@@ -733,7 +733,8 @@ async function admitFactoryMediaBeforeAcceptance(options) {
     options.factoryManifestPath,
     options.factoryProvenancePath,
     options.factoryIsoPath,
-    options.factoryIsoBuilderPath,
+    options.factoryUdfExtractorPath,
+    options.factoryUdfWriterPath,
     options.factoryWimlibPath,
   ];
   if (supplied.every((value) => value === undefined)) return null;
@@ -773,7 +774,8 @@ async function admitFactoryMediaBeforeAcceptance(options) {
     provenanceDigest: options.factoryProvenanceDigest,
     outputIdentity: options.factoryIso,
     outputDigest,
-    isoBuilderPath: options.factoryIsoBuilderPath,
+    udfExtractorPath: options.factoryUdfExtractorPath,
+    udfWriterPath: options.factoryUdfWriterPath,
     wimlibPath: options.factoryWimlibPath,
   });
 }
@@ -7358,8 +7360,11 @@ function parseArgs(argv) {
     } else if (arg === "--factory-iso-path") {
       options.factoryIsoPath = next;
       index += 1;
-    } else if (arg === "--factory-iso-builder") {
-      options.factoryIsoBuilderPath = next;
+    } else if (arg === "--factory-udf-extractor") {
+      options.factoryUdfExtractorPath = next;
+      index += 1;
+    } else if (arg === "--factory-udf-writer") {
+      options.factoryUdfWriterPath = next;
       index += 1;
     } else if (arg === "--factory-wimlib") {
       options.factoryWimlibPath = next;

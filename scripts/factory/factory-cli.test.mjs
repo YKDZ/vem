@@ -16,12 +16,26 @@ import {
 } from "./vision-release.mjs";
 
 const run = promisify(execFile);
-const ISO_BUILDER_PATH = "/usr/bin/xorriso";
-const WIMLIB_PATH = "/usr/bin/wimlib-imagex";
-const SYNTHETIC_ISO_TOOL = "/usr/bin/genisoimage";
+function toolPath(name, environmentName) {
+  return (
+    process.env[environmentName] ??
+    execFileSync("sh", ["-lc", `command -v ${name}`], {
+      encoding: "utf8",
+    }).trim()
+  );
+}
+
+const UDF_EXTRACTOR_PATH = toolPath("7z", "VEM_FACTORY_TEST_UDF_EXTRACTOR");
+const UDF_WRITER_PATH = toolPath("genisoimage", "VEM_FACTORY_TEST_UDF_WRITER");
+const WIMLIB_PATH = toolPath("wimlib-imagex", "VEM_FACTORY_TEST_WIMLIB");
+const SYNTHETIC_ISO_TOOL = UDF_WRITER_PATH;
 const IMAGE_HASH = "f".repeat(64);
 const BUILDER_IDENTITY =
   "github-actions://vem/vem/.github/workflows/build.yml@refs/heads/main";
+const PINNED_UDF_WRITER_VERSION = "1.1.11";
+const PINNED_UDF_WRITER_DIGEST =
+  process.env.VEM_FACTORY_TEST_UDF_WRITER_DIGEST ??
+  "sha256:9bacc5951ca0767701cfd8e6b47537f199977e51a6e943f4edfdcf9d639d99d2";
 
 function toolVersion(path, args, expression, label) {
   const output = execFileSync(path, args, { encoding: "utf8" });
@@ -32,18 +46,44 @@ function toolVersion(path, args, expression, label) {
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "vem-factory-cli-"));
-  const isoBuilderHash = createHash("sha256")
-    .update(await readFile(ISO_BUILDER_PATH))
+  const udfExtractorHash = createHash("sha256")
+    .update(await readFile(UDF_EXTRACTOR_PATH))
     .digest("hex");
-  const isoBuilder = {
-    identity: `tool://xorriso@sha256:${isoBuilderHash}`,
-    digest: `sha256:${isoBuilderHash}`,
-    version: toolVersion(
-      ISO_BUILDER_PATH,
-      ["-version"],
-      /xorriso version\s*:\s*([0-9.]+)/i,
-      "xorriso",
+  const udfExtractor = {
+    identity: `tool://7z@sha256:${udfExtractorHash}`,
+    digest: `sha256:${udfExtractorHash}`,
+    version: `${toolVersion(
+      UDF_EXTRACTOR_PATH,
+      [],
+      /7-Zip\s+\[[^\]]+\]\s+([0-9.]+)/i,
+      "7z",
+    )
+      .split(".")
+      .map((part) => String(Number(part)))
+      .join(".")}.0`,
+  };
+  const observedUdfWriterDigest = `sha256:${createHash("sha256")
+    .update(await readFile(UDF_WRITER_PATH))
+    .digest("hex")}`;
+  assert.equal(
+    observedUdfWriterDigest,
+    PINNED_UDF_WRITER_DIGEST,
+    "fixture genisoimage digest must match the pinned contract",
+  );
+  assert.equal(
+    toolVersion(
+      UDF_WRITER_PATH,
+      ["--version"],
+      /genisoimage\s+([0-9.]+)/i,
+      "genisoimage",
     ),
+    PINNED_UDF_WRITER_VERSION,
+    "fixture genisoimage version must match the pinned contract",
+  );
+  const udfWriter = {
+    identity: `tool://genisoimage@${PINNED_UDF_WRITER_DIGEST}`,
+    digest: PINNED_UDF_WRITER_DIGEST,
+    version: PINNED_UDF_WRITER_VERSION,
   };
   const sourceIso = join(root, "fixture-source.iso");
   const sourceTree = join(root, "synthetic-windows-setup");
@@ -337,7 +377,8 @@ async function fixture() {
     assets: definitions.slice(1).map(strip),
     toolchain: {
       builderImage,
-      isoBuilder,
+      udfExtractor,
+      udfWriter,
       wimlib: {
         identity: `tool://wimlib-imagex@${wimlibDigest}`,
         digest: wimlibDigest,
@@ -451,8 +492,10 @@ describe("Factory builder CLI fixture", () => {
           data.evidenceStore,
           "--approval-policy",
           data.approvalPolicy,
-          "--iso-builder",
-          ISO_BUILDER_PATH,
+          "--udf-extractor",
+          UDF_EXTRACTOR_PATH,
+          "--udf-writer",
+          UDF_WRITER_PATH,
           "--wimlib",
           WIMLIB_PATH,
           "--vision-release-delivery-unit",
@@ -472,6 +515,18 @@ describe("Factory builder CLI fixture", () => {
           env: {
             ...process.env,
             VEM_FACTORY_EXECUTED_BUILDER_IMAGE: data.builderImage.identity,
+            VEM_FACTORY_EXPECTED_UDF_EXTRACTOR_DIGEST:
+              data.manifest.toolchain.udfExtractor.digest,
+            VEM_FACTORY_EXPECTED_UDF_EXTRACTOR_VERSION:
+              data.manifest.toolchain.udfExtractor.version,
+            VEM_FACTORY_EXPECTED_UDF_WRITER_DIGEST:
+              data.manifest.toolchain.udfWriter.digest,
+            VEM_FACTORY_EXPECTED_UDF_WRITER_VERSION:
+              data.manifest.toolchain.udfWriter.version,
+            VEM_FACTORY_EXPECTED_WIMLIB_DIGEST:
+              data.manifest.toolchain.wimlib.digest,
+            VEM_FACTORY_EXPECTED_WIMLIB_VERSION:
+              data.manifest.toolchain.wimlib.version,
           },
         },
       );

@@ -85,9 +85,11 @@ The canonical media workflow takes:
   artifacts;
 - a production or testbed profile without machine-specific secrets.
 
-`windows-serviced-iso` is the only deployable Factory ISO mode: the pinned xorriso
-tool replays the verified source ISO's BIOS and UEFI boot configuration while
-injecting `Autounattend.xml` and `sources/$OEM$`. The source must contain
+`windows-serviced-iso` is the only deployable Factory ISO mode: the pinned 7-Zip
+extractor reads the source UDF filesystem view, and the pinned `genisoimage`
+writer rebuilds ISO9660, Joliet, and UDF media while replaying the verified BIOS
+and UEFI El Torito semantics and injecting `Autounattend.xml` and `sources/$OEM$`.
+The source must contain
 `setup.exe`, `sources/boot.wim`, `sources/install.wim` or `install.esd`, BIOS
 `boot/etfsboot.com`, EFI `efisys.bin`, and a complete BIOS+UEFI El Torito
 catalog; fixture, non-Windows, and BIOS-only media are rejected. The unattended
@@ -107,11 +109,14 @@ The Factory media pipeline emits:
 - a provenance report containing every input identity and toolchain identity;
 - a sanitized evidence index that records whether Windows Setup was customized.
 
-The media builder runs in a pinned, platform-neutral Linux container. It must
-execute the manifest-pinned ISO builder and produce byte-identical output from
-two independent build directories and processes. Tests inspect ISO9660, UDF
-descriptor checksums/CRCs, and El Torito boot metadata. Source Windows media is
-not committed, cached by GitHub, or uploaded to GitHub.
+The media builder runs in a pinned, platform-neutral Linux container. It executes
+the manifest-pinned extractor, writer, and `wimlib-imagex`, and produces
+byte-identical output from two independent build directories and processes.
+ISO bytes are processed through bounded file ranges and streaming SHA-256; build
+results and APIs expose only logical identity, digest, byte size, and path. Tests
+inspect ISO9660/Joliet/UDF filesystem views, UDF descriptor checksums/CRCs, and
+El Torito boot metadata. Source Windows media is not committed, cached by GitHub,
+or uploaded to GitHub.
 
 ### Factory Manifest v1
 
@@ -256,6 +261,22 @@ The Factory ISO workflow has a reproducibility mode that builds twice and
 requires identical ISO hashes. GitHub receives only sanitized provenance,
 logs, and acceptance reports. A testbed ISO or personalization artifact that
 contains private material must never be uploaded.
+
+### Factory Tool Contract
+
+`windows-serviced-iso` requires four manifest-pinned executable regular files:
+the 7-Zip UDF-view extractor, the ISO/UDF writer, `wimlib-imagex`, and the
+Factory builder image identity. The runner supplies absolute no-symlink paths;
+the builder opens each executable with no-follow semantics, hashes the opened
+bytes, checks the manifest digest and reported version, and records the exact
+tool identities as effective inputs and provenance. Factory admission repeats
+the pinned extractor/WIM inspection against the runner-local ISO. Missing,
+symlinked, non-regular, digest-mismatched, or wrong-version tools fail before
+media inspection or build output admission. The extractor must first report a
+single authoritative `Type = Udf` view; extraction then uses that UDF view and
+performs a no-follow `lstat` tree inventory before any WIM inspection, hashing,
+overlay copy, or timestamp adjustment; symlinks, special files, and Windows
+case-colliding normalized paths are rejected.
 
 ## VM Host Adapter Contract
 
@@ -512,13 +533,15 @@ Lifecycle operations are distinct:
   credentials, claim codes, and every machine peer from the platform
   perspective. An online machine receives a durable signed command that removes
   its local tunnel, logs the destructive message id, and persists a retryable
-  signed result. The daemon retains only its cleanup MQTT credential and result
-  until it verifies the platform's signed acknowledgement; that result is not
-  subject to normal outbox expiry or capacity eviction. The platform erases its
-  encrypted cleanup credential in the same transaction that records the result,
-  then retries the already-signed acknowledgement across restart. Duplicate
-  command, result, and acknowledgement delivery is idempotent. An offline
-  machine has no valid business credentials and is denied when it reconnects.
+  signed result. Before a persisted platform acknowledgement, a restarted
+  daemon fails closed and never starts normal runtime components with retained
+  credentials: a partially failed local cleanup is therefore not a recoverable
+  online state. The result is not subject to normal outbox expiry or capacity
+  eviction. Once acknowledgement is durable, final secret/profile cleanup runs
+  before both decommission markers are removed in one SQLite transaction.
+  Duplicate command, result, and acknowledgement delivery is idempotent. An
+  offline machine has no valid business credentials and is denied when it
+  reconnects.
 
 Ordinary machine credential rotation does not rotate the WireGuard key. A full
 reinstall generates a new key and requires the previous peer to be revoked by

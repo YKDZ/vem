@@ -1,9 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
-use rumqttc::{AsyncClient, ClientError, Event, EventLoop, MqttOptions, Packet, QoS};
+use rumqttc::{AsyncClient, ClientError, Event, EventLoop, MqttOptions, Outgoing, Packet, QoS};
 use serde_json::json;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -32,6 +32,21 @@ pub struct OutboxFlushResult {
 }
 
 #[derive(Debug, Clone)]
+struct PendingMqttOutboxEvent {
+    id: String,
+    awaiting_platform_ack: bool,
+}
+
+#[derive(Debug, Default)]
+struct PendingMqttOutbox {
+    // All application QoS1 publishes originate in the durable outbox. Keeping
+    // one owner here makes a PubAck unambiguous even when rumqttc reuses a pkid.
+    inflight: Option<PendingMqttOutboxEvent>,
+    packet_id: Option<u16>,
+    outgoing_observed: bool,
+}
+
+#[derive(Debug, Clone)]
 pub enum CommandHandlingResult {
     DuplicateFinal { command_no: String },
     ActiveDuplicate { command_no: String },
@@ -49,6 +64,8 @@ pub struct MqttSyncRuntime {
     events: broadcast::Sender<DaemonEvent>,
     shutdown: CancellationToken,
     mqtt_client: Option<Arc<RwLock<AsyncClient>>>,
+    outbox_flush: Arc<Mutex<()>>,
+    pending_mqtt_outbox: Arc<Mutex<PendingMqttOutbox>>,
 }
 
 impl MqttSyncRuntime {
@@ -70,6 +87,8 @@ impl MqttSyncRuntime {
             events,
             shutdown,
             mqtt_client: None,
+            outbox_flush: Arc::new(Mutex::new(())),
+            pending_mqtt_outbox: Arc::new(Mutex::new(PendingMqttOutbox::default())),
         }
     }
 
@@ -530,6 +549,17 @@ impl MqttSyncRuntime {
             .await
             .map_err(|error| error.to_string())?;
         if existing.status == "succeeded" {
+            let finalized = match &self.readiness_context {
+                Some(context) => context
+                    .config_store
+                    .pending_secure_decommission_marker()
+                    .await?
+                    .is_none(),
+                None => false,
+            };
+            if finalized {
+                return Ok(CommandHandlingResult::DuplicateFinal { command_no });
+            }
             let result_payload = serde_json::json!({
                 "commandNo": command_no,
                 "success": true,
@@ -552,8 +582,13 @@ impl MqttSyncRuntime {
             return Ok(CommandHandlingResult::DuplicateFinal { command_no });
         }
 
+        let marker = crate::state::store::SecureDecommissionFinalizeMarker {
+            message_id: envelope.message_id.clone(),
+            command_no: command_no.clone(),
+            generation: envelope.message_id.clone(),
+        };
         let cleanup = match &self.readiness_context {
-            Some(context) => context.config_store.secure_decommission().await,
+            Some(context) => context.config_store.secure_decommission(&marker).await,
             None => Err("secure decommission runtime context is unavailable".to_string()),
         };
         let reported_at = crate::state::store::now_iso();
@@ -634,34 +669,53 @@ impl MqttSyncRuntime {
         {
             return Err("secure decommission command is not ready for acknowledgement".to_string());
         }
-        let already_acknowledged = self
+        let marker = crate::state::store::SecureDecommissionFinalizeMarker {
+            message_id: message_id.clone(),
+            command_no: command_no.clone(),
+            generation: message_id.clone(),
+        };
+        let context = self
+            .readiness_context
+            .as_ref()
+            .ok_or_else(|| "secure decommission finalization context is unavailable".to_string())?;
+        match context
+            .config_store
+            .pending_secure_decommission_marker()
+            .await?
+        {
+            Some(active) if active == marker => {}
+            Some(_) => {
+                return Err(
+                    "secure decommission acknowledgement does not match the active command generation"
+                        .to_string(),
+                );
+            }
+            None => return Ok(CommandHandlingResult::DuplicateFinal { command_no }),
+        }
+        let newly_acknowledged = self
             .state
-            .get_metadata::<String>("secure_decommission_platform_acknowledged_command_no")
-            .await
-            .map_err(|error| error.to_string())?
-            .as_deref()
-            == Some(command_no.as_str());
-        if !already_acknowledged {
-            self.state
-                .remove_outbox_event(&format!(
+            .acknowledge_secure_decommission_result_tx(
+                &message_id,
+                &format!(
                     "{}:secure-decommission-result:{command_no}",
                     self.machine_code
-                ))
-                .await
-                .map_err(|error| error.to_string())?;
-            let context = self.readiness_context.as_ref().ok_or_else(|| {
-                "secure decommission finalization context is unavailable".to_string()
-            })?;
-            context
-                .config_store
-                .acknowledge_secure_decommission(&command_no)
-                .await?;
-        }
+                ),
+                &marker,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        // This deliberately happens after the SQLite transaction. A process
+        // crash or external cleanup failure leaves the durable marker for
+        // ConfigStore startup recovery rather than losing either side.
+        context
+            .config_store
+            .finalize_secure_decommission(&marker)
+            .await?;
         self.shutdown.cancel();
-        Ok(if already_acknowledged {
-            CommandHandlingResult::DuplicateFinal { command_no }
-        } else {
+        Ok(if newly_acknowledged {
             CommandHandlingResult::Processed { command_no }
+        } else {
+            CommandHandlingResult::DuplicateFinal { command_no }
         })
     }
 
@@ -828,6 +882,7 @@ impl MqttSyncRuntime {
     }
 
     pub async fn flush_due_outbox(&self) -> Result<OutboxFlushResult, String> {
+        let _flush = self.outbox_flush.lock().await;
         let due = self
             .state
             .list_due_outbox(chrono::Utc::now())
@@ -849,8 +904,24 @@ impl MqttSyncRuntime {
                 event.topic.as_deref() == Some(decommission_result_topic.as_str());
             let result = match event.transport {
                 vending_core::domain::OutboxTransport::Mqtt => {
-                    self.publish_json(event.topic.as_deref(), &event.payload_json)
+                    if !self
+                        .claim_mqtt_outbox_event(&event.id, is_decommission_result)
                         .await
+                    {
+                        // At most one durable QoS1 event may be owned until its
+                        // matching Outgoing(Publish) and PubAck are observed.
+                        break;
+                    }
+                    match self
+                        .publish_json(event.topic.as_deref(), &event.payload_json)
+                        .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(error) => {
+                            self.release_mqtt_outbox_event(&event.id).await;
+                            Err(error)
+                        }
+                    }
                 }
                 vending_core::domain::OutboxTransport::Http => {
                     self.publish_http(event.target_url.as_deref(), &event.payload_json)
@@ -858,21 +929,13 @@ impl MqttSyncRuntime {
                 }
             };
             match result {
-                Ok(()) if is_decommission_result => {
-                    self.state
-                        .mark_outbox_failed(
-                            &event.id,
-                            "awaiting secure decommission platform acknowledgement",
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    sent += 1;
-                }
                 Ok(()) => {
-                    self.state
-                        .remove_outbox_event(&event.id)
-                        .await
-                        .map_err(|error| error.to_string())?;
+                    if event.transport == vending_core::domain::OutboxTransport::Http {
+                        self.state
+                            .remove_outbox_event(&event.id)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
                     sent += 1;
                 }
                 Err(error) => {
@@ -892,6 +955,93 @@ impl MqttSyncRuntime {
         }
 
         Ok(OutboxFlushResult { sent, failed })
+    }
+
+    async fn claim_mqtt_outbox_event(&self, event_id: &str, awaiting_platform_ack: bool) -> bool {
+        let mut pending = self.pending_mqtt_outbox.lock().await;
+        if pending.inflight.is_some() {
+            return false;
+        }
+        pending.inflight = Some(PendingMqttOutboxEvent {
+            id: event_id.to_string(),
+            awaiting_platform_ack,
+        });
+        pending.packet_id = None;
+        pending.outgoing_observed = false;
+        true
+    }
+
+    async fn release_mqtt_outbox_event(&self, event_id: &str) {
+        let mut pending = self.pending_mqtt_outbox.lock().await;
+        if pending
+            .inflight
+            .as_ref()
+            .is_some_and(|event| event.id == event_id)
+        {
+            pending.inflight = None;
+            pending.packet_id = None;
+            pending.outgoing_observed = false;
+        }
+    }
+
+    async fn record_mqtt_outbox_publish(&self, packet_id: u16) {
+        let mut pending = self.pending_mqtt_outbox.lock().await;
+        if pending.inflight.is_some() && !pending.outgoing_observed {
+            pending.packet_id = Some(packet_id);
+            pending.outgoing_observed = true;
+        }
+    }
+
+    async fn acknowledge_mqtt_outbox_publish(&self, packet_id: u16) -> Result<bool, String> {
+        let event = {
+            let mut pending = self.pending_mqtt_outbox.lock().await;
+            if pending.outgoing_observed && pending.packet_id == Some(packet_id) {
+                let event = pending.inflight.take();
+                pending.packet_id = None;
+                pending.outgoing_observed = false;
+                event
+            } else {
+                None
+            }
+        };
+        let Some(event) = event else {
+            return Ok(false);
+        };
+        if event.awaiting_platform_ack {
+            self.state
+                .mark_outbox_failed(
+                    &event.id,
+                    "awaiting secure decommission platform acknowledgement",
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+        } else {
+            self.state
+                .remove_outbox_event(&event.id)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(true)
+    }
+
+    async fn begin_mqtt_generation(&self) {
+        let mut pending = self.pending_mqtt_outbox.lock().await;
+        // The same durable owner is retransmitted by rumqttc after reconnect.
+        pending.packet_id = None;
+        pending.outgoing_observed = false;
+    }
+
+    async fn retry_inflight_mqtt_outbox(&self) {
+        let mut pending = self.pending_mqtt_outbox.lock().await;
+        pending.packet_id = None;
+        pending.outgoing_observed = false;
+    }
+
+    fn schedule_due_outbox(self: &Arc<Self>) {
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            let _ = runtime.flush_due_outbox().await;
+        });
     }
 
     async fn publish_json(
@@ -958,7 +1108,9 @@ impl MqttSyncRuntime {
                 .await;
         }
         let _ = self.recover_stale_active_dispense_commands().await;
-        let _ = self.flush_due_outbox().await;
+        // The bounded AsyncClient queue is drained only by event_loop.poll().
+        // Never await an initial backlog here, before this loop can poll it.
+        self.schedule_due_outbox();
 
         let heartbeat = self.clone();
         let heartbeat_task = tokio::spawn(async move {
@@ -995,8 +1147,30 @@ impl MqttSyncRuntime {
                 event = event_loop.poll() => {
                     match event {
                         Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                            self.begin_mqtt_generation().await;
                             self.set_connected(true, None).await;
-                            let _ = self.flush_due_outbox().await;
+                            self.schedule_due_outbox();
+                        }
+                        Ok(Event::Incoming(Packet::PubAck(ack))) => {
+                            match self.acknowledge_mqtt_outbox_publish(ack.pkid).await {
+                                Err(error) => {
+                                    self.set_connected(
+                                        false,
+                                        Some(format!("outbox acknowledgement failed: {error}")),
+                                    )
+                                        .await;
+                                }
+                                Ok(true) => {
+                                    // Polling is the only progress engine for the
+                                    // bounded AsyncClient queue; start the next
+                                    // durable event only after this acknowledgement.
+                                    self.schedule_due_outbox();
+                                }
+                                Ok(false) => {}
+                            }
+                        }
+                        Ok(Event::Outgoing(Outgoing::Publish(packet_id))) => {
+                            self.record_mqtt_outbox_publish(packet_id).await;
                         }
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
                             let text = String::from_utf8_lossy(&publish.payload).to_string();
@@ -1016,14 +1190,7 @@ impl MqttSyncRuntime {
 
                             match handling_result {
                                 Ok(_) => {
-                                    if let Err(error) = self.flush_due_outbox().await {
-                                        let _ = self
-                                            .set_connected(
-                                                false,
-                                                Some(format!("outbox flush failed: {error}")),
-                                            )
-                                            .await;
-                                    }
+                                    self.schedule_due_outbox();
                                 }
                                 Err(error) => {
                                     let _ = self
@@ -1037,6 +1204,7 @@ impl MqttSyncRuntime {
                         }
                         Ok(_) => {}
                         Err(error) => {
+                            self.retry_inflight_mqtt_outbox().await;
                             self.set_connected(false, Some(error.to_string())).await;
                         }
                     }
@@ -1685,6 +1853,141 @@ mod tests {
         assert!(
             MqttSyncRuntime::mqtt_options_from_config("M1", "ws://127.0.0.1:1883", None).is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn mqtt_outbox_allows_one_durable_qos1_owner_until_matching_puback() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let config = crate::config::default_public_config();
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&config).expect("hw");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        let first = crate::state::store::OutboxInput::command_ack("M1", "CMD-PUBACK-1");
+        let second = crate::state::store::OutboxInput::command_ack("M1", "CMD-PUBACK-2");
+        state.enqueue_outbox(&first).await.expect("seed first");
+        state.enqueue_outbox(&second).await.expect("seed second");
+        assert!(runtime.claim_mqtt_outbox_event(&first.id, false).await);
+        assert!(!runtime.claim_mqtt_outbox_event(&second.id, false).await);
+        runtime.record_mqtt_outbox_publish(7).await;
+        runtime
+            .acknowledge_mqtt_outbox_publish(6)
+            .await
+            .expect("ignore unrelated ack");
+        assert!(state
+            .outbox_record(&first.id)
+            .await
+            .expect("first")
+            .is_some());
+        runtime
+            .acknowledge_mqtt_outbox_publish(7)
+            .await
+            .expect("ack first");
+        assert!(state
+            .outbox_record(&first.id)
+            .await
+            .expect("first")
+            .is_none());
+        assert!(runtime.claim_mqtt_outbox_event(&second.id, false).await);
+        runtime.record_mqtt_outbox_publish(7).await;
+        runtime
+            .acknowledge_mqtt_outbox_publish(7)
+            .await
+            .expect("ack reused pkid");
+        assert_eq!(state.outbox_size().await.expect("outbox size"), 0);
+    }
+
+    #[tokio::test]
+    async fn mqtt_outbox_ignores_duplicate_outgoing_events_and_retries_across_generations() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let config = crate::config::default_public_config();
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&config).expect("hw");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        let first = crate::state::store::OutboxInput::command_ack("M1", "CMD-FIRST");
+        let second = crate::state::store::OutboxInput::command_ack("M1", "CMD-SECOND");
+        state.enqueue_outbox(&first).await.expect("seed first");
+        state.enqueue_outbox(&second).await.expect("seed second");
+        assert!(runtime.claim_mqtt_outbox_event(&first.id, false).await);
+        assert!(!runtime.claim_mqtt_outbox_event(&second.id, false).await);
+
+        runtime.record_mqtt_outbox_publish(7).await;
+        // A non-outbox QoS1 publish cannot steal this owner by colliding with
+        // its packet id. Its later PubAck must leave the durable event intact.
+        runtime.record_mqtt_outbox_publish(9).await;
+        assert!(!runtime
+            .acknowledge_mqtt_outbox_publish(9)
+            .await
+            .expect("ignore non-outbox packet id"));
+        assert!(state
+            .outbox_record(&first.id)
+            .await
+            .expect("first")
+            .is_some());
+        runtime
+            .acknowledge_mqtt_outbox_publish(7)
+            .await
+            .expect("ack first");
+        assert!(state
+            .outbox_record(&first.id)
+            .await
+            .expect("first")
+            .is_none());
+        assert!(state
+            .outbox_record(&second.id)
+            .await
+            .expect("second")
+            .is_some());
+
+        assert!(runtime.claim_mqtt_outbox_event(&second.id, false).await);
+
+        let retry = crate::state::store::OutboxInput::command_ack("M1", "CMD-RETRY");
+        state.enqueue_outbox(&retry).await.expect("seed retry");
+        assert!(!runtime.claim_mqtt_outbox_event(&retry.id, false).await);
+        runtime.record_mqtt_outbox_publish(7).await;
+        runtime
+            .acknowledge_mqtt_outbox_publish(7)
+            .await
+            .expect("ack reused packet id");
+        assert!(state
+            .outbox_record(&second.id)
+            .await
+            .expect("second")
+            .is_none());
+        assert!(runtime.claim_mqtt_outbox_event(&retry.id, false).await);
+        runtime.record_mqtt_outbox_publish(9).await;
+        runtime.begin_mqtt_generation().await;
+        runtime.record_mqtt_outbox_publish(9).await;
+        runtime
+            .acknowledge_mqtt_outbox_publish(9)
+            .await
+            .expect("ack retry after reconnect");
+        assert!(state
+            .outbox_record(&retry.id)
+            .await
+            .expect("retry")
+            .is_none());
     }
 
     #[tokio::test]
@@ -2839,5 +3142,52 @@ mod tests {
             .mqtt_signing_secret
             .is_none());
         assert!(shutdown.is_cancelled());
+
+        let duplicate_command = runtime
+            .handle_secure_decommission_command(&serde_json::to_string(&command).expect("command"))
+            .await
+            .expect("duplicate command after final acknowledgement");
+        assert!(matches!(
+            duplicate_command,
+            CommandHandlingResult::DuplicateFinal { .. }
+        ));
+        assert!(state
+            .outbox_record("M1:secure-decommission-result:DCOM-ACK")
+            .await
+            .expect("outbox")
+            .is_none());
+
+        let mut reprovisioned = crate::config::default_public_config();
+        reprovisioned.machine_code = Some("M1".to_string());
+        context
+            .config_store
+            .save_public_config(reprovisioned.clone())
+            .await
+            .expect("reprovision");
+        let hardware =
+            crate::hardware::HardwareSupervisor::from_config(&reprovisioned).expect("hardware");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let restarted = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_readiness_context(context.clone());
+        let replay_after_restart = restarted
+            .handle_secure_decommission_command(&serde_json::to_string(&command).expect("command"))
+            .await
+            .expect("replay after reprovision and restart");
+        assert!(matches!(
+            replay_after_restart,
+            CommandHandlingResult::DuplicateFinal { .. }
+        ));
+        assert!(state
+            .outbox_record("M1:secure-decommission-result:DCOM-ACK")
+            .await
+            .expect("outbox")
+            .is_none());
     }
 }

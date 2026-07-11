@@ -18,8 +18,8 @@ const manifest = validateFactoryManifest(
 const structure = await inspectWindowsSourceIso({
   sourceIsoPath: option("--source-iso"),
   source: manifest.source,
-  isoBuilderPath: option("--xorriso"),
-  isoBuilder: manifest.toolchain.isoBuilder,
+  udfExtractorPath: option("--udf-extractor"),
+  udfExtractor: manifest.toolchain.udfExtractor,
   wimlibPath: option("--wimlib"),
   wimlib: manifest.toolchain.wimlib,
 });

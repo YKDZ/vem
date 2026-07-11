@@ -112,10 +112,15 @@ function validInput() {
         digest: `sha256:${HASH}`,
         version: "1.0.0",
       },
-      isoBuilder: {
-        identity: "tool://iso-builder@sha256:" + HASH,
+      udfExtractor: {
+        identity: "tool://7z@sha256:" + HASH,
         digest: `sha256:${HASH}`,
-        version: "1.0.0",
+        version: "26.1.0",
+      },
+      udfWriter: {
+        identity: "tool://genisoimage@sha256:" + HASH,
+        digest: `sha256:${HASH}`,
+        version: "1.1.11",
       },
       wimlib: {
         identity: "tool://wimlib-imagex@sha256:" + HASH,
@@ -233,10 +238,10 @@ describe("Factory Manifest v1", () => {
 
   it("binds every tool URI digest to its digest field", () => {
     const input = validInput();
-    input.toolchain.isoBuilder.digest = `sha256:${"b".repeat(64)}`;
+    input.toolchain.udfWriter.digest = `sha256:${"b".repeat(64)}`;
     assert.throws(
       () => createFactoryManifest(input),
-      /isoBuilder.*digest|digest.*identity/i,
+      /udfWriter.*digest|digest.*identity/i,
     );
   });
 

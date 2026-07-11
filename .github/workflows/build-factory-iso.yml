@@ -87,7 +87,12 @@ jobs:
             VEM_FACTORY_FACTORY_VISION_TRUSTED_ROOTS \
             VEM_FACTORY_VISION_EVIDENCE_VERIFIER \
             VEM_FACTORY_BUILDER_IMAGE \
-            VEM_FACTORY_ISO_BUILDER_CONTAINER_PATH \
+            VEM_FACTORY_UDF_EXTRACTOR_CONTAINER_PATH \
+            VEM_FACTORY_UDF_EXTRACTOR_DIGEST \
+            VEM_FACTORY_UDF_EXTRACTOR_VERSION \
+            VEM_FACTORY_UDF_WRITER_CONTAINER_PATH \
+            VEM_FACTORY_UDF_WRITER_DIGEST \
+            VEM_FACTORY_UDF_WRITER_VERSION \
             VEM_FACTORY_WIMLIB_CONTAINER_PATH \
             VEM_FACTORY_WIMLIB_DIGEST \
             VEM_FACTORY_WIMLIB_VERSION \
@@ -100,9 +105,15 @@ jobs:
             exit 1
           }
           [[ "$VEM_FACTORY_MANIFEST_IDENTITY" =~ ^sha256:[a-f0-9]{64}$ ]]
-          [[ "$VEM_FACTORY_WIMLIB_CONTAINER_PATH" = /* ]]
-          [[ "$VEM_FACTORY_WIMLIB_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
-          [[ "$VEM_FACTORY_WIMLIB_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          for path in "$VEM_FACTORY_UDF_EXTRACTOR_CONTAINER_PATH" "$VEM_FACTORY_UDF_WRITER_CONTAINER_PATH" "$VEM_FACTORY_WIMLIB_CONTAINER_PATH"; do
+            [[ "$path" = /* ]]
+          done
+          for digest in "$VEM_FACTORY_UDF_EXTRACTOR_DIGEST" "$VEM_FACTORY_UDF_WRITER_DIGEST" "$VEM_FACTORY_WIMLIB_DIGEST"; do
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          done
+          for version in "$VEM_FACTORY_UDF_EXTRACTOR_VERSION" "$VEM_FACTORY_UDF_WRITER_VERSION" "$VEM_FACTORY_WIMLIB_VERSION"; do
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          done
           echo "MANIFEST_IDENTITY=$VEM_FACTORY_MANIFEST_IDENTITY" >> "$GITHUB_ENV"
           for path in \
             "$VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT" \
@@ -158,6 +169,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/vem-factory-output"
           docker run --rm --network none --read-only --tmpfs /tmp \
             --env "VEM_FACTORY_EXECUTED_BUILDER_IMAGE=$VEM_FACTORY_BUILDER_IMAGE" \
+            --env "VEM_FACTORY_EXPECTED_UDF_EXTRACTOR_DIGEST=$VEM_FACTORY_UDF_EXTRACTOR_DIGEST" \
+            --env "VEM_FACTORY_EXPECTED_UDF_EXTRACTOR_VERSION=$VEM_FACTORY_UDF_EXTRACTOR_VERSION" \
+            --env "VEM_FACTORY_EXPECTED_UDF_WRITER_DIGEST=$VEM_FACTORY_UDF_WRITER_DIGEST" \
+            --env "VEM_FACTORY_EXPECTED_UDF_WRITER_VERSION=$VEM_FACTORY_UDF_WRITER_VERSION" \
+            --env "VEM_FACTORY_EXPECTED_WIMLIB_DIGEST=$VEM_FACTORY_WIMLIB_DIGEST" \
+            --env "VEM_FACTORY_EXPECTED_WIMLIB_VERSION=$VEM_FACTORY_WIMLIB_VERSION" \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
             --mount "type=bind,src=$VEM_FACTORY_ASSET_STORE,dst=/factory-assets" \
             --mount "type=bind,src=$VEM_FACTORY_MANIFEST_STORE,dst=/factory-manifests,readonly" \
@@ -181,7 +198,8 @@ jobs:
               --repository-vision-trusted-roots /factory-vision/repository-trust.json \
               --factory-vision-trusted-roots /factory-vision/factory-trust.json \
               --vision-evidence-verifier /factory-vision/vision-release-verifier \
-              --iso-builder "$VEM_FACTORY_ISO_BUILDER_CONTAINER_PATH" \
+              --udf-extractor "$VEM_FACTORY_UDF_EXTRACTOR_CONTAINER_PATH" \
+              --udf-writer "$VEM_FACTORY_UDF_WRITER_CONTAINER_PATH" \
               --wimlib "$VEM_FACTORY_WIMLIB_CONTAINER_PATH" \
               --authenticode-verifier "$VEM_FACTORY_AUTHENTICODE_VERIFIER_CONTAINER_PATH" \
               --authenticode-ca-bundle /factory-policy/authenticode-ca.pem \

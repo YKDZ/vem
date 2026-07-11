@@ -80,6 +80,23 @@ async function readVisionReleaseDeliveryUnit(path) {
   };
 }
 
+function assertExpectedToolInvocation(
+  tool,
+  label,
+  expectedDigest,
+  expectedVersion,
+) {
+  if (!expectedDigest && !expectedVersion) return;
+  if (!expectedDigest || !expectedVersion) {
+    throw new Error(`${label} invocation must provide both digest and version`);
+  }
+  if (tool.digest !== expectedDigest || tool.version !== expectedVersion) {
+    throw new Error(
+      `${label} invocation does not exactly match the Factory Manifest`,
+    );
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const manifestStore =
@@ -95,8 +112,10 @@ async function main() {
     options["evidence-store"] ?? process.env.VEM_FACTORY_EVIDENCE_STORE;
   const approvalPolicyPath =
     options["approval-policy"] ?? process.env.VEM_FACTORY_APPROVAL_POLICY;
-  const isoBuilderPath =
-    options["iso-builder"] ?? process.env.VEM_FACTORY_ISO_BUILDER;
+  const udfExtractorPath =
+    options["udf-extractor"] ?? process.env.VEM_FACTORY_UDF_EXTRACTOR;
+  const udfWriterPath =
+    options["udf-writer"] ?? process.env.VEM_FACTORY_UDF_WRITER;
   const wimlibPath = options.wimlib ?? process.env.VEM_FACTORY_WIMLIB;
   const visionReleaseDeliveryUnitPath =
     options["vision-release-delivery-unit"] ??
@@ -124,7 +143,8 @@ async function main() {
     !sourceStoreRoot ||
     !evidenceStoreRoot ||
     !approvalPolicyPath ||
-    !isoBuilderPath ||
+    !udfExtractorPath ||
+    !udfWriterPath ||
     !wimlibPath ||
     !visionReleaseDeliveryUnitPath ||
     !repositoryVisionTrustedRootsPath ||
@@ -133,7 +153,7 @@ async function main() {
     !executedBuilderImage
   ) {
     throw new Error(
-      "Factory manifest, output, asset, Windows source, evidence, approval policy, Vision release delivery unit, repository/factory Vision trusted roots, Vision verifier, ISO builder, wimlib, and executed builder image configuration are required",
+      "Factory manifest, output, asset, Windows source, evidence, approval policy, Vision release delivery unit, repository/factory Vision trusted roots, Vision verifier, UDF extractor, UDF writer, wimlib, and executed builder image configuration are required",
     );
   }
   for (const [value, label] of [
@@ -143,7 +163,8 @@ async function main() {
     [sourceStoreRoot, "--windows-source-store"],
     [evidenceStoreRoot, "--evidence-store"],
     [approvalPolicyPath, "--approval-policy"],
-    [isoBuilderPath, "--iso-builder"],
+    [udfExtractorPath, "--udf-extractor"],
+    [udfWriterPath, "--udf-writer"],
     [wimlibPath, "--wimlib"],
     [visionReleaseDeliveryUnitPath, "--vision-release-delivery-unit"],
     [repositoryVisionTrustedRootsPath, "--repository-vision-trusted-roots"],
@@ -161,6 +182,30 @@ async function main() {
   const manifest = await readManifest(
     manifestStore,
     options["manifest-identity"],
+  );
+  assertExpectedToolInvocation(
+    manifest.toolchain.udfExtractor,
+    "UDF extractor",
+    options["expected-udf-extractor-digest"] ??
+      process.env.VEM_FACTORY_EXPECTED_UDF_EXTRACTOR_DIGEST,
+    options["expected-udf-extractor-version"] ??
+      process.env.VEM_FACTORY_EXPECTED_UDF_EXTRACTOR_VERSION,
+  );
+  assertExpectedToolInvocation(
+    manifest.toolchain.udfWriter,
+    "UDF writer",
+    options["expected-udf-writer-digest"] ??
+      process.env.VEM_FACTORY_EXPECTED_UDF_WRITER_DIGEST,
+    options["expected-udf-writer-version"] ??
+      process.env.VEM_FACTORY_EXPECTED_UDF_WRITER_VERSION,
+  );
+  assertExpectedToolInvocation(
+    manifest.toolchain.wimlib,
+    "wimlib",
+    options["expected-wimlib-digest"] ??
+      process.env.VEM_FACTORY_EXPECTED_WIMLIB_DIGEST,
+    options["expected-wimlib-version"] ??
+      process.env.VEM_FACTORY_EXPECTED_WIMLIB_VERSION,
   );
   const store = new ContentAddressedAssetStore(assetStoreRoot);
   const approvalPolicy = JSON.parse(await readFile(approvalPolicyPath, "utf8"));
@@ -184,7 +229,8 @@ async function main() {
     repositoryVisionTrustedRoots,
     factoryVisionTrustedRoots,
     visionEvidenceVerifierPath,
-    isoBuilderPath,
+    udfExtractorPath,
+    udfWriterPath,
     wimlibPath,
     authenticodeVerifierPath,
     authenticodeCaBundlePath,

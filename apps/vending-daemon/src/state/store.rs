@@ -179,6 +179,18 @@ pub struct DestructiveCommandRecord {
     pub expires_at: String,
 }
 
+/// Binds the local finalization marker to one accepted destructive command.
+/// A command message id is the command generation for the MQTT control plane:
+/// retries reuse it, while a new secure-decommission command must not inherit
+/// acknowledgement from an earlier generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureDecommissionFinalizeMarker {
+    pub message_id: String,
+    pub command_no: String,
+    pub generation: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutboxRecord {
@@ -1293,6 +1305,104 @@ impl LocalStateStore {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// Persist the platform acknowledgement before touching external secrets
+    /// or configuration. The result outbox deletion and recovery marker share
+    /// one SQLite commit, so a crash can only leave the result retryable or
+    /// leave a marker that startup recovery can finalize.
+    pub async fn acknowledge_secure_decommission_result_tx(
+        &self,
+        message_id: &str,
+        result_outbox_id: &str,
+        marker: &SecureDecommissionFinalizeMarker,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        let command: Option<(String, String)> = sqlx::query_as(
+            "SELECT command_type,status FROM destructive_command_log WHERE message_id=?1",
+        )
+        .bind(message_id)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        match command {
+            Some((command_type, status))
+                if command_type == "secure-decommission" && status == "succeeded" => {}
+            _ => {
+                return Err(StoreError::IntegrityCheckFailed(
+                    "secure decommission command is not ready for acknowledgement".to_string(),
+                ));
+            }
+        }
+        if marker.message_id != message_id || marker.generation != message_id {
+            return Err(StoreError::IntegrityCheckFailed(
+                "secure decommission acknowledgement marker does not bind the active command generation".to_string(),
+            ));
+        }
+        let existing: Option<(String,)> =
+            sqlx::query_as("SELECT value_json FROM runtime_metadata WHERE key=?1")
+                .bind("secure_decommission_platform_acknowledged_command_no")
+                .fetch_optional(tx.as_mut())
+                .await?;
+        if let Some((value_json,)) = existing {
+            let recorded: SecureDecommissionFinalizeMarker = serde_json::from_str(&value_json)?;
+            if recorded != *marker {
+                return Err(StoreError::IntegrityCheckFailed(
+                    "secure decommission acknowledgement conflicts with durable marker".to_string(),
+                ));
+            }
+            tx.commit().await?;
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM outbox_events WHERE id=?1")
+            .bind(result_outbox_id)
+            .execute(tx.as_mut())
+            .await?;
+        sqlx::query("INSERT INTO runtime_metadata(key,value_json,updated_at) VALUES (?1,?2,?3)")
+            .bind("secure_decommission_platform_acknowledged_command_no")
+            .bind(serde_json::to_string(marker)?)
+            .bind(now_iso())
+            .execute(tx.as_mut())
+            .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Remove the matched finalization generation as one SQLite commit. External
+    /// secret/profile cleanup happens before this point; a crash can therefore
+    /// only leave both markers for idempotent recovery or neither marker.
+    pub async fn clear_secure_decommission_finalization_markers_tx(
+        &self,
+        marker: &SecureDecommissionFinalizeMarker,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        for key in [
+            "secure_decommission_pending_finalize",
+            "secure_decommission_platform_acknowledged_command_no",
+        ] {
+            let value: Option<(String,)> =
+                sqlx::query_as("SELECT value_json FROM runtime_metadata WHERE key=?1")
+                    .bind(key)
+                    .fetch_optional(tx.as_mut())
+                    .await?;
+            let Some((value_json,)) = value else {
+                return Err(StoreError::IntegrityCheckFailed(format!(
+                    "secure decommission finalization marker is missing: {key}"
+                )));
+            };
+            let recorded: SecureDecommissionFinalizeMarker = serde_json::from_str(&value_json)?;
+            if recorded != *marker {
+                return Err(StoreError::IntegrityCheckFailed(format!(
+                    "secure decommission finalization marker does not match active generation: {key}"
+                )));
+            }
+        }
+        sqlx::query(
+            "DELETE FROM runtime_metadata WHERE key IN ('secure_decommission_pending_finalize','secure_decommission_platform_acknowledged_command_no')",
+        )
+        .execute(tx.as_mut())
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -6529,6 +6639,145 @@ mod tests {
             .await
             .expect("outbox")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_ack_marker_and_result_removal_are_atomic_across_restart() {
+        let temp = TempDir::new().expect("temp");
+        let path = temp.path().join("state.db");
+        let store = LocalStateStore::open(&path).await.expect("open");
+        let message_id = "secure-decommission:DCOM-ATOMIC";
+        let command_payload = json!({
+            "commandNo": "DCOM-ATOMIC",
+            "operation": "secure-decommission"
+        });
+        store
+            .record_destructive_command_received(
+                message_id,
+                "secure-decommission",
+                &command_payload,
+                "2026-07-11T00:00:00.000Z",
+            )
+            .await
+            .expect("record command");
+        let event = OutboxInput::secure_decommission_result(
+            "MACHINE-1",
+            "DCOM-ATOMIC",
+            json!({"commandNo":"DCOM-ATOMIC","success":true}),
+        );
+        let marker = SecureDecommissionFinalizeMarker {
+            message_id: message_id.to_string(),
+            command_no: "DCOM-ATOMIC".to_string(),
+            generation: message_id.to_string(),
+        };
+        store
+            .record_destructive_command_result_tx(message_id, true, None, &event)
+            .await
+            .expect("record successful result");
+
+        let trigger = "fail_secure_decommission_ack_marker";
+        sqlx::query(&format!(
+            "CREATE TRIGGER {trigger} BEFORE INSERT ON runtime_metadata
+             WHEN NEW.key = 'secure_decommission_platform_acknowledged_command_no'
+             BEGIN SELECT RAISE(ABORT, 'injected durable marker failure'); END;"
+        ))
+        .execute(store.pool())
+        .await
+        .expect("install fault injection");
+        assert!(store
+            .acknowledge_secure_decommission_result_tx(message_id, &event.id, &marker)
+            .await
+            .is_err());
+        assert!(store
+            .outbox_record(&event.id)
+            .await
+            .expect("outbox")
+            .is_some());
+        assert_eq!(
+            store
+                .get_metadata::<SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_platform_acknowledged_command_no",
+                )
+                .await
+                .expect("marker"),
+            None
+        );
+        sqlx::query(&format!("DROP TRIGGER {trigger}"))
+            .execute(store.pool())
+            .await
+            .expect("remove fault injection");
+        assert!(store
+            .acknowledge_secure_decommission_result_tx(message_id, &event.id, &marker)
+            .await
+            .expect("atomic acknowledgement"));
+        drop(store);
+
+        let reopened = LocalStateStore::open(&path).await.expect("restart state");
+        assert!(reopened
+            .outbox_record(&event.id)
+            .await
+            .expect("outbox")
+            .is_none());
+        assert_eq!(
+            reopened
+                .get_metadata::<SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_platform_acknowledged_command_no",
+                )
+                .await
+                .expect("marker"),
+            Some(marker)
+        );
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_finalization_marker_deletion_is_atomic() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let marker = SecureDecommissionFinalizeMarker {
+            message_id: "secure-decommission:DCOM-FINALIZE-ATOMIC".to_string(),
+            command_no: "DCOM-FINALIZE-ATOMIC".to_string(),
+            generation: "secure-decommission:DCOM-FINALIZE-ATOMIC".to_string(),
+        };
+        for key in [
+            "secure_decommission_pending_finalize",
+            "secure_decommission_platform_acknowledged_command_no",
+        ] {
+            store.put_metadata(key, &marker).await.expect("seed marker");
+        }
+        sqlx::query(
+            "CREATE TRIGGER fail_secure_decommission_finalization_delete BEFORE DELETE ON runtime_metadata
+             WHEN OLD.key = 'secure_decommission_platform_acknowledged_command_no'
+             BEGIN SELECT RAISE(ABORT, 'injected finalization delete failure'); END;",
+        )
+        .execute(store.pool())
+        .await
+        .expect("install fault injection");
+        assert!(store
+            .clear_secure_decommission_finalization_markers_tx(&marker)
+            .await
+            .is_err());
+        for key in [
+            "secure_decommission_pending_finalize",
+            "secure_decommission_platform_acknowledged_command_no",
+        ] {
+            assert_eq!(
+                store
+                    .get_metadata::<SecureDecommissionFinalizeMarker>(key)
+                    .await
+                    .expect("marker"),
+                Some(marker.clone()),
+            );
+        }
+        sqlx::query("DROP TRIGGER fail_secure_decommission_finalization_delete")
+            .execute(store.pool())
+            .await
+            .expect("remove fault injection");
+        store
+            .clear_secure_decommission_finalization_markers_tx(&marker)
+            .await
+            .expect("atomic marker deletion");
     }
 
     #[tokio::test]

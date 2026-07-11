@@ -775,7 +775,13 @@ function validateManifestShape(manifest, { requireManifestId }) {
 
   assertExactKeys(
     manifest.toolchain,
-    ["builderImage", "isoBuilder", "wimlib", "authenticodeVerifier"],
+    [
+      "builderImage",
+      "udfExtractor",
+      "udfWriter",
+      "wimlib",
+      "authenticodeVerifier",
+    ],
     "toolchain",
     issues,
   );
@@ -817,38 +823,74 @@ function validateManifestShape(manifest, { requireManifestId }) {
       );
     }
     assertExactKeys(
-      manifest.toolchain.isoBuilder,
+      manifest.toolchain.udfExtractor,
       ["identity", "digest", "version"],
-      "toolchain.isoBuilder",
+      "toolchain.udfExtractor",
       issues,
     );
-    if (isRecord(manifest.toolchain.isoBuilder)) {
+    if (isRecord(manifest.toolchain.udfExtractor)) {
       requiredString(
-        manifest.toolchain.isoBuilder.identity,
-        "toolchain.isoBuilder.identity",
+        manifest.toolchain.udfExtractor.identity,
+        "toolchain.udfExtractor.identity",
         issues,
       );
       assertDigest(
-        manifest.toolchain.isoBuilder.digest,
-        "toolchain.isoBuilder.digest",
+        manifest.toolchain.udfExtractor.digest,
+        "toolchain.udfExtractor.digest",
         issues,
       );
       fixedVersion(
-        manifest.toolchain.isoBuilder.version,
-        "toolchain.isoBuilder.version",
+        manifest.toolchain.udfExtractor.version,
+        "toolchain.udfExtractor.version",
         issues,
       );
       if (
-        typeof manifest.toolchain.isoBuilder.identity === "string" &&
-        !/@sha256:[a-f0-9]{64}$/.test(manifest.toolchain.isoBuilder.identity)
+        typeof manifest.toolchain.udfExtractor.identity === "string" &&
+        !/@sha256:[a-f0-9]{64}$/.test(manifest.toolchain.udfExtractor.identity)
       ) {
         issues.push(
-          issue("toolchain.isoBuilder.identity", "must be pinned by digest"),
+          issue("toolchain.udfExtractor.identity", "must be pinned by digest"),
         );
       }
       assertToolIdentityDigest(
-        manifest.toolchain.isoBuilder,
-        "toolchain.isoBuilder",
+        manifest.toolchain.udfExtractor,
+        "toolchain.udfExtractor",
+        issues,
+      );
+    }
+    assertExactKeys(
+      manifest.toolchain.udfWriter,
+      ["identity", "digest", "version"],
+      "toolchain.udfWriter",
+      issues,
+    );
+    if (isRecord(manifest.toolchain.udfWriter)) {
+      requiredString(
+        manifest.toolchain.udfWriter.identity,
+        "toolchain.udfWriter.identity",
+        issues,
+      );
+      assertDigest(
+        manifest.toolchain.udfWriter.digest,
+        "toolchain.udfWriter.digest",
+        issues,
+      );
+      fixedVersion(
+        manifest.toolchain.udfWriter.version,
+        "toolchain.udfWriter.version",
+        issues,
+      );
+      if (
+        typeof manifest.toolchain.udfWriter.identity === "string" &&
+        !/@sha256:[a-f0-9]{64}$/.test(manifest.toolchain.udfWriter.identity)
+      ) {
+        issues.push(
+          issue("toolchain.udfWriter.identity", "must be pinned by digest"),
+        );
+      }
+      assertToolIdentityDigest(
+        manifest.toolchain.udfWriter,
+        "toolchain.udfWriter",
         issues,
       );
     }

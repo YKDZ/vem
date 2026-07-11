@@ -1490,19 +1490,35 @@ impl ConfigStore {
     ) -> Result<Option<crate::maintenance::MaintenanceEnrollmentStatus>, String> {
         let pending_finalize = self
             .state
-            .get_metadata::<bool>("secure_decommission_pending_finalize")
+            .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                "secure_decommission_pending_finalize",
+            )
             .await
-            .map_err(|error| error.to_string())?
-            .unwrap_or(false);
-        if pending_finalize {
-            if self
+            .map_err(|error| error.to_string())?;
+        if let Some(pending_finalize) = pending_finalize {
+            let acknowledged = self
                 .state
-                .get_metadata::<String>("secure_decommission_platform_acknowledged_command_no")
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_platform_acknowledged_command_no",
+                )
                 .await
-                .map_err(|error| error.to_string())?
-                .is_some()
-            {
-                self.finalize_secure_decommission().await?;
+                .map_err(|error| error.to_string())?;
+            match acknowledged {
+                Some(marker) if marker == pending_finalize => {
+                    self.finalize_secure_decommission(&pending_finalize).await?;
+                }
+                Some(_) => {
+                    return Err(
+                        "secure decommission acknowledgement does not match the active command generation"
+                            .to_string(),
+                    );
+                }
+                None => {
+                    return Err(
+                        "secure decommission is pending platform acknowledgement; daemon startup is refused until finalization can be proven"
+                            .to_string(),
+                    );
+                }
             }
             return Ok(None);
         }
@@ -1535,9 +1551,12 @@ impl ConfigStore {
         self.maintenance.reject_reclaim(public_key, reason).await
     }
 
-    pub async fn secure_decommission(&self) -> Result<(), String> {
+    pub async fn secure_decommission(
+        &self,
+        marker: &crate::state::store::SecureDecommissionFinalizeMarker,
+    ) -> Result<(), String> {
         self.state
-            .put_metadata("secure_decommission_pending_finalize", &true)
+            .put_metadata("secure_decommission_pending_finalize", marker)
             .await
             .map_err(|error| error.to_string())?;
         self.maintenance.decommission().await?;
@@ -1547,7 +1566,28 @@ impl ConfigStore {
             .map_err(|error| format!("clear decommissioned machine credential failed: {error}"))
     }
 
-    pub async fn finalize_secure_decommission(&self) -> Result<(), String> {
+    pub async fn pending_secure_decommission_marker(
+        &self,
+    ) -> Result<Option<crate::state::store::SecureDecommissionFinalizeMarker>, String> {
+        self.state
+            .get_metadata("secure_decommission_pending_finalize")
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn finalize_secure_decommission(
+        &self,
+        marker: &crate::state::store::SecureDecommissionFinalizeMarker,
+    ) -> Result<(), String> {
+        let pending = self
+            .pending_secure_decommission_marker()
+            .await?
+            .ok_or_else(|| {
+                "secure decommission finalization has no active command marker".to_string()
+            })?;
+        if pending != *marker {
+            return Err("secure decommission finalization marker does not match the active command generation".to_string());
+        }
         self.secrets
             .clear_all()
             .await
@@ -1559,20 +1599,35 @@ impl ConfigStore {
         }
         self.save_public_config(default_public_config()).await?;
         self.state
-            .put_metadata("secure_decommission_pending_finalize", &false)
+            .clear_secure_decommission_finalization_markers_tx(marker)
             .await
             .map_err(|error| error.to_string())
     }
 
     pub async fn acknowledge_secure_decommission(&self, command_no: &str) -> Result<(), String> {
+        let marker = self
+            .state
+            .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                "secure_decommission_pending_finalize",
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "secure decommission acknowledgement has no active command marker".to_string()
+            })?;
+        if marker.command_no != command_no {
+            return Err(
+                "secure decommission acknowledgement does not match the active command".to_string(),
+            );
+        }
         self.state
             .put_metadata(
                 "secure_decommission_platform_acknowledged_command_no",
-                &command_no,
+                &marker,
             )
             .await
             .map_err(|error| error.to_string())?;
-        self.finalize_secure_decommission().await
+        self.finalize_secure_decommission(&marker).await
     }
 
     async fn read_optional_json<T>(path: PathBuf, label: &str) -> Result<Option<T>, String>
@@ -2329,6 +2384,17 @@ mod tests {
 
     async fn with_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
         ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await
+    }
+
+    fn decommission_marker(
+        command_no: &str,
+    ) -> crate::state::store::SecureDecommissionFinalizeMarker {
+        let message_id = format!("secure-decommission:{command_no}");
+        crate::state::store::SecureDecommissionFinalizeMarker {
+            generation: message_id.clone(),
+            message_id,
+            command_no: command_no.to_string(),
+        }
     }
 
     fn valid_provisioning_profile_for_test() -> MachineProvisioningProfile {
@@ -4108,23 +4174,36 @@ mod tests {
         );
 
         let error = store
-            .secure_decommission()
+            .secure_decommission(&decommission_marker("DCOM-PENDING"))
             .await
             .expect_err("injected cleanup failure");
 
         assert!(error.contains("injected tunnel removal failure"));
         assert_eq!(
             state
-                .get_metadata::<bool>("secure_decommission_pending_finalize")
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_pending_finalize",
+                )
                 .await
                 .expect("pending marker"),
-            Some(true)
+            Some(decommission_marker("DCOM-PENDING"))
         );
         assert!(secrets
             .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
             .await
             .expect("retained key")
             .is_some());
+        let restarted = ConfigStore::new_with_tunnel(
+            temp.path().to_path_buf(),
+            state,
+            secrets,
+            Arc::new(RemovalFailingTunnel),
+        );
+        let restart_error = restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect_err("a failed pre-ack tunnel cleanup must not start the daemon");
+        assert!(restart_error.contains("pending platform acknowledgement"));
     }
 
     #[tokio::test]
@@ -4146,14 +4225,38 @@ mod tests {
             .save_public_config(public)
             .await
             .expect("save public config");
-        store.secure_decommission().await.expect("local cleanup");
+        let message_id = "secure-decommission:DCOM-RECOVER";
+        let marker = decommission_marker("DCOM-RECOVER");
+        store
+            .secure_decommission(&marker)
+            .await
+            .expect("local cleanup");
+        let payload = serde_json::json!({
+            "commandNo": "DCOM-RECOVER",
+            "operation": "secure-decommission"
+        });
         state
-            .put_metadata(
-                "secure_decommission_platform_acknowledged_command_no",
-                &"DCOM-RECOVER",
+            .record_destructive_command_received(
+                message_id,
+                "secure-decommission",
+                &payload,
+                "2026-07-11T00:00:00.000Z",
             )
             .await
-            .expect("persist platform acknowledgement");
+            .expect("record command");
+        let result = crate::state::store::OutboxInput::secure_decommission_result(
+            "M1",
+            "DCOM-RECOVER",
+            serde_json::json!({"commandNo":"DCOM-RECOVER","success":true}),
+        );
+        state
+            .record_destructive_command_result_tx(message_id, true, None, &result)
+            .await
+            .expect("persist result");
+        state
+            .acknowledge_secure_decommission_result_tx(message_id, &result.id, &marker)
+            .await
+            .expect("persist atomic platform acknowledgement");
 
         let restarted = ConfigStore::new(data_dir, state.clone(), secrets.clone());
         assert!(restarted
@@ -4175,10 +4278,208 @@ mod tests {
             .is_none());
         assert_eq!(
             state
-                .get_metadata::<bool>("secure_decommission_pending_finalize")
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_pending_finalize",
+                )
                 .await
                 .expect("pending marker"),
-            Some(false),
+            None,
         );
+    }
+
+    #[tokio::test]
+    async fn a_second_decommission_generation_cannot_finalize_from_the_first_ack_marker_after_restart(
+    ) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets.clone());
+        let first = decommission_marker("DCOM-FIRST");
+        store
+            .secure_decommission(&first)
+            .await
+            .expect("first cleanup");
+        state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &first,
+            )
+            .await
+            .expect("first ack marker");
+        store
+            .finalize_secure_decommission(&first)
+            .await
+            .expect("first finalization");
+        assert_eq!(
+            state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_platform_acknowledged_command_no",
+                )
+                .await
+                .expect("ack marker"),
+            None,
+        );
+
+        let mut public = default_public_config();
+        public.machine_code = Some("M1".to_string());
+        store
+            .save_public_config(public)
+            .await
+            .expect("reprovision config");
+        let second = decommission_marker("DCOM-SECOND");
+        store
+            .secure_decommission(&second)
+            .await
+            .expect("second cleanup");
+
+        // Simulate a crash between accepting the second result and receiving
+        // its platform acknowledgement. A stale first-generation marker must
+        // neither finalize nor clear the active second-generation state.
+        let restarted = ConfigStore::new(data_dir, state.clone(), secrets);
+        let error = restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect_err("startup refuses an unacknowledged decommission generation");
+        assert!(error.contains("pending platform acknowledgement"));
+        assert_eq!(
+            state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_pending_finalize",
+                )
+                .await
+                .expect("pending marker"),
+            Some(second.clone()),
+        );
+
+        state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &second,
+            )
+            .await
+            .expect("second ack marker");
+        assert!(restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect("second finalization")
+            .is_none());
+        assert_eq!(
+            state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_pending_finalize",
+                )
+                .await
+                .expect("pending marker"),
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_fails_closed_when_finalization_cannot_clear_secrets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(ClearFailingSecretStore::default());
+        secrets.seed_old_secrets().await;
+        let store = ConfigStore::new(data_dir, state.clone(), secrets.clone());
+        let marker = decommission_marker("DCOM-CLEAR-FAIL");
+        state
+            .put_metadata("secure_decommission_pending_finalize", &marker)
+            .await
+            .expect("pending marker");
+        state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &marker,
+            )
+            .await
+            .expect("ack marker");
+
+        let error = store
+            .recover_maintenance_from_cache()
+            .await
+            .expect_err("startup must fail closed");
+        assert!(error.contains("injected clear failure"));
+        assert_eq!(
+            store
+                .runtime_secrets()
+                .await
+                .expect("secrets remain unread by failed startup")
+                .machine_secret
+                .as_deref(),
+            Some("old-machine-secret"),
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_fails_closed_when_profile_or_default_config_cleanup_fails() {
+        for failure in ["profile", "default-config"] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let data_dir = temp.path().join("vending-daemon");
+            let state = LocalStateStore::open(&data_dir.join("state.db"))
+                .await
+                .expect("state");
+            let secrets = Arc::new(InMemorySecretStore::default());
+            secrets
+                .write_secret(MACHINE_SECRET_ACCOUNT, "old-machine-secret")
+                .await
+                .expect("seed machine secret");
+            let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets.clone());
+            let mut old = default_public_config();
+            old.machine_code = Some("OLD-MACHINE".to_string());
+            store.save_public_config(old).await.expect("old config");
+            let marker = decommission_marker(&format!("DCOM-{failure}"));
+            state
+                .put_metadata("secure_decommission_pending_finalize", &marker)
+                .await
+                .expect("pending marker");
+            state
+                .put_metadata(
+                    "secure_decommission_platform_acknowledged_command_no",
+                    &marker,
+                )
+                .await
+                .expect("ack marker");
+            match failure {
+                "profile" => {
+                    fs::create_dir_all(store.provisioning_profile_cache_summary_path())
+                        .await
+                        .expect("block profile deletion");
+                }
+                "default-config" => {
+                    fs::remove_file(daemon_config_path(&data_dir))
+                        .await
+                        .expect("remove old config");
+                    fs::create_dir(daemon_config_path(&data_dir))
+                        .await
+                        .expect("block config rewrite");
+                }
+                _ => unreachable!(),
+            }
+
+            let error = store
+                .recover_maintenance_from_cache()
+                .await
+                .expect_err("startup must fail closed");
+            assert!(
+                error.contains(if failure == "profile" {
+                    "remove provisioning profile"
+                } else {
+                    "write daemon config"
+                }),
+                "{failure}: {error}",
+            );
+            assert!(store
+                .runtime_secrets()
+                .await
+                .expect("secrets")
+                .machine_secret
+                .is_none());
+        }
     }
 }

@@ -105,7 +105,10 @@ async fn run_console_cycle(
         state.clone(),
         secret_store,
     ));
-    let _ = config_store.recover_maintenance_from_cache().await;
+    config_store
+        .recover_maintenance_from_cache()
+        .await
+        .map_err(|error| format!("secure decommission startup recovery failed: {error}"))?;
 
     let runtime = DaemonRuntime::start(RuntimeStartInput {
         state: state.clone(),

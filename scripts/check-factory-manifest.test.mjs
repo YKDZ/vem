@@ -67,7 +67,12 @@ describe("Factory Manifest and media workflow contract", () => {
   it("executes manifest-pinned tools offline and uploads only validated bounded JSON evidence", () => {
     const workflow = read(workflowPath);
     assert.match(workflow, /VEM_FACTORY_EXECUTED_BUILDER_IMAGE/);
-    assert.match(workflow, /VEM_FACTORY_ISO_BUILDER_CONTAINER_PATH/);
+    assert.match(workflow, /VEM_FACTORY_UDF_EXTRACTOR_CONTAINER_PATH/);
+    assert.match(workflow, /VEM_FACTORY_UDF_EXTRACTOR_DIGEST/);
+    assert.match(workflow, /VEM_FACTORY_UDF_EXTRACTOR_VERSION/);
+    assert.match(workflow, /VEM_FACTORY_UDF_WRITER_CONTAINER_PATH/);
+    assert.match(workflow, /VEM_FACTORY_UDF_WRITER_DIGEST/);
+    assert.match(workflow, /VEM_FACTORY_UDF_WRITER_VERSION/);
     assert.match(workflow, /VEM_FACTORY_WIMLIB_CONTAINER_PATH/);
     assert.match(workflow, /VEM_FACTORY_WIMLIB_DIGEST/);
     assert.match(workflow, /VEM_FACTORY_WIMLIB_VERSION/);
@@ -79,6 +84,8 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.match(workflow, /--factory-vision-trusted-roots/);
     assert.match(workflow, /--vision-evidence-verifier/);
     assert.match(workflow, /--wimlib/);
+    assert.match(workflow, /--udf-extractor/);
+    assert.match(workflow, /--udf-writer/);
     assert.match(workflow, /sanitize-build-evidence\.mjs/);
     const uploadStart = workflow.indexOf(
       "- name: Upload Sanitized Factory Evidence Only",
@@ -92,17 +99,34 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.doesNotMatch(upload, /\.iso|windows-source|cache/i);
   });
 
-  it("installs exact xorriso and wimtools versions before required Factory media tests", () => {
+  it("installs UDF extractor/writer fixtures and pinned WIM inspection before Factory media tests", () => {
     const workflow = read(ciWorkflowPath);
     assert.match(workflow, /runs-on:\s*ubuntu-24\.04/);
+    assert.match(
+      workflow,
+      /apt-cache policy genisoimage=9:1\.1\.11-3\.5 7zip xorriso/,
+    );
+    assert.match(workflow, /apt-cache show genisoimage=9:1\.1\.11-3\.5/);
+    assert.match(workflow, /genisoimage=9:1\.1\.11-3\.5/);
+    assert.match(
+      workflow,
+      /VEM_FACTORY_TEST_UDF_WRITER_DIGEST: sha256:9bacc5951ca0767701cfd8e6b47537f199977e51a6e943f4edfdcf9d639d99d2/,
+    );
+    assert.match(
+      read("scripts/factory/build-factory-media.test.mjs"),
+      /fixture genisoimage digest must match the pinned contract/,
+    );
+    assert.match(workflow, /7zip=23\.01\+dfsg-11/);
     assert.match(workflow, /xorriso=1:1\.5\.6-1\.1ubuntu3/);
     assert.match(workflow, /wimtools=1\.14\.4-1\.1build2/);
-    for (const path of [
-      "scripts/factory/build-factory-media.test.mjs",
-      "scripts/factory/factory-cli.test.mjs",
-    ]) {
-      assert.doesNotMatch(read(path), /\bskip\b/);
-    }
+    assert.match(
+      read("scripts/factory/build-factory-media.test.mjs"),
+      /skip: !process\.env\.VEM_FACTORY_REAL_WINDOWS_ISO/,
+    );
+    assert.doesNotMatch(
+      read("scripts/factory/factory-cli.test.mjs"),
+      /\bskip\b/,
+    );
   });
 
   it("binds reusable runtime outputs and exact build toolchain into artifact identity", () => {

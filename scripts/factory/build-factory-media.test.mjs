@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  stat,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -13,6 +24,12 @@ import {
   expectedFactoryEffectiveInputRoles,
   factoryPreparationSplat,
   inspectBootableIso,
+  inspectBootableIsoFile,
+  inspectIsoFilesystemExtents,
+  inspectIsoFilesystemViews,
+  inspectWindowsSetupIso,
+  normalizeDescriptorTimestampsFile,
+  rangeBackedIsoMedia,
 } from "./build-factory-media.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { admitFactoryAcceptance } from "./factory-acceptance-admission.mjs";
@@ -23,13 +40,28 @@ import {
   createVisionReleaseDescriptor,
 } from "./vision-release.mjs";
 
-const XORRISO_PATH = process.env.VEM_FACTORY_TEST_XORRISO ?? "/usr/bin/xorriso";
-const WIMLIB_PATH =
-  process.env.VEM_FACTORY_TEST_WIMLIB ?? "/usr/bin/wimlib-imagex";
-const SYNTHETIC_ISO_TOOL = "/usr/bin/genisoimage";
+function toolPath(name, environmentName) {
+  return (
+    process.env[environmentName] ??
+    execFileSync("sh", ["-lc", `command -v ${name}`], {
+      encoding: "utf8",
+    }).trim()
+  );
+}
+
+const UDF_EXTRACTOR_PATH = toolPath("7z", "VEM_FACTORY_TEST_UDF_EXTRACTOR");
+const UDF_WRITER_PATH = toolPath("genisoimage", "VEM_FACTORY_TEST_UDF_WRITER");
+const WIMLIB_PATH = toolPath("wimlib-imagex", "VEM_FACTORY_TEST_WIMLIB");
+const XORRISO_PATH = toolPath("xorriso", "VEM_FACTORY_TEST_XORRISO");
+const SYNTHETIC_ISO_TOOL = UDF_WRITER_PATH;
 const BUILDER_IMAGE_HASH = "f".repeat(64);
 const EVIDENCE_BUILDER =
   "github-actions://vem/vem/.github/workflows/build.yml@refs/heads/main";
+const ISO_SECTOR_BYTES = 2048;
+const PINNED_UDF_WRITER_VERSION = "1.1.11";
+const PINNED_UDF_WRITER_DIGEST =
+  process.env.VEM_FACTORY_TEST_UDF_WRITER_DIGEST ??
+  "sha256:9bacc5951ca0767701cfd8e6b47537f199977e51a6e943f4edfdcf9d639d99d2";
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -42,20 +74,262 @@ function toolVersion(path, args, expression, label) {
   return version;
 }
 
+function isoDirectoryRecord({ sector, bytes, flags = 0, identifier }) {
+  const name = Buffer.isBuffer(identifier)
+    ? identifier
+    : Buffer.from(identifier, "ascii");
+  const length = 33 + name.length + (name.length % 2 === 0 ? 1 : 0);
+  const record = Buffer.alloc(length);
+  record[0] = length;
+  record.writeUInt32LE(sector, 2);
+  record.writeUInt32LE(bytes, 10);
+  record[25] = flags;
+  record[32] = name.length;
+  name.copy(record, 33);
+  return record;
+}
+
+function jolietIdentifier(value) {
+  const bytes = Buffer.from(value, "utf16le");
+  bytes.swap16();
+  return bytes;
+}
+
+function writeIsoDirectory(media, sector, records) {
+  let offset = sector * ISO_SECTOR_BYTES;
+  for (const record of records) {
+    record.copy(media, offset);
+    offset += record.length;
+  }
+}
+
+function rewriteUdfTag(descriptor) {
+  const crcLength = descriptor.readUInt16LE(10);
+  let crc = 0;
+  for (const byte of descriptor.subarray(16, 16 + crcLength)) {
+    crc ^= byte << 8;
+    for (let bit = 0; bit < 8; bit += 1)
+      crc = ((crc & 0x8000) !== 0 ? (crc << 1) ^ 0x1021 : crc << 1) & 0xffff;
+  }
+  descriptor.writeUInt16LE(crc, 8);
+  descriptor[4] = 0;
+  descriptor[4] = [...descriptor.subarray(0, 16)].reduce(
+    (sum, byte, index) => (index === 4 ? sum : (sum + byte) & 0xff),
+    0,
+  );
+}
+
+function findUdfRootDirectory(image) {
+  const rootBlock = [...Array(image.length / ISO_SECTOR_BYTES).keys()]
+    .map((sector) => sector * ISO_SECTOR_BYTES)
+    .find((offset) => image.readUInt16LE(offset) === 256);
+  assert.notEqual(
+    rootBlock,
+    undefined,
+    "fixture has a UDF File Set Descriptor",
+  );
+  const rootIcbBlock = image.readUInt32LE(rootBlock + 404);
+  const entryOffset = [...Array(image.length / ISO_SECTOR_BYTES).keys()]
+    .map((sector) => sector * ISO_SECTOR_BYTES)
+    .find(
+      (offset) =>
+        [261, 266].includes(image.readUInt16LE(offset)) &&
+        image[offset + 27] === 4 &&
+        image.readUInt32LE(offset + 12) === rootIcbBlock,
+    );
+  assert.notEqual(entryOffset, undefined, "fixture has a root directory ICB");
+  assert.equal(
+    image.readUInt16LE(entryOffset + 34) & 0x7,
+    0,
+    "fixture root directory uses short allocation descriptors",
+  );
+  const tag = image.readUInt16LE(entryOffset);
+  const layout =
+    tag === 261
+      ? { extAttrs: 168, allocations: 172, data: 176 }
+      : { extAttrs: 208, allocations: 212, data: 216 };
+  const allocationStart =
+    entryOffset +
+    layout.data +
+    image.readUInt32LE(entryOffset + layout.extAttrs);
+  assert.equal(
+    image.readUInt32LE(entryOffset + layout.allocations),
+    8,
+    "fixture root directory has one short allocation descriptor",
+  );
+  const directoryBytes = image.readUInt32LE(allocationStart) & 0x3fffffff;
+  const directoryBlock = image.readUInt32LE(allocationStart + 4);
+  const directoryOffset = [...Array(image.length / ISO_SECTOR_BYTES).keys()]
+    .map((sector) => sector * ISO_SECTOR_BYTES)
+    .find(
+      (offset) =>
+        image.readUInt16LE(offset) === 257 &&
+        image.readUInt32LE(offset + 12) === directoryBlock,
+    );
+  assert.notEqual(
+    directoryOffset,
+    undefined,
+    "fixture root directory is reachable",
+  );
+  return {
+    allocationStart,
+    directoryBytes,
+    directoryOffset,
+    entryOffset,
+    layout,
+  };
+}
+
+function firstChildFileIdentifier(directory) {
+  for (let offset = 0; offset < directory.length; ) {
+    if (directory[offset] === 0) {
+      offset = (Math.floor(offset / 4) + 1) * 4;
+      continue;
+    }
+    assert.equal(
+      directory.readUInt16LE(offset),
+      257,
+      "fixture directory has File Identifier Descriptors",
+    );
+    const length =
+      (38 + directory.readUInt16LE(offset + 36) + directory[offset + 19] + 3) &
+      ~3;
+    if ((directory[offset + 18] & 0x8) === 0) return offset;
+    offset += length;
+  }
+  assert.fail("fixture root directory has a child File Identifier Descriptor");
+}
+
+function relocateEmbeddedDirectoryFileIdentifiers(directory, logicalBlock) {
+  for (let offset = 0; offset < directory.length; ) {
+    if (directory[offset] === 0) {
+      offset = (Math.floor(offset / 4) + 1) * 4;
+      continue;
+    }
+    assert.equal(
+      directory.readUInt16LE(offset),
+      257,
+      "fixture directory has File Identifier Descriptors",
+    );
+    const length =
+      (38 + directory.readUInt16LE(offset + 36) + directory[offset + 19] + 3) &
+      ~3;
+    directory.writeUInt32LE(logicalBlock, offset + 12);
+    rewriteUdfTag(directory.subarray(offset, offset + length));
+    offset += length;
+  }
+}
+
+function sharedExtentIso({ cycle = false, malformedMultiExtent = false } = {}) {
+  const media = Buffer.alloc(64 * ISO_SECTOR_BYTES);
+  const writeDescriptor = (sector, type, rootSector, joliet) => {
+    const offset = sector * ISO_SECTOR_BYTES;
+    media[offset] = type;
+    media.write("CD001", offset + 1, "ascii");
+    media[offset + 6] = 1;
+    if (joliet) media.write("%/E", offset + 88, "ascii");
+    isoDirectoryRecord({
+      sector: rootSector,
+      bytes: ISO_SECTOR_BYTES,
+      flags: 2,
+      identifier: Buffer.from([0]),
+    }).copy(media, offset + 156);
+  };
+  writeDescriptor(16, 1, 20, false);
+  writeDescriptor(17, 2, 22, true);
+  media[18 * ISO_SECTOR_BYTES] = 255;
+  media.write("CD001", 18 * ISO_SECTOR_BYTES + 1, "ascii");
+
+  const writeSharedTree = (rootSector, sharedSector, encode) => {
+    writeIsoDirectory(media, rootSector, [
+      isoDirectoryRecord({
+        sector: sharedSector,
+        bytes: ISO_SECTOR_BYTES,
+        flags: 2,
+        identifier: encode("A"),
+      }),
+      isoDirectoryRecord({
+        sector: sharedSector,
+        bytes: ISO_SECTOR_BYTES,
+        flags: 2,
+        identifier: encode("B"),
+      }),
+    ]);
+    writeIsoDirectory(
+      media,
+      sharedSector,
+      cycle
+        ? [
+            isoDirectoryRecord({
+              sector: sharedSector,
+              bytes: ISO_SECTOR_BYTES,
+              flags: 2,
+              identifier: encode("LOOP"),
+            }),
+          ]
+        : [
+            isoDirectoryRecord({
+              sector: 30,
+              bytes: 0xfffffff0,
+              flags: 0x80,
+              identifier: encode("INSTALL.WIM;1"),
+            }),
+            isoDirectoryRecord({
+              sector: 31,
+              bytes: 0x30,
+              flags: 0,
+              identifier: encode(
+                malformedMultiExtent ? "OTHER.WIM;1" : "INSTALL.WIM;1",
+              ),
+            }),
+          ],
+    );
+  };
+  writeSharedTree(20, 21, (value) => Buffer.from(value, "ascii"));
+  writeSharedTree(22, 23, jolietIdentifier);
+  return media;
+}
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "vem-factory-media-"));
-  const isoBuilderDigest = `sha256:${createHash("sha256")
-    .update(await readFile(XORRISO_PATH))
+  const udfExtractorDigest = `sha256:${createHash("sha256")
+    .update(await readFile(UDF_EXTRACTOR_PATH))
     .digest("hex")}`;
-  const isoBuilder = {
-    identity: `tool://xorriso@${isoBuilderDigest}`,
-    digest: isoBuilderDigest,
-    version: toolVersion(
-      XORRISO_PATH,
-      ["-version"],
-      /xorriso version\s*:\s*([0-9.]+)/i,
-      "xorriso",
+  const udfExtractor = {
+    identity: `tool://7z@${udfExtractorDigest}`,
+    digest: udfExtractorDigest,
+    version: `${toolVersion(
+      UDF_EXTRACTOR_PATH,
+      [],
+      /7-Zip\s+\[[^\]]+\]\s+([0-9.]+)/i,
+      "7z",
+    )
+      .split(".")
+      .map((part) => String(Number(part)))
+      .join(".")}.0`,
+  };
+  const observedUdfWriterDigest = `sha256:${createHash("sha256")
+    .update(await readFile(UDF_WRITER_PATH))
+    .digest("hex")}`;
+  assert.equal(
+    observedUdfWriterDigest,
+    PINNED_UDF_WRITER_DIGEST,
+    "fixture genisoimage digest must match the pinned contract",
+  );
+  assert.equal(
+    toolVersion(
+      UDF_WRITER_PATH,
+      ["--version"],
+      /genisoimage\s+([0-9.]+)/i,
+      "genisoimage",
     ),
+    PINNED_UDF_WRITER_VERSION,
+    "fixture genisoimage version must match the pinned contract",
+  );
+  const udfWriter = {
+    identity: `tool://genisoimage@${PINNED_UDF_WRITER_DIGEST}`,
+    digest: PINNED_UDF_WRITER_DIGEST,
+    version: PINNED_UDF_WRITER_VERSION,
   };
   const sourceIsoPath = join(root, "windows-setup-synthetic.iso");
   const sourceTree = join(root, "synthetic-windows-setup");
@@ -76,6 +350,17 @@ async function fixture() {
     join(sourceTree, "efi", "microsoft", "boot", "efisys.bin"),
     Buffer.alloc(2048, 0),
   );
+  await writeFile(
+    join(sourceTree, "sources", "adversarial-udf-timestamp.bin"),
+    Buffer.from([
+      0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0,
+      0xe8, 0x07, 12, 31, 23, 59, 59, 0, 0, 0, 0, 0,
+    ]),
+  );
+  await writeFile(
+    join(sourceTree, "UDF-ONLY-MARKER.TXT"),
+    "UDF-only factory source marker\n",
+  );
   const wimInput = join(root, "wim-input");
   await mkdir(wimInput, { recursive: true });
   await writeFile(join(wimInput, "fixture.txt"), "factory wim fixture\n");
@@ -95,6 +380,8 @@ async function fixture() {
     "-R",
     "-iso-level",
     "3",
+    "-hide",
+    "UDF-ONLY-MARKER.TXT",
     "-o",
     sourceIsoPath,
     "-b",
@@ -356,7 +643,8 @@ async function fixture() {
     assets: definitions.slice(1).map(({ bytes, ...definition }) => definition),
     toolchain: {
       builderImage,
-      isoBuilder,
+      udfExtractor,
+      udfWriter,
       wimlib: {
         identity: `tool://wimlib-imagex@${wimlibDigest}`,
         digest: wimlibDigest,
@@ -629,7 +917,8 @@ describe("real deterministic Factory ISO builder", () => {
         repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
         factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
         visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
-        isoBuilderPath: XORRISO_PATH,
+        udfExtractorPath: UDF_EXTRACTOR_PATH,
+        udfWriterPath: UDF_WRITER_PATH,
         wimlibPath: WIMLIB_PATH,
         executedBuilderImage: data.builderImage.identity,
         outputDirectory: join(data.root, "output"),
@@ -651,6 +940,651 @@ describe("real deterministic Factory ISO builder", () => {
     }
   });
 
+  it("replays a source marker through canonical ISO9660, Joliet, and UDF views", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const sourceViews = inspectIsoFilesystemViews(await readFile(sourcePath));
+      assert.ok(sourceViews.iso9660.includes("setup.exe"));
+      assert.ok(sourceViews.joliet.includes("setup.exe"));
+      assert.ok(sourceViews.joliet.includes("udf-only-marker.txt"));
+      const sourceListing = execFileSync(
+        UDF_EXTRACTOR_PATH,
+        ["l", "-slt", sourcePath],
+        {
+          encoding: "utf8",
+        },
+      );
+      assert.match(sourceListing, /Path = UDF-ONLY-MARKER\.TXT/);
+      const sourceIsoView = execFileSync(
+        XORRISO_PATH,
+        ["-indev", sourcePath, "-ls", "/"],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      assert.doesNotMatch(sourceIsoView, /UDF-ONLY-MARKER\.TXT/);
+      const sourceJolietView = execFileSync(
+        "isoinfo",
+        ["-i", sourcePath, "-J", "-f"],
+        { encoding: "utf8" },
+      );
+      assert.match(sourceJolietView, /UDF-ONLY-MARKER\.TXT/);
+
+      const result = await buildFactoryMedia({
+        manifest: data.manifest,
+        store: new ContentAddressedAssetStore(join(data.root, "cas")),
+        sourcePaths: data.sourcePaths,
+        evidenceStoreRoot: data.evidenceStoreRoot,
+        approvalPolicy: data.approvalPolicy,
+        visionReleaseDeliveryUnit: data.visionReleaseDeliveryUnit,
+        repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
+        factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
+        visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
+        udfExtractorPath: UDF_EXTRACTOR_PATH,
+        udfWriterPath: UDF_WRITER_PATH,
+        wimlibPath: WIMLIB_PATH,
+        executedBuilderImage: data.builderImage.identity,
+        outputDirectory: join(data.root, "output"),
+        reproducibility: false,
+      });
+      const outputListing = execFileSync(
+        UDF_EXTRACTOR_PATH,
+        ["l", "-slt", result.output.path],
+        {
+          encoding: "utf8",
+        },
+      );
+      assert.match(outputListing, /Path = UDF-ONLY-MARKER\.TXT/);
+      const outputIsoView = execFileSync(
+        XORRISO_PATH,
+        ["-indev", result.output.path, "-ls", "/"],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      assert.doesNotMatch(outputIsoView, /UDF-ONLY-MARKER\.TXT/);
+      const outputJolietView = execFileSync(
+        "isoinfo",
+        ["-i", result.output.path, "-J", "-f"],
+        { encoding: "utf8" },
+      );
+      assert.match(outputJolietView, /UDF-ONLY-MARKER\.TXT/);
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("retains shared ISO9660 and Joliet directory extents for each logical path and aggregates level-3 file segments", () => {
+    const media = sharedExtentIso();
+    assert.deepEqual(inspectIsoFilesystemViews(media), {
+      iso9660: ["a/install.wim", "b/install.wim"],
+      joliet: ["a/install.wim", "b/install.wim"],
+    });
+    for (const joliet of [false, true]) {
+      const files = inspectIsoFilesystemExtents(media, { joliet });
+      assert.equal(files.length, 2);
+      for (const file of files) {
+        assert.equal(file.path.toLowerCase().endsWith("/install.wim"), true);
+        assert.equal(file.segments.length, 2);
+        assert.equal(file.bytes, 0x100000020);
+      }
+    }
+  });
+
+  it("rejects ISO9660 directory cycles and malformed level-3 multi-extent ordering", () => {
+    assert.throws(
+      () => inspectIsoFilesystemViews(sharedExtentIso({ cycle: true })),
+      /directory hierarchy contains a cycle/,
+    );
+    assert.throws(
+      () =>
+        inspectIsoFilesystemViews(
+          sharedExtentIso({ malformedMultiExtent: true }),
+        ),
+      /multi-extent ordering/,
+    );
+  });
+
+  it("normalizes a sparse large ISO through bounded file ranges", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const sparse = join(data.root, "sparse-large.iso");
+      await cp(sourcePath, sparse);
+      await truncate(sparse, 512 * 1024 * 1024);
+      const before = process.memoryUsage().rss;
+      await normalizeDescriptorTimestampsFile(sparse);
+      const growth = process.memoryUsage().rss - before;
+      assert.ok(
+        growth < 64 * 1024 * 1024,
+        `range normalization grew RSS by ${growth}`,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an out-of-bounds range write before dirtying any cached page", async () => {
+    const data = await fixture();
+    try {
+      const path = join(data.root, "range-preflight.bin");
+      await writeFile(path, Buffer.from([1, 2, 3, 4]));
+      const { media, close } = rangeBackedIsoMedia(path, { writable: true });
+      try {
+        assert.throws(
+          () => media.writeRange(Buffer.from([9, 9]), 3),
+          /outside the media/,
+        );
+      } finally {
+        close();
+      }
+      assert.deepEqual(await readFile(path), Buffer.from([1, 2, 3, 4]));
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes the ECMA-167 PVD recording time without changing its implementation identifier", async () => {
+    const data = await fixture();
+    const implementationIdentifier = Buffer.from("PVD-IMPL-ID-14", "ascii");
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const media = join(data.root, "pvd-recording-time.iso");
+      await cp(sourcePath, media);
+      const handle = await open(media, "r+");
+      try {
+        const image = await readFile(media);
+        let descriptorOffset;
+        for (let sector = 0; sector < image.length / 2048; sector += 1) {
+          const offset = sector * 2048;
+          if (image.readUInt16LE(offset) === 1) {
+            descriptorOffset = offset;
+            break;
+          }
+        }
+        assert.notEqual(descriptorOffset, undefined, "fixture has a UDF PVD");
+        await handle.write(
+          implementationIdentifier,
+          0,
+          implementationIdentifier.length,
+          descriptorOffset + 388,
+        );
+        const descriptor = Buffer.alloc(2048);
+        await handle.read(descriptor, 0, descriptor.length, descriptorOffset);
+        const crcLength = descriptor.readUInt16LE(10);
+        let crc = 0;
+        for (const byte of descriptor.subarray(16, 16 + crcLength)) {
+          crc ^= byte << 8;
+          for (let bit = 0; bit < 8; bit += 1)
+            crc =
+              ((crc & 0x8000) !== 0 ? (crc << 1) ^ 0x1021 : crc << 1) & 0xffff;
+        }
+        descriptor.writeUInt16LE(crc, 8);
+        descriptor[4] = 0;
+        descriptor[4] = [...descriptor.subarray(0, 16)].reduce(
+          (sum, byte, index) => (index === 4 ? sum : (sum + byte) & 0xff),
+          0,
+        );
+        await handle.write(descriptor, 0, descriptor.length, descriptorOffset);
+      } finally {
+        await handle.close();
+      }
+      await normalizeDescriptorTimestampsFile(media);
+      const normalized = await readFile(media);
+      const pvd = [...Array(normalized.length / 2048).keys()]
+        .map((sector) => sector * 2048)
+        .find((offset) => normalized.readUInt16LE(offset) === 1);
+      assert.ok(pvd !== undefined);
+      assert.deepEqual(
+        normalized.subarray(
+          pvd + 388,
+          pvd + 388 + implementationIdentifier.length,
+        ),
+        implementationIdentifier,
+      );
+      assert.deepEqual(
+        normalized.subarray(pvd + 376, pvd + 376 + 12),
+        Buffer.alloc(12),
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects malformed reachable UDF descriptor CRC lengths and tag locations", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      for (const [name, offset, value, expected] of [
+        [
+          "crc-length",
+          256 * 2048 + 10,
+          0xffff,
+          /CRC length exceeds its sector/,
+        ],
+        ["tag-location", 256 * 2048 + 12, 0xff, /tag location does not match/],
+      ]) {
+        const malformed = join(data.root, `${name}.iso`);
+        await cp(sourcePath, malformed);
+        const handle = await open(malformed, "r+");
+        try {
+          const tag = Buffer.alloc(16);
+          await handle.read(tag, 0, tag.length, 256 * 2048);
+          if (name === "crc-length") tag.writeUInt16LE(value, 10);
+          else tag.writeUInt32LE(value, 12);
+          tag[4] = 0;
+          tag[4] = [...tag].reduce(
+            (sum, byte, index) => (index === 4 ? sum : (sum + byte) & 0xff),
+            0,
+          );
+          await handle.write(tag, 0, tag.length, 256 * 2048);
+        } finally {
+          await handle.close();
+        }
+        await assert.rejects(
+          normalizeDescriptorTimestampsFile(malformed),
+          expected,
+        );
+      }
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses ICB Tag Flags at +34 for an embedded root directory and traverses its children", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const embedded = Buffer.from(await readFile(sourcePath));
+      const root = findUdfRootDirectory(embedded);
+      const directory = Buffer.from(
+        embedded.subarray(
+          root.directoryOffset,
+          root.directoryOffset + root.directoryBytes,
+        ),
+      );
+      assert.ok(
+        root.entryOffset + root.layout.data + directory.length <=
+          root.entryOffset + ISO_SECTOR_BYTES,
+        "fixture root directory fits into a File Entry embedded allocation",
+      );
+
+      const rootLogicalBlock = embedded.readUInt32LE(root.entryOffset + 12);
+      relocateEmbeddedDirectoryFileIdentifiers(directory, rootLogicalBlock);
+      directory.copy(embedded, root.entryOffset + root.layout.data);
+      // +32 is in the parent ICB location. A misleading value there must not
+      // select the allocation format; only ICB Tag Flags at +34 may do that.
+      embedded.writeUInt16LE(0xffff, root.entryOffset + 32);
+      embedded.writeUInt16LE(3, root.entryOffset + 34);
+      embedded.writeUInt32LE(
+        directory.length,
+        root.entryOffset + root.layout.allocations,
+      );
+      rewriteUdfTag(
+        embedded.subarray(
+          root.entryOffset,
+          root.entryOffset + ISO_SECTOR_BYTES,
+        ),
+      );
+
+      assert.doesNotThrow(() => inspectBootableIso(embedded));
+
+      const child = firstChildFileIdentifier(directory);
+      directory.writeUInt32LE(0xffffffff, child + 24);
+      rewriteUdfTag(directory.subarray(child));
+      directory.copy(embedded, root.entryOffset + root.layout.data);
+      rewriteUdfTag(
+        embedded.subarray(
+          root.entryOffset,
+          root.entryOffset + ISO_SECTOR_BYTES,
+        ),
+      );
+      assert.throws(
+        () => inspectBootableIso(embedded),
+        /UDF ICB is outside its declared partition/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads UDF allocation type from ICB Tag Flags and rejects unsupported long and extended descriptors", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const image = await readFile(sourcePath);
+      const rootFileEntry = [...Array(image.length / ISO_SECTOR_BYTES).keys()]
+        .map((sector) => sector * ISO_SECTOR_BYTES)
+        .find(
+          (offset) =>
+            [261, 266].includes(image.readUInt16LE(offset)) &&
+            image[offset + 27] === 4 &&
+            (image.readUInt16LE(offset + 34) & 0x7) === 0,
+        );
+      assert.notEqual(
+        rootFileEntry,
+        undefined,
+        "fixture has a short_ad root ICB",
+      );
+      for (const [name, flags, expected] of [
+        ["wrong-parent-icb-bytes", 0, null],
+        [
+          "long-ad",
+          1,
+          /only short_ad and embedded allocation descriptors are supported/,
+        ],
+        [
+          "extended-ad",
+          2,
+          /only short_ad and embedded allocation descriptors are supported/,
+        ],
+      ]) {
+        const malformed = join(data.root, `${name}.iso`);
+        await cp(sourcePath, malformed);
+        const handle = await open(malformed, "r+");
+        try {
+          const descriptor = Buffer.alloc(ISO_SECTOR_BYTES);
+          await handle.read(descriptor, 0, descriptor.length, rootFileEntry);
+          descriptor.writeUInt16LE(3, 32);
+          descriptor.writeUInt16LE(flags, 34);
+          const crcLength = descriptor.readUInt16LE(10);
+          let crc = 0;
+          for (const byte of descriptor.subarray(16, 16 + crcLength)) {
+            crc ^= byte << 8;
+            for (let bit = 0; bit < 8; bit += 1)
+              crc =
+                ((crc & 0x8000) !== 0 ? (crc << 1) ^ 0x1021 : crc << 1) &
+                0xffff;
+          }
+          descriptor.writeUInt16LE(crc, 8);
+          descriptor[4] = [...descriptor.subarray(0, 16)].reduce(
+            (sum, byte, index) => (index === 4 ? sum : (sum + byte) & 0xff),
+            0,
+          );
+          await handle.write(descriptor, 0, descriptor.length, rootFileEntry);
+        } finally {
+          await handle.close();
+        }
+        if (expected) {
+          await assert.rejects(
+            normalizeDescriptorTimestampsFile(malformed),
+            expected,
+          );
+        } else {
+          await normalizeDescriptorTimestampsFile(malformed);
+        }
+      }
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a UEFI platform id masquerading as the El Torito default BIOS entry", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const media = await readFile(sourcePath);
+      let bootRecord;
+      for (let sector = 16; sector < 32; sector += 1) {
+        const offset = sector * 2048;
+        if (
+          media[offset] === 0 &&
+          media.subarray(offset + 1, offset + 6).toString("ascii") ===
+            "CD001" &&
+          media
+            .subarray(offset + 7, offset + 30)
+            .toString("ascii")
+            .trim() === "EL TORITO SPECIFICATION"
+        ) {
+          bootRecord = offset;
+          break;
+        }
+      }
+      assert.ok(bootRecord !== undefined);
+      const catalog = media.readUInt32LE(bootRecord + 71) * 2048;
+      media[catalog + 1] = 0xef;
+      assert.throws(
+        () => inspectBootableIso(media),
+        /boot catalog is invalid or not bootable/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("inspects only anchor-reachable UDF descriptors and ignores descriptor-like payload bytes", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const { media, close } = rangeBackedIsoMedia(sourcePath);
+      try {
+        assert.deepEqual(inspectBootableIso(media).udf, true);
+        assert.ok(
+          media.readCount < Math.floor(media.length / 2048 / 4),
+          `inspection read ${media.readCount} pages from ${media.length / 2048} sectors`,
+        );
+      } finally {
+        close();
+      }
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it(
+    "parses ISO9660 and Joliet install-image extents from a supplied real Windows ISO",
+    { skip: !process.env.VEM_FACTORY_REAL_WINDOWS_ISO },
+    async () => {
+      const realIso = process.env.VEM_FACTORY_REAL_WINDOWS_ISO;
+      const before = process.memoryUsage().rss;
+      const structure = await inspectBootableIsoFile(realIso);
+      const { media, close } = rangeBackedIsoMedia(realIso);
+      let iso9660;
+      let joliet;
+      try {
+        iso9660 = inspectIsoFilesystemExtents(media);
+        joliet = inspectIsoFilesystemExtents(media, { joliet: true });
+      } finally {
+        close();
+      }
+      const growth = process.memoryUsage().rss - before;
+      assert.equal(structure.iso9660, true);
+      assert.equal(structure.udf, true);
+      const installImage = (entries, label) => {
+        const matches = entries.filter(({ path }) =>
+          ["sources/install.wim", "sources/install.esd"].includes(
+            path.toLocaleLowerCase("en-US"),
+          ),
+        );
+        assert.equal(
+          matches.length,
+          1,
+          `${label} view locates one install image`,
+        );
+        const entry = matches[0];
+        assert.ok(
+          entry.bytes > 0,
+          `${label} install image has a positive size`,
+        );
+        assert.equal(
+          entry.bytes,
+          entry.segments.reduce((total, segment) => total + segment.bytes, 0),
+          `${label} segment sizes equal the install image size`,
+        );
+        for (const segment of entry.segments) {
+          assert.ok(segment.bytes > 0, `${label} extent has a positive size`);
+          assert.ok(
+            segment.sector >= 0,
+            `${label} extent has a non-negative sector`,
+          );
+          assert.ok(
+            (segment.sector + Math.ceil(segment.bytes / ISO_SECTOR_BYTES)) *
+              ISO_SECTOR_BYTES <=
+              media.length,
+            `${label} extent remains within the ISO media`,
+          );
+        }
+        if (entry.bytes > 4 * 1024 ** 3) {
+          assert.ok(
+            entry.segments.length > 1,
+            `${label} install image above 4 GiB uses ISO9660 multi-extent records`,
+          );
+          for (let index = 1; index < entry.segments.length; index += 1) {
+            const previous = entry.segments[index - 1];
+            const current = entry.segments[index];
+            assert.equal(
+              current.sector,
+              previous.sector + Math.ceil(previous.bytes / ISO_SECTOR_BYTES),
+              `${label} install-image multi-extent segments are contiguous`,
+            );
+          }
+        } else if (media.length < 4 * 1024 ** 3) {
+          assert.equal(
+            entry.segments.length,
+            1,
+            `${label} install image is a single extent because the supplied media is below 4 GiB`,
+          );
+        }
+        return entry;
+      };
+      const isoInstallImage = installImage(iso9660, "ISO9660");
+      const jolietInstallImage = installImage(joliet, "Joliet");
+      assert.equal(
+        jolietInstallImage.path.toLocaleLowerCase("en-US"),
+        isoInstallImage.path.toLocaleLowerCase("en-US"),
+        "ISO9660 and Joliet select the same install image path",
+      );
+      assert.equal(
+        jolietInstallImage.bytes,
+        isoInstallImage.bytes,
+        "ISO9660 and Joliet report the same install image size",
+      );
+      assert.ok(
+        growth < 96 * 1024 * 1024,
+        `real ISO inspection grew RSS by ${growth}`,
+      );
+    },
+  );
+
+  it("rejects hostile extractor output before following, hashing, timestamping, or overlaying it", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const sentinel = join(data.root, "outside-sentinel.bin");
+      await writeFile(sentinel, "sentinel must remain untouched\n");
+      const before = await stat(sentinel);
+      const hazards = [
+        {
+          name: "symlink",
+          body: `ln -s ${JSON.stringify(sentinel)} "$output/payload"`,
+          expected: /symlink/,
+        },
+        {
+          name: "special-file",
+          body: 'mkfifo "$output/payload"',
+          expected: /non-regular/,
+        },
+        {
+          name: "case-collision",
+          body: ': > "$output/A"\n: > "$output/a"',
+          expected: /case-colliding/,
+        },
+        {
+          name: "eacces-directory",
+          body: 'mkdir "$output/locked"\nchmod 000 "$output/locked"',
+          expected: process.getuid?.() === 0 ? /Windows source ISO/ : /EACCES/,
+        },
+      ];
+      for (const hazard of hazards) {
+        const extractor = join(data.root, `hostile-${hazard.name}-extractor`);
+        await writeFile(
+          extractor,
+          `#!/bin/sh\nset -eu\nif [ "$1" = l ]; then printf 'Path = fixture.iso\\nType = Udf\\n----------\\n'; exit 0; fi\nfor argument in "$@"; do case "$argument" in -o*) output="${"${argument#-o}"}" ;; esac; done\n: "${"${output:?missing extraction output}"}"\nmkdir -p "$output"\n${hazard.body}\n`,
+          { mode: 0o755 },
+        );
+        const bytes = await readFile(extractor);
+        await assert.rejects(
+          inspectWindowsSetupIso({
+            isoPath: sourcePath,
+            expectedInstallImage: {
+              index: data.manifest.source.installImageIndex,
+              edition: data.manifest.source.installImageEdition,
+              digest: data.manifest.source.installImageDigest,
+            },
+            udfExtractorPath: extractor,
+            udfExtractor: {
+              identity: `tool://hostile@${sha256(bytes)}`,
+              digest: sha256(bytes),
+              version: "1.0.0",
+            },
+            wimlibPath: WIMLIB_PATH,
+            wimlib: data.manifest.toolchain.wimlib,
+          }),
+          hazard.expected,
+          hazard.name,
+        );
+        const after = await stat(sentinel);
+        assert.equal(
+          await readFile(sentinel, "utf8"),
+          "sentinel must remain untouched\n",
+        );
+        assert.equal(
+          after.mtimeMs,
+          before.mtimeMs,
+          `${hazard.name} modified sentinel mtime`,
+        );
+      }
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires the extractor to select exactly one authoritative UDF view before extraction", async () => {
+    const data = await fixture();
+    try {
+      const extractor = join(data.root, "non-udf-view-extractor");
+      await writeFile(
+        extractor,
+        "#!/bin/sh\nif [ \"$1\" = l ]; then printf 'Path = fixture.iso\\nType = Iso\\n----------\\n'; exit 0; fi\nexit 99\n",
+        { mode: 0o755 },
+      );
+      const bytes = await readFile(extractor);
+      await assert.rejects(
+        inspectWindowsSetupIso({
+          isoPath: data.sourcePaths[data.manifest.source.windowsMedia.identity],
+          expectedInstallImage: {
+            index: data.manifest.source.installImageIndex,
+            edition: data.manifest.source.installImageEdition,
+            digest: data.manifest.source.installImageDigest,
+          },
+          udfExtractorPath: extractor,
+          udfExtractor: {
+            identity: `tool://fixture@${sha256(bytes)}`,
+            digest: sha256(bytes),
+            version: "1.0.0",
+          },
+          wimlibPath: WIMLIB_PATH,
+          wimlib: data.manifest.toolchain.wimlib,
+        }),
+        /authoritative Type = Udf view/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
   it("executes the pinned builder twice in independent directories and emits bootable ISO9660/UDF/El Torito media", async () => {
     const data = await fixture();
     try {
@@ -664,7 +1598,8 @@ describe("real deterministic Factory ISO builder", () => {
         repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
         factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
         visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
-        isoBuilderPath: XORRISO_PATH,
+        udfExtractorPath: UDF_EXTRACTOR_PATH,
+        udfWriterPath: UDF_WRITER_PATH,
         wimlibPath: WIMLIB_PATH,
         executedBuilderImage: data.builderImage.identity,
         outputDirectory: join(data.root, "output"),
@@ -690,7 +1625,13 @@ describe("real deterministic Factory ISO builder", () => {
         result.provenance.output.requiresIssue15CustomizationAssets,
         false,
       );
-      assert.equal(result.provenance.toolchain.isoBuilder.executed, true);
+      assert.deepEqual(
+        Object.entries(result.provenance.toolchain)
+          .filter(([, tool]) => tool.executed)
+          .map(([name]) => name)
+          .sort(),
+        ["builderImage", "udfExtractor", "udfWriter", "wimlib"],
+      );
       assert.equal(result.provenance.inputs.length, 9);
       assert.equal(
         result.provenance.inputs.every(
@@ -716,7 +1657,8 @@ describe("real deterministic Factory ISO builder", () => {
         provenanceDigest: sha256(provenanceBytes),
         outputIdentity: result.output.identity,
         outputDigest: result.output.digest,
-        isoBuilderPath: XORRISO_PATH,
+        udfExtractorPath: UDF_EXTRACTOR_PATH,
+        udfWriterPath: UDF_WRITER_PATH,
         wimlibPath: WIMLIB_PATH,
       });
       assert.equal(admitted.provenanceDigest, sha256(provenanceBytes));
@@ -724,14 +1666,18 @@ describe("real deterministic Factory ISO builder", () => {
         result.provenance.effectiveInputs.map(({ role }) => role).sort(),
         expectedFactoryEffectiveInputRoles(data.manifest),
       );
-      await writeFile(
-        data.visionEvidenceVerifierPath,
-        Buffer.concat([
-          await readFile(data.visionEvidenceVerifierPath),
-          Buffer.from("factory-effective-input-mutation\n"),
-        ]),
-        { mode: 0o555 },
-      );
+      const mutatedVerifier = Buffer.concat([
+        await readFile(data.visionEvidenceVerifierPath),
+        Buffer.from("factory-effective-input-mutation\n"),
+      ]);
+      // The builder makes verified inputs immutable. Replace the file through
+      // its writable fixture directory so this adversarial mutation works for
+      // the non-root CI user as well as root.
+      await rm(data.visionEvidenceVerifierPath);
+      await writeFile(data.visionEvidenceVerifierPath, mutatedVerifier, {
+        mode: 0o755,
+      });
+      await chmod(data.visionEvidenceVerifierPath, 0o755);
       const mutated = await buildFactoryMedia({
         manifest: data.manifest,
         store: new ContentAddressedAssetStore(join(data.root, "mutated-cas")),
@@ -742,16 +1688,76 @@ describe("real deterministic Factory ISO builder", () => {
         repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
         factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
         visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
-        isoBuilderPath: XORRISO_PATH,
+        udfExtractorPath: UDF_EXTRACTOR_PATH,
+        udfWriterPath: UDF_WRITER_PATH,
         wimlibPath: WIMLIB_PATH,
         executedBuilderImage: data.builderImage.identity,
         outputDirectory: join(data.root, "mutated-output"),
-        reproducibility: true,
+        reproducibility: false,
       });
       assert.notEqual(mutated.output.identity, result.output.identity);
       assert.notDeepEqual(
         mutated.provenance.effectiveInputs,
         result.provenance.effectiveInputs,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("produces one byte-identical serviced ISO across ten independent builds", async () => {
+    const data = await fixture();
+    try {
+      const outputs = [];
+      for (let index = 0; index < 10; index += 1) {
+        const result = await buildFactoryMedia({
+          manifest: data.manifest,
+          store: new ContentAddressedAssetStore(
+            join(data.root, `cas-${index}`),
+          ),
+          sourcePaths: data.sourcePaths,
+          evidenceStoreRoot: data.evidenceStoreRoot,
+          approvalPolicy: data.approvalPolicy,
+          visionReleaseDeliveryUnit: data.visionReleaseDeliveryUnit,
+          repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
+          factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
+          visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
+          udfExtractorPath: UDF_EXTRACTOR_PATH,
+          udfWriterPath: UDF_WRITER_PATH,
+          wimlibPath: WIMLIB_PATH,
+          executedBuilderImage: data.builderImage.identity,
+          outputDirectory: join(data.root, `output-${index}`),
+          reproducibility: false,
+        });
+        outputs.push(result.output);
+      }
+      const hashes = outputs.map(({ digest }) => digest);
+      const first = outputs[0];
+      const different = outputs.find(({ digest }) => digest !== first.digest);
+      let differences = [];
+      let differenceBytes = [];
+      if (different) {
+        const [left, right] = await Promise.all([
+          readFile(first.path),
+          readFile(different.path),
+        ]);
+        for (
+          let index = 0;
+          index < left.length && differences.length < 16;
+          index += 1
+        ) {
+          if (left[index] !== right[index]) {
+            differences.push(index);
+            differenceBytes.push(
+              `${index}:${left[index].toString(16)}>${right[index].toString(16)}:${left.subarray(index - 12, index + 12).toString("hex")}`,
+            );
+          }
+        }
+      }
+      assert.equal(
+        new Set(hashes).size,
+        1,
+        `non-deterministic ISO hashes: ${hashes.join(", ")}; offsets: ${differences.join(",")}; bytes: ${differenceBytes.join(",")}`,
       );
     } finally {
       await rm(data.root, { recursive: true, force: true });
@@ -776,7 +1782,8 @@ describe("real deterministic Factory ISO builder", () => {
       await assert.rejects(
         buildFactoryMedia({
           ...common,
-          isoBuilderPath: XORRISO_PATH,
+          udfExtractorPath: UDF_EXTRACTOR_PATH,
+          udfWriterPath: UDF_WRITER_PATH,
           wimlibPath: WIMLIB_PATH,
           executedBuilderImage: `oci://attacker@sha256:${BUILDER_IMAGE_HASH}`,
         }),
@@ -787,10 +1794,11 @@ describe("real deterministic Factory ISO builder", () => {
       await assert.rejects(
         buildFactoryMedia({
           ...common,
-          isoBuilderPath: fakeBuilder,
+          udfExtractorPath: fakeBuilder,
+          udfWriterPath: UDF_WRITER_PATH,
           executedBuilderImage: data.builderImage.identity,
         }),
-        /ISO builder digest mismatch/i,
+        /UDF extractor digest mismatch/i,
       );
     } finally {
       await rm(data.root, { recursive: true, force: true });

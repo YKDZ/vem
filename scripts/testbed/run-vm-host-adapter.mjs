@@ -99,10 +99,22 @@ async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
     optional: true,
   });
   const isoPath = readOption("--factory-iso-path", { optional: true });
+  const udfExtractorPath = readOption("--factory-udf-extractor", {
+    optional: true,
+  });
+  const udfWriterPath = readOption("--factory-udf-writer", { optional: true });
+  const wimlibPath = readOption("--factory-wimlib", { optional: true });
   const required =
     process.env.VEM_FACTORY_ACCEPTANCE_REQUIRE_HOST_PROVENANCE === "1";
   if (!manifestPath && !provenancePath && !isoPath && !required) return null;
-  if (!manifestPath || !provenancePath || !isoPath)
+  if (
+    !manifestPath ||
+    !provenancePath ||
+    !isoPath ||
+    !udfExtractorPath ||
+    !udfWriterPath ||
+    !wimlibPath
+  )
     throw new Error(
       "Factory acceptance requires host-owned manifest, provenance, and ISO paths before adapter mutation",
     );
@@ -114,6 +126,9 @@ async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
     provenanceDigest: factoryMedia.provenanceDigest,
     outputIdentity: factoryMedia.outputIdentity,
     outputDigest: factoryMedia.outputDigest,
+    udfExtractorPath,
+    udfWriterPath,
+    wimlibPath,
   });
 }
 

@@ -110,10 +110,11 @@
     "toolchain": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["builderImage", "isoBuilder", "wimlib"],
+      "required": ["builderImage", "udfExtractor", "udfWriter", "wimlib"],
       "properties": {
         "builderImage": { "$ref": "#/$defs/toolIdentity" },
-        "isoBuilder": { "$ref": "#/$defs/toolIdentity" },
+        "udfExtractor": { "$ref": "#/$defs/toolIdentity" },
+        "udfWriter": { "$ref": "#/$defs/toolIdentity" },
         "wimlib": { "$ref": "#/$defs/toolIdentity" },
         "authenticodeVerifier": { "$ref": "#/$defs/toolIdentity" }
       }

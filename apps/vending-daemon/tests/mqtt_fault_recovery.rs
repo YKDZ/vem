@@ -2,7 +2,10 @@ mod support;
 
 use rumqttc::QoS;
 use support::{
-    mqtt::{collect_publishes, spawn_event_loop, MqttBrokerHarness},
+    mqtt::{
+        collect_publishes, spawn_event_loop, MqttBrokerHarness, ObservedQos1Publish,
+        PubAckDropProxy,
+    },
     process::DaemonHarness,
     sensitive, sqlite,
 };
@@ -300,13 +303,64 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
     assert_eq!(body["payload"]["commandNo"], "CMD-RECOVER-1");
     assert!(body["signature"].as_str().unwrap_or_default().len() >= 32);
 
-    wait_for_empty_outbox(&data_dir).await;
+    wait_for_outbox_event_removal(&data_dir, &event.id).await;
     daemon2.terminate().await;
     let pool = sqlite::open_readonly(&data_dir.join("state.db")).await;
     assert_eq!(
-        sqlite::scalar_i64(&pool, "SELECT COUNT(1) FROM outbox_events").await,
+        sqlite::scalar_i64(
+            &pool,
+            "SELECT COUNT(1) FROM outbox_events WHERE id = 'MACHINE-MQTT:dispense-result:CMD-RECOVER-1'",
+        )
+        .await,
         0
     );
+}
+
+#[tokio::test]
+async fn initial_mqtt_backlog_drains_past_async_client_capacity_without_losing_due_events() {
+    let broker = MqttBrokerHarness::start().await;
+    let temp = tempfile::tempdir().expect("shared daemon data dir");
+    let data_dir = temp.path().join("vending-daemon");
+    let state = vending_daemon::state::LocalStateStore::open(&data_dir.join("state.db"))
+        .await
+        .expect("state");
+    let mut event_ids = Vec::new();
+    for index in 0..32 {
+        let event = vending_daemon::state::store::OutboxInput::command_ack(
+            "MACHINE-MQTT",
+            &format!("CMD-BACKLOG-{index}"),
+        );
+        state.enqueue_outbox(&event).await.expect("seed due event");
+        event_ids.push(event.id);
+    }
+    drop(state);
+
+    let (collector, mut collector_loop) = broker.client("backlog-collector");
+    collector
+        .subscribe("vem/machines/MACHINE-MQTT/commands/+/ack", QoS::AtLeastOnce)
+        .await
+        .expect("subscribe collector");
+    let received = tokio::spawn(async move { collect_publishes(&mut collector_loop, 32).await });
+
+    let mut daemon = DaemonHarness::start_at(
+        data_dir.clone(),
+        mqtt_config(broker.url(), None),
+        &[(
+            "VEM_MQTT_SIGNING_SECRET",
+            sensitive::TEST_MQTT_SIGNING_SECRET,
+        )],
+    )
+    .await
+    .expect("start daemon with 32 due events");
+    let publishes = tokio::time::timeout(std::time::Duration::from_secs(15), received)
+        .await
+        .expect("initial backlog timed out")
+        .expect("collector task");
+    assert_eq!(publishes.len(), 32);
+    for event_id in &event_ids {
+        wait_for_outbox_event_removal(&data_dir, event_id).await;
+    }
+    daemon.terminate().await;
 }
 
 #[tokio::test]
@@ -340,7 +394,20 @@ async fn broker_unavailable_keeps_due_outbox_with_retry_error() {
     daemon.terminate().await;
 
     let pool = sqlite::open_readonly(&data_dir.join("state.db")).await;
-    let _retained = sqlite::scalar_i64(&pool, "SELECT COUNT(1) FROM outbox_events").await;
+    let retained = sqlite::scalar_i64(&pool, "SELECT COUNT(1) FROM outbox_events").await;
+    assert!(
+        retained >= 1,
+        "the outbox must retain events while MQTT is offline"
+    );
+    let seeded = sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM outbox_events WHERE id = ?1")
+        .bind(&heartbeat.id)
+        .fetch_one(&pool)
+        .await
+        .expect("query seeded outbox event");
+    assert_eq!(
+        seeded, 1,
+        "the original due event must remain durable while MQTT is offline"
+    );
     assert_eq!(
         sqlite::scalar_i64(
             &pool,
@@ -351,16 +418,105 @@ async fn broker_unavailable_keeps_due_outbox_with_retry_error() {
     );
 }
 
-async fn wait_for_empty_outbox(data_dir: &std::path::Path) {
-    for _ in 0..20 {
+#[tokio::test]
+async fn puback_drop_proxy_retransmits_durable_qos1_without_stranding_other_outbox_traffic() {
+    let broker = MqttBrokerHarness::start().await;
+    for round in 0..3 {
+        let proxy = PubAckDropProxy::start(broker.port()).await;
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = vending_daemon::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let first = vending_daemon::state::store::OutboxInput::command_ack(
+            "MACHINE-MQTT",
+            &format!("CMD-PUBACK-DROP-{round}"),
+        );
+        let second = vending_daemon::state::store::OutboxInput::heartbeat(
+            "MACHINE-MQTT",
+            serde_json::json!({"round": round, "kind": "other-qos1-traffic"}),
+        );
+        state.enqueue_outbox(&first).await.expect("seed first");
+        state.enqueue_outbox(&second).await.expect("seed second");
+        drop(state);
+
+        let mut daemon = DaemonHarness::start_at(
+            data_dir.clone(),
+            mqtt_config(proxy.url(), None),
+            &[(
+                "VEM_MQTT_SIGNING_SECRET",
+                sensitive::TEST_MQTT_SIGNING_SECRET,
+            )],
+        )
+        .await
+        .expect("start daemon through PubAck-drop proxy");
+        wait_for_outbox_event_removal(&data_dir, &first.id).await;
+        wait_for_outbox_event_removal(&data_dir, &second.id).await;
+        let publishes = wait_for_proxy_publishes(&proxy, 3).await;
+        assert!(
+            proxy.dropped_before_puback(),
+            "proxy did not cut the first PubAck"
+        );
+        assert_eq!(
+            publishes[0].packet_id, publishes[1].packet_id,
+            "retransmit must retain the QoS1 packet id"
+        );
+        assert_eq!(
+            publishes[0].topic, publishes[1].topic,
+            "retransmit changed the durable publish owner"
+        );
+        assert!(
+            publishes.iter().skip(2).any(|publish| {
+                publish.topic != publishes[0].topic && publish.packet_id != publishes[0].packet_id
+            }),
+            "other QoS1 traffic was not independently acknowledged: {publishes:?}",
+        );
+        daemon.terminate().await;
         let pool = sqlite::open_readonly(&data_dir.join("state.db")).await;
-        let count = sqlite::scalar_i64(&pool, "SELECT COUNT(1) FROM outbox_events").await;
+        let stranded =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM outbox_events WHERE id IN (?1, ?2)")
+                .bind(&first.id)
+                .bind(&second.id)
+                .fetch_one(&pool)
+                .await
+                .expect("query seeded outbox events");
+        assert_eq!(
+            stranded, 0,
+            "PubAck recovery stranded a seeded durable event"
+        );
+    }
+}
+
+async fn wait_for_outbox_event_removal(data_dir: &std::path::Path, event_id: &str) {
+    for _ in 0..30 {
+        let pool = sqlite::open_readonly(&data_dir.join("state.db")).await;
+        let count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM outbox_events WHERE id = ?1")
+                .bind(event_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query persisted outbox event");
         if count == 0 {
             return;
         }
         drop(pool);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
+    panic!("persisted outbox event {event_id} was not removed after MQTT PubAck");
+}
+
+async fn wait_for_proxy_publishes(
+    proxy: &PubAckDropProxy,
+    expected: usize,
+) -> Vec<ObservedQos1Publish> {
+    for _ in 0..100 {
+        let publishes = proxy.qos1_publishes().await;
+        if publishes.len() >= expected {
+            return publishes;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("proxy did not observe {expected} QoS1 PUBLISH packets");
 }
 
 async fn wait_for_mqtt_connected(daemon: &DaemonHarness) {
