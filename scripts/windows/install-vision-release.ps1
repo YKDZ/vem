@@ -470,6 +470,8 @@ namespace VemVisionLauncher {
     private const uint CREATE_SUSPENDED = 0x00000004;
     private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     private const uint WAIT_OBJECT_0 = 0;
+    private const uint WAIT_TIMEOUT = 258;
+    private const uint TERMINATION_CONFIRMATION_TIMEOUT_MS = 5000;
     private IntPtr processHandle;
     private IntPtr threadHandle;
 
@@ -576,7 +578,8 @@ namespace VemVisionLauncher {
       if (processHandle == IntPtr.Zero) { return; }
       if (TerminateProcess(processHandle, 1)) { return; }
       var error = Marshal.GetLastWin32Error();
-      if (WaitForSingleObject(processHandle, 0) == WAIT_OBJECT_0) { return; }
+      // A Job Object may have already initiated termination, while this handle has not signaled yet.
+      if (WaitForSingleObject(processHandle, TERMINATION_CONFIRMATION_TIMEOUT_MS) == WAIT_OBJECT_0) { return; }
       throw new Win32Exception(error, "TerminateProcess failed");
     }
 

@@ -132,6 +132,16 @@ describe("Vision release installer fixtures", () => {
         launcher,
         /throw new Win32Exception\(error, "TerminateProcess failed"\)/,
       );
+      assert.match(launcher, /private const uint WAIT_TIMEOUT = 258;/);
+      assert.match(
+        launcher,
+        /private const uint TERMINATION_CONFIRMATION_TIMEOUT_MS = 5000;/,
+      );
+      assert.match(
+        launcher,
+        /WaitForSingleObject\(processHandle, TERMINATION_CONFIRMATION_TIMEOUT_MS\) == WAIT_OBJECT_0/,
+      );
+      assert.doesNotMatch(launcher, /WaitForSingleObject\(processHandle, 0\)/);
       assert.match(
         launcher,
         /throw new Win32Exception\(Marshal\.GetLastWin32Error\(\), "TerminateJobObject failed"\)/,
@@ -225,10 +235,32 @@ describe("Vision release installer fixtures", () => {
       assert.doesNotMatch(fixtureSource, /if \(false\) \{ return; \}/);
       assert.match(
         fixtureSource,
+        /generated launcher fixture did not retain the WaitForSingleObject P\/Invoke boundary/,
+      );
+      assert.match(
+        fixtureSource,
+        /generated launcher fixture did not intercept the WaitForSingleObject P\/Invoke call/,
+      );
+      assert.match(
+        fixtureSource,
+        /private static extern void SetLastError\(uint dwErrCode\);/,
+      );
+      assert.match(fixtureSource, /FIXTURE_TERMINATE_PROCESS_ERROR = 5/);
+      assert.match(
+        fixtureSource,
+        /SetLastError\(FIXTURE_TERMINATE_PROCESS_ERROR\);/,
+      );
+      assert.match(fixtureSource, /NativeErrorCode -ne 5/);
+      assert.match(
+        fixtureSource,
         /VEM_VISION_LAUNCHER_FIXTURE_FORCE_TERMINATE_FAILURE/,
       );
       assert.match(fixtureSource, /TerminateJobObjectForFixture/);
       assert.match(fixtureSource, /TerminateProcessForFixture/);
+      assert.match(
+        fixtureSource,
+        /VEM_VISION_LAUNCHER_FIXTURE_FORCE_NATIVE_TERMINATE_FALSE/,
+      );
     },
   );
 
@@ -260,7 +292,7 @@ describe("Vision release installer fixtures", () => {
       assert.match(fixtureSource, /function Add-FixturePostStartFailure/);
       assert.match(
         fixtureSource,
-        /\$Failure -in @\("selection-reread", "hash", "record-write", "selection-reread-and-cleanup"\)/,
+        /\$Failure -in @\("selection-reread", "hash", "record-write", "selection-reread-and-cleanup", "selection-reread-job-terminated-native-race"\)/,
       );
       assert.match(
         fixtureSource,
@@ -286,6 +318,22 @@ describe("Vision release installer fixtures", () => {
         /launcher aggregate failure fixture committed a process record/,
       );
       assert.match(fixtureSource, /selection-reread-and-cleanup/);
+      assert.match(
+        fixtureSource,
+        /selection-reread-job-terminated-native-race/,
+      );
+      assert.match(
+        fixtureSource,
+        /launcher race fixture did not preserve the injected selection reread failure/,
+      );
+      assert.match(
+        fixtureSource,
+        /launcher race fixture unexpectedly reported cleanup failure/,
+      );
+      assert.match(
+        fixtureSource,
+        /Assert-FixtureRuntimeIdentitiesStopped "selection-reread-job-terminated-native-race"/,
+      );
     },
   );
 
