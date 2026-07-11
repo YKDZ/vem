@@ -6,6 +6,7 @@
     "check:admin-api-contracts": "node --test scripts/check-admin-api-contracts.test.mjs scripts/check-admin-contract-e2e-ci.test.mjs && node scripts/check-admin-api-contracts.mjs && node scripts/check-admin-contract-e2e-ci.mjs",
     "check:boundaries": "turbo boundaries --no-color",
     "check:daemon-ipc-contracts": "pnpm typecheck:scripts && pnpm test:daemon-ipc-contracts && pnpm generate:daemon-ipc-contracts -- --check && cargo test -p daemon-ipc-contracts && cargo test -p vending-core --test daemon_ipc_migration_guard && pnpm --filter machine test -- src/daemon/migration-guards.spec.ts",
+    "check:factory-manifest": "node --test scripts/check-factory-manifest.test.mjs scripts/factory/*.test.mjs",
     "check:factory-runtime-prep": "node scripts/check-factory-runtime-prep.mjs",
     "check:fix": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all && turbo lint -- --fix && turbo typecheck test",
     "check:machine-vision-deployment": "node scripts/check-machine-vision-deployment.mjs",
@@ -23,6 +24,7 @@
     "test": "node --test scripts/check-repository-script-inventory.test.mjs && turbo test",
     "test:daemon-ipc-contracts": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run scripts/daemon-ipc-contracts/generate-contracts.spec.ts",
     "test:e2e": "turbo test:e2e",
+    "test:factory-manifest": "node --test scripts/check-factory-manifest.test.mjs scripts/factory/*.test.mjs",
     "test:windows-factory-maintenance-fixtures": "pwsh -NoProfile -File scripts/windows/test-factory-maintenance-fixtures.ps1",
     "typecheck": "turbo typecheck",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json"
@@ -31,6 +33,7 @@
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "catalog:",
     "@vem/shared": "workspace:*",
+    "ajv": "8.20.0",
     "jsdom": "^29.1.1",
     "marked": "^18.0.5",
     "mermaid": "^11.15.0",

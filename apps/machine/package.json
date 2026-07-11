@@ -34,6 +34,7 @@
   "devDependencies": {
     "@playwright/test": "catalog:",
     "@tailwindcss/vite": "catalog:",
+    "@tauri-apps/cli": "2.11.4",
     "@types/node": "catalog:",
     "@types/pngjs": "^6.0.5",
     "@types/qrcode": "catalog:",

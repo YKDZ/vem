@@ -40,6 +40,11 @@ jobs:
               - 'apps/vending-daemon/**'
               - 'crates/**'
               - 'tools/**'
+              - 'scripts/factory/**'
+              - 'scripts/check-factory-manifest.test.mjs'
+              - 'public/factory-manifest-v1.schema.json'
+              - '.github/workflows/build-factory-iso.yml'
+              - '.github/workflows/build-windows-runtime-artifacts.yml'
               - 'turbo.json'
               - 'pnpm-workspace.yaml'
               - 'Cargo.toml'
@@ -92,6 +97,17 @@ jobs:
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install Factory Media Fixture Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            genisoimage \
+            osslsigncode \
+            gcc-mingw-w64-x86-64
+
+      - name: Run Factory Media Contract Tests
+        run: pnpm check:factory-manifest
 
       - name: Restore Turbo cache
         uses: actions/cache@v4

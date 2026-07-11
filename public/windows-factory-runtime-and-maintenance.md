@@ -84,16 +84,73 @@ The canonical media workflow takes:
   artifacts;
 - a production or testbed profile without machine-specific secrets.
 
-It emits:
+Issue10 emits a `bootable-fixture-envelope`, not a deployable customized Windows
+installer. The envelope is a real ISO9660/UDF image with an El Torito boot
+catalog and contains the verified source-media and runtime payload boundaries.
+Issue15 must supply and verify the Windows setup/customization assets before any
+result may be described or consumed as a Windows Factory installation ISO.
+
+The Issue10 tracer emits:
 
 - `vem-factory-<manifest-id>.iso`;
 - the ISO SHA-256;
 - a provenance report containing every input identity and toolchain identity;
-- a sanitized evidence index.
+- a sanitized evidence index that explicitly records
+  `windowsInstallerCustomized: false` and the Issue15 dependency.
 
 The media builder runs in a pinned, platform-neutral Linux container. It must
-produce byte-identical ISO output for identical non-secret inputs. Source
-Windows media is not committed or uploaded to GitHub.
+execute the manifest-pinned ISO builder and produce byte-identical output from
+two independent build directories and processes. Tests inspect ISO9660, UDF
+descriptor checksums/CRCs, and El Torito boot metadata. Source Windows media is
+not committed, cached by GitHub, or uploaded to GitHub.
+
+### Factory Manifest v1
+
+The maintained schema is [`factory-manifest-v1.schema.json`](./factory-manifest-v1.schema.json).
+The executable validator is stricter than structural JSON Schema validation and
+requires `schemaVersion: vem-factory-manifest/v1`, `kind: factory-manifest`, a
+self-derived `manifestId`, and exactly one immutable `factory-cas://sha256/...`
+reference for the Windows source plus these runtime roles: `openssh-installer`,
+`wireguard-installer`, `vem-daemon`, `vem-machine-ui`, `webview2-loader`, and
+`vision-release`. Every reference carries a fixed version, matching SHA-256
+digest, strict semantic version, content-addressed signature evidence, and
+signed provenance evidence. Detached Ed25519 evidence is verified against an
+approved SPKI identity. Authenticode evidence is verified from the embedded PE
+signature by a pinned `osslsigncode`, an approved leaf-certificate SHA-256, and
+a runner-owned CA bundle. Signed provenance must bind the asset digest,
+predicate, source, builder, and build identity to approved signer and builder
+identities. Manifest strings alone are never verification evidence. Roles are
+unique and exact; missing or duplicate roles, schema-unknown fields, mutable
+references, invalid semantic versions, profile contamination, file URIs,
+encoded/absolute paths, secrets, and private keys fail validation.
+
+The runner-local asset store is addressed only by digest under
+`sha256/<digest>`. A cache miss verifies the source bytes, publishes through an
+exclusive owner lock and atomic rename, fsyncs the file and containing
+directory, then verifies the published bytes. Locks carry PID, host, token,
+start time, and heartbeat metadata; stale and dead owners are recoverable while
+live owners are not removed. Sources and cache entries must be no-follow regular
+files. Population and consumption use already-open verified handles so a path
+swap cannot substitute bytes. A hit is rehash-verified before use, and a
+provided downloaded source is hashed even when the CAS is already a hit. Cache
+evidence reports only logical identity, digest, hit/miss, and byte count.
+The Windows source ISO is the exception: it is verified from a separately
+configured restricted source store and is never copied into the ordinary CAS.
+
+`build-factory-iso.yml` accepts only a manifest identity. An unprivileged gate
+rejects untrusted events, refs, actors, and workflow identities before the
+protected `vem-factory-production` environment can schedule the labeled
+`[self-hosted, Linux, X64, vem-factory]` runner. Restricted store, approval
+policy, CA bundle, and tool paths are runner-service environment only; they are
+not workflow inputs or repository variables. The trusted job then checks out
+the trusted ref, verifies the reusable runtime descriptor's identity, commit,
+artifact name, workflow run/attempt, exact file allowlist, sizes, hashes, and
+toolchain, and runs the manifest-pinned builder offline. GitHub receives only
+two bounded, structurally validated JSON files. Their recursive sanitizer
+rejects path/URI/encoded/secret-like content and derives the upload policy
+flags. The ISO remains in the runner-local CAS; source media, ISO bytes,
+personalization, private keys, and restricted paths are never uploaded or put
+in GitHub cache.
 
 OpenSSH and WireGuard are mandatory Factory Runtime capabilities. Windows
 Capability installation and floating online downloads are not accepted. The
@@ -119,8 +176,10 @@ any local break-glass credential remains outside Factory Runtime inputs.
 
 Three workflows compose the Windows gates:
 
-1. `build-factory-iso.yml` builds the reproducible Factory ISO and writes it to
-   a runner-local content-addressed asset store.
+1. `build-factory-iso.yml` currently builds the reproducible Issue10 bootable
+   fixture envelope and writes it to a runner-local content-addressed asset
+   store; Issue15 must replace the declared assembly mode before clean-install
+   acceptance may consume it as Windows installation media.
 2. `factory-image-acceptance.yml` performs a clean install from that ISO,
    validates the pre-claim image, creates an approved runtime base identity,
    then uses a disposable overlay to claim the machine and reach the vending

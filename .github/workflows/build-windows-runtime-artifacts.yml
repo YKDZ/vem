@@ -17,6 +17,15 @@ on:
       artifact_name:
         description: Uploaded runtime artifact name
         value: ${{ jobs.build.outputs.artifact_name }}
+      artifact_identity:
+        description: Content identity of WINDOWS-RUNTIME-ARTIFACTS.json
+        value: ${{ jobs.build.outputs.artifact_identity }}
+      commit:
+        description: Exact source commit bound by the descriptor
+        value: ${{ jobs.build.outputs.commit }}
+      workflow_run_identity:
+        description: Exact workflow run and attempt bound by the descriptor
+        value: ${{ jobs.build.outputs.workflow_run_identity }}
   workflow_dispatch:
     inputs:
       artifact_name:
@@ -35,10 +44,13 @@ permissions:
 jobs:
   build:
     name: Build Windows Runtime Artifacts
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 90
     outputs:
-      artifact_name: ${{ inputs.artifact_name || 'windows-runtime-artifacts' }}
+      artifact_name: ${{ steps.stage.outputs.artifact_name }}
+      artifact_identity: ${{ steps.stage.outputs.artifact_identity }}
+      commit: ${{ steps.stage.outputs.commit }}
+      workflow_run_identity: ${{ steps.stage.outputs.workflow_run_identity }}
     defaults:
       run:
         shell: pwsh
@@ -50,14 +62,17 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
 
-      - name: Setup Node.js
+      - name: Setup Exact Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: 24
+          node-version: 24.16.0
           cache: pnpm
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.96.0
+          targets: x86_64-pc-windows-msvc
 
       - name: Restore Cargo cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -91,12 +106,14 @@ jobs:
 
       - name: Build Machine UI Kiosk
         working-directory: apps/machine
-        run: pnpm dlx @tauri-apps/cli@^2.0.0 build --config src-tauri/tauri.windows.conf.json --no-bundle
+        run: pnpm exec tauri build --config src-tauri/tauri.windows.conf.json --no-bundle
 
       - name: Stage Runtime Artifacts
+        id: stage
         run: |
           $ErrorActionPreference = "Stop"
           $artifactRoot = Join-Path $env:RUNNER_TEMP "vem-runtime-artifacts"
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $artifactRoot
           New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
 
           $daemonExe = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\vending-daemon.exe"
@@ -124,34 +141,34 @@ jobs:
           if (-not $webView2Loader) { throw "WebView2Loader.dll sidecar not found in machine.exe output or WebView2 build output" }
           Copy-Item -Force -Path $webView2Loader.FullName -Destination (Join-Path $artifactRoot "WebView2Loader.dll")
 
-          $hashLines = Get-ChildItem -Path $artifactRoot -File |
-            Sort-Object Name |
-            ForEach-Object {
-              $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
-              "sha256:$($_.Name)=$($hash.Hash)"
-            }
-          $metadata = @(
-            "commit=${{ github.sha }}",
-            "ref=${{ github.ref_name }}",
-            "run_id=${{ github.run_id }}",
-            "run_number=${{ github.run_number }}",
-            "built_at_utc=$((Get-Date).ToUniversalTime().ToString('o'))",
-            "runner=$env:RUNNER_NAME",
-            "daemon_source=$daemonExe",
-            "machine_ui_source=$($machineExe.FullName)",
-            "webview2_loader_source=$($webView2Loader.FullName)",
-            "",
-            "hashes:",
-            $hashLines
-          )
-          $metadata | Set-Content -Encoding UTF8 (Join-Path $artifactRoot "WINDOWS-RUNTIME-ARTIFACTS.txt")
-
-          Get-ChildItem -Path $artifactRoot | Format-Table FullName, Length
+          $artifactName = "${{ inputs.artifact_name || 'windows-runtime-artifacts' }}"
+          $workflowRunIdentity = "github-actions://${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}"
+          $toolchain = [ordered]@{
+            runnerImage = "windows-2022"
+            runnerImageVersion = $env:ImageVersion
+            node = ((node --version).Trim()).TrimStart('v')
+            pnpm = (pnpm --version).Trim()
+            rustc = ((rustc --version) -split ' ')[1]
+            cargo = ((cargo --version) -split ' ')[1]
+            tauriCli = (((pnpm --filter machine exec tauri --version).Trim()) -split ' ')[-1]
+          }
+          $descriptorJson = & node scripts/factory/runtime-artifact-descriptor.mjs `
+            --directory $artifactRoot `
+            --commit "${{ github.sha }}" `
+            --artifact-name $artifactName `
+            --workflow-run-identity $workflowRunIdentity `
+            --toolchain-json ($toolchain | ConvertTo-Json -Compress)
+          if ($LASTEXITCODE -ne 0) { throw "runtime artifact descriptor generation failed" }
+          $descriptor = $descriptorJson | ConvertFrom-Json
+          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_identity=$($descriptor.identity)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "commit=${{ github.sha }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "workflow_run_identity=$workflowRunIdentity" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload Runtime Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ inputs.artifact_name || 'windows-runtime-artifacts' }}
+          name: ${{ steps.stage.outputs.artifact_name }}
           path: ${{ runner.temp }}/vem-runtime-artifacts/
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days || 7 }}
