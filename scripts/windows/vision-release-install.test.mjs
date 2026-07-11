@@ -310,10 +310,7 @@ describe("Vision release installer fixtures", () => {
         fixtureSource,
         /Wait-FixtureRuntimeIdentities; throw.*WriteAllText/,
       );
-      assert.match(
-        fixtureSource,
-        /launcher fixture PS5\.1 parser passed/,
-      );
+      assert.match(fixtureSource, /launcher fixture PS5\.1 parser passed/);
       assert.match(
         fixtureSource,
         /\$replacement = '\$\(' \+ \('throw "\{0\}"' -f \$message\) \+ '\)'/,
