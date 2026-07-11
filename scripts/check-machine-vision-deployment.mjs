@@ -11,12 +11,12 @@ function readText(path) {
 }
 
 const setupPath = "scripts/windows/setup-scheduled-tasks.ps1";
-const deployPath = "scripts/windows/deploy-windows-artifact.sh";
+const installerPath = "scripts/windows/install-vision-release.ps1";
 const verifyPath = "scripts/windows/verify-vem-runtime.ps1";
 const runbookPath = "public/managed-machine-update.md";
 
 const setup = readText(setupPath);
-const deploy = readText(deployPath);
+const installer = readText(installerPath);
 const verify = readText(verifyPath);
 const runbook = readText(runbookPath);
 
@@ -29,26 +29,34 @@ addCheck(
 );
 
 addCheck(
-  "deploy-script-supports-vision-kind",
-  deploy.includes("--kind daemon|ui|vision") &&
-    deploy.includes('"daemon" && "$kind" != "ui" && "$kind" != "vision"') &&
-    deploy.includes("C:\\VEM\\vision") &&
-    deploy.includes("C:\\VEM\\bringup\\start_vision.bat") &&
-    deploy.includes(
-      "vision artifact must contain start_vision.bat at its root",
-    ),
-  `${deployPath} should install a managed vision directory artifact and launcher`,
+  "vision-installer-requires-immutable-release-contract",
+  installer.includes("DescriptorPath") &&
+    installer.includes("AttestationPath") &&
+    installer.includes("SbomPath") &&
+    installer.includes("ConformanceEvidencePath") &&
+    installer.includes("TrustPolicyPath") &&
+    installer.includes("EvidenceVerifierPath") &&
+    installer.includes("ApprovalPath") &&
+    installer.includes("FactoryManifestPath") &&
+    installer.includes("Invoke-ReleaseEvidenceVerifier") &&
+    installer.includes("approved identity") &&
+    installer.includes("C:\\VEM\\vision") &&
+    installer.includes("C:\\ProgramData\\VEM\\vision"),
+  `${installerPath} should select only a fully approved immutable Vision release`,
 );
 
 addCheck(
-  "deploy-script-keeps-component-restarts-isolated",
-  deploy.includes("Stop-Service VemVendingDaemon") &&
-    deploy.includes("Stop-ScheduledTask -TaskName VEMMachineUI") &&
-    deploy.includes("Stop-ScheduledTask -TaskName 'VEM\\StartVisionServer'") &&
-    !deploy.includes(
-      "Stop-Service VemVendingDaemon -Force\nStart-Sleep -Seconds 2\nCopy-Item $dst",
-    ),
-  `${deployPath} should restart only the selected daemon, UI, or vision component`,
+  "vision-installer-uses-interactive-task-health-rollback-and-redaction",
+  installer.includes("StartVisionServer") &&
+    installer.includes("Test-VisionProtocol") &&
+    installer.includes("ClientWebSocket") &&
+    installer.includes("Stop-RecordedVision") &&
+    installer.includes("Sanitize") &&
+    !installer.match(/PyInstaller|\bpython(?:\.exe)?\b/i) &&
+    !verify.match(/python(?:\.exe)?|pythonw(?:\.exe)?/i) &&
+    verify.includes("VisionActiveProcessFile") &&
+    verify.includes("activeProcessDigest"),
+  `${installerPath} should stay implementation-independent and use the existing interactive task`,
 );
 
 addCheck(
@@ -75,11 +83,11 @@ addCheck(
 );
 
 addCheck(
-  "runbook-documents-vision-artifact",
-  runbook.includes("视觉应用产物") &&
+  "runbook-documents-approved-vision-release",
+  runbook.includes("Vision Release Bundle") &&
     runbook.includes("C:\\VEM\\vision") &&
     runbook.includes("C:\\VEM\\bringup\\start_vision.bat") &&
-    runbook.includes("--kind vision") &&
+    runbook.includes("install-vision-release.ps1") &&
     runbook.includes("-RequireVisionOnline"),
   `${runbookPath} should document vision deployment and verification`,
 );

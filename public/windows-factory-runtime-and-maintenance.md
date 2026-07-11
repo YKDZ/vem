@@ -125,6 +125,16 @@ unique and exact; missing or duplicate roles, schema-unknown fields, mutable
 references, invalid semantic versions, profile contamination, file URIs,
 encoded/absolute paths, secrets, and private keys fail validation.
 
+The `vision-release` asset additionally carries a `release` selection with
+content-addressed descriptor, artifact attestation, VEM approval, and
+black-box conformance evidence identities. All four records must bind the
+same immutable bundle digest before Factory Manifest selection or Windows
+installation. VEM installs the original bundle into a version-addressed
+directory, keeps configuration and current selection outside the vendor
+runtime, launches it through `VEM\StartVisionServer`, and rolls back the
+selection when HTTP health or WebSocket conformance fails. The release contract
+does not name a programming language, packager, runtime, or service model.
+
 ### Factory Personalization Media v1
 
 The maintained envelope is
@@ -534,26 +544,24 @@ Customer Audio Zone remain field acceptance.
 
 ## Vision Release Boundary
 
-The Vision repository publishes one immutable Windows release bundle per build
-candidate through GitHub Releases. The release includes a small language-neutral
-descriptor, SHA-256, SBOM, and GitHub build provenance attestation. A failed
-candidate is abandoned under its own version; assets are never overwritten.
+Vision publishes an immutable Windows release bundle and language-neutral
+descriptor. The descriptor, artifact attestation, SBOM, provenance, black-box
+conformance evidence, VEM approval, and Factory Manifest selection must bind
+the same SHA-256 digest. A failed candidate is abandoned under its own version;
+assets are never overwritten.
 
-VEM downloads the original release asset, verifies its digest and attestation,
-stores it in the factory CAS, and runs Windows black-box conformance. Acceptance
-marks that exact digest approved; promotion must not rebuild the bundle.
+VEM consumes the original release asset from the factory CAS without rebuilding
+or repackaging it. It installs private vendor bytes unchanged into a
+version-addressed directory, keeps configuration and selection in
+`C:\ProgramData\VEM\vision`, generates the launcher, uses the
+`VEM\StartVisionServer` interactive task, probes loopback HTTP health and the
+declared WebSocket, and restores the preceding approved selection after a
+failed startup or conformance check. The contract names no language, packager,
+runtime, or service model.
 
-The Vision implementation may use PyInstaller, a packaged Python executable, an
-embedded Python directory, or another runtime. VEM does not repackage its
-dependencies or modify private runtime directories. VEM owns installation into
-version-addressed directories, external configuration under
-`C:\ProgramData\VEM\vision`, launcher generation, the
-`VEM\StartVisionServer` interactive task, health checks, rollback, and ACLs.
-
-The current `vending-vision.zip` demonstrates that a self-contained PyInstaller
-directory is viable, but it remains a candidate until its repository workflow
-provides the descriptor, version, supported external configuration, SBOM,
-provenance, and clean-Windows conformance evidence.
+The current `vending-vision.zip` remains a candidate until it supplies the
+descriptor, version, supported external configuration, artifact attestation,
+SBOM, provenance, clean-Windows conformance evidence, and VEM approval.
 
 ## Required Hard Migration
 

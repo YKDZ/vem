@@ -27,6 +27,8 @@ param(
   [Parameter(Mandatory = $false)][string]$TargetLayoutVersion,
   [Parameter(Mandatory = $false)][ValidateSet("production", "testbed")][string]$FactoryProfile,
   [Parameter(Mandatory = $false)][string]$PersonalizationMediaPath,
+  [Parameter(Mandatory = $false)][string]$FactoryMediaRoot,
+  [Parameter(Mandatory = $false)][string]$VisionConfigurationSourcePath,
   [Parameter(Mandatory = $false)][string]$OpenSshPackagePath,
   [Parameter(Mandatory = $false)][string]$OpenSshPackageSource,
   [Parameter(Mandatory = $false)][string]$OpenSshPackageVersion,
@@ -102,6 +104,15 @@ function Assert-RequiredInputs {
 
   if ($missing.Count -gt 0) {
     throw ("missing required input: {0}" -f ($missing -join ", "))
+  }
+
+  if ($FactoryProfile -eq "production") {
+    $visionMissing = @("FactoryMediaRoot", "VisionConfigurationSourcePath") | Where-Object {
+      [string]::IsNullOrWhiteSpace([string](Get-Variable -Name $_ -ValueOnly))
+    }
+    if ($visionMissing.Count -gt 0) {
+      throw ("production Factory Vision installation requires: {0}" -f ($visionMissing -join ", "))
+    }
   }
 
   Normalize-Sha256 -Value $DaemonSha256 | Out-Null
@@ -748,7 +759,9 @@ function Assert-FactoryRuntimePreflight {
     "verify-factory-runtime.ps1",
     "verify-kiosk-lockdown.ps1",
     "verify-vem-runtime.ps1",
-    "apply-managed-update.ps1"
+    "apply-managed-update.ps1",
+    "provision-vision-factory-release.ps1",
+    "install-vision-release.ps1"
   ) | ForEach-Object { Assert-SupportScriptPresent -Name $_ }
 
   return [pscustomobject]@{
@@ -802,6 +815,8 @@ function New-FactoryRuntimePlan {
       topologyIdentity = $TopologyIdentity
       topologyVersion = $TopologyVersion
       factoryProfile = $Preflight.FactoryProfile
+      factoryMediaRoot = $FactoryMediaRoot
+      visionConfigurationSourcePath = $VisionConfigurationSourcePath
       wireGuardInterfaceAlias = $Preflight.WireGuardInterfaceAlias
       wireGuardListenAddress = $Preflight.WireGuardListenAddress
       display = [ordered]@{
@@ -873,6 +888,8 @@ function New-FactoryRuntimePlan {
       provisioningRoot = $provisioningRoot
       secretsRoot = $secretsRoot
       evidenceRoot = $evidenceRoot
+      visionInstallEvidencePath = Join-Path $evidenceRoot "vision-release-install.json"
+      visionConfigurationPath = "C:\ProgramData\VEM\vision\config\factory-vision-config.json"
       maintenanceCaPath = Join-Path $factoryRoot "maintenance-ca.pub"
       wireGuardRoot = Join-Path $ProgramDataRoot "maintenance"
       wireGuardConfigPath = Join-Path (Join-Path $ProgramDataRoot "maintenance") "VEM-Maintenance.conf"
@@ -888,6 +905,7 @@ function New-FactoryRuntimePlan {
       "C:\ProgramData\VEM\provisioning",
       "C:\ProgramData\VEM\secrets",
       "C:\ProgramData\VEM\evidence",
+      "C:\ProgramData\VEM\vision\config",
       (Join-Path $ProgramDataRoot "maintenance"),
       "C:\ProgramData\VEM\overrides"
     )
@@ -1233,6 +1251,62 @@ function Remove-ExistingVemState {
   return $State
 }
 
+function Assert-FactoryVisionInputFile {
+  param([string]$Path, [string]$Label)
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or $Path -match '[\x00-\x1f]' -or $Path -match '^(\\\\|//)' -or $Path -notmatch '^[A-Za-z]:\\') {
+    throw "$Label must be an absolute local Windows path"
+  }
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    throw "$Label must be a regular non-reparse file"
+  }
+  return $item.FullName
+}
+
+function Invoke-FactoryVisionRelease {
+  param($Plan)
+
+  $provisioningManifest = Assert-FactoryVisionInputFile -Path (Join-Path $FactoryMediaRoot "VEM\VISION-FACTORY-PROVISIONING.JSON") -Label "Factory Vision provisioning manifest"
+  $factoryMediaRoot = Split-Path -Parent $provisioningManifest
+  $configurationSource = Assert-FactoryVisionInputFile -Path $VisionConfigurationSourcePath -Label "Vision configuration source"
+  $provisioner = Join-Path $PSScriptRoot "provision-vision-factory-release.ps1"
+  if (-not (Test-Path -LiteralPath $provisioner -PathType Leaf)) { throw "Factory Vision provisioner is missing" }
+  & $provisioner -FactoryMediaRoot $factoryMediaRoot
+
+  $configurationPath = [string]$Plan.layout.visionConfigurationPath
+  New-Item -ItemType Directory -Path (Split-Path -Parent $configurationPath) -Force | Out-Null
+  Copy-Item -LiteralPath $configurationSource -Destination $configurationPath -Force
+  $configurationDigest = (Get-FileHash -LiteralPath $configurationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $installer = "C:\VEM\bringup\install-vision-release.ps1"
+  if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Factory Vision installer was not provisioned" }
+  & $installer -ConfigurationPath $configurationPath -EvidencePath ([string]$Plan.layout.visionInstallEvidencePath) -TaskUser $ExpectedAutoLogonUser
+
+  $evidence = Read-JsonFile -Path ([string]$Plan.layout.visionInstallEvidencePath)
+  if (
+    [string]$evidence.schemaVersion -cne "vem-vision-install-evidence/v3" -or
+    [string]$evidence.kind -cne "vision-release-install-evidence" -or
+    $evidence.redacted -ne $true -or
+    $evidence.healthOk -ne $true -or
+    $evidence.webSocketOk -ne $true -or
+    [string]::IsNullOrWhiteSpace([string]$evidence.installedDigest) -or
+    [string]$evidence.installedDigest -cne [string]$evidence.bundleDigest -or
+    -not [string]::IsNullOrWhiteSpace([string]$evidence.failure)
+  ) {
+    throw "Factory Vision installation evidence is incomplete or failed"
+  }
+  return [ordered]@{
+    installedDigest = [string]$evidence.installedDigest
+    descriptorDigest = [string]$evidence.descriptorDigest
+    approvalDigest = [string]$evidence.approvalDigest
+    configurationSha256 = $configurationDigest
+    evidencePath = [string]$Plan.layout.visionInstallEvidencePath
+    healthOk = $true
+    webSocketOk = $true
+    redacted = $true
+  }
+}
+
 function Write-FactoryRuntimeFiles {
   param(
     $Plan,
@@ -1269,6 +1343,8 @@ function Write-FactoryRuntimeFiles {
   Copy-ScriptIfPresent -Name "verify-kiosk-lockdown.ps1" -TargetDirectory $scriptsRoot
   Copy-ScriptIfPresent -Name "verify-vem-runtime.ps1" -TargetDirectory $scriptsRoot
   Copy-ScriptIfPresent -Name "apply-managed-update.ps1" -TargetDirectory $scriptsRoot
+  Copy-ScriptIfPresent -Name "provision-vision-factory-release.ps1" -TargetDirectory $scriptsRoot
+  Copy-ScriptIfPresent -Name "install-vision-release.ps1" -TargetDirectory $scriptsRoot
 
   $machineUiStartupMode = if (Test-ShellLauncherAvailable) { "shell_launcher" } else { "scheduled_task" }
   $manifest = [ordered]@{
@@ -1349,8 +1425,6 @@ function Write-FactoryRuntimeFiles {
     components = $Plan.inputs.components
     paths = $Plan.layout
   }
-  Write-JsonFile -Path ([string]$Plan.layout.manifestPath) -Value ([pscustomobject]$manifest)
-
   $daemonManifest = [ordered]@{
     layoutVersion = 1
     environment = $EnvironmentName
@@ -1426,10 +1500,18 @@ function Write-FactoryRuntimeFiles {
   }
   New-Service -Name "VemVendingDaemon" -BinaryPathName (Join-Path $RuntimeRoot "vending-daemon.exe") -StartupType Automatic -DisplayName "VEM Vending Daemon" -ErrorAction SilentlyContinue | Out-Null
   Invoke-NamedPowerShellScript -ScriptPath (Join-Path $scriptsRoot "setup-scheduled-tasks.ps1") -Arguments $setupArguments
+  $visionInstallation = if ($FactoryProfile -eq "production") {
+    Invoke-FactoryVisionRelease -Plan $Plan
+  } else {
+    [ordered]@{ status = "not-applicable-testbed"; redacted = $true }
+  }
+  $manifest["visionRelease"] = $visionInstallation
+  Write-JsonFile -Path ([string]$Plan.layout.manifestPath) -Value ([pscustomobject]$manifest)
 
   return [ordered]@{
     wireGuardApplication = $wireGuardApplication
     packageInstallation = [ordered]@{ openSsh = $openSshInstallation; wireGuard = $wireGuardInstallation }
+    visionInstallation = $visionInstallation
   }
 }
 
@@ -1463,6 +1545,7 @@ try {
     personalization = $preflight.PersonalizationRedaction
     wireGuard = $writeResult.wireGuardApplication
     packageInstallation = $writeResult.packageInstallation
+    visionInstallation = $writeResult.visionInstallation
   }
   $result | ConvertTo-Json -Depth 30
 } finally {

@@ -1091,6 +1091,23 @@ try {
   if ($null -eq $manifest.maintenanceSsh -or $null -eq $manifest.wireGuard) {
     Add-Failure $failures "factory manifest must declare Maintenance SSH CA and WireGuard ownership"
   }
+  $checks.visionRelease = $manifest.visionRelease
+  if ([string]$manifest.factoryProfile -eq "production") {
+    $vision = $manifest.visionRelease
+    if (
+      $null -eq $vision -or
+      [string]$vision.installedDigest -notmatch '^sha256:[a-f0-9]{64}$' -or
+      [string]$vision.descriptorDigest -notmatch '^sha256:[a-f0-9]{64}$' -or
+      [string]$vision.approvalDigest -notmatch '^sha256:[a-f0-9]{64}$' -or
+      [string]$vision.configurationSha256 -notmatch '^[a-f0-9]{64}$' -or
+      $vision.healthOk -ne $true -or
+      $vision.webSocketOk -ne $true -or
+      $vision.redacted -ne $true -or
+      -not (Test-Path -LiteralPath ([string]$vision.evidencePath) -PathType Leaf)
+    ) {
+      Add-Failure $failures "production Factory Vision installation evidence is missing or invalid"
+    }
+  }
   $checks.personalization = Get-FactoryPersonalizationRedaction -Manifest $manifest
   $checks.personalizationLifecycle = Get-FactoryPersonalizationEvidence -Manifest $manifest
   if (-not [bool]$checks.personalizationLifecycle.consumed -or

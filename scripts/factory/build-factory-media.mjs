@@ -21,11 +21,16 @@ import {
   verifyAssetEvidence,
   verifyAuthenticodeSignature,
 } from "./verify-asset-evidence.mjs";
+import {
+  validateVisionReleaseTrustPolicy,
+  verifySignedVisionReleaseEvidence,
+} from "./vision-release.mjs";
 
 const run = promisify(execFile);
 const FIXED_EPOCH_SECONDS = 315_532_800;
 const SECTOR_BYTES = 2048;
 const UDF_VOLUME_SET_ID = "VEM_FACTORY_SET";
+const ISO_BUILDER_LOCK = join(tmpdir(), "vem-factory-iso-builder.lock");
 
 function hashBytes(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -42,6 +47,88 @@ function outputName(manifest) {
     "{manifestId}",
     manifest.manifestId.slice("sha256:".length),
   );
+}
+
+function findVisionReleaseAsset(manifest) {
+  const assets = manifest.assets.filter(
+    ({ role }) => role === "vision-release",
+  );
+  if (assets.length !== 1) {
+    throw new Error(
+      "Factory Manifest must contain exactly one Vision release asset",
+    );
+  }
+  return assets[0];
+}
+
+function approvedVisionIdentities({
+  repositoryTrustedRoots,
+  factoryTrustedRoots,
+}) {
+  if (!repositoryTrustedRoots || !factoryTrustedRoots) {
+    throw new Error(
+      "Vision release verification requires repository and factory trusted roots",
+    );
+  }
+  const roles = [
+    "descriptor",
+    "attestation",
+    "sbom",
+    "provenance",
+    "conformance",
+    "approval",
+  ];
+  return Object.fromEntries(
+    roles.map((role) => {
+      const repository = repositoryTrustedRoots[role];
+      const factory = factoryTrustedRoots[role];
+      if (
+        !Array.isArray(repository) ||
+        repository.length === 0 ||
+        !Array.isArray(factory) ||
+        factory.length === 0
+      ) {
+        throw new Error(
+          `repository and factory trusted roots must approve Vision ${role}`,
+        );
+      }
+      const jointlyApproved = repository.filter((identity) =>
+        factory.includes(identity),
+      );
+      if (jointlyApproved.length === 0) {
+        throw new Error(
+          `repository and factory trusted roots have no common Vision ${role} identity`,
+        );
+      }
+      return [role, [...new Set(jointlyApproved)]];
+    }),
+  );
+}
+
+export function verifyManifestVisionReleaseEvidence({
+  manifest,
+  deliveryUnit,
+  repositoryTrustedRoots,
+  factoryTrustedRoots,
+}) {
+  if (!deliveryUnit || typeof deliveryUnit !== "object") {
+    throw new Error("Vision release evidence delivery unit is required");
+  }
+  const selectedAsset = findVisionReleaseAsset(manifest);
+  return verifySignedVisionReleaseEvidence({
+    manifestAsset: {
+      role: selectedAsset.role,
+      digest: selectedAsset.digest,
+      version: selectedAsset.version,
+      release: selectedAsset.release,
+    },
+    documents: deliveryUnit.documents,
+    signatures: deliveryUnit.signatures,
+    approvedIdentities: approvedVisionIdentities({
+      repositoryTrustedRoots,
+      factoryTrustedRoots,
+    }),
+  });
 }
 
 async function readPinnedExecutable(path, tool) {
@@ -75,6 +162,82 @@ async function readPinnedExecutable(path, tool) {
   } finally {
     await handle.close();
   }
+}
+
+async function readPinnedVisionVerifier(path) {
+  let handle;
+  try {
+    handle = await open(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if (error?.code === "ELOOP") {
+      throw new Error("Vision evidence verifier must not be a symlink");
+    }
+    throw error;
+  }
+  try {
+    const fileStat = await handle.stat();
+    if (
+      !fileStat.isFile() ||
+      (fileStat.mode & 0o111) === 0 ||
+      fileStat.size < 1
+    ) {
+      throw new Error(
+        "Vision evidence verifier must be an executable regular file",
+      );
+    }
+    const bytes = Buffer.alloc(fileStat.size);
+    const read = await handle.read(bytes, 0, bytes.length, 0);
+    if (read.bytesRead !== bytes.length) {
+      throw new Error("Vision evidence verifier read was incomplete");
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+function createVisionFactoryTrustMaterial({
+  repositoryTrustedRoots,
+  factoryTrustedRoots,
+  verifierBytes,
+}) {
+  const approvedIdentities = approvedVisionIdentities({
+    repositoryTrustedRoots,
+    factoryTrustedRoots,
+  });
+  const policy = validateVisionReleaseTrustPolicy({
+    schemaVersion: "vem-vision-release-trust-policy/v1",
+    kind: "vision-release-trust-policy",
+    verifierDigest: hashBytes(verifierBytes),
+    approvedIdentities,
+  });
+  const policyBytes = Buffer.from(canonicalJson(policy));
+  const anchor = {
+    schemaVersion: "vem-factory-vision-trust-anchor/v1",
+    kind: "factory-vision-trust-anchor",
+    trustPolicyDigest: hashBytes(policyBytes),
+    verifierDigest: policy.verifierDigest,
+  };
+  return {
+    anchorBytes: Buffer.from(canonicalJson(anchor)),
+    policyBytes,
+    verifierBytes,
+  };
+}
+
+function visionFactoryProvisioningManifest(files) {
+  return {
+    schemaVersion: "vem-vision-factory-provisioning/v1",
+    kind: "vision-factory-provisioning",
+    files: Object.fromEntries(
+      Object.entries(files)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, bytes]) => [path, hashBytes(bytes)]),
+    ),
+  };
 }
 
 function bootImageBytes() {
@@ -321,50 +484,70 @@ async function executeIsoBuilder({
   outputPath,
   workDirectory,
 }) {
+  const deadline = Date.now() + 60_000;
+  while (true) {
+    try {
+      await mkdir(ISO_BUILDER_LOCK);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST" || Date.now() >= deadline) {
+        throw new Error("timed out acquiring deterministic ISO builder lock", {
+          cause: error,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
   const executable = join(workDirectory, "iso-builder");
-  await writeFile(executable, builderBytes, { mode: 0o555 });
-  await run(
-    executable,
-    [
-      "-quiet",
-      "-udf",
-      "-iso-level",
-      "3",
-      "-V",
-      "VEM_FACTORY",
-      "-volset",
-      UDF_VOLUME_SET_ID,
-      "-A",
-      "VEM_FACTORY_ISSUE10",
-      "-sysid",
-      "VEM",
-      "-b",
-      "BOOT/BOOT.IMG",
-      "-c",
-      "BOOT/BOOT.CAT",
-      "-no-emul-boot",
-      "-boot-load-size",
-      "4",
-      "-o",
-      outputPath,
-      stageDirectory,
-    ],
-    {
-      cwd: workDirectory,
-      env: {
-        PATH: "/usr/bin:/bin",
-        HOME: workDirectory,
-        LC_ALL: "C",
-        TZ: "UTC",
-        SOURCE_DATE_EPOCH: String(FIXED_EPOCH_SECONDS),
+  try {
+    await writeFile(executable, builderBytes, { mode: 0o555 });
+    await run(
+      executable,
+      [
+        "-quiet",
+        "-udf",
+        "-iso-level",
+        "3",
+        "-V",
+        "VEM_FACTORY",
+        "-volset",
+        UDF_VOLUME_SET_ID,
+        "-A",
+        "VEM_FACTORY_ISSUE10",
+        "-sysid",
+        "VEM",
+        "-b",
+        "BOOT/BOOT.IMG",
+        "-c",
+        "BOOT/BOOT.CAT",
+        "-no-emul-boot",
+        "-boot-load-size",
+        "4",
+        "-o",
+        outputPath,
+        stageDirectory,
+      ],
+      {
+        cwd: workDirectory,
+        env: {
+          PATH: "/usr/bin:/bin",
+          HOME: workDirectory,
+          LC_ALL: "C",
+          TZ: "UTC",
+          SOURCE_DATE_EPOCH: String(FIXED_EPOCH_SECONDS),
+        },
+        maxBuffer: 1024 * 1024,
       },
-      maxBuffer: 1024 * 1024,
-    },
-  );
-  const normalized = normalizeUdfForReproducibility(await readFile(outputPath));
-  await writeFile(outputPath, normalized, { mode: 0o444 });
-  const structure = inspectBootableIso(normalized);
-  return { bytes: normalized, structure };
+    );
+    const normalized = normalizeUdfForReproducibility(
+      await readFile(outputPath),
+    );
+    await writeFile(outputPath, normalized, { mode: 0o444 });
+    const structure = inspectBootableIso(normalized);
+    return { bytes: normalized, structure };
+  } finally {
+    await rm(ISO_BUILDER_LOCK, { recursive: true, force: true });
+  }
 }
 
 export async function createRedistributableFixtureIso({
@@ -468,6 +651,7 @@ async function stageBuildInputs({
   resolvedAssets,
   store,
   stageDirectory,
+  visionTrustMaterial,
 }) {
   await mkdir(join(stageDirectory, "BOOT"), { recursive: true });
   await mkdir(join(stageDirectory, "VEM", "ASSETS"), { recursive: true });
@@ -475,6 +659,103 @@ async function stageBuildInputs({
   await writeFile(
     join(stageDirectory, "VEM", "MANIFEST.JSON"),
     Buffer.from(canonicalJson(manifest)),
+  );
+  const visionEvidence = resolvedAssets.find(
+    ({ reference }) => reference.role === "vision-release",
+  )?.visionEvidence;
+  if (!visionEvidence) {
+    throw new Error(
+      "approved Vision release evidence is missing from Factory Media inputs",
+    );
+  }
+  const evidenceRoot = join(stageDirectory, "VEM", "VISION-RELEASE");
+  await mkdir(evidenceRoot, { recursive: true });
+  await writeFile(
+    join(evidenceRoot, "factory-manifest.json"),
+    Buffer.from(canonicalJson(manifest)),
+  );
+  const visionAsset = resolvedAssets.find(
+    ({ reference }) => reference.role === "vision-release",
+  );
+  await store.stageVerified(
+    visionAsset.reference,
+    join(evidenceRoot, "bundle.bin"),
+  );
+  for (const [role, bytes] of Object.entries(
+    visionEvidence.deliveryUnit.documents,
+  )) {
+    await writeFile(join(evidenceRoot, `${role}.json`), bytes);
+  }
+  for (const [role, signature] of Object.entries(
+    visionEvidence.deliveryUnit.signatures,
+  )) {
+    await writeFile(
+      join(evidenceRoot, `${role}.signature.json`),
+      Buffer.from(canonicalJson(signature)),
+    );
+  }
+  const trustRoot = join(stageDirectory, "VEM", "VISION-TRUST");
+  const installerRoot = join(stageDirectory, "VEM", "VISION-INSTALLER");
+  await mkdir(trustRoot, { recursive: true });
+  await mkdir(installerRoot, { recursive: true });
+  const installerBytes = await readFile(
+    new URL("../windows/install-vision-release.ps1", import.meta.url),
+  );
+  const provisionerBytes = await readFile(
+    new URL("../windows/provision-vision-factory-release.ps1", import.meta.url),
+  );
+  await writeFile(
+    join(trustRoot, "vision-release-trust-anchor.json"),
+    visionTrustMaterial.anchorBytes,
+  );
+  await writeFile(
+    join(trustRoot, "vision-release-trust-policy.json"),
+    visionTrustMaterial.policyBytes,
+  );
+  await writeFile(
+    join(trustRoot, "vision-release-verifier.exe"),
+    visionTrustMaterial.verifierBytes,
+  );
+  await writeFile(
+    join(installerRoot, "install-vision-release.ps1"),
+    installerBytes,
+  );
+  await writeFile(
+    join(installerRoot, "provision-vision-factory-release.ps1"),
+    provisionerBytes,
+  );
+  const provisioningManifest = visionFactoryProvisioningManifest({
+    "VISION-RELEASE/factory-manifest.json": Buffer.from(
+      canonicalJson(manifest),
+    ),
+    "VISION-RELEASE/bundle.bin": await readFile(
+      join(evidenceRoot, "bundle.bin"),
+    ),
+    ...Object.fromEntries(
+      Object.entries(visionEvidence.deliveryUnit.documents).map(
+        ([role, bytes]) => [`VISION-RELEASE/${role}.json`, bytes],
+      ),
+    ),
+    ...Object.fromEntries(
+      Object.entries(visionEvidence.deliveryUnit.signatures).map(
+        ([role, value]) => [
+          `VISION-RELEASE/${role}.signature.json`,
+          Buffer.from(canonicalJson(value)),
+        ],
+      ),
+    ),
+    "VISION-TRUST/vision-release-trust-anchor.json":
+      visionTrustMaterial.anchorBytes,
+    "VISION-TRUST/vision-release-trust-policy.json":
+      visionTrustMaterial.policyBytes,
+    "VISION-TRUST/vision-release-verifier.exe":
+      visionTrustMaterial.verifierBytes,
+    "VISION-INSTALLER/install-vision-release.ps1": installerBytes,
+    "VISION-INSTALLER/provision-vision-factory-release.ps1": provisionerBytes,
+  });
+  await writeFile(
+    join(stageDirectory, "VEM", "VISION-FACTORY-PROVISIONING.JSON"),
+    Buffer.from(canonicalJson(provisioningManifest)),
   );
   for (const asset of resolvedAssets) {
     const name =
@@ -579,6 +860,10 @@ export async function buildFactoryMedia({
   sourceStoreRoot,
   evidenceStoreRoot,
   approvalPolicy,
+  visionReleaseDeliveryUnit,
+  repositoryVisionTrustedRoots,
+  factoryVisionTrustedRoots,
+  visionEvidenceVerifierPath,
   isoBuilderPath,
   authenticodeVerifierPath,
   authenticodeCaBundlePath,
@@ -603,6 +888,17 @@ export async function buildFactoryMedia({
     isoBuilderPath,
     validatedManifest.toolchain.isoBuilder,
   );
+  const visionEvidence = verifyManifestVisionReleaseEvidence({
+    manifest: validatedManifest,
+    deliveryUnit: visionReleaseDeliveryUnit,
+    repositoryTrustedRoots: repositoryVisionTrustedRoots,
+    factoryTrustedRoots: factoryVisionTrustedRoots,
+  });
+  const visionTrustMaterial = createVisionFactoryTrustMaterial({
+    repositoryTrustedRoots: repositoryVisionTrustedRoots,
+    factoryTrustedRoots: factoryVisionTrustedRoots,
+    verifierBytes: await readPinnedVisionVerifier(visionEvidenceVerifierPath),
+  });
   const resolvedAssets = await resolveAssets({
     manifest: validatedManifest,
     store,
@@ -613,6 +909,13 @@ export async function buildFactoryMedia({
     authenticodeVerifierPath,
     authenticodeCaBundlePath,
   });
+  const selectedVisionAsset = resolvedAssets.find(
+    ({ reference }) => reference.role === "vision-release",
+  );
+  selectedVisionAsset.visionEvidence = {
+    selection: visionEvidence,
+    deliveryUnit: visionReleaseDeliveryUnit,
+  };
   const buildCount = reproducibility ? 2 : 1;
   const builds = [];
   for (let index = 0; index < buildCount; index += 1) {
@@ -626,6 +929,7 @@ export async function buildFactoryMedia({
         resolvedAssets,
         store,
         stageDirectory,
+        visionTrustMaterial,
       });
       builds.push(
         await executeIsoBuilder({

@@ -203,6 +203,8 @@ const FACTORY_SUPPORT_SCRIPT_NAMES = [
   "verify-kiosk-lockdown.ps1",
   "verify-vem-runtime.ps1",
   "apply-managed-update.ps1",
+  "provision-vision-factory-release.ps1",
+  "install-vision-release.ps1",
 ];
 
 const PLATFORM_TARGETS = {

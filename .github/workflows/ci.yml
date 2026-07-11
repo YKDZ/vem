@@ -41,6 +41,7 @@ jobs:
               - 'crates/**'
               - 'tools/**'
               - 'scripts/factory/**'
+              - 'scripts/windows/**'
               - 'scripts/check-factory-manifest.test.mjs'
               - 'public/factory-manifest-v1.schema.json'
               - '.github/workflows/build-factory-iso.yml'
@@ -215,6 +216,24 @@ jobs:
 
       - name: Run protected secret store DPAPI round-trip
         run: cargo test -p vending-daemon secret::tests::protected_local_secret_store_round_trips_status_and_clear_without_exposing_values -- --exact
+
+  windows-vision-release-installer:
+    name: Windows Vision Release Installer
+    needs: [changes, static]
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run signed Vision installer harness
+        run: >-
+          ./scripts/windows/vision-release-install.windows-harness.ps1
+          -InstallerPath ./scripts/windows/install-vision-release.ps1
 
   machine-e2e-tests:
     name: Machine UI Daemon E2E

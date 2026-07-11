@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 
 import { buildFactoryMedia } from "./build-factory-media.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
@@ -28,6 +28,22 @@ function parseArgs(argv) {
   return options;
 }
 
+function assertSafeHostPath(value, label) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.includes("\0") ||
+    value.includes("\\") ||
+    /^[A-Za-z]:/.test(value) ||
+    value.startsWith("//") ||
+    !isAbsolute(value) ||
+    normalize(value) !== resolve(value)
+  ) {
+    throw new Error(`${label} must be a canonical local Unix path`);
+  }
+  return value;
+}
+
 async function readManifest(manifestStoreRoot, manifestIdentity) {
   const match = /^sha256:([a-f0-9]{64})$/.exec(manifestIdentity ?? "");
   if (!match)
@@ -39,6 +55,29 @@ async function readManifest(manifestStoreRoot, manifestIdentity) {
   if (manifest.manifestId !== manifestIdentity)
     throw new Error("manifest store identity mismatch");
   return manifest;
+}
+
+async function readVisionReleaseDeliveryUnit(path) {
+  const value = JSON.parse(await readFile(path, "utf8"));
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !value.documents ||
+    !value.signatures
+  ) {
+    throw new Error(
+      "Vision release delivery unit must contain documents and signatures",
+    );
+  }
+  return {
+    documents: Object.fromEntries(
+      Object.entries(value.documents).map(([role, base64]) => [
+        role,
+        Buffer.from(base64, "base64"),
+      ]),
+    ),
+    signatures: value.signatures,
+  };
 }
 
 async function main() {
@@ -58,6 +97,18 @@ async function main() {
     options["approval-policy"] ?? process.env.VEM_FACTORY_APPROVAL_POLICY;
   const isoBuilderPath =
     options["iso-builder"] ?? process.env.VEM_FACTORY_ISO_BUILDER;
+  const visionReleaseDeliveryUnitPath =
+    options["vision-release-delivery-unit"] ??
+    process.env.VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT;
+  const repositoryVisionTrustedRootsPath =
+    options["repository-vision-trusted-roots"] ??
+    process.env.VEM_FACTORY_REPOSITORY_VISION_TRUSTED_ROOTS;
+  const factoryVisionTrustedRootsPath =
+    options["factory-vision-trusted-roots"] ??
+    process.env.VEM_FACTORY_FACTORY_VISION_TRUSTED_ROOTS;
+  const visionEvidenceVerifierPath =
+    options["vision-evidence-verifier"] ??
+    process.env.VEM_FACTORY_VISION_EVIDENCE_VERIFIER;
   const authenticodeVerifierPath =
     options["authenticode-verifier"] ??
     process.env.VEM_FACTORY_AUTHENTICODE_VERIFIER;
@@ -73,11 +124,36 @@ async function main() {
     !evidenceStoreRoot ||
     !approvalPolicyPath ||
     !isoBuilderPath ||
+    !visionReleaseDeliveryUnitPath ||
+    !repositoryVisionTrustedRootsPath ||
+    !factoryVisionTrustedRootsPath ||
+    !visionEvidenceVerifierPath ||
     !executedBuilderImage
   ) {
     throw new Error(
-      "Factory manifest, output, asset, Windows source, evidence, approval policy, ISO builder, and executed builder image configuration are required",
+      "Factory manifest, output, asset, Windows source, evidence, approval policy, Vision release delivery unit, repository/factory Vision trusted roots, Vision verifier, ISO builder, and executed builder image configuration are required",
     );
+  }
+  for (const [value, label] of [
+    [manifestStore, "--manifest-store"],
+    [outputDirectory, "--output-dir"],
+    [assetStoreRoot, "--asset-store"],
+    [sourceStoreRoot, "--windows-source-store"],
+    [evidenceStoreRoot, "--evidence-store"],
+    [approvalPolicyPath, "--approval-policy"],
+    [isoBuilderPath, "--iso-builder"],
+    [visionReleaseDeliveryUnitPath, "--vision-release-delivery-unit"],
+    [repositoryVisionTrustedRootsPath, "--repository-vision-trusted-roots"],
+    [factoryVisionTrustedRootsPath, "--factory-vision-trusted-roots"],
+    [visionEvidenceVerifierPath, "--vision-evidence-verifier"],
+    ...(authenticodeVerifierPath
+      ? [[authenticodeVerifierPath, "--authenticode-verifier"]]
+      : []),
+    ...(authenticodeCaBundlePath
+      ? [[authenticodeCaBundlePath, "--authenticode-ca-bundle"]]
+      : []),
+  ]) {
+    assertSafeHostPath(value, label);
   }
   const manifest = await readManifest(
     manifestStore,
@@ -85,6 +161,15 @@ async function main() {
   );
   const store = new ContentAddressedAssetStore(assetStoreRoot);
   const approvalPolicy = JSON.parse(await readFile(approvalPolicyPath, "utf8"));
+  const visionReleaseDeliveryUnit = await readVisionReleaseDeliveryUnit(
+    visionReleaseDeliveryUnitPath,
+  );
+  const repositoryVisionTrustedRoots = JSON.parse(
+    await readFile(repositoryVisionTrustedRootsPath, "utf8"),
+  );
+  const factoryVisionTrustedRoots = JSON.parse(
+    await readFile(factoryVisionTrustedRootsPath, "utf8"),
+  );
   const result = await buildFactoryMedia({
     manifest,
     store,
@@ -92,6 +177,10 @@ async function main() {
     sourceStoreRoot,
     evidenceStoreRoot,
     approvalPolicy,
+    visionReleaseDeliveryUnit,
+    repositoryVisionTrustedRoots,
+    factoryVisionTrustedRoots,
+    visionEvidenceVerifierPath,
     isoBuilderPath,
     authenticodeVerifierPath,
     authenticodeCaBundlePath,

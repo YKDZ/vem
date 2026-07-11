@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,8 +9,12 @@ import { promisify } from "node:util";
 
 import { createRedistributableFixtureIso } from "./build-factory-media.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
-import { createFactoryManifest } from "./factory-manifest.mjs";
+import { canonicalJson, createFactoryManifest } from "./factory-manifest.mjs";
 import { createSignedAssetEvidence } from "./verify-asset-evidence.mjs";
+import {
+  createVisionReleaseApproval,
+  createVisionReleaseDescriptor,
+} from "./vision-release.mjs";
 
 const run = promisify(execFile);
 const ISO_BUILDER_PATH = "/usr/bin/genisoimage";
@@ -45,7 +49,7 @@ async function fixture() {
   ]);
   const evidenceStore = join(root, "evidence");
   await mkdir(join(evidenceStore, "sha256"), { recursive: true });
-  const { privateKey } = generateKeyPairSync("ed25519");
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const definitions = [];
   for (const [role, bytes] of bytesByRole) {
     const hash = createHash("sha256").update(bytes).digest("hex");
@@ -69,6 +73,20 @@ async function fixture() {
       version: role === "windows-source-iso" ? "10.0.19045" : "1.0.0",
       signature: signed.signature,
       provenance: signed.provenance,
+      ...(role === "vision-release"
+        ? {
+            release: {
+              descriptorIdentity: signed.signature.evidenceIdentity,
+              descriptorDigest: signed.signature.evidenceDigest,
+              attestationIdentity: signed.signature.evidenceIdentity,
+              attestationDigest: signed.signature.evidenceDigest,
+              approvalIdentity: signed.signature.evidenceIdentity,
+              approvalDigest: signed.signature.evidenceDigest,
+              conformanceEvidenceIdentity: signed.signature.evidenceIdentity,
+              conformanceEvidenceDigest: signed.signature.evidenceDigest,
+            },
+          }
+        : {}),
       bytes,
     });
   }
@@ -76,6 +94,117 @@ async function fixture() {
     identity: `oci://builder@sha256:${IMAGE_HASH}`,
     digest: `sha256:${IMAGE_HASH}`,
     version: "1.0.0",
+  };
+  const visionAsset = definitions.find(({ role }) => role === "vision-release");
+  const sha256 = (bytes) =>
+    `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const evidenceIdentity = (digest) =>
+    `factory-evidence://${digest.replace(":", "/")}`;
+  const sbomBytes = Buffer.from('{"spdxVersion":"SPDX-2.3"}');
+  const provenanceBytes = Buffer.from(
+    '{"predicateType":"https://slsa.dev/provenance/v1"}',
+  );
+  const descriptor = createVisionReleaseDescriptor({
+    releaseVersion: "1.0.0",
+    bundle: {
+      digest: visionAsset.digest,
+      bytes: visionAsset.bytes.length,
+      platform: { os: "windows", architecture: "x86_64" },
+      format: "zip",
+      extractor: {
+        contractVersion: "vem-vision-extractor/v1",
+        handler: "zip-safe-v1",
+      },
+    },
+    entrypoint: { command: "vision.exe", arguments: [] },
+    lifecycle: { requiresInteractiveSession: true, shutdownTimeoutMs: 5000 },
+    configuration: {
+      format: "json",
+      schemaVersion: "fixture/v1",
+      argument: "--config",
+    },
+    health: {
+      port: 7892,
+      path: "/health",
+      expectedStatus: 200,
+      timeoutMs: 5000,
+    },
+    protocol: { version: "vem.vision.v1", webSocketPath: "/ws" },
+    sbom: {
+      identity: evidenceIdentity(sha256(sbomBytes)),
+      digest: sha256(sbomBytes),
+      format: "spdx-json",
+    },
+    provenance: {
+      identity: evidenceIdentity(sha256(provenanceBytes)),
+      digest: sha256(provenanceBytes),
+      predicateType: "https://slsa.dev/provenance/v1",
+    },
+  });
+  const descriptorBytes = Buffer.from(canonicalJson(descriptor));
+  const attestation = {
+    schemaVersion: "vem-vision-artifact-attestation/v1",
+    kind: "vision-artifact-attestation",
+    bundleDigest: descriptor.bundle.digest,
+    descriptorDigest: descriptor.identity,
+    sbomDigest: descriptor.sbom.digest,
+    provenanceDigest: descriptor.provenance.digest,
+    signerIdentity: `spki-sha256:${"a".repeat(64)}`,
+  };
+  const attestationBytes = Buffer.from(canonicalJson(attestation));
+  const conformanceBytes = Buffer.from(
+    canonicalJson({
+      schemaVersion: "vem-vision-conformance/v1",
+      kind: "vision-release-conformance",
+      bundleDigest: descriptor.bundle.digest,
+      descriptorDigest: descriptor.identity,
+      protocolVersion: "vem.vision.v1",
+    }),
+  );
+  const approval = createVisionReleaseApproval({
+    releaseVersion: descriptor.releaseVersion,
+    bundleDigest: descriptor.bundle.digest,
+    descriptorDigest: descriptor.identity,
+    attestationDigest: sha256(attestationBytes),
+    conformanceEvidenceDigest: sha256(conformanceBytes),
+    approverIdentity: "vem-release-approval:fixture",
+  });
+  const approvalBytes = Buffer.from(canonicalJson(approval));
+  const documents = {
+    descriptor: descriptorBytes,
+    attestation: attestationBytes,
+    sbom: sbomBytes,
+    provenance: provenanceBytes,
+    conformance: conformanceBytes,
+    approval: approvalBytes,
+  };
+  const publicKeyDer = publicKey.export({ type: "spki", format: "der" });
+  const signerIdentity = `spki-sha256:${createHash("sha256").update(publicKeyDer).digest("hex")}`;
+  const signatures = Object.fromEntries(
+    Object.entries(documents).map(([role, bytes]) => [
+      role,
+      {
+        signer: {
+          identity: signerIdentity,
+          publicKey: publicKeyDer.toString("base64"),
+        },
+        signature: sign(
+          null,
+          Buffer.from(canonicalJson({ role, digest: sha256(bytes) })),
+          privateKey,
+        ).toString("base64"),
+      },
+    ]),
+  );
+  visionAsset.release = {
+    descriptorIdentity: evidenceIdentity(descriptor.identity),
+    descriptorDigest: descriptor.identity,
+    attestationIdentity: evidenceIdentity(sha256(attestationBytes)),
+    attestationDigest: sha256(attestationBytes),
+    approvalIdentity: evidenceIdentity(approval.identity),
+    approvalDigest: approval.identity,
+    conformanceEvidenceIdentity: evidenceIdentity(sha256(conformanceBytes)),
+    conformanceEvidenceDigest: sha256(conformanceBytes),
   };
   const strip = ({ bytes, ...value }) => value;
   const manifest = createFactoryManifest({
@@ -101,6 +230,32 @@ async function fixture() {
     join(manifestStore, "sha256", `${manifest.manifestId.slice(7)}.json`),
     JSON.stringify(manifest),
   );
+  const visionDeliveryUnit = join(root, "vision-release-delivery-unit.json");
+  const repositoryVisionTrustedRoots = join(
+    root,
+    "repository-vision-trusted-roots.json",
+  );
+  const factoryVisionTrustedRoots = join(
+    root,
+    "factory-vision-trusted-roots.json",
+  );
+  await writeFile(
+    visionDeliveryUnit,
+    JSON.stringify({
+      documents: Object.fromEntries(
+        Object.entries(documents).map(([role, bytes]) => [
+          role,
+          bytes.toString("base64"),
+        ]),
+      ),
+      signatures,
+    }),
+  );
+  const trustedRoots = Object.fromEntries(
+    Object.keys(documents).map((role) => [role, [signerIdentity]]),
+  );
+  await writeFile(repositoryVisionTrustedRoots, JSON.stringify(trustedRoots));
+  await writeFile(factoryVisionTrustedRoots, JSON.stringify(trustedRoots));
   await writeFile(
     join(
       sourceStoreRoot,
@@ -132,6 +287,10 @@ async function fixture() {
     sourceStoreRoot,
     evidenceStore,
     approvalPolicy,
+    visionDeliveryUnit,
+    repositoryVisionTrustedRoots,
+    factoryVisionTrustedRoots,
+    visionEvidenceVerifier: "/usr/bin/true",
     builderImage,
   };
 }
@@ -159,6 +318,14 @@ describe("Factory builder CLI fixture", () => {
           data.approvalPolicy,
           "--iso-builder",
           ISO_BUILDER_PATH,
+          "--vision-release-delivery-unit",
+          data.visionDeliveryUnit,
+          "--repository-vision-trusted-roots",
+          data.repositoryVisionTrustedRoots,
+          "--factory-vision-trusted-roots",
+          data.factoryVisionTrustedRoots,
+          "--vision-evidence-verifier",
+          data.visionEvidenceVerifier,
           "--manifest-identity",
           data.manifest.manifestId,
           "--reproducibility",

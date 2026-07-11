@@ -1,26 +1,7 @@
 name: Build Factory ISO
 
 on:
-  workflow_call:
-    inputs:
-      manifest_identity:
-        description: Content identity of the immutable Factory Manifest
-        required: true
-        type: string
-    outputs:
-      iso_identity:
-        description: Content identity of the runner-local Factory ISO
-        value: ${{ jobs.build.outputs.iso_identity }}
-      provenance_artifact_name:
-        description: Sanitized provenance artifact name
-        value: ${{ jobs.build.outputs.provenance_artifact_name }}
   workflow_dispatch:
-    inputs:
-      manifest_identity:
-        description: Content identity of the immutable Factory Manifest
-        required: true
-        type: string
-
 permissions:
   actions: read
   contents: read
@@ -38,7 +19,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$GITHUB_EVENT_NAME" in
-            workflow_dispatch|push) ;;
+            workflow_dispatch) ;;
             *) echo "Factory media is unavailable to this event" >&2; exit 1 ;;
           esac
           case "$GITHUB_REF" in
@@ -69,7 +50,6 @@ jobs:
       iso_identity: ${{ steps.result.outputs.iso_identity }}
       provenance_artifact_name: ${{ steps.result.outputs.provenance_artifact_name }}
     env:
-      MANIFEST_IDENTITY: ${{ inputs.manifest_identity }}
       RUNTIME_ARTIFACT_NAME: ${{ needs.build-runtime-artifacts.outputs.artifact_name }}
       RUNTIME_ARTIFACT_IDENTITY: ${{ needs.build-runtime-artifacts.outputs.artifact_identity }}
       RUNTIME_ARTIFACT_COMMIT: ${{ needs.build-runtime-artifacts.outputs.commit }}
@@ -83,6 +63,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
+          test -n "${VEM_FACTORY_TRUSTED_RUNNER_NAME:-}"
+          test "$RUNNER_NAME" = "$VEM_FACTORY_TRUSTED_RUNNER_NAME"
           case "$OBSERVED_WORKFLOW_REF" in
             "$GITHUB_REPOSITORY"/.github/workflows/*@"$GITHUB_REF") ;;
             *) echo "Factory media requires a same-repository workflow on the trusted ref" >&2; exit 1 ;;
@@ -99,6 +81,11 @@ jobs:
             VEM_FACTORY_WINDOWS_SOURCE_STORE \
             VEM_FACTORY_EVIDENCE_STORE \
             VEM_FACTORY_APPROVAL_POLICY \
+            VEM_FACTORY_MANIFEST_IDENTITY \
+            VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT \
+            VEM_FACTORY_REPOSITORY_VISION_TRUSTED_ROOTS \
+            VEM_FACTORY_FACTORY_VISION_TRUSTED_ROOTS \
+            VEM_FACTORY_VISION_EVIDENCE_VERIFIER \
             VEM_FACTORY_BUILDER_IMAGE \
             VEM_FACTORY_ISO_BUILDER_CONTAINER_PATH \
             VEM_FACTORY_AUTHENTICODE_VERIFIER_CONTAINER_PATH \
@@ -109,6 +96,23 @@ jobs:
             echo "Factory ISO build must not receive personalization media" >&2
             exit 1
           }
+          [[ "$VEM_FACTORY_MANIFEST_IDENTITY" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "MANIFEST_IDENTITY=$VEM_FACTORY_MANIFEST_IDENTITY" >> "$GITHUB_ENV"
+          for path in \
+            "$VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT" \
+            "$VEM_FACTORY_REPOSITORY_VISION_TRUSTED_ROOTS" \
+            "$VEM_FACTORY_FACTORY_VISION_TRUSTED_ROOTS" \
+            "$VEM_FACTORY_VISION_EVIDENCE_VERIFIER"; do
+            case "$path" in
+              /*) ;;
+              *) echo "Vision factory input must be an absolute host-owned Unix path" >&2; exit 1 ;;
+            esac
+            case "$path" in
+              *\\*|*..*|//* ) echo "Vision factory input path is unsafe" >&2; exit 1 ;;
+            esac
+            test -f "$path" || { echo "Vision factory input is not a regular file" >&2; exit 1; }
+            test -L "$path" && { echo "Vision factory input must not be a symlink" >&2; exit 1; }
+          done
 
       - name: Checkout Trusted Ref
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -154,6 +158,10 @@ jobs:
             --mount "type=bind,src=$VEM_FACTORY_WINDOWS_SOURCE_STORE,dst=/windows-source,readonly" \
             --mount "type=bind,src=$VEM_FACTORY_EVIDENCE_STORE,dst=/factory-evidence,readonly" \
             --mount "type=bind,src=$VEM_FACTORY_APPROVAL_POLICY,dst=/factory-policy/approval.json,readonly" \
+            --mount "type=bind,src=$VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT,dst=/factory-vision/delivery-unit.json,readonly" \
+            --mount "type=bind,src=$VEM_FACTORY_REPOSITORY_VISION_TRUSTED_ROOTS,dst=/factory-vision/repository-trust.json,readonly" \
+            --mount "type=bind,src=$VEM_FACTORY_FACTORY_VISION_TRUSTED_ROOTS,dst=/factory-vision/factory-trust.json,readonly" \
+            --mount "type=bind,src=$VEM_FACTORY_VISION_EVIDENCE_VERIFIER,dst=/factory-vision/vision-release-verifier,readonly" \
             --mount "type=bind,src=$VEM_FACTORY_AUTHENTICODE_CA_BUNDLE,dst=/factory-policy/authenticode-ca.pem,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/vem-factory-output,dst=/factory-output" \
             "$VEM_FACTORY_BUILDER_IMAGE" \
@@ -163,6 +171,10 @@ jobs:
               --windows-source-store /windows-source \
               --evidence-store /factory-evidence \
               --approval-policy /factory-policy/approval.json \
+              --vision-release-delivery-unit /factory-vision/delivery-unit.json \
+              --repository-vision-trusted-roots /factory-vision/repository-trust.json \
+              --factory-vision-trusted-roots /factory-vision/factory-trust.json \
+              --vision-evidence-verifier /factory-vision/vision-release-verifier \
               --iso-builder "$VEM_FACTORY_ISO_BUILDER_CONTAINER_PATH" \
               --authenticode-verifier "$VEM_FACTORY_AUTHENTICODE_VERIFIER_CONTAINER_PATH" \
               --authenticode-ca-bundle /factory-policy/authenticode-ca.pem \

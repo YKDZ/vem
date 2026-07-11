@@ -77,6 +77,8 @@ const requiredPrepareParams = [
   "TargetLayoutVersion",
   "FactoryProfile",
   "PersonalizationMediaPath",
+  "FactoryMediaRoot",
+  "VisionConfigurationSourcePath",
   "OpenSshPackagePath",
   "OpenSshPackageSource",
   "OpenSshPackageVersion",
@@ -194,8 +196,45 @@ addCheck(
     prepare.includes("local-bringup-settings.json") &&
     prepare.includes("machine-config.json") &&
     prepare.includes("setup-scheduled-tasks.ps1") &&
+    prepare.includes("provision-vision-factory-release.ps1") &&
+    prepare.includes("install-vision-release.ps1") &&
     prepare.includes("verify-factory-runtime.ps1"),
   `${preparePath} should plan the ADR-0038 fixed Windows runtime layout and copied support scripts`,
+);
+
+addCheck(
+  "production-preparation-provisions-and-installs-approved-vision-before-writing-success-manifest",
+  prepare.includes("Invoke-FactoryVisionRelease") &&
+    prepare.includes("production Factory Vision installation requires") &&
+    prepare.includes(
+      "Factory Vision installation evidence is incomplete or failed",
+    ) &&
+    prepare.indexOf("Invoke-FactoryVisionRelease -Plan $Plan") <
+      prepare.lastIndexOf(
+        "Write-JsonFile -Path ([string]$Plan.layout.manifestPath)",
+      ) &&
+    verifier.includes(
+      "production Factory Vision installation evidence is missing or invalid",
+    ),
+  "production factory preparation must provision immutable Vision media, run the production installer, and require successful redacted evidence before recording completion",
+);
+
+const factoryVisionRelease = functionBlock(
+  prepare,
+  "Invoke-FactoryVisionRelease",
+);
+addCheck(
+  "production-preparation-passes-the-vem-media-root-to-the-vision-provisioner",
+  factoryVisionRelease.includes(
+    "$factoryMediaRoot = Split-Path -Parent $provisioningManifest",
+  ) &&
+    factoryVisionRelease.includes(
+      "& $provisioner -FactoryMediaRoot $factoryMediaRoot",
+    ) &&
+    !factoryVisionRelease.includes(
+      "Split-Path -Parent (Split-Path -Parent $provisioningManifest)",
+    ),
+  "production factory preparation must pass the VEM directory containing VISION-FACTORY-PROVISIONING.JSON, not the outer Factory Media parent, to the Vision provisioner",
 );
 
 addCheck(

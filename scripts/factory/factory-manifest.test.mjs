@@ -10,7 +10,7 @@ import {
 const HASH = "a".repeat(64);
 
 function asset(role, version = "1.0.0") {
-  return {
+  const value = {
     role,
     identity: `factory-cas://sha256/${HASH}`,
     digest: `sha256:${HASH}`,
@@ -31,6 +31,19 @@ function asset(role, version = "1.0.0") {
       evidenceDigest: `sha256:${HASH}`,
     },
   };
+  if (role === "vision-release") {
+    value.release = {
+      descriptorIdentity: `factory-evidence://sha256/${HASH}`,
+      descriptorDigest: `sha256:${HASH}`,
+      attestationIdentity: `factory-evidence://sha256/${HASH}`,
+      attestationDigest: `sha256:${HASH}`,
+      approvalIdentity: `factory-evidence://sha256/${HASH}`,
+      approvalDigest: `sha256:${HASH}`,
+      conformanceEvidenceIdentity: `factory-evidence://sha256/${HASH}`,
+      conformanceEvidenceDigest: `sha256:${HASH}`,
+    };
+  }
+  return value;
 }
 
 function validInput() {
@@ -88,6 +101,23 @@ describe("Factory Manifest v1", () => {
       (error) =>
         error instanceof FactoryManifestError &&
         error.issues.some((issue) => issue.path === "assets[0].identity"),
+    );
+  });
+
+  it("requires matched Vision release evidence before a Factory Manifest can select it", () => {
+    const missing = validInput();
+    delete missing.assets.at(-1).release;
+    assert.throws(
+      () => createFactoryManifest(missing),
+      /Vision release.*required|release/i,
+    );
+
+    const mismatched = validInput();
+    mismatched.assets.at(-1).release.approvalDigest =
+      `sha256:${"b".repeat(64)}`;
+    assert.throws(
+      () => createFactoryManifest(mismatched),
+      /approval.*match|identity/i,
     );
   });
 

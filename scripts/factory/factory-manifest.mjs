@@ -49,6 +49,17 @@ const ASSET_KEYS = [
   "version",
   "signature",
   "provenance",
+  "release",
+];
+const VISION_RELEASE_KEYS = [
+  "descriptorIdentity",
+  "descriptorDigest",
+  "attestationIdentity",
+  "attestationDigest",
+  "approvalIdentity",
+  "approvalDigest",
+  "conformanceEvidenceIdentity",
+  "conformanceEvidenceDigest",
 ];
 
 export class FactoryManifestError extends Error {
@@ -221,6 +232,50 @@ function assertAsset(value, path, issues) {
       );
     }
     assertEvidenceReference(value.provenance, `${path}.provenance`, issues);
+  }
+
+  if (value.role === "vision-release") {
+    assertExactKeys(
+      value.release,
+      VISION_RELEASE_KEYS,
+      `${path}.release`,
+      issues,
+    );
+    if (isRecord(value.release)) {
+      for (const key of VISION_RELEASE_KEYS) {
+        if (key.endsWith("Identity")) {
+          const digestKey = `${key.slice(0, -"Identity".length)}Digest`;
+          const match = /^factory-evidence:\/\/sha256\/([a-f0-9]{64})$/.exec(
+            value.release[key] ?? "",
+          );
+          if (!match) {
+            issues.push(
+              issue(
+                `${path}.release.${key}`,
+                "must be a content-addressed evidence identity",
+              ),
+            );
+          }
+          assertDigest(
+            value.release[digestKey],
+            `${path}.release.${digestKey}`,
+            issues,
+          );
+          if (match && value.release[digestKey] !== `sha256:${match[1]}`) {
+            issues.push(
+              issue(
+                `${path}.release.${digestKey}`,
+                "must match the evidence identity",
+              ),
+            );
+          }
+        }
+      }
+    }
+  } else if (value.release !== undefined) {
+    issues.push(
+      issue(`${path}.release`, "is only permitted for vision-release"),
+    );
   }
 }
 

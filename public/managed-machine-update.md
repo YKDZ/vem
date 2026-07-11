@@ -6,7 +6,9 @@
 
 - daemon 产物：`C:\VEM\bringup\vending-daemon.exe`
 - 机器 UI 产物：`C:\VEM\bringup\machine.exe`
-- 视觉应用产物：`C:\VEM\vision` 目录，目录根部必须包含 `start_vision.bat`
+- Vision Release Bundle：供应方原始不可变 bundle、descriptor、attestation、SBOM、provenance、conformance evidence 和 VEM approval
+- Vision 版本目录：`C:\VEM\vision\releases\<version>-<digest-prefix>`
+- Vision 外部配置与 current selection：`C:\ProgramData\VEM\vision`
 - 视觉启动入口：`C:\VEM\bringup\start_vision.bat`
 - daemon 服务：`VemVendingDaemon`
 - 机器 UI 任务：`VEMMachineUI`
@@ -15,7 +17,9 @@
 
 daemon、UI 和视觉分别独立更新。UI 更新只停止 `VEMMachineUI` 和 `machine.exe`，不得停止 daemon 服务。daemon 更新只重启 `VemVendingDaemon`，不得结束机器 UI。
 
-视觉应用是独立本地服务。首次装机不能只创建 `VEM\StartVisionServer` 任务，还必须安装 `C:\VEM\vision` 和 `C:\VEM\bringup\start_vision.bat`。视觉更新只停止 `VEM\StartVisionServer` 和从 `C:\VEM\vision` 启动的视觉进程，不得停止 daemon 或机器 UI。
+daemon 或 UI 的受控传输仍使用 `scripts/windows/deploy-windows-artifact.sh`；它只接受 `--kind daemon|ui`。Vision 不得通过该脚本传输，因为它会创建新的 zip，从而改变供应方 release bundle。
+
+Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式任务启动；更新只停止该任务和 VEM 记录的 Vision 子进程，不得停止 daemon 或机器 UI。
 
 更新器会把每个组件绑定到生产目标路径。`daemon` 只能替换 `C:\VEM\bringup\vending-daemon.exe`；`ui` 只能替换 `C:\VEM\bringup\machine.exe`。清单或直接调用如果提供了不同的 `targetPath`，会在替换前失败。省略 `targetPath` 时，使用所选组件允许的默认路径。
 
@@ -108,21 +112,32 @@ node scripts/check-machine-vision-deployment.mjs
 
 该检查会验证脚本契约，包括固定组件目标路径、拒绝空组件、daemon `healthz` 和 `readyz` 证据、UI 目标哈希校验、任务或直接启动回退，以及组件隔离的停止和重启行为。它不能证明 Windows 主机可以重启服务或任务。Windows 实际运行及其证据 JSON 仍是生产验收记录。
 
-## 视觉应用部署
+## Vision Release Bundle
 
-视觉应用目录产物必须在根部提供 `start_vision.bat`。该脚本负责在 `C:\VEM\vision` 工作目录内启动真实视觉服务和 Python/模型依赖；机器端通用启动入口 `C:\VEM\bringup\start_vision.bat` 只负责切换目录并委托给它。
+Vision 的源码、模型、依赖、打包、SBOM 和 provenance 由 Vision 发布方负责。VEM 只消费原始 immutable bundle，绝不重新构建、重新打包或修改版本目录中的私有运行时文件。每个 Factory Manifest 的 `vision-release` 必须绑定同一 bundle digest 的 descriptor、artifact attestation、SBOM、provenance、black-box conformance evidence 和 VEM approval；任一 digest 不一致都不得安装或作为 Factory Manifest 选择。
 
-从 Linux 运维机上传视觉产物：
+在 Windows 管理员 PowerShell 中，以已验证的本地输入安装：
 
-```bash
-scripts/windows/deploy-windows-artifact.sh \
-  --artifact /path/to/vending_vision_release_dir \
-  --remote <MaintenanceUser>@<controlled-maintenance-ingress-host> \
-  --identity /root/.ssh/vem_codex_ed25519 \
-  --kind vision
+```powershell
+.\scripts\windows\install-vision-release.ps1 `
+  -BundlePath C:\VEM\updates\vision-release.zip `
+  -DescriptorPath C:\VEM\updates\vision-descriptor.json `
+  -AttestationPath C:\VEM\updates\vision-attestation.json `
+  -SbomPath C:\VEM\updates\vision-sbom.json `
+  -ProvenancePath C:\VEM\updates\vision-provenance.json `
+  -ConformanceEvidencePath C:\VEM\updates\vision-conformance.json `
+  -ApprovalPath C:\VEM\updates\vision-approval.json `
+  -FactoryManifestPath C:\VEM\updates\factory-manifest.json `
+  -ConfigurationPath C:\ProgramData\VEM\vision\config\site.json
 ```
 
-首次装机或任务丢失时，部署产物后在 Windows 主机上重新注册启动项：
+首次安装不接受命令行传入的 release metadata：它只使用 Factory Media 的真实 `vision-release` delivery unit，位于 `C:\ProgramData\VEM\factory\vision-release`，其中的 bundle、Factory Manifest 和完整 evidence 必须一起交付。Windows 只从受保护的 `C:\ProgramData\VEM\factory-trust` 读取 trust anchor、policy 和 verifier；更新 bundle 不得携带或替换这些 trust roots。
+
+安装器按版本和 digest 写入 `C:\VEM\vision\releases`，将 current selection、只允许 kiosk 原子写入的 `process-state`、版本 metadata 和外部配置保持在 `C:\ProgramData\VEM\vision`，并生成 VEM-owned launcher `C:\VEM\bringup\start_vision.bat`。它使用 `VEM\StartVisionServer` 启动，通过 loopback HTTP health 和 `vem.vision.v1` `vision.hello` / `vision.ready` 对 exact installed digest 做 black-box conformance；启动或健康失败时恢复上一已批准 selection，并写入不含路径、配置值、凭据或私有运行时细节的证据。
+
+`docs/vending-vision.zip` 当前只可作为候选评估：digest 为 `sha256:9dc9dda0fb60a69cfac142bbbfd09f769b8ef965c0f4d3bbc8ccf3a8e33d4b1b`，但缺少 release descriptor、artifact attestation、SBOM、provenance、clean-Windows health/WebSocket conformance evidence 和 VEM approval，故不得标记为 approved 或安装。
+
+首次装机或任务丢失时，在 release 成功安装后重新注册启动项：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -139,4 +154,4 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -RequireVisionOnline
 ```
 
-没有真实摄像头或模型依赖缺失时，视觉进程可能启动后自行报告 degraded；这不应阻断售卖主流程。但新机器生产验收必须至少证明视觉目录、launcher、任务和进程启动路径都来自受管部署位置。
+没有真实摄像头时，Vision 可能报告 degraded；这不应阻断售卖主流程。但新机器生产验收必须至少证明 approved digest、version-addressed directory、external configuration、launcher、任务、HTTP health 和 WebSocket conformance。

@@ -250,6 +250,9 @@
             "evidenceIdentity": { "$ref": "#/$defs/evidenceIdentity" },
             "evidenceDigest": { "$ref": "#/$defs/digest" }
           }
+        },
+        "release": {
+          "$ref": "#/$defs/visionReleaseSelection"
         }
       }
     },
@@ -279,8 +282,44 @@
               ]
             }
           }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": { "role": { "const": "vision-release" } },
+            "required": ["role"]
+          },
+          "then": {
+            "type": "object",
+            "properties": { "release": {} },
+            "required": ["release"]
+          }
         }
       ]
+    },
+    "visionReleaseSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptorIdentity",
+        "descriptorDigest",
+        "attestationIdentity",
+        "attestationDigest",
+        "approvalIdentity",
+        "approvalDigest",
+        "conformanceEvidenceIdentity",
+        "conformanceEvidenceDigest"
+      ],
+      "properties": {
+        "descriptorIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+        "descriptorDigest": { "$ref": "#/$defs/digest" },
+        "attestationIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+        "attestationDigest": { "$ref": "#/$defs/digest" },
+        "approvalIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+        "approvalDigest": { "$ref": "#/$defs/digest" },
+        "conformanceEvidenceIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+        "conformanceEvidenceDigest": { "$ref": "#/$defs/digest" }
+      }
     },
     "toolIdentity": {
       "type": "object",

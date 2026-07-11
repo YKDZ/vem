@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vem.example.invalid/schemas/vision-artifact-attestation/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "bundleDigest",
+    "descriptorDigest",
+    "sbomDigest",
+    "provenanceDigest",
+    "signerIdentity"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "vem-vision-artifact-attestation/v1" },
+    "kind": { "const": "vision-artifact-attestation" },
+    "bundleDigest": { "$ref": "#/$defs/digest" },
+    "descriptorDigest": { "$ref": "#/$defs/digest" },
+    "sbomDigest": { "$ref": "#/$defs/digest" },
+    "provenanceDigest": { "$ref": "#/$defs/digest" },
+    "signerIdentity": {
+      "type": "string",
+      "pattern": "^spki-sha256:[a-f0-9]{64}$"
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

@@ -13,19 +13,11 @@ function read(path) {
 }
 
 describe("Factory Manifest and media workflow contract", () => {
-  it("accepts only logical manifest identity and publishes logical evidence outputs", () => {
+  it("exposes a trusted manual trigger without caller-controlled factory inputs", () => {
     const workflow = read(workflowPath);
     const parsed = parse(workflow);
-    assert.deepEqual(Object.keys(parsed.on.workflow_call.inputs), [
-      "manifest_identity",
-    ]);
-    assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), [
-      "manifest_identity",
-    ]);
-    assert.deepEqual(Object.keys(parsed.on.workflow_call.outputs).sort(), [
-      "iso_identity",
-      "provenance_artifact_name",
-    ]);
+    assert.deepEqual(parsed.on.workflow_dispatch, null);
+    assert.equal(parsed.on.workflow_call, undefined);
     assert.doesNotMatch(
       workflow,
       /windows_source_iso|source_iso_path|private_key/i,
@@ -47,9 +39,12 @@ describe("Factory Manifest and media workflow contract", () => {
       "build-runtime-artifacts",
     ]);
     assert.equal(parsed.jobs["build-runtime-artifacts"].needs, "trust-gate");
-    assert.match(workflow, /workflow_dispatch\|push/);
+    assert.match(workflow, /workflow_dispatch\) ;;/);
     assert.match(workflow, /refs\/heads\/main\|refs\/tags\/factory-v\*/);
     assert.match(workflow, /GITHUB_ACTOR.*GITHUB_REPOSITORY_OWNER/);
+    assert.match(workflow, /VEM_FACTORY_TRUSTED_RUNNER_NAME/);
+    assert.match(workflow, /VEM_FACTORY_MANIFEST_IDENTITY/);
+    assert.doesNotMatch(workflow, /inputs\.manifest_identity/);
     const firstBuildStep = parsed.jobs.build.steps[0];
     assert.match(firstBuildStep.name, /Guard Protected Factory Runner/);
     assert.doesNotMatch(
@@ -58,6 +53,14 @@ describe("Factory Manifest and media workflow contract", () => {
     );
     assert.doesNotMatch(workflow, /\$\{\{\s*vars\.VEM_FACTORY_/);
     assert.doesNotMatch(workflow, /runs-on:\s*ubuntu-latest/);
+    for (const name of [
+      "VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT",
+      "VEM_FACTORY_REPOSITORY_VISION_TRUSTED_ROOTS",
+      "VEM_FACTORY_FACTORY_VISION_TRUSTED_ROOTS",
+      "VEM_FACTORY_VISION_EVIDENCE_VERIFIER",
+    ]) {
+      assert.match(workflow, new RegExp(name));
+    }
   });
 
   it("executes manifest-pinned tools offline and uploads only validated bounded JSON evidence", () => {
@@ -67,6 +70,10 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.match(workflow, /VEM_FACTORY_AUTHENTICODE_VERIFIER_CONTAINER_PATH/);
     assert.match(workflow, /VEM_FACTORY_AUTHENTICODE_CA_BUNDLE/);
     assert.match(workflow, /docker run --rm --network none --read-only/);
+    assert.match(workflow, /--vision-release-delivery-unit/);
+    assert.match(workflow, /--repository-vision-trusted-roots/);
+    assert.match(workflow, /--factory-vision-trusted-roots/);
+    assert.match(workflow, /--vision-evidence-verifier/);
     assert.match(workflow, /sanitize-build-evidence\.mjs/);
     const uploadStart = workflow.indexOf(
       "- name: Upload Sanitized Factory Evidence Only",

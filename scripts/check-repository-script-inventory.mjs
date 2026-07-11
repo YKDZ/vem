@@ -90,6 +90,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/factory/vision-release.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
+    path: "scripts/factory/vision-release.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
     path: "scripts/factory/factory-personalization-media.mjs",
     owner: "field-operations",
     category: "public runbook operation",
@@ -283,6 +295,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/vm-host-adapter-conformance.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/run-vm-host-adapter.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
@@ -305,6 +323,36 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["managed update"],
+  },
+  {
+    path: "scripts/windows/install-vision-release.ps1",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
+    path: "scripts/windows/provision-vision-factory-release.ps1",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/windows/vision-release-install.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
+    path: "scripts/windows/vision-release-install.fixtures.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
+    path: "scripts/windows/vision-release-install.windows-harness.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
   },
   {
     path: "scripts/windows/machine-config.bringup.example.json",
@@ -477,6 +525,7 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
       "scripts/check-machine-vision-deployment.mjs",
       "scripts/windows/apply-managed-update.ps1",
       "scripts/windows/deploy-windows-artifact.sh",
+      "scripts/windows/install-vision-release.ps1",
       "scripts/windows/setup-scheduled-tasks.ps1",
       "scripts/windows/verify-vem-runtime.ps1",
     ],
