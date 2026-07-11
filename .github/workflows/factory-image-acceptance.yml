@@ -38,7 +38,6 @@ jobs:
     timeout-minutes: 90
     env:
       VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: ${{ needs.trust-gate.outputs.approved }}
-      VEM_FACTORY_PERSONALIZATION_RUNNER_NAME: ${{ runner.name }}
       # `runs-on` is the authoritative label gate. GitHub's runner context does
       # not expose labels, so pass the exact selected label contract explicitly.
       VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: '["self-hosted","Linux","X64","vem-factory"]'
@@ -47,6 +46,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export VEM_FACTORY_PERSONALIZATION_RUNNER_NAME="$RUNNER_NAME"
           test -n "${VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME:-}"
           test "$VEM_FACTORY_PERSONALIZATION_RUNNER_NAME" = "$VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME"
           node -e '
@@ -65,6 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export VEM_FACTORY_PERSONALIZATION_RUNNER_NAME="$RUNNER_NAME"
           node --input-type=module - <<'NODE'
           import { spawnSync } from "node:child_process";
 
@@ -84,6 +85,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export VEM_FACTORY_PERSONALIZATION_RUNNER_NAME="$RUNNER_NAME"
           node --input-type=module - <<'NODE'
           import { spawnSync } from "node:child_process";
 
