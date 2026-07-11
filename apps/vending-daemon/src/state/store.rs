@@ -5,7 +5,7 @@ use std::{
 
 use chrono::{SecondsFormat, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool, Transaction};
+use sqlx::{sqlite::SqlitePoolOptions, Row, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -526,6 +526,12 @@ pub struct LocalStateStore {
 }
 
 impl LocalStateStore {
+    async fn begin_immediate_write_transaction(
+        &self,
+    ) -> Result<Transaction<'static, Sqlite>, StoreError> {
+        Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
+    }
+
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -1212,7 +1218,7 @@ impl LocalStateStore {
     }
 
     pub async fn enqueue_outbox(&self, input: &OutboxInput) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_immediate_write_transaction().await?;
 
         let existing: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM outbox_events WHERE id = ?1")
             .bind(&input.id)
@@ -2131,7 +2137,7 @@ impl LocalStateStore {
             ));
         }
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_immediate_write_transaction().await?;
         let planogram: Option<(i64,)> = sqlx::query_as(
             "SELECT active FROM machine_planogram_versions WHERE planogram_version = ?1",
         )
@@ -4452,8 +4458,11 @@ fn now_iso_days(days: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, time::Duration};
+
     use serde_json::json;
     use tempfile::TempDir;
+    use tokio::sync::Barrier;
 
     use super::*;
 
@@ -4489,6 +4498,59 @@ mod tests {
             })
             .await
             .expect("planogram");
+    }
+
+    #[tokio::test]
+    async fn physical_stock_attestation_waits_for_conflicting_writer_before_reading_snapshot() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .put_metadata("write-race", &"before")
+            .await
+            .expect("seed metadata");
+
+        let mut blocker = store
+            .pool()
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("hold write lock");
+        sqlx::query("UPDATE runtime_metadata SET value_json = ?2, updated_at = ?3 WHERE key = ?1")
+            .bind("write-race")
+            .bind("\"after\"")
+            .bind(now_iso())
+            .execute(&mut *blocker)
+            .await
+            .expect("change metadata while lock is held");
+
+        let contender = store.record_physical_stock_attestation(PhysicalStockAttestationInput {
+            attestation_id: "ATT-WRITE-RACE".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            operator_id: "operator-1".to_string(),
+            slots: vec![PhysicalStockAttestationSlotInput {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                sku: "WATER-001".to_string(),
+                quantity: 3,
+                enabled: true,
+            }],
+        });
+        tokio::pin!(contender);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), contender.as_mut())
+                .await
+                .is_err(),
+            "the contender must wait instead of reading a stale snapshot"
+        );
+
+        blocker.commit().await.expect("release write lock");
+        let sale_view = tokio::time::timeout(Duration::from_secs(1), contender)
+            .await
+            .expect("contender should acquire lock after release")
+            .expect("record physical stock attestation");
+        assert_eq!(sale_view.items[0].physical_stock, 3);
     }
 
     fn dispense_command_for_slot(command_no: &str) -> DispenseCommandPayload {
@@ -6540,6 +6602,92 @@ mod tests {
             .expect("exists");
         assert_eq!(after.attempt_count, 1);
         assert!(after.last_error.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outbox_enqueue_waits_for_immediate_writer_then_dedupes_and_enforces_capacity() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let duplicate = OutboxInput::stock_movement_upload(
+            "MOVE-CONTENTION-DUPLICATE",
+            "https://platform.example/api/machine-stock-movements".to_string(),
+            json!({"movementId":"MOVE-CONTENTION-DUPLICATE"}),
+        );
+        store
+            .enqueue_outbox(&duplicate)
+            .await
+            .expect("seed duplicate");
+        for index in 1..OUTBOX_MAX_EVENTS {
+            let event = OutboxInput::stock_movement_upload(
+                &format!("MOVE-CONTENTION-{index}"),
+                "https://platform.example/api/machine-stock-movements".to_string(),
+                json!({"movementId": format!("MOVE-CONTENTION-{index}")}),
+            );
+            store.enqueue_outbox(&event).await.expect("fill outbox");
+        }
+        assert_eq!(
+            store.outbox_size().await.expect("full outbox size"),
+            OUTBOX_MAX_EVENTS as u64
+        );
+
+        let blocker = store
+            .pool()
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("hold immediate write lock");
+        let barrier = Arc::new(Barrier::new(3));
+
+        let duplicate_store = store.clone();
+        let duplicate_input = duplicate.clone();
+        let duplicate_barrier = Arc::clone(&barrier);
+        let duplicate_contender = tokio::spawn(async move {
+            duplicate_barrier.wait().await;
+            duplicate_store.enqueue_outbox(&duplicate_input).await
+        });
+
+        let capacity_store = store.clone();
+        let capacity_barrier = Arc::clone(&barrier);
+        let capacity_contender = tokio::spawn(async move {
+            capacity_barrier.wait().await;
+            capacity_store
+                .enqueue_outbox(&OutboxInput::heartbeat(
+                    "MACHINE-1",
+                    json!({"status":"contended"}),
+                ))
+                .await
+        });
+
+        barrier.wait().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !duplicate_contender.is_finished() && !capacity_contender.is_finished(),
+            "concurrent enqueue contenders must wait for the immediate writer"
+        );
+
+        blocker
+            .commit()
+            .await
+            .expect("release immediate write lock");
+        duplicate_contender
+            .await
+            .expect("join duplicate contender")
+            .expect("duplicate enqueue");
+        assert!(matches!(
+            capacity_contender.await.expect("join capacity contender"),
+            Err(StoreError::OutboxCapacity)
+        ));
+
+        assert_eq!(
+            store.outbox_size().await.expect("outbox size"),
+            OUTBOX_MAX_EVENTS as u64
+        );
+        assert!(store
+            .outbox_record(&duplicate.id)
+            .await
+            .expect("duplicate record")
+            .is_some());
     }
 
     #[tokio::test]

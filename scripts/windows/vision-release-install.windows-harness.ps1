@@ -29,6 +29,9 @@ $factoryRoot = "C:\ProgramData\VEM\factory"
 $stateRoot = "C:\ProgramData\VEM\vision"
 $evidencePath = "C:\ProgramData\VEM\evidence\vision-release-install.json"
 $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+$certificate = $null
+$trustedRootCertificate = $null
+$trustedPublisherCertificate = $null
 
 try {
   Remove-Item -LiteralPath "C:\VEM", "C:\ProgramData\VEM" -Recurse -Force -ErrorAction SilentlyContinue
@@ -49,8 +52,15 @@ class VisionFixture {
   & $csc /nologo /target:exe /out:$runtimePath $runtimeSourcePath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "fixture runtime compilation failed" }
   $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=VEM Vision CI Fixture" -CertStoreLocation "Cert:\CurrentUser\My"
+  $certificateExportPath = Join-Path $root "fixture-signing-root.cer"
+  Export-Certificate -Cert $certificate -FilePath $certificateExportPath -Force | Out-Null
+  $trustedRootCertificate = Import-Certificate -FilePath $certificateExportPath -CertStoreLocation "Cert:\CurrentUser\Root"
+  $trustedPublisherCertificate = Import-Certificate -FilePath $certificateExportPath -CertStoreLocation "Cert:\CurrentUser\TrustedPublisher"
   $signature = Set-AuthenticodeSignature -FilePath $runtimePath -Certificate $certificate
-  Assert-True ($signature.Status -eq "Valid") "fixture runtime was not signed"
+  $verification = Get-AuthenticodeSignature -FilePath $runtimePath
+  Write-Output "fixture Authenticode status: sign=$($signature.Status); verify=$($verification.Status); signerThumbprint=$($certificate.Thumbprint)"
+  Assert-True ($signature.Status -eq "Valid") "fixture runtime signing status was $($signature.Status)"
+  Assert-True ($verification.Status -eq "Valid") "fixture runtime verification status was $($verification.Status)"
 
   $release = Join-Path $root "release"
   New-Item -ItemType Directory -Force -Path $release | Out-Null
@@ -177,5 +187,8 @@ using System; class V { static void Main(){ Console.Write("{\"schemaVersion\":\"
   Write-Output "signed production installer harness passed: first-install task acl process-record mutex reinstall protocol runtime-verifier"
 } finally {
   Get-Process runtime -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  if ($null -ne $trustedPublisherCertificate) { Remove-Item -LiteralPath $trustedPublisherCertificate.PSPath -Force -ErrorAction SilentlyContinue }
+  if ($null -ne $trustedRootCertificate) { Remove-Item -LiteralPath $trustedRootCertificate.PSPath -Force -ErrorAction SilentlyContinue }
+  if ($null -ne $certificate) { Remove-Item -LiteralPath $certificate.PSPath -DeleteKey -Force -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

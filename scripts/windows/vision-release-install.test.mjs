@@ -74,4 +74,37 @@ describe("Vision release installer behavioral fixtures", () => {
       /Assert-True \$wrongParentFailed "Vision provisioner accepted the Factory Media parent instead of the VEM root"/,
     );
   });
+
+  it("trusts and independently verifies the ephemeral Authenticode fixture", () => {
+    const harness = readFileSync(windowsHarness, "utf8");
+    const rootTrust = harness.indexOf(
+      'CertStoreLocation "Cert:\\CurrentUser\\Root"',
+    );
+    const publisherTrust = harness.indexOf(
+      'CertStoreLocation "Cert:\\CurrentUser\\TrustedPublisher"',
+    );
+    const sign = harness.indexOf("Set-AuthenticodeSignature");
+    const verify = harness.indexOf("Get-AuthenticodeSignature");
+
+    assert.notEqual(rootTrust, -1);
+    assert.notEqual(publisherTrust, -1);
+    assert.notEqual(sign, -1);
+    assert.notEqual(verify, -1);
+    assert.ok(rootTrust < publisherTrust);
+    assert.ok(publisherTrust < sign);
+    assert.ok(sign < verify);
+    assert.match(harness, /fixture Authenticode status:/);
+    assert.match(
+      harness,
+      /Remove-Item -LiteralPath \$trustedPublisherCertificate\.PSPath/,
+    );
+    assert.match(
+      harness,
+      /Remove-Item -LiteralPath \$trustedRootCertificate\.PSPath/,
+    );
+    assert.match(
+      harness,
+      /Remove-Item -LiteralPath \$certificate\.PSPath -DeleteKey/,
+    );
+  });
 });
