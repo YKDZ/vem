@@ -473,8 +473,6 @@ namespace VemVisionLauncher {
     private IntPtr processHandle;
     private IntPtr threadHandle;
 
-    public static Func<IntPtr, uint, bool> TerminateProcessOverride { get; set; }
-
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO {
       public uint cb;
@@ -576,8 +574,7 @@ namespace VemVisionLauncher {
 
     public void Terminate() {
       if (processHandle == IntPtr.Zero) { return; }
-      var terminate = TerminateProcessOverride;
-      if (terminate == null ? TerminateProcess(processHandle, 1) : terminate(processHandle, 1)) { return; }
+      if (TerminateProcess(processHandle, 1)) { return; }
       var error = Marshal.GetLastWin32Error();
       if (WaitForSingleObject(processHandle, 0) == WAIT_OBJECT_0) { return; }
       throw new Win32Exception(error, "TerminateProcess failed");
@@ -604,8 +601,6 @@ namespace VemVisionLauncher {
     private const uint JobObjectExtendedLimitInformation = 9;
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
     private IntPtr handle;
-
-    public static Func<IntPtr, uint, bool> TerminateJobObjectOverride { get; set; }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct IO_COUNTERS {
@@ -696,8 +691,7 @@ namespace VemVisionLauncher {
 
     public void Terminate() {
       if (handle == IntPtr.Zero) { return; }
-      var terminate = TerminateJobObjectOverride;
-      if (terminate == null ? TerminateJobObject(handle, 1) : terminate(handle, 1)) { return; }
+      if (TerminateJobObject(handle, 1)) { return; }
       throw new Win32Exception(Marshal.GetLastWin32Error(), "TerminateJobObject failed");
     }
 

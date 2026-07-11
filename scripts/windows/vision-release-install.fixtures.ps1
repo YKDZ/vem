@@ -141,6 +141,7 @@ try {
       $fixtureSelectionPath = Join-Path $fixtureStateRoot "current.json"
       $fixtureLauncherPath = Join-Path $root "launch-vision-release-fixture.ps1"
       $fixtureDescendantIdentityPath = Join-Path $root "launcher-fixture-descendant.pid"
+      $escapedFixtureDescendantIdentityPath = $fixtureDescendantIdentityPath.Replace("'", "''")
       $fixtureRuntimeSource = @"
 using System;
 using System.Diagnostics;
@@ -177,25 +178,104 @@ public static class LauncherFixtureRuntime {
       [IO.File]::WriteAllText($fixtureConfigurationPath, "{}", [Text.UTF8Encoding]::new($false))
       $fixtureSelection = [ordered]@{ revision="fixture-revision"; bundleDigest=("sha256:" + ("a" * 64)); installDirectory=$root; entrypoint=(Split-Path -Leaf $fixtureRuntimePath); arguments=@("--fixture-descendant-identity", $fixtureDescendantIdentityPath); configurationArgument="--config"; configurationPath=$fixtureConfigurationPath }
 
+      function New-FixturePostStartFailure {
+        return @"
+function Wait-FixtureRuntimeIdentities {
+  `$identityPath = '$escapedFixtureDescendantIdentityPath'
+  `$deadlineUtc = [DateTime]::UtcNow.AddSeconds(5)
+  `$lastIdentity = "<missing>"
+  [int]`$parentId = 0
+  [int]`$descendantId = 0
+  do {
+    if (Test-Path -LiteralPath `$identityPath -PathType Leaf) {
+      try {
+        `$lastIdentity = (Get-Content -LiteralPath `$identityPath -Raw -Encoding UTF8).Trim()
+        `$parts = `$lastIdentity.Split(',')
+        if (`$parts.Count -eq 2 -and [int]::TryParse(`$parts[0], [ref]`$parentId) -and `$parentId -gt 0 -and [int]::TryParse(`$parts[1], [ref]`$descendantId) -and `$descendantId -gt 0 -and `$parentId -ne `$descendantId) {
+          return [pscustomobject]@{ parentId=`$parentId; descendantId=`$descendantId }
+        }
+      } catch {
+        `$lastIdentity = "<read failed: `$(`$_.Exception.Message)>"
+      }
+    }
+    Start-Sleep -Milliseconds 50
+  } while ([DateTime]::UtcNow -lt `$deadlineUtc)
+  throw "launcher fixture identity wait timed out: fixture runtime did not record parent and child process identities; identityPath=`$identityPath lastIdentity=`$lastIdentity"
+}
+"@
+      }
+
+      function Get-FixturePostStartFailureMessage([string]$Failure) {
+        if ($Failure -in @("selection-reread", "selection-reread-and-cleanup")) { return "injected selection reread failure" }
+        if ($Failure -eq "hash") { return "injected hash failure" }
+        if ($Failure -eq "record-write") { return "injected record write failure" }
+        throw "unknown post-start fixture failure: $Failure"
+      }
+
+      function Add-FixturePostStartFailure([string]$ExecutionLauncher, [string]$Failure) {
+        $functionAnchor = '$launchFailure = $null'
+        if (-not $ExecutionLauncher.Contains($functionAnchor)) { throw "generated launcher fixture did not retain the post-start failure function boundary" }
+        $executionWithIdentityWait = $ExecutionLauncher.Replace($functionAnchor, ((New-FixturePostStartFailure) + "`n" + $functionAnchor))
+        $message = Get-FixturePostStartFailureMessage $Failure
+
+        if ($Failure -in @("selection-reread", "selection-reread-and-cleanup")) {
+          $needle = '  $current = Get-Content -LiteralPath (Join-Path $stateRoot "current.json") -Raw -Encoding UTF8 | ConvertFrom-Json'
+          $replacement = "  Wait-FixtureRuntimeIdentities`n  throw `"$message`""
+        } elseif ($Failure -eq "hash") {
+          $needle = 'Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256'
+          $replacement = "(Wait-FixtureRuntimeIdentities; throw `"$message`")"
+        } elseif ($Failure -eq "record-write") {
+          $needle = '[IO.File]::WriteAllText($temporary,'
+          $replacement = "Wait-FixtureRuntimeIdentities; throw `"$message`"; [IO.File]::WriteAllText(`$temporary,"
+        }
+
+        if (-not $executionWithIdentityWait.Contains($needle)) { throw "generated launcher fixture did not retain the $Failure failure boundary" }
+        return $executionWithIdentityWait.Replace($needle, $replacement)
+      }
+
       function Write-LauncherExecutionFixture([string]$Failure) {
         Remove-Item -LiteralPath $fixtureDescendantIdentityPath -Force -ErrorAction SilentlyContinue
         [IO.File]::WriteAllText($fixtureSelectionPath, ($fixtureSelection | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
         $executionLauncher = $launcher.Replace('$stateRoot = "C:\ProgramData\VEM\vision"', ("`$stateRoot = '{0}'" -f $fixtureStateRoot.Replace("'", "''")))
-        if ($Failure -eq "selection-reread") {
-          $needle = '  $current = Get-Content -LiteralPath (Join-Path $stateRoot "current.json") -Raw -Encoding UTF8 | ConvertFrom-Json'
-          $executionLauncher = $executionLauncher.Replace($needle, '  throw "injected selection reread failure"')
-        } elseif ($Failure -eq "hash") {
-          $executionLauncher = $executionLauncher.Replace('Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256', '(throw "injected hash failure")')
-        } elseif ($Failure -eq "record-write") {
-          $executionLauncher = $executionLauncher.Replace('[IO.File]::WriteAllText($temporary,', 'throw "injected record write failure"; [IO.File]::WriteAllText($temporary,')
-        } elseif ($Failure -eq "selection-reread-and-cleanup") {
-          $needle = '  $current = Get-Content -LiteralPath (Join-Path $stateRoot "current.json") -Raw -Encoding UTF8 | ConvertFrom-Json'
-          $executionLauncher = $executionLauncher.Replace($needle, '  throw "injected selection reread failure"')
-          $terminationOverrides = @'
-[VemVisionLauncher.KillOnCloseJob]::TerminateJobObjectOverride = [Func[IntPtr,uint32,bool]] { param($job, $exitCode) return $false }
-[VemVisionLauncher.NativeProcess]::TerminateProcessOverride = [Func[IntPtr,uint32,bool]] { param($process, $exitCode) return $false }
+        if ($Failure -in @("selection-reread", "hash", "record-write", "selection-reread-and-cleanup")) {
+          $executionLauncher = Add-FixturePostStartFailure $executionLauncher $Failure
+        }
+        if ($Failure -eq "selection-reread-and-cleanup") {
+          $terminationFailureEnvironmentVariable = "VEM_VISION_LAUNCHER_FIXTURE_FORCE_TERMINATE_FAILURE"
+          $nativeTerminationStub = @"
+    private static bool TerminateProcessForFixture(IntPtr processHandle, uint exitCode) {
+      if (Environment.GetEnvironmentVariable("$terminationFailureEnvironmentVariable") == "1") {
+        return false;
+      }
+      return TerminateProcess(processHandle, exitCode);
+    }
+
+"@
+          $jobTerminationStub = @"
+    private static bool TerminateJobObjectForFixture(IntPtr job, uint exitCode) {
+      if (Environment.GetEnvironmentVariable("$terminationFailureEnvironmentVariable") == "1") {
+        return false;
+      }
+      return TerminateJobObject(job, exitCode);
+    }
+
+"@
+          $nativeTerminationMethod = @'
+    public void Terminate() {
+      if (processHandle == IntPtr.Zero) { return; }
+      if (TerminateProcess(processHandle, 1)) { return; }
 '@
-          $executionLauncher = $executionLauncher.Replace('$commandLine = ', ($terminationOverrides + '$commandLine = '))
+          $jobTerminationMethod = @'
+    public void Terminate() {
+      if (handle == IntPtr.Zero) { return; }
+      if (TerminateJobObject(handle, 1)) { return; }
+'@
+          if (-not $executionLauncher.Contains($nativeTerminationMethod) -or -not $executionLauncher.Contains($jobTerminationMethod)) { throw "generated launcher fixture did not retain both native termination paths" }
+          $executionLauncher = $executionLauncher.Replace($nativeTerminationMethod, ($nativeTerminationStub + $nativeTerminationMethod.Replace('TerminateProcess(processHandle, 1)', 'TerminateProcessForFixture(processHandle, 1)')))
+          $executionLauncher = $executionLauncher.Replace($jobTerminationMethod, ($jobTerminationStub + $jobTerminationMethod.Replace('TerminateJobObject(handle, 1)', 'TerminateJobObjectForFixture(handle, 1)')))
+          foreach ($stub in @("TerminateProcessForFixture", "TerminateJobObjectForFixture", $terminationFailureEnvironmentVariable)) {
+            if (-not $executionLauncher.Contains($stub)) { throw "generated launcher fixture did not inject runtime native termination failure: $stub" }
+          }
         }
         if ($executionLauncher -ceq $launcher) { throw "launcher execution fixture did not inject $Failure" }
         [IO.File]::WriteAllText($fixtureLauncherPath, $executionLauncher, [Text.UTF8Encoding]::new($false))
@@ -216,20 +296,38 @@ public static class LauncherFixtureRuntime {
         throw "launcher $Failure failure left its started process running"
       }
 
-      function Get-FixtureRuntimeIdentities {
+      function Wait-FixtureRuntimeIdentities([string]$Failure) {
         $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        $lastIdentity = "<missing>"
         do {
           if (Test-Path -LiteralPath $fixtureDescendantIdentityPath -PathType Leaf) {
-            $parts = (Get-Content -LiteralPath $fixtureDescendantIdentityPath -Raw).Trim().Split(',')
-            [int]$parentId = 0
-            [int]$descendantId = 0
-            if ($parts.Count -eq 2 -and [int]::TryParse($parts[0], [ref]$parentId) -and $parentId -gt 0 -and [int]::TryParse($parts[1], [ref]$descendantId) -and $descendantId -gt 0) {
-              return [pscustomobject]@{ parentId=$parentId; descendantId=$descendantId }
+            try {
+              $lastIdentity = (Get-Content -LiteralPath $fixtureDescendantIdentityPath -Raw -Encoding UTF8).Trim()
+              $parts = $lastIdentity.Split(',')
+              [int]$parentId = 0
+              [int]$descendantId = 0
+              if ($parts.Count -eq 2 -and [int]::TryParse($parts[0], [ref]$parentId) -and $parentId -gt 0 -and [int]::TryParse($parts[1], [ref]$descendantId) -and $descendantId -gt 0 -and $parentId -ne $descendantId) {
+                return [pscustomobject]@{ parentId=$parentId; descendantId=$descendantId }
+              }
+            } catch {
+              $lastIdentity = "<read failed: $($_.Exception.Message)>"
             }
           }
           Start-Sleep -Milliseconds 50
         } while ([DateTime]::UtcNow -lt $deadline)
-        throw "launcher fixture runtime did not record its descendant process"
+        throw "launcher fixture identity wait timed out: fixture runtime did not record parent and child process identities for $Failure; identityPath=$fixtureDescendantIdentityPath lastIdentity=$lastIdentity"
+      }
+
+      function Assert-FixtureRuntimeIdentitiesStopped([string]$Failure, [object]$Identities) {
+        foreach ($identity in @(
+          [pscustomobject]@{ role="parent"; processId=[int]$Identities.parentId },
+          [pscustomobject]@{ role="descendant"; processId=[int]$Identities.descendantId }
+        )) {
+          $fixtureProcess = Get-Process -Id $identity.processId -ErrorAction SilentlyContinue
+          if ($null -ne $fixtureProcess) {
+            try { throw "launcher $Failure failure left tracked $($identity.role) process $($identity.processId) running" } finally { $fixtureProcess.Dispose() }
+          }
+        }
       }
 
       try {
@@ -241,7 +339,7 @@ public static class LauncherFixtureRuntime {
         $fixtureRecord = Get-Content -LiteralPath $fixtureRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $fixtureProcess = Get-Process -Id $fixtureRecord.processId -ErrorAction Stop
         if ($fixtureProcess.Path -cne $fixtureRuntimePath) { throw "generated launcher recorded the wrong process" }
-        $fixtureRuntimeIdentities = Get-FixtureRuntimeIdentities
+        $fixtureRuntimeIdentities = Wait-FixtureRuntimeIdentities "success"
         if ($fixtureRuntimeIdentities.parentId -ne $fixtureRecord.processId) { throw "generated launcher descendant record identified the wrong parent process" }
         $fixtureDescendant = Get-Process -Id $fixtureRuntimeIdentities.descendantId -ErrorAction Stop
         try {
@@ -259,16 +357,13 @@ public static class LauncherFixtureRuntime {
         foreach ($failure in @("selection-reread", "hash", "record-write")) {
           Remove-Item -LiteralPath $fixtureRecordPath -Force -ErrorAction SilentlyContinue
           Write-LauncherExecutionFixture $failure
-          & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureLauncherPath 2>$null | Out-Null
+          $fixtureFailureOutput = @(& $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureLauncherPath 2>&1)
           if ($LASTEXITCODE -eq 0) { throw "generated launcher accepted injected $failure failure" }
-          $fixtureRuntimeIdentities = Get-FixtureRuntimeIdentities
+          $expectedFailureMessage = Get-FixturePostStartFailureMessage $failure
+          if ((@($fixtureFailureOutput) -join "`n") -notmatch [regex]::Escape($expectedFailureMessage)) { throw "generated launcher did not report the injected $failure failure" }
+          $fixtureRuntimeIdentities = Wait-FixtureRuntimeIdentities $failure
           Assert-FixtureRuntimeStopped $failure
-          foreach ($processId in @($fixtureRuntimeIdentities.parentId, $fixtureRuntimeIdentities.descendantId)) {
-            $fixtureProcess = Get-Process -Id $processId -ErrorAction SilentlyContinue
-            if ($null -ne $fixtureProcess) {
-              try { throw "launcher $failure failure left tracked process $processId running" } finally { $fixtureProcess.Dispose() }
-            }
-          }
+          Assert-FixtureRuntimeIdentitiesStopped $failure $fixtureRuntimeIdentities
           if (Test-Path -LiteralPath $fixtureRecordPath -PathType Leaf) { throw "launcher $failure failure committed a process record" }
         }
 
@@ -278,27 +373,42 @@ public static class LauncherFixtureRuntime {
         $escapedFixtureLauncherPath = $fixtureLauncherPath.Replace("'", "''")
         [IO.File]::WriteAllText($fixtureFailureRunnerPath, @"
 `$ErrorActionPreference = "Stop"
+`$env:VEM_VISION_LAUNCHER_FIXTURE_FORCE_TERMINATE_FAILURE = "1"
+`$fixtureIdentityPath = '$escapedFixtureDescendantIdentityPath'
+`$fixtureRuntimeIdentities = `$null
 try {
   & '$escapedFixtureLauncherPath'
   throw "aggregate failure fixture did not throw"
 } catch {
+  `$identity = (Get-Content -LiteralPath `$fixtureIdentityPath -Raw -Encoding UTF8).Trim().Split(',')
+  [int]`$parentId = 0
+  [int]`$descendantId = 0
+  if (`$identity.Count -ne 2 -or -not [int]::TryParse(`$identity[0], [ref]`$parentId) -or `$parentId -lt 1 -or -not [int]::TryParse(`$identity[1], [ref]`$descendantId) -or `$descendantId -lt 1 -or `$parentId -eq `$descendantId) { throw "aggregate failure fixture runner did not collect parent and child process identities" }
+  `$fixtureRuntimeIdentities = [pscustomobject]@{ parentId=`$parentId; descendantId=`$descendantId }
   `$failure = `$_.Exception
-  if (`$failure -isnot [AggregateException] -or `$failure.Message -ne "Vision launcher failed and cleanup failed") { throw "aggregate failure fixture did not preserve the outer AggregateException" }
+  if (`$failure -isnot [AggregateException] -or `$failure.Message -notlike "Vision launcher failed and cleanup failed*") { throw "aggregate failure fixture did not preserve the outer AggregateException" }
   `$outerFailures = @(`$failure.InnerExceptions)
   if (`$outerFailures.Count -ne 2) { throw "aggregate failure fixture did not preserve both primary and cleanup failures" }
   if (`$outerFailures[0] -isnot [Management.Automation.RuntimeException] -or `$outerFailures[0].Message -ne "injected selection reread failure") { throw "aggregate failure fixture did not preserve the primary post-start failure" }
-  if (`$outerFailures[1] -isnot [AggregateException] -or `$outerFailures[1].Message -ne "Vision launcher cleanup failed") { throw "aggregate failure fixture did not preserve the cleanup aggregate" }
+  if (`$outerFailures[1] -isnot [AggregateException] -or `$outerFailures[1].Message -notlike "Vision launcher cleanup failed*") { throw "aggregate failure fixture did not preserve the cleanup aggregate" }
   `$cleanupFailures = @(`$outerFailures[1].InnerExceptions)
   if (`$cleanupFailures.Count -ne 2) { throw "aggregate failure fixture did not preserve both cleanup failures" }
   if (`$cleanupFailures[0] -isnot [ComponentModel.Win32Exception] -or `$cleanupFailures[0].Message -notmatch "TerminateJobObject failed") { throw "aggregate failure fixture did not preserve the false Job Object return" }
   if (`$cleanupFailures[1] -isnot [ComponentModel.Win32Exception] -or `$cleanupFailures[1].Message -notmatch "TerminateProcess failed") { throw "aggregate failure fixture did not preserve the false process return" }
 }
-Write-Output "aggregate failure fixture passed"
+if (`$null -eq `$fixtureRuntimeIdentities) { throw "aggregate failure fixture runner did not collect runtime process identities" }
+Write-Output ("aggregate failure fixture passed parentId={0} descendantId={1}" -f `$fixtureRuntimeIdentities.parentId, `$fixtureRuntimeIdentities.descendantId)
 "@, [Text.UTF8Encoding]::new($false))
-        $fixtureFailureOutput = & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureFailureRunnerPath 2>$null
-        if ($LASTEXITCODE -ne 0) { throw "aggregate failure fixture did not execute successfully" }
-        if ((@($fixtureFailureOutput) -join "`n") -notmatch "aggregate failure fixture passed") { throw "aggregate failure fixture did not report success" }
+        $fixtureFailureOutput = @(& $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureFailureRunnerPath 2>&1)
+        if ($LASTEXITCODE -ne 0) { throw "aggregate failure fixture runner failed: $($fixtureFailureOutput -join [Environment]::NewLine)" }
+        $fixtureFailureText = @($fixtureFailureOutput) -join "`n"
+        if ($fixtureFailureText -match 'CS0162|unreachable code') { throw "aggregate failure fixture compiled unreachable C# code: $($fixtureFailureOutput -join [Environment]::NewLine)" }
+        if ($fixtureFailureText -notmatch "aggregate failure fixture passed") { throw "aggregate failure fixture did not report success" }
+        $fixtureRuntimeIdentities = Wait-FixtureRuntimeIdentities "selection-reread-and-cleanup"
+        $expectedFixtureIdentityReport = "aggregate failure fixture passed parentId={0} descendantId={1}" -f $fixtureRuntimeIdentities.parentId, $fixtureRuntimeIdentities.descendantId
+        if ($fixtureFailureText -notmatch [regex]::Escape($expectedFixtureIdentityReport)) { throw "aggregate failure fixture runner did not report the collected parent and child process identities" }
         Assert-FixtureRuntimeStopped "selection-reread-and-cleanup"
+        Assert-FixtureRuntimeIdentitiesStopped "selection-reread-and-cleanup" $fixtureRuntimeIdentities
         if (Test-Path -LiteralPath $fixtureRecordPath -PathType Leaf) { throw "launcher aggregate failure fixture committed a process record" }
       } finally {
         foreach ($fixtureProcess in @(Get-FixtureRuntimeProcesses)) {

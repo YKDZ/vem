@@ -126,8 +126,8 @@ describe("Vision release installer fixtures", () => {
         launcher,
         /\[DllImport\("kernel32\.dll", SetLastError = true\)\]\s+private static extern bool TerminateJobObject/,
       );
-      assert.match(launcher, /TerminateProcessOverride/);
-      assert.match(launcher, /TerminateJobObjectOverride/);
+      assert.doesNotMatch(launcher, /TerminateProcessOverride/);
+      assert.doesNotMatch(launcher, /TerminateJobObjectOverride/);
       assert.match(
         launcher,
         /throw new Win32Exception\(error, "TerminateProcess failed"\)/,
@@ -206,6 +206,83 @@ describe("Vision release installer fixtures", () => {
       assert.match(source, /const TEST_TIMEOUT_MS = 60_000/);
       assert.match(source, /function parsePowerShell/);
       assert.match(source, /spawnSync/);
+    },
+  );
+
+  boundedIt(
+    "keeps launcher cleanup failure injection compatible with Windows PowerShell",
+    () => {
+      const fixtureSource = readFileSync(fixture, "utf8");
+      assert.match(
+        fixtureSource,
+        /generated launcher fixture did not inject runtime native termination failure/,
+      );
+      assert.doesNotMatch(
+        fixtureSource,
+        /Terminate(?:JobObject|Process)Override\s*=\s*\[Func\[/,
+      );
+      assert.doesNotMatch(fixtureSource, /Marshal\.SetLastWin32Error/);
+      assert.doesNotMatch(fixtureSource, /if \(false\) \{ return; \}/);
+      assert.match(
+        fixtureSource,
+        /VEM_VISION_LAUNCHER_FIXTURE_FORCE_TERMINATE_FAILURE/,
+      );
+      assert.match(fixtureSource, /TerminateJobObjectForFixture/);
+      assert.match(fixtureSource, /TerminateProcessForFixture/);
+    },
+  );
+
+  boundedIt(
+    "makes every post-start failure fixture observe its started process tree",
+    () => {
+      const fixtureSource = readFileSync(fixture, "utf8");
+      assert.match(fixtureSource, /New-FixturePostStartFailure/);
+      assert.match(fixtureSource, /Get-FixturePostStartFailureMessage/);
+      assert.match(fixtureSource, /Wait-FixtureRuntimeIdentities/);
+      assert.match(
+        fixtureSource,
+        /fixture runtime did not record parent and child process identities/,
+      );
+      assert.match(fixtureSource, /launcher fixture identity wait timed out/);
+      assert.match(fixtureSource, /Assert-FixtureRuntimeIdentitiesStopped/);
+      assert.match(
+        fixtureSource,
+        /aggregate failure fixture runner did not collect parent and child process identities/,
+      );
+      assert.match(
+        fixtureSource,
+        /aggregate failure fixture runner did not report the collected parent and child process identities/,
+      );
+      assert.match(
+        fixtureSource,
+        /Assert-FixtureRuntimeIdentitiesStopped "selection-reread-and-cleanup"/,
+      );
+      assert.match(fixtureSource, /function Add-FixturePostStartFailure/);
+      assert.match(
+        fixtureSource,
+        /\$Failure -in @\("selection-reread", "hash", "record-write", "selection-reread-and-cleanup"\)/,
+      );
+      assert.match(
+        fixtureSource,
+        /Add-FixturePostStartFailure \$executionLauncher \$Failure/,
+      );
+      assert.match(
+        fixtureSource,
+        /\$message = Get-FixturePostStartFailureMessage \$Failure/,
+      );
+      assert.match(
+        fixtureSource,
+        /Get-FixturePostStartFailureMessage \$failure/,
+      );
+      assert.match(
+        fixtureSource,
+        /generated launcher did not report the injected \$failure failure/,
+      );
+      assert.match(
+        fixtureSource,
+        /launcher aggregate failure fixture committed a process record/,
+      );
+      assert.match(fixtureSource, /selection-reread-and-cleanup/);
     },
   );
 });
