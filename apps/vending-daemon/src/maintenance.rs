@@ -157,9 +157,10 @@ impl WireGuardEncryptedConfigStore for WindowsDpapiWireGuardConfigStore {
         #[cfg(windows)]
         {
             let tunnel_name = tunnel_name.to_string();
+            let tunnel_name_for_protection = tunnel_name.clone();
             let plaintext_config = plaintext_config.to_vec();
             let encrypted = tokio::task::spawn_blocking(move || {
-                protect_wireguard_config(&plaintext_config, &tunnel_name)
+                protect_wireguard_config(&plaintext_config, &tunnel_name_for_protection)
             })
             .await
             .map_err(|error| format!("join WireGuard DPAPI protection failed: {error}"))??;
