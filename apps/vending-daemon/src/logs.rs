@@ -33,6 +33,9 @@ pub async fn append_local_log(path: &Path, entry: &LocalLogEntry) -> Result<(), 
     tokio::io::AsyncWriteExt::write_all(&mut file, &payload)
         .await
         .map_err(|error| format!("write log entry failed: {error}"))?;
+    tokio::io::AsyncWriteExt::flush(&mut file)
+        .await
+        .map_err(|error| format!("flush log entry failed: {error}"))?;
 
     Ok(())
 }
