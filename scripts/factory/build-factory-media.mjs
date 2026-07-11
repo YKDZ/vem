@@ -38,6 +38,21 @@ import {
 
 const run = promisify(execFile);
 const FIXED_EPOCH_SECONDS = 315_532_800;
+const SEVEN_ZIP_BANNER_VERSION =
+  /^7-Zip[ \t]+(?:\[64\][ \t]+)?(?<version>\d+\.\d+(?:\.\d+)?)(?:[ \t]+\(x64\))?[ \t]*:[^\r\n]*\r?$/m;
+
+export function parse7ZipBannerVersion(output) {
+  return SEVEN_ZIP_BANNER_VERSION.exec(output)?.groups?.version;
+}
+
+export function hasExpected7ZipBannerVersion(output, manifestVersion) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(manifestVersion);
+  if (!match) return false;
+  const [, major, minor, patch] = match;
+  const expected = `${major}.${minor.padStart(2, "0")}${patch === "0" ? "" : `.${patch}`}`;
+  return parse7ZipBannerVersion(output) === expected;
+}
+
 const SECTOR_BYTES = 2048;
 const ISO_RANGE_CACHE_PAGES = 64;
 const UDF_VOLUME_SET_ID = "VEM_FACTORY_SET";
@@ -2743,14 +2758,11 @@ async function executeWindowsServicedIsoBuilder({
     run(writer, ["--version"], { cwd: workDirectory, env: toolEnv }),
     run(wimlibExecutable, ["--version"], { cwd: workDirectory, env: toolEnv }),
   ]);
-  const [extractorMajor, extractorMinor, extractorPatch] =
-    extractorVersion.split(".");
-  const reportedExtractorVersion = `${extractorMajor}.${extractorMinor.padStart(2, "0")}${extractorPatch === "0" ? "" : `.${extractorPatch}`}`;
   if (
-    !new RegExp(
-      `7-zip[^\\r\\n]*${reportedExtractorVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
-      "i",
-    ).test(`${extractorInfo.stdout}\n${extractorInfo.stderr}`)
+    !hasExpected7ZipBannerVersion(
+      `${extractorInfo.stdout}\n${extractorInfo.stderr}`,
+      extractorVersion,
+    )
   )
     throw new Error(
       `executed UDF extractor version does not match pinned manifest version ${extractorVersion}`,

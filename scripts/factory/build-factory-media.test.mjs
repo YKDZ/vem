@@ -28,7 +28,9 @@ import {
   inspectIsoFilesystemExtents,
   inspectIsoFilesystemViews,
   inspectWindowsSetupIso,
+  hasExpected7ZipBannerVersion,
   normalizeDescriptorTimestampsFile,
+  parse7ZipBannerVersion,
   rangeBackedIsoMedia,
 } from "./build-factory-media.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
@@ -73,6 +75,64 @@ function toolVersion(path, args, expression, label) {
   assert.ok(version, `${label} must report a version`);
   return version;
 }
+
+function sevenZipVersion(path) {
+  const version = parse7ZipBannerVersion(
+    execFileSync(path, [], { encoding: "utf8" }),
+  );
+  assert.ok(version, "7z must report a version");
+  return version;
+}
+
+describe("7-Zip banner version parsing", () => {
+  it("captures official and local 7-Zip banner versions strictly", () => {
+    assert.equal(
+      parse7ZipBannerVersion(
+        "7-Zip 23.01 (x64) : Copyright (c) 1999-2023 Igor Pavlov",
+      ),
+      "23.01",
+    );
+    assert.equal(
+      parse7ZipBannerVersion(
+        "7-Zip [64] 26.01 : Copyright (c) 1999-2026 Igor Pavlov",
+      ),
+      "26.01",
+    );
+    assert.equal(parse7ZipBannerVersion("7-Zip 23.01.2.3 (x64)"), undefined);
+    for (const banner of [
+      "7-Zip\n23.01 (x64) : Copyright (c) 1999-2023 Igor Pavlov",
+      "7-Zip [64]\n26.01 : Copyright (c) 1999-2026 Igor Pavlov",
+      "7-Zip [portable] 26.01 : Copyright (c) 1999-2026 Igor Pavlov",
+      "7-Zip [64] [portable] 26.01 : Copyright (c) 1999-2026 Igor Pavlov",
+      "7-Zip 23.01 (x86) : Copyright (c) 1999-2023 Igor Pavlov",
+      "7-Zip 23.01 (x64)\n: Copyright (c) 1999-2023 Igor Pavlov",
+      "7-Zip 23.01.2.3 (x64) : Copyright (c) 1999-2023 Igor Pavlov",
+    ]) {
+      assert.equal(parse7ZipBannerVersion(banner), undefined);
+    }
+    assert.equal(
+      hasExpected7ZipBannerVersion(
+        "7-Zip 23.01 (x64) : Copyright (c) 1999-2023 Igor Pavlov",
+        "23.1.0",
+      ),
+      true,
+    );
+    assert.equal(
+      hasExpected7ZipBannerVersion(
+        "7-Zip [64] 26.01 : Copyright (c) 1999-2026 Igor Pavlov",
+        "26.1.0",
+      ),
+      true,
+    );
+    assert.equal(
+      hasExpected7ZipBannerVersion(
+        "7-Zip 23.01 (x64) : Copyright (c) 1999-2023 Igor Pavlov",
+        "23.2.0",
+      ),
+      false,
+    );
+  });
+});
 
 function isoDirectoryRecord({ sector, bytes, flags = 0, identifier }) {
   const name = Buffer.isBuffer(identifier)
@@ -298,12 +358,7 @@ async function fixture() {
   const udfExtractor = {
     identity: `tool://7z@${udfExtractorDigest}`,
     digest: udfExtractorDigest,
-    version: `${toolVersion(
-      UDF_EXTRACTOR_PATH,
-      [],
-      /7-Zip\s+\[[^\]]+\]\s+([0-9.]+)/i,
-      "7z",
-    )
+    version: `${sevenZipVersion(UDF_EXTRACTOR_PATH)
       .split(".")
       .map((part) => String(Number(part)))
       .join(".")}.0`,

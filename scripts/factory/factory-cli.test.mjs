@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { promisify } from "node:util";
 
+import { parse7ZipBannerVersion } from "./build-factory-media.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { canonicalJson, createFactoryManifest } from "./factory-manifest.mjs";
 import { createSignedAssetEvidence } from "./verify-asset-evidence.mjs";
@@ -44,6 +45,31 @@ function toolVersion(path, args, expression, label) {
   return version;
 }
 
+function sevenZipVersion(path) {
+  const version = parse7ZipBannerVersion(
+    execFileSync(path, [], { encoding: "utf8" }),
+  );
+  assert.ok(version, "7z must report a version");
+  return version;
+}
+
+describe("7-Zip banner fixture parsing", () => {
+  it("accepts official and local 7-Zip banners", () => {
+    assert.equal(
+      parse7ZipBannerVersion(
+        "7-Zip 23.01 (x64) : Copyright (c) 1999-2023 Igor Pavlov",
+      ),
+      "23.01",
+    );
+    assert.equal(
+      parse7ZipBannerVersion(
+        "7-Zip [64] 26.01 : Copyright (c) 1999-2026 Igor Pavlov",
+      ),
+      "26.01",
+    );
+  });
+});
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "vem-factory-cli-"));
   const udfExtractorHash = createHash("sha256")
@@ -52,12 +78,7 @@ async function fixture() {
   const udfExtractor = {
     identity: `tool://7z@sha256:${udfExtractorHash}`,
     digest: `sha256:${udfExtractorHash}`,
-    version: `${toolVersion(
-      UDF_EXTRACTOR_PATH,
-      [],
-      /7-Zip\s+\[[^\]]+\]\s+([0-9.]+)/i,
-      "7z",
-    )
+    version: `${sevenZipVersion(UDF_EXTRACTOR_PATH)
       .split(".")
       .map((part) => String(Number(part)))
       .join(".")}.0`,
