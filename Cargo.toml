@@ -30,4 +30,4 @@ tokio-serial = "5"
 tokio-tungstenite = "0.24"
 tokio-util = "0.7"
 uuid = { version = "1", features = ["v4", "serde"] }
-zip = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
