@@ -88,6 +88,18 @@ describe("Vision release installer fixtures", () => {
     });
   }
 
+  boundedIt("declares the optional Vision runtime binding result", () => {
+    const source = readFileSync(
+      "scripts/windows/verify-vem-runtime.ps1",
+      "utf8",
+    );
+    assert.match(source, /binding = \$null/);
+    assert.match(
+      source,
+      /\$checks\.vision\.binding = Test-VisionRuntimeBinding/,
+    );
+  });
+
   boundedIt("stops non-reparse traversal at a Windows drive root", () => {
     for (const path of [
       "scripts/windows/install-vision-release.ps1",

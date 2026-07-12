@@ -229,6 +229,7 @@ $checks.vision = [pscustomobject]@{
   activeProcessDigest = if ($null -ne $visionActiveProcess) { [string]$visionActiveProcess.bundleDigest } else { $null }
   processRunning = $null -ne $visionProcess
   processId = if ($null -ne $visionProcess) { $visionProcess.ProcessId } else { $null }
+  binding = $null
 }
 if ($RequireVisionOnline) {
   if ($null -eq $visionTask -or [string]$visionTask.State -eq "Disabled") {
