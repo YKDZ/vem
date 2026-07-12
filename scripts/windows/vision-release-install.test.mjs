@@ -323,6 +323,14 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
         behavior,
         /VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE[\s\S]*?behavior\.watchdog-missing-completion-unconfirmed[\s\S]*?behavior\.primary-failure-job-confirmation-unavailable/,
       );
+      assert.match(
+        behavior,
+        /\$scenarioTerminateUnresumedFailure = \$null\s+if \(\$scenario\.forceTerminateFailure\) \{\s+\$scenarioTerminateUnresumedFailure = "1"\s+\}\s+\[Environment\]::SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", \$scenarioTerminateUnresumedFailure, \[EnvironmentVariableTarget\]::Process\)/,
+      );
+      assert.doesNotMatch(
+        behavior,
+        /SetEnvironmentVariable\([^\r\n]*\(if\s*\(/,
+      );
     },
   );
 

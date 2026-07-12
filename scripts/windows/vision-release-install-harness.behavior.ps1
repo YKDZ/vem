@@ -422,7 +422,11 @@ public static class MissingCompletionWatchdog {
       [pscustomobject]@{ stage="behavior.watchdog-missing-completion-job"; forceTerminateFailure=$true; authority="job-object" }
     )) {
       Assert-BeforeDeadline
-      [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", (if ($scenario.forceTerminateFailure) { "1" } else { $null }), [EnvironmentVariableTarget]::Process)
+      $scenarioTerminateUnresumedFailure = $null
+      if ($scenario.forceTerminateFailure) {
+        $scenarioTerminateUnresumedFailure = "1"
+      }
+      [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $scenarioTerminateUnresumedFailure, [EnvironmentVariableTarget]::Process)
       $records = New-Object 'System.Collections.Generic.List[object]'
       $failure = $null
       try {
