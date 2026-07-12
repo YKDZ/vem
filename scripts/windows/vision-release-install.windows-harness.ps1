@@ -1979,7 +1979,11 @@ Assert-True ($acl.AreAccessRulesProtected) "selection ACL is inherited"
       }
       throw
     }
-    Invoke-BoundedPowerShell -Stage "fixture.rollback-reinstall.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+    $rollbackDiagnosticPath = Join-Path $root "rollback-reinstall-error.txt"
+    Remove-Item -LiteralPath $rollbackDiagnosticPath -Force -ErrorAction SilentlyContinue
+    try {
+      Invoke-BoundedPowerShell -Stage "fixture.rollback-reinstall.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+try {
 $factoryRoot = $context.factoryRoot
 $stateRoot = $context.stateRoot
 $evidencePath = $context.evidencePath
@@ -2029,7 +2033,17 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
   & "C:\VEM\bringup\install-vision-release.ps1" -BundlePath (Join-Path $factoryRoot "vision-release\bundle.bin") -DescriptorPath (Join-Path $factoryRoot "vision-release\descriptor.json") -AttestationPath (Join-Path $factoryRoot "vision-release\attestation.json") -SbomPath (Join-Path $factoryRoot "vision-release\sbom.json") -ProvenancePath (Join-Path $factoryRoot "vision-release\provenance.json") -ConformanceEvidencePath (Join-Path $factoryRoot "vision-release\conformance.json") -ApprovalPath (Join-Path $factoryRoot "vision-release\approval.json") -FactoryManifestPath (Join-Path $factoryRoot "vision-release\factory-manifest.json") -ConfigurationPath (Join-Path $stateRoot "config\fixture.json") -EvidencePath $evidencePath -TaskUser $env:USERNAME
   $reinstalled = Get-Content -LiteralPath "C:\ProgramData\VEM\vision\current.json" -Raw | ConvertFrom-Json
   Assert-True ($reinstalled.bundleDigest -eq $bundleDigest) "idempotent reinstall changed the selected digest"
+} catch {
+  [IO.File]::WriteAllText((Join-Path $context.root "rollback-reinstall-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
+  throw
+}
 '@ | Out-Null
+    } catch {
+      if (Test-Path -LiteralPath $rollbackDiagnosticPath -PathType Leaf) {
+        throw "fixture rollback/reinstall failed under ${corePowerShellName}: $(Get-Content -LiteralPath $rollbackDiagnosticPath -Raw)"
+      }
+      throw
+    }
   }
 
   Invoke-BoundedPowerShell -Stage "fixture.process-mutex-runtime" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
