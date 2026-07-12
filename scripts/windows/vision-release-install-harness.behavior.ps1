@@ -462,10 +462,17 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 public static class BlockingCommandWatchdog {
+  private const uint WAIT_OBJECT_0 = 0;
+  private const uint WAIT_FAILED = 0xFFFFFFFF;
+
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool CloseHandle(IntPtr handle);
 
   private static void Write(string path, string value) {
     var bytes = new UTF8Encoding(false).GetBytes(value);
@@ -475,21 +482,92 @@ public static class BlockingCommandWatchdog {
     }
   }
 
+  private static bool TryReadFixtureDeadline(string path, out long ticks) {
+    ticks = 0;
+    try {
+      var bytes = new byte[32];
+      var count = 0;
+      using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+        while (count < bytes.Length) {
+          var read = stream.Read(bytes, count, bytes.Length - count);
+          if (read == 0) { break; }
+          count += read;
+        }
+      }
+      var frame = Encoding.UTF8.GetString(bytes, 0, count);
+      if (!frame.EndsWith("\n", StringComparison.Ordinal)) { return false; }
+      return Int64.TryParse(frame.Substring(0, frame.Length - 1), NumberStyles.None, CultureInfo.InvariantCulture, out ticks);
+    } catch (IOException) { return false; }
+    catch (UnauthorizedAccessException) { return false; }
+  }
+
   public static int Main(string[] args) {
     if (args == null || args.Length != 6) { return 2; }
-    Directory.CreateDirectory(args[1]);
-    Write(args[2], "armed");
     var process = new IntPtr(unchecked((long)UInt64.Parse(args[0], CultureInfo.InvariantCulture)));
-    WaitForSingleObject(process, 15000);
-    return 0;
+    var exitReason = "deadline";
+    try {
+    Write(args[2], "armed");
+    var armedSignalPath = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_ARMED_SIGNAL_PATH");
+    var commandBlockedSignalPath = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCKED_SIGNAL_PATH");
+    var commandBlockDeadlinePath = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PATH");
+    if (String.IsNullOrWhiteSpace(armedSignalPath) || String.IsNullOrWhiteSpace(commandBlockedSignalPath) || String.IsNullOrWhiteSpace(commandBlockDeadlinePath)) { exitReason = "fixture-invalid"; return 3; }
+    var setupDeadlineUtc = new DateTime(Int64.Parse(args[4], NumberStyles.None, CultureInfo.InvariantCulture), DateTimeKind.Utc);
+    var deadlineUtc = setupDeadlineUtc;
+    var fixtureDeadlineAccepted = false;
+    var commandBlocked = false;
+    for (;;) {
+      if (!fixtureDeadlineAccepted) {
+        if (DateTime.UtcNow >= setupDeadlineUtc) { exitReason = "deadline"; return 0; }
+        long fixtureDeadlineTicks;
+        if (TryReadFixtureDeadline(commandBlockDeadlinePath, out fixtureDeadlineTicks)) {
+          if (DateTime.UtcNow >= setupDeadlineUtc) { exitReason = "deadline"; return 0; }
+          var fixtureDeadlineUtc = new DateTime(fixtureDeadlineTicks, DateTimeKind.Utc);
+          if (fixtureDeadlineUtc <= setupDeadlineUtc || fixtureDeadlineUtc > setupDeadlineUtc.AddMilliseconds(2000)) { exitReason = "fixture-deadline-invalid"; return 5; }
+          deadlineUtc = fixtureDeadlineUtc;
+          fixtureDeadlineAccepted = true;
+        }
+      }
+      if (DateTime.UtcNow >= deadlineUtc) { exitReason = "deadline"; return 0; }
+        if (!commandBlocked && File.Exists(armedSignalPath)) {
+          Directory.CreateDirectory(args[1]);
+          File.WriteAllText(commandBlockedSignalPath, "blocked", new UTF8Encoding(false));
+          commandBlocked = true;
+        }
+        var remainingMilliseconds = Math.Max(1, (int)Math.Ceiling((deadlineUtc - DateTime.UtcNow).TotalMilliseconds));
+        var waitMilliseconds = (uint)Math.Min(10, remainingMilliseconds);
+        var waitResult = WaitForSingleObject(process, waitMilliseconds);
+        if (waitResult == WAIT_OBJECT_0) { exitReason = "target-signaled"; return 0; }
+        if (waitResult == WAIT_FAILED) { exitReason = "target-wait-failed"; return 4; }
+      }
+    } finally {
+      CloseHandle(process);
+      var exitSignalPath = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_EXIT_PATH");
+      if (!String.IsNullOrWhiteSpace(exitSignalPath)) {
+        try { File.WriteAllText(exitSignalPath, exitReason, new UTF8Encoding(false)); } catch { }
+      }
+    }
   }
 }
 '@
   & $csc /nologo /target:exe ("/out:{0}" -f $blockingCommandWatchdogPath) $blockingCommandWatchdogSourcePath
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $blockingCommandWatchdogPath -PathType Leaf)) { throw "blocking command watchdog fixture compilation failed" }
   $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
+  $commandBlockArmedSignalPath = Join-Path $root "blocking-command.armed"
+  $commandBlockedSignalPath = Join-Path $root "blocking-command.blocked"
+  $commandBlockDeadlinePath = Join-Path $root "blocking-command.deadline"
+  $commandBlockExitPath = Join-Path $root "blocking-command.exit"
+  $previousCommandBlockArmedSignalPath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_ARMED_SIGNAL_PATH", [EnvironmentVariableTarget]::Process)
+  $previousCommandBlockedSignalPath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCKED_SIGNAL_PATH", [EnvironmentVariableTarget]::Process)
+  $previousCommandBlockDeadlinePath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PATH", [EnvironmentVariableTarget]::Process)
+  $previousCommandBlockDeadlinePartialWriteDelay = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PARTIAL_WRITE_DELAY_MILLISECONDS", [EnvironmentVariableTarget]::Process)
+  $previousCommandBlockExitPath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_EXIT_PATH", [EnvironmentVariableTarget]::Process)
   $script:HarnessSuspendedProcessWatchdogPath = $blockingCommandWatchdogPath
   try {
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_ARMED_SIGNAL_PATH", $commandBlockArmedSignalPath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCKED_SIGNAL_PATH", $commandBlockedSignalPath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PATH", $commandBlockDeadlinePath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PARTIAL_WRITE_DELAY_MILLISECONDS", "50", [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_EXIT_PATH", $commandBlockExitPath, [EnvironmentVariableTarget]::Process)
     $blockingCommandRecords = New-Object 'System.Collections.Generic.List[object]'
     $blockingCommandFailure = $null
     try {
@@ -505,8 +583,15 @@ public static class BlockingCommandWatchdog {
     }) -join [Environment]::NewLine
     Assert-True ($blockingCommandTelemetry -match "stage=behavior.watchdog-command-write-failure status=suspended-process-termination-confirmed detail=processId=[0-9]+") "watchdog command write fixture did not confirm native target termination"
     Assert-True ($blockingCommandTelemetry -notmatch "stage=behavior.watchdog-command-write-failure status=suspended-process-watchdog-completion-ignored") "watchdog command write failure was incorrectly downgraded"
+    Wait-ForSignal -Path $commandBlockExitPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) -FailureMessage "blocking command watchdog did not observe native target termination while waiting for its armed signal"
+    Assert-True ((Get-Content -LiteralPath $commandBlockExitPath -Raw).Trim() -ceq "target-signaled") "blocking command watchdog did not close after the inherited target handle signaled"
   } finally {
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_ARMED_SIGNAL_PATH", $previousCommandBlockArmedSignalPath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCKED_SIGNAL_PATH", $previousCommandBlockedSignalPath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PATH", $previousCommandBlockDeadlinePath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PARTIAL_WRITE_DELAY_MILLISECONDS", $previousCommandBlockDeadlinePartialWriteDelay, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_EXIT_PATH", $previousCommandBlockExitPath, [EnvironmentVariableTarget]::Process)
   }
 
   Assert-BeforeDeadline
