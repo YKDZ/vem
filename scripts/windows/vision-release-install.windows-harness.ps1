@@ -442,6 +442,7 @@ namespace VemVisionHarness {
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
     private IntPtr handle;
     private bool forceActiveProcessCountFailure;
+    private readonly bool forcePersistentActiveProcessCountFailure;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct IO_COUNTERS {
@@ -559,6 +560,7 @@ namespace VemVisionHarness {
       try {
         AssertNativeLayout();
         forceActiveProcessCountFailure = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_FAILURE") == "1";
+        forcePersistentActiveProcessCountFailure = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE") == "1";
         var information = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
         information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         var size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
@@ -600,7 +602,7 @@ namespace VemVisionHarness {
 
     public uint ActiveProcessCount() {
       if (handle == IntPtr.Zero) { throw new ObjectDisposedException("KillOnCloseJob"); }
-      if (forceActiveProcessCountFailure) {
+      if (forcePersistentActiveProcessCountFailure || forceActiveProcessCountFailure) {
         forceActiveProcessCountFailure = false;
         throw new Win32Exception(87, "QueryInformationJobObject fixture failure");
       }
@@ -1434,6 +1436,8 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     exceptionalExit = $false
   }
   $operationFailure = $null
+  $watchdogCompletionFailure = $null
+  $watchdogCompletionAction = $null
   $cleanupFailures = New-Object 'System.Collections.Generic.List[System.Exception]'
   $result = $null
   if ([string]::IsNullOrWhiteSpace([string]$script:HarnessSuspendedProcessWatchdogPath)) { throw "suspended-process watchdog is not initialized" }
@@ -1462,7 +1466,15 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     Write-HarnessStage $Stage "process-ownership" "state=job-assigned-suspended processId=$($nativeProcess.ProcessId)"
     $handoffDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($confirmationReserveMilliseconds)
     if ($handoffDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $handoffDeadlineUtc = $harnessCleanupDeadlineUtc }
-    $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action "disarm" -DeadlineUtc $handoffDeadlineUtc
+    try {
+      $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action "disarm" -DeadlineUtc $handoffDeadlineUtc
+    } catch {
+      if ($suspendedProcessWatchdog.terminalCompletion -eq "missing-completion") {
+        $watchdogCompletionFailure = $_
+        $watchdogCompletionAction = "disarm"
+      }
+      throw
+    }
     Write-HarnessStage $Stage "suspended-process-watchdog-disarmed" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion"
     $suspendedProcessWatchdog = $null
     $nativeProcess.Resume()
@@ -1506,7 +1518,9 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $operationFailure = $_
   } finally {
     $nativeCleanupFailure = $null
+    $targetTerminationConfirmationFailures = New-Object 'System.Collections.Generic.List[System.Exception]'
     $nativeCleanupConfirmed = $null -eq $nativeProcess -or $nativeProcess.IsResumed
+    $nativeTargetTerminationConfirmed = $null -eq $nativeProcess
     try {
       if ($null -ne $nativeProcess -and -not $nativeProcess.IsResumed) {
         Write-HarnessStage $Stage "suspended-process-termination-requested" "processId=$($nativeProcess.ProcessId)"
@@ -1514,25 +1528,46 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
           $nativeProcess.TerminateUnresumed([uint32](Get-HarnessRemainingMilliseconds -DeadlineUtc $cleanupDeadlineUtc))
           Write-HarnessStage $Stage "suspended-process-termination-confirmed" "processId=$($nativeProcess.ProcessId)"
           $nativeCleanupConfirmed = $true
+          $nativeTargetTerminationConfirmed = $true
         } catch {
           Write-HarnessStage $Stage "suspended-process-termination-failed" (Get-HarnessTerminationFailureDetail -Operation "terminate-suspended-process" -ErrorRecord $_)
-          $nativeCleanupFailure = $_
+          $targetTerminationConfirmationFailures.Add($_.Exception)
         }
         if ($null -ne $suspendedProcessWatchdog) {
-          try {
-            $watchdogAction = if ($nativeCleanupConfirmed) { "disarm" } else { "terminate" }
-            $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action $watchdogAction -DeadlineUtc $cleanupDeadlineUtc
-            if (-not $nativeCleanupConfirmed) {
-              if (-not $nativeProcess.WaitForExit([uint32](Get-HarnessRemainingMilliseconds -DeadlineUtc $cleanupDeadlineUtc))) { throw "suspended-process watchdog reported '$watchdogCompletion' without a signaled original process handle" }
-              $nativeCleanupConfirmed = $true
-              Write-HarnessStage $Stage "suspended-process-watchdog-terminated" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion identity=original-process-handle"
-            } else {
-              Write-HarnessStage $Stage "suspended-process-watchdog-disarmed" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion"
+          if ($null -eq $watchdogCompletionFailure) {
+            $watchdogCompletion = $null
+            try {
+              $watchdogAction = if ($nativeCleanupConfirmed) { "disarm" } else { "terminate" }
+              $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action $watchdogAction -DeadlineUtc $cleanupDeadlineUtc
+            } catch {
+              if ($suspendedProcessWatchdog.terminalCompletion -eq "missing-completion") {
+                $watchdogCompletionFailure = $_
+                $watchdogCompletionAction = $watchdogAction
+              } else {
+                $cleanupFailures.Add($_.Exception)
+                try {
+                  Close-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog
+                } catch {
+                  $cleanupFailures.Add($_.Exception)
+                }
+                $suspendedProcessWatchdog = $null
+              }
             }
-            $suspendedProcessWatchdog = $null
-          } catch {
-            if ($null -eq $nativeCleanupFailure) { $nativeCleanupFailure = $_ }
-            else { $cleanupFailures.Add($_.Exception) }
+            if ($null -ne $watchdogCompletion) {
+              if (-not $nativeCleanupConfirmed) {
+                try {
+                  if (-not $nativeProcess.WaitForExit([uint32](Get-HarnessRemainingMilliseconds -DeadlineUtc $cleanupDeadlineUtc))) { throw "suspended-process watchdog reported '$watchdogCompletion' without a signaled original process handle" }
+                  $nativeCleanupConfirmed = $true
+                  $nativeTargetTerminationConfirmed = $true
+                  Write-HarnessStage $Stage "suspended-process-watchdog-terminated" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion identity=original-process-handle"
+                } catch {
+                  $targetTerminationConfirmationFailures.Add($_.Exception)
+                }
+              } else {
+                Write-HarnessStage $Stage "suspended-process-watchdog-disarmed" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion"
+              }
+              $suspendedProcessWatchdog = $null
+            }
           }
         }
       }
@@ -1551,6 +1586,24 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
           $jobCleanupConfirmed = $true
         } catch {
           $cleanupFailures.Add($_.Exception)
+        }
+        $authoritativeTargetTerminationConfirmed = $nativeTargetTerminationConfirmed -or ($jobCleanupConfirmed -and $cleanupState.processOwnership -in @("job-assigned-suspended", "resumed-job-assigned"))
+        if ($null -ne $watchdogCompletionFailure) {
+          if ($authoritativeTargetTerminationConfirmed) {
+            $terminationAuthority = if ($nativeTargetTerminationConfirmed) { "native-process-handle" } else { "job-object" }
+            Write-HarnessStage $Stage "suspended-process-watchdog-completion-ignored" "action=$watchdogCompletionAction completion=missing-completion authority=$terminationAuthority"
+            $suspendedProcessWatchdog = $null
+          } else {
+            $targetTerminationConfirmationFailures.Add($watchdogCompletionFailure.Exception)
+          }
+        }
+        if ($authoritativeTargetTerminationConfirmed) {
+          if ($targetTerminationConfirmationFailures.Count -gt 0) {
+            $terminationAuthority = if ($nativeTargetTerminationConfirmed) { "native-process-handle" } else { "job-object" }
+            Write-HarnessStage $Stage "suspended-process-termination-fallback-confirmed" "authority=$terminationAuthority failures=$($targetTerminationConfirmationFailures.Count)"
+          }
+        } else {
+          foreach ($targetTerminationConfirmationFailure in $targetTerminationConfirmationFailures) { $cleanupFailures.Add($targetTerminationConfirmationFailure) }
         }
         if ($null -ne $nativeProcess -and -not $nativeCleanupConfirmed) {
           if ($jobCleanupConfirmed -and $cleanupState.processOwnership -in @("job-assigned-suspended", "resumed-job-assigned")) {

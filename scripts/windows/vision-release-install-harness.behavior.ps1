@@ -351,12 +351,16 @@ public static class SlowWatchdog {
     Thread.Sleep(4000);
     Write(args[2], "armed");
     for (;;) {
-      if (File.Exists(args[1])) {
-        var command = File.ReadAllText(args[1]).Trim();
-        if (String.Equals(command, "disarm", StringComparison.Ordinal)) {
-          Write(args[3], "disarmed");
-          return 0;
+      try {
+        if (File.Exists(args[1])) {
+          var command = File.ReadAllText(args[1]).Trim();
+          if (String.Equals(command, "disarm", StringComparison.Ordinal)) {
+            Write(args[3], "disarmed");
+            return 0;
+          }
         }
+      } catch (IOException) {
+      } catch (UnauthorizedAccessException) {
       }
       Thread.Sleep(10);
     }
@@ -373,6 +377,175 @@ public static class SlowWatchdog {
     Assert-True ($delayedWatchdogSetup.stdout.Trim() -ceq "watchdog-setup-budget") "watchdog setup consumed the child execution timeout before resume"
   } finally {
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+  }
+
+  Assert-BeforeDeadline
+  $missingCompletionWatchdogPath = Join-Path $root "missing-completion-watchdog.exe"
+  $missingCompletionWatchdogSourcePath = Join-Path $root "MissingCompletionWatchdog.cs"
+  Write-Utf8 $missingCompletionWatchdogSourcePath @'
+using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+public static class MissingCompletionWatchdog {
+  private static void Write(string path, string value) {
+    var bytes = new UTF8Encoding(false).GetBytes(value);
+    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
+      stream.Write(bytes, 0, bytes.Length);
+      stream.Flush(true);
+    }
+  }
+
+  public static int Main(string[] args) {
+    if (args == null || args.Length != 6) { return 2; }
+    Write(args[2], "armed");
+    for (;;) {
+      try {
+        if (File.Exists(args[1]) && String.Equals(File.ReadAllText(args[1]).Trim(), "disarm", StringComparison.Ordinal)) { return 0; }
+      } catch (IOException) {
+      } catch (UnauthorizedAccessException) {
+      }
+      Thread.Sleep(10);
+    }
+  }
+}
+'@
+  & $csc /nologo /target:exe ("/out:{0}" -f $missingCompletionWatchdogPath) $missingCompletionWatchdogSourcePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $missingCompletionWatchdogPath -PathType Leaf)) { throw "missing-completion watchdog fixture compilation failed" }
+  $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
+  $previousTerminateUnresumedFailure = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", [EnvironmentVariableTarget]::Process)
+  $script:HarnessSuspendedProcessWatchdogPath = $missingCompletionWatchdogPath
+  try {
+    foreach ($scenario in @(
+      [pscustomobject]@{ stage="behavior.watchdog-missing-completion-native"; forceTerminateFailure=$false; authority="native-process-handle" },
+      [pscustomobject]@{ stage="behavior.watchdog-missing-completion-job"; forceTerminateFailure=$true; authority="job-object" }
+    )) {
+      Assert-BeforeDeadline
+      [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", (if ($scenario.forceTerminateFailure) { "1" } else { $null }), [EnvironmentVariableTarget]::Process)
+      $records = New-Object 'System.Collections.Generic.List[object]'
+      $failure = $null
+      try {
+        Invoke-BoundedPowerShell -Stage $scenario.stage -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(10)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$records.Add($_) }
+      } catch {
+        $failure = $_.Exception
+      }
+      Assert-True ($null -ne $failure) "$($scenario.stage) accepted a missing watchdog completion"
+      Assert-True ($failure -isnot [AggregateException]) "$($scenario.stage) turned a missing watchdog completion into a cleanup AggregateException: $failure"
+      Assert-True ($failure.Message -match "could not disarm process [0-9]+: missing-completion") "$($scenario.stage) did not preserve the original missing disarm completion: $failure"
+      $telemetry = ($records | ForEach-Object {
+        if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
+      }) -join [Environment]::NewLine
+      Assert-True ($telemetry -match "stage=$($scenario.stage) status=suspended-process-watchdog-completion-ignored detail=action=disarm completion=missing-completion authority=$($scenario.authority)") "$($scenario.stage) did not record its authoritative target termination"
+      if ($scenario.forceTerminateFailure) {
+        Assert-True ($telemetry -match "stage=$($scenario.stage) status=suspended-process-termination-failed") "$($scenario.stage) did not record its native termination failure before Job fallback"
+        Assert-True ($telemetry -match "stage=$($scenario.stage) status=termination-confirmed detail=termination=job-object activeProcesses=0") "$($scenario.stage) did not confirm Job Object termination"
+      } else {
+        Assert-True ($telemetry -match "stage=$($scenario.stage) status=suspended-process-termination-confirmed detail=processId=[0-9]+") "$($scenario.stage) did not confirm native suspended target termination"
+      }
+    }
+  } finally {
+    $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $previousTerminateUnresumedFailure, [EnvironmentVariableTarget]::Process)
+  }
+
+  Assert-BeforeDeadline
+  $blockingCommandWatchdogPath = Join-Path $root "blocking-command-watchdog.exe"
+  $blockingCommandWatchdogSourcePath = Join-Path $root "BlockingCommandWatchdog.cs"
+  Write-Utf8 $blockingCommandWatchdogSourcePath @'
+using System;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class BlockingCommandWatchdog {
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+  private static void Write(string path, string value) {
+    var bytes = new UTF8Encoding(false).GetBytes(value);
+    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
+      stream.Write(bytes, 0, bytes.Length);
+      stream.Flush(true);
+    }
+  }
+
+  public static int Main(string[] args) {
+    if (args == null || args.Length != 6) { return 2; }
+    Directory.CreateDirectory(args[1]);
+    Write(args[2], "armed");
+    var process = new IntPtr(unchecked((long)UInt64.Parse(args[0], CultureInfo.InvariantCulture)));
+    WaitForSingleObject(process, 15000);
+    return 0;
+  }
+}
+'@
+  & $csc /nologo /target:exe ("/out:{0}" -f $blockingCommandWatchdogPath) $blockingCommandWatchdogSourcePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $blockingCommandWatchdogPath -PathType Leaf)) { throw "blocking command watchdog fixture compilation failed" }
+  $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
+  $script:HarnessSuspendedProcessWatchdogPath = $blockingCommandWatchdogPath
+  try {
+    $blockingCommandRecords = New-Object 'System.Collections.Generic.List[object]'
+    $blockingCommandFailure = $null
+    try {
+      Invoke-BoundedPowerShell -Stage "behavior.watchdog-command-write-failure" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$blockingCommandRecords.Add($_) }
+    } catch {
+      $blockingCommandFailure = $_.Exception
+    }
+    Assert-True ($blockingCommandFailure -is [AggregateException]) "watchdog command write failure was swallowed after native termination confirmation: $blockingCommandFailure"
+    $blockingCommandMessages = @($blockingCommandFailure.InnerExceptions | ForEach-Object { $_.Message }) -join [Environment]::NewLine
+    Assert-True ($blockingCommandMessages -match "could not acquire the command path") "watchdog command write failure was absent from the cleanup aggregate: $blockingCommandMessages"
+    $blockingCommandTelemetry = ($blockingCommandRecords | ForEach-Object {
+      if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
+    }) -join [Environment]::NewLine
+    Assert-True ($blockingCommandTelemetry -match "stage=behavior.watchdog-command-write-failure status=suspended-process-termination-confirmed detail=processId=[0-9]+") "watchdog command write fixture did not confirm native target termination"
+    Assert-True ($blockingCommandTelemetry -notmatch "stage=behavior.watchdog-command-write-failure status=suspended-process-watchdog-completion-ignored") "watchdog command write failure was incorrectly downgraded"
+  } finally {
+    $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+  }
+
+  Assert-BeforeDeadline
+  $previousTerminateUnresumedFailure = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", [EnvironmentVariableTarget]::Process)
+  $previousPersistentActiveProcessCountFailure = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE", [EnvironmentVariableTarget]::Process)
+  $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
+  $script:HarnessSuspendedProcessWatchdogPath = $missingCompletionWatchdogPath
+  try {
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", "1", [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE", "1", [EnvironmentVariableTarget]::Process)
+    $unconfirmedRecords = New-Object 'System.Collections.Generic.List[object]'
+    $unconfirmedFailure = $null
+    try {
+      Invoke-BoundedPowerShell -Stage "behavior.watchdog-missing-completion-unconfirmed" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$unconfirmedRecords.Add($_) }
+    } catch {
+      $unconfirmedFailure = $_.Exception
+    }
+    Assert-True ($unconfirmedFailure -is [AggregateException]) "missing completion without native or Job confirmation did not aggregate: $unconfirmedFailure"
+    $unconfirmedMessages = @($unconfirmedFailure.InnerExceptions | ForEach-Object { $_.Message }) -join [Environment]::NewLine
+    Assert-True ($unconfirmedMessages -match "could not disarm process [0-9]+: missing-completion") "unconfirmed aggregate omitted the original missing completion: $unconfirmedMessages"
+    Assert-True ($unconfirmedMessages -match "could not confirm its Job Object was empty") "unconfirmed aggregate omitted the Job confirmation failure: $unconfirmedMessages"
+    $unconfirmedTelemetry = ($unconfirmedRecords | ForEach-Object {
+      if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
+    }) -join [Environment]::NewLine
+    Assert-True ($unconfirmedTelemetry -notmatch "stage=behavior.watchdog-missing-completion-unconfirmed status=suspended-process-watchdog-completion-ignored") "unconfirmed missing completion was incorrectly ignored"
+
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $null, [EnvironmentVariableTarget]::Process)
+    $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+    $primaryFailure = $null
+    try {
+      Invoke-BoundedPowerShell -Stage "behavior.primary-failure-job-confirmation-unavailable" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output primary-nonzero; exit 23' | Out-Null
+    } catch {
+      $primaryFailure = $_.Exception
+    }
+    Assert-True ($primaryFailure -is [AggregateException]) "primary operation failure with unavailable Job confirmation did not aggregate: $primaryFailure"
+    Assert-True ($primaryFailure.InnerExceptions.Count -ge 2) "primary operation aggregate omitted its cleanup failure: $primaryFailure"
+    Assert-True ($primaryFailure.InnerExceptions[0].Message -match "failed with exit code 23") "primary operation failure was not retained as the aggregate primary error: $($primaryFailure.InnerExceptions[0])"
+    $primaryMessages = @($primaryFailure.InnerExceptions | ForEach-Object { $_.Message }) -join [Environment]::NewLine
+    Assert-True ($primaryMessages -match "could not confirm its Job Object was empty") "primary operation aggregate omitted the unavailable Job confirmation: $primaryMessages"
+  } finally {
+    $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $previousTerminateUnresumedFailure, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE", $previousPersistentActiveProcessCountFailure, [EnvironmentVariableTarget]::Process)
   }
 
   Assert-BeforeDeadline

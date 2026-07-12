@@ -188,6 +188,7 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
         "utf8",
       );
       const harness = readFileSync(windowsHarness, "utf8");
+      const behavior = readFileSync(behaviorHarness, "utf8");
       const result = spawnBounded("node", [
         "-e",
         "const fs=require('fs'); const s=fs.readFileSync('scripts/windows/install-vision-release.ps1','utf8'); const required=['FactoryTrustRoot','FactoryTrustPolicyPath','FactoryEvidenceVerifierPath','Assert-FactoryTrustAcl','process-state','CreateProcessW','CREATE_SUSPENDED','STARTUPINFO','PROCESS_INFORMATION','vision.hello','vision.ready','Get-ExtractedFileManifest','Assert-InstalledRelease','Resolve-ApprovedVisionExecution','Quarantine-UntrustedReleaseDirectory','Get-CanonicalContainedPath','CON|PRN|AUX|NUL']; const forbidden=['[string]$TrustPolicyPath','[string]$EvidenceVerifierPath','FactoryTrustAnchorDigest']; for (const item of required) if (!s.includes(item)) throw new Error('missing '+item); for (const item of forbidden) if (s.includes(item)) throw new Error('mutable trust input '+item);",
@@ -301,6 +302,26 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       assert.match(
         harness,
         /Invoke-HarnessJobCleanup[\s\S]*?\$jobCleanupConfirmed = \$true[\s\S]*?if \(\$null -ne \$nativeProcess -and -not \$nativeCleanupConfirmed\) \{[\s\S]*?if \(\$jobCleanupConfirmed -and \$cleanupState\.processOwnership -in @\("job-assigned-suspended", "resumed-job-assigned"\)\) \{[\s\S]*?\$nativeProcess\.Dispose\(\)[\s\S]*?suspended-process-handle-released.*reason=job-cleanup-confirmed/,
+      );
+      assert.match(
+        harness,
+        /\$nativeTargetTerminationConfirmed = \$null -eq \$nativeProcess[\s\S]*?\$authoritativeTargetTerminationConfirmed = \$nativeTargetTerminationConfirmed -or \(\$jobCleanupConfirmed -and \$cleanupState\.processOwnership -in @\("job-assigned-suspended", "resumed-job-assigned"\)\)[\s\S]*?if \(\$authoritativeTargetTerminationConfirmed\) \{[\s\S]*?suspended-process-watchdog-completion-ignored[\s\S]*?\} else \{[\s\S]*?\$cleanupFailures\.Add\(/,
+      );
+      assert.match(
+        harness,
+        /\$targetTerminationConfirmationFailures = New-Object 'System\.Collections\.Generic\.List\[System\.Exception\]'[\s\S]*?if \(\$suspendedProcessWatchdog\.terminalCompletion -eq "missing-completion"\) \{[\s\S]*?\$watchdogCompletionFailure = \$_[\s\S]*?\} else \{[\s\S]*?\$cleanupFailures\.Add\(\$_.Exception\)[\s\S]*?Close-HarnessSuspendedProcessWatchdog -Watchdog \$suspendedProcessWatchdog/,
+      );
+      assert.match(
+        behavior,
+        /public static class MissingCompletionWatchdog[\s\S]*?behavior\.watchdog-missing-completion-native[\s\S]*?authority="native-process-handle"[\s\S]*?behavior\.watchdog-missing-completion-job[\s\S]*?authority="job-object"/,
+      );
+      assert.match(
+        behavior,
+        /public static class BlockingCommandWatchdog[\s\S]*?behavior\.watchdog-command-write-failure[\s\S]*?could not acquire the command path/,
+      );
+      assert.match(
+        behavior,
+        /VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE[\s\S]*?behavior\.watchdog-missing-completion-unconfirmed[\s\S]*?behavior\.primary-failure-job-confirmation-unavailable/,
       );
     },
   );
