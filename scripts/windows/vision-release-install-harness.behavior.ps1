@@ -584,7 +584,7 @@ public static class MissingCompletionWatchdog {
   try {
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", "1", [EnvironmentVariableTarget]::Process)
-    $commandWriteFailureStage = "behavior.watchdog-command-write-failure"
+    $commandWriteFailureStage = "behavior.watchdog-write-failure"
     Assert-HarnessWatchdogStagePathBudget -Stage $commandWriteFailureStage
     $commandWriteFailureRecords = New-Object 'System.Collections.Generic.List[object]'
     $commandWriteFailure = $null
