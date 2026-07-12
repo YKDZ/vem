@@ -828,10 +828,7 @@ function Start-HarnessSuspendedProcessWatchdog {
 
     $setupCleanupReserveMilliseconds = [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($remainingMilliseconds / 4)))
     $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
-    $readyBudgetMilliseconds = [Math]::Max(0, $remainingMilliseconds - $setupCleanupReserveMilliseconds)
     $readyDeadlineUtc = $DeadlineUtc.AddMilliseconds(-$setupCleanupReserveMilliseconds)
-    $readyPollDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds([Math]::Min(2500, $readyBudgetMilliseconds))
-    if ($readyPollDeadlineUtc -lt $readyDeadlineUtc) { $readyDeadlineUtc = $readyPollDeadlineUtc }
     while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadlineUtc) { Start-Sleep -Milliseconds 10 }
     if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) { throw "suspended-process watchdog did not inherit the original process handle before setup continued" }
     $ready = (Get-Content -LiteralPath $readyPath -Raw -Encoding UTF8).Trim()
