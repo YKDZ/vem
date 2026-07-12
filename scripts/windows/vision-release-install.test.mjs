@@ -118,6 +118,14 @@ describe("Vision release installer fixtures", () => {
     assert.match(source, /else \{\s*"None"\s*\}/);
   });
 
+  boundedIt("uses object fields for strict install evidence", () => {
+    const source = readFileSync(
+      "scripts/windows/install-vision-release.ps1",
+      "utf8",
+    );
+    assert.match(source, /\$evidence = \[pscustomobject\]\[ordered\]@\{/);
+  });
+
   boundedIt(
     "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",
     () => {

@@ -873,7 +873,7 @@ function Write-InstallEvidence([object]$Value) {
   Write-AtomicJson $EvidencePath $Value
 }
 
-$evidence = [ordered]@{ schemaVersion="vem-vision-install-evidence/v3"; kind="vision-release-install-evidence"; bundleDigest=$null; descriptorDigest=$null; approvalDigest=$null; previousDigest=$null; installedDigest=$null; healthOk=$false; webSocketOk=$false; rollbackAttempted=$false; rollbackOk=$false; failure=""; redacted=$true }
+$evidence = [pscustomobject][ordered]@{ schemaVersion="vem-vision-install-evidence/v3"; kind="vision-release-install-evidence"; bundleDigest=$null; descriptorDigest=$null; approvalDigest=$null; previousDigest=$null; installedDigest=$null; healthOk=$false; webSocketOk=$false; rollbackAttempted=$false; rollbackOk=$false; failure=""; redacted=$true }
 $mutex = [Threading.Mutex]::new($false, "Global\VEMVisionReleaseInstaller")
 $previous = $null; $next = $null; $activationStarted = $false; $lockHeld = $false
 try {
