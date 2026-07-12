@@ -22,8 +22,12 @@ function Assert-BeforeDeadline {
 function Assert-HarnessWatchdogStagePathBudget([string]$Stage) {
   $stageRoot = Join-Path $root ("diagnostics\" + $Stage + "-" + ("0" * 32))
   $watchdogRoot = Join-Path (Join-Path $stageRoot "suspended-process-watchdog") ("0" * 32)
+  $fixtureDeadlinePath = Join-Path $watchdogRoot "ready.deadline"
+  $fixtureConfirmationPath = Join-Path $watchdogRoot "ready.confirm"
   Assert-True ($stageRoot.Length -lt 248) "$Stage stage root exceeds the Windows current-directory length budget"
   Assert-True ($watchdogRoot.Length -lt 248) "$Stage watchdog root exceeds the Windows current-directory length budget"
+  Assert-True ($fixtureDeadlinePath.Length -lt 248) "$Stage fixture deadline path exceeds the Windows current-directory length budget"
+  Assert-True ($fixtureConfirmationPath.Length -lt 248) "$Stage fixture confirmation path exceeds the Windows current-directory length budget"
 }
 
 function Get-RunningProcess([int]$ProcessId) {
@@ -690,7 +694,7 @@ public static class SetupTimeoutWatchdog {
   public static int Main(string[] args) {
     if (args == null || args.Length != 6) { return 2; }
     Write(args[2] + ".deadline", args[4]);
-    Write(args[2] + ".confirmation-deadline", args[5]);
+    Write(args[2] + ".confirm", args[5]);
     var deadlineUtc = new DateTime(Int64.Parse(args[4], NumberStyles.None, CultureInfo.InvariantCulture), DateTimeKind.Utc);
     while (DateTime.UtcNow < deadlineUtc) { Thread.Sleep(10); }
     var process = new IntPtr(unchecked((long)UInt64.Parse(args[0], CultureInfo.InvariantCulture)));
@@ -706,6 +710,8 @@ public static class SetupTimeoutWatchdog {
   & $csc /nologo /target:exe ("/out:{0}" -f $setupTimeoutWatchdogPath) $setupTimeoutWatchdogSourcePath
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $setupTimeoutWatchdogPath -PathType Leaf)) { throw "setup timeout watchdog fixture compilation failed" }
   $setupTimeoutTranscriptPath = Join-Path $root "setup-timeout-watchdog.telemetry.log"
+  $setupTimeoutStage = "behavior.watchdog-setup-timeout"
+  Assert-HarnessWatchdogStagePathBudget -Stage $setupTimeoutStage
   $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
   $previousTerminateUnresumedFailure = $env:VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE
   $script:HarnessSuspendedProcessWatchdogPath = $setupTimeoutWatchdogPath
@@ -716,7 +722,7 @@ public static class SetupTimeoutWatchdog {
     $setupTimeoutFailure = $null
     Start-Transcript -Path $setupTimeoutTranscriptPath -Force | Out-Null
     try {
-      Invoke-BoundedPowerShell -Stage "behavior.watchdog-setup-timeout" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc $setupTimeoutHarnessDeadlineUtc -ScriptBody 'Write-Output must-not-run' | Out-Null
+      Invoke-BoundedPowerShell -Stage $setupTimeoutStage -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc $setupTimeoutHarnessDeadlineUtc -ScriptBody 'Write-Output must-not-run' | Out-Null
     } catch {
       $setupTimeoutFailure = $_.Exception.Message
     } finally {
@@ -726,7 +732,7 @@ public static class SetupTimeoutWatchdog {
     $automaticDeadlinePath = Get-ChildItem -LiteralPath $root -Recurse -Filter "ready.deadline" | Select-Object -First 1 -ExpandProperty FullName
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$automaticDeadlinePath)) "setup timeout watchdog did not record its automatic termination deadline"
     $automaticDeadlineUtc = [DateTime]::new([Int64](Get-Content -LiteralPath $automaticDeadlinePath -Raw), [DateTimeKind]::Utc)
-    $automaticConfirmationDeadlinePath = Get-ChildItem -LiteralPath $root -Recurse -Filter "ready.confirmation-deadline" | Select-Object -First 1 -ExpandProperty FullName
+    $automaticConfirmationDeadlinePath = Get-ChildItem -LiteralPath $root -Recurse -Filter "ready.confirm" | Select-Object -First 1 -ExpandProperty FullName
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$automaticConfirmationDeadlinePath)) "setup timeout watchdog did not record its automatic confirmation deadline"
     $automaticConfirmationDeadlineUtc = [DateTime]::new([Int64](Get-Content -LiteralPath $automaticConfirmationDeadlinePath -Raw), [DateTimeKind]::Utc)
     Assert-True ($automaticDeadlineUtc -lt $setupTimeoutStartUtc.AddSeconds(6)) "setup timeout watchdog received the harness deadline instead of its setup deadline"
