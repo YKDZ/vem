@@ -102,6 +102,12 @@ describe("Vision release installer fixtures", () => {
     }
   });
 
+  boundedIt("normalizes Factory provisioning manifest paths", () => {
+    const source = readFileSync(windowsHarness, "utf8");
+    assert.match(source, /\.Replace\("\\","\/"\)/);
+    assert.doesNotMatch(source, /\.Replace\("\\\\","\/"\)/);
+  });
+
   boundedIt(
     "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",
     () => {

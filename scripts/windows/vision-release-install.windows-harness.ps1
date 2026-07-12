@@ -1924,7 +1924,7 @@ Write-Json (Join-Path $context.trust "vision-release-trust-anchor.json") @{schem
 try {
 Copy-Item -LiteralPath $context.installerPath -Destination (Join-Path $context.installerMedia "install-vision-release.ps1")
 Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $context.installerPath) "provision-vision-factory-release.ps1") -Destination (Join-Path $context.installerMedia "provision-vision-factory-release.ps1")
-$files = @{}; Get-ChildItem -LiteralPath (Join-Path $context.media "VEM") -Recurse -File | ForEach-Object { $relative=$_.FullName.Substring((Join-Path $context.media "VEM").Length+1).Replace("\\","/"); $files[$relative]=Get-Digest $_.FullName }
+$files = @{}; Get-ChildItem -LiteralPath (Join-Path $context.media "VEM") -Recurse -File | ForEach-Object { $relative=$_.FullName.Substring((Join-Path $context.media "VEM").Length+1).Replace("\","/"); $files[$relative]=Get-Digest $_.FullName }
 Write-Json (Join-Path $context.media "VEM\VISION-FACTORY-PROVISIONING.JSON") @{schemaVersion="vem-vision-factory-provisioning/v1";kind="vision-factory-provisioning";files=$files}
   $wrongParentFailed = $false
   try {
