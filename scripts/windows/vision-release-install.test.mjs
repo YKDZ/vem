@@ -177,6 +177,37 @@ exit 23
   );
 
   boundedIt(
+    "captures and mirrors behavior fault telemetry from the Information stream on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install-harness.behavior.ps1") -Library
+$marker = "VEM_VISION_HARNESS_INFORMATION_MIRROR_" + [guid]::NewGuid().ToString("N")
+$records = New-Object 'System.Collections.Generic.List[object]'
+& { Write-Host $marker } 6>&1 | ForEach-Object {
+  [void]$records.Add($_)
+  Write-FaultTelemetryRecordToHost $_
+}
+if ($records.Count -ne 1) { throw "expected one captured Information record, got $($records.Count)" }
+if ($records[0] -isnot [Management.Automation.InformationRecord]) { throw "captured record is not InformationRecord: $($records[0].GetType().FullName)" }
+if ([string]$records[0].MessageData -cne $marker) { throw "captured Information record changed: $($records[0].MessageData)" }
+`;
+      const result = spawnBounded("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      const marker = result.stdout.match(/VEM_VISION_HARNESS_INFORMATION_MIRROR_[0-9a-f]+/g);
+      assert.equal(marker?.length, 1, `Information telemetry was not mirrored exactly once: ${result.stdout}`);
+    },
+  );
+
+  boundedIt(
     "keeps trust roots outside update inputs and uses validated process/job lifecycles",
     () => {
       const installer = readFileSync(
@@ -310,6 +341,44 @@ exit 23
         "the direct behavior harness must run before the full Windows harness",
       );
       assert.match(visionJob, /-CorePowerShellPaths pwsh,powershell\.exe/);
+    },
+  );
+
+  boundedIt(
+    "keeps behavior fault telemetry transcript-free and bounds hard-watchdog signal waits",
+    () => {
+      const behavior = readFileSync(behaviorHarness, "utf8");
+      const faultLoop = behavior.match(
+        /\$faultRecords = New-Object 'System\.Collections\.Generic\.List\[object\]'([\s\S]*?)\n    if \(\$fault\.expectedOwnership/,
+      )?.[1];
+
+      assert.ok(faultLoop, "behavior fault telemetry capture is missing");
+      assert.match(
+        faultLoop,
+        /Invoke-BoundedPowerShell[\s\S]*?6>&1\s*\|\s*ForEach-Object\s*\{\s*\[void\]\$faultRecords\.Add\(\$_\)\s*Write-FaultTelemetryRecordToHost \$_\s*\}/,
+      );
+      assert.match(
+        faultLoop,
+        /\[Management\.Automation\.InformationRecord\][\s\S]*?\.MessageData/,
+      );
+      assert.doesNotMatch(faultLoop, /Start-Transcript|Stop-Transcript/);
+      assert.match(
+        behavior,
+        /function Write-FaultTelemetryRecordToHost\(\[object\]\$Record\)\s*\{[\s\S]*?\$Host\.UI\.WriteLine\(\$message\)/,
+      );
+      assert.doesNotMatch(behavior, /\$readyStopwatch|TimeoutSeconds 3/);
+      assert.match(
+        behavior,
+        /function Wait-ForSignal\(\[string\]\$Path, \[DateTime\]\$DeadlineUtc, \[string\]\$FailureMessage\)/,
+      );
+      assert.match(
+        behavior,
+        /\$runDeadlineUtc = \[DateTime\]::new\(\[Int64\]\$RunDeadlineUtcTicks, \[DateTimeKind\]::Utc\)/,
+      );
+      assert.match(
+        behavior,
+        /hard watchdog host did not receive its run signal before the behavior deadline/,
+      );
     },
   );
 

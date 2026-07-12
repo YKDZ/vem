@@ -2,7 +2,8 @@
 param(
   [string]$HarnessPath = (Join-Path $PSScriptRoot "vision-release-install.windows-harness.ps1"),
   [ValidateRange(30, 120)][int]$DeadlineSeconds = 60,
-  [ValidateRange(60, 180)][int]$HardDeadlineSeconds = 90
+  [ValidateRange(60, 180)][int]$HardDeadlineSeconds = 90,
+  [switch]$Library
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +74,7 @@ function Start-HardWatchdogHost {
     [Parameter(Mandatory = $true)][string]$IdentityPath,
     [Parameter(Mandatory = $true)][string]$ReadySignalPath,
     [Parameter(Mandatory = $true)][string]$RunSignalPath,
+    [Parameter(Mandatory = $true)][string]$RunDeadlineUtcTicks,
     [Parameter(Mandatory = $true)][string]$FaultSignalPath,
     [Parameter(Mandatory = $true)][string]$TelemetryPath,
     [Parameter(Mandatory = $true)][string]$ObservedChildPowerShellPath
@@ -82,16 +84,25 @@ function Start-HardWatchdogHost {
   $start.FileName = $PowerShellPath
   $start.UseShellExecute = $false
   $start.CreateNoWindow = $true
-  $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $HostPath, "-HarnessPath", $HarnessPath, "-HarnessRoot", $HarnessRoot, "-HarnessContextPath", $HarnessContextPath, "-ChildPowerShellPath", $ChildPowerShellPath, "-IdentityPath", $IdentityPath, "-ReadySignalPath", $ReadySignalPath, "-RunSignalPath", $RunSignalPath, "-FaultSignalPath", $FaultSignalPath, "-TelemetryPath", $TelemetryPath, "-ObservedChildPowerShellPath", $ObservedChildPowerShellPath)
+  $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $HostPath, "-HarnessPath", $HarnessPath, "-HarnessRoot", $HarnessRoot, "-HarnessContextPath", $HarnessContextPath, "-ChildPowerShellPath", $ChildPowerShellPath, "-IdentityPath", $IdentityPath, "-ReadySignalPath", $ReadySignalPath, "-RunSignalPath", $RunSignalPath, "-RunDeadlineUtcTicks", $RunDeadlineUtcTicks, "-FaultSignalPath", $FaultSignalPath, "-TelemetryPath", $TelemetryPath, "-ObservedChildPowerShellPath", $ObservedChildPowerShellPath)
   $start.Arguments = (($arguments | ForEach-Object { [VemVisionHarness.SuspendedProcess]::QuoteArgument([string]$_) }) -join " ")
   return [Diagnostics.Process]::Start($start)
 }
 
-function Wait-ForSignal([string]$Path, [int]$TimeoutSeconds, [string]$FailureMessage) {
-  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
-  while (-not (Test-Path -LiteralPath $Path -PathType Leaf) -and $stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) { Start-Sleep -Milliseconds 25 }
+function Wait-ForSignal([string]$Path, [DateTime]$DeadlineUtc, [string]$FailureMessage) {
+  while (-not (Test-Path -LiteralPath $Path -PathType Leaf) -and [DateTime]::UtcNow -lt $DeadlineUtc) {
+    $remainingMilliseconds = [Math]::Max(1, [int][Math]::Floor(($DeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds))
+    Start-Sleep -Milliseconds ([Math]::Min(25, $remainingMilliseconds))
+  }
   Assert-True (Test-Path -LiteralPath $Path -PathType Leaf) $FailureMessage
 }
+
+function Write-FaultTelemetryRecordToHost([object]$Record) {
+  $message = if ($Record -is [Management.Automation.InformationRecord]) { [string]$Record.MessageData } else { [string]$Record }
+  $Host.UI.WriteLine($message)
+}
+
+if ($Library) { return }
 
 if ($HardDeadlineSeconds -le $DeadlineSeconds) { throw "HardDeadlineSeconds must leave time for cleanup after DeadlineSeconds" }
 . $HarnessPath -Library
@@ -107,6 +118,12 @@ $hardWatchdogHost = $null
 $watchdog = $null
 
 try {
+  $deadlineStartUtc = [DateTime]::UtcNow
+  $script:deadlineUtc = $deadlineStartUtc.AddSeconds($DeadlineSeconds)
+  $hardDeadlineUtc = $deadlineStartUtc.AddSeconds($HardDeadlineSeconds)
+  $watchdogMessage = "vision installer harness behavior test exceeded its $HardDeadlineSeconds-second hard deadline"
+  $watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $hardDeadlineUtc
+
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   $layoutJob = New-HarnessKillOnCloseJob
@@ -127,16 +144,16 @@ try {
   $hardWatchdogTelemetryPath = Join-Path $root "hard-watchdog-host.telemetry.log"
   $observedChildPowerShellPath = Join-Path $root "hard-watchdog-host.child-powershell-path"
   Write-Utf8 $hardWatchdogHostPath @'
-param([string]$HarnessPath, [string]$HarnessRoot, [string]$HarnessContextPath, [string]$ChildPowerShellPath, [string]$IdentityPath, [string]$ReadySignalPath, [string]$RunSignalPath, [string]$FaultSignalPath, [string]$TelemetryPath, [string]$ObservedChildPowerShellPath)
+param([string]$HarnessPath, [string]$HarnessRoot, [string]$HarnessContextPath, [string]$ChildPowerShellPath, [string]$IdentityPath, [string]$ReadySignalPath, [string]$RunSignalPath, [string]$RunDeadlineUtcTicks, [string]$FaultSignalPath, [string]$TelemetryPath, [string]$ObservedChildPowerShellPath)
 $ErrorActionPreference = "Stop"
 . $HarnessPath -Library
 Initialize-HarnessNativeTypes
 $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $HarnessRoot
 [IO.File]::WriteAllText($ObservedChildPowerShellPath, $ChildPowerShellPath, [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText($ReadySignalPath, "ready", [Text.UTF8Encoding]::new($false))
-$readyStopwatch = [Diagnostics.Stopwatch]::StartNew()
-while (-not (Test-Path -LiteralPath $RunSignalPath -PathType Leaf) -and $readyStopwatch.Elapsed.TotalSeconds -lt 75) { Start-Sleep -Milliseconds 25 }
-if (-not (Test-Path -LiteralPath $RunSignalPath -PathType Leaf)) { throw "hard watchdog host did not receive its run signal" }
+$runDeadlineUtc = [DateTime]::new([Int64]$RunDeadlineUtcTicks, [DateTimeKind]::Utc)
+while (-not (Test-Path -LiteralPath $RunSignalPath -PathType Leaf) -and [DateTime]::UtcNow -lt $runDeadlineUtc) { Start-Sleep -Milliseconds 25 }
+if (-not (Test-Path -LiteralPath $RunSignalPath -PathType Leaf)) { throw "hard watchdog host did not receive its run signal before the behavior deadline" }
 $watchdog = Arm-HarnessFailFastWatchdog -Message "behavior terminate-job hard watchdog" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4))
 $env:VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_JOB_FAILURE = "1"
 $caughtExpectedFailure = $false
@@ -168,15 +185,9 @@ try {
   # The watchdog must remain armed: this process owns the unclosed Job Object.
 }
 '@
-  $hardWatchdogHost = Start-HardWatchdogHost -PowerShellPath $pwshPath -HostPath $hardWatchdogHostPath -HarnessPath $HarnessPath -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -IdentityPath $hardWatchdogIdentityPath -ReadySignalPath $hardWatchdogReadySignalPath -RunSignalPath $hardWatchdogRunSignalPath -FaultSignalPath $hardWatchdogFaultSignalPath -TelemetryPath $hardWatchdogTelemetryPath -ObservedChildPowerShellPath $observedChildPowerShellPath
-  Wait-ForSignal -Path $hardWatchdogReadySignalPath -TimeoutSeconds 5 -FailureMessage "hard watchdog host did not become ready"
+  $hardWatchdogHost = Start-HardWatchdogHost -PowerShellPath $pwshPath -HostPath $hardWatchdogHostPath -HarnessPath $HarnessPath -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -IdentityPath $hardWatchdogIdentityPath -ReadySignalPath $hardWatchdogReadySignalPath -RunSignalPath $hardWatchdogRunSignalPath -RunDeadlineUtcTicks $deadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) -FaultSignalPath $hardWatchdogFaultSignalPath -TelemetryPath $hardWatchdogTelemetryPath -ObservedChildPowerShellPath $observedChildPowerShellPath
+  Wait-ForSignal -Path $hardWatchdogReadySignalPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5)) -FailureMessage "hard watchdog host did not become ready"
   Assert-True ((Get-Content -LiteralPath $observedChildPowerShellPath -Raw) -ceq $pwshPath) "hard watchdog host did not receive the exact ChildPowerShellPath"
-
-  $deadlineStartUtc = [DateTime]::UtcNow
-  $deadlineUtc = $deadlineStartUtc.AddSeconds($DeadlineSeconds)
-  $hardDeadlineUtc = $deadlineStartUtc.AddSeconds($HardDeadlineSeconds)
-  $watchdogMessage = "vision installer harness behavior test exceeded its $HardDeadlineSeconds-second hard deadline"
-  $watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $hardDeadlineUtc
 
   Assert-BeforeDeadline
   $unrelated = Start-Process -FilePath $pwshPath -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60") -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $root "unrelated.stdout.log") -RedirectStandardError (Join-Path $root "unrelated.stderr.log")
@@ -334,23 +345,26 @@ try {
     [pscustomobject]@{ stage="behavior.active-process-count-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output active-process-count-probe"; cleanupMechanism=$null; expectedOwnership="resumed-job-assigned" }
   )) {
     Assert-BeforeDeadline
-    $faultTranscriptPath = Join-Path $root ($fault.stage + ".telemetry.log")
     $previousFaultValue = [Environment]::GetEnvironmentVariable($fault.variable, [EnvironmentVariableTarget]::Process)
     $previousSecondaryFaultValue = if ([string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { $null } else { [Environment]::GetEnvironmentVariable($fault.secondaryVariable, [EnvironmentVariableTarget]::Process) }
     [Environment]::SetEnvironmentVariable($fault.variable, "1", [EnvironmentVariableTarget]::Process)
     if (-not [string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { [Environment]::SetEnvironmentVariable($fault.secondaryVariable, "1", [EnvironmentVariableTarget]::Process) }
-    Start-Transcript -Path $faultTranscriptPath -Force | Out-Null
+    $faultRecords = New-Object 'System.Collections.Generic.List[object]'
     try {
-      Invoke-BoundedPowerShell -Stage $fault.stage -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $windowsPowerShell -HarnessDeadlineUtc $deadlineUtc -ScriptBody $fault.scriptBody | Out-Null
+      Invoke-BoundedPowerShell -Stage $fault.stage -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $windowsPowerShell -HarnessDeadlineUtc $deadlineUtc -ScriptBody $fault.scriptBody 6>&1 | ForEach-Object {
+        [void]$faultRecords.Add($_)
+        Write-FaultTelemetryRecordToHost $_
+      }
       if ($fault.stage -match "(create-job|set-job-limit|assign-job)") { throw "fault injection $($fault.stage) did not fail bounded setup" }
     } catch {
       if ($fault.stage -match "(terminate-job|active-process-count)" -and $_.Exception.Message -notmatch "failed with exit code") { throw }
     } finally {
-      Stop-Transcript | Out-Null
       [Environment]::SetEnvironmentVariable($fault.variable, $previousFaultValue, [EnvironmentVariableTarget]::Process)
       if (-not [string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { [Environment]::SetEnvironmentVariable($fault.secondaryVariable, $previousSecondaryFaultValue, [EnvironmentVariableTarget]::Process) }
     }
-    $faultTelemetry = Get-Content -LiteralPath $faultTranscriptPath -Raw
+    $faultTelemetry = ($faultRecords | ForEach-Object {
+      if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
+    }) -join [Environment]::NewLine
     if ($fault.expectedOwnership -eq "resumed-job-assigned") {
       Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=resumed-job-assigned") "fault injection $($fault.stage) did not record resumed Job Object process ownership"
     } elseif ($fault.cleanupMechanism -eq "native") {
@@ -383,8 +397,11 @@ try {
   }
 
   Assert-BeforeDeadline
+  Write-HarnessStage "behavior.hard-watchdog" "run-signal-creating"
   New-Item -ItemType File -Path $hardWatchdogRunSignalPath -ErrorAction Stop | Out-Null
-  Wait-ForSignal -Path $hardWatchdogFaultSignalPath -TimeoutSeconds 3 -FailureMessage "hard watchdog host did not validate its unconfirmed cleanup telemetry"
+  Write-HarnessStage "behavior.hard-watchdog" "run-signal-created"
+  Wait-ForSignal -Path $hardWatchdogFaultSignalPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3)) -FailureMessage "hard watchdog host did not validate its unconfirmed cleanup telemetry"
+  Write-HarnessStage "behavior.hard-watchdog" "fault-observed"
   Assert-True ((Get-Content -LiteralPath $hardWatchdogFaultSignalPath -Raw).Trim() -ceq "fault-observed") "hard watchdog host did not acknowledge the expected cleanup fault"
   Assert-True (Test-Path -LiteralPath $hardWatchdogIdentityPath -PathType Leaf) "hard watchdog host did not create a live descendant"
   $hardWatchdogDescendantIdentity = Get-Content -LiteralPath $hardWatchdogIdentityPath -Raw | ConvertFrom-Json
