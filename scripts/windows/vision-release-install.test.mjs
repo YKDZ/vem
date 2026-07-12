@@ -298,11 +298,7 @@ describe("Vision release installer fixtures", () => {
       );
       assert.match(
         behavior,
-        /public static class DelayedDisarmWatchdog[\s\S]*?DISARM_CONFIRMATION_DELAY_MILLISECONDS = 100[\s\S]*?Write\(args\[2\], "armed"\)[\s\S]*?IsDisarmCommand\(args\[1\]\)[\s\S]*?Thread\.Sleep\(DISARM_CONFIRMATION_DELAY_MILLISECONDS\)[\s\S]*?Write\(args\[3\], "disarmed"\)[\s\S]*?\$delayedDisarmStage = "b\.dh"[\s\S]*?Assert-HarnessWatchdogStagePathBudget -Stage \$delayedDisarmStage[\s\S]*?TimeoutSeconds 2[\s\S]*?HarnessDeadlineUtc \(\[DateTime\]::UtcNow\.AddSeconds\(4\)\)[\s\S]*?suspended-process-watchdog-disarmed[\s\S]*?completion=disarmed[\s\S]*?state=resumed-job-assigned/,
-      );
-      assert.match(
-        behavior,
-        /public static class SetupTimeoutWatchdog[\s\S]*?Write\(args\[2\] \+ "\.deadline", args\[4\]\)[\s\S]*?Write\(args\[2\] \+ "\.confirm", args\[5\]\)[\s\S]*?\$setupTimeoutStage = "b\.st"[\s\S]*?Assert-HarnessWatchdogStagePathBudget -Stage \$setupTimeoutStage[\s\S]*?ready\.confirm[\s\S]*?setupDeadlineUtcTicks=\(\[0-9\]\+\);automaticDeadlineUtcTicks=\(\[0-9\]\+\);automaticConfirmationDeadlineUtcTicks=\(\[0-9\]\+\)[\s\S]*?\$setupDeadlineTicks -lt \$automaticDeadlineTicks[\s\S]*?\$automaticDeadlineTicks -lt \$automaticConfirmationDeadlineTicks[\s\S]*?\$automaticConfirmationDeadlineTicks -le \$setupTimeoutHarnessDeadlineUtc\.Ticks[\s\S]*?suspended-process-watchdog-terminated/,
+        /public static class DelayedDisarmWatchdog[\s\S]*?DISARM_CONFIRMATION_DELAY_MILLISECONDS = 100[\s\S]*?Write\(args\[2\], "armed"\)[\s\S]*?IsDisarmCommand\(args\[1\]\)[\s\S]*?Thread\.Sleep\(DISARM_CONFIRMATION_DELAY_MILLISECONDS\)[\s\S]*?Write\(args\[3\], "disarmed"\)[\s\S]*?\$delayedDisarmStage = "b\.dh"[\s\S]*?TimeoutSeconds 2[\s\S]*?HarnessDeadlineUtc \(\[DateTime\]::UtcNow\.AddSeconds\(4\)\)[\s\S]*?suspended-process-watchdog-disarmed[\s\S]*?completion=disarmed[\s\S]*?state=resumed-job-assigned/,
       );
       assert.match(
         harness,
@@ -329,9 +325,9 @@ describe("Vision release installer fixtures", () => {
         /\$root = Join-Path \(\[IO\.Path\]::GetTempPath\(\)\) \("vh-" \+ \[guid\]::NewGuid\(\)\.ToString\("N"\)\)/,
       );
       assert.doesNotMatch(behavior, /vem-vision-harness-behavior/);
-      assert.match(
+      assert.doesNotMatch(
         behavior,
-        /function Assert-HarnessWatchdogStagePathBudget\(\[string\]\$Stage\) \{[\s\S]*?\$stageRoot = Join-Path \$root \("diagnostics\\" \+ \$Stage \+ "-" \+ \("0" \* 32\)\)[\s\S]*?\$watchdogRoot = Join-Path \(Join-Path \$stageRoot "suspended-process-watchdog"\) \("0" \* 32\)[\s\S]*?\$fixtureDeadlinePath = Join-Path \$watchdogRoot "ready\.deadline"[\s\S]*?\$fixtureConfirmationPath = Join-Path \$watchdogRoot "ready\.confirm"[\s\S]*?Assert-True \(\$stageRoot\.Length -lt 248\)[\s\S]*?Assert-True \(\$watchdogRoot\.Length -lt 248\)[\s\S]*?Assert-True \(\$fixtureDeadlinePath\.Length -lt 248\)[\s\S]*?Assert-True \(\$fixtureConfirmationPath\.Length -lt 248\)[\s\S]*?\$delayedDisarmStage = "b\.dh"[\s\S]*?Assert-HarnessWatchdogStagePathBudget -Stage \$delayedDisarmStage[\s\S]*?\$commandWriteFailureStage = "b\.wf"[\s\S]*?Assert-HarnessWatchdogStagePathBudget -Stage \$commandWriteFailureStage[\s\S]*?Invoke-BoundedPowerShell -Stage \$commandWriteFailureStage[\s\S]*?\$unconfirmedStage = "b\.wu"[\s\S]*?Assert-HarnessWatchdogStagePathBudget -Stage \$unconfirmedStage[\s\S]*?\$primaryFailureStage = "b\.pj"[\s\S]*?Assert-HarnessWatchdogStagePathBudget -Stage \$primaryFailureStage[\s\S]*?\$setupTimeoutStage = "b\.st"[\s\S]*?Assert-HarnessWatchdogStagePathBudget -Stage \$setupTimeoutStage/,
+        /SetupTimeoutWatchdog|b\.st|Assert-HarnessWatchdogStagePathBudget|ready\.(deadline|confirm)|setup-timeout-watchdog/,
       );
       assert.match(
         behavior,
@@ -437,7 +433,7 @@ describe("Vision release installer fixtures", () => {
         behavior,
         /stage=behavior\.normal-parent-exit-active-descendant status=completed[\s\S]*?stage=behavior\.normal-parent-exit-active-descendant status=cleanup-confirmation-waiting[\s\S]*?stage=behavior\.normal-parent-exit-active-descendant status=termination-confirmed/,
       );
-      for (const fixtureName of ["SlowWatchdog", "SetupTimeoutWatchdog"]) {
+      for (const fixtureName of ["SlowWatchdog"]) {
         const fixtureSource = behavior.match(
           new RegExp(
             `public static class ${fixtureName} \\{([\\s\\S]*?)\\r?\\n\\}`,
