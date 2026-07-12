@@ -800,7 +800,7 @@ function Start-HarnessSuspendedProcessWatchdog {
     [Parameter(Mandatory = $true)][object]$NativeProcess,
     [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
     [ValidateRange(100, 5000)][int]$ConfirmationReserveMilliseconds = 1000,
-    [Parameter(Mandatory = $true)][ref]$Watchdog
+    [Parameter(Mandatory = $true)][Alias("Watchdog")][ref]$WatchdogReference
   )
 
   $watchdogStageRoot = Join-Path $StageRoot "suspended-process-watchdog"
@@ -837,13 +837,13 @@ function Start-HarnessSuspendedProcessWatchdog {
     $ready = (Get-Content -LiteralPath $readyPath -Raw -Encoding UTF8).Trim()
     if ($ready -ne "armed") { throw "suspended-process watchdog reported invalid ready state '$ready'" }
     $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
-    [void]($Watchdog.Value = $watchdog)
+    [void]($WatchdogReference.Value = $watchdog)
     return
   } catch {
     if ($null -eq $process -and $null -ne $watchdogProcessId) { try { $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId) } catch { } }
     if ($null -ne $process) {
       $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
-      if ($null -ne $Watchdog) { [void]($Watchdog.Value = $watchdog) }
+      [void]($WatchdogReference.Value = $watchdog)
       [void]($_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"] = $watchdog)
     }
     throw

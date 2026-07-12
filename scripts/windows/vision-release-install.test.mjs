@@ -653,7 +653,7 @@ try {
 
     assert.match(
       harness,
-      /function Start-HarnessSuspendedProcessWatchdog[\s\S]*?\[void\]\(\$Watchdog\.Value = \$watchdog\)[\s\S]*?return/,
+      /function Start-HarnessSuspendedProcessWatchdog[\s\S]*?\[void\]\(\$WatchdogReference\.Value = \$watchdog\)[\s\S]*?return/,
     );
     const startFunction = harness.match(
       /function Start-HarnessSuspendedProcessWatchdog \{([\s\S]*?)\r?\n\}\r?\nfunction Get-HarnessSuspendedProcessWatchdogCompletion/,
