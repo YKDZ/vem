@@ -480,7 +480,7 @@ try {
   $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
   $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
-  $watchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1))
+  $watchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -Watchdog ([ref]$watchdog)
   $nativeProcess.Resume()
   $completionDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
   while (-not (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf) -and [DateTime]::UtcNow -lt $completionDeadlineUtc) { Start-Sleep -Milliseconds 10 }
@@ -529,7 +529,12 @@ Start-Sleep -Seconds 30
 '@
   [IO.File]::WriteAllText($hostPath, $hostScript, [Text.UTF8Encoding]::new($false))
   $hostProcess = Start-HardWatchdogHost -PowerShellPath $powerShellPath -HostPath $hostPath -HarnessPath $hostPath -HarnessRoot $root -HarnessContextPath (Join-Path $root "context.json") -ChildPowerShellPath $powerShellPath -IdentityPath (Join-Path $root "identity.json") -ReadySignalPath (Join-Path $root "ready") -RunSignalPath (Join-Path $root "run") -RunDeadlineUtcTicks ([DateTime]::UtcNow.AddSeconds(20).Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -FaultSignalPath (Join-Path $root "fault") -TelemetryPath (Join-Path $root "telemetry") -ObservedChildPowerShellPath (Join-Path $root "observed") -LifetimeDeadlineUtc ([DateTime]::UtcNow.AddSeconds(10))
-  $hostProcess.deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hostProcess.process -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1))
+  $deadlineWatchdog = $null
+  try {
+    $deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hostProcess.process -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -Watchdog ([ref]$deadlineWatchdog)
+  } finally {
+    $hostProcess.deadlineWatchdog = $deadlineWatchdog
+  }
   Complete-HarnessSuspendedProcessWatchdog -Watchdog $hostProcess.lifetimeWatchdog -Action "disarm" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null
   $hostProcess.lifetimeWatchdog = $null
   $completionDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)

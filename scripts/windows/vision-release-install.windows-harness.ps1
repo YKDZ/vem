@@ -800,7 +800,7 @@ function Start-HarnessSuspendedProcessWatchdog {
     [Parameter(Mandatory = $true)][object]$NativeProcess,
     [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
     [ValidateRange(100, 5000)][int]$ConfirmationReserveMilliseconds = 1000,
-    [AllowNull()][ref]$Watchdog = $null
+    [Parameter(Mandatory = $true)][ref]$Watchdog
   )
 
   $watchdogStageRoot = Join-Path $StageRoot "suspended-process-watchdog"

@@ -458,7 +458,12 @@ try {
   Write-HarnessStage "behavior.hard-watchdog" "fault-signal-validated"
   Write-HarnessStage "behavior.hard-watchdog" "inherited-watchdog-arming"
   $hardWatchdogDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
-  $hardWatchdogHost.deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "hard-watchdog-host-deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hardWatchdogHost.process -DeadlineUtc $hardWatchdogDeadlineUtc
+  $deadlineWatchdog = $null
+  try {
+    $deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "hard-watchdog-host-deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hardWatchdogHost.process -DeadlineUtc $hardWatchdogDeadlineUtc -Watchdog ([ref]$deadlineWatchdog)
+  } finally {
+    $hardWatchdogHost.deadlineWatchdog = $deadlineWatchdog
+  }
   Write-HarnessStage "behavior.hard-watchdog" "inherited-watchdog-armed" "processId=$($hardWatchdogHost.deadlineWatchdog.processId) identity=original-process-handle"
   Complete-HarnessSuspendedProcessWatchdog -Watchdog $hardWatchdogHost.lifetimeWatchdog -Action "disarm" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null
   $hardWatchdogHost.lifetimeWatchdog = $null
