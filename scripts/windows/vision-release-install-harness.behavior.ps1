@@ -500,29 +500,34 @@ public static class MissingCompletionWatchdog {
     $unconfirmedRecords = New-Object 'System.Collections.Generic.List[object]'
     $unconfirmedFailure = $null
     try {
-      Invoke-BoundedPowerShell -Stage "behavior.watchdog-missing-completion-unconfirmed" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(8)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$unconfirmedRecords.Add($_) }
+      Invoke-BoundedPowerShell -Stage "behavior.watchdog-missing-completion-unconfirmed" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(12)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$unconfirmedRecords.Add($_) }
     } catch {
       $unconfirmedFailure = $_.Exception
     }
     Assert-True ($unconfirmedFailure -is [AggregateException]) "missing completion without native or Job confirmation did not aggregate: $unconfirmedFailure"
     $unconfirmedMessages = @($unconfirmedFailure.InnerExceptions | ForEach-Object { $_.Message }) -join [Environment]::NewLine
+    Assert-True ($unconfirmedMessages -match "fixture forced pre-disarm operation failure") "unconfirmed aggregate omitted the pre-disarm operation failure: $unconfirmedMessages"
     Assert-True ($unconfirmedMessages -match "could not terminate process [0-9]+: missing-completion") "unconfirmed aggregate omitted the original missing termination completion: $unconfirmedMessages"
     Assert-True ($unconfirmedMessages -match "could not confirm its Job Object was empty") "unconfirmed aggregate omitted the Job confirmation failure: $unconfirmedMessages"
     $unconfirmedTelemetry = ($unconfirmedRecords | ForEach-Object {
       if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
     }) -join [Environment]::NewLine
+    Assert-True ($unconfirmedTelemetry -match "stage=behavior.watchdog-missing-completion-unconfirmed status=suspended-process-watchdog-armed detail=processId=[0-9]+ identity=original-process-handle") "unconfirmed missing completion did not arm the watchdog"
+    Assert-True ($unconfirmedTelemetry -match "stage=behavior.watchdog-missing-completion-unconfirmed status=process-ownership detail=state=job-assigned-suspended processId=[0-9]+") "unconfirmed missing completion did not assign the suspended target to the Job Object"
     Assert-True ($unconfirmedTelemetry -notmatch "stage=behavior.watchdog-missing-completion-unconfirmed status=suspended-process-watchdog-completion-ignored") "unconfirmed missing completion was incorrectly ignored"
 
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $null, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", $null, [EnvironmentVariableTarget]::Process)
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
     $primaryFailureStage = "behavior.primary-job-unavailable"
     $primaryFailureStageRoot = Join-Path $root ("diagnostics\" + $primaryFailureStage + "-" + ("0" * 32))
     $primaryFailureWatchdogRoot = Join-Path (Join-Path $primaryFailureStageRoot "suspended-process-watchdog") ("0" * 32)
     Assert-True ($primaryFailureStageRoot.Length -lt 248) "primary failure stage root exceeds the Windows current-directory length budget"
     Assert-True ($primaryFailureWatchdogRoot.Length -lt 248) "primary failure watchdog root exceeds the Windows current-directory length budget"
+    $primaryFailureRecords = New-Object 'System.Collections.Generic.List[object]'
     $primaryFailure = $null
     try {
-      Invoke-BoundedPowerShell -Stage $primaryFailureStage -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output primary-nonzero; exit 23' | Out-Null
+      Invoke-BoundedPowerShell -Stage $primaryFailureStage -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output primary-nonzero; exit 23' 6>&1 | ForEach-Object { [void]$primaryFailureRecords.Add($_) }
     } catch {
       $primaryFailure = $_.Exception
     }
@@ -531,6 +536,11 @@ public static class MissingCompletionWatchdog {
     Assert-True ($primaryFailure.InnerExceptions[0].Message -match "failed with exit code 23") "primary operation failure was not retained as the aggregate primary error: $($primaryFailure.InnerExceptions[0])"
     $primaryMessages = @($primaryFailure.InnerExceptions | ForEach-Object { $_.Message }) -join [Environment]::NewLine
     Assert-True ($primaryMessages -match "could not confirm its Job Object was empty") "primary operation aggregate omitted the unavailable Job confirmation: $primaryMessages"
+    $primaryFailureTelemetry = ($primaryFailureRecords | ForEach-Object {
+      if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
+    }) -join [Environment]::NewLine
+    Assert-True ($primaryFailureTelemetry -match "stage=$primaryFailureStage status=process-ownership detail=state=resumed-job-assigned processId=[0-9]+") "primary operation failure did not resume the assigned target"
+    Assert-True ($primaryFailureTelemetry -match "stage=$primaryFailureStage status=failed detail=exitCode=23") "primary operation failure did not execute the exit 23 child"
   } finally {
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", $previousUnconfirmedPreDisarmOperationFailure, [EnvironmentVariableTarget]::Process)
