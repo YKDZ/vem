@@ -1805,9 +1805,8 @@ New-Item -ItemType Directory -Force -Path $context.delivery, $context.trust, $co
 '@ | Out-Null
   Invoke-BoundedPowerShell -Stage "fixture.create-kiosk-account" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 if ($null -ne (Get-LocalUser -Name "VEMKiosk" -ErrorAction SilentlyContinue)) { throw "fixture VEMKiosk account already exists" }
-$password = "Vem!" + [guid]::NewGuid().ToString("N") + "aA1"
-& "$env:SystemRoot\System32\net.exe" user VEMKiosk $password /add /passwordchg:no | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "fixture VEMKiosk account creation failed with exit code $LASTEXITCODE" }
+$password = ConvertTo-SecureString ("Vem!" + [guid]::NewGuid().ToString("N") + "aA1") -AsPlainText -Force
+New-LocalUser -Name "VEMKiosk" -Password $password -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
 New-Item -ItemType File -Path (Join-Path $context.root "kiosk-account-created") -Force | Out-Null
 '@ | Out-Null
   $runtimeSource = @'
@@ -2068,10 +2067,7 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
 } finally {
   $cleanupFailure = $null
   if (Test-Path -LiteralPath (Join-Path $root "kiosk-account-created") -PathType Leaf) {
-    & "$env:SystemRoot\System32\net.exe" user VEMKiosk /delete | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-      $cleanupFailure = [Exception]::new("fixture VEMKiosk account cleanup failed with exit code $LASTEXITCODE")
-    }
+    try { Remove-LocalUser -Name "VEMKiosk" -ErrorAction Stop } catch { $cleanupFailure = $_ }
   }
   if (Test-Path -LiteralPath $certificateCleanupMarkerPath) {
     try {

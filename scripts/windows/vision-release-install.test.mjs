@@ -155,8 +155,8 @@ describe("Vision release installer fixtures", () => {
   boundedIt("owns the disposable kiosk account lifecycle", () => {
     const source = readFileSync(windowsHarness, "utf8");
     assert.match(source, /-Stage "fixture\.create-kiosk-account"/);
-    assert.match(source, /user VEMKiosk \$password \/add/);
-    assert.match(source, /user VEMKiosk \/delete/);
+    assert.match(source, /New-LocalUser -Name "VEMKiosk" -Password \$password/);
+    assert.match(source, /Remove-LocalUser -Name "VEMKiosk"/);
     assert.match(source, /kiosk-account-created/);
   });
 
