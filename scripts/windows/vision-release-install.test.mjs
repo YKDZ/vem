@@ -643,6 +643,51 @@ try {
     },
   );
 
+  boundedIt("keeps watchdog helper output contracts explicit", () => {
+    const harness = readFileSync(windowsHarness, "utf8");
+
+    assert.match(
+      harness,
+      /function Start-HarnessSuspendedProcessWatchdog[\s\S]*?\[void\]\(\$Watchdog\.Value = \$watchdog\)[\s\S]*?Write-Output -NoEnumerate \$watchdog/,
+    );
+    assert.match(
+      harness,
+      /function Complete-HarnessSuspendedProcessWatchdogTerminal[\s\S]*?Close-HarnessSuspendedProcessWatchdog -Watchdog \$Watchdog \| Out-Null[\s\S]*?Write-Output -NoEnumerate \$Completion/,
+    );
+    assert.match(
+      harness,
+      /function Write-HarnessAtomicUtf8[\s\S]*?Initialize-HarnessNativeTypes \| Out-Null[\s\S]*?Remove-Item[^\r\n]*\| Out-Null/,
+    );
+  });
+
+  boundedIt("returns exactly one terminal watchdog completion", () => {
+    const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-output-" + [guid]::NewGuid().ToString("N"))
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $completionPath = Join-Path $root "completion"
+  [IO.File]::WriteAllText($completionPath, "terminated", [Text.UTF8Encoding]::new($false))
+  $process = [pscustomobject]@{ disposeCalls=0 }
+  $process | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.disposeCalls++ }
+  $watchdog = [pscustomobject]@{ process=$process; commandPath=(Join-Path $root "command"); completionPath=$completionPath; processId=4244; completed=$false; commandAction=$null; disposed=$false; terminalCompletion=$null }
+  $results = @(Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)))
+  if ($results.Count -ne 1 -or $results[0] -cne "terminated") { throw "terminal watchdog completion returned $($results.Count) results: $($results -join ',')" }
+  if (-not $watchdog.completed -or -not $watchdog.disposed -or $process.disposeCalls -ne 1) { throw "terminal watchdog completion did not finalize its watchdog" }
+} finally {
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+    const result = spawnBounded("pwsh", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      probe,
+    ]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  });
+
   boundedIt(
     "extends a live watchdog termination deadline after its first command times out",
     { skip: process.platform !== "win32" },

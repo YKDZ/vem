@@ -21,10 +21,10 @@ function Write-HarnessAtomicUtf8([string]$Path, [string]$Text) {
   $temporaryPath = Join-Path $directory (".{0}.{1}.tmp" -f (Split-Path -Leaf $Path), [guid]::NewGuid().ToString("N"))
   try {
     [IO.File]::WriteAllText($temporaryPath, $Text, [Text.UTF8Encoding]::new($false))
-    Initialize-HarnessNativeTypes
+    Initialize-HarnessNativeTypes | Out-Null
     [VemVisionHarness.AtomicFile]::Replace($temporaryPath, $Path)
   } finally {
-    if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue | Out-Null }
   }
 }
 function Get-Digest([string]$Path) { "sha256:" + (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -806,7 +806,7 @@ function Start-HarnessSuspendedProcessWatchdog {
   $watchdogStageRoot = Join-Path $StageRoot "suspended-process-watchdog"
   New-Item -ItemType Directory -Force -Path $watchdogStageRoot | Out-Null
   foreach ($staleSignalPath in @((Join-Path $watchdogStageRoot "command"), (Join-Path $watchdogStageRoot "ready"), (Join-Path $watchdogStageRoot "completion"))) {
-    if (Test-Path -LiteralPath $staleSignalPath -PathType Leaf) { Remove-Item -LiteralPath $staleSignalPath -Force -ErrorAction Stop }
+    if (Test-Path -LiteralPath $staleSignalPath -PathType Leaf) { Remove-Item -LiteralPath $staleSignalPath -Force -ErrorAction Stop | Out-Null }
   }
   $watchdogRoot = Join-Path $watchdogStageRoot ([guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $watchdogRoot | Out-Null
@@ -837,14 +837,15 @@ function Start-HarnessSuspendedProcessWatchdog {
     $ready = (Get-Content -LiteralPath $readyPath -Raw -Encoding UTF8).Trim()
     if ($ready -ne "armed") { throw "suspended-process watchdog reported invalid ready state '$ready'" }
     $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
-    if ($null -ne $Watchdog) { $Watchdog.Value = $watchdog }
-    return $watchdog
+    if ($null -ne $Watchdog) { [void]($Watchdog.Value = $watchdog) }
+    Write-Output -NoEnumerate $watchdog
+    return
   } catch {
     if ($null -eq $process -and $null -ne $watchdogProcessId) { try { $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId) } catch { } }
     if ($null -ne $process) {
       $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
-      if ($null -ne $Watchdog) { $Watchdog.Value = $watchdog }
-      $_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"] = $watchdog
+      if ($null -ne $Watchdog) { [void]($Watchdog.Value = $watchdog) }
+      [void]($_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"] = $watchdog)
     }
     throw
   }
@@ -874,7 +875,7 @@ function Initialize-HarnessSuspendedProcessWatchdogState {
 
   foreach ($property in @(@{ name="disposed"; value=$false }, @{ name="terminalCompletion"; value=$null }, @{ name="confirmationDeadlineUtcTicks"; value=$null })) {
     if ($null -eq $Watchdog.PSObject.Properties[$property.name]) {
-      $Watchdog | Add-Member -MemberType NoteProperty -Name $property.name -Value $property.value
+      $Watchdog | Add-Member -MemberType NoteProperty -Name $property.name -Value $property.value | Out-Null
     }
   }
 }
@@ -883,9 +884,9 @@ function Close-HarnessSuspendedProcessWatchdog {
 
   if ($Watchdog.disposed) { return }
   try {
-    $Watchdog.process.Dispose()
+    [void]$Watchdog.process.Dispose()
   } finally {
-    $Watchdog.disposed = $true
+    [void]($Watchdog.disposed = $true)
   }
 }
 function Complete-HarnessSuspendedProcessWatchdogTerminal {
@@ -895,14 +896,15 @@ function Complete-HarnessSuspendedProcessWatchdogTerminal {
     [Parameter(Mandatory = $true)][string]$Completion
   )
 
-  $Watchdog.terminalCompletion = $Completion
+  [void]($Watchdog.terminalCompletion = $Completion)
   try {
-    Assert-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog -Action $Action -Completion $Completion
-    $Watchdog.completed = $true
-    return $Completion
+    Assert-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog -Action $Action -Completion $Completion | Out-Null
+    [void]($Watchdog.completed = $true)
   } finally {
-    Close-HarnessSuspendedProcessWatchdog -Watchdog $Watchdog
+    Close-HarnessSuspendedProcessWatchdog -Watchdog $Watchdog | Out-Null
   }
+  Write-Output -NoEnumerate $Completion
+  return
 }
 function Complete-HarnessSuspendedProcessWatchdog {
   param(
@@ -911,10 +913,11 @@ function Complete-HarnessSuspendedProcessWatchdog {
     [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
   )
 
-  Initialize-HarnessSuspendedProcessWatchdogState -Watchdog $Watchdog
+  Initialize-HarnessSuspendedProcessWatchdogState -Watchdog $Watchdog | Out-Null
   if ($null -ne $Watchdog.terminalCompletion) {
-    Assert-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog -Action $Action -Completion $Watchdog.terminalCompletion
-    return "already-completed"
+    Assert-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog -Action $Action -Completion $Watchdog.terminalCompletion | Out-Null
+    Write-Output -NoEnumerate "already-completed"
+    return
   }
   if ($Watchdog.disposed) { throw "suspended-process watchdog process handle was disposed without a terminal completion" }
   if ($Watchdog.completed) { throw "suspended-process watchdog was marked completed without a terminal completion" }
@@ -931,15 +934,15 @@ function Complete-HarnessSuspendedProcessWatchdog {
   }
   if ($writeCommand) {
     $command = if ($Action -eq "terminate") { "terminate:" + $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) } else { $Action }
-    Write-HarnessAtomicUtf8 $Watchdog.commandPath $command
-    $Watchdog.commandAction = $Action
-    if ($Action -eq "terminate") { $Watchdog.confirmationDeadlineUtcTicks = $DeadlineUtc.Ticks }
+    Write-HarnessAtomicUtf8 $Watchdog.commandPath $command | Out-Null
+    [void]($Watchdog.commandAction = $Action)
+    if ($Action -eq "terminate") { [void]($Watchdog.confirmationDeadlineUtcTicks = $DeadlineUtc.Ticks) }
   }
   $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
   if (-not $Watchdog.process.WaitForExit($remainingMilliseconds)) { throw "suspended-process watchdog did not complete '$Action' before the cleanup deadline" }
   $completion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog
   if ($null -eq $completion) { $completion = "missing-completion" }
-  return Complete-HarnessSuspendedProcessWatchdogTerminal -Watchdog $Watchdog -Action $Action -Completion $completion
+  Complete-HarnessSuspendedProcessWatchdogTerminal -Watchdog $Watchdog -Action $Action -Completion $completion
 }
 function Get-HarnessRemainingMilliseconds {
   param(
