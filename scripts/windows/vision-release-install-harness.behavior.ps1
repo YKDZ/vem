@@ -515,9 +515,14 @@ public static class MissingCompletionWatchdog {
 
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $null, [EnvironmentVariableTarget]::Process)
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+    $primaryFailureStage = "behavior.primary-job-unavailable"
+    $primaryFailureStageRoot = Join-Path $root ("diagnostics\" + $primaryFailureStage + "-" + ("0" * 32))
+    $primaryFailureWatchdogRoot = Join-Path (Join-Path $primaryFailureStageRoot "suspended-process-watchdog") ("0" * 32)
+    Assert-True ($primaryFailureStageRoot.Length -lt 248) "primary failure stage root exceeds the Windows current-directory length budget"
+    Assert-True ($primaryFailureWatchdogRoot.Length -lt 248) "primary failure watchdog root exceeds the Windows current-directory length budget"
     $primaryFailure = $null
     try {
-      Invoke-BoundedPowerShell -Stage "behavior.primary-failure-job-confirmation-unavailable" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output primary-nonzero; exit 23' | Out-Null
+      Invoke-BoundedPowerShell -Stage $primaryFailureStage -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output primary-nonzero; exit 23' | Out-Null
     } catch {
       $primaryFailure = $_.Exception
     }
