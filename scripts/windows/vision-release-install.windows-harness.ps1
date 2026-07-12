@@ -132,7 +132,6 @@ function Initialize-HarnessNativeTypes {
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -624,6 +623,7 @@ function Initialize-HarnessSuspendedProcessWatchdog {
   Write-Utf8 $sourcePath @'
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
