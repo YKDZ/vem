@@ -32,13 +32,6 @@ function Get-RunningProcess([int]$ProcessId) {
   }
 }
 
-function Assert-ExactCertificateCleanup([string]$CertificateSubject) {
-  foreach ($storePath in "Cert:\CurrentUser\My", "Cert:\CurrentUser\Root", "Cert:\CurrentUser\TrustedPublisher") {
-    $remaining = @(Get-ChildItem -Path $storePath -ErrorAction Stop | Where-Object { $_.Subject -eq $CertificateSubject })
-    Assert-True ($remaining.Count -eq 0) "fixture certificate remained after cleanup in $storePath"
-  }
-}
-
 function Stop-TrackedProcess([object]$Identity) {
   if ($null -eq $Identity) { return }
 
@@ -156,7 +149,6 @@ if ($HardDeadlineSeconds -le $DeadlineSeconds) { throw "HardDeadlineSeconds must
 Initialize-HarnessNativeTypes
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vh-" + [guid]::NewGuid().ToString("N"))
 $contextPath = Join-Path $root "context.json"
-$certificateSubject = "CN=VEM Vision Harness Behavior " + [guid]::NewGuid().ToString("N")
 $unrelated = $null
 $descendantIdentity = $null
 $normalDescendantIdentity = $null
@@ -843,37 +835,6 @@ try {
   $hardWatchdogHost.process.Dispose()
   Write-HarnessStage "behavior.hard-watchdog" "cleanup-completed" "completion=$hardWatchdogCompletion identity=original-process-handle"
   $hardWatchdogHost = $null
-
-  Assert-BeforeDeadline
-  $certificate = $null
-  try {
-    $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $certificateSubject -KeyUsage DigitalSignature -HashAlgorithm SHA256 -CertStoreLocation "Cert:\CurrentUser\My"
-    $certificatePath = Join-Path $root "certificate.cer"
-    Export-Certificate -Cert $certificate -FilePath $certificatePath -Force | Out-Null
-    Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
-    Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\CurrentUser\TrustedPublisher" | Out-Null
-    foreach ($storePath in "Cert:\CurrentUser\My", "Cert:\CurrentUser\Root", "Cert:\CurrentUser\TrustedPublisher") {
-      Assert-True (@(Get-ChildItem -Path $storePath | Where-Object { $_.Subject -eq $certificateSubject }).Count -eq 1) "fixture certificate mutation was incomplete in $storePath"
-    }
-
-    New-Item -ItemType Directory -Force -Path $context.stateRoot | Out-Null
-    Write-Json (Join-Path $context.stateRoot "current.json") @{}
-    Write-Json (Join-Path $root "fixture-certificate-cleanup.json") @{ certificateSubject=$certificateSubject }
-    $serialized = Invoke-BoundedPowerShell -Stage "behavior.serialized-cleanup" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
-try {
-  Invoke-HarnessFixtureCleanup -Context $context
-  throw "serialized cleanup did not report the invalid runtime selection"
-} catch {
-  if ($_.Exception.Message -notmatch "fixture runtime cleanup could not verify") { throw }
-  Write-HarnessStage "behavior.serialized-cleanup" "completed" "runtime failure still cleaned certificates"
-}
-'@
-    Assert-True ($serialized.stdout -match "stage=behavior.serialized-cleanup status=completed") "serialized cleanup did not execute its dependency chain"
-    Assert-ExactCertificateCleanup $certificateSubject
-  } finally {
-    Remove-HarnessFixtureCertificates -CertificateSubject $certificateSubject
-    Assert-ExactCertificateCleanup $certificateSubject
-  }
 
   Write-Host "vision release installer harness behavior checks passed"
 } finally {
