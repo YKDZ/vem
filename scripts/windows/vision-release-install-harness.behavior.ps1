@@ -62,23 +62,53 @@ function Stop-TrackedProcess([object]$Identity) {
   }
 }
 
+function Start-HardWatchdogHost {
+  param(
+    [Parameter(Mandatory = $true)][string]$PowerShellPath,
+    [Parameter(Mandatory = $true)][string]$HostPath,
+    [Parameter(Mandatory = $true)][string]$HarnessPath,
+    [Parameter(Mandatory = $true)][string]$HarnessRoot,
+    [Parameter(Mandatory = $true)][string]$HarnessContextPath,
+    [Parameter(Mandatory = $true)][string]$ChildPowerShellPath,
+    [Parameter(Mandatory = $true)][string]$IdentityPath,
+    [Parameter(Mandatory = $true)][string]$ReadySignalPath,
+    [Parameter(Mandatory = $true)][string]$RunSignalPath,
+    [Parameter(Mandatory = $true)][string]$FaultSignalPath,
+    [Parameter(Mandatory = $true)][string]$TelemetryPath,
+    [Parameter(Mandatory = $true)][string]$ObservedChildPowerShellPath
+  )
+
+  $start = [Diagnostics.ProcessStartInfo]::new()
+  $start.FileName = $PowerShellPath
+  $start.UseShellExecute = $false
+  $start.CreateNoWindow = $true
+  $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $HostPath, "-HarnessPath", $HarnessPath, "-HarnessRoot", $HarnessRoot, "-HarnessContextPath", $HarnessContextPath, "-ChildPowerShellPath", $ChildPowerShellPath, "-IdentityPath", $IdentityPath, "-ReadySignalPath", $ReadySignalPath, "-RunSignalPath", $RunSignalPath, "-FaultSignalPath", $FaultSignalPath, "-TelemetryPath", $TelemetryPath, "-ObservedChildPowerShellPath", $ObservedChildPowerShellPath)
+  $start.Arguments = (($arguments | ForEach-Object { [VemVisionHarness.SuspendedProcess]::QuoteArgument([string]$_) }) -join " ")
+  return [Diagnostics.Process]::Start($start)
+}
+
+function Wait-ForSignal([string]$Path, [int]$TimeoutSeconds, [string]$FailureMessage) {
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  while (-not (Test-Path -LiteralPath $Path -PathType Leaf) -and $stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) { Start-Sleep -Milliseconds 25 }
+  Assert-True (Test-Path -LiteralPath $Path -PathType Leaf) $FailureMessage
+}
+
 if ($HardDeadlineSeconds -le $DeadlineSeconds) { throw "HardDeadlineSeconds must leave time for cleanup after DeadlineSeconds" }
 . $HarnessPath -Library
 Initialize-HarnessNativeTypes
-$deadlineStartUtc = [DateTime]::UtcNow
-$deadlineUtc = $deadlineStartUtc.AddSeconds($DeadlineSeconds)
-$hardDeadlineUtc = $deadlineStartUtc.AddSeconds($HardDeadlineSeconds)
-$watchdogMessage = "vision installer harness behavior test exceeded its $HardDeadlineSeconds-second hard deadline"
-$watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $hardDeadlineUtc
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-harness-behavior-" + [guid]::NewGuid().ToString("N"))
 $contextPath = Join-Path $root "context.json"
 $certificateSubject = "CN=VEM Vision Harness Behavior " + [guid]::NewGuid().ToString("N")
 $unrelated = $null
 $descendantIdentity = $null
+$normalDescendantIdentity = $null
+$hardWatchdogDescendantIdentity = $null
+$hardWatchdogHost = $null
+$watchdog = $null
 
 try {
-  Assert-BeforeDeadline
   New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   $layoutJob = New-HarnessKillOnCloseJob
   try {
     [VemVisionHarness.KillOnCloseJob]::AssertNativeLayout()
@@ -89,6 +119,66 @@ try {
   $context = [ordered]@{ root=$root; stateRoot=(Join-Path $root "state"); bundleDigest="sha256:behavior" }
   Write-Json $contextPath $context
 
+  $hardWatchdogIdentityPath = Join-Path $root "hard-watchdog-descendant.identity.json"
+  $hardWatchdogHostPath = Join-Path $root "hard-watchdog-host.ps1"
+  $hardWatchdogReadySignalPath = Join-Path $root "hard-watchdog-host.ready"
+  $hardWatchdogRunSignalPath = Join-Path $root "hard-watchdog-host.run"
+  $hardWatchdogFaultSignalPath = Join-Path $root "hard-watchdog-host.fault-observed"
+  $hardWatchdogTelemetryPath = Join-Path $root "hard-watchdog-host.telemetry.log"
+  $observedChildPowerShellPath = Join-Path $root "hard-watchdog-host.child-powershell-path"
+  Write-Utf8 $hardWatchdogHostPath @'
+param([string]$HarnessPath, [string]$HarnessRoot, [string]$HarnessContextPath, [string]$ChildPowerShellPath, [string]$IdentityPath, [string]$ReadySignalPath, [string]$RunSignalPath, [string]$FaultSignalPath, [string]$TelemetryPath, [string]$ObservedChildPowerShellPath)
+$ErrorActionPreference = "Stop"
+. $HarnessPath -Library
+Initialize-HarnessNativeTypes
+$script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $HarnessRoot
+[IO.File]::WriteAllText($ObservedChildPowerShellPath, $ChildPowerShellPath, [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($ReadySignalPath, "ready", [Text.UTF8Encoding]::new($false))
+$readyStopwatch = [Diagnostics.Stopwatch]::StartNew()
+while (-not (Test-Path -LiteralPath $RunSignalPath -PathType Leaf) -and $readyStopwatch.Elapsed.TotalSeconds -lt 75) { Start-Sleep -Milliseconds 25 }
+if (-not (Test-Path -LiteralPath $RunSignalPath -PathType Leaf)) { throw "hard watchdog host did not receive its run signal" }
+$watchdog = Arm-HarnessFailFastWatchdog -Message "behavior terminate-job hard watchdog" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4))
+$env:VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_JOB_FAILURE = "1"
+$caughtExpectedFailure = $false
+try {
+  Start-Transcript -Path $TelemetryPath -Force | Out-Null
+  try {
+    Invoke-BoundedPowerShell -Stage "behavior.terminate-job-hard-watchdog.inner" -TimeoutSeconds 1 -HarnessRoot $HarnessRoot -HarnessContextPath $HarnessContextPath -ChildPowerShellPath $ChildPowerShellPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(3)) -ScriptBody @"
+`$descendant = Start-Process -FilePath `$env:COMSPEC -ArgumentList @('/d', '/c', 'ping -t 127.0.0.1') -PassThru -NoNewWindow
+try {
+  Write-Json '$IdentityPath' @{ processId=`$descendant.Id; creationTimeUtcTicks=`$descendant.StartTime.ToUniversalTime().Ticks; executablePath=[IO.Path]::GetFullPath(`$descendant.Path) }
+  Start-Sleep -Seconds 60
+} finally {
+  `$descendant.Dispose()
+}
+"@ | Out-Null
+  } catch {
+    $caughtExpectedFailure = $true
+  } finally {
+    Stop-Transcript | Out-Null
+  }
+  if (-not $caughtExpectedFailure) { throw "hard watchdog fixture unexpectedly completed" }
+  $telemetry = Get-Content -LiteralPath $TelemetryPath -Raw
+  foreach ($status in @("termination-failed", "cleanup-job-dispose-skipped", "hard-watchdog-required")) {
+    if ($telemetry -notmatch "stage=behavior.terminate-job-hard-watchdog.inner status=$status") { throw "hard watchdog telemetry did not record $status before fault signal" }
+  }
+  [IO.File]::WriteAllText($FaultSignalPath, "fault-observed", [Text.UTF8Encoding]::new($false))
+  Start-Sleep -Seconds 30
+} finally {
+  # The watchdog must remain armed: this process owns the unclosed Job Object.
+}
+'@
+  $hardWatchdogHost = Start-HardWatchdogHost -PowerShellPath $pwshPath -HostPath $hardWatchdogHostPath -HarnessPath $HarnessPath -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -IdentityPath $hardWatchdogIdentityPath -ReadySignalPath $hardWatchdogReadySignalPath -RunSignalPath $hardWatchdogRunSignalPath -FaultSignalPath $hardWatchdogFaultSignalPath -TelemetryPath $hardWatchdogTelemetryPath -ObservedChildPowerShellPath $observedChildPowerShellPath
+  Wait-ForSignal -Path $hardWatchdogReadySignalPath -TimeoutSeconds 5 -FailureMessage "hard watchdog host did not become ready"
+  Assert-True ((Get-Content -LiteralPath $observedChildPowerShellPath -Raw) -ceq $pwshPath) "hard watchdog host did not receive the exact ChildPowerShellPath"
+
+  $deadlineStartUtc = [DateTime]::UtcNow
+  $deadlineUtc = $deadlineStartUtc.AddSeconds($DeadlineSeconds)
+  $hardDeadlineUtc = $deadlineStartUtc.AddSeconds($HardDeadlineSeconds)
+  $watchdogMessage = "vision installer harness behavior test exceeded its $HardDeadlineSeconds-second hard deadline"
+  $watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $hardDeadlineUtc
+
+  Assert-BeforeDeadline
   $unrelated = Start-Process -FilePath $pwshPath -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60") -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $root "unrelated.stdout.log") -RedirectStandardError (Join-Path $root "unrelated.stderr.log")
   Assert-True ($unrelated -is [Diagnostics.Process]) "unrelated process did not retain a .NET process handle"
 
@@ -111,6 +201,34 @@ try {
   Assert-True (Test-Path -LiteralPath (Join-Path $returned.diagnosticsPath "stdout.log") -PathType Leaf) "bounded invocation did not write a stdout log"
   Assert-True (Test-Path -LiteralPath (Join-Path $returned.diagnosticsPath "stderr.log") -PathType Leaf) "bounded invocation did not write a stderr log"
   Assert-True (($returned.PSObject.Properties.Name -join ",") -ceq "stdout,stderr,diagnosticsPath") "bounded invocation result shape changed"
+
+  $windowsPowerShell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+  Assert-True (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf) "Windows PowerShell 5.1 is missing"
+  $previousPs51Environment = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_PS51_ENV", [EnvironmentVariableTarget]::Process)
+  [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_PS51_ENV", "native-wrapper", [EnvironmentVariableTarget]::Process)
+  $ps51TranscriptPath = Join-Path $root "ps51-native-wrapper.telemetry.log"
+  try {
+    Start-Transcript -Path $ps51TranscriptPath -Force | Out-Null
+    try {
+      $ps51Returned = Invoke-BoundedPowerShell -Stage "behavior.ps51-native-wrapper" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $windowsPowerShell -HarnessDeadlineUtc $deadlineUtc -ScriptBody '
+if ($env:VEM_VISION_HARNESS_PS51_ENV -cne "native-wrapper") { throw "PS5.1 native wrapper did not inherit its environment" }
+Write-Output ps51-stdout
+& $env:COMSPEC /d /c "echo ps51-stderr 1>&2"
+'
+      Assert-True ($ps51Returned.stdout.Trim() -ceq "ps51-stdout") "PS5.1 native wrapper did not capture stdout"
+      Assert-True ($ps51Returned.stderr.Trim() -ceq "ps51-stderr") "PS5.1 native wrapper did not capture stderr"
+    } finally {
+      Stop-Transcript | Out-Null
+    }
+    $ps51Telemetry = Get-Content -LiteralPath $ps51TranscriptPath -Raw
+    foreach ($status in @("created-suspended", "job-assigned-suspended", "resumed-job-assigned")) {
+      Assert-True ($ps51Telemetry -match "stage=behavior.ps51-native-wrapper status=process-ownership detail=state=$status") "PS5.1 native wrapper did not record $status"
+    }
+    Assert-True ($ps51Telemetry -match "stage=behavior.ps51-native-wrapper status=completed") "PS5.1 native wrapper did not record normal exit"
+    Assert-True ($ps51Telemetry -match "stage=behavior.ps51-native-wrapper status=cleanup-job-dispose-completed") "PS5.1 native wrapper did not complete Job Object cleanup"
+  } finally {
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_PS51_ENV", $previousPs51Environment, [EnvironmentVariableTarget]::Process)
+  }
 
   Assert-BeforeDeadline
   $verifiedRuntime = Start-Process -FilePath $pwshPath -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60") -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $root "verified-runtime.stdout.log") -RedirectStandardError (Join-Path $root "verified-runtime.stderr.log")
@@ -147,14 +265,22 @@ try {
   $timeoutTranscriptPath = Join-Path $root "timeout-telemetry.log"
   Start-Transcript -Path $timeoutTranscriptPath -Force | Out-Null
   try {
-    Invoke-BoundedPowerShell -Stage "behavior.parent-exits-near-timeout" -TimeoutSeconds 2 -TerminationWaitSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody $timeoutBody | Out-Null
+    Invoke-BoundedPowerShell -Stage "behavior.parent-exits-near-timeout" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody $timeoutBody | Out-Null
     throw "timed-out bounded invocation did not throw"
   } catch {
     if ($_.Exception.Message -notmatch "exceeded") { throw }
   } finally {
     Stop-Transcript | Out-Null
   }
-  Assert-True ((Get-Content -LiteralPath $timeoutTranscriptPath -Raw) -match "stage=behavior.parent-exits-near-timeout status=timed-out detail=timeoutSeconds=2 termination=job-object") "timed-out bounded invocation did not emit precise Job Object timeout telemetry"
+  $timeoutTelemetry = Get-Content -LiteralPath $timeoutTranscriptPath -Raw
+  Assert-True ($timeoutTelemetry -match "stage=behavior.parent-exits-near-timeout status=timed-out detail=timeoutSeconds=2 termination=job-object") "timed-out bounded invocation did not emit precise Job Object timeout telemetry"
+  Assert-True ($timeoutTelemetry -match "stage=behavior.parent-exits-near-timeout status=termination-requested detail=termination=job-object") "timed-out bounded invocation did not record the explicit Job Object termination request"
+  Assert-True ($timeoutTelemetry -match "stage=behavior.parent-exits-near-timeout status=termination-signaled detail=termination=job-object") "timed-out bounded invocation did not record the explicit Job Object termination signal"
+  Assert-True ($timeoutTelemetry -match "stage=behavior.parent-exits-near-timeout status=termination-waiting detail=remainingMilliseconds=[0-9]+ confirmationReserveMilliseconds=[1-9][0-9]* termination=job-object") "timed-out bounded invocation did not record its bounded termination wait"
+  Assert-True ($timeoutTelemetry -match "stage=behavior.parent-exits-near-timeout status=termination-confirmed detail=termination=job-object activeProcesses=0 confirmationReserveMilliseconds=[1-9][0-9]*") "timed-out bounded invocation did not confirm an empty Job Object before cleanup"
+  Assert-True ($timeoutTelemetry -match "stage=behavior.parent-exits-near-timeout status=cleanup-job-dispose-started") "timed-out bounded invocation did not record Job Object cleanup start"
+  Assert-True ($timeoutTelemetry -match "stage=behavior.parent-exits-near-timeout status=cleanup-job-dispose-completed") "timed-out bounded invocation did not record Job Object cleanup completion"
+  Assert-True ($timeoutTelemetry.IndexOf("status=termination-confirmed") -lt $timeoutTelemetry.IndexOf("status=cleanup-job-dispose-started")) "Job Object cleanup started before termination was confirmed"
   Assert-True (Test-Path -LiteralPath $descendantIdentityPath -PathType Leaf) "timed-out child did not record its descendant identity"
   $descendantIdentity = Get-Content -LiteralPath $descendantIdentityPath -Raw | ConvertFrom-Json
   $descendant = Get-RunningProcess -ProcessId ([int]$descendantIdentity.processId)
@@ -164,6 +290,119 @@ try {
     if ($null -ne $descendant) { $descendant.Dispose() }
   }
   Assert-True (-not $unrelated.HasExited) "timed-out bounded invocation stopped an unrelated retained process"
+
+  Assert-BeforeDeadline
+  $normalDescendantIdentityPath = Join-Path $root "normal-parent-exit-descendant.identity.json"
+  $normalParentExitTranscriptPath = Join-Path $root "normal-parent-exit.telemetry.log"
+  Start-Transcript -Path $normalParentExitTranscriptPath -Force | Out-Null
+  try {
+    $normalParentExit = Invoke-BoundedPowerShell -Stage "behavior.normal-parent-exit-active-descendant" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+$descendant = Start-Process -FilePath $env:COMSPEC -ArgumentList @('/d', '/c', 'ping -t 127.0.0.1') -PassThru -NoNewWindow
+try {
+  Write-Json (Join-Path $context.root "normal-parent-exit-descendant.identity.json") @{ processId=$descendant.Id; creationTimeUtcTicks=$descendant.StartTime.ToUniversalTime().Ticks; executablePath=[IO.Path]::GetFullPath($descendant.Path) }
+  Write-Output normal-parent-exit
+} finally {
+  $descendant.Dispose()
+}
+'@
+    Assert-True ($normalParentExit.stdout.Trim() -ceq "normal-parent-exit") "normal-parent-exit bounded invocation did not preserve stdout"
+  } finally {
+    Stop-Transcript | Out-Null
+  }
+  $normalParentExitTelemetry = Get-Content -LiteralPath $normalParentExitTranscriptPath -Raw
+  Assert-True ($normalParentExitTelemetry -match "stage=behavior.normal-parent-exit-active-descendant status=cleanup-confirmation-waiting detail=remainingMilliseconds=[0-9]+ confirmationReserveMilliseconds=[1-9][0-9]* termination=job-object") "normal-parent-exit active descendant did not begin a bounded natural-exit wait"
+  $normalTerminationWait = [regex]::Match($normalParentExitTelemetry, "stage=behavior.normal-parent-exit-active-descendant status=termination-waiting detail=remainingMilliseconds=([0-9]+) confirmationReserveMilliseconds=([0-9]+) termination=job-object")
+  Assert-True $normalTerminationWait.Success "normal-parent-exit active descendant did not reserve a termination-confirmation window"
+  Assert-True ([int]$normalTerminationWait.Groups[1].Value -gt 0) "normal-parent-exit active descendant did not leave the reserved termination-confirmation window"
+  Assert-True ($normalParentExitTelemetry -match "stage=behavior.normal-parent-exit-active-descendant status=termination-confirmed detail=termination=job-object activeProcesses=0 confirmationReserveMilliseconds=[1-9][0-9]*") "normal-parent-exit active descendant did not confirm Job Object termination"
+  Assert-True (Test-Path -LiteralPath $normalDescendantIdentityPath -PathType Leaf) "normal-parent-exit child did not record its descendant identity"
+  $normalDescendantIdentity = Get-Content -LiteralPath $normalDescendantIdentityPath -Raw | ConvertFrom-Json
+  $normalDescendant = Get-RunningProcess -ProcessId ([int]$normalDescendantIdentity.processId)
+  try {
+    Assert-True ($null -eq $normalDescendant) "normal-parent-exit active descendant remained alive after the Job Object cleanup"
+  } finally {
+    if ($null -ne $normalDescendant) { $normalDescendant.Dispose() }
+  }
+
+  foreach ($fault in @(
+    [pscustomobject]@{ stage="behavior.create-job-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_CREATE_JOB_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output create-job-probe"; cleanupMechanism=$null; expectedOwnership=$null },
+    [pscustomobject]@{ stage="behavior.set-job-limit-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_SET_JOB_LIMIT_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output set-job-limit-probe"; cleanupMechanism=$null; expectedOwnership=$null },
+    [pscustomobject]@{ stage="behavior.assign-job-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ASSIGN_JOB_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output assign-job-probe"; cleanupMechanism="native"; expectedOwnership="created-suspended" },
+    [pscustomobject]@{ stage="behavior.assign-and-suspended-terminate-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ASSIGN_JOB_FAILURE"; secondaryVariable="VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE"; scriptBody="Write-Output assign-and-terminate-probe"; cleanupMechanism="watchdog"; expectedOwnership="created-suspended" },
+    [pscustomobject]@{ stage="behavior.terminate-job-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_JOB_FAILURE"; secondaryVariable=$null; scriptBody="exit 17"; cleanupMechanism=$null; expectedOwnership="resumed-job-assigned" },
+    [pscustomobject]@{ stage="behavior.active-process-count-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output active-process-count-probe"; cleanupMechanism=$null; expectedOwnership="resumed-job-assigned" }
+  )) {
+    Assert-BeforeDeadline
+    $faultTranscriptPath = Join-Path $root ($fault.stage + ".telemetry.log")
+    $previousFaultValue = [Environment]::GetEnvironmentVariable($fault.variable, [EnvironmentVariableTarget]::Process)
+    $previousSecondaryFaultValue = if ([string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { $null } else { [Environment]::GetEnvironmentVariable($fault.secondaryVariable, [EnvironmentVariableTarget]::Process) }
+    [Environment]::SetEnvironmentVariable($fault.variable, "1", [EnvironmentVariableTarget]::Process)
+    if (-not [string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { [Environment]::SetEnvironmentVariable($fault.secondaryVariable, "1", [EnvironmentVariableTarget]::Process) }
+    Start-Transcript -Path $faultTranscriptPath -Force | Out-Null
+    try {
+      Invoke-BoundedPowerShell -Stage $fault.stage -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $windowsPowerShell -HarnessDeadlineUtc $deadlineUtc -ScriptBody $fault.scriptBody | Out-Null
+      if ($fault.stage -match "(create-job|set-job-limit|assign-job)") { throw "fault injection $($fault.stage) did not fail bounded setup" }
+    } catch {
+      if ($fault.stage -match "(terminate-job|active-process-count)" -and $_.Exception.Message -notmatch "failed with exit code") { throw }
+    } finally {
+      Stop-Transcript | Out-Null
+      [Environment]::SetEnvironmentVariable($fault.variable, $previousFaultValue, [EnvironmentVariableTarget]::Process)
+      if (-not [string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { [Environment]::SetEnvironmentVariable($fault.secondaryVariable, $previousSecondaryFaultValue, [EnvironmentVariableTarget]::Process) }
+    }
+    $faultTelemetry = Get-Content -LiteralPath $faultTranscriptPath -Raw
+    if ($fault.expectedOwnership -eq "resumed-job-assigned") {
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=resumed-job-assigned") "fault injection $($fault.stage) did not record resumed Job Object process ownership"
+    } elseif ($fault.cleanupMechanism -eq "native") {
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=$($fault.expectedOwnership)") "fault injection $($fault.stage) did not record its suspended process"
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-termination-confirmed detail=processId=[0-9]+") "fault injection $($fault.stage) did not terminate its unresumed process through the native handle"
+      Assert-True ($faultTelemetry -notmatch "stage=$($fault.stage) status=suspended-process-watchdog-terminated") "native cleanup fault unexpectedly delegated to the watchdog"
+    } elseif ($fault.cleanupMechanism -eq "watchdog") {
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=$($fault.expectedOwnership)") "watchdog cleanup fault did not record its suspended process"
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-termination-failed") "watchdog cleanup fault did not preserve the native termination failure"
+      $watchdogTermination = [regex]::Match($faultTelemetry, "stage=$($fault.stage) status=suspended-process-watchdog-terminated detail=processId=([0-9]+) completion=(terminated|exited) identity=original-process-handle")
+      Assert-True $watchdogTermination.Success "watchdog cleanup fault did not confirm termination through the inherited original process handle"
+      Assert-True ($faultTelemetry -notmatch "wait-failed:6|ERROR_INVALID_HANDLE") "watchdog inherited-handle probe observed ERROR_INVALID_HANDLE"
+      $suspendedProcess = Get-RunningProcess -ProcessId ([int]$watchdogTermination.Groups[1].Value)
+      try {
+        Assert-True ($null -eq $suspendedProcess) "watchdog cleanup did not terminate the combined setup-failure process"
+      } finally {
+        if ($null -ne $suspendedProcess) { $suspendedProcess.Dispose() }
+      }
+    } else {
+      Assert-True ($faultTelemetry -notmatch "stage=$($fault.stage) status=process-ownership") "fault injection $($fault.stage) created a child before Job setup completed"
+    }
+    if ($fault.stage -eq "behavior.terminate-job-failure") {
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=termination-failed detail=termination=job-object operation=terminate-job-object exceptionType=[A-Za-z0-9._:-]+ exceptionMessage=[A-Za-z0-9._:-]+ nativeErrorCode=[0-9]+") "termination failure did not retain sanitized telemetry"
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=cleanup-job-dispose-completed") "historical termination failure blocked Job Object close after activeProcesses reached zero"
+    }
+    if ($fault.stage -eq "behavior.active-process-count-failure") {
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=termination-query-failed detail=termination=job-object operation=active-process-count") "query failure did not retain telemetry"
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=cleanup-job-dispose-completed") "historical query failure blocked Job Object close after activeProcesses reached zero"
+    }
+  }
+
+  Assert-BeforeDeadline
+  New-Item -ItemType File -Path $hardWatchdogRunSignalPath -ErrorAction Stop | Out-Null
+  Wait-ForSignal -Path $hardWatchdogFaultSignalPath -TimeoutSeconds 3 -FailureMessage "hard watchdog host did not validate its unconfirmed cleanup telemetry"
+  Assert-True ((Get-Content -LiteralPath $hardWatchdogFaultSignalPath -Raw).Trim() -ceq "fault-observed") "hard watchdog host did not acknowledge the expected cleanup fault"
+  Assert-True (Test-Path -LiteralPath $hardWatchdogIdentityPath -PathType Leaf) "hard watchdog host did not create a live descendant"
+  $hardWatchdogDescendantIdentity = Get-Content -LiteralPath $hardWatchdogIdentityPath -Raw | ConvertFrom-Json
+  $liveDescendant = Get-RunningProcess -ProcessId ([int]$hardWatchdogDescendantIdentity.processId)
+  try {
+    Assert-True ($null -ne $liveDescendant) "hard watchdog host did not retain its live descendant before the watchdog deadline"
+  } finally {
+    if ($null -ne $liveDescendant) { $liveDescendant.Dispose() }
+  }
+  Assert-True ($hardWatchdogHost.WaitForExit(10000)) "hard watchdog did not terminate its independent host"
+  Assert-True ($hardWatchdogHost.HasExited) "hard watchdog host was still running after the bounded parent wait"
+  $terminatedDescendant = Get-RunningProcess -ProcessId ([int]$hardWatchdogDescendantIdentity.processId)
+  try {
+    Assert-True ($null -eq $terminatedDescendant) "hard watchdog left its live descendant"
+  } finally {
+    if ($null -ne $terminatedDescendant) { $terminatedDescendant.Dispose() }
+  }
+  $hardWatchdogHost.Dispose()
+  $hardWatchdogHost = $null
 
   Assert-BeforeDeadline
   $certificate = $null
@@ -203,6 +442,8 @@ try {
       $descendantIdentity = Get-Content -LiteralPath (Join-Path $root "descendant.identity.json") -Raw | ConvertFrom-Json
     }
     Stop-TrackedProcess -Identity $descendantIdentity
+    Stop-TrackedProcess -Identity $normalDescendantIdentity
+    Stop-TrackedProcess -Identity $hardWatchdogDescendantIdentity
   } finally {
     if ($null -ne $unrelated) {
       try {
@@ -214,7 +455,14 @@ try {
         $unrelated.Dispose()
       }
     }
-    $watchdog.Dispose()
+    if ($null -ne $hardWatchdogHost) {
+      try {
+        if (-not $hardWatchdogHost.HasExited -and -not $hardWatchdogHost.WaitForExit(5000)) { $hardWatchdogHost.Kill(); $hardWatchdogHost.WaitForExit(5000) | Out-Null }
+      } finally {
+        $hardWatchdogHost.Dispose()
+      }
+    }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    if ($null -ne $watchdog) { $watchdog.Dispose() }
   }
 }

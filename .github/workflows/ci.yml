@@ -260,6 +260,7 @@ jobs:
         run: >-
           ./scripts/windows/vision-release-install.windows-harness.ps1
           -InstallerPath ./scripts/windows/install-vision-release.ps1
+          -CorePowerShellPaths pwsh,powershell.exe
 
   machine-e2e-tests:
     name: Machine UI Daemon E2E

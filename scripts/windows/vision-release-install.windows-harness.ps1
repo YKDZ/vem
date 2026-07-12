@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
   [string]$InstallerPath,
+  [string[]]$CorePowerShellPaths = @(),
   [switch]$Library
 )
 
@@ -119,14 +120,241 @@ function Initialize-HarnessNativeTypes {
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 namespace VemVisionHarness {
+  public sealed class SuspendedProcess : IDisposable {
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const uint WAIT_OBJECT_0 = 0;
+    private const uint WAIT_FAILED = 0xFFFFFFFF;
+    private IntPtr processHandle;
+    private IntPtr threadHandle;
+    private readonly uint processId;
+    private bool resumed;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO {
+      public int cb;
+      public string lpReserved;
+      public string lpDesktop;
+      public string lpTitle;
+      public int dwX;
+      public int dwY;
+      public int dwXSize;
+      public int dwYSize;
+      public int dwXCountChars;
+      public int dwYCountChars;
+      public int dwFillAttribute;
+      public int dwFlags;
+      public short wShowWindow;
+      public short cbReserved2;
+      public IntPtr lpReserved2;
+      public IntPtr hStdInput;
+      public IntPtr hStdOutput;
+      public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION {
+      public IntPtr hProcess;
+      public IntPtr hThread;
+      public uint dwProcessId;
+      public uint dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessW(
+      string applicationName,
+      StringBuilder commandLine,
+      IntPtr processAttributes,
+      IntPtr threadAttributes,
+      bool inheritHandles,
+      uint creationFlags,
+      IntPtr environment,
+      string currentDirectory,
+      ref STARTUPINFO startupInfo,
+      out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr thread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DuplicateHandle(
+      IntPtr sourceProcess,
+      IntPtr sourceHandle,
+      IntPtr targetProcess,
+      out IntPtr targetHandle,
+      uint desiredAccess,
+      bool inheritHandle,
+      uint options);
+
+    private const uint DUPLICATE_SAME_ACCESS = 0x00000002;
+
+    private SuspendedProcess(IntPtr processHandle, IntPtr threadHandle, uint processId) {
+      this.processHandle = processHandle;
+      this.threadHandle = threadHandle;
+      this.processId = processId;
+    }
+
+    public IntPtr ProcessHandle { get { return processHandle; } }
+    public uint ProcessId { get { return processId; } }
+    public bool IsResumed { get { return resumed; } }
+
+    public static string QuoteArgument(string argument) {
+      if (argument == null || argument.Length == 0) { return "\"\""; }
+      var requiresQuotes = false;
+      for (var index = 0; index < argument.Length; index++) {
+        if (Char.IsWhiteSpace(argument[index]) || argument[index] == '"') { requiresQuotes = true; break; }
+      }
+      if (!requiresQuotes) { return argument; }
+
+      var quoted = new StringBuilder();
+      quoted.Append('"');
+      var slashCount = 0;
+      for (var index = 0; index < argument.Length; index++) {
+        var character = argument[index];
+        if (character == '\\') { slashCount++; continue; }
+        if (character == '"') {
+          quoted.Append('\\', (slashCount * 2) + 1);
+          quoted.Append('"');
+          slashCount = 0;
+          continue;
+        }
+        quoted.Append('\\', slashCount);
+        quoted.Append(character);
+        slashCount = 0;
+      }
+      quoted.Append('\\', slashCount * 2);
+      quoted.Append('"');
+      return quoted.ToString();
+    }
+
+    public static SuspendedProcess Create(string applicationName, string[] arguments, string currentDirectory) {
+      if (String.IsNullOrWhiteSpace(applicationName) || String.IsNullOrWhiteSpace(currentDirectory)) {
+        throw new ArgumentException("CreateProcessW requires application name and current directory");
+      }
+      var commandLine = new StringBuilder(QuoteArgument(applicationName));
+      if (arguments != null) {
+        foreach (var argument in arguments) {
+          commandLine.Append(' ');
+          commandLine.Append(QuoteArgument(argument));
+        }
+      }
+      var startupInfo = new STARTUPINFO();
+      startupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+      PROCESS_INFORMATION processInformation;
+      if (!CreateProcessW(applicationName, commandLine, IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED | CREATE_NO_WINDOW, IntPtr.Zero, currentDirectory, ref startupInfo, out processInformation)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessW failed");
+      }
+      if (processInformation.hProcess == IntPtr.Zero || processInformation.hThread == IntPtr.Zero) {
+        if (processInformation.hThread != IntPtr.Zero) { CloseHandle(processInformation.hThread); }
+        if (processInformation.hProcess != IntPtr.Zero) { CloseHandle(processInformation.hProcess); }
+        throw new InvalidOperationException("CreateProcessW returned incomplete process handles");
+      }
+      return new SuspendedProcess(processInformation.hProcess, processInformation.hThread, processInformation.dwProcessId);
+    }
+
+    public uint StartInheritedHandleWatchdog(string applicationName, string[] arguments, string currentDirectory) {
+      if (processHandle == IntPtr.Zero) { throw new ObjectDisposedException("SuspendedProcess"); }
+      if (arguments == null || arguments.Length < 1) { throw new ArgumentException("watchdog arguments must reserve index zero for its inherited process handle", "arguments"); }
+      IntPtr inheritedHandle;
+      if (!DuplicateHandle(GetCurrentProcess(), processHandle, GetCurrentProcess(), out inheritedHandle, 0, true, DUPLICATE_SAME_ACCESS)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "DuplicateHandle for watchdog failed");
+      }
+      try {
+        var watchdogArguments = (string[])arguments.Clone();
+        watchdogArguments[0] = unchecked((ulong)inheritedHandle.ToInt64()).ToString(CultureInfo.InvariantCulture);
+        var commandLine = new StringBuilder(QuoteArgument(applicationName));
+        foreach (var argument in watchdogArguments) {
+            commandLine.Append(' ');
+            commandLine.Append(QuoteArgument(argument));
+        }
+        var startupInfo = new STARTUPINFO();
+        startupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+        PROCESS_INFORMATION processInformation;
+        if (!CreateProcessW(applicationName, commandLine, IntPtr.Zero, IntPtr.Zero, true, CREATE_NO_WINDOW, IntPtr.Zero, currentDirectory, ref startupInfo, out processInformation)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessW for watchdog failed");
+        }
+        if (processInformation.hThread != IntPtr.Zero) { CloseHandle(processInformation.hThread); }
+        if (processInformation.hProcess == IntPtr.Zero) { throw new InvalidOperationException("CreateProcessW for watchdog returned no process handle"); }
+        CloseHandle(processInformation.hProcess);
+        return processInformation.dwProcessId;
+      } finally {
+        CloseHandle(inheritedHandle);
+      }
+    }
+
+    public void Resume() {
+      if (processHandle == IntPtr.Zero || threadHandle == IntPtr.Zero) { throw new ObjectDisposedException("SuspendedProcess"); }
+      var previousSuspendCount = ResumeThread(threadHandle);
+      if (previousSuspendCount == UInt32.MaxValue) { throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread failed"); }
+      resumed = true;
+      CloseAndClear(ref threadHandle, "CloseHandle for suspended process thread failed");
+    }
+
+    public void TerminateUnresumed(uint waitMilliseconds) {
+      if (resumed) { throw new InvalidOperationException("cannot terminate a resumed process through the suspended-process cleanup path"); }
+      if (processHandle == IntPtr.Zero) { return; }
+      if (Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE") == "1") {
+        throw new Win32Exception(5, "TerminateProcess for suspended process fixture failure");
+      }
+      if (!TerminateProcess(processHandle, 1)) { throw new Win32Exception(Marshal.GetLastWin32Error(), "TerminateProcess for suspended process failed"); }
+      if (!WaitForExit(waitMilliseconds)) { throw new TimeoutException("suspended process did not terminate before its cleanup budget elapsed"); }
+    }
+
+    public bool WaitForExit(uint waitMilliseconds) {
+      if (processHandle == IntPtr.Zero) { throw new ObjectDisposedException("SuspendedProcess"); }
+      var waitResult = WaitForSingleObject(processHandle, waitMilliseconds);
+      if (waitResult == WAIT_OBJECT_0) { return true; }
+      if (waitResult == WAIT_FAILED) { throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject for suspended process failed"); }
+      return false;
+    }
+
+    public int ExitCode {
+      get {
+        if (processHandle == IntPtr.Zero) { throw new ObjectDisposedException("SuspendedProcess"); }
+        uint exitCode;
+        if (!GetExitCodeProcess(processHandle, out exitCode)) { throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed"); }
+        return unchecked((int)exitCode);
+      }
+    }
+
+    private static void CloseAndClear(ref IntPtr handle, string failureMessage) {
+      var previous = Interlocked.Exchange(ref handle, IntPtr.Zero);
+      if (previous != IntPtr.Zero && !CloseHandle(previous)) { throw new Win32Exception(Marshal.GetLastWin32Error(), failureMessage); }
+    }
+
+    public void Dispose() {
+      CloseAndClear(ref threadHandle, "CloseHandle for suspended process thread failed");
+      CloseAndClear(ref processHandle, "CloseHandle for suspended process failed");
+      GC.SuppressFinalize(this);
+    }
+  }
+
   public sealed class KillOnCloseJob : IDisposable {
     private const uint JobObjectExtendedLimitInformation = 9;
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
     private IntPtr handle;
+    private bool forceActiveProcessCountFailure;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct IO_COUNTERS {
@@ -161,6 +389,18 @@ namespace VemVisionHarness {
       public UIntPtr PeakJobMemoryUsed;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION {
+      public long TotalUserTime;
+      public long TotalKernelTime;
+      public long ThisPeriodTotalUserTime;
+      public long ThisPeriodTotalKernelTime;
+      public uint TotalPageFaultCount;
+      public uint TotalProcesses;
+      public uint ActiveProcesses;
+      public uint TotalTerminatedProcesses;
+    }
+
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
 
@@ -172,6 +412,12 @@ namespace VemVisionHarness {
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(IntPtr job, uint informationClass, IntPtr information, uint informationLength, IntPtr returnLength);
 
     private static void AssertOffset(Type type, string field, long expected) {
       var actual = Marshal.OffsetOf(type, field).ToInt64();
@@ -212,19 +458,28 @@ namespace VemVisionHarness {
       AssertOffset(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), "PeakProcessMemoryUsed", basicSize + ioSize + (pointerSize * 2));
       AssertOffset(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), "PeakJobMemoryUsed", basicSize + ioSize + (pointerSize * 3));
       AssertSize(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), extendedSize);
+      AssertSize(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION), 48);
     }
 
     public KillOnCloseJob() {
+      if (Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_CREATE_JOB_FAILURE") == "1") {
+        throw new Win32Exception(8, "CreateJobObject fixture failure");
+      }
       handle = CreateJobObject(IntPtr.Zero, null);
       if (handle == IntPtr.Zero) { throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateJobObject failed"); }
 
-      AssertNativeLayout();
-      var information = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-      information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-      var size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
-      var buffer = Marshal.AllocHGlobal(size);
+      IntPtr buffer = IntPtr.Zero;
       try {
+        AssertNativeLayout();
+        forceActiveProcessCountFailure = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_FAILURE") == "1";
+        var information = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        var size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+        buffer = Marshal.AllocHGlobal(size);
         Marshal.StructureToPtr(information, buffer, false);
+        if (Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_SET_JOB_LIMIT_FAILURE") == "1") {
+          throw new Win32Exception(5, "SetInformationJobObject fixture failure");
+        }
         if (!SetInformationJobObject(handle, JobObjectExtendedLimitInformation, buffer, (uint)size)) {
           throw new Win32Exception(Marshal.GetLastWin32Error(), "SetInformationJobObject failed");
         }
@@ -232,14 +487,46 @@ namespace VemVisionHarness {
         Dispose();
         throw;
       } finally {
-        Marshal.FreeHGlobal(buffer);
+        if (buffer != IntPtr.Zero) { Marshal.FreeHGlobal(buffer); }
       }
     }
 
     public void Assign(IntPtr processHandle) {
       if (handle == IntPtr.Zero) { throw new ObjectDisposedException("KillOnCloseJob"); }
+      if (Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ASSIGN_JOB_FAILURE") == "1") {
+        throw new Win32Exception(5, "AssignProcessToJobObject fixture failure");
+      }
       if (!AssignProcessToJobObject(handle, processHandle)) {
         throw new Win32Exception(Marshal.GetLastWin32Error(), "AssignProcessToJobObject failed");
+      }
+    }
+
+    public void Terminate() {
+      if (handle == IntPtr.Zero) { return; }
+      if (Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_JOB_FAILURE") == "1") {
+        throw new Win32Exception(5, "TerminateJobObject fixture failure");
+      }
+      if (!TerminateJobObject(handle, 1)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "TerminateJobObject failed");
+      }
+    }
+
+    public uint ActiveProcessCount() {
+      if (handle == IntPtr.Zero) { throw new ObjectDisposedException("KillOnCloseJob"); }
+      if (forceActiveProcessCountFailure) {
+        forceActiveProcessCountFailure = false;
+        throw new Win32Exception(87, "QueryInformationJobObject fixture failure");
+      }
+      var size = Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+      var buffer = Marshal.AllocHGlobal(size);
+      try {
+        if (!QueryInformationJobObject(handle, 1, buffer, (uint)size, IntPtr.Zero)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "QueryInformationJobObject failed");
+        }
+        var information = (JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)Marshal.PtrToStructure(buffer, typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+        return information.ActiveProcesses;
+      } finally {
+        Marshal.FreeHGlobal(buffer);
       }
     }
 
@@ -295,6 +582,272 @@ function Arm-HarnessFailFastWatchdog {
   if ($remaining -le [TimeSpan]::Zero) { throw "watchdog deadline elapsed before it could be armed" }
   return [VemVisionHarness.FailFastWatchdog]::new($Message, $remaining)
 }
+function Initialize-HarnessSuspendedProcessWatchdog {
+  param([Parameter(Mandatory = $true)][string]$HarnessRoot)
+
+  if ($env:OS -ne "Windows_NT") { throw "the suspended-process watchdog requires Windows" }
+  $watchdogRoot = Join-Path $HarnessRoot "native-watchdog"
+  $watchdogPath = Join-Path $watchdogRoot "suspended-process-watchdog.exe"
+  if (Test-Path -LiteralPath $watchdogPath -PathType Leaf) { return $watchdogPath }
+
+  New-Item -ItemType Directory -Force -Path $watchdogRoot | Out-Null
+  $sourcePath = Join-Path $watchdogRoot "SuspendedProcessWatchdog.cs"
+  Write-Utf8 $sourcePath @'
+using System;
+using System.ComponentModel;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+public static class SuspendedProcessWatchdog {
+  private const uint WAIT_OBJECT_0 = 0;
+  private const uint WAIT_FAILED = 0xFFFFFFFF;
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool CloseHandle(IntPtr handle);
+
+  private static void Write(string path, string value) {
+    File.WriteAllText(path, value);
+  }
+
+  private static int Terminate(IntPtr process, string completionPath, DateTime deadlineUtc) {
+    if (!TerminateProcess(process, 1)) {
+      var error = Marshal.GetLastWin32Error();
+      var signal = WaitForSingleObject(process, 0);
+      if (signal == WAIT_OBJECT_0) {
+        Write(completionPath, "exited");
+        return 0;
+      }
+      Write(completionPath, signal == WAIT_FAILED ? "wait-failed:" + Marshal.GetLastWin32Error() : "terminate-failed:" + error);
+      return 1;
+    }
+    var remainingMilliseconds = Math.Max(0, (int)Math.Floor((deadlineUtc - DateTime.UtcNow).TotalMilliseconds));
+    if (WaitForSingleObject(process, (uint)remainingMilliseconds) != WAIT_OBJECT_0) {
+      Write(completionPath, "terminate-unconfirmed");
+      return 1;
+    }
+    Write(completionPath, "terminated");
+    return 0;
+  }
+
+  public static int Main(string[] args) {
+    if (args == null || args.Length != 5) { return 2; }
+    ulong inheritedHandleValue;
+    long deadlineUtcTicks;
+    if (!UInt64.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out inheritedHandleValue) || !Int64.TryParse(args[4], NumberStyles.None, CultureInfo.InvariantCulture, out deadlineUtcTicks)) { return 2; }
+    var commandPath = args[1];
+    var readyPath = args[2];
+    var completionPath = args[3];
+    var process = new IntPtr(unchecked((long)inheritedHandleValue));
+    if (process == IntPtr.Zero) { return 2; }
+    try {
+      DateTime deadlineUtc;
+      try {
+        deadlineUtc = new DateTime(deadlineUtcTicks, DateTimeKind.Utc);
+      } catch (ArgumentOutOfRangeException) {
+        return 2;
+      }
+      Write(readyPath, "armed");
+      for (;;) {
+        var signal = WaitForSingleObject(process, 0);
+        if (signal == WAIT_OBJECT_0) {
+          Write(completionPath, "exited");
+          return 0;
+        }
+        if (signal == WAIT_FAILED) {
+          Write(completionPath, "wait-failed:" + Marshal.GetLastWin32Error());
+          return 1;
+        }
+        if (File.Exists(commandPath)) {
+          var command = File.ReadAllText(commandPath).Trim();
+          if (String.Equals(command, "disarm", StringComparison.Ordinal)) {
+            Write(completionPath, "disarmed");
+            return 0;
+          }
+          if (String.Equals(command, "terminate", StringComparison.Ordinal)) {
+            return Terminate(process, completionPath, deadlineUtc);
+          }
+        }
+        if (DateTime.UtcNow >= deadlineUtc) { return Terminate(process, completionPath, deadlineUtc); }
+        Thread.Sleep(10);
+      }
+    } catch (Exception exception) {
+      Write(completionPath, "watchdog-failed:" + exception.GetType().Name);
+      return 1;
+    } finally {
+      CloseHandle(process);
+    }
+  }
+}
+'@
+  $csc = Join-Path $env:WINDIR "Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"
+  if (-not (Test-Path -LiteralPath $csc -PathType Leaf)) { throw "C# compiler missing for suspended-process watchdog" }
+  & $csc /nologo /target:exe ("/out:{0}" -f $watchdogPath) $sourcePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $watchdogPath -PathType Leaf)) { throw "suspended-process watchdog compilation failed" }
+  return $watchdogPath
+}
+function Start-HarnessSuspendedProcessWatchdog {
+  param(
+    [Parameter(Mandatory = $true)][string]$StageRoot,
+    [Parameter(Mandatory = $true)][string]$WatchdogPath,
+    [Parameter(Mandatory = $true)][object]$NativeProcess,
+    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+  )
+
+  $watchdogRoot = Join-Path $StageRoot "suspended-process-watchdog"
+  New-Item -ItemType Directory -Force -Path $watchdogRoot | Out-Null
+  $commandPath = Join-Path $watchdogRoot "command"
+  $readyPath = Join-Path $watchdogRoot "ready"
+  $completionPath = Join-Path $watchdogRoot "completion"
+  $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
+  if ($remainingMilliseconds -le 0) { throw "suspended-process watchdog deadline elapsed before it could be started" }
+  $deadlineUtcTicks = $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+  # StartInheritedHandleWatchdog replaces this reserved argument with the inheritable DuplicateHandle value.
+  $arguments = @("inherited-process-handle", $commandPath, $readyPath, $completionPath, $deadlineUtcTicks)
+  $watchdogProcessId = $NativeProcess.StartInheritedHandleWatchdog($WatchdogPath, [string[]]$arguments, $watchdogRoot)
+  $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId)
+
+  $readyDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds([Math]::Min(1000, $remainingMilliseconds))
+  while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadlineUtc -and -not $process.HasExited) { Start-Sleep -Milliseconds 10 }
+  if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) {
+    try { $process.Dispose() } finally { throw "suspended-process watchdog did not inherit the original process handle before setup continued" }
+  }
+  $ready = (Get-Content -LiteralPath $readyPath -Raw -Encoding UTF8).Trim()
+  if ($ready -ne "armed") {
+    try { $process.Dispose() } finally { throw "suspended-process watchdog reported invalid ready state '$ready'" }
+  }
+  return [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false }
+}
+function Complete-HarnessSuspendedProcessWatchdog {
+  param(
+    [Parameter(Mandatory = $true)][object]$Watchdog,
+    [Parameter(Mandatory = $true)][ValidateSet("disarm", "terminate")][string]$Action,
+    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+  )
+
+  if ($Watchdog.completed) { return "already-completed" }
+  Write-Utf8 $Watchdog.commandPath $Action
+  $remainingMilliseconds = [Math]::Max(0, [int][Math]::Floor(($DeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds))
+  if (-not $Watchdog.process.WaitForExit($remainingMilliseconds)) { throw "suspended-process watchdog did not complete '$Action' before the cleanup deadline" }
+  $completion = if (Test-Path -LiteralPath $Watchdog.completionPath -PathType Leaf) { (Get-Content -LiteralPath $Watchdog.completionPath -Raw -Encoding UTF8).Trim() } else { "missing-completion" }
+  $Watchdog.completed = $true
+  $Watchdog.process.Dispose()
+  if ($Action -eq "terminate" -and $completion -notin @("terminated", "exited")) { throw "suspended-process watchdog could not terminate process $($Watchdog.processId): $completion" }
+  if ($Action -eq "disarm" -and $completion -notin @("disarmed", "exited")) { throw "suspended-process watchdog could not disarm process $($Watchdog.processId): $completion" }
+  return $completion
+}
+function Get-HarnessRemainingMilliseconds {
+  param(
+    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+  )
+
+  return [Math]::Max(0, [int][Math]::Floor(($DeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds))
+}
+function Get-HarnessTerminationConfirmationReserveMilliseconds {
+  param([Parameter(Mandatory = $true)][int]$TotalMilliseconds)
+
+  return [Math]::Min(2000, [Math]::Max(1000, [int][Math]::Floor($TotalMilliseconds / 4)))
+}
+function Wait-HarnessJobTermination {
+  param(
+    [Parameter(Mandatory = $true)][object]$Job,
+    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+  )
+
+  $queryFailureDetail = $null
+  $activeProcesses = $null
+  while ($true) {
+    try {
+      $activeProcesses = $Job.ActiveProcessCount()
+      if ($activeProcesses -eq 0) {
+        return [pscustomobject]@{ confirmed=$true; activeProcesses=$activeProcesses; queryFailureDetail=$queryFailureDetail }
+      }
+    } catch {
+      if ($null -eq $queryFailureDetail) {
+        $queryFailureDetail = Get-HarnessTerminationFailureDetail -Operation "active-process-count" -ErrorRecord $_
+      }
+    }
+
+    $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
+    if ($remainingMilliseconds -le 0) { break }
+    $sleepMilliseconds = [Math]::Min(25, $remainingMilliseconds)
+    Start-Sleep -Milliseconds $sleepMilliseconds
+  }
+
+  return [pscustomobject]@{ confirmed=$false; activeProcesses=$activeProcesses; queryFailureDetail=$queryFailureDetail }
+}
+function Get-HarnessTerminationFailureDetail {
+  param(
+    [Parameter(Mandatory = $true)][string]$Operation,
+    [Parameter(Mandatory = $true)][object]$ErrorRecord
+  )
+
+  $failure = if ($ErrorRecord -is [Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } elseif ($ErrorRecord -is [Exception]) { $ErrorRecord } else { [Exception]::new([string]$ErrorRecord) }
+  while ($null -ne $failure.InnerException) { $failure = $failure.InnerException }
+  $nativeErrorCode = if ($null -ne $failure.PSObject.Properties["NativeErrorCode"]) { [string]$failure.NativeErrorCode } else { "none" }
+  $exceptionType = ($failure.GetType().FullName -replace '[^A-Za-z0-9._:-]', '_')
+  $exceptionMessage = ($failure.Message -replace '[^A-Za-z0-9._:-]', '_')
+  if ([string]::IsNullOrWhiteSpace($exceptionMessage)) { $exceptionMessage = "empty" }
+  if ($exceptionMessage.Length -gt 160) { $exceptionMessage = $exceptionMessage.Substring(0, 160) }
+  return "termination=job-object operation=$Operation exceptionType=$exceptionType exceptionMessage=$exceptionMessage nativeErrorCode=$nativeErrorCode"
+}
+function Invoke-HarnessJobCleanup {
+  param(
+    [Parameter(Mandatory = $true)][string]$Stage,
+    [AllowNull()][object]$Job,
+    [Parameter(Mandatory = $true)][object]$CleanupState,
+    [Parameter(Mandatory = $true)][DateTime]$CleanupDeadlineUtc,
+    [Parameter(Mandatory = $true)][int]$ConfirmationReserveMilliseconds
+  )
+
+  $naturalExitDeadlineUtc = $CleanupDeadlineUtc.AddMilliseconds(-$ConfirmationReserveMilliseconds)
+  $termination = $null
+  if ($null -eq $Job) { return }
+
+  $mustTerminate = $CleanupState.processOwnership -eq "resumed-job-assigned" -and $CleanupState.exceptionalExit
+  if (-not $mustTerminate) {
+    Write-HarnessStage $Stage "cleanup-confirmation-waiting" "remainingMilliseconds=$(Get-HarnessRemainingMilliseconds -DeadlineUtc $naturalExitDeadlineUtc) confirmationReserveMilliseconds=$ConfirmationReserveMilliseconds termination=job-object"
+    $termination = Wait-HarnessJobTermination -Job $Job -DeadlineUtc $naturalExitDeadlineUtc
+    if ($null -ne $termination.queryFailureDetail) {
+      Write-HarnessStage $Stage "termination-query-failed" $termination.queryFailureDetail
+    }
+    if (-not $termination.confirmed) { $mustTerminate = $CleanupState.processOwnership -eq "resumed-job-assigned" }
+  }
+
+  if ($mustTerminate) {
+    Write-HarnessStage $Stage "termination-requested" "termination=job-object"
+    try {
+      $Job.Terminate()
+      Write-HarnessStage $Stage "termination-signaled" "termination=job-object"
+    } catch {
+      Write-HarnessStage $Stage "termination-failed" (Get-HarnessTerminationFailureDetail -Operation "terminate-job-object" -ErrorRecord $_)
+    }
+    Write-HarnessStage $Stage "termination-waiting" "remainingMilliseconds=$(Get-HarnessRemainingMilliseconds -DeadlineUtc $CleanupDeadlineUtc) confirmationReserveMilliseconds=$ConfirmationReserveMilliseconds termination=job-object"
+    $termination = Wait-HarnessJobTermination -Job $Job -DeadlineUtc $CleanupDeadlineUtc
+    if ($null -ne $termination.queryFailureDetail) {
+      Write-HarnessStage $Stage "termination-query-failed" $termination.queryFailureDetail
+    }
+  }
+
+  if ($termination.activeProcesses -eq 0) {
+    Write-HarnessStage $Stage "termination-confirmed" "termination=job-object activeProcesses=$($termination.activeProcesses) confirmationReserveMilliseconds=$ConfirmationReserveMilliseconds"
+    Write-HarnessStage $Stage "cleanup-job-dispose-started"
+    $Job.Dispose()
+    Write-HarnessStage $Stage "cleanup-job-dispose-completed"
+    return
+  }
+
+  Write-HarnessStage $Stage "cleanup-job-dispose-skipped" "reason=termination-unconfirmed activeProcesses=$($termination.activeProcesses)"
+  Write-HarnessStage $Stage "hard-watchdog-required" "reason=termination-unconfirmed ownership=$($CleanupState.processOwnership)"
+  throw "fixture stage '$Stage' could not confirm its Job Object was empty; leaving the Job Object handle for the hard watchdog to cap"
+}
 function Invoke-BoundedPowerShell {
   param(
     [Parameter(Mandatory = $true)][string]$Stage,
@@ -304,27 +857,37 @@ function Invoke-BoundedPowerShell {
     [Parameter(Mandatory = $true)][string]$ChildPowerShellPath,
     [Parameter(Mandatory = $true)][DateTime]$HarnessDeadlineUtc,
     [int]$CleanupReserveSeconds = 0,
-    [int]$TimeoutSeconds = 30,
-    [int]$TerminationWaitSeconds = 10
+    [int]$TimeoutSeconds = 30
   )
 
-  $remainingSeconds = [Math]::Floor(($HarnessDeadlineUtc - [DateTime]::UtcNow).TotalSeconds) - $CleanupReserveSeconds
-  $effectiveTimeoutSeconds = [Math]::Min($TimeoutSeconds, $remainingSeconds)
-  if ($effectiveTimeoutSeconds -le 0) {
+  $harnessRemainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $HarnessDeadlineUtc
+  $availableMilliseconds = $harnessRemainingMilliseconds - ($CleanupReserveSeconds * 1000)
+  $stageBudgetMilliseconds = [Math]::Min($availableMilliseconds, ($TimeoutSeconds * 1000) + 2000)
+  $confirmationReserveMilliseconds = Get-HarnessTerminationConfirmationReserveMilliseconds -TotalMilliseconds $stageBudgetMilliseconds
+  $executionMilliseconds = [Math]::Min($TimeoutSeconds * 1000, $stageBudgetMilliseconds - $confirmationReserveMilliseconds)
+  if ($executionMilliseconds -le 0) {
     throw "fixture stage '$Stage' cannot start before the harness deadline while reserving $CleanupReserveSeconds seconds for cleanup"
   }
+  $invokeStartUtc = [DateTime]::UtcNow
+  $cleanupDeadlineUtc = $invokeStartUtc.AddMilliseconds($executionMilliseconds + $confirmationReserveMilliseconds)
+  $harnessCleanupDeadlineUtc = $HarnessDeadlineUtc.AddSeconds(-$CleanupReserveSeconds)
+  if ($cleanupDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $cleanupDeadlineUtc = $harnessCleanupDeadlineUtc }
+  $executionDeadlineUtc = $cleanupDeadlineUtc.AddMilliseconds(-$confirmationReserveMilliseconds)
+  $executionMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $executionDeadlineUtc
+  if ($executionMilliseconds -le 0) {
+    throw "fixture stage '$Stage' cannot start before its termination-confirmation reserve"
+  }
+  $effectiveTimeoutSeconds = [Math]::Max(1, [int][Math]::Ceiling($executionMilliseconds / 1000.0))
 
   $safeStage = $Stage -replace '[^A-Za-z0-9._-]', "-"
   $stageRoot = Join-Path $HarnessRoot ("diagnostics\\" + $safeStage + "-" + [guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $stageRoot -ErrorAction Stop | Out-Null
   $scriptPath = Join-Path $stageRoot "operation.ps1"
   $bootstrapPath = Join-Path $stageRoot "bootstrap.ps1"
-  $gatePath = Join-Path $stageRoot "job-assigned.signal"
   $stdoutPath = Join-Path $stageRoot "stdout.log"
   $stderrPath = Join-Path $stageRoot "stderr.log"
   $escapedContextPath = $HarnessContextPath.Replace("'", "''")
   $escapedScriptPath = $scriptPath.Replace("'", "''")
-  $escapedGatePath = $gatePath.Replace("'", "''")
   $escapedStdoutPath = $stdoutPath.Replace("'", "''")
   $escapedStderrPath = $stderrPath.Replace("'", "''")
   $writeHarnessStageFunction = ${function:Write-HarnessStage}.ToString()
@@ -359,70 +922,116 @@ $ScriptBody
 
   Write-Utf8 $bootstrapPath @"
 `$ErrorActionPreference = "Stop"
-while (-not (Test-Path -LiteralPath '$escapedGatePath' -PathType Leaf)) { Start-Sleep -Milliseconds 10 }
 & '$escapedScriptPath' 1> '$escapedStdoutPath' 2> '$escapedStderrPath'
 if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 "@
 
-  $process = $null
+  $nativeProcess = $null
+  $suspendedProcessWatchdog = $null
   $job = $null
-  $jobAssigned = $false
+  $cleanupState = [pscustomobject]@{
+    processOwnership = "not-created"
+    exceptionalExit = $false
+  }
+  $operationFailure = $null
+  $cleanupFailures = New-Object 'System.Collections.Generic.List[System.Exception]'
+  $result = $null
+  if ([string]::IsNullOrWhiteSpace([string]$script:HarnessSuspendedProcessWatchdogPath)) { throw "suspended-process watchdog is not initialized" }
   try {
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $ChildPowerShellPath
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.WorkingDirectory = $stageRoot
-    $start.ArgumentList.Add("-NoProfile")
-    $start.ArgumentList.Add("-NonInteractive")
-    $start.ArgumentList.Add("-ExecutionPolicy")
-    $start.ArgumentList.Add("Bypass")
-    $start.ArgumentList.Add("-File")
-    $start.ArgumentList.Add($bootstrapPath)
-    $process = [Diagnostics.Process]::Start($start)
-    if ($null -eq $process) { throw "fixture stage '$Stage' did not start its child PowerShell process" }
     $job = New-HarnessKillOnCloseJob
-    $job.Assign($process.Handle)
-    $jobAssigned = $true
-    New-Item -ItemType File -Path $gatePath -ErrorAction Stop | Out-Null
-    Write-HarnessStage $Stage "started" "timeoutSeconds=$effectiveTimeoutSeconds processId=$($process.Id) termination=job-object"
+    Write-HarnessStage $Stage "process-ownership" "state=not-created"
+    $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($ChildPowerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $bootstrapPath), $stageRoot)
+    $cleanupState.processOwnership = "created-suspended"
+    Write-HarnessStage $Stage "process-ownership" "state=created-suspended processId=$($nativeProcess.ProcessId)"
+    $suspendedProcessWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $cleanupDeadlineUtc
+    Write-HarnessStage $Stage "suspended-process-watchdog-armed" "processId=$($nativeProcess.ProcessId) identity=original-process-handle"
+    $job.Assign($nativeProcess.ProcessHandle)
+    $cleanupState.processOwnership = "job-assigned-suspended"
+    Write-HarnessStage $Stage "process-ownership" "state=job-assigned-suspended processId=$($nativeProcess.ProcessId)"
+    $nativeProcess.Resume()
+    $cleanupState.processOwnership = "resumed-job-assigned"
+    $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action "disarm" -DeadlineUtc $cleanupDeadlineUtc
+    Write-HarnessStage $Stage "suspended-process-watchdog-disarmed" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion"
+    $suspendedProcessWatchdog = $null
+    Write-HarnessStage $Stage "process-ownership" "state=resumed-job-assigned processId=$($nativeProcess.ProcessId)"
+    Write-HarnessStage $Stage "started" "timeoutSeconds=$effectiveTimeoutSeconds processId=$($nativeProcess.ProcessId) termination=job-object"
 
-    $timeoutMilliseconds = [int]($effectiveTimeoutSeconds * 1000)
-    $terminationWaitMilliseconds = [int]($TerminationWaitSeconds * 1000)
-    if (-not $process.WaitForExit($timeoutMilliseconds)) {
+    $timeoutMilliseconds = [Math]::Min($executionMilliseconds, (Get-HarnessRemainingMilliseconds -DeadlineUtc $executionDeadlineUtc))
+    if (-not $nativeProcess.WaitForExit([uint32]$timeoutMilliseconds)) {
       Write-HarnessStage $Stage "timed-out" "timeoutSeconds=$effectiveTimeoutSeconds termination=job-object"
-      $job.Dispose()
-      if (-not $process.WaitForExit($terminationWaitMilliseconds) -and -not $process.HasExited) {
-        Write-HarnessStage $Stage "termination-failed" "waitSeconds=$TerminationWaitSeconds termination=job-object"
-        throw "fixture stage '$Stage' exceeded $effectiveTimeoutSeconds seconds and its Job Object did not terminate the parent process"
-      }
-      throw "fixture stage '$Stage' exceeded $effectiveTimeoutSeconds seconds; its Job Object terminated the assigned process tree"
-    }
-    if (-not $process.HasExited) {
-      throw "fixture stage '$Stage' returned from WaitForExit without exiting"
+      throw "fixture stage '$Stage' exceeded $effectiveTimeoutSeconds seconds; cleanup will terminate the assigned Job Object"
     }
 
     $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
     $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
-    if ($process.ExitCode -ne 0) {
-      Write-HarnessStage $Stage "failed" "exitCode=$($process.ExitCode)"
-      throw "fixture stage '$Stage' failed with exit code $($process.ExitCode): $stderr$stdout"
+    if ($nativeProcess.ExitCode -ne 0) {
+      Write-HarnessStage $Stage "failed" "exitCode=$($nativeProcess.ExitCode)"
+      throw "fixture stage '$Stage' failed with exit code $($nativeProcess.ExitCode): $stderr$stdout"
     }
     Write-HarnessStage $Stage "completed"
-    return [pscustomobject]@{ stdout=$stdout; stderr=$stderr; diagnosticsPath=$stageRoot }
+    $result = [pscustomobject]@{ stdout=$stdout; stderr=$stderr; diagnosticsPath=$stageRoot }
+  } catch {
+    if ($null -ne $nativeProcess -and $nativeProcess.IsResumed) {
+      $cleanupState.processOwnership = "resumed-job-assigned"
+    }
+    $cleanupState.exceptionalExit = $true
+    $operationFailure = $_
   } finally {
-    if ($null -ne $job) { $job.Dispose() }
-    if ($null -ne $process) {
-      try {
-        if (-not $jobAssigned -and -not $process.HasExited) {
-          $process.Kill($true)
-          $process.WaitForExit([int]($TerminationWaitSeconds * 1000)) | Out-Null
+    $nativeCleanupFailure = $null
+    $nativeCleanupConfirmed = $null -eq $nativeProcess -or $nativeProcess.IsResumed
+    try {
+      if ($null -ne $nativeProcess -and -not $nativeProcess.IsResumed) {
+        Write-HarnessStage $Stage "suspended-process-termination-requested" "processId=$($nativeProcess.ProcessId)"
+        try {
+          $nativeProcess.TerminateUnresumed([uint32](Get-HarnessRemainingMilliseconds -DeadlineUtc $cleanupDeadlineUtc))
+          Write-HarnessStage $Stage "suspended-process-termination-confirmed" "processId=$($nativeProcess.ProcessId)"
+          $nativeCleanupConfirmed = $true
+        } catch {
+          Write-HarnessStage $Stage "suspended-process-termination-failed" (Get-HarnessTerminationFailureDetail -Operation "terminate-suspended-process" -ErrorRecord $_)
+          $nativeCleanupFailure = $_
         }
+        if ($null -ne $suspendedProcessWatchdog) {
+          try {
+            $watchdogAction = if ($nativeCleanupConfirmed) { "disarm" } else { "terminate" }
+            $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action $watchdogAction -DeadlineUtc $cleanupDeadlineUtc
+            if (-not $nativeCleanupConfirmed) {
+              if (-not $nativeProcess.WaitForExit([uint32](Get-HarnessRemainingMilliseconds -DeadlineUtc $cleanupDeadlineUtc))) { throw "suspended-process watchdog reported '$watchdogCompletion' without a signaled original process handle" }
+              $nativeCleanupConfirmed = $true
+              Write-HarnessStage $Stage "suspended-process-watchdog-terminated" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion identity=original-process-handle"
+            } else {
+              Write-HarnessStage $Stage "suspended-process-watchdog-disarmed" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion"
+            }
+            $suspendedProcessWatchdog = $null
+          } catch {
+            if ($null -eq $nativeCleanupFailure) { $nativeCleanupFailure = $_ }
+            else { $cleanupFailures.Add($_.Exception) }
+          }
+        }
+      }
+    } catch {
+      $nativeCleanupFailure = $_
+    } finally {
+      try {
+        if ($null -ne $nativeProcess -and $nativeCleanupConfirmed) { $nativeProcess.Dispose() }
+        elseif ($null -ne $nativeProcess) { Write-HarnessStage $Stage "suspended-process-handle-retained" "processId=$($nativeProcess.ProcessId) reason=cleanup-unconfirmed" }
+      } catch {
+        if ($null -eq $nativeCleanupFailure) { $nativeCleanupFailure = $_ } else { $cleanupFailures.Add($_.Exception) }
       } finally {
-        $process.Dispose()
+        try {
+          Invoke-HarnessJobCleanup -Stage $Stage -Job $job -CleanupState $cleanupState -CleanupDeadlineUtc $cleanupDeadlineUtc -ConfirmationReserveMilliseconds $confirmationReserveMilliseconds
+        } catch {
+          $cleanupFailures.Add($_.Exception)
+        }
       }
     }
+    if ($null -ne $nativeCleanupFailure) { $cleanupFailures.Add($nativeCleanupFailure.Exception) }
   }
+  if ($null -ne $operationFailure -and $cleanupFailures.Count -gt 0) {
+    throw [Exception]::new("$($operationFailure.Exception.Message); cleanup failure: $($cleanupFailures[0].Message)", [AggregateException]::new($cleanupFailures))
+  }
+  if ($null -ne $operationFailure) { throw $operationFailure }
+  if ($cleanupFailures.Count -gt 0) { throw [AggregateException]::new("fixture stage '$Stage' cleanup failed", $cleanupFailures) }
+  return $result
 }
 
 if ($Library) { return }
@@ -439,19 +1048,20 @@ $factoryRoot = "C:\ProgramData\VEM\factory"
 $stateRoot = "C:\ProgramData\VEM\vision"
 $evidencePath = "C:\ProgramData\VEM\evidence\vision-release-install.json"
 $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-$childPwsh = (Get-Command pwsh -ErrorAction Stop).Source
+$assetPowerShellPath = (Get-Command pwsh -ErrorAction Stop).Source
+$corePowerShellPathInputs = if ($CorePowerShellPaths.Count -eq 0) { @($assetPowerShellPath) } else { $CorePowerShellPaths }
+$corePowerShellPaths = @($corePowerShellPathInputs | ForEach-Object { (Get-Command $_ -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source) } | Select-Object -Unique)
+Assert-True ($corePowerShellPaths.Count -gt 0) "at least one core PowerShell executable is required"
 $harnessContextPath = Join-Path $root "harness-context.json"
 $certificateCleanupMarkerPath = Join-Path $root "fixture-certificate-cleanup.json"
 $certificateSubject = "CN=VEM Vision CI Fixture " + [guid]::NewGuid().ToString("N")
 $HarnessDeadlineSeconds = 480
 $CleanupReserveSeconds = 75
-$hardWatchdogSeconds = $HarnessDeadlineSeconds + $CleanupReserveSeconds
 Initialize-HarnessNativeTypes
 $deadlineStartUtc = [DateTime]::UtcNow
 $harnessDeadlineUtc = $deadlineStartUtc.AddSeconds($HarnessDeadlineSeconds)
-$cleanupDeadlineUtc = $deadlineStartUtc.AddSeconds($hardWatchdogSeconds)
-$watchdogMessage = "vision installer harness exceeded its $hardWatchdogSeconds-second hard deadline"
-$watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $cleanupDeadlineUtc
+$watchdogMessage = "vision installer harness exceeded its $HarnessDeadlineSeconds-second hard deadline"
+$watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $harnessDeadlineUtc
 $harnessContext = [ordered]@{
   root = $root
   media = $media
@@ -472,15 +1082,15 @@ $harnessContext = [ordered]@{
 
 try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
+  Assert-True (Test-Path -LiteralPath $csc -PathType Leaf) "C# compiler missing from Windows runner"
+  $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   Write-Json $certificateCleanupMarkerPath @{ schemaVersion="vem-vision-harness-certificate-cleanup/v1"; certificateSubject=$certificateSubject; certificateThumbprint=$null }
   Write-Json $harnessContextPath $harnessContext
   Write-HarnessStage "harness" "started"
-  Invoke-BoundedPowerShell -Stage "fixture.cleanup" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.cleanup" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 Remove-Item -LiteralPath "C:\VEM", "C:\ProgramData\VEM" -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $context.delivery, $context.trust, $context.installerMedia | Out-Null
 '@ | Out-Null
-  Assert-True (Test-Path -LiteralPath $csc -PathType Leaf) "C# compiler missing from Windows runner"
-
   $runtimeSource = @'
 using System; using System.IO; using System.Net; using System.Net.WebSockets; using System.Diagnostics; using System.Security.Cryptography; using System.Text; using System.Threading;
 class VisionFixture {
@@ -496,13 +1106,13 @@ class VisionFixture {
   $harnessContext.runtimePath = $runtimePath
   $harnessContext.certificateExportPath = $certificateExportPath
   Write-Json $harnessContextPath $harnessContext
-  Invoke-BoundedPowerShell -Stage "fixture.compile-runtime" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.compile-runtime" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 & $csc /nologo /target:exe ("/out:{0}" -f $context.runtimePath) (Join-Path $context.root "VisionFixture.cs")
 if ($LASTEXITCODE -ne 0) { throw "fixture runtime compilation failed" }
 '@ | Out-Null
   $certificateResultPath = Join-Path $root "certificate.json"
-  Invoke-BoundedPowerShell -Stage "fixture.create-certificate" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.create-certificate" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $context.certificateSubject -KeyUsage DigitalSignature -HashAlgorithm SHA256 -CertStoreLocation "Cert:\CurrentUser\My"
 [IO.File]::WriteAllText((Join-Path $context.root "certificate.json"), (@{thumbprint=$certificate.Thumbprint;psPath=$certificate.PSPath}|ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 '@ | Out-Null
@@ -511,25 +1121,25 @@ $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $context
   $harnessContext.certificateThumbprint = [string]$certificate.thumbprint
   Write-Json $certificateCleanupMarkerPath @{ schemaVersion="vem-vision-harness-certificate-cleanup/v1"; certificateSubject=$certificateSubject; certificateThumbprint=[string]$certificate.thumbprint }
   Write-Json $harnessContextPath $harnessContext
-  Invoke-BoundedPowerShell -Stage "fixture.export-certificate" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.export-certificate" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $certificate = Get-Item -LiteralPath ("Cert:\CurrentUser\My\{0}" -f $context.certificateThumbprint)
 Export-Certificate -Cert $certificate -FilePath $context.certificateExportPath -Force | Out-Null
 '@ | Out-Null
-  Invoke-BoundedPowerShell -Stage "fixture.trust-root" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.trust-root" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 Import-Certificate -FilePath $context.certificateExportPath -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
 '@ | Out-Null
-  Invoke-BoundedPowerShell -Stage "fixture.trust-publisher" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.trust-publisher" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 Import-Certificate -FilePath $context.certificateExportPath -CertStoreLocation "Cert:\CurrentUser\TrustedPublisher" | Out-Null
 '@ | Out-Null
   $signatureResultPath = Join-Path $root "signature.json"
-  Invoke-BoundedPowerShell -Stage "fixture.sign-runtime" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.sign-runtime" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $certificate = Get-Item -LiteralPath ("Cert:\CurrentUser\My\{0}" -f $context.certificateThumbprint)
 $signature = Set-AuthenticodeSignature -FilePath $context.runtimePath -Certificate $certificate -HashAlgorithm SHA256
 [IO.File]::WriteAllText((Join-Path $context.root "signature.json"), (@{status=[string]$signature.Status;statusMessage=[string]$signature.StatusMessage}|ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 '@ | Out-Null
   $signature = Get-Content -LiteralPath $signatureResultPath -Raw | ConvertFrom-Json
   $verificationResultPath = Join-Path $root "verification.json"
-  Invoke-BoundedPowerShell -Stage "fixture.verify-authenticode" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.verify-authenticode" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $verification = Get-AuthenticodeSignature -FilePath $context.runtimePath
 $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
 $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
@@ -542,7 +1152,7 @@ $localChainValid = $null -ne $verification.SignerCertificate -and $chain.Build($
   Assert-True ($verification.status -eq "Valid") "fixture runtime verification status was $($verification.status): $($verification.statusMessage)"
   Assert-True ($verification.localChainValid -eq $true) "fixture runtime certificate chain did not validate from local trust"
 
-  Invoke-BoundedPowerShell -Stage "fixture.assemble-release" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.assemble-release" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $release = Join-Path $context.root "release"
 New-Item -ItemType Directory -Force -Path $release | Out-Null
 Copy-Item -LiteralPath $context.runtimePath -Destination (Join-Path $release "runtime.exe")
@@ -571,7 +1181,7 @@ $factoryManifest = @{ assets=@(@{role="vision-release";digest=$bundleDigest;vers
 Write-Json (Join-Path $context.delivery "factory-manifest.json") $factoryManifest
 Write-Json (Join-Path $context.root "release-context.json") @{ bundleDigest=$bundleDigest; signer=$signer }
 '@ | Out-Null
-  Invoke-BoundedPowerShell -Stage "fixture.compile-verifier" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.compile-verifier" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $releaseContext = Get-Content -LiteralPath (Join-Path $context.root "release-context.json") -Raw | ConvertFrom-Json
 $signer = [string]$releaseContext.signer
 $verifierSource = @"
@@ -591,7 +1201,7 @@ Write-Json (Join-Path $context.trust "vision-release-trust-anchor.json") @{schem
   $bundleDigest = (Get-Content -LiteralPath (Join-Path $root "release-context.json") -Raw | ConvertFrom-Json).bundleDigest
   $harnessContext.bundleDigest = $bundleDigest
   Write-Json $harnessContextPath $harnessContext
-  Invoke-BoundedPowerShell -Stage "fixture.provision-and-first-install" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.provision" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 Copy-Item -LiteralPath $context.installerPath -Destination (Join-Path $context.installerMedia "install-vision-release.ps1")
 Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $context.installerPath) "provision-vision-factory-release.ps1") -Destination (Join-Path $context.installerMedia "provision-vision-factory-release.ps1")
 $files = @{}; Get-ChildItem -LiteralPath (Join-Path $context.media "VEM") -Recurse -File | ForEach-Object { $relative=$_.FullName.Substring((Join-Path $context.media "VEM").Length+1).Replace("\\","/"); $files[$relative]=Get-Digest $_.FullName }
@@ -606,15 +1216,20 @@ Write-Json (Join-Path $context.media "VEM\VISION-FACTORY-PROVISIONING.JSON") @{s
 & (Join-Path $context.installerMedia "provision-vision-factory-release.ps1") -FactoryMediaRoot $context.visionMediaRoot
 New-Item -ItemType Directory -Force -Path (Join-Path $context.stateRoot "config") | Out-Null
 Write-Utf8 (Join-Path $context.stateRoot "config\fixture.json") "{}"
-& "C:\VEM\bringup\install-vision-release.ps1" -ConfigurationPath (Join-Path $context.stateRoot "config\fixture.json") -EvidencePath $context.evidencePath -TaskUser $env:USERNAME
-$evidence = Get-Content -LiteralPath $context.evidencePath -Raw | ConvertFrom-Json
-Assert-True ($evidence.healthOk -and $evidence.webSocketOk -and $evidence.installedDigest -eq $context.bundleDigest) "first install did not reach approved runtime"
-  Assert-True (Test-Path -LiteralPath "C:\ProgramData\VEM\vision\current.json") "selection missing after first install"
-  Assert-True ($null -ne (Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue)) "Vision task missing"
-  $acl = Get-Acl -LiteralPath "C:\ProgramData\VEM\vision\current.json"
-  Assert-True ($acl.AreAccessRulesProtected) "selection ACL is inherited"
 '@ | Out-Null
-  Invoke-BoundedPowerShell -Stage "fixture.activation-regressions" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  foreach ($corePowerShellPath in $corePowerShellPaths) {
+    $corePowerShellName = [IO.Path]::GetFileNameWithoutExtension($corePowerShellPath).ToLowerInvariant()
+    Invoke-BoundedPowerShell -Stage "fixture.signed-install.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+$factoryDelivery = Join-Path $context.factoryRoot "vision-release"
+& "C:\VEM\bringup\install-vision-release.ps1" -BundlePath (Join-Path $factoryDelivery "bundle.bin") -DescriptorPath (Join-Path $factoryDelivery "descriptor.json") -AttestationPath (Join-Path $factoryDelivery "attestation.json") -SbomPath (Join-Path $factoryDelivery "sbom.json") -ProvenancePath (Join-Path $factoryDelivery "provenance.json") -ConformanceEvidencePath (Join-Path $factoryDelivery "conformance.json") -ApprovalPath (Join-Path $factoryDelivery "approval.json") -FactoryManifestPath (Join-Path $factoryDelivery "factory-manifest.json") -ConfigurationPath (Join-Path $context.stateRoot "config\fixture.json") -EvidencePath $context.evidencePath -TaskUser $env:USERNAME
+$evidence = Get-Content -LiteralPath $context.evidencePath -Raw | ConvertFrom-Json
+Assert-True ($evidence.healthOk -and $evidence.webSocketOk -and $evidence.installedDigest -eq $context.bundleDigest) "signed install did not reach approved runtime"
+Assert-True (Test-Path -LiteralPath "C:\ProgramData\VEM\vision\current.json") "selection missing after signed install"
+Assert-True ($null -ne (Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue)) "Vision task missing"
+$acl = Get-Acl -LiteralPath "C:\ProgramData\VEM\vision\current.json"
+Assert-True ($acl.AreAccessRulesProtected) "selection ACL is inherited"
+'@ | Out-Null
+    Invoke-BoundedPowerShell -Stage "fixture.rollback-reinstall.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $factoryRoot = $context.factoryRoot
 $stateRoot = $context.stateRoot
 $evidencePath = $context.evidencePath
@@ -665,8 +1280,9 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
   $reinstalled = Get-Content -LiteralPath "C:\ProgramData\VEM\vision\current.json" -Raw | ConvertFrom-Json
   Assert-True ($reinstalled.bundleDigest -eq $bundleDigest) "idempotent reinstall changed the selected digest"
 '@ | Out-Null
+  }
 
-  Invoke-BoundedPowerShell -Stage "fixture.process-mutex-runtime" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.process-mutex-runtime" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
   $factoryRoot = $context.factoryRoot
   $stateRoot = $context.stateRoot
   $evidencePath = $context.evidencePath
@@ -702,7 +1318,7 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
   $cleanupFailure = $null
   if (Test-Path -LiteralPath $certificateCleanupMarkerPath) {
     try {
-      Invoke-BoundedPowerShell -Stage "fixture.cleanup-certificates" -TimeoutSeconds 30 -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $cleanupDeadlineUtc -ScriptBody 'Invoke-HarnessFixtureCleanup -Context $context' | Out-Null
+      Invoke-BoundedPowerShell -Stage "fixture.cleanup-certificates" -TimeoutSeconds 30 -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody 'Invoke-HarnessFixtureCleanup -Context $context' | Out-Null
     } catch {
       Write-HarnessStage "fixture.cleanup-certificates" "failed" $_.Exception.Message
       $cleanupFailure = $_

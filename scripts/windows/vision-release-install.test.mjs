@@ -84,6 +84,39 @@ describe("Vision release installer fixtures", () => {
   }
 
   boundedIt(
+    "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",
+    () => {
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-Command",
+        ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; Initialize-HarnessNativeTypes; $actual=[VemVisionHarness.SuspendedProcess]::QuoteArgument('C:\\Program Files\\PowerShell\\7\\pwsh.exe'); if($actual -cne '\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\"'){throw \"unexpected quote: $actual\"}",
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "uses the native child-path quote under both PowerShell editions on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const quoteProbe =
+        ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; Initialize-HarnessNativeTypes; $actual=[VemVisionHarness.SuspendedProcess]::QuoteArgument('C:\\Program Files\\PowerShell\\7\\pwsh.exe'); if($actual -cne '\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\"'){throw \"unexpected quote: $actual\"}";
+
+      for (const command of ["pwsh", "powershell.exe"]) {
+        const result = spawnBounded(command, [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          quoteProbe,
+        ]);
+        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      }
+    },
+  );
+
+  boundedIt(
     "keeps trust roots outside update inputs and uses validated process/job lifecycles",
     () => {
       const installer = readFileSync(
@@ -97,7 +130,9 @@ describe("Vision release installer fixtures", () => {
       ]);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
       assert.match(installer, /\$process -isnot \[Diagnostics\.Process\]/);
-      assert.match(installer, /\$process\.Kill\(\$true\)/);
+      assert.match(installer, /function Stop-VerifiedProcessTree/);
+      assert.match(installer, /taskkill\.exe/);
+      assert.match(installer, /Stop-VerifiedProcessTree \$process/);
       assert.match(installer, /\$process\.WaitForExit\(5000\)/);
       assert.match(installer, /\$process\.Dispose\(\)/);
       assert.doesNotMatch(installer, /Stop-Process\s+-Id/);
@@ -175,13 +210,22 @@ describe("Vision release installer fixtures", () => {
       assert.match(harness, /public UIntPtr Affinity/);
       assert.match(harness, /AssertNativeLayout\(\)/);
       assert.match(harness, /AssignProcessToJobObject/);
-      assert.match(harness, /\$job\.Assign\(\$process\.Handle\)/);
-      assert.match(harness, /job-assigned\.signal/);
+      assert.match(
+        harness,
+        /public sealed class SuspendedProcess : IDisposable/,
+      );
+      assert.match(harness, /CreateProcessW/);
+      assert.match(harness, /CREATE_SUSPENDED/);
+      assert.match(harness, /ResumeThread/);
+      assert.match(harness, /TerminateUnresumed/);
+      assert.match(harness, /\$job\.Assign\(\$nativeProcess\.ProcessHandle\)/);
+      assert.match(harness, /\$nativeProcess\.Resume\(\)/);
+      assert.match(harness, /\$nativeProcess\.TerminateUnresumed/);
       assert.match(harness, /stdout\.log/);
       assert.match(harness, /stderr\.log/);
       assert.doesNotMatch(harness, /RedirectStandardOutput\s*=\s*\$true/);
       assert.doesNotMatch(harness, /RedirectStandardError\s*=\s*\$true/);
-      assert.match(harness, /\$job\.Dispose\(\)/);
+      assert.match(harness, /\$Job\.Dispose\(\)/);
     },
   );
 
@@ -205,106 +249,114 @@ describe("Vision release installer fixtures", () => {
           visionJob.indexOf("vision-release-install.windows-harness.ps1"),
         "the direct behavior harness must run before the full Windows harness",
       );
+      assert.match(visionJob, /-CorePowerShellPaths pwsh,powershell\.exe/);
     },
   );
 
   boundedIt(
-    "uses an initialized, absolute-deadline, drained hard-deadline watchdog in both Windows harnesses",
+    "passes complete Factory release inputs to every signed-install shell",
     () => {
-      const behavior = readFileSync(behaviorHarness, "utf8");
       const harness = readFileSync(windowsHarness, "utf8");
-
-      for (const source of [behavior, harness]) {
-        assert.doesNotMatch(source, /\[Threading\.TimerCallback\]\s*\{/);
-        assert.doesNotMatch(source, /\$watchdogCallback/);
-      }
-      assert.match(harness, /function Initialize-HarnessNativeTypes/);
-      assert.match(harness, /function Arm-HarnessFailFastWatchdog/);
-      assert.match(
-        harness,
-        /public sealed class FailFastWatchdog : IDisposable/,
-      );
-      assert.match(harness, /private static void FailFast\(object state\)/);
-      assert.match(harness, /Environment\.FailFast\(\(string\)state\)/);
-      assert.match(harness, /timer\.Dispose\(drained\);/);
-      assert.match(harness, /drained\.WaitOne\(\);/);
-      assert.match(
-        behavior,
-        /Initialize-HarnessNativeTypes\r?\n\$deadlineStartUtc = \[DateTime\]::UtcNow\r?\n\$deadlineUtc = \$deadlineStartUtc\.AddSeconds\(\$DeadlineSeconds\)\r?\n\$hardDeadlineUtc = \$deadlineStartUtc\.AddSeconds\(\$HardDeadlineSeconds\)/,
-      );
-      assert.match(
-        harness,
-        /Initialize-HarnessNativeTypes\r?\n\$deadlineStartUtc = \[DateTime\]::UtcNow\r?\n\$harnessDeadlineUtc = \$deadlineStartUtc\.AddSeconds\(\$HarnessDeadlineSeconds\)\r?\n\$cleanupDeadlineUtc = \$deadlineStartUtc\.AddSeconds\(\$hardWatchdogSeconds\)/,
-      );
-      assert.match(
-        behavior,
-        /\$watchdog = Arm-HarnessFailFastWatchdog -Message \$watchdogMessage -DeadlineUtc \$hardDeadlineUtc/,
-      );
-      assert.match(
-        harness,
-        /\$watchdog = Arm-HarnessFailFastWatchdog -Message \$watchdogMessage -DeadlineUtc \$cleanupDeadlineUtc/,
-      );
-
-      const armFunction = harness.match(
-        /function Arm-HarnessFailFastWatchdog \{([\s\S]*?)\r?\n\}/,
+      const signedInstall = harness.match(
+        /Invoke-BoundedPowerShell -Stage "fixture\.signed-install\.\$corePowerShellName"[\s\S]*?-ScriptBody @'\r?\n([\s\S]*?)\r?\n'@ \| Out-Null/,
       )?.[1];
-      assert.ok(armFunction, "watchdog arm function is missing");
+
+      assert.ok(signedInstall, "signed-install shell body is missing");
       assert.match(
-        armFunction,
-        /\$remaining = \$DeadlineUtc - \[DateTime\]::UtcNow/,
+        signedInstall,
+        /\$factoryDelivery = Join-Path \$context\.factoryRoot "vision-release"/,
       );
+      for (const [parameter, file] of [
+        ["BundlePath", "bundle.bin"],
+        ["DescriptorPath", "descriptor.json"],
+        ["AttestationPath", "attestation.json"],
+        ["SbomPath", "sbom.json"],
+        ["ProvenancePath", "provenance.json"],
+        ["ConformanceEvidencePath", "conformance.json"],
+        ["ApprovalPath", "approval.json"],
+        ["FactoryManifestPath", "factory-manifest.json"],
+      ]) {
+        assert.match(
+          signedInstall,
+          new RegExp(
+            `-${parameter} \\(Join-Path \\$factoryDelivery "${file}"\\)`,
+          ),
+        );
+      }
       assert.match(
-        armFunction,
-        /\[VemVisionHarness\.FailFastWatchdog\]::new\(\$Message, \$remaining\)/,
+        signedInstall,
+        /-ConfigurationPath \(Join-Path \$context\.stateRoot "config\\fixture\.json"\) -EvidencePath \$context\.evidencePath -TaskUser \$env:USERNAME/,
       );
       assert.doesNotMatch(
-        armFunction,
-        /Initialize-HarnessNativeTypes|Add-Type/,
+        signedInstall,
+        /install-vision-release\.ps1" -ConfigurationPath/,
       );
     },
   );
 
   boundedIt(
-    "disposes and drains the watchdog under both PowerShell editions on Windows",
-    { skip: process.platform !== "win32" },
+    "reserves termination confirmation from a single remaining deadline budget",
     () => {
-      const disposalProbe =
-        ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; Initialize-HarnessNativeTypes; $deadlineUtc = [DateTime]::UtcNow.AddSeconds(1); $watchdog = Arm-HarnessFailFastWatchdog -Message 'watchdog disposal probe' -DeadlineUtc $deadlineUtc; try { $watchdog.Dispose(); Start-Sleep -Seconds 2 } finally { $watchdog.Dispose() }";
-
-      for (const command of ["pwsh", "powershell.exe"]) {
-        const result = spawnBounded(command, [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          disposalProbe,
-        ]);
-        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-      }
-    },
-  );
-
-  boundedIt(
-    "lets an armed watchdog terminate only its bounded child process on Windows",
-    { skip: process.platform !== "win32" },
-    () => {
-      const childProbe =
-        ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; Initialize-HarnessNativeTypes; $deadlineUtc = [DateTime]::UtcNow.AddSeconds(1); $watchdog = Arm-HarnessFailFastWatchdog -Message 'watchdog child probe deadline reached' -DeadlineUtc $deadlineUtc; Start-Sleep -Seconds 10";
-      const result = spawnBounded("powershell.exe", [
+      const result = spawnBounded("pwsh", [
         "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
         "-Command",
-        childProbe,
+        ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; if((Get-HarnessTerminationConfirmationReserveMilliseconds -TotalMilliseconds 4000) -ne 1000){throw 'four-second reserve'}; if((Get-HarnessTerminationConfirmationReserveMilliseconds -TotalMilliseconds 8000) -ne 2000){throw 'eight-second reserve'}; $deadline=[DateTime]::UtcNow.AddMilliseconds(20); Start-Sleep -Milliseconds 40; if((Get-HarnessRemainingMilliseconds -DeadlineUtc $deadline) -ne 0){throw 'expired deadline still has budget'}",
       ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
 
-      assert.notEqual(
-        result.status,
-        0,
-        "armed watchdog child unexpectedly succeeded",
+  boundedIt(
+    "passes the inherited watchdog handle and one absolute UTC deadline to the child",
+    () => {
+      const harness = readFileSync(windowsHarness, "utf8");
+      const behavior = readFileSync(behaviorHarness, "utf8");
+
+      assert.match(
+        harness,
+        /watchdogArguments\[0\]\s*=\s*unchecked\(\(ulong\)inheritedHandle\.ToInt64\(\)\)\.ToString/,
       );
+      assert.match(
+        harness,
+        /new DateTime\(deadlineUtcTicks, DateTimeKind\.Utc\)/,
+      );
+      assert.match(
+        harness,
+        /using System\.Globalization;\s+using System\.IO;\s+using System\.Runtime\.InteropServices;/,
+      );
+      assert.doesNotMatch(
+        harness,
+        /DateTime\.UtcNow\.AddMilliseconds\(deadlineMilliseconds\)/,
+      );
+      assert.match(
+        behavior,
+        /watchdog inherited-handle probe observed ERROR_INVALID_HANDLE/,
+      );
+    },
+  );
+
+  boundedIt(
+    "keeps the production installer compatible with Windows PowerShell 5.1",
+    () => {
+      const installer = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
+
+      assert.doesNotMatch(installer, /ConvertFrom-Json\s+-Depth/);
+      assert.doesNotMatch(installer, /\.ArgumentList(?:\.|\b)/);
+      assert.doesNotMatch(
+        installer,
+        /\[Convert\]::ToHexString|\[Security\.Cryptography\.SHA256\]::HashData|\.Kill\(\$true\)/,
+      );
+      assert.match(installer, /function ConvertTo-WindowsCommandLineArgument/);
+      assert.match(installer, /\$start\.Arguments\s*=/);
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-Command",
+        ". ./scripts/windows/install-vision-release.ps1 -Library -VisionRoot ([IO.Path]::GetTempPath()) -StateRoot ([IO.Path]::GetTempPath()); $actual=@('plain', 'space value', 'quote\"value', 'trailing\\' | ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join '|'; if($actual -cne '\"plain\"|\"space value\"|\"quote\\\"value\"|\"trailing\\\\\"'){throw \"unexpected quote: $actual\"}",
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     },
   );
 

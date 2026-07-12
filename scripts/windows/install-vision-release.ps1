@@ -54,8 +54,24 @@ function Assert-Digest([string]$Digest, [string]$Label) {
   if ($Digest -notmatch '^sha256:[a-f0-9]{64}$') { Throw-InstallError "$Label digest is invalid" }
 }
 
+function ConvertTo-LowerHex([byte[]]$Bytes) {
+  return ([BitConverter]::ToString($Bytes).Replace("-", "")).ToLowerInvariant()
+}
+
 function Get-Digest([byte[]]$Bytes) {
-  return "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes))).ToLowerInvariant()
+  $hash = [Security.Cryptography.SHA256]::Create()
+  try {
+    return "sha256:" + (ConvertTo-LowerHex $hash.ComputeHash($Bytes))
+  } finally {
+    $hash.Dispose()
+  }
+}
+
+function ConvertTo-WindowsCommandLineArgument([string]$Argument) {
+  if ($null -eq $Argument) { return '""' }
+  $escaped = [regex]::Replace($Argument, '(\\*)"', '$1$1\"')
+  $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+  return '"' + $escaped + '"'
 }
 
 function Get-ExactFileBytes {
@@ -161,7 +177,7 @@ function Get-FactoryTrustPolicy {
 function Read-StrictJson {
   param([string]$Path, [string]$Label, [Int64]$MaximumBytes = 16MB)
   $bytes = Get-ExactFileBytes -Path $Path -Label $Label -MaximumBytes $MaximumBytes
-  try { $value = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -Depth 64 } catch { Throw-InstallError "$Label is not valid UTF-8 JSON" }
+  try { $value = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json } catch { Throw-InstallError "$Label is not valid UTF-8 JSON" }
   return [pscustomobject]@{ value = $value; bytes = $bytes; digest = (Get-Digest $bytes) }
 }
 
@@ -193,20 +209,22 @@ function Invoke-ReleaseEvidenceVerifier {
   if ((Get-Digest $verifierBytes) -cne [string]$Policy.verifierDigest) { Throw-InstallError "Vision evidence verifier digest mismatch" }
   if (@($Documents.Values | Where-Object { $_.digest -notmatch '^sha256:' }).Count -ne 0) { Throw-InstallError "Vision evidence inputs are invalid" }
   # The verifier is a separately pinned, language-neutral release-contract implementation.
-  # Arguments are one value each through ProcessStartInfo, never a command string.
+  # Quote every value with the Windows CommandLineToArgvW-compatible routine before assigning Arguments.
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = (Get-Item -LiteralPath $FactoryEvidenceVerifierPath -Force).FullName
   $start.UseShellExecute = $false; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
-  $start.ArgumentList.Add("verify")
+  $arguments = [Collections.Generic.List[string]]::new()
+  $arguments.Add("verify")
   foreach ($name in @("descriptor", "attestation", "sbom", "provenance", "conformance", "approval", "manifest")) {
-    $start.ArgumentList.Add("--$name-digest"); $start.ArgumentList.Add([string]$Documents[$name].digest)
-    $start.ArgumentList.Add("--$name-path"); $start.ArgumentList.Add([string]$Documents[$name].path)
+    $arguments.Add("--$name-digest"); $arguments.Add([string]$Documents[$name].digest)
+    $arguments.Add("--$name-path"); $arguments.Add([string]$Documents[$name].path)
   }
-  $start.ArgumentList.Add("--policy"); $start.ArgumentList.Add((Get-Item -LiteralPath $FactoryTrustPolicyPath -Force).FullName)
+  $arguments.Add("--policy"); $arguments.Add((Get-Item -LiteralPath $FactoryTrustPolicyPath -Force).FullName)
+  $start.Arguments = ((@($arguments) | ForEach-Object { ConvertTo-WindowsCommandLineArgument ([string]$_) }) -join " ")
   $process = [Diagnostics.Process]::Start($start)
   $stdout = $process.StandardOutput.ReadToEnd(); $stderr = $process.StandardError.ReadToEnd(); $process.WaitForExit()
   if ($process.ExitCode -ne 0 -or $stdout.Length -gt 16384) { Throw-InstallError "cryptographic release evidence verification failed" }
-  try { $result = $stdout | ConvertFrom-Json -Depth 16 } catch { Throw-InstallError "cryptographic release evidence verifier returned invalid output" }
+  try { $result = $stdout | ConvertFrom-Json } catch { Throw-InstallError "cryptographic release evidence verifier returned invalid output" }
   Assert-Keys $result @("schemaVersion", "kind", "verified", "identities") "Vision evidence verification result"
   if ($result.schemaVersion -cne "vem-vision-release-verification/v1" -or $result.kind -cne "vision-release-verification" -or $result.verified -ne $true) { Throw-InstallError "cryptographic release evidence verification was not approved" }
   foreach ($role in @("descriptor", "attestation", "sbom", "provenance", "conformance", "approval")) {
@@ -267,7 +285,7 @@ function Get-VerifiedBundleStream {
     $buffer = [byte[]]::new(1048576); $readTotal = [Int64]0
     while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) { $hash.TransformBlock($buffer, 0, $count, $null, 0) | Out-Null; $readTotal += $count }
     $hash.TransformFinalBlock([byte[]]::new(0), 0, 0) | Out-Null
-    if ($readTotal -ne $item.Length -or ("sha256:" + ([Convert]::ToHexString($hash.Hash)).ToLowerInvariant()) -cne [string]$Descriptor.bundle.digest) { Throw-InstallError "Vision bundle exact bytes do not match approved descriptor" }
+    if ($readTotal -ne $item.Length -or ("sha256:" + (ConvertTo-LowerHex $hash.Hash)) -cne [string]$Descriptor.bundle.digest) { Throw-InstallError "Vision bundle exact bytes do not match approved descriptor" }
     $stream.Position = 0
     return $stream
   } catch { $stream.Dispose(); throw } finally { $hash.Dispose() }
@@ -393,6 +411,19 @@ function Set-VisionStateAcl {
   }
 }
 
+function Stop-VerifiedProcessTree([Diagnostics.Process]$Process) {
+  if ($env:OS -ne "Windows_NT") {
+    $Process.Kill()
+    return
+  }
+
+  $taskKillPath = Join-Path $env:WINDIR "System32\taskkill.exe"
+  & $taskKillPath /PID ([string]$Process.Id) /T /F | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Throw-InstallError "recorded Vision process $($Process.Id) tree cleanup failed: taskkill /T /F exited with code $LASTEXITCODE"
+  }
+}
+
 function Stop-RecordedVision([object]$Selection) {
   Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
   if (-not (Test-Path -LiteralPath $processPath -PathType Leaf)) { return }
@@ -425,7 +456,7 @@ function Stop-RecordedVision([object]$Selection) {
     if (("sha256:" + (Get-FileHash -LiteralPath $actualPath -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $approved.executableDigest) { return }
     if (-not $process.HasExited) {
       try {
-        $process.Kill($true)
+        Stop-VerifiedProcessTree $process
       } catch [InvalidOperationException] {
         if (-not $process.HasExited) { throw }
       }
@@ -802,7 +833,7 @@ function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
     $hello = [ordered]@{ protocol="vem.vision.v1"; type="vision.hello"; messageId=("installer-" + [guid]::NewGuid().ToString("N")); timestamp=[DateTime]::UtcNow.ToString("o"); payload=[ordered]@{ clientRole="machine"; machineCode=$null; protocolVersion=1; capabilities=@("profile_push","presence_status","person_departed","ambient_light") } }
     $helloBytes = [Text.Encoding]::UTF8.GetBytes(($hello | ConvertTo-Json -Depth 8 -Compress)); $socket.SendAsync([ArraySegment[byte]]::new($helloBytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancel.Token).GetAwaiter().GetResult()
     $received = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), $cancel.Token).GetAwaiter().GetResult()
-    $ready = [Text.Encoding]::UTF8.GetString($buffer, 0, $received.Count) | ConvertFrom-Json -Depth 16
+    $ready = [Text.Encoding]::UTF8.GetString($buffer, 0, $received.Count) | ConvertFrom-Json
     Assert-Keys $ready @("protocol","type","messageId","timestamp","payload") "Vision WebSocket ready envelope"
     Assert-Keys $ready.payload @("serverName","serverVersion","cameraReady","modelReady","capabilities") "Vision WebSocket ready payload"
     if ($Descriptor.protocol.version -cne "vem.vision.v1" -or $ready.protocol -cne "vem.vision.v1" -or $ready.type -cne "vision.ready" -or [string]::IsNullOrWhiteSpace([string]$ready.messageId) -or [string]::IsNullOrWhiteSpace([string]$ready.timestamp) -or [string]::IsNullOrWhiteSpace([string]$ready.payload.serverName) -or [string]::IsNullOrWhiteSpace([string]$ready.payload.serverVersion) -or $ready.payload.cameraReady -isnot [bool] -or $ready.payload.modelReady -isnot [bool] -or $ready.payload.capabilities -isnot [array]) { Throw-InstallError "Vision WebSocket ready does not satisfy vem.vision.v1" }
