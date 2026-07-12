@@ -567,7 +567,9 @@ try {
   Start-Transcript -Path $normalParentExitTranscriptPath -Force | Out-Null
   try {
     $normalParentExit = Invoke-BoundedPowerShell -Stage "behavior.normal-parent-exit-active-descendant" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
-$descendant = Start-Process -FilePath $env:COMSPEC -ArgumentList @('/d', '/c', 'ping -t 127.0.0.1') -PassThru -NoNewWindow
+$descendantStdoutPath = Join-Path $context.root "normal-parent-exit-descendant.stdout.log"
+$descendantStderrPath = Join-Path $context.root "normal-parent-exit-descendant.stderr.log"
+$descendant = Start-Process -FilePath $env:COMSPEC -ArgumentList @('/d', '/c', 'ping -t 127.0.0.1') -RedirectStandardOutput $descendantStdoutPath -RedirectStandardError $descendantStderrPath -WindowStyle Hidden -PassThru
 try {
   Write-Json (Join-Path $context.root "normal-parent-exit-descendant.identity.json") @{ processId=$descendant.Id; creationTimeUtcTicks=$descendant.StartTime.ToUniversalTime().Ticks; executablePath=[IO.Path]::GetFullPath($descendant.Path) }
   Write-Output normal-parent-exit
@@ -580,6 +582,7 @@ try {
     Stop-Transcript | Out-Null
   }
   $normalParentExitTelemetry = Get-Content -LiteralPath $normalParentExitTranscriptPath -Raw
+  Assert-True ($normalParentExitTelemetry -match "stage=behavior.normal-parent-exit-active-descendant status=completed") "normal-parent-exit bounded parent did not complete naturally"
   Assert-True ($normalParentExitTelemetry -match "stage=behavior.normal-parent-exit-active-descendant status=cleanup-confirmation-waiting detail=remainingMilliseconds=[0-9]+ confirmationReserveMilliseconds=[1-9][0-9]* termination=job-object") "normal-parent-exit active descendant did not begin a bounded natural-exit wait"
   $normalTerminationWait = [regex]::Match($normalParentExitTelemetry, "stage=behavior.normal-parent-exit-active-descendant status=termination-waiting detail=remainingMilliseconds=([0-9]+) confirmationReserveMilliseconds=([0-9]+) termination=job-object")
   Assert-True $normalTerminationWait.Success "normal-parent-exit active descendant did not reserve a termination-confirmation window"

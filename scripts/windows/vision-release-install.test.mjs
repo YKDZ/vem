@@ -375,6 +375,22 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.WaitForExit\(/);
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.HasExited/);
+      const normalParentExitFixture = behavior.match(
+        /Invoke-BoundedPowerShell -Stage "behavior\.normal-parent-exit-active-descendant"[\s\S]*?-ScriptBody @'([\s\S]*?)'@/,
+      )?.[1];
+      assert.ok(
+        normalParentExitFixture,
+        "normal-parent-exit descendant fixture is missing",
+      );
+      assert.match(
+        normalParentExitFixture,
+        /Start-Process -FilePath \$env:COMSPEC[\s\S]*?-RedirectStandardOutput \$descendantStdoutPath[\s\S]*?-RedirectStandardError \$descendantStderrPath[\s\S]*?-WindowStyle Hidden/,
+      );
+      assert.doesNotMatch(normalParentExitFixture, /-NoNewWindow/);
+      assert.match(
+        behavior,
+        /stage=behavior\.normal-parent-exit-active-descendant status=completed[\s\S]*?stage=behavior\.normal-parent-exit-active-descendant status=cleanup-confirmation-waiting[\s\S]*?stage=behavior\.normal-parent-exit-active-descendant status=termination-confirmed/,
+      );
       for (const fixtureName of ["SlowWatchdog", "SetupTimeoutWatchdog"]) {
         const fixtureSource = behavior.match(
           new RegExp(
