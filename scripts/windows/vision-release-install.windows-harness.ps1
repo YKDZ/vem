@@ -389,6 +389,9 @@ namespace VemVisionHarness {
 
     public void Resume() {
       if (processHandle == IntPtr.Zero || threadHandle == IntPtr.Zero) { throw new ObjectDisposedException("SuspendedProcess"); }
+      if (Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_RESUME_FAILURE") == "1") {
+        throw new Win32Exception(5, "ResumeThread fixture failure");
+      }
       var previousSuspendCount = ResumeThread(threadHandle);
       if (previousSuspendCount == UInt32.MaxValue) { throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread failed"); }
       resumed = true;
@@ -1305,14 +1308,15 @@ function Invoke-HarnessJobCleanup {
   $termination = $null
   if ($null -eq $Job) { return }
 
-  $mustTerminate = $CleanupState.processOwnership -eq "resumed-job-assigned" -and $CleanupState.exceptionalExit
+  $jobAssigned = $CleanupState.processOwnership -in @("job-assigned-suspended", "resumed-job-assigned")
+  $mustTerminate = $CleanupState.exceptionalExit -and $jobAssigned
   if (-not $mustTerminate) {
     Write-HarnessStage $Stage "cleanup-confirmation-waiting" "remainingMilliseconds=$(Get-HarnessRemainingMilliseconds -DeadlineUtc $naturalExitDeadlineUtc) confirmationReserveMilliseconds=$ConfirmationReserveMilliseconds termination=job-object"
     $termination = Wait-HarnessJobTermination -Job $Job -DeadlineUtc $naturalExitDeadlineUtc
     if ($null -ne $termination.queryFailureDetail) {
       Write-HarnessStage $Stage "termination-query-failed" $termination.queryFailureDetail
     }
-    if (-not $termination.confirmed) { $mustTerminate = $CleanupState.processOwnership -eq "resumed-job-assigned" }
+    if (-not $termination.confirmed) { $mustTerminate = $jobAssigned }
   }
 
   if ($mustTerminate) {
@@ -1456,6 +1460,11 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $job.Assign($nativeProcess.ProcessHandle)
     $cleanupState.processOwnership = "job-assigned-suspended"
     Write-HarnessStage $Stage "process-ownership" "state=job-assigned-suspended processId=$($nativeProcess.ProcessId)"
+    $handoffDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($confirmationReserveMilliseconds)
+    if ($handoffDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $handoffDeadlineUtc = $harnessCleanupDeadlineUtc }
+    $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action "disarm" -DeadlineUtc $handoffDeadlineUtc
+    Write-HarnessStage $Stage "suspended-process-watchdog-disarmed" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion"
+    $suspendedProcessWatchdog = $null
     $nativeProcess.Resume()
     $cleanupState.processOwnership = "resumed-job-assigned"
     $executionStartUtc = [DateTime]::UtcNow
@@ -1472,9 +1481,6 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
       throw "fixture stage '$Stage' cannot start before its termination-confirmation reserve"
     }
     $effectiveTimeoutSeconds = [Math]::Max(1, [int][Math]::Ceiling($executionMilliseconds / 1000.0))
-    $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action "disarm" -DeadlineUtc $cleanupDeadlineUtc
-    Write-HarnessStage $Stage "suspended-process-watchdog-disarmed" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion"
-    $suspendedProcessWatchdog = $null
     Write-HarnessStage $Stage "process-ownership" "state=resumed-job-assigned processId=$($nativeProcess.ProcessId)"
     Write-HarnessStage $Stage "started" "timeoutSeconds=$effectiveTimeoutSeconds processId=$($nativeProcess.ProcessId) termination=job-object"
 
@@ -1536,14 +1542,28 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     } finally {
       try {
         if ($null -ne $nativeProcess -and $nativeCleanupConfirmed) { $nativeProcess.Dispose() }
-        elseif ($null -ne $nativeProcess) { Write-HarnessStage $Stage "suspended-process-handle-retained" "processId=$($nativeProcess.ProcessId) reason=cleanup-unconfirmed" }
       } catch {
         if ($null -eq $nativeCleanupFailure) { $nativeCleanupFailure = $_ } else { $cleanupFailures.Add($_.Exception) }
       } finally {
+        $jobCleanupConfirmed = $false
         try {
           Invoke-HarnessJobCleanup -Stage $Stage -Job $job -CleanupState $cleanupState -CleanupDeadlineUtc $cleanupDeadlineUtc -ConfirmationReserveMilliseconds $confirmationReserveMilliseconds
+          $jobCleanupConfirmed = $true
         } catch {
           $cleanupFailures.Add($_.Exception)
+        }
+        if ($null -ne $nativeProcess -and -not $nativeCleanupConfirmed) {
+          if ($jobCleanupConfirmed -and $cleanupState.processOwnership -in @("job-assigned-suspended", "resumed-job-assigned")) {
+            try {
+              $nativeProcess.Dispose()
+              $nativeCleanupConfirmed = $true
+              Write-HarnessStage $Stage "suspended-process-handle-released" "reason=job-cleanup-confirmed"
+            } catch {
+              if ($null -eq $nativeCleanupFailure) { $nativeCleanupFailure = $_ } else { $cleanupFailures.Add($_.Exception) }
+            }
+          } else {
+            Write-HarnessStage $Stage "suspended-process-handle-retained" "processId=$($nativeProcess.ProcessId) reason=cleanup-unconfirmed"
+          }
         }
       }
     }

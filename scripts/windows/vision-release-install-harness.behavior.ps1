@@ -602,6 +602,7 @@ try {
     [pscustomobject]@{ stage="behavior.set-job-limit-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_SET_JOB_LIMIT_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output set-job-limit-probe"; cleanupMechanism=$null; expectedOwnership=$null },
     [pscustomobject]@{ stage="behavior.assign-job-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ASSIGN_JOB_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output assign-job-probe"; cleanupMechanism="native"; expectedOwnership="created-suspended" },
     [pscustomobject]@{ stage="behavior.assign-and-suspended-terminate-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ASSIGN_JOB_FAILURE"; secondaryVariable="VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE"; scriptBody="Write-Output assign-and-terminate-probe"; cleanupMechanism="watchdog"; expectedOwnership="created-suspended" },
+    [pscustomobject]@{ stage="behavior.resume-and-suspended-terminate-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_RESUME_FAILURE"; secondaryVariable="VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE"; scriptBody="Write-Output resume-and-terminate-probe"; cleanupMechanism="job"; expectedOwnership="job-assigned-suspended" },
     [pscustomobject]@{ stage="behavior.terminate-job-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_JOB_FAILURE"; secondaryVariable=$null; scriptBody="exit 17"; cleanupMechanism=$null; expectedOwnership="resumed-job-assigned" },
     [pscustomobject]@{ stage="behavior.active-process-count-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output active-process-count-probe"; cleanupMechanism=$null; expectedOwnership="resumed-job-assigned" }
   )) {
@@ -641,6 +642,21 @@ try {
       $suspendedProcess = Get-RunningProcess -ProcessId ([int]$watchdogTermination.Groups[1].Value)
       try {
         Assert-True ($null -eq $suspendedProcess) "watchdog cleanup did not terminate the combined setup-failure process"
+      } finally {
+        if ($null -ne $suspendedProcess) { $suspendedProcess.Dispose() }
+      }
+    } elseif ($fault.cleanupMechanism -eq "job") {
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=job-assigned-suspended") "Job fallback fault did not record its assigned suspended process"
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-watchdog-disarmed detail=processId=[0-9]+ completion=(disarmed|exited)") "Job fallback fault did not disarm the inherited watchdog before ResumeThread"
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-termination-failed") "Job fallback fault did not preserve the native suspended termination failure"
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=termination-confirmed detail=termination=job-object activeProcesses=0") "Job fallback fault did not confirm Job Object termination"
+      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-handle-released detail=reason=job-cleanup-confirmed") "Job fallback fault did not release the C# suspended-process wrapper after Job Object termination confirmation"
+      Assert-True ($faultTelemetry -notmatch "stage=$($fault.stage) status=suspended-process-handle-retained") "Job fallback fault retained the C# suspended-process wrapper after Job Object termination confirmation"
+      $jobFallbackProcess = [regex]::Match($faultTelemetry, "stage=$($fault.stage) status=process-ownership detail=state=job-assigned-suspended processId=([0-9]+)")
+      Assert-True $jobFallbackProcess.Success "Job fallback fault did not record its target process identity"
+      $suspendedProcess = Get-RunningProcess -ProcessId ([int]$jobFallbackProcess.Groups[1].Value)
+      try {
+        Assert-True ($null -eq $suspendedProcess) "Job fallback fault left its target process running"
       } finally {
         if ($null -ne $suspendedProcess) { $suspendedProcess.Dispose() }
       }

@@ -281,6 +281,10 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       assert.match(harness, /CreateProcessW/);
       assert.match(harness, /CREATE_SUSPENDED/);
       assert.match(harness, /ResumeThread/);
+      assert.match(
+        harness,
+        /VEM_VISION_HARNESS_FIXTURE_FORCE_RESUME_FAILURE[\s\S]*?ResumeThread fixture failure/,
+      );
       assert.match(harness, /TerminateUnresumed/);
       assert.match(harness, /\$job\.Assign\(\$nativeProcess\.ProcessHandle\)/);
       assert.match(harness, /\$nativeProcess\.Resume\(\)/);
@@ -290,6 +294,14 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       assert.doesNotMatch(harness, /RedirectStandardOutput\s*=\s*\$true/);
       assert.doesNotMatch(harness, /RedirectStandardError\s*=\s*\$true/);
       assert.match(harness, /\$Job\.Dispose\(\)/);
+      assert.match(
+        harness,
+        /\$jobAssigned = \$CleanupState\.processOwnership -in @\("job-assigned-suspended", "resumed-job-assigned"\)[\s\S]*?\$mustTerminate = \$CleanupState\.exceptionalExit -and \$jobAssigned/,
+      );
+      assert.match(
+        harness,
+        /Invoke-HarnessJobCleanup[\s\S]*?\$jobCleanupConfirmed = \$true[\s\S]*?if \(\$null -ne \$nativeProcess -and -not \$nativeCleanupConfirmed\) \{[\s\S]*?if \(\$jobCleanupConfirmed -and \$cleanupState\.processOwnership -in @\("job-assigned-suspended", "resumed-job-assigned"\)\) \{[\s\S]*?\$nativeProcess\.Dispose\(\)[\s\S]*?suspended-process-handle-released.*reason=job-cleanup-confirmed/,
+      );
     },
   );
 
@@ -788,6 +800,14 @@ try {
 
   boundedIt("keeps watchdog helper output contracts explicit", () => {
     const harness = readFileSync(windowsHarness, "utf8");
+    assert.match(
+      harness,
+      /state=job-assigned-suspended[\s\S]*?Complete-HarnessSuspendedProcessWatchdog -Watchdog \$suspendedProcessWatchdog -Action "disarm"[\s\S]*?suspended-process-watchdog-disarmed[\s\S]*?\$nativeProcess\.Resume\(\)[\s\S]*?state=resumed-job-assigned/,
+    );
+    assert.match(
+      harness,
+      /\$job\.Assign\(\$nativeProcess\.ProcessHandle\)[\s\S]*?Complete-HarnessSuspendedProcessWatchdog -Watchdog \$suspendedProcessWatchdog -Action "disarm"[\s\S]*?\$nativeProcess\.Resume\(\)/,
+    );
 
     assert.match(
       harness,
