@@ -170,7 +170,7 @@ if ($Library) { return }
 if ($HardDeadlineSeconds -le $DeadlineSeconds) { throw "HardDeadlineSeconds must leave time for cleanup after DeadlineSeconds" }
 . $HarnessPath -Library
 Initialize-HarnessNativeTypes
-$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-harness-behavior-" + [guid]::NewGuid().ToString("N"))
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vh-" + [guid]::NewGuid().ToString("N"))
 $contextPath = Join-Path $root "context.json"
 $certificateSubject = "CN=VEM Vision Harness Behavior " + [guid]::NewGuid().ToString("N")
 $unrelated = $null
