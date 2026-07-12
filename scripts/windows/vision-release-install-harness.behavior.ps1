@@ -85,7 +85,7 @@ function Start-HardWatchdogHost {
   $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($PowerShellPath, $arguments, $HarnessRoot)
   $lifetimeWatchdog = $null
   try {
-    $lifetimeWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $HarnessRoot "hard-watchdog-host-lifetime") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $LifetimeDeadlineUtc -Watchdog ([ref]$lifetimeWatchdog)
+    Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $HarnessRoot "hard-watchdog-host-lifetime") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $LifetimeDeadlineUtc -Watchdog ([ref]$lifetimeWatchdog) | Out-Null
     $nativeProcess.Resume()
     return [pscustomobject]@{ process=$nativeProcess; lifetimeWatchdog=$lifetimeWatchdog; deadlineWatchdog=$null }
   } catch {
@@ -460,7 +460,7 @@ try {
   $hardWatchdogDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
   $deadlineWatchdog = $null
   try {
-    $deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "hard-watchdog-host-deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hardWatchdogHost.process -DeadlineUtc $hardWatchdogDeadlineUtc -Watchdog ([ref]$deadlineWatchdog)
+    Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "hard-watchdog-host-deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hardWatchdogHost.process -DeadlineUtc $hardWatchdogDeadlineUtc -Watchdog ([ref]$deadlineWatchdog) | Out-Null
   } finally {
     $hardWatchdogHost.deadlineWatchdog = $deadlineWatchdog
   }

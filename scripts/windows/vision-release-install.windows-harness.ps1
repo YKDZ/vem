@@ -837,8 +837,7 @@ function Start-HarnessSuspendedProcessWatchdog {
     $ready = (Get-Content -LiteralPath $readyPath -Raw -Encoding UTF8).Trim()
     if ($ready -ne "armed") { throw "suspended-process watchdog reported invalid ready state '$ready'" }
     $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
-    if ($null -ne $Watchdog) { [void]($Watchdog.Value = $watchdog) }
-    Write-Output -NoEnumerate $watchdog
+    [void]($Watchdog.Value = $watchdog)
     return
   } catch {
     if ($null -eq $process -and $null -ne $watchdogProcessId) { try { $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId) } catch { } }
@@ -1146,7 +1145,7 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($ChildPowerShellPath, $nativeArguments, $stageRoot)
     $cleanupState.processOwnership = "created-suspended"
     Write-HarnessStage $Stage "process-ownership" "state=created-suspended processId=$($nativeProcess.ProcessId)"
-    $suspendedProcessWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $cleanupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog)
+    Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $cleanupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog) | Out-Null
     Write-HarnessStage $Stage "suspended-process-watchdog-armed" "processId=$($nativeProcess.ProcessId) identity=original-process-handle"
     $job.Assign($nativeProcess.ProcessHandle)
     $cleanupState.processOwnership = "job-assigned-suspended"

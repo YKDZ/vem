@@ -480,7 +480,7 @@ try {
   $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
   $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
-  $watchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -Watchdog ([ref]$watchdog)
+  Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -Watchdog ([ref]$watchdog) | Out-Null
   $nativeProcess.Resume()
   $completionDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
   while (-not (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf) -and [DateTime]::UtcNow -lt $completionDeadlineUtc) { Start-Sleep -Milliseconds 10 }
@@ -531,7 +531,7 @@ Start-Sleep -Seconds 30
   $hostProcess = Start-HardWatchdogHost -PowerShellPath $powerShellPath -HostPath $hostPath -HarnessPath $hostPath -HarnessRoot $root -HarnessContextPath (Join-Path $root "context.json") -ChildPowerShellPath $powerShellPath -IdentityPath (Join-Path $root "identity.json") -ReadySignalPath (Join-Path $root "ready") -RunSignalPath (Join-Path $root "run") -RunDeadlineUtcTicks ([DateTime]::UtcNow.AddSeconds(20).Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -FaultSignalPath (Join-Path $root "fault") -TelemetryPath (Join-Path $root "telemetry") -ObservedChildPowerShellPath (Join-Path $root "observed") -LifetimeDeadlineUtc ([DateTime]::UtcNow.AddSeconds(10))
   $deadlineWatchdog = $null
   try {
-    $deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hostProcess.process -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -Watchdog ([ref]$deadlineWatchdog)
+    Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hostProcess.process -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -Watchdog ([ref]$deadlineWatchdog) | Out-Null
   } finally {
     $hostProcess.deadlineWatchdog = $deadlineWatchdog
   }
@@ -653,8 +653,13 @@ try {
 
     assert.match(
       harness,
-      /function Start-HarnessSuspendedProcessWatchdog[\s\S]*?\[void\]\(\$Watchdog\.Value = \$watchdog\)[\s\S]*?Write-Output -NoEnumerate \$watchdog/,
+      /function Start-HarnessSuspendedProcessWatchdog[\s\S]*?\[void\]\(\$Watchdog\.Value = \$watchdog\)[\s\S]*?return/,
     );
+    const startFunction = harness.match(
+      /function Start-HarnessSuspendedProcessWatchdog \{([\s\S]*?)\r?\n\}\r?\nfunction Get-HarnessSuspendedProcessWatchdogCompletion/,
+    )?.[1];
+    assert.ok(startFunction, "watchdog start helper is missing");
+    assert.doesNotMatch(startFunction, /Write-Output/);
     assert.match(
       harness,
       /function Complete-HarnessSuspendedProcessWatchdogTerminal[\s\S]*?Close-HarnessSuspendedProcessWatchdog -Watchdog \$Watchdog \| Out-Null[\s\S]*?Write-Output -NoEnumerate \$Completion/,
@@ -664,6 +669,43 @@ try {
       /function Write-HarnessAtomicUtf8[\s\S]*?Initialize-HarnessNativeTypes \| Out-Null[\s\S]*?Remove-Item[^\r\n]*\| Out-Null/,
     );
   });
+
+  boundedIt(
+    "returns a watchdog only through ref without success-stream output on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-start-output-" + [guid]::NewGuid().ToString("N"))
+$nativeProcess = $null
+$watchdog = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+  $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
+  if (@(Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5)) -Watchdog ([ref]$watchdog)).Count -ne 0) { throw "watchdog start emitted success-stream output" }
+  if (@($watchdog).Count -ne 1 -or $watchdog -isnot [pscustomobject]) { throw "watchdog start did not assign exactly one watchdog object through ref" }
+  if ($null -eq $watchdog.process -or [string]::IsNullOrWhiteSpace([string]$watchdog.commandPath) -or [string]::IsNullOrWhiteSpace([string]$watchdog.completionPath)) { throw "watchdog ref object is incomplete" }
+} finally {
+  if ($null -ne $watchdog) { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null }
+  if ($null -ne $nativeProcess) { $nativeProcess.Dispose() }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
 
   boundedIt("returns exactly one terminal watchdog completion", () => {
     const probe = String.raw`
@@ -712,7 +754,7 @@ try {
   $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
   $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
-  $watchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(10)) -Watchdog ([ref]$watchdog)
+  Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(10)) -Watchdog ([ref]$watchdog) | Out-Null
 
   $firstDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(250)
   $firstFailure = $null
@@ -771,7 +813,7 @@ foreach ($terminationResult in @("success", "failure")) {
     $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
     $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
     $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
-    $watchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -ConfirmationReserveMilliseconds 100 -Watchdog ([ref]$watchdog)
+    Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -ConfirmationReserveMilliseconds 100 -Watchdog ([ref]$watchdog) | Out-Null
     $watchdogProcessId = $watchdog.process.Id
     $failure = $null
     try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(1400)) | Out-Null } catch { $failure = $_.Exception.Message }
