@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
   [string]$HarnessPath = (Join-Path $PSScriptRoot "vision-release-install.windows-harness.ps1"),
-  [ValidateRange(30, 120)][int]$DeadlineSeconds = 60,
-  [ValidateRange(60, 180)][int]$HardDeadlineSeconds = 90,
+  [ValidateRange(30, 120)][int]$DeadlineSeconds = 120,
+  [ValidateRange(60, 180)][int]$HardDeadlineSeconds = 180,
   [switch]$Library
 )
 

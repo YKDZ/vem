@@ -324,6 +324,10 @@ describe("Vision release installer fixtures", () => {
         behavior,
         /\$root = Join-Path \(\[IO\.Path\]::GetTempPath\(\)\) \("vh-" \+ \[guid\]::NewGuid\(\)\.ToString\("N"\)\)/,
       );
+      assert.match(
+        behavior,
+        /\[ValidateRange\(30, 120\)\]\[int\]\$DeadlineSeconds = 120,[\s\S]*?\[ValidateRange\(60, 180\)\]\[int\]\$HardDeadlineSeconds = 180,[\s\S]*?if \(\$HardDeadlineSeconds -le \$DeadlineSeconds\) \{ throw "HardDeadlineSeconds must leave time for cleanup after DeadlineSeconds" \}/,
+      );
       assert.doesNotMatch(behavior, /vem-vision-harness-behavior/);
       assert.doesNotMatch(
         behavior,
