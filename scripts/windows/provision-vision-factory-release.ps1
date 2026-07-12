@@ -78,6 +78,7 @@ $destinations = @{
   "VISION-INSTALLER/install-vision-release.ps1" = (Join-Path $bringupRoot "install-vision-release.ps1")
   "VISION-INSTALLER/provision-vision-factory-release.ps1" = (Join-Path $bringupRoot "provision-vision-factory-release.ps1")
 }
+$installedFiles = @()
 foreach ($property in @($manifest.files.PSObject.Properties)) {
   $relative = [string]$property.Name
   $expected = [string]$property.Value
@@ -103,8 +104,9 @@ foreach ($property in @($manifest.files.PSObject.Properties)) {
   Assert-NonReparsePath $parent "Factory Vision destination"
   Copy-Item -LiteralPath $source -Destination $destination -Force
   if ((Get-Sha256Digest $destination) -cne $expected) { throw "Factory Vision destination hash mismatch" }
+  $installedFiles += $destination
 }
-foreach ($path in @($factoryRoot, $trustRoot, $bringupRoot, (Join-Path $factoryRoot "vision-release"), (Join-Path $bringupRoot "install-vision-release.ps1"))) {
+foreach ($path in @($factoryRoot, $trustRoot, $bringupRoot, (Join-Path $factoryRoot "vision-release")) + $installedFiles | Select-Object -Unique) {
   Assert-NonReparsePath $path "Factory Vision installed path"
   Set-SystemOnlyAcl $path
 }

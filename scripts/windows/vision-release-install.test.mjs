@@ -116,6 +116,8 @@ describe("Vision release installer fixtures", () => {
     assert.match(source, /\.PSIsContainer/);
     assert.match(source, /\$inheritanceFlags/);
     assert.match(source, /else \{\s*"None"\s*\}/);
+    assert.match(source, /\$installedFiles \+= \$destination/);
+    assert.match(source, /\+ \$installedFiles \| Select-Object -Unique/);
   });
 
   boundedIt("uses object fields for strict install evidence", () => {
