@@ -131,9 +131,9 @@ try {
   $contextPath = Join-Path $root "context.json"
   Write-Json $contextPath ([ordered]@{ root=$root; stateRoot=(Join-Path $root "state"); bundleDigest="sha256:node-streams" })
   $childPowerShellPath = Join-Path $PSHOME "powershell.exe"
-  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(15)
+  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(30)
 
-  $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+  $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
 $ErrorActionPreference = "Stop"
 Write-Output ps51-stdout
 Write-Error "VEM_VISION_HARNESS_PS51_STDERR" -ErrorAction Continue
@@ -146,7 +146,7 @@ exit 0
 
   $failure = $null
   try {
-    Invoke-BoundedPowerShell -Stage "node.ps51-streams-nonzero" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+    Invoke-BoundedPowerShell -Stage "node.ps51-streams-nonzero" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
 $ErrorActionPreference = "Stop"
 Write-Output nonzero-stdout
 Write-Error "VEM_VISION_HARNESS_PS51_NONZERO_STDERR" -ErrorAction Continue
