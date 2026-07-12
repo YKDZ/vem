@@ -1838,12 +1838,26 @@ $certificate = Get-Item -LiteralPath ("Cert:\CurrentUser\My\{0}" -f $context.cer
 Export-Certificate -Cert $certificate -FilePath $context.certificateExportPath -Force | Out-Null
 '@ | Out-Null
   Invoke-BoundedPowerShell -Stage "fixture.trust-root" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
-& certutil.exe -user -f -addstore Root $context.certificateExportPath
-if ($LASTEXITCODE -ne 0) { throw "certutil failed to trust the fixture root with exit code $LASTEXITCODE" }
+$certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($context.certificateExportPath)
+$store = [Security.Cryptography.X509Certificates.X509Store]::new("Root", "CurrentUser")
+try {
+  $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+  $store.Add($certificate)
+} finally {
+  $store.Dispose()
+  $certificate.Dispose()
+}
 '@ | Out-Null
   Invoke-BoundedPowerShell -Stage "fixture.trust-publisher" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
-& certutil.exe -user -f -addstore TrustedPublisher $context.certificateExportPath
-if ($LASTEXITCODE -ne 0) { throw "certutil failed to trust the fixture publisher with exit code $LASTEXITCODE" }
+$certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($context.certificateExportPath)
+$store = [Security.Cryptography.X509Certificates.X509Store]::new("TrustedPublisher", "CurrentUser")
+try {
+  $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+  $store.Add($certificate)
+} finally {
+  $store.Dispose()
+  $certificate.Dispose()
+}
 '@ | Out-Null
   $signatureResultPath = Join-Path $root "signature.json"
   Invoke-BoundedPowerShell -Stage "fixture.sign-runtime" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
