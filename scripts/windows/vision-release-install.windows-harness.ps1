@@ -684,6 +684,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 public static class SuspendedProcessWatchdog {
@@ -700,13 +701,10 @@ public static class SuspendedProcessWatchdog {
   private static extern bool CloseHandle(IntPtr handle);
 
   private static void Write(string path, string value) {
-    var directory = Path.GetDirectoryName(path);
-    var temporaryPath = Path.Combine(directory, "." + Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
-    try {
-      File.WriteAllText(temporaryPath, value);
-      File.Move(temporaryPath, path);
-    } finally {
-      if (File.Exists(temporaryPath)) { File.Delete(temporaryPath); }
+    var bytes = new UTF8Encoding(false).GetBytes(value);
+    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
+      stream.Write(bytes, 0, bytes.Length);
+      stream.Flush(true);
     }
   }
 
@@ -980,7 +978,7 @@ function Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic {
 
   $temporaryFiles = "temporaryFiles=unavailable"
   try {
-    $temporaryCounts = @{ ready=0; command=0; completion=0; invalid=0 }
+    $temporaryCounts = @{ command=0; invalid=0 }
     $temporaryEntries = 0
     $temporaryOverflow = $false
     foreach ($temporaryPath in [IO.Directory]::EnumerateFiles($WatchdogRoot)) {
@@ -991,13 +989,13 @@ function Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic {
         $temporaryOverflow = $true
         break
       }
-      if ($temporaryName -match '^\.(ready|command|completion)\.[0-9a-fA-F]{32}\.tmp$') {
-        $temporaryCounts[$Matches[1].ToLowerInvariant()]++
+      if ($temporaryName -match '^\.command\.[0-9a-fA-F]{32}\.tmp$') {
+        $temporaryCounts.command++
       } elseif ($temporaryName -match '^\..+\.tmp$') {
         $temporaryCounts.invalid++
       }
     }
-    $temporaryFiles = "temporaryFiles=ready:$($temporaryCounts.ready),command:$($temporaryCounts.command),completion:$($temporaryCounts.completion),invalid:$($temporaryCounts.invalid),overflow:$($temporaryOverflow.ToString().ToLowerInvariant())"
+    $temporaryFiles = "temporaryFiles=command:$($temporaryCounts.command),invalid:$($temporaryCounts.invalid),overflow:$($temporaryOverflow.ToString().ToLowerInvariant())"
   } catch { }
 
   return @(
@@ -1049,6 +1047,8 @@ function Start-HarnessSuspendedProcessWatchdog {
   $completionPath = Join-Path $watchdogRoot "completion"
   $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $SetupDeadlineUtc
   if ($remainingMilliseconds -le 0) { throw "suspended-process watchdog deadline elapsed before it could be started" }
+  $setupHandoffReserveMilliseconds = [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($remainingMilliseconds / 4)))
+  $readyAcceptanceDeadlineUtc = $SetupDeadlineUtc.AddMilliseconds(-$setupHandoffReserveMilliseconds)
   $deadlineUtcTicks = $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   $automaticConfirmationDeadlineUtc = $DeadlineUtc.AddMilliseconds($ConfirmationReserveMilliseconds)
   $automaticConfirmationDeadlineUtcTicks = $automaticConfirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -1056,20 +1056,38 @@ function Start-HarnessSuspendedProcessWatchdog {
   $arguments = @("inherited-process-handle", $commandPath, $readyPath, $completionPath, $deadlineUtcTicks, $automaticConfirmationDeadlineUtcTicks)
   $process = $null
   $setupCleanupDeadlineUtc = $DeadlineUtc
+  $readyFailure = $null
   try {
     $process = $NativeProcess.StartInheritedHandleWatchdog($WatchdogPath, [string[]]$arguments, $watchdogRoot)
 
-    $setupCleanupReserveMilliseconds = [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($remainingMilliseconds / 4)))
-    $readyDeadlineUtc = $SetupDeadlineUtc.AddMilliseconds(-$setupCleanupReserveMilliseconds)
-    while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadlineUtc) { Start-Sleep -Milliseconds 10 }
-    if ([DateTime]::UtcNow -ge $SetupDeadlineUtc) { throw "suspended-process watchdog setup deadline elapsed before it could be armed" }
-    if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) { throw "suspended-process watchdog did not inherit the original process handle before setup continued" }
-    $ready = (Get-Content -LiteralPath $readyPath -Raw -Encoding UTF8).Trim()
-    if ($ready -ne "armed") { throw "suspended-process watchdog reported invalid ready state '$ready'" }
+    $readySignal = "ready=missing"
+    while ($true) {
+      $readySignal = Get-HarnessSuspendedProcessWatchdogSetupSignalDiagnostic -Name "ready" -Path $readyPath
+      if ($readySignal -eq "ready=armed") {
+        if ([DateTime]::UtcNow -ge $readyAcceptanceDeadlineUtc) {
+          $readyFailure = "late-armed"
+          throw "suspended-process watchdog ready signal armed after setup handoff deadline"
+        }
+        break
+      }
+      $remainingReadyMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $readyAcceptanceDeadlineUtc
+      if ($remainingReadyMilliseconds -le 0) {
+        $readyFailure = switch ($readySignal) {
+          "ready=missing" { "missing"; break }
+          "ready=invalid" { "invalid"; break }
+          default { "unavailable"; break }
+        }
+        throw "suspended-process watchdog setup handoff deadline elapsed with $readyFailure ready signal"
+      }
+      Start-Sleep -Milliseconds ([Math]::Min(10, $remainingReadyMilliseconds))
+    }
     $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
     [void]($WatchdogReference.Value = $watchdog)
     return
   } catch {
+    if ($readyFailure -eq "late-armed") {
+      try { [void]($_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogReadyFailure"] = "late-armed") } catch { }
+    }
     if ($null -ne $process) {
       $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
       [void]($WatchdogReference.Value = $watchdog)
@@ -1084,13 +1102,26 @@ function Start-HarnessSuspendedProcessWatchdog {
 }
 function Get-HarnessSuspendedProcessWatchdogCompletion {
   param(
-    [Parameter(Mandatory = $true)][object]$Watchdog
+    [Parameter(Mandatory = $true)][object]$Watchdog,
+    [DateTime]$DeadlineUtc = [DateTime]::MinValue
   )
 
-  if (-not (Test-Path -LiteralPath $Watchdog.completionPath -PathType Leaf)) { return $null }
-  $completion = (Get-Content -LiteralPath $Watchdog.completionPath -Raw -Encoding UTF8).Trim()
-  if ($completion -notmatch "^(exited|terminated|disarmed|wait-failed:[0-9]+|terminate-failed:[0-9]+|terminate-unconfirmed|command-invalid|watchdog-failed:[A-Za-z0-9_]+(?::[0-9]+)?)$") { return $null }
-  return $completion
+  while ($true) {
+    try {
+      if (Test-Path -LiteralPath $Watchdog.completionPath -PathType Leaf) {
+        $completion = [IO.File]::ReadAllText($Watchdog.completionPath, [Text.UTF8Encoding]::new($false)).Trim()
+        if ($completion -match "^(exited|terminated|disarmed|wait-failed:[0-9]+|terminate-failed:[0-9]+|terminate-unconfirmed|command-invalid|watchdog-failed:[A-Za-z0-9_]+(?::[0-9]+)?)$") { return $completion }
+      }
+    } catch [IO.FileNotFoundException] {
+    } catch [IO.IOException] {
+    } catch [UnauthorizedAccessException] {
+    }
+
+    if ($DeadlineUtc -eq [DateTime]::MinValue) { return $null }
+    $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
+    if ($remainingMilliseconds -le 0) { return $null }
+    Start-Sleep -Milliseconds ([Math]::Min(10, $remainingMilliseconds))
+  }
 }
 function Assert-HarnessSuspendedProcessWatchdogCompletion {
   param(
@@ -1172,7 +1203,7 @@ function Complete-HarnessSuspendedProcessWatchdog {
   }
   $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
   if (-not $Watchdog.process.WaitForExit($remainingMilliseconds)) { throw "suspended-process watchdog did not complete '$Action' before the cleanup deadline" }
-  $completion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog
+  $completion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog -DeadlineUtc $DeadlineUtc
   if ($null -eq $completion) { $completion = "missing-completion" }
   Complete-HarnessSuspendedProcessWatchdogTerminal -Watchdog $Watchdog -Action $Action -Completion $completion
 }
@@ -1387,6 +1418,10 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
       Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogSetupDeadlineUtc -SetupDeadlineUtc $watchdogSetupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog) | Out-Null
     } catch {
       $watchdogSetupDiagnostic = [string]$_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogSetupDiagnostic"]
+      $watchdogReadyFailure = [string]$_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogReadyFailure"]
+      if ($watchdogReadyFailure -eq "late-armed" -and -not [string]::IsNullOrWhiteSpace($watchdogSetupDiagnostic)) {
+        $watchdogSetupDiagnostic += ";readyFailure=late-armed"
+      }
       if (-not [string]::IsNullOrWhiteSpace($watchdogSetupDiagnostic)) {
         try { Write-HarnessStage $Stage "suspended-process-watchdog-setup-failed" $watchdogSetupDiagnostic } catch { }
       }

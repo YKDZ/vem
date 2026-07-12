@@ -392,14 +392,13 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.doesNotMatch(inheritedWatchdog, /OpenProcess/);
       assert.doesNotMatch(inheritedWatchdog, /GetProcessById/);
-      assert.match(inheritedWatchdog, /File\.Move\(temporaryPath, path\);/);
       assert.match(
         inheritedWatchdog,
-        /finally \{\s+if \(File\.Exists\(temporaryPath\)\) \{ File\.Delete\(temporaryPath\); \}\s+\}/,
+        /new FileStream\(path, FileMode\.CreateNew, FileAccess\.Write, FileShare\.Read\)[\s\S]*?stream\.Write\(bytes, 0, bytes\.Length\);[\s\S]*?stream\.Flush\(true\);/,
       );
       assert.doesNotMatch(
         inheritedWatchdog,
-        /MoveFileExW|MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH/,
+        /MoveFileExW|MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH|File\.Move\(temporaryPath, path\)|temporaryPath/,
       );
     },
   );
@@ -682,15 +681,16 @@ $ErrorActionPreference = "Stop"
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-create-once-" + [guid]::NewGuid().ToString("N"))
 try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
-  $destinationPath = Join-Path $root "ready"
-  $temporaryPath = Join-Path $root ".ready.0123456789abcdef0123456789abcdef.tmp"
-  [IO.File]::WriteAllText($destinationPath, "armed", [Text.UTF8Encoding]::new($false))
-  [IO.File]::WriteAllText($temporaryPath, "replacement", [Text.UTF8Encoding]::new($false))
-  $moveFailure = $null
-  try { [IO.File]::Move($temporaryPath, $destinationPath) } catch [IO.IOException] { $moveFailure = $_.Exception }
-  if ($null -eq $moveFailure) { throw "create-once watchdog signal unexpectedly replaced its destination" }
-  if ((Get-Content -LiteralPath $destinationPath -Raw -Encoding UTF8) -cne "armed") { throw "create-once watchdog signal modified its destination" }
-  if (-not (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) { throw "failed create-once publish unexpectedly removed its temporary file" }
+  foreach ($signalName in @("ready", "completion")) {
+    $destinationPath = Join-Path $root $signalName
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes("armed")
+    $stream = [IO.FileStream]::new($destinationPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    $createFailure = $null
+    try { [IO.FileStream]::new($destinationPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read).Dispose() } catch [IO.IOException] { $createFailure = $_.Exception }
+    if ($null -eq $createFailure) { throw "create-once $signalName watchdog signal unexpectedly replaced its destination" }
+    if ((Get-Content -LiteralPath $destinationPath -Raw -Encoding UTF8) -cne "armed") { throw "create-once $signalName watchdog signal modified its destination" }
+  }
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -722,6 +722,15 @@ try {
     assert.doesNotMatch(startFunction, /GetProcessById|watchdogProcessId/);
     assert.match(
       startFunction,
+      /while \(\$true\) \{[\s\S]*?Get-HarnessSuspendedProcessWatchdogSetupSignalDiagnostic -Name "ready"[\s\S]*?\$readySignal -eq "ready=armed"[\s\S]*?readyAcceptanceDeadlineUtc[\s\S]*?ready signal armed after setup handoff deadline[\s\S]*?setup handoff deadline elapsed with \$readyFailure ready signal/,
+    );
+    assert.doesNotMatch(startFunction, /Get-Content -LiteralPath \$readyPath/);
+    assert.match(
+      startFunction,
+      /readyFailure = "late-armed"[\s\S]*?SuspendedProcessWatchdogReadyFailure"] = "late-armed"/,
+    );
+    assert.match(
+      startFunction,
       /catch \{[\s\S]*?if \(\$null -ne \$process\) \{[\s\S]*?\[void\]\(\$WatchdogReference\.Value = \$watchdog\)[\s\S]*?\$_\.Exception\.Data\["VemVisionHarness\.SuspendedProcessWatchdog"\] = \$watchdog[\s\S]*?\}[\s\S]*?\$diagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic/,
     );
     const signalDiagnostic = harness.match(
@@ -748,7 +757,7 @@ try {
     );
     assert.match(
       setupDiagnostic,
-      /temporaryFiles=ready:\$\(\$temporaryCounts\.ready\),command:\$\(\$temporaryCounts\.command\),completion:\$\(\$temporaryCounts\.completion\),invalid:\$\(\$temporaryCounts\.invalid\),overflow:/,
+      /temporaryFiles=command:\$\(\$temporaryCounts\.command\),invalid:\$\(\$temporaryCounts\.invalid\),overflow:/,
     );
     assert.doesNotMatch(setupDiagnostic, /Get-ChildItem|Sort-Object/);
     assert.match(
@@ -762,6 +771,10 @@ try {
     assert.match(
       harness,
       /try \{\s+Start-HarnessSuspendedProcessWatchdog -StageRoot \$stageRoot[\s\S]*?\} catch \{\s+\$watchdogSetupDiagnostic = \[string\]\$_.Exception.Data\["VemVisionHarness\.SuspendedProcessWatchdogSetupDiagnostic"\][\s\S]*?Write-HarnessStage \$Stage "suspended-process-watchdog-setup-failed" \$watchdogSetupDiagnostic[\s\S]*?throw\s+\}/,
+    );
+    assert.match(
+      harness,
+      /\$watchdogReadyFailure = \[string\]\$_.Exception.Data\["VemVisionHarness\.SuspendedProcessWatchdogReadyFailure"\][\s\S]*?\$watchdogSetupDiagnostic \+= ";readyFailure=late-armed"/,
     );
   });
 
@@ -1008,12 +1021,77 @@ foreach ($terminationResult in @("success", "failure")) {
 $ErrorActionPreference = "Stop"
 . (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-completion-" + [guid]::NewGuid().ToString("N"))
+$completionWriter = $null
 try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
+  Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+public sealed class PartialSignalWriter : IDisposable {
+  private readonly ManualResetEventSlim partialWritten = new ManualResetEventSlim(false);
+  private readonly ManualResetEventSlim finished = new ManualResetEventSlim(false);
+  private readonly Thread thread;
+  private Exception failure;
+
+  private PartialSignalWriter(string path, string partial, string remainder, int delayMilliseconds) {
+    thread = new Thread(() => {
+      try {
+        using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
+          var encoding = new UTF8Encoding(false);
+          var partialBytes = encoding.GetBytes(partial);
+          stream.Write(partialBytes, 0, partialBytes.Length);
+          stream.Flush(true);
+          partialWritten.Set();
+          Thread.Sleep(delayMilliseconds);
+          var remainderBytes = encoding.GetBytes(remainder);
+          stream.Write(remainderBytes, 0, remainderBytes.Length);
+          stream.Flush(true);
+        }
+      } catch (Exception exception) {
+        failure = exception;
+        partialWritten.Set();
+      } finally {
+        finished.Set();
+      }
+    });
+    thread.IsBackground = true;
+    thread.Start();
+  }
+
+  public static PartialSignalWriter Start(string path, string partial, string remainder, int delayMilliseconds) {
+    return new PartialSignalWriter(path, partial, remainder, delayMilliseconds);
+  }
+
+  public void WaitForPartial(int timeoutMilliseconds) {
+    if (!partialWritten.Wait(timeoutMilliseconds)) { throw new TimeoutException("partial signal was not written"); }
+    if (failure != null) { throw new InvalidOperationException("partial signal writer failed", failure); }
+  }
+
+  public void WaitForCompletion(int timeoutMilliseconds) {
+    if (!finished.Wait(timeoutMilliseconds)) { throw new TimeoutException("partial signal writer did not finish"); }
+    if (failure != null) { throw new InvalidOperationException("partial signal writer failed", failure); }
+  }
+
+  public void Dispose() {
+    WaitForCompletion(5000);
+    partialWritten.Dispose();
+    finished.Dispose();
+  }
+}
+'@
   $completionPath = Join-Path $root "completion"
-  [IO.File]::WriteAllText($completionPath, "termin", [Text.UTF8Encoding]::new($false))
+  $completionWriter = [PartialSignalWriter]::Start($completionPath, "termin", "ated", 300)
+  $completionWriter.WaitForPartial(1000)
   $partialWatchdog = [pscustomobject]@{ completionPath=$completionPath }
   if ($null -ne (Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $partialWatchdog)) { throw "partial completion was consumed as a terminal state" }
+  $eventualCompletion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $partialWatchdog -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2))
+  if ($eventualCompletion -cne "terminated") { throw "partial completion did not become terminal before its bounded deadline: $eventualCompletion" }
+  $completionWriter.WaitForCompletion(1000)
+  $completionWriter.Dispose()
+  $completionWriter = $null
 
   Remove-Item -LiteralPath $completionPath -Force
   $timeoutProcess = [pscustomobject]@{ waitCalls=0; disposeCalls=0 }
@@ -1038,6 +1116,200 @@ try {
   }
   if ($watchdog.completed -or -not $watchdog.disposed -or $watchdog.terminalCompletion -cne "terminate-unconfirmed" -or $fakeProcess.disposeCalls -ne 1) { throw "invalid watchdog completion was not retained as one terminal failure" }
 } finally {
+  if ($null -ne $completionWriter) { $completionWriter.Dispose() }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "rejects an armed watchdog signal observed inside the setup handoff reserve",
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-armed-after-deadline-" + [guid]::NewGuid().ToString("N"))
+$watchdog = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $wrapper = [pscustomobject]@{ disposeCalls=0 }
+  $wrapper | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.disposeCalls++ }
+  $nativeProcess = [pscustomobject]@{ ProcessId=4340; watchdogWrapper=$wrapper }
+  $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value {
+    param($watchdogPath, $watchdogArguments, $workingDirectory)
+    [IO.File]::WriteAllText([string]$watchdogArguments[2], "armed", [Text.UTF8Encoding]::new($false))
+    Start-Sleep -Milliseconds 1000
+    return $this.watchdogWrapper
+  }
+  $failure = $null
+  try { Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(1200)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_ }
+  if ($null -eq $failure -or $failure.Exception.Message -notmatch "ready signal armed after setup handoff deadline") { throw "armed signal inside the setup handoff reserve was accepted: $failure" }
+  if ([string]$failure.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogReadyFailure"] -cne "late-armed") { throw "late armed setup was not classified for telemetry" }
+  if ($null -eq $watchdog -or $null -eq $failure.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"]) { throw "late armed setup did not publish cleanup ownership" }
+  Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null
+  if ($wrapper.disposeCalls -ne 1) { throw "late armed watchdog wrapper was not disposed" }
+  $watchdog = $null
+} finally {
+  if ($null -ne $watchdog -and -not $watchdog.disposed) { Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "accepts an early partial ready signal only after its original stream completes",
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-partial-signal-" + [guid]::NewGuid().ToString("N"))
+$writer = $null
+$readyWatchdog = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+public sealed class PartialReadySignalWriter : IDisposable {
+  private readonly ManualResetEventSlim partialWritten = new ManualResetEventSlim(false);
+  private readonly ManualResetEventSlim finished = new ManualResetEventSlim(false);
+  private readonly Thread thread;
+  private Exception failure;
+
+  private PartialReadySignalWriter(string path) {
+    thread = new Thread(() => {
+      try {
+        using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
+          var encoding = new UTF8Encoding(false);
+          var partialBytes = encoding.GetBytes("ar");
+          stream.Write(partialBytes, 0, partialBytes.Length);
+          stream.Flush(true);
+          partialWritten.Set();
+          Thread.Sleep(300);
+          var remainderBytes = encoding.GetBytes("med");
+          stream.Write(remainderBytes, 0, remainderBytes.Length);
+          stream.Flush(true);
+        }
+      } catch (Exception exception) {
+        failure = exception;
+        partialWritten.Set();
+      } finally {
+        finished.Set();
+      }
+    });
+    thread.IsBackground = true;
+    thread.Start();
+  }
+
+  public static PartialReadySignalWriter Start(string path) { return new PartialReadySignalWriter(path); }
+
+  public void WaitForPartial(int timeoutMilliseconds) {
+    if (!partialWritten.Wait(timeoutMilliseconds)) { throw new TimeoutException("partial ready signal was not written"); }
+    if (failure != null) { throw new InvalidOperationException("partial ready writer failed", failure); }
+  }
+
+  public void WaitForCompletion(int timeoutMilliseconds) {
+    if (!finished.Wait(timeoutMilliseconds)) { throw new TimeoutException("partial ready writer did not finish"); }
+    if (failure != null) { throw new InvalidOperationException("partial ready writer failed", failure); }
+  }
+
+  public void Dispose() {
+    WaitForCompletion(5000);
+    partialWritten.Dispose();
+    finished.Dispose();
+  }
+}
+'@
+  $readyWrapper = [pscustomobject]@{ disposeCalls=0 }
+  $readyWrapper | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.disposeCalls++ }
+  $readyNativeProcess = [pscustomobject]@{ ProcessId=4341; watchdogWrapper=$readyWrapper }
+  $readyNativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value {
+    param($watchdogPath, $watchdogArguments, $workingDirectory)
+    $readyPath = [string]$watchdogArguments[2]
+    $script:writer = [PartialReadySignalWriter]::Start($readyPath)
+    $script:writer.WaitForPartial(1000)
+    return $this.watchdogWrapper
+  }
+  Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "eventual") -WatchdogPath "unused" -NativeProcess $readyNativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) -Watchdog ([ref]$readyWatchdog) | Out-Null
+  if ($null -eq $readyWatchdog) { throw "partial ready signal did not become an armed watchdog" }
+  $writer.WaitForCompletion(1000)
+  $writer.Dispose()
+  $writer = $null
+  Close-HarnessSuspendedProcessWatchdog -Watchdog $readyWatchdog | Out-Null
+  if ($readyWrapper.disposeCalls -ne 1) { throw "eventual ready watchdog wrapper was not disposed" }
+  $readyWatchdog = $null
+
+} finally {
+  if ($null -ne $writer) { $writer.Dispose() }
+  if ($null -ne $readyWatchdog -and -not $readyWatchdog.disposed) { Close-HarnessSuspendedProcessWatchdog -Watchdog $readyWatchdog | Out-Null }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "bounds a permanently partial ready signal held by its original stream",
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-permanent-partial-" + [guid]::NewGuid().ToString("N"))
+$watchdog = $null
+$readyStream = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $wrapper = [pscustomobject]@{ disposeCalls=0 }
+  $wrapper | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.disposeCalls++ }
+  $nativeProcess = [pscustomobject]@{ ProcessId=4342; watchdogWrapper=$wrapper; readyStream=$null }
+  $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value {
+    param($watchdogPath, $watchdogArguments, $workingDirectory)
+    $stream = [IO.FileStream]::new([string]$watchdogArguments[2], [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes("ar")
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+    $this.readyStream = $stream
+    return $this.watchdogWrapper
+  }
+  $failure = $null
+  try { Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_ }
+  if ($null -eq $failure -or $failure.Exception.Message -notmatch "setup handoff deadline elapsed with (invalid|unavailable) ready signal") { throw "permanently partial ready signal was not bounded safely: $failure" }
+  $diagnostic = [string]$failure.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogSetupDiagnostic"]
+  if ($diagnostic -notmatch "ready=(invalid|unavailable)") { throw "permanently partial ready signal did not retain its safe read classification: $diagnostic" }
+  if ($null -eq $nativeProcess.readyStream -or $null -eq $watchdog -or $null -eq $failure.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"]) { throw "permanently partial setup did not preserve its live protocol stream and cleanup ownership" }
+  $readyStream = $nativeProcess.readyStream
+  Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null
+  if ($wrapper.disposeCalls -ne 1) { throw "permanently partial watchdog wrapper was not disposed" }
+  $watchdog = $null
+} finally {
+  if ($null -ne $readyStream) { $readyStream.Dispose() }
+  if ($null -ne $watchdog -and -not $watchdog.disposed) { Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 `;
@@ -1076,17 +1348,17 @@ try {
   $nativeProcess = [pscustomobject]@{ ProcessId=4243; watchdogWrapper=$watchdogWrapper }
   $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value {
     param($watchdogPath, $arguments, $workingDirectory)
-    [IO.File]::WriteAllText((Join-Path $workingDirectory ".ready.0123456789abcdef0123456789abcdef.tmp"), "temporary", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $workingDirectory ".command.0123456789abcdef0123456789abcdef.tmp"), "temporary", [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $workingDirectory ".ready.fixture.tmp"), "invalid", [Text.UTF8Encoding]::new($false))
     return $this.watchdogWrapper
   }
   $failure = $null
   try { Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_ }
-  if ($null -eq $failure -or $failure.Exception.Message -notmatch "did not inherit") { throw "slow watchdog start did not preserve its readiness failure: $failure" }
+  if ($null -eq $failure -or $failure.Exception.Message -notmatch "setup handoff deadline elapsed with missing ready signal") { throw "slow watchdog start did not preserve its readiness failure: $failure" }
   $ownership = $failure.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"]
   if ($null -eq $ownership -or $null -eq $watchdog -or -not [object]::ReferenceEquals($ownership, $watchdog)) { throw "failed watchdog setup did not publish its cleanup ownership before returning" }
   $diagnostic = [string]$failure.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogSetupDiagnostic"]
-  if ($diagnostic -notmatch "watchdogProcess=running;ready=missing;completion=missing;temporaryFiles=ready:1,command:0,completion:0,invalid:1,overflow:false;setupDeadlineUtcTicks=[0-9]+;automaticDeadlineUtcTicks=[0-9]+;automaticConfirmationDeadlineUtcTicks=[0-9]+;lastWin32Error=[0-9]+") { throw "slow watchdog start did not attach bounded setup diagnostics: $diagnostic" }
+  if ($diagnostic -notmatch "watchdogProcess=running;ready=missing;completion=missing;temporaryFiles=command:1,invalid:1,overflow:false;setupDeadlineUtcTicks=[0-9]+;automaticDeadlineUtcTicks=[0-9]+;automaticConfirmationDeadlineUtcTicks=[0-9]+;lastWin32Error=[0-9]+") { throw "slow watchdog start did not attach bounded setup diagnostics: $diagnostic" }
   if ($diagnostic -match [regex]::Escape($root) -or $diagnostic -match "processId|handle|0123456789abcdef|fixture") { throw "slow watchdog setup diagnostics leaked a secret process detail: $diagnostic" }
   Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null
   if (-not $watchdog.disposed -or $watchdogWrapper.disposeCalls -ne 1) { throw "failed watchdog setup leaked its watchdog process wrapper" }
@@ -1134,7 +1406,7 @@ try {
   $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value { param($watchdogPath, $arguments, $workingDirectory) return $this.child }
   $failure = $null
   try { Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(800)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_.Exception.Message }
-  if ([string]::IsNullOrWhiteSpace($failure) -or $failure -notmatch "did not inherit") { throw "stale ready signal was accepted: $failure" }
+  if ([string]::IsNullOrWhiteSpace($failure) -or $failure -notmatch "setup handoff deadline elapsed with missing ready signal") { throw "stale ready signal was accepted: $failure" }
   foreach ($staleSignalPath in @((Join-Path $staleRoot "command"), (Join-Path $staleRoot "ready"), (Join-Path $staleRoot "completion"))) {
     if (Test-Path -LiteralPath $staleSignalPath -PathType Leaf) { throw "stale watchdog signal was not removed: $staleSignalPath" }
   }
@@ -1173,16 +1445,16 @@ try {
 
   $exitedProcess = [pscustomobject]@{ HasExited=$true; ExitCode=2 }
   $exitedDiagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -Process $exitedProcess -WatchdogRoot $watchdogRoot -ReadyPath $readyPath -CompletionPath $completionPath -SetupDeadlineUtc $setupDeadlineUtc -AutomaticDeadlineUtc $automaticDeadlineUtc -AutomaticConfirmationDeadlineUtc $automaticConfirmationDeadlineUtc -LastWin32Error 0
-  if ($exitedDiagnostic -notmatch "watchdogProcess=exited:2;ready=missing;completion=missing;temporaryFiles=ready:0,command:0,completion:0,invalid:0,overflow:false") { throw "exited watchdog setup diagnostics were incomplete: $exitedDiagnostic" }
+  if ($exitedDiagnostic -notmatch "watchdogProcess=exited:2;ready=missing;completion=missing;temporaryFiles=command:0,invalid:0,overflow:false") { throw "exited watchdog setup diagnostics were incomplete: $exitedDiagnostic" }
 
   [IO.File]::WriteAllText($completionPath, "watchdog-failed:Win32Exception:5", [Text.UTF8Encoding]::new($false))
   for ($index = 0; $index -lt 9; $index++) {
-    $temporaryName = ".ready.{0:x32}.tmp" -f $index
+    $temporaryName = ".command.{0:x32}.tmp" -f $index
     [IO.File]::WriteAllText((Join-Path $watchdogRoot $temporaryName), "temporary", [Text.UTF8Encoding]::new($false))
   }
   $runningProcess = [pscustomobject]@{ HasExited=$false; ExitCode=$null }
   $completionDiagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -Process $runningProcess -WatchdogRoot $watchdogRoot -ReadyPath $readyPath -CompletionPath $completionPath -SetupDeadlineUtc $setupDeadlineUtc -AutomaticDeadlineUtc $automaticDeadlineUtc -AutomaticConfirmationDeadlineUtc $automaticConfirmationDeadlineUtc -LastWin32Error 5
-  if ($completionDiagnostic -notmatch "watchdogProcess=running;ready=missing;completion=watchdog-failed:Win32Exception:5;temporaryFiles=ready:8,command:0,completion:0,invalid:0,overflow:true") { throw "atomic ready failure diagnostics were incomplete: $completionDiagnostic" }
+  if ($completionDiagnostic -notmatch "watchdogProcess=running;ready=missing;completion=watchdog-failed:Win32Exception:5;temporaryFiles=command:8,invalid:0,overflow:true") { throw "atomic ready failure diagnostics were incomplete: $completionDiagnostic" }
   if ($completionDiagnostic -match "[0-9a-f]{32}|$([regex]::Escape($root))") { throw "watchdog setup diagnostics exposed a temporary filename or root path: $completionDiagnostic" }
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
@@ -1249,7 +1521,14 @@ try {
         harness,
         /using System\.Globalization;\s+using System\.IO;\s+using System\.Runtime\.InteropServices;/,
       );
-      assert.match(harness, /File\.WriteAllText\(temporaryPath, value\)/);
+      assert.match(
+        harness,
+        /function Write-HarnessAtomicUtf8[\s\S]*?\[IO\.File\]::WriteAllText\(\$temporaryPath, \$Text, \[Text\.UTF8Encoding\]::new\(\$false\)\)[\s\S]*?\[VemVisionHarness\.AtomicFile\]::Replace\(\$temporaryPath, \$Path\)/,
+      );
+      assert.match(
+        harness,
+        /private static void Write\(string path, string value\) \{\s+var bytes = new UTF8Encoding\(false\)\.GetBytes\(value\);\s+using \(var stream = new FileStream\(path, FileMode\.CreateNew, FileAccess\.Write, FileShare\.Read\)\) \{\s+stream\.Write\(bytes, 0, bytes\.Length\);\s+stream\.Flush\(true\);/,
+      );
       assert.match(
         harness,
         /MoveFileExW\(temporaryPath, path, MOVEFILE_REPLACE_EXISTING \| MOVEFILE_WRITE_THROUGH\)/,
