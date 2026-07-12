@@ -1059,6 +1059,7 @@ function Start-HarnessSuspendedProcessWatchdog {
     [Parameter(Mandatory = $true)][object]$NativeProcess,
     [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
     [DateTime]$SetupDeadlineUtc = [DateTime]::MinValue,
+    [DateTime]$SetupAcceptanceDeadlineUtc = [DateTime]::MinValue,
     [ValidateRange(100, 5000)][int]$ConfirmationReserveMilliseconds = 1000,
     [DateTime]$AutomaticConfirmationDeadlineUtc = [DateTime]::MinValue,
     [Parameter(Mandatory = $true)][Alias("Watchdog")][ref]$WatchdogReference
@@ -1068,6 +1069,7 @@ function Start-HarnessSuspendedProcessWatchdog {
   if ($AutomaticConfirmationDeadlineUtc -eq [DateTime]::MinValue) { $AutomaticConfirmationDeadlineUtc = $DeadlineUtc.AddMilliseconds($ConfirmationReserveMilliseconds) }
   if ($SetupDeadlineUtc -gt $DeadlineUtc) { throw "suspended-process watchdog setup deadline cannot exceed its termination deadline" }
   if ($AutomaticConfirmationDeadlineUtc -le $DeadlineUtc) { throw "suspended-process watchdog automatic confirmation deadline must follow its termination deadline" }
+  if ($SetupAcceptanceDeadlineUtc -ne [DateTime]::MinValue -and $SetupAcceptanceDeadlineUtc -ge $SetupDeadlineUtc) { throw "suspended-process watchdog setup acceptance deadline must precede its setup deadline" }
   $watchdogStageRoot = Join-Path $StageRoot "suspended-process-watchdog"
   New-Item -ItemType Directory -Force -Path $watchdogStageRoot | Out-Null
   foreach ($staleSignalPath in @((Join-Path $watchdogStageRoot "command"), (Join-Path $watchdogStageRoot "ready"), (Join-Path $watchdogStageRoot "completion"))) {
@@ -1080,8 +1082,13 @@ function Start-HarnessSuspendedProcessWatchdog {
   $completionPath = Join-Path $watchdogRoot "completion"
   $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $SetupDeadlineUtc
   if ($remainingMilliseconds -le 0) { throw "suspended-process watchdog deadline elapsed before it could be started" }
-  $setupHandoffReserveMilliseconds = [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($remainingMilliseconds / 4)))
-  $readyAcceptanceDeadlineUtc = $SetupDeadlineUtc.AddMilliseconds(-$setupHandoffReserveMilliseconds)
+  if ($SetupAcceptanceDeadlineUtc -eq [DateTime]::MinValue) {
+    $setupHandoffReserveMilliseconds = [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($remainingMilliseconds / 4)))
+    $readyAcceptanceDeadlineUtc = $SetupDeadlineUtc.AddMilliseconds(-$setupHandoffReserveMilliseconds)
+  } else {
+    $readyAcceptanceDeadlineUtc = $SetupAcceptanceDeadlineUtc
+    $setupHandoffReserveMilliseconds = [int][Math]::Floor(($SetupDeadlineUtc - $readyAcceptanceDeadlineUtc).TotalMilliseconds)
+  }
   $deadlineUtcTicks = $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   $automaticConfirmationDeadlineUtcTicks = $AutomaticConfirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   # StartInheritedHandleWatchdog replaces this reserved argument with the inheritable DuplicateHandle value.
@@ -1260,6 +1267,86 @@ function Get-HarnessTerminationConfirmationReserveMilliseconds {
 
   return [Math]::Min(2000, [Math]::Max(1000, [int][Math]::Floor($TotalMilliseconds / 4)))
 }
+function Get-HarnessWatchdogReserveMilliseconds {
+  param([Parameter(Mandatory = $true)][int]$AvailableMilliseconds)
+
+  if ($AvailableMilliseconds -le 50) { return 0 }
+  return [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($AvailableMilliseconds / 4)))
+}
+function New-HarnessBoundedPowerShellDeadlinePlan {
+  param(
+    [Parameter(Mandatory = $true)][DateTime]$InvokeStartUtc,
+    [Parameter(Mandatory = $true)][DateTime]$HarnessDeadlineUtc,
+    [ValidateRange(0, 3600)][int]$CleanupReserveSeconds = 0,
+    [ValidateRange(1, 3600)][int]$TimeoutSeconds = 30
+  )
+
+  # Round the single sampled interval down before constructing every deadline
+  # from the same anchor. This leaves sub-millisecond clock-read overhead out
+  # of the usable budget rather than borrowing it from execution cleanup.
+  $harnessCleanupDeadlineUtc = $HarnessDeadlineUtc.AddSeconds(-$CleanupReserveSeconds)
+  $availableTicks = $harnessCleanupDeadlineUtc.Ticks - $InvokeStartUtc.Ticks
+  $availableMilliseconds = [int][Math]::Floor([double]$availableTicks / [TimeSpan]::TicksPerMillisecond)
+  if ($availableMilliseconds -le 0) {
+    throw "bounded PowerShell cannot start before the harness cleanup deadline"
+  }
+  $harnessBudgetDeadlineUtc = $InvokeStartUtc.AddMilliseconds($availableMilliseconds)
+  $requestedExecutionMilliseconds = $TimeoutSeconds * 1000
+  $stageBudgetMilliseconds = [Math]::Min($availableMilliseconds, $requestedExecutionMilliseconds + 2000)
+  $confirmationReserveMilliseconds = Get-HarnessTerminationConfirmationReserveMilliseconds -TotalMilliseconds $stageBudgetMilliseconds
+  $normalTailMilliseconds = $requestedExecutionMilliseconds + $confirmationReserveMilliseconds
+  $preTailAvailableMilliseconds = $availableMilliseconds - $normalTailMilliseconds
+  $watchdogHandoffReserveMilliseconds = Get-HarnessWatchdogReserveMilliseconds -AvailableMilliseconds $preTailAvailableMilliseconds
+  $automaticTargetReserveMilliseconds = Get-HarnessWatchdogReserveMilliseconds -AvailableMilliseconds $preTailAvailableMilliseconds
+  $automaticConfirmationReserveMilliseconds = Get-HarnessWatchdogReserveMilliseconds -AvailableMilliseconds $preTailAvailableMilliseconds
+  $resumeTransitionReserveMilliseconds = 50
+  if ($watchdogHandoffReserveMilliseconds -le $resumeTransitionReserveMilliseconds -or $automaticTargetReserveMilliseconds -lt 50 -or $automaticConfirmationReserveMilliseconds -lt 50) {
+    throw "bounded PowerShell cannot reserve watchdog handoff and automatic confirmation while preserving execution and Job cleanup"
+  }
+  $automaticTailMilliseconds = $automaticTargetReserveMilliseconds + $automaticConfirmationReserveMilliseconds
+  $watchdogTailMilliseconds = [Math]::Max($automaticTailMilliseconds, $normalTailMilliseconds)
+  $watchdogSetupAvailableMilliseconds = $availableMilliseconds - $watchdogHandoffReserveMilliseconds - $watchdogTailMilliseconds
+  $watchdogSetupBudgetMilliseconds = Get-HarnessWatchdogSetupBudgetMilliseconds -AvailableMilliseconds $watchdogSetupAvailableMilliseconds
+  if ($watchdogSetupBudgetMilliseconds -le 0) {
+    throw "bounded PowerShell cannot reserve watchdog setup before execution and cleanup"
+  }
+
+  $watchdogSetupDeadlineUtc = $InvokeStartUtc.AddMilliseconds($watchdogSetupBudgetMilliseconds)
+  $watchdogHandoffEndDeadlineUtc = $watchdogSetupDeadlineUtc.AddMilliseconds($watchdogHandoffReserveMilliseconds)
+  $watchdogDisarmHandoffDeadlineUtc = $watchdogHandoffEndDeadlineUtc.AddMilliseconds(-$resumeTransitionReserveMilliseconds)
+  $watchdogAutomaticDeadlineUtc = $watchdogHandoffEndDeadlineUtc.AddMilliseconds($automaticTargetReserveMilliseconds)
+  $watchdogAutomaticConfirmationDeadlineUtc = $watchdogAutomaticDeadlineUtc.AddMilliseconds($automaticConfirmationReserveMilliseconds)
+  $normalExecutionLatestStartDeadlineUtc = $harnessBudgetDeadlineUtc.AddMilliseconds(-$normalTailMilliseconds)
+  $setupAcceptanceReserveMilliseconds = Get-HarnessWatchdogReserveMilliseconds -AvailableMilliseconds $watchdogSetupBudgetMilliseconds
+  $setupAcceptanceDeadlineUtc = $watchdogSetupDeadlineUtc.AddMilliseconds(-$setupAcceptanceReserveMilliseconds)
+
+  if ($setupAcceptanceDeadlineUtc -ge $watchdogDisarmHandoffDeadlineUtc -or $watchdogDisarmHandoffDeadlineUtc -le $watchdogSetupDeadlineUtc -or $watchdogDisarmHandoffDeadlineUtc -ge $watchdogAutomaticDeadlineUtc -or $watchdogAutomaticConfirmationDeadlineUtc -gt $harnessBudgetDeadlineUtc -or $watchdogHandoffEndDeadlineUtc -gt $normalExecutionLatestStartDeadlineUtc) {
+    throw "bounded PowerShell derived an invalid watchdog deadline plan"
+  }
+
+  return [pscustomobject]@{
+    invokeStartUtc = $InvokeStartUtc
+    harnessCleanupDeadlineUtc = $harnessCleanupDeadlineUtc
+    harnessBudgetDeadlineUtc = $harnessBudgetDeadlineUtc
+    availableMilliseconds = $availableMilliseconds
+    requestedExecutionMilliseconds = $requestedExecutionMilliseconds
+    confirmationReserveMilliseconds = $confirmationReserveMilliseconds
+    normalTailMilliseconds = $normalTailMilliseconds
+    watchdogSetupBudgetMilliseconds = $watchdogSetupBudgetMilliseconds
+    watchdogHandoffReserveMilliseconds = $watchdogHandoffReserveMilliseconds
+    resumeTransitionReserveMilliseconds = $resumeTransitionReserveMilliseconds
+    setupAcceptanceReserveMilliseconds = $setupAcceptanceReserveMilliseconds
+    automaticTargetReserveMilliseconds = $automaticTargetReserveMilliseconds
+    automaticConfirmationReserveMilliseconds = $automaticConfirmationReserveMilliseconds
+    watchdogSetupDeadlineUtc = $watchdogSetupDeadlineUtc
+    setupAcceptanceDeadlineUtc = $setupAcceptanceDeadlineUtc
+    watchdogHandoffEndDeadlineUtc = $watchdogHandoffEndDeadlineUtc
+    watchdogDisarmHandoffDeadlineUtc = $watchdogDisarmHandoffDeadlineUtc
+    watchdogAutomaticDeadlineUtc = $watchdogAutomaticDeadlineUtc
+    watchdogAutomaticConfirmationDeadlineUtc = $watchdogAutomaticConfirmationDeadlineUtc
+    normalExecutionLatestStartDeadlineUtc = $normalExecutionLatestStartDeadlineUtc
+  }
+}
 function Wait-HarnessJobTermination {
   param(
     [Parameter(Mandatory = $true)][object]$Job,
@@ -1366,25 +1453,19 @@ function Invoke-BoundedPowerShell {
     [int]$TimeoutSeconds = 30
   )
 
-  $harnessCleanupDeadlineUtc = $HarnessDeadlineUtc.AddSeconds(-$CleanupReserveSeconds)
-  $harnessRemainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $harnessCleanupDeadlineUtc
-  $stageBudgetMilliseconds = [Math]::Min($harnessRemainingMilliseconds, ($TimeoutSeconds * 1000) + 2000)
-  $confirmationReserveMilliseconds = Get-HarnessTerminationConfirmationReserveMilliseconds -TotalMilliseconds $stageBudgetMilliseconds
-  $minimumExecutionMilliseconds = [Math]::Min($TimeoutSeconds * 1000, 1000)
-  $watchdogSetupAvailableMilliseconds = $harnessRemainingMilliseconds - $confirmationReserveMilliseconds - $minimumExecutionMilliseconds
-  $watchdogSetupBudgetMilliseconds = Get-HarnessWatchdogSetupBudgetMilliseconds -AvailableMilliseconds $watchdogSetupAvailableMilliseconds
-  if ($watchdogSetupBudgetMilliseconds -le 0) {
-    throw "fixture stage '$Stage' cannot start before the harness deadline while reserving $CleanupReserveSeconds seconds for cleanup"
-  }
   $invokeStartUtc = [DateTime]::UtcNow
-  $watchdogSetupDeadlineUtc = $invokeStartUtc.AddMilliseconds($watchdogSetupBudgetMilliseconds)
-  if ($watchdogSetupDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $watchdogSetupDeadlineUtc = $harnessCleanupDeadlineUtc }
-  $cleanupDeadlineUtc = $watchdogSetupDeadlineUtc.AddMilliseconds($confirmationReserveMilliseconds)
-  if ($cleanupDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $cleanupDeadlineUtc = $harnessCleanupDeadlineUtc }
-  $watchdogAutomaticDeadlineUtc = $cleanupDeadlineUtc
-  if ($watchdogAutomaticDeadlineUtc -le $watchdogSetupDeadlineUtc) {
-    throw "fixture stage '$Stage' cannot reserve a watchdog automatic deadline after setup"
-  }
+  $deadlinePlan = New-HarnessBoundedPowerShellDeadlinePlan -InvokeStartUtc $invokeStartUtc -HarnessDeadlineUtc $HarnessDeadlineUtc -CleanupReserveSeconds $CleanupReserveSeconds -TimeoutSeconds $TimeoutSeconds
+  $harnessBudgetDeadlineUtc = $deadlinePlan.harnessBudgetDeadlineUtc
+  $confirmationReserveMilliseconds = [int]$deadlinePlan.confirmationReserveMilliseconds
+  $requestedExecutionMilliseconds = [int]$deadlinePlan.requestedExecutionMilliseconds
+  $watchdogSetupDeadlineUtc = $deadlinePlan.watchdogSetupDeadlineUtc
+  $setupAcceptanceDeadlineUtc = $deadlinePlan.setupAcceptanceDeadlineUtc
+  $setupAcceptanceReserveMilliseconds = [int]$deadlinePlan.setupAcceptanceReserveMilliseconds
+  $watchdogDisarmHandoffDeadlineUtc = $deadlinePlan.watchdogDisarmHandoffDeadlineUtc
+  $watchdogAutomaticDeadlineUtc = $deadlinePlan.watchdogAutomaticDeadlineUtc
+  $watchdogAutomaticConfirmationDeadlineUtc = $deadlinePlan.watchdogAutomaticConfirmationDeadlineUtc
+  $normalExecutionLatestStartDeadlineUtc = $deadlinePlan.normalExecutionLatestStartDeadlineUtc
+  $cleanupDeadlineUtc = $watchdogAutomaticConfirmationDeadlineUtc
   $executionDeadlineUtc = $null
   $executionMilliseconds = $null
   $effectiveTimeoutSeconds = $null
@@ -1458,7 +1539,7 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $cleanupState.processOwnership = "created-suspended"
     Write-HarnessStage $Stage "process-ownership" "state=created-suspended processId=$($nativeProcess.ProcessId)"
     try {
-      Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogAutomaticDeadlineUtc -SetupDeadlineUtc $watchdogSetupDeadlineUtc -AutomaticConfirmationDeadlineUtc $harnessCleanupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog) | Out-Null
+      Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogAutomaticDeadlineUtc -SetupDeadlineUtc $watchdogSetupDeadlineUtc -SetupAcceptanceDeadlineUtc $setupAcceptanceDeadlineUtc -AutomaticConfirmationDeadlineUtc $watchdogAutomaticConfirmationDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog) | Out-Null
     } catch {
       $watchdogSetupDiagnostic = [string]$_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogSetupDiagnostic"]
       $watchdogReadyFailure = [string]$_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogReadyFailure"]
@@ -1479,7 +1560,13 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
       throw "fixture forced pre-disarm operation failure"
     }
     $initialHandoffReserveMilliseconds = [int]$suspendedProcessWatchdog.setupHandoffReserveMilliseconds
-    $handoffDeadlineUtc = $watchdogAutomaticDeadlineUtc.AddMilliseconds(-$initialHandoffReserveMilliseconds)
+    if ($initialHandoffReserveMilliseconds -ne $setupAcceptanceReserveMilliseconds) {
+      throw "fixture stage '$Stage' did not preserve its planned watchdog setup acceptance reserve"
+    }
+    $handoffDeadlineUtc = $watchdogDisarmHandoffDeadlineUtc
+    if ($setupAcceptanceDeadlineUtc -ge $handoffDeadlineUtc) {
+      throw "fixture stage '$Stage' cannot reserve disarm handoff after setup acceptance"
+    }
     if ($handoffDeadlineUtc -ge $watchdogAutomaticDeadlineUtc) {
       throw "fixture stage '$Stage' cannot reserve watchdog automatic termination after disarm handoff"
     }
@@ -1497,21 +1584,21 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     }
     Write-HarnessStage $Stage "suspended-process-watchdog-disarmed" "processId=$($nativeProcess.ProcessId) completion=$watchdogCompletion"
     $suspendedProcessWatchdog = $null
+    if ([DateTime]::UtcNow -ge $normalExecutionLatestStartDeadlineUtc) {
+      $cleanupDeadlineUtc = $harnessBudgetDeadlineUtc
+      throw "fixture stage '$Stage' cannot resume with its requested execution timeout and Job cleanup reserve after watchdog handoff"
+    }
     $nativeProcess.Resume()
     $cleanupState.processOwnership = "resumed-job-assigned"
     $executionStartUtc = [DateTime]::UtcNow
-    $executionMilliseconds = [Math]::Min($TimeoutSeconds * 1000, (Get-HarnessRemainingMilliseconds -DeadlineUtc $harnessCleanupDeadlineUtc) - $confirmationReserveMilliseconds)
-    if ($executionMilliseconds -le 0) {
-      throw "fixture stage '$Stage' cannot start before its termination-confirmation reserve"
+    $executionMilliseconds = $requestedExecutionMilliseconds
+    $executionDeadlineUtc = $executionStartUtc.AddMilliseconds($requestedExecutionMilliseconds)
+    $requestedCleanupDeadlineUtc = $executionDeadlineUtc.AddMilliseconds($confirmationReserveMilliseconds)
+    if ($requestedCleanupDeadlineUtc -gt $harnessBudgetDeadlineUtc) {
+      $cleanupDeadlineUtc = $harnessBudgetDeadlineUtc
+      throw "fixture stage '$Stage' cannot preserve its requested execution timeout and Job cleanup reserve after watchdog handoff"
     }
-    $executionDeadlineUtc = $executionStartUtc.AddMilliseconds($executionMilliseconds)
-    $cleanupDeadlineUtc = $executionDeadlineUtc.AddMilliseconds($confirmationReserveMilliseconds)
-    if ($cleanupDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $cleanupDeadlineUtc = $harnessCleanupDeadlineUtc }
-    $executionDeadlineUtc = $cleanupDeadlineUtc.AddMilliseconds(-$confirmationReserveMilliseconds)
-    $executionMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $executionDeadlineUtc
-    if ($executionMilliseconds -le 0) {
-      throw "fixture stage '$Stage' cannot start before its termination-confirmation reserve"
-    }
+    $cleanupDeadlineUtc = $requestedCleanupDeadlineUtc
     $effectiveTimeoutSeconds = [Math]::Max(1, [int][Math]::Ceiling($executionMilliseconds / 1000.0))
     Write-HarnessStage $Stage "process-ownership" "state=resumed-job-assigned processId=$($nativeProcess.ProcessId)"
     Write-HarnessStage $Stage "started" "timeoutSeconds=$effectiveTimeoutSeconds processId=$($nativeProcess.ProcessId) termination=job-object"

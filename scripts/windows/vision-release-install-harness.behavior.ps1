@@ -690,6 +690,7 @@ public static class SetupTimeoutWatchdog {
   public static int Main(string[] args) {
     if (args == null || args.Length != 6) { return 2; }
     Write(args[2] + ".deadline", args[4]);
+    Write(args[2] + ".confirmation-deadline", args[5]);
     var deadlineUtc = new DateTime(Int64.Parse(args[4], NumberStyles.None, CultureInfo.InvariantCulture), DateTimeKind.Utc);
     while (DateTime.UtcNow < deadlineUtc) { Thread.Sleep(10); }
     var process = new IntPtr(unchecked((long)UInt64.Parse(args[0], CultureInfo.InvariantCulture)));
@@ -725,9 +726,22 @@ public static class SetupTimeoutWatchdog {
     $automaticDeadlinePath = Get-ChildItem -LiteralPath $root -Recurse -Filter "ready.deadline" | Select-Object -First 1 -ExpandProperty FullName
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$automaticDeadlinePath)) "setup timeout watchdog did not record its automatic termination deadline"
     $automaticDeadlineUtc = [DateTime]::new([Int64](Get-Content -LiteralPath $automaticDeadlinePath -Raw), [DateTimeKind]::Utc)
+    $automaticConfirmationDeadlinePath = Get-ChildItem -LiteralPath $root -Recurse -Filter "ready.confirmation-deadline" | Select-Object -First 1 -ExpandProperty FullName
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$automaticConfirmationDeadlinePath)) "setup timeout watchdog did not record its automatic confirmation deadline"
+    $automaticConfirmationDeadlineUtc = [DateTime]::new([Int64](Get-Content -LiteralPath $automaticConfirmationDeadlinePath -Raw), [DateTimeKind]::Utc)
     Assert-True ($automaticDeadlineUtc -lt $setupTimeoutStartUtc.AddSeconds(6)) "setup timeout watchdog received the harness deadline instead of its setup deadline"
     $setupTimeoutTelemetry = Get-Content -LiteralPath $setupTimeoutTranscriptPath -Raw
     Assert-True ($setupTimeoutTelemetry -match "stage=behavior.watchdog-setup-timeout status=suspended-process-watchdog-setup-failed detail=watchdogProcess=running;ready=missing;completion=missing;temporaryFiles=command:0,invalid:0,overflow:false;setupDeadlineUtcTicks=[0-9]+;automaticDeadlineUtcTicks=[0-9]+;automaticConfirmationDeadlineUtcTicks=[0-9]+;lastWin32Error=[0-9]+") "setup timeout did not record bounded watchdog setup diagnostics"
+    $setupTimeoutDeadlines = [regex]::Match($setupTimeoutTelemetry, "setupDeadlineUtcTicks=([0-9]+);automaticDeadlineUtcTicks=([0-9]+);automaticConfirmationDeadlineUtcTicks=([0-9]+)")
+    Assert-True $setupTimeoutDeadlines.Success "setup timeout did not record ordered watchdog deadlines"
+    [Int64]$setupDeadlineTicks = $setupTimeoutDeadlines.Groups[1].Value
+    [Int64]$automaticDeadlineTicks = $setupTimeoutDeadlines.Groups[2].Value
+    [Int64]$automaticConfirmationDeadlineTicks = $setupTimeoutDeadlines.Groups[3].Value
+    Assert-True ($setupDeadlineTicks -lt $automaticDeadlineTicks) "setup timeout watchdog automatic target deadline did not follow setup"
+    Assert-True ($automaticDeadlineTicks -lt $automaticConfirmationDeadlineTicks) "setup timeout watchdog automatic confirmation deadline did not follow automatic target"
+    Assert-True ($automaticConfirmationDeadlineTicks -le $setupTimeoutHarnessDeadlineUtc.Ticks) "setup timeout watchdog automatic confirmation deadline exceeded the harness cleanup deadline"
+    Assert-True ($automaticDeadlineTicks -eq $automaticDeadlineUtc.Ticks) "setup timeout watchdog recorded inconsistent automatic target deadline"
+    Assert-True ($automaticConfirmationDeadlineTicks -eq $automaticConfirmationDeadlineUtc.Ticks) "setup timeout watchdog recorded inconsistent automatic confirmation deadline"
     $takeover = [regex]::Match($setupTimeoutTelemetry, "stage=behavior.watchdog-setup-timeout status=suspended-process-watchdog-terminated detail=processId=([0-9]+) completion=terminated identity=original-process-handle")
     Assert-True $takeover.Success "setup timeout did not confirm delayed watchdog takeover"
     $suspendedProcess = Get-RunningProcess -ProcessId ([int]$takeover.Groups[1].Value)

@@ -325,19 +325,23 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.match(
         harness,
-        /\$cleanupDeadlineUtc = \$watchdogSetupDeadlineUtc\.AddMilliseconds\(\$confirmationReserveMilliseconds\)[\s\S]*?\$watchdogAutomaticDeadlineUtc = \$cleanupDeadlineUtc[\s\S]*?if \(\$watchdogAutomaticDeadlineUtc -le \$watchdogSetupDeadlineUtc\) \{[\s\S]*?automatic deadline after setup/,
+        /function New-HarnessBoundedPowerShellDeadlinePlan[\s\S]*?\$availableTicks = \$harnessCleanupDeadlineUtc\.Ticks - \$InvokeStartUtc\.Ticks[\s\S]*?\$availableMilliseconds = \[int\]\[Math\]::Floor\(\[double\]\$availableTicks \/ \[TimeSpan\]::TicksPerMillisecond\)[\s\S]*?\$harnessBudgetDeadlineUtc = \$InvokeStartUtc\.AddMilliseconds\(\$availableMilliseconds\)[\s\S]*?\$normalTailMilliseconds = \$requestedExecutionMilliseconds \+ \$confirmationReserveMilliseconds[\s\S]*?\$preTailAvailableMilliseconds = \$availableMilliseconds - \$normalTailMilliseconds[\s\S]*?\$watchdogHandoffEndDeadlineUtc = \$watchdogSetupDeadlineUtc\.AddMilliseconds\(\$watchdogHandoffReserveMilliseconds\)[\s\S]*?\$watchdogDisarmHandoffDeadlineUtc = \$watchdogHandoffEndDeadlineUtc\.AddMilliseconds\(-\$resumeTransitionReserveMilliseconds\)[\s\S]*?\$watchdogAutomaticDeadlineUtc = \$watchdogHandoffEndDeadlineUtc\.AddMilliseconds\(\$automaticTargetReserveMilliseconds\)[\s\S]*?\$normalExecutionLatestStartDeadlineUtc = \$harnessBudgetDeadlineUtc\.AddMilliseconds\(-\$normalTailMilliseconds\)/,
       );
       assert.match(
         harness,
-        /Start-HarnessSuspendedProcessWatchdog -StageRoot \$stageRoot -WatchdogPath \$script:HarnessSuspendedProcessWatchdogPath -NativeProcess \$nativeProcess -DeadlineUtc \$watchdogAutomaticDeadlineUtc -SetupDeadlineUtc \$watchdogSetupDeadlineUtc -AutomaticConfirmationDeadlineUtc \$harnessCleanupDeadlineUtc/,
+        /Start-HarnessSuspendedProcessWatchdog -StageRoot \$stageRoot -WatchdogPath \$script:HarnessSuspendedProcessWatchdogPath -NativeProcess \$nativeProcess -DeadlineUtc \$watchdogAutomaticDeadlineUtc -SetupDeadlineUtc \$watchdogSetupDeadlineUtc -SetupAcceptanceDeadlineUtc \$setupAcceptanceDeadlineUtc -AutomaticConfirmationDeadlineUtc \$watchdogAutomaticConfirmationDeadlineUtc/,
       );
       assert.match(
         harness,
-        /\$initialHandoffReserveMilliseconds = \[int\]\$suspendedProcessWatchdog\.setupHandoffReserveMilliseconds[\s\S]*?\$handoffDeadlineUtc = \$watchdogAutomaticDeadlineUtc\.AddMilliseconds\(-\$initialHandoffReserveMilliseconds\)[\s\S]*?if \(\$handoffDeadlineUtc -ge \$watchdogAutomaticDeadlineUtc\) \{[\s\S]*?automatic termination after disarm handoff[\s\S]*?Complete-HarnessSuspendedProcessWatchdog -Watchdog \$suspendedProcessWatchdog -Action "disarm" -DeadlineUtc \$handoffDeadlineUtc/,
+        /\$invokeStartUtc = \[DateTime\]::UtcNow[\s\S]*?New-HarnessBoundedPowerShellDeadlinePlan -InvokeStartUtc \$invokeStartUtc -HarnessDeadlineUtc \$HarnessDeadlineUtc[\s\S]*?\$setupAcceptanceDeadlineUtc = \$deadlinePlan\.setupAcceptanceDeadlineUtc[\s\S]*?-SetupAcceptanceDeadlineUtc \$setupAcceptanceDeadlineUtc[\s\S]*?\$initialHandoffReserveMilliseconds = \[int\]\$suspendedProcessWatchdog\.setupHandoffReserveMilliseconds[\s\S]*?did not preserve its planned watchdog setup acceptance reserve[\s\S]*?\$handoffDeadlineUtc = \$watchdogDisarmHandoffDeadlineUtc[\s\S]*?Complete-HarnessSuspendedProcessWatchdog -Watchdog \$suspendedProcessWatchdog -Action "disarm" -DeadlineUtc \$handoffDeadlineUtc[\s\S]*?if \(\[DateTime\]::UtcNow -ge \$normalExecutionLatestStartDeadlineUtc\) \{[\s\S]*?\$nativeProcess\.Resume\(\)[\s\S]*?\$executionDeadlineUtc = \$executionStartUtc\.AddMilliseconds\(\$requestedExecutionMilliseconds\)[\s\S]*?\$requestedCleanupDeadlineUtc = \$executionDeadlineUtc\.AddMilliseconds\(\$confirmationReserveMilliseconds\)[\s\S]*?if \(\$requestedCleanupDeadlineUtc -gt \$harnessBudgetDeadlineUtc\) \{[\s\S]*?requested execution timeout and Job cleanup reserve/,
       );
       assert.match(
         behavior,
         /public static class DelayedDisarmWatchdog[\s\S]*?DISARM_CONFIRMATION_DELAY_MILLISECONDS = 100[\s\S]*?Write\(args\[2\], "armed"\)[\s\S]*?IsDisarmCommand\(args\[1\]\)[\s\S]*?Thread\.Sleep\(DISARM_CONFIRMATION_DELAY_MILLISECONDS\)[\s\S]*?Write\(args\[3\], "disarmed"\)[\s\S]*?behavior\.watchdog-disarm-handoff[\s\S]*?TimeoutSeconds 2[\s\S]*?HarnessDeadlineUtc \(\[DateTime\]::UtcNow\.AddSeconds\(4\)\)[\s\S]*?suspended-process-watchdog-disarmed[\s\S]*?completion=disarmed[\s\S]*?state=resumed-job-assigned/,
+      );
+      assert.match(
+        behavior,
+        /public static class SetupTimeoutWatchdog[\s\S]*?Write\(args\[2\] \+ "\.deadline", args\[4\]\)[\s\S]*?Write\(args\[2\] \+ "\.confirmation-deadline", args\[5\]\)[\s\S]*?setupDeadlineUtcTicks=\(\[0-9\]\+\);automaticDeadlineUtcTicks=\(\[0-9\]\+\);automaticConfirmationDeadlineUtcTicks=\(\[0-9\]\+\)[\s\S]*?\$setupDeadlineTicks -lt \$automaticDeadlineTicks[\s\S]*?\$automaticDeadlineTicks -lt \$automaticConfirmationDeadlineTicks[\s\S]*?\$automaticConfirmationDeadlineTicks -le \$setupTimeoutHarnessDeadlineUtc\.Ticks[\s\S]*?suspended-process-watchdog-terminated/,
       );
       assert.match(
         harness,
@@ -708,6 +712,48 @@ Start-Sleep -Seconds 30
         "-Command",
         ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; if((Get-HarnessTerminationConfirmationReserveMilliseconds -TotalMilliseconds 4000) -ne 1000){throw 'four-second reserve'}; if((Get-HarnessTerminationConfirmationReserveMilliseconds -TotalMilliseconds 8000) -ne 2000){throw 'eight-second reserve'}; $deadline=[DateTime]::UtcNow.AddMilliseconds(20); Start-Sleep -Milliseconds 40; if((Get-HarnessRemainingMilliseconds -DeadlineUtc $deadline) -ne 0){throw 'expired deadline still has budget'}",
       ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "derives a three-second watchdog budget from one absolute invocation anchor",
+    () => {
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-Command",
+        ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; $anchor=[DateTime]::UtcNow; $harnessDeadlineUtc=$anchor.AddMilliseconds(3000); $plan=New-HarnessBoundedPowerShellDeadlinePlan -InvokeStartUtc $anchor -HarnessDeadlineUtc $harnessDeadlineUtc -CleanupReserveSeconds 0 -TimeoutSeconds 1; if($plan.availableMilliseconds -ne 3000){throw 'three-second available budget'}; if($plan.confirmationReserveMilliseconds -ne 1000){throw 'three-second Job reserve'}; if($plan.requestedExecutionMilliseconds -ne 1000){throw 'three-second execution reserve'}; if($plan.watchdogHandoffReserveMilliseconds -ne 250){throw 'three-second handoff reserve'}; if($plan.automaticConfirmationReserveMilliseconds -ne 250){throw 'three-second automatic confirmation reserve'}; if($plan.watchdogSetupBudgetMilliseconds -ne 750){throw 'three-second setup reserve'}; if($plan.watchdogDisarmHandoffDeadlineUtc -ge $plan.normalExecutionLatestStartDeadlineUtc){throw 'handoff did not leave resume transition reserve'}; if($plan.normalExecutionLatestStartDeadlineUtc.AddMilliseconds($plan.requestedExecutionMilliseconds + $plan.confirmationReserveMilliseconds) -gt $harnessDeadlineUtc){throw 'three-second normal tail exceeds harness deadline'}",
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "keeps latest legal handoff inside the true harness deadline after sampling overhead",
+    () => {
+      const probe = String.raw`
+. ./scripts/windows/vision-release-install.windows-harness.ps1 -Library
+
+function Assert-Plan([int]$HarnessMilliseconds, [int]$SamplingOffsetMilliseconds, [int]$CleanupReserveSeconds, [int]$TimeoutSeconds, [int]$ExpectedJobReserveMilliseconds) {
+  $harnessDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($HarnessMilliseconds)
+  $invokeStartUtc = $harnessDeadlineUtc.AddMilliseconds(-($HarnessMilliseconds - $SamplingOffsetMilliseconds))
+  $plan = New-HarnessBoundedPowerShellDeadlinePlan -InvokeStartUtc $invokeStartUtc -HarnessDeadlineUtc $harnessDeadlineUtc -CleanupReserveSeconds $CleanupReserveSeconds -TimeoutSeconds $TimeoutSeconds
+
+  if ($plan.confirmationReserveMilliseconds -ne $ExpectedJobReserveMilliseconds) { throw "unexpected Job reserve: $($plan.confirmationReserveMilliseconds)" }
+  if ($plan.watchdogSetupBudgetMilliseconds -le 0 -or $plan.setupAcceptanceReserveMilliseconds -lt 50) { throw "setup budget was not viable" }
+  if (-not ($plan.setupAcceptanceDeadlineUtc -lt $plan.watchdogDisarmHandoffDeadlineUtc -and $plan.watchdogDisarmHandoffDeadlineUtc -lt $plan.watchdogAutomaticDeadlineUtc -and $plan.watchdogAutomaticDeadlineUtc -lt $plan.watchdogAutomaticConfirmationDeadlineUtc -and $plan.watchdogAutomaticConfirmationDeadlineUtc -le $harnessDeadlineUtc)) { throw "watchdog deadline order was invalid" }
+  if ($plan.watchdogDisarmHandoffDeadlineUtc -ge $plan.normalExecutionLatestStartDeadlineUtc) { throw "latest legal disarm did not leave the resume transition reserve" }
+  $latestCleanupDeadlineUtc = $plan.normalExecutionLatestStartDeadlineUtc.AddMilliseconds($plan.requestedExecutionMilliseconds + $plan.confirmationReserveMilliseconds)
+  if ($latestCleanupDeadlineUtc -gt $harnessDeadlineUtc) { throw "latest legal handoff shortened normal execution" }
+  return $plan
+}
+
+$short = Assert-Plan -HarnessMilliseconds 3000 -SamplingOffsetMilliseconds 137 -CleanupReserveSeconds 0 -TimeoutSeconds 1 -ExpectedJobReserveMilliseconds 1000
+if ($short.availableMilliseconds -ne 2863 -or $short.requestedExecutionMilliseconds -ne 1000) { throw "short branch sampling offset changed" }
+$long = Assert-Plan -HarnessMilliseconds 12000 -SamplingOffsetMilliseconds 731 -CleanupReserveSeconds 1 -TimeoutSeconds 6 -ExpectedJobReserveMilliseconds 2000
+if ($long.availableMilliseconds -ne 10269 -or $long.requestedExecutionMilliseconds -ne 6000) { throw "long branch sampling offset changed" }
+`;
+      const result = spawnBounded("pwsh", ["-NoProfile", "-Command", probe]);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     },
   );
