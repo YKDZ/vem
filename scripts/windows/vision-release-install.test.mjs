@@ -118,8 +118,8 @@ describe("Vision release installer fixtures", () => {
   );
 
   boundedIt(
-    "captures PowerShell 5.1 stdout and non-terminating stderr through the bounded native process",
-    { skip: process.platform !== "win32", timeout: 120_000 },
+    "captures a Windows PowerShell 5.1 child stdout and non-terminating stderr through the bounded native process",
+    { skip: process.platform !== "win32" },
     () => {
       const probe = String.raw`
 $ErrorActionPreference = "Stop"
@@ -131,10 +131,11 @@ try {
   $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   $contextPath = Join-Path $root "context.json"
   Write-Json $contextPath ([ordered]@{ root=$root; stateRoot=(Join-Path $root "state"); bundleDigest="sha256:node-streams" })
-  $childPowerShellPath = Join-Path $PSHOME "powershell.exe"
-  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(70)
+  $childPowerShellPath = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+  if (-not (Test-Path -LiteralPath $childPowerShellPath -PathType Leaf)) { throw "Windows PowerShell 5.1 is missing" }
+  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(30)
 
-  $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 20 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+  $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
 $ErrorActionPreference = "Stop"
 Write-Output ps51-stdout
 Write-Error "VEM_VISION_HARNESS_PS51_STDERR" -ErrorAction Continue
@@ -147,7 +148,7 @@ exit 0
 
   $failure = $null
   try {
-    Invoke-BoundedPowerShell -Stage "node.ps51-streams-nonzero" -TimeoutSeconds 20 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+    Invoke-BoundedPowerShell -Stage "node.ps51-streams-nonzero" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
 $ErrorActionPreference = "Stop"
 Write-Output nonzero-stdout
 Write-Error "VEM_VISION_HARNESS_PS51_NONZERO_STDERR" -ErrorAction Continue
@@ -165,18 +166,14 @@ exit 23
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 `;
-      const result = spawnBounded(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          probe,
-        ],
-        { timeout: 90_000 },
-      );
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     },
   );
@@ -217,6 +214,33 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
         1,
         `Information telemetry was not mirrored exactly once: ${result.stdout}`,
       );
+    },
+  );
+
+  boundedIt(
+    "keeps the Node PS5.1 stream probe host and child boundaries explicit",
+    () => {
+      const source = readFileSync(windowsHarness, "utf8");
+      const testSource = readFileSync(
+        "scripts/windows/vision-release-install.test.mjs",
+        "utf8",
+      );
+      const streamProbe = testSource.match(
+        /captures a Windows PowerShell 5\.1 child stdout and non-terminating stderr through the bounded native process[\s\S]*?(?=\n  boundedIt\()/,
+      )?.[0];
+
+      assert.ok(streamProbe, "Node PS5.1 stream probe is missing");
+      assert.match(
+        streamProbe,
+        /\$childPowerShellPath = Join-Path \$env:WINDIR "System32\\WindowsPowerShell\\v1\.0\\powershell\.exe"/,
+      );
+      assert.match(
+        streamProbe,
+        /if \(-not \(Test-Path -LiteralPath \$childPowerShellPath -PathType Leaf\)\) \{ throw "Windows PowerShell 5\.1 is missing" \}/,
+      );
+      assert.match(streamProbe, /spawnBounded\(\s*"pwsh"/);
+      assert.doesNotMatch(streamProbe, /spawnBounded\(\s*"powershell\.exe"/);
+      assert.match(source, /function Invoke-BoundedPowerShell/);
     },
   );
 
