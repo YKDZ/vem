@@ -109,15 +109,21 @@ describe("Vision release installer fixtures", () => {
   });
 
   boundedIt("uses file-safe ACL inheritance in the Factory provisioner", () => {
-    const source = readFileSync(
+    for (const path of [
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/install-vision-release.ps1",
+    ]) {
+      const source = readFileSync(path, "utf8");
+      assert.match(source, /\.PSIsContainer/);
+      assert.match(source, /\$inheritanceFlags/);
+      assert.match(source, /else \{\s*"None"\s*\}/);
+    }
+    const provisioner = readFileSync(
       "scripts/windows/provision-vision-factory-release.ps1",
       "utf8",
     );
-    assert.match(source, /\.PSIsContainer/);
-    assert.match(source, /\$inheritanceFlags/);
-    assert.match(source, /else \{\s*"None"\s*\}/);
-    assert.match(source, /\$installedFiles \+= \$destination/);
-    assert.match(source, /\+ \$installedFiles \| Select-Object -Unique/);
+    assert.match(provisioner, /\$installedFiles \+= \$destination/);
+    assert.match(provisioner, /\+ \$installedFiles \| Select-Object -Unique/);
   });
 
   boundedIt("uses object fields for strict install evidence", () => {
