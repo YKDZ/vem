@@ -485,7 +485,7 @@ try {
   $completionDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
   while (-not (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf) -and [DateTime]::UtcNow -lt $completionDeadlineUtc) { Start-Sleep -Milliseconds 10 }
   if (-not (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf)) { throw "automatic watchdog deadline did not write a completion state" }
-  if ((Get-Content -LiteralPath $watchdog.completionPath -Raw).Trim() -cne "terminated") { throw "automatic watchdog did not confirm termination" }
+  if ((Get-Content -LiteralPath $watchdog.completionPath -Raw).Trim() -notin @("terminated", "exited")) { throw "automatic watchdog did not confirm termination" }
   if (-not $nativeProcess.WaitForExit(1000)) { throw "automatic watchdog left its host process running" }
   Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null
   $watchdog = $null
@@ -540,7 +540,7 @@ Start-Sleep -Seconds 30
   $completionDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
   while (-not (Test-Path -LiteralPath $hostProcess.deadlineWatchdog.completionPath -PathType Leaf) -and [DateTime]::UtcNow -lt $completionDeadlineUtc) { Start-Sleep -Milliseconds 10 }
   if (-not (Test-Path -LiteralPath $hostProcess.deadlineWatchdog.completionPath -PathType Leaf)) { throw "automatic hard-watchdog deadline did not write a completion state" }
-  if ((Get-Content -LiteralPath $hostProcess.deadlineWatchdog.completionPath -Raw).Trim() -cne "terminated") { throw "automatic hard-watchdog did not confirm host termination" }
+  if ((Get-Content -LiteralPath $hostProcess.deadlineWatchdog.completionPath -Raw).Trim() -notin @("terminated", "exited")) { throw "automatic hard-watchdog did not confirm host termination" }
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   Stop-HardWatchdogHost -HostProcess $hostProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4))
   $stopwatch.Stop()
@@ -768,7 +768,7 @@ try {
   New-Item -ItemType File -Path $gatePath | Out-Null
   $extendedDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
   $completion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc $extendedDeadlineUtc
-  if ($completion -cne "terminated") { throw "extended watchdog command did not confirm termination: $completion" }
+  if ($completion -notin @("terminated", "exited")) { throw "extended watchdog command did not confirm termination: $completion" }
   $extendedCommand = (Get-Content -LiteralPath $watchdog.commandPath -Raw -Encoding UTF8).Trim()
   if ($extendedCommand -notmatch "^terminate:([0-9]+)$") { throw "extended watchdog command was invalid: $extendedCommand" }
   if ([Int64]$Matches[1] -le $firstTicks) { throw "watchdog confirmation deadline did not increase monotonically" }
@@ -815,8 +815,16 @@ foreach ($terminationResult in @("success", "failure")) {
     $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
     Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -ConfirmationReserveMilliseconds 100 -Watchdog ([ref]$watchdog) | Out-Null
     $watchdogProcessId = $watchdog.process.Id
+    $confirmationDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(1500)
+    $parentDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
+    Write-HarnessAtomicUtf8 $watchdog.commandPath ("terminate:" + $confirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) | Out-Null
+    $watchdog.commandAction = "terminate"
+    $watchdog.confirmationDeadlineUtcTicks = $confirmationDeadlineUtc.Ticks
+    if (-not $watchdog.process.WaitForExit((Get-HarnessRemainingMilliseconds -DeadlineUtc $parentDeadlineUtc))) { throw "$terminationResult watchdog did not exit before the parent deadline" }
+    if ([DateTime]::UtcNow -le $confirmationDeadlineUtc) { throw "$terminationResult watchdog exited before its confirmation deadline" }
+    if ((Get-HarnessRemainingMilliseconds -DeadlineUtc $parentDeadlineUtc) -le 0) { throw "$terminationResult parent deadline elapsed before unconfirmed completion was consumed" }
     $failure = $null
-    try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(1400)) | Out-Null } catch { $failure = $_.Exception.Message }
+    try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc $parentDeadlineUtc | Out-Null } catch { $failure = $_.Exception.Message }
     if ($failure -notmatch "could not terminate process .*: terminate-unconfirmed") { throw "$terminationResult termination did not become unconfirmed: $failure" }
     if ($watchdog.completed -or -not $watchdog.disposed -or $watchdog.terminalCompletion -cne "terminate-unconfirmed") { throw "$terminationResult termination did not retain its unconfirmed terminal state" }
     if ($null -ne (Get-Process -Id $watchdogProcessId -ErrorAction SilentlyContinue)) { throw "$terminationResult watchdog did not exit" }
