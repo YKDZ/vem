@@ -642,7 +642,7 @@ Start-Sleep -Seconds 30
   );
 
   boundedIt(
-    "atomically overwrites an existing watchdog command signal with Windows PowerShell 5.1",
+    "overwrites an existing watchdog command signal with Windows PowerShell 5.1",
     { skip: process.platform !== "win32" },
     () => {
       const probe = String.raw`
@@ -653,9 +653,9 @@ try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $path = Join-Path $root "command"
   [IO.File]::WriteAllText($path, "old", [Text.UTF8Encoding]::new($false))
-  Write-HarnessAtomicUtf8 -Path $path -Text "new"
-  if ((Get-Content -LiteralPath $path -Raw -Encoding UTF8) -cne "new") { throw "atomic write did not replace an existing target" }
-  if (@(Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -like ".command.*.tmp" }).Count -ne 0) { throw "atomic write left a temporary file" }
+  Write-HarnessWatchdogCommand -Path $path -Command "new" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2))
+  if ((Get-Content -LiteralPath $path -Raw -Encoding UTF8) -cne ("new" + [char]10)) { throw "command write did not publish its complete LF-terminated frame" }
+  if (@(Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -like ".command.*.tmp" }).Count -ne 0) { throw "command write left a temporary file" }
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -700,6 +700,52 @@ try {
         "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "publishes complete watchdog commands after partial reads and keeps the latest terminate deadline",
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-command-protocol-" + [guid]::NewGuid().ToString("N"))
+$partialStream = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $commandPath = Join-Path $root "command"
+  $partialStream = [IO.FileStream]::new($commandPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+  $partialBytes = [Text.UTF8Encoding]::new($false).GetBytes("dis")
+  $partialStream.Write($partialBytes, 0, $partialBytes.Length)
+  $partialStream.Flush($true)
+  $partial = $null
+  try { $partial = [IO.File]::ReadAllText($commandPath, [Text.UTF8Encoding]::new($false)).Trim() } catch [IO.IOException] { }
+  if ($partial -eq "disarm" -or $partial -match "^terminate:[0-9]+$") { throw "partial watchdog command was consumable: $partial" }
+  $partialStream.Dispose()
+  $partialStream = $null
+
+  Write-HarnessWatchdogCommand -Path $commandPath -Command "disarm" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2))
+  if ([IO.File]::ReadAllText($commandPath, [Text.UTF8Encoding]::new($false)) -cne ("disarm" + [char]10)) { throw "complete disarm command frame was not published" }
+
+  $firstDeadlineUtc = [DateTime]::UtcNow.AddSeconds(2)
+  $secondDeadlineUtc = $firstDeadlineUtc.AddSeconds(2)
+  Write-HarnessWatchdogCommand -Path $commandPath -Command ("terminate:" + $firstDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2))
+  Write-HarnessWatchdogCommand -Path $commandPath -Command ("terminate:" + $secondDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2))
+  $latest = [IO.File]::ReadAllText($commandPath, [Text.UTF8Encoding]::new($false))
+  if ($latest -cne (("terminate:" + $secondDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) + [char]10)) { throw "latest terminate deadline frame was not retained: $latest" }
+  if (@(Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -like ".command.*.tmp" }).Count -ne 0) { throw "watchdog command writer left a rename temporary file" }
+} finally {
+  if ($null -ne $partialStream) { $partialStream.Dispose() }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
         "-Command",
         probe,
       ]);
@@ -766,7 +812,7 @@ try {
     );
     assert.match(
       harness,
-      /function Write-HarnessAtomicUtf8[\s\S]*?Initialize-HarnessNativeTypes \| Out-Null[\s\S]*?Remove-Item[^\r\n]*\| Out-Null/,
+      /function Write-HarnessWatchdogCommand\(\[string\]\$Path, \[string\]\$Command, \[DateTime\]\$DeadlineUtc\) \{[\s\S]*?while \(\$true\) \{[\s\S]*?command write was late before[\s\S]*?new\(\$Path, \[IO\.FileMode\]::Create, \[IO\.FileAccess\]::Write, \[IO\.FileShare\]::Read\)[\s\S]*?\.Flush\(\$true\)[\s\S]*?command write completed after[\s\S]*?catch \[IO\.IOException\][\s\S]*?Get-HarnessRemainingMilliseconds -DeadlineUtc \$DeadlineUtc/,
     );
     assert.match(
       harness,
@@ -866,6 +912,102 @@ try {
     },
   );
 
+  boundedIt(
+    "retries a watchdog command writer through a concurrent reader on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+
+public sealed class CommandReadLock : IDisposable {
+  private readonly ManualResetEventSlim acquired = new ManualResetEventSlim(false);
+  private readonly ManualResetEventSlim finished = new ManualResetEventSlim(false);
+  private readonly Thread thread;
+  private Exception failure;
+
+  private CommandReadLock(string path, int holdMilliseconds) {
+    thread = new Thread(() => {
+      try {
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+          acquired.Set();
+          Thread.Sleep(holdMilliseconds);
+        }
+      } catch (Exception exception) {
+        failure = exception;
+        acquired.Set();
+      } finally {
+        finished.Set();
+      }
+    });
+    thread.IsBackground = true;
+    thread.Start();
+  }
+
+  public static CommandReadLock Hold(string path, int holdMilliseconds) { return new CommandReadLock(path, holdMilliseconds); }
+  public void WaitForAcquired(int timeoutMilliseconds) {
+    if (!acquired.Wait(timeoutMilliseconds)) { throw new TimeoutException("command reader did not acquire its lock"); }
+    if (failure != null) { throw new InvalidOperationException("command reader failed", failure); }
+  }
+  public void Dispose() {
+    if (!finished.Wait(5000)) { throw new TimeoutException("command reader did not release its lock"); }
+    if (failure != null) { throw new InvalidOperationException("command reader failed", failure); }
+    acquired.Dispose();
+    finished.Dispose();
+  }
+}
+'@
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-command-reader-" + [guid]::NewGuid().ToString("N"))
+$nativeProcess = $null
+$watchdog = $null
+$reader = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+  $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
+  Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(8)) -Watchdog ([ref]$watchdog) | Out-Null
+  [IO.File]::WriteAllText($watchdog.commandPath, ("partial" + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+  $reader = [CommandReadLock]::Hold($watchdog.commandPath, 350)
+  $reader.WaitForAcquired(1000)
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  $completion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "disarm" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3))
+  $stopwatch.Stop()
+  if ($completion -cne "disarmed" -or $stopwatch.ElapsedMilliseconds -lt 100) { throw "watchdog command writer did not retry through its concurrent reader: completion=$completion elapsed=$($stopwatch.ElapsedMilliseconds)" }
+  $commandPath = $watchdog.commandPath
+  $watchdog = $null
+  $reader.Dispose()
+  $reader = [CommandReadLock]::Hold($commandPath, 600)
+  $reader.WaitForAcquired(1000)
+  $lateWriteFailure = $null
+  try { Write-HarnessWatchdogCommand -Path $commandPath -Command "disarm" -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(150)) } catch { $lateWriteFailure = $_.Exception.Message }
+  if ($lateWriteFailure -notmatch "command write was late|could not acquire") { throw "permanent command sharing lock did not fail within its deadline: $lateWriteFailure" }
+} finally {
+  if ($null -ne $reader) { $reader.Dispose() }
+  if ($null -ne $watchdog -and -not $watchdog.completed) { try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null } catch { } }
+  if ($null -ne $nativeProcess) {
+    try { if (-not $nativeProcess.WaitForExit(0)) { $nativeProcess.TerminateUnresumed(2000) } } finally { $nativeProcess.Dispose() }
+  }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
   boundedIt("returns exactly one terminal watchdog completion", () => {
     const probe = String.raw`
 $ErrorActionPreference = "Stop"
@@ -895,7 +1037,7 @@ try {
   });
 
   boundedIt(
-    "extends a live watchdog termination deadline after its first command times out",
+    "applies a watchdog deadline extension before the prior confirmation deadline expires",
     { skip: process.platform !== "win32" },
     () => {
       const probe = String.raw`
@@ -906,26 +1048,43 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-extend-" + [g
 $nativeProcess = $null
 $watchdog = $null
 $previousGate = $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_GATE_PATH
+$previousCommandDeadlinePath = $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_DEADLINE_PATH
 try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $gatePath = Join-Path $root "allow-terminate"
+  $commandDeadlinePath = Join-Path $root "observed-command-deadline"
   $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_GATE_PATH = $gatePath
+  $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_DEADLINE_PATH = $commandDeadlinePath
   $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
   $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
-  Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(10)) -Watchdog ([ref]$watchdog) | Out-Null
+  $watchdogDeadlineUtc = [DateTime]::UtcNow.AddSeconds(5)
+  $automaticConfirmationDeadlineUtc = $watchdogDeadlineUtc.AddSeconds(1)
+  Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogDeadlineUtc -Watchdog ([ref]$watchdog) | Out-Null
 
-  $firstDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(250)
-  $firstFailure = $null
-  try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc $firstDeadlineUtc | Out-Null } catch { $firstFailure = $_.Exception.Message }
-  if ($firstFailure -notmatch "did not complete 'terminate' before the cleanup deadline") { throw "first watchdog command did not time out: $firstFailure" }
+  $firstDeadlineUtc = $automaticConfirmationDeadlineUtc.AddMilliseconds(800)
+  if ($firstDeadlineUtc -le $automaticConfirmationDeadlineUtc) { throw "first terminate deadline did not exceed automatic confirmation deadline" }
+  Write-HarnessWatchdogCommand -Path $watchdog.commandPath -Command ("terminate:" + $firstDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3))
+  $watchdog.commandAction = "terminate"
+  $watchdog.confirmationDeadlineUtcTicks = $firstDeadlineUtc.Ticks
   $firstCommand = (Get-Content -LiteralPath $watchdog.commandPath -Raw -Encoding UTF8).Trim()
   if ($firstCommand -notmatch "^terminate:([0-9]+)$") { throw "first watchdog command was invalid: $firstCommand" }
   [Int64]$firstTicks = $Matches[1]
-  if ($watchdog.disposed -or $watchdog.completed -or (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf)) { throw "watchdog stopped after its first command timed out" }
+  $telemetryDeadlineUtc = [DateTime]::UtcNow.AddSeconds(1)
+  while ((-not (Test-Path -LiteralPath $commandDeadlinePath -PathType Leaf) -or [Int64](Get-Content -LiteralPath $commandDeadlinePath -Raw) -ne $firstTicks) -and [DateTime]::UtcNow -lt $telemetryDeadlineUtc) { Start-Sleep -Milliseconds 10 }
+  if (-not (Test-Path -LiteralPath $commandDeadlinePath -PathType Leaf) -or [Int64](Get-Content -LiteralPath $commandDeadlinePath -Raw) -ne $firstTicks) { throw "watchdog did not consume the first terminate deadline" }
+
+  Start-Sleep -Milliseconds 400
+  $extendedDeadlineUtc = $firstDeadlineUtc.AddSeconds(2)
+  Write-HarnessWatchdogCommand -Path $watchdog.commandPath -Command ("terminate:" + $extendedDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3))
+  $watchdog.confirmationDeadlineUtcTicks = $extendedDeadlineUtc.Ticks
+  $telemetryDeadlineUtc = [DateTime]::UtcNow.AddSeconds(1)
+  while ((-not (Test-Path -LiteralPath $commandDeadlinePath -PathType Leaf) -or [Int64](Get-Content -LiteralPath $commandDeadlinePath -Raw) -ne $extendedDeadlineUtc.Ticks) -and [DateTime]::UtcNow -lt $telemetryDeadlineUtc) { Start-Sleep -Milliseconds 10 }
+  if (-not (Test-Path -LiteralPath $commandDeadlinePath -PathType Leaf) -or [Int64](Get-Content -LiteralPath $commandDeadlinePath -Raw) -ne $extendedDeadlineUtc.Ticks) { throw "watchdog did not consume the second terminate deadline" }
+  Start-Sleep -Milliseconds ([Math]::Max(0, (Get-HarnessRemainingMilliseconds -DeadlineUtc $firstDeadlineUtc) + 100))
+  if ($watchdog.process.HasExited -or (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf)) { throw "watchdog expired the old confirmation deadline after receiving its extension" }
 
   New-Item -ItemType File -Path $gatePath | Out-Null
-  $extendedDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
   $completion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc $extendedDeadlineUtc
   if ($completion -notin @("terminated", "exited")) { throw "extended watchdog command did not confirm termination: $completion" }
   $extendedCommand = (Get-Content -LiteralPath $watchdog.commandPath -Raw -Encoding UTF8).Trim()
@@ -938,6 +1097,55 @@ try {
     try { if (-not $nativeProcess.WaitForExit(0)) { $nativeProcess.TerminateUnresumed(2000) } } finally { $nativeProcess.Dispose() }
   }
   $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_GATE_PATH = $previousGate
+  $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_DEADLINE_PATH = $previousCommandDeadlinePath
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "honors a first future watchdog terminate deadline before automatic termination",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-first-terminate-" + [guid]::NewGuid().ToString("N"))
+$nativeProcess = $null
+$watchdog = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+  $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
+  $watchdogDeadlineUtc = [DateTime]::UtcNow.AddSeconds(5)
+  $automaticConfirmationDeadlineUtc = $watchdogDeadlineUtc.AddSeconds(1)
+  Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogDeadlineUtc -Watchdog ([ref]$watchdog) | Out-Null
+  $requestedDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(500)
+  if ($requestedDeadlineUtc -ge $automaticConfirmationDeadlineUtc) { throw "first requested deadline was not before automatic confirmation" }
+  Write-HarnessWatchdogCommand -Path $watchdog.commandPath -Command ("terminate:" + $requestedDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2))
+  if (-not $watchdog.process.WaitForExit(2000)) { throw "first future terminate deadline did not trigger watchdog termination" }
+  if ([DateTime]::UtcNow -ge $automaticConfirmationDeadlineUtc) { throw "first future terminate waited for automatic confirmation" }
+  $completion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1))
+  if ($completion -notin @("terminated", "exited")) { throw "first future terminate did not confirm termination: $completion" }
+  if (-not $nativeProcess.WaitForExit(1000)) { throw "first future terminate did not signal the inherited process handle" }
+  $watchdog = $null
+} finally {
+  if ($null -ne $watchdog -and -not $watchdog.completed) { try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null } catch { } }
+  if ($null -ne $nativeProcess) {
+    try { if (-not $nativeProcess.WaitForExit(0)) { $nativeProcess.TerminateUnresumed(2000) } } finally { $nativeProcess.Dispose() }
+  }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 `;
@@ -976,7 +1184,7 @@ foreach ($terminationResult in @("success", "failure")) {
     $watchdogProcessId = $watchdog.process.ProcessId
     $confirmationDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(1500)
     $parentDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
-    Write-HarnessAtomicUtf8 $watchdog.commandPath ("terminate:" + $confirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) | Out-Null
+    Write-HarnessWatchdogCommand $watchdog.commandPath ("terminate:" + $confirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -DeadlineUtc $parentDeadlineUtc | Out-Null
     $watchdog.commandAction = "terminate"
     $watchdog.confirmationDeadlineUtcTicks = $confirmationDeadlineUtc.Ticks
     if (-not $watchdog.process.WaitForExit((Get-HarnessRemainingMilliseconds -DeadlineUtc $parentDeadlineUtc))) { throw "$terminationResult watchdog did not exit before the parent deadline" }
@@ -1504,6 +1712,10 @@ try {
         harness,
         /if \(terminationRequested && DateTime\.UtcNow >= confirmationDeadlineUtc\) \{\s+Write\(completionPath, "terminate-unconfirmed"\);/,
       );
+      assert.match(
+        harness,
+        /for \(;;\) \{[\s\S]*?if \(TryReadCommand\(commandPath, out command\)\)[\s\S]*?if \(terminationRequested && DateTime\.UtcNow >= confirmationDeadlineUtc\)/,
+      );
       assert.doesNotMatch(
         harness,
         /!terminationRequested \|\| requestedDeadlineUtc > confirmationDeadlineUtc/,
@@ -1523,7 +1735,7 @@ try {
       );
       assert.match(
         harness,
-        /function Write-HarnessAtomicUtf8[\s\S]*?\[IO\.File\]::WriteAllText\(\$temporaryPath, \$Text, \[Text\.UTF8Encoding\]::new\(\$false\)\)[\s\S]*?\[VemVisionHarness\.AtomicFile\]::Replace\(\$temporaryPath, \$Path\)/,
+        /function Write-HarnessWatchdogCommand\(\[string\]\$Path, \[string\]\$Command, \[DateTime\]\$DeadlineUtc\) \{[\s\S]*?new\(\$Path, \[IO\.FileMode\]::Create, \[IO\.FileAccess\]::Write, \[IO\.FileShare\]::Read\)[\s\S]*?\.Write\([\s\S]*?\.Flush\(\$true\)[\s\S]*?catch \[UnauthorizedAccessException\]/,
       );
       assert.match(
         harness,
@@ -1531,11 +1743,19 @@ try {
       );
       assert.match(
         harness,
-        /MoveFileExW\(temporaryPath, path, MOVEFILE_REPLACE_EXISTING \| MOVEFILE_WRITE_THROUGH\)/,
+        /Write-HarnessWatchdogCommand \$Watchdog\.commandPath \$command/,
       );
       assert.match(
         harness,
-        /\[VemVisionHarness\.AtomicFile\]::Replace\(\$temporaryPath, \$Path\)/,
+        /private const int MAX_COMMAND_BYTES = 256;[\s\S]*?TryReadCommand[\s\S]*?new FileStream\(path, FileMode\.Open, FileAccess\.Read, FileShare\.ReadWrite\)[\s\S]*?text\.EndsWith\("\\n", StringComparison\.Ordinal\)[\s\S]*?return TryGetTerminationDeadline\(command, out terminationDeadlineUtc\)[\s\S]*?catch \(IOException\) \{\s+return false;\s+\}/,
+      );
+      assert.match(
+        harness,
+        /if \(TryReadCommand\(commandPath, out command\)\) \{\s+var commandObservedUtc = DateTime\.UtcNow;[\s\S]*?!terminationRequested && requestedDeadlineUtc > commandObservedUtc[\s\S]*?terminationRequested && commandObservedUtc < confirmationDeadlineUtc && requestedDeadlineUtc > confirmationDeadlineUtc[\s\S]*?if \(terminationRequested && DateTime\.UtcNow >= confirmationDeadlineUtc\)/,
+      );
+      assert.doesNotMatch(
+        harness,
+        /Write-HarnessAtomicUtf8|AtomicFile|MoveFileExW|MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH/,
       );
       assert.match(
         harness,

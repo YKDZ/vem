@@ -15,16 +15,30 @@ function Write-Utf8([string]$Path, [string]$Text) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
   [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
 }
-function Write-HarnessAtomicUtf8([string]$Path, [string]$Text) {
-  $directory = Split-Path -Parent $Path
-  New-Item -ItemType Directory -Force -Path $directory | Out-Null
-  $temporaryPath = Join-Path $directory (".{0}.{1}.tmp" -f (Split-Path -Leaf $Path), [guid]::NewGuid().ToString("N"))
-  try {
-    [IO.File]::WriteAllText($temporaryPath, $Text, [Text.UTF8Encoding]::new($false))
-    Initialize-HarnessNativeTypes | Out-Null
-    [VemVisionHarness.AtomicFile]::Replace($temporaryPath, $Path)
-  } finally {
-    if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue | Out-Null }
+function Write-HarnessWatchdogCommand([string]$Path, [string]$Command, [DateTime]$DeadlineUtc) {
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Command + "`n")
+  while ($true) {
+    if ((Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc) -le 0) { throw "suspended-process watchdog command write was late before it could acquire the command path" }
+    $stream = $null
+    $writeSucceeded = $false
+    try {
+      $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+      $stream.Write($bytes, 0, $bytes.Length)
+      $stream.Flush($true)
+      $writeSucceeded = $true
+    } catch [IO.IOException] {
+    } catch [UnauthorizedAccessException] {
+    } finally {
+      if ($null -ne $stream) { $stream.Dispose() }
+    }
+
+    if ($writeSucceeded) {
+      if ((Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc) -le 0) { throw "suspended-process watchdog command write completed after the cleanup deadline" }
+      return
+    }
+    $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
+    if ($remainingMilliseconds -le 0) { throw "suspended-process watchdog command write could not acquire the command path before the cleanup deadline" }
+    Start-Sleep -Milliseconds ([Math]::Min(10, $remainingMilliseconds))
   }
 }
 function Get-Digest([string]$Path) { "sha256:" + (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -139,20 +153,6 @@ using System.Text;
 using System.Threading;
 
 namespace VemVisionHarness {
-  public static class AtomicFile {
-    private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
-    private const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern bool MoveFileExW(string existingFileName, string newFileName, uint flags);
-
-    public static void Replace(string temporaryPath, string path) {
-      if (!MoveFileExW(temporaryPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        throw new Win32Exception(Marshal.GetLastWin32Error(), "MoveFileExW atomic replace failed");
-      }
-    }
-  }
-
   public sealed class RetainedWatchdogProcess : IDisposable {
     private const uint WAIT_OBJECT_0 = 0;
     private const uint WAIT_FAILED = 0xFFFFFFFF;
@@ -690,6 +690,7 @@ using System.Threading;
 public static class SuspendedProcessWatchdog {
   private const uint WAIT_OBJECT_0 = 0;
   private const uint WAIT_FAILED = 0xFFFFFFFF;
+  private const int MAX_COMMAND_BYTES = 256;
 
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern bool TerminateProcess(IntPtr process, uint exitCode);
@@ -712,8 +713,22 @@ public static class SuspendedProcessWatchdog {
     command = null;
     try {
       if (!File.Exists(path)) { return false; }
-      command = File.ReadAllText(path).Trim();
-      return true;
+      using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+        if (stream.Length < 1 || stream.Length > MAX_COMMAND_BYTES) { return false; }
+        var bytes = new byte[(int)stream.Length];
+        var offset = 0;
+        while (offset < bytes.Length) {
+          var read = stream.Read(bytes, offset, bytes.Length - offset);
+          if (read == 0) { return false; }
+          offset += read;
+        }
+        var text = new UTF8Encoding(false).GetString(bytes, 0, offset);
+        if (!text.EndsWith("\n", StringComparison.Ordinal)) { return false; }
+        command = text.TrimEnd('\r', '\n');
+      }
+      if (String.Equals(command, "disarm", StringComparison.Ordinal)) { return true; }
+      DateTime terminationDeadlineUtc;
+      return TryGetTerminationDeadline(command, out terminationDeadlineUtc);
     } catch (IOException) {
       return false;
     } catch (UnauthorizedAccessException) {
@@ -741,6 +756,11 @@ public static class SuspendedProcessWatchdog {
     if (String.Equals(fixtureResult, "success", StringComparison.Ordinal)) { return true; }
     if (String.Equals(fixtureResult, "failure", StringComparison.Ordinal)) { return false; }
     return TerminateProcess(process, exitCode);
+  }
+
+  private static void RecordCommandDeadline(DateTime deadlineUtc) {
+    var path = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_DEADLINE_PATH");
+    if (!String.IsNullOrWhiteSpace(path)) { File.WriteAllText(path, deadlineUtc.Ticks.ToString(CultureInfo.InvariantCulture)); }
   }
 
   public static int Main(string[] args) {
@@ -794,23 +814,28 @@ public static class SuspendedProcessWatchdog {
           Write(completionPath, "wait-failed:" + Marshal.GetLastWin32Error());
           return 1;
         }
-        if (terminationRequested && DateTime.UtcNow >= confirmationDeadlineUtc) {
-          Write(completionPath, "terminate-unconfirmed");
-          return 1;
-        }
         string command;
         if (TryReadCommand(commandPath, out command)) {
-          if (!terminationRequested && String.Equals(command, "disarm", StringComparison.Ordinal)) {
+          var commandObservedUtc = DateTime.UtcNow;
+          if (!terminationRequested && commandObservedUtc < deadlineUtc && String.Equals(command, "disarm", StringComparison.Ordinal)) {
             Write(completionPath, "disarmed");
             return 0;
           }
           DateTime requestedDeadlineUtc;
           if (TryGetTerminationDeadline(command, out requestedDeadlineUtc)) {
-            if (requestedDeadlineUtc > confirmationDeadlineUtc) {
+            if (!terminationRequested && requestedDeadlineUtc > commandObservedUtc) {
               confirmationDeadlineUtc = requestedDeadlineUtc;
+              terminationRequested = true;
+              RecordCommandDeadline(confirmationDeadlineUtc);
+            } else if (terminationRequested && commandObservedUtc < confirmationDeadlineUtc && requestedDeadlineUtc > confirmationDeadlineUtc) {
+              confirmationDeadlineUtc = requestedDeadlineUtc;
+              RecordCommandDeadline(confirmationDeadlineUtc);
             }
-            terminationRequested = true;
           }
+        }
+        if (terminationRequested && DateTime.UtcNow >= confirmationDeadlineUtc) {
+          Write(completionPath, "terminate-unconfirmed");
+          return 1;
         }
         if (!terminationRequested && DateTime.UtcNow >= deadlineUtc) { terminationRequested = true; }
         if (terminationRequested) {
@@ -1197,7 +1222,7 @@ function Complete-HarnessSuspendedProcessWatchdog {
   }
   if ($writeCommand) {
     $command = if ($Action -eq "terminate") { "terminate:" + $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) } else { $Action }
-    Write-HarnessAtomicUtf8 $Watchdog.commandPath $command | Out-Null
+    Write-HarnessWatchdogCommand $Watchdog.commandPath $command -DeadlineUtc $DeadlineUtc | Out-Null
     [void]($Watchdog.commandAction = $Action)
     if ($Action -eq "terminate") { [void]($Watchdog.confirmationDeadlineUtcTicks = $DeadlineUtc.Ticks) }
   }
