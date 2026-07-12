@@ -213,10 +213,11 @@ try {
       $ps51Returned = Invoke-BoundedPowerShell -Stage "behavior.ps51-native-wrapper" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $windowsPowerShell -HarnessDeadlineUtc $deadlineUtc -ScriptBody '
 if ($env:VEM_VISION_HARNESS_PS51_ENV -cne "native-wrapper") { throw "PS5.1 native wrapper did not inherit its environment" }
 Write-Output ps51-stdout
-& $env:COMSPEC /d /c "echo ps51-stderr 1>&2"
+Write-Error "VEM_VISION_HARNESS_PS51_STDERR" -ErrorAction Continue
+exit 0
 '
       Assert-True ($ps51Returned.stdout.Trim() -ceq "ps51-stdout") "PS5.1 native wrapper did not capture stdout"
-      Assert-True ($ps51Returned.stderr.Trim() -ceq "ps51-stderr") "PS5.1 native wrapper did not capture stderr"
+      Assert-True ($ps51Returned.stderr -match "(?m)(?<!\S)VEM_VISION_HARNESS_PS51_STDERR(?!\S)") "PS5.1 native wrapper did not capture its non-terminating stderr marker"
     } finally {
       Stop-Transcript | Out-Null
     }

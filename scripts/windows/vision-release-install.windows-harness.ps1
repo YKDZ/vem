@@ -927,6 +927,8 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 "@
 
   $nativeProcess = $null
+  $nativeArguments = [string[]]@("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $bootstrapPath)
+  $nativeCommand = ([VemVisionHarness.SuspendedProcess]::QuoteArgument($ChildPowerShellPath)) + " " + (($nativeArguments | ForEach-Object { [VemVisionHarness.SuspendedProcess]::QuoteArgument($_) }) -join " ")
   $suspendedProcessWatchdog = $null
   $job = $null
   $cleanupState = [pscustomobject]@{
@@ -940,7 +942,7 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
   try {
     $job = New-HarnessKillOnCloseJob
     Write-HarnessStage $Stage "process-ownership" "state=not-created"
-    $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($ChildPowerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $bootstrapPath), $stageRoot)
+    $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($ChildPowerShellPath, $nativeArguments, $stageRoot)
     $cleanupState.processOwnership = "created-suspended"
     Write-HarnessStage $Stage "process-ownership" "state=created-suspended processId=$($nativeProcess.ProcessId)"
     $suspendedProcessWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $cleanupDeadlineUtc
@@ -966,7 +968,7 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
     if ($nativeProcess.ExitCode -ne 0) {
       Write-HarnessStage $Stage "failed" "exitCode=$($nativeProcess.ExitCode)"
-      throw "fixture stage '$Stage' failed with exit code $($nativeProcess.ExitCode): $stderr$stdout"
+      throw "fixture stage '$Stage' failed with exit code $($nativeProcess.ExitCode): command=$nativeCommand stdout=$stdout stderr=$stderr"
     }
     Write-HarnessStage $Stage "completed"
     $result = [pscustomobject]@{ stdout=$stdout; stderr=$stderr; diagnosticsPath=$stageRoot }

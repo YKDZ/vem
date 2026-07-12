@@ -117,6 +117,66 @@ describe("Vision release installer fixtures", () => {
   );
 
   boundedIt(
+    "captures PowerShell 5.1 stdout and non-terminating stderr through the bounded native process",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-node-streams-" + [guid]::NewGuid().ToString("N"))
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $contextPath = Join-Path $root "context.json"
+  Write-Json $contextPath ([ordered]@{ root=$root; stateRoot=(Join-Path $root "state"); bundleDigest="sha256:node-streams" })
+  $childPowerShellPath = Join-Path $PSHOME "powershell.exe"
+  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(15)
+
+  $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+$ErrorActionPreference = "Stop"
+Write-Output ps51-stdout
+Write-Error "VEM_VISION_HARNESS_PS51_STDERR" -ErrorAction Continue
+exit 0
+'@
+  if ($clean.stdout.Trim() -cne "ps51-stdout") { throw "bounded PS5.1 invocation did not capture stdout: $($clean.stdout)" }
+  if ($clean.stderr -notmatch "(?m)(?<!\S)VEM_VISION_HARNESS_PS51_STDERR(?!\S)") { throw "bounded PS5.1 invocation did not capture its non-terminating stderr marker: $($clean.stderr)" }
+  if (-not (Test-Path -LiteralPath (Join-Path $clean.diagnosticsPath "stdout.log") -PathType Leaf)) { throw "bounded PS5.1 invocation did not retain stdout diagnostics" }
+  if (-not (Test-Path -LiteralPath (Join-Path $clean.diagnosticsPath "stderr.log") -PathType Leaf)) { throw "bounded PS5.1 invocation did not retain stderr diagnostics" }
+
+  $failure = $null
+  try {
+    Invoke-BoundedPowerShell -Stage "node.ps51-streams-nonzero" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+$ErrorActionPreference = "Stop"
+Write-Output nonzero-stdout
+Write-Error "VEM_VISION_HARNESS_PS51_NONZERO_STDERR" -ErrorAction Continue
+exit 23
+'@ | Out-Null
+  } catch {
+    $failure = $_.Exception.Message
+  }
+  if ([string]::IsNullOrWhiteSpace($failure)) { throw "bounded PS5.1 nonzero invocation did not fail" }
+  foreach ($expectedDiagnostic in @("exit code 23", "command=", "nonzero-stdout")) {
+    if ($failure -notmatch [regex]::Escape($expectedDiagnostic)) { throw "bounded PS5.1 nonzero invocation omitted diagnostic '$expectedDiagnostic': $failure" }
+  }
+  if ($failure -notmatch "(?m)(?<!\S)VEM_VISION_HARNESS_PS51_NONZERO_STDERR(?!\S)") { throw "bounded PS5.1 nonzero invocation omitted its stderr marker: $failure" }
+} finally {
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
     "keeps trust roots outside update inputs and uses validated process/job lifecycles",
     () => {
       const installer = readFileSync(
