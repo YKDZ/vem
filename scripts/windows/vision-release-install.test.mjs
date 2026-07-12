@@ -669,12 +669,47 @@ try {
     assert.ok(startFunction, "watchdog start helper is missing");
     assert.doesNotMatch(startFunction, /Write-Output/);
     assert.match(
+      startFunction,
+      /catch \{[\s\S]*?if \(\$null -ne \$process\) \{[\s\S]*?\[void\]\(\$WatchdogReference\.Value = \$watchdog\)[\s\S]*?\$_\.Exception\.Data\["VemVisionHarness\.SuspendedProcessWatchdog"\] = \$watchdog[\s\S]*?\}[\s\S]*?\$diagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic/,
+    );
+    const signalDiagnostic = harness.match(
+      /function Get-HarnessSuspendedProcessWatchdogSetupSignalDiagnostic \{([\s\S]*?)\r?\n\}\r?\nfunction Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic/,
+    )?.[1];
+    assert.ok(
+      signalDiagnostic,
+      "watchdog setup signal diagnostic helper is missing",
+    );
+    assert.match(
+      signalDiagnostic,
+      /try \{\s+if \(-not \(Test-Path -LiteralPath \$Path -PathType Leaf\)\) \{ return "\$Name=missing" \}/,
+    );
+    const setupDiagnostic = harness.match(
+      /function Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic \{([\s\S]*?)\r?\n\}\r?\nfunction Add-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic/,
+    )?.[1];
+    assert.ok(
+      setupDiagnostic,
+      "watchdog setup failure diagnostic helper is missing",
+    );
+    assert.match(
+      setupDiagnostic,
+      /\[IO\.Directory\]::EnumerateFiles\(\$WatchdogRoot\)[\s\S]*?if \(\$temporaryEntries -gt 8\) \{[\s\S]*?\$temporaryOverflow = \$true/,
+    );
+    assert.match(
+      setupDiagnostic,
+      /temporaryFiles=ready:\$\(\$temporaryCounts\.ready\),command:\$\(\$temporaryCounts\.command\),completion:\$\(\$temporaryCounts\.completion\),invalid:\$\(\$temporaryCounts\.invalid\),overflow:/,
+    );
+    assert.doesNotMatch(setupDiagnostic, /Get-ChildItem|Sort-Object/);
+    assert.match(
       harness,
       /function Complete-HarnessSuspendedProcessWatchdogTerminal[\s\S]*?Close-HarnessSuspendedProcessWatchdog -Watchdog \$Watchdog \| Out-Null[\s\S]*?Write-Output -NoEnumerate \$Completion/,
     );
     assert.match(
       harness,
       /function Write-HarnessAtomicUtf8[\s\S]*?Initialize-HarnessNativeTypes \| Out-Null[\s\S]*?Remove-Item[^\r\n]*\| Out-Null/,
+    );
+    assert.match(
+      harness,
+      /try \{\s+Start-HarnessSuspendedProcessWatchdog -StageRoot \$stageRoot[\s\S]*?\} catch \{\s+\$watchdogSetupDiagnostic = \[string\]\$_.Exception.Data\["VemVisionHarness\.SuspendedProcessWatchdogSetupDiagnostic"\][\s\S]*?Write-HarnessStage \$Stage "suspended-process-watchdog-setup-failed" \$watchdogSetupDiagnostic[\s\S]*?throw\s+\}/,
     );
   });
 
@@ -930,14 +965,25 @@ try {
   $startInfo.UseShellExecute = $false
   $child = [Diagnostics.Process]::Start($startInfo)
   $nativeProcess = [pscustomobject]@{ ProcessId=4243; child=$child }
-  $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value { param($watchdogPath, $arguments, $workingDirectory) Start-Sleep -Milliseconds 350; return $this.child.Id }
-  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value {
+    param($watchdogPath, $arguments, $workingDirectory)
+    [IO.File]::WriteAllText((Join-Path $workingDirectory ".ready.0123456789abcdef0123456789abcdef.tmp"), "temporary", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $workingDirectory ".ready.fixture.tmp"), "invalid", [Text.UTF8Encoding]::new($false))
+    return $this.child.Id
+  }
   $failure = $null
-  try { Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(650)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_.Exception.Message }
-  $stopwatch.Stop()
-  if ($failure -notmatch "did not inherit") { throw "slow watchdog start did not fail readiness: $failure" }
-  if ($stopwatch.ElapsedMilliseconds -ge 620) { throw "slow watchdog readiness exceeded its absolute deadline budget: $($stopwatch.ElapsedMilliseconds)ms" }
+  try { Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_ }
+  if ($null -eq $failure -or $failure.Exception.Message -notmatch "did not inherit") { throw "slow watchdog start did not preserve its readiness failure: $failure" }
+  $ownership = $failure.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"]
+  if ($null -eq $ownership -or $null -eq $watchdog -or -not [object]::ReferenceEquals($ownership, $watchdog)) { throw "failed watchdog setup did not publish its cleanup ownership before returning" }
+  $diagnostic = [string]$failure.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogSetupDiagnostic"]
+  if ($diagnostic -notmatch "watchdogProcess=running;ready=missing;completion=missing;temporaryFiles=ready:1,command:0,completion:0,invalid:1,overflow:false;setupDeadlineUtcTicks=[0-9]+;automaticDeadlineUtcTicks=[0-9]+;automaticConfirmationDeadlineUtcTicks=[0-9]+;lastWin32Error=[0-9]+") { throw "slow watchdog start did not attach bounded setup diagnostics: $diagnostic" }
+  if ($diagnostic -match [regex]::Escape($root) -or $diagnostic -match "processId|handle|0123456789abcdef|fixture") { throw "slow watchdog setup diagnostics leaked a secret process detail: $diagnostic" }
+  Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null
+  if (-not $watchdog.disposed) { throw "failed watchdog setup leaked its watchdog process wrapper" }
+  $watchdog = $null
 } finally {
+  if ($null -ne $watchdog -and -not $watchdog.disposed) { Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null }
   if ($null -ne $child) {
     try { if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit(1000) | Out-Null } } finally { $child.Dispose() }
   }
@@ -987,6 +1033,49 @@ try {
   if ($null -ne $child) {
     try { if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit(1000) | Out-Null } } finally { $child.Dispose() }
   }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "reports deterministic exited and atomic-ready watchdog setup diagnostics",
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-setup-diagnostics-" + [guid]::NewGuid().ToString("N"))
+try {
+  $watchdogRoot = Join-Path $root "watchdog"
+  New-Item -ItemType Directory -Force -Path $watchdogRoot | Out-Null
+  $readyPath = Join-Path $watchdogRoot "ready"
+  $completionPath = Join-Path $watchdogRoot "completion"
+  $setupDeadlineUtc = [DateTime]::UtcNow.AddSeconds(5)
+  $automaticDeadlineUtc = $setupDeadlineUtc.AddSeconds(1)
+  $automaticConfirmationDeadlineUtc = $automaticDeadlineUtc.AddSeconds(1)
+
+  $exitedProcess = [pscustomobject]@{ HasExited=$true; ExitCode=2 }
+  $exitedDiagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -Process $exitedProcess -WatchdogRoot $watchdogRoot -ReadyPath $readyPath -CompletionPath $completionPath -SetupDeadlineUtc $setupDeadlineUtc -AutomaticDeadlineUtc $automaticDeadlineUtc -AutomaticConfirmationDeadlineUtc $automaticConfirmationDeadlineUtc -LastWin32Error 0
+  if ($exitedDiagnostic -notmatch "watchdogProcess=exited:2;ready=missing;completion=missing;temporaryFiles=ready:0,command:0,completion:0,invalid:0,overflow:false") { throw "exited watchdog setup diagnostics were incomplete: $exitedDiagnostic" }
+
+  [IO.File]::WriteAllText($completionPath, "watchdog-failed:Win32Exception:5", [Text.UTF8Encoding]::new($false))
+  for ($index = 0; $index -lt 9; $index++) {
+    $temporaryName = ".ready.{0:x32}.tmp" -f $index
+    [IO.File]::WriteAllText((Join-Path $watchdogRoot $temporaryName), "temporary", [Text.UTF8Encoding]::new($false))
+  }
+  $runningProcess = [pscustomobject]@{ HasExited=$false; ExitCode=$null }
+  $completionDiagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -Process $runningProcess -WatchdogRoot $watchdogRoot -ReadyPath $readyPath -CompletionPath $completionPath -SetupDeadlineUtc $setupDeadlineUtc -AutomaticDeadlineUtc $automaticDeadlineUtc -AutomaticConfirmationDeadlineUtc $automaticConfirmationDeadlineUtc -LastWin32Error 5
+  if ($completionDiagnostic -notmatch "watchdogProcess=running;ready=missing;completion=watchdog-failed:Win32Exception:5;temporaryFiles=ready:8,command:0,completion:0,invalid:0,overflow:true") { throw "atomic ready failure diagnostics were incomplete: $completionDiagnostic" }
+  if ($completionDiagnostic -match "[0-9a-f]{32}|$([regex]::Escape($root))") { throw "watchdog setup diagnostics exposed a temporary filename or root path: $completionDiagnostic" }
+} finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 `;

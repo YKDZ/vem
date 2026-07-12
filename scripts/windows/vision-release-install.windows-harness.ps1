@@ -873,6 +873,108 @@ function Invoke-HarnessSuspendedProcessWatchdogPreflight {
     $preflightFailFastWatchdog.Dispose()
   }
 }
+function Get-HarnessSuspendedProcessWatchdogSetupSignalDiagnostic {
+  param(
+    [Parameter(Mandatory = $true)][ValidateSet("ready", "completion")][string]$Name,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+
+  try {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "$Name=missing" }
+    $file = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($file.Length -gt 256) { return "$Name=too-large" }
+    $value = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false)).Trim()
+  } catch {
+    return "$Name=unavailable"
+  }
+
+  if ($Name -eq "ready") {
+    if ($value -eq "armed") { return "ready=armed" }
+    return "ready=invalid"
+  }
+  if ($value -match "^(exited|terminated|disarmed|wait-failed:[0-9]+|terminate-failed:[0-9]+|terminate-unconfirmed|command-invalid|watchdog-failed:[A-Za-z0-9_]+(?::[0-9]+)?)$") {
+    return "completion=$value"
+  }
+  return "completion=invalid"
+}
+function Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic {
+  param(
+    [object]$Process,
+    [Parameter(Mandatory = $true)][string]$WatchdogRoot,
+    [Parameter(Mandatory = $true)][string]$ReadyPath,
+    [Parameter(Mandatory = $true)][string]$CompletionPath,
+    [Parameter(Mandatory = $true)][DateTime]$SetupDeadlineUtc,
+    [Parameter(Mandatory = $true)][DateTime]$AutomaticDeadlineUtc,
+    [Parameter(Mandatory = $true)][DateTime]$AutomaticConfirmationDeadlineUtc,
+    [Parameter(Mandatory = $true)][int]$LastWin32Error
+  )
+
+  $processState = "watchdogProcess=unavailable"
+  if ($null -ne $Process) {
+    try {
+      if ($Process.HasExited) {
+        try {
+          $exitCode = $Process.ExitCode
+          [int]$exitCodeValue = 0
+          if ($null -eq $exitCode -or -not [int]::TryParse([string]$exitCode, [ref]$exitCodeValue)) { $processState = "watchdogProcess=exited:unknown" }
+          else { $processState = "watchdogProcess=exited:$exitCodeValue" }
+        } catch {
+          $processState = "watchdogProcess=exited:unknown"
+        }
+      } else {
+        $processState = "watchdogProcess=running"
+      }
+    } catch {
+      $processState = "watchdogProcess=unavailable"
+    }
+  }
+
+  $temporaryFiles = "temporaryFiles=unavailable"
+  try {
+    $temporaryCounts = @{ ready=0; command=0; completion=0; invalid=0 }
+    $temporaryEntries = 0
+    $temporaryOverflow = $false
+    foreach ($temporaryPath in [IO.Directory]::EnumerateFiles($WatchdogRoot)) {
+      $temporaryName = [IO.Path]::GetFileName($temporaryPath)
+      if ($temporaryName -in @("command", "ready", "completion")) { continue }
+      $temporaryEntries++
+      if ($temporaryEntries -gt 8) {
+        $temporaryOverflow = $true
+        break
+      }
+      if ($temporaryName -match '^\.(ready|command|completion)\.[0-9a-fA-F]{32}\.tmp$') {
+        $temporaryCounts[$Matches[1].ToLowerInvariant()]++
+      } elseif ($temporaryName -match '^\..+\.tmp$') {
+        $temporaryCounts.invalid++
+      }
+    }
+    $temporaryFiles = "temporaryFiles=ready:$($temporaryCounts.ready),command:$($temporaryCounts.command),completion:$($temporaryCounts.completion),invalid:$($temporaryCounts.invalid),overflow:$($temporaryOverflow.ToString().ToLowerInvariant())"
+  } catch { }
+
+  return @(
+    $processState,
+    (Get-HarnessSuspendedProcessWatchdogSetupSignalDiagnostic -Name "ready" -Path $ReadyPath),
+    (Get-HarnessSuspendedProcessWatchdogSetupSignalDiagnostic -Name "completion" -Path $CompletionPath),
+    $temporaryFiles,
+    "setupDeadlineUtcTicks=$($SetupDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture))",
+    "automaticDeadlineUtcTicks=$($AutomaticDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture))",
+    "automaticConfirmationDeadlineUtcTicks=$($AutomaticConfirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture))",
+    "lastWin32Error=$LastWin32Error"
+  ) -join ";"
+}
+function Add-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic {
+  param(
+    [Parameter(Mandatory = $true)][Management.Automation.ErrorRecord]$ErrorRecord,
+    [Parameter(Mandatory = $true)][string]$Diagnostic
+  )
+
+  try {
+    [void]($ErrorRecord.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogSetupDiagnostic"] = $Diagnostic)
+  } catch { }
+  try {
+    $ErrorRecord.ErrorDetails = [Management.Automation.ErrorDetails]::new("$($ErrorRecord.Exception.Message) [suspended-process-watchdog-setup-diagnostic $Diagnostic]")
+  } catch { }
+}
 function Start-HarnessSuspendedProcessWatchdog {
   param(
     [Parameter(Mandatory = $true)][string]$StageRoot,
@@ -899,7 +1001,8 @@ function Start-HarnessSuspendedProcessWatchdog {
   $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $SetupDeadlineUtc
   if ($remainingMilliseconds -le 0) { throw "suspended-process watchdog deadline elapsed before it could be started" }
   $deadlineUtcTicks = $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
-  $automaticConfirmationDeadlineUtcTicks = $DeadlineUtc.AddMilliseconds($ConfirmationReserveMilliseconds).Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $automaticConfirmationDeadlineUtc = $DeadlineUtc.AddMilliseconds($ConfirmationReserveMilliseconds)
+  $automaticConfirmationDeadlineUtcTicks = $automaticConfirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   # StartInheritedHandleWatchdog replaces this reserved argument with the inheritable DuplicateHandle value.
   $arguments = @("inherited-process-handle", $commandPath, $readyPath, $completionPath, $deadlineUtcTicks, $automaticConfirmationDeadlineUtcTicks)
   $watchdogProcessId = $null
@@ -926,6 +1029,10 @@ function Start-HarnessSuspendedProcessWatchdog {
       [void]($WatchdogReference.Value = $watchdog)
       [void]($_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"] = $watchdog)
     }
+    [int]$lastWin32Error = 0
+    try { $lastWin32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error() } catch { }
+    $diagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -Process $process -WatchdogRoot $watchdogRoot -ReadyPath $readyPath -CompletionPath $completionPath -SetupDeadlineUtc $SetupDeadlineUtc -AutomaticDeadlineUtc $DeadlineUtc -AutomaticConfirmationDeadlineUtc $automaticConfirmationDeadlineUtc -LastWin32Error $lastWin32Error
+    Add-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -ErrorRecord $_ -Diagnostic $diagnostic
     throw
   }
 }
@@ -1230,7 +1337,15 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($ChildPowerShellPath, $nativeArguments, $stageRoot)
     $cleanupState.processOwnership = "created-suspended"
     Write-HarnessStage $Stage "process-ownership" "state=created-suspended processId=$($nativeProcess.ProcessId)"
-    Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogSetupDeadlineUtc -SetupDeadlineUtc $watchdogSetupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog) | Out-Null
+    try {
+      Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogSetupDeadlineUtc -SetupDeadlineUtc $watchdogSetupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog) | Out-Null
+    } catch {
+      $watchdogSetupDiagnostic = [string]$_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogSetupDiagnostic"]
+      if (-not [string]::IsNullOrWhiteSpace($watchdogSetupDiagnostic)) {
+        try { Write-HarnessStage $Stage "suspended-process-watchdog-setup-failed" $watchdogSetupDiagnostic } catch { }
+      }
+      throw
+    }
     Write-HarnessStage $Stage "suspended-process-watchdog-armed" "processId=$($nativeProcess.ProcessId) identity=original-process-handle"
     $job.Assign($nativeProcess.ProcessHandle)
     $cleanupState.processOwnership = "job-assigned-suspended"

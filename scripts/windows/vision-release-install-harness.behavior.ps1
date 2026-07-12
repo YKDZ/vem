@@ -432,6 +432,7 @@ public static class SetupTimeoutWatchdog {
     $automaticDeadlineUtc = [DateTime]::new([Int64](Get-Content -LiteralPath $automaticDeadlinePath -Raw), [DateTimeKind]::Utc)
     Assert-True ($automaticDeadlineUtc -lt $setupTimeoutStartUtc.AddSeconds(6)) "setup timeout watchdog received the harness deadline instead of its setup deadline"
     $setupTimeoutTelemetry = Get-Content -LiteralPath $setupTimeoutTranscriptPath -Raw
+    Assert-True ($setupTimeoutTelemetry -match "stage=behavior.watchdog-setup-timeout status=suspended-process-watchdog-setup-failed detail=watchdogProcess=running;ready=missing;completion=missing;temporaryFiles=ready:0,command:0,completion:0,invalid:0,overflow:false;setupDeadlineUtcTicks=[0-9]+;automaticDeadlineUtcTicks=[0-9]+;automaticConfirmationDeadlineUtcTicks=[0-9]+;lastWin32Error=[0-9]+") "setup timeout did not record bounded watchdog setup diagnostics"
     $takeover = [regex]::Match($setupTimeoutTelemetry, "stage=behavior.watchdog-setup-timeout status=suspended-process-watchdog-terminated detail=processId=([0-9]+) completion=terminated identity=original-process-handle")
     Assert-True $takeover.Success "setup timeout did not confirm delayed watchdog takeover"
     $suspendedProcess = Get-RunningProcess -ProcessId ([int]$takeover.Groups[1].Value)
