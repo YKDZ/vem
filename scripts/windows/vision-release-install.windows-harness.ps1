@@ -1060,11 +1060,14 @@ function Start-HarnessSuspendedProcessWatchdog {
     [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
     [DateTime]$SetupDeadlineUtc = [DateTime]::MinValue,
     [ValidateRange(100, 5000)][int]$ConfirmationReserveMilliseconds = 1000,
+    [DateTime]$AutomaticConfirmationDeadlineUtc = [DateTime]::MinValue,
     [Parameter(Mandatory = $true)][Alias("Watchdog")][ref]$WatchdogReference
   )
 
   if ($SetupDeadlineUtc -eq [DateTime]::MinValue) { $SetupDeadlineUtc = $DeadlineUtc }
+  if ($AutomaticConfirmationDeadlineUtc -eq [DateTime]::MinValue) { $AutomaticConfirmationDeadlineUtc = $DeadlineUtc.AddMilliseconds($ConfirmationReserveMilliseconds) }
   if ($SetupDeadlineUtc -gt $DeadlineUtc) { throw "suspended-process watchdog setup deadline cannot exceed its termination deadline" }
+  if ($AutomaticConfirmationDeadlineUtc -le $DeadlineUtc) { throw "suspended-process watchdog automatic confirmation deadline must follow its termination deadline" }
   $watchdogStageRoot = Join-Path $StageRoot "suspended-process-watchdog"
   New-Item -ItemType Directory -Force -Path $watchdogStageRoot | Out-Null
   foreach ($staleSignalPath in @((Join-Path $watchdogStageRoot "command"), (Join-Path $watchdogStageRoot "ready"), (Join-Path $watchdogStageRoot "completion"))) {
@@ -1080,8 +1083,7 @@ function Start-HarnessSuspendedProcessWatchdog {
   $setupHandoffReserveMilliseconds = [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($remainingMilliseconds / 4)))
   $readyAcceptanceDeadlineUtc = $SetupDeadlineUtc.AddMilliseconds(-$setupHandoffReserveMilliseconds)
   $deadlineUtcTicks = $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
-  $automaticConfirmationDeadlineUtc = $DeadlineUtc.AddMilliseconds($ConfirmationReserveMilliseconds)
-  $automaticConfirmationDeadlineUtcTicks = $automaticConfirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $automaticConfirmationDeadlineUtcTicks = $AutomaticConfirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   # StartInheritedHandleWatchdog replaces this reserved argument with the inheritable DuplicateHandle value.
   $arguments = @("inherited-process-handle", $commandPath, $readyPath, $completionPath, $deadlineUtcTicks, $automaticConfirmationDeadlineUtcTicks)
   $process = $null
@@ -1111,7 +1113,7 @@ function Start-HarnessSuspendedProcessWatchdog {
       }
       Start-Sleep -Milliseconds ([Math]::Min(10, $remainingReadyMilliseconds))
     }
-    $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
+    $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; setupHandoffReserveMilliseconds=$setupHandoffReserveMilliseconds; disposed=$false; terminalCompletion=$null }
     [void]($WatchdogReference.Value = $watchdog)
     return
   } catch {
@@ -1119,13 +1121,13 @@ function Start-HarnessSuspendedProcessWatchdog {
       try { [void]($_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogReadyFailure"] = "late-armed") } catch { }
     }
     if ($null -ne $process) {
-      $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
+      $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; setupHandoffReserveMilliseconds=$setupHandoffReserveMilliseconds; disposed=$false; terminalCompletion=$null }
       [void]($WatchdogReference.Value = $watchdog)
       [void]($_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"] = $watchdog)
     }
     [int]$lastWin32Error = 0
     try { $lastWin32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error() } catch { }
-    $diagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -Process $process -WatchdogRoot $watchdogRoot -ReadyPath $readyPath -CompletionPath $completionPath -SetupDeadlineUtc $SetupDeadlineUtc -AutomaticDeadlineUtc $DeadlineUtc -AutomaticConfirmationDeadlineUtc $automaticConfirmationDeadlineUtc -LastWin32Error $lastWin32Error
+    $diagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -Process $process -WatchdogRoot $watchdogRoot -ReadyPath $readyPath -CompletionPath $completionPath -SetupDeadlineUtc $SetupDeadlineUtc -AutomaticDeadlineUtc $DeadlineUtc -AutomaticConfirmationDeadlineUtc $AutomaticConfirmationDeadlineUtc -LastWin32Error $lastWin32Error
     Add-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic -ErrorRecord $_ -Diagnostic $diagnostic
     throw
   }
@@ -1379,6 +1381,10 @@ function Invoke-BoundedPowerShell {
   if ($watchdogSetupDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $watchdogSetupDeadlineUtc = $harnessCleanupDeadlineUtc }
   $cleanupDeadlineUtc = $watchdogSetupDeadlineUtc.AddMilliseconds($confirmationReserveMilliseconds)
   if ($cleanupDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $cleanupDeadlineUtc = $harnessCleanupDeadlineUtc }
+  $watchdogAutomaticDeadlineUtc = $cleanupDeadlineUtc
+  if ($watchdogAutomaticDeadlineUtc -le $watchdogSetupDeadlineUtc) {
+    throw "fixture stage '$Stage' cannot reserve a watchdog automatic deadline after setup"
+  }
   $executionDeadlineUtc = $null
   $executionMilliseconds = $null
   $effectiveTimeoutSeconds = $null
@@ -1452,7 +1458,7 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $cleanupState.processOwnership = "created-suspended"
     Write-HarnessStage $Stage "process-ownership" "state=created-suspended processId=$($nativeProcess.ProcessId)"
     try {
-      Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogSetupDeadlineUtc -SetupDeadlineUtc $watchdogSetupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog) | Out-Null
+      Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $watchdogAutomaticDeadlineUtc -SetupDeadlineUtc $watchdogSetupDeadlineUtc -AutomaticConfirmationDeadlineUtc $harnessCleanupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog) | Out-Null
     } catch {
       $watchdogSetupDiagnostic = [string]$_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogSetupDiagnostic"]
       $watchdogReadyFailure = [string]$_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdogReadyFailure"]
@@ -1472,8 +1478,14 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
       [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", $null, [EnvironmentVariableTarget]::Process)
       throw "fixture forced pre-disarm operation failure"
     }
-    $handoffDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($confirmationReserveMilliseconds)
-    if ($handoffDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $handoffDeadlineUtc = $harnessCleanupDeadlineUtc }
+    $initialHandoffReserveMilliseconds = [int]$suspendedProcessWatchdog.setupHandoffReserveMilliseconds
+    $handoffDeadlineUtc = $watchdogAutomaticDeadlineUtc.AddMilliseconds(-$initialHandoffReserveMilliseconds)
+    if ($handoffDeadlineUtc -ge $watchdogAutomaticDeadlineUtc) {
+      throw "fixture stage '$Stage' cannot reserve watchdog automatic termination after disarm handoff"
+    }
+    if ((Get-HarnessRemainingMilliseconds -DeadlineUtc $handoffDeadlineUtc) -le 0) {
+      throw "fixture stage '$Stage' cannot complete its watchdog disarm handoff before the automatic termination reserve"
+    }
     try {
       $watchdogCompletion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog -Action "disarm" -DeadlineUtc $handoffDeadlineUtc
     } catch {

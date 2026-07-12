@@ -387,6 +387,114 @@ public static class SlowWatchdog {
   }
 
   Assert-BeforeDeadline
+  $delayedDisarmWatchdogPath = Join-Path $root "delayed-disarm-watchdog.exe"
+  $delayedDisarmWatchdogSourcePath = Join-Path $root "DelayedDisarmWatchdog.cs"
+  Write-Utf8 $delayedDisarmWatchdogSourcePath @'
+using System;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+
+public static class DelayedDisarmWatchdog {
+  private const int DISARM_CONFIRMATION_DELAY_MILLISECONDS = 100;
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool CloseHandle(IntPtr handle);
+
+  private static void Write(string path, string value) {
+    var bytes = new UTF8Encoding(false).GetBytes(value);
+    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
+      stream.Write(bytes, 0, bytes.Length);
+      stream.Flush(true);
+    }
+  }
+
+  private static bool IsDisarmCommand(string path) {
+    try {
+      if (!File.Exists(path)) { return false; }
+      using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+        if (stream.Length < 1 || stream.Length > 256) { return false; }
+        var bytes = new byte[(int)stream.Length];
+        var offset = 0;
+        while (offset < bytes.Length) {
+          var read = stream.Read(bytes, offset, bytes.Length - offset);
+          if (read == 0) { return false; }
+          offset += read;
+        }
+        return String.Equals(new UTF8Encoding(false).GetString(bytes, 0, offset).TrimEnd('\r', '\n'), "disarm", StringComparison.Ordinal);
+      }
+    } catch (IOException) {
+      return false;
+    } catch (UnauthorizedAccessException) {
+      return false;
+    }
+  }
+
+  public static int Main(string[] args) {
+    if (args == null || args.Length != 6) { return 2; }
+    long automaticDeadlineTicks;
+    if (!Int64.TryParse(args[4], NumberStyles.None, CultureInfo.InvariantCulture, out automaticDeadlineTicks)) { return 2; }
+    DateTime automaticDeadlineUtc;
+    try {
+      automaticDeadlineUtc = new DateTime(automaticDeadlineTicks, DateTimeKind.Utc);
+    } catch (ArgumentOutOfRangeException) {
+      return 2;
+    }
+    var process = new IntPtr(unchecked((long)UInt64.Parse(args[0], CultureInfo.InvariantCulture)));
+    if (process == IntPtr.Zero) { return 2; }
+    try {
+      Write(args[2], "armed");
+      for (;;) {
+        if (IsDisarmCommand(args[1])) {
+          Thread.Sleep(DISARM_CONFIRMATION_DELAY_MILLISECONDS);
+          if (DateTime.UtcNow >= automaticDeadlineUtc) {
+            if (!TerminateProcess(process, 1)) { return 1; }
+            Write(args[3], "terminated");
+            return 0;
+          }
+          Write(args[3], "disarmed");
+          return 0;
+        }
+        if (DateTime.UtcNow >= automaticDeadlineUtc) {
+          if (!TerminateProcess(process, 1)) { return 1; }
+          Write(args[3], "terminated");
+          return 0;
+        }
+        Thread.Sleep(10);
+      }
+    } finally {
+      CloseHandle(process);
+    }
+  }
+}
+'@
+  & $csc /nologo /target:exe ("/out:{0}" -f $delayedDisarmWatchdogPath) $delayedDisarmWatchdogSourcePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $delayedDisarmWatchdogPath -PathType Leaf)) { throw "delayed disarm watchdog fixture compilation failed" }
+  $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
+  $script:HarnessSuspendedProcessWatchdogPath = $delayedDisarmWatchdogPath
+  $delayedDisarmTranscriptPath = Join-Path $root "watchdog-disarm-handoff.telemetry.log"
+  try {
+    Start-Transcript -Path $delayedDisarmTranscriptPath -Force | Out-Null
+    try {
+      $delayedDisarm = Invoke-BoundedPowerShell -Stage "behavior.watchdog-disarm-handoff" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output watchdog-disarm-handoff'
+      Assert-True ($delayedDisarm.stdout.Trim() -ceq "watchdog-disarm-handoff") "delayed disarm handoff did not resume and run the child"
+    } finally {
+      Stop-Transcript | Out-Null
+    }
+  } finally {
+    $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+  }
+  $delayedDisarmTelemetry = Get-Content -LiteralPath $delayedDisarmTranscriptPath -Raw
+  Assert-True ($delayedDisarmTelemetry -match "stage=behavior.watchdog-disarm-handoff status=suspended-process-watchdog-disarmed detail=processId=[0-9]+ completion=disarmed") "delayed disarm handoff did not confirm the watchdog before resume"
+  Assert-True ($delayedDisarmTelemetry -match "stage=behavior.watchdog-disarm-handoff status=process-ownership detail=state=resumed-job-assigned processId=[0-9]+") "delayed disarm handoff did not resume the Job-owned child"
+  Assert-True ($delayedDisarmTelemetry -notmatch "stage=behavior.watchdog-disarm-handoff status=suspended-process-termination-confirmed") "delayed disarm handoff allowed automatic watchdog termination before disarm"
+
+  Assert-BeforeDeadline
   $missingCompletionWatchdogPath = Join-Path $root "missing-completion-watchdog.exe"
   $missingCompletionWatchdogSourcePath = Join-Path $root "MissingCompletionWatchdog.cs"
   Write-Utf8 $missingCompletionWatchdogSourcePath @'

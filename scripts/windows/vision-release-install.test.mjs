@@ -321,6 +321,26 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.match(
         harness,
+        /function Start-HarnessSuspendedProcessWatchdog[\s\S]*?\[DateTime\]\$AutomaticConfirmationDeadlineUtc = \[DateTime\]::MinValue[\s\S]*?if \(\$AutomaticConfirmationDeadlineUtc -eq \[DateTime\]::MinValue\) \{ \$AutomaticConfirmationDeadlineUtc = \$DeadlineUtc\.AddMilliseconds\(\$ConfirmationReserveMilliseconds\) \}[\s\S]*?if \(\$AutomaticConfirmationDeadlineUtc -le \$DeadlineUtc\) \{ throw "suspended-process watchdog automatic confirmation deadline must follow its termination deadline" \}[\s\S]*?\$setupHandoffReserveMilliseconds = \[Math\]::Min\(250, \[Math\]::Max\(50, \[int\]\[Math\]::Floor\(\$remainingMilliseconds \/ 4\)\)\)[\s\S]*?\$automaticConfirmationDeadlineUtcTicks = \$AutomaticConfirmationDeadlineUtc\.Ticks[\s\S]*?setupHandoffReserveMilliseconds=\$setupHandoffReserveMilliseconds/,
+      );
+      assert.match(
+        harness,
+        /\$cleanupDeadlineUtc = \$watchdogSetupDeadlineUtc\.AddMilliseconds\(\$confirmationReserveMilliseconds\)[\s\S]*?\$watchdogAutomaticDeadlineUtc = \$cleanupDeadlineUtc[\s\S]*?if \(\$watchdogAutomaticDeadlineUtc -le \$watchdogSetupDeadlineUtc\) \{[\s\S]*?automatic deadline after setup/,
+      );
+      assert.match(
+        harness,
+        /Start-HarnessSuspendedProcessWatchdog -StageRoot \$stageRoot -WatchdogPath \$script:HarnessSuspendedProcessWatchdogPath -NativeProcess \$nativeProcess -DeadlineUtc \$watchdogAutomaticDeadlineUtc -SetupDeadlineUtc \$watchdogSetupDeadlineUtc -AutomaticConfirmationDeadlineUtc \$harnessCleanupDeadlineUtc/,
+      );
+      assert.match(
+        harness,
+        /\$initialHandoffReserveMilliseconds = \[int\]\$suspendedProcessWatchdog\.setupHandoffReserveMilliseconds[\s\S]*?\$handoffDeadlineUtc = \$watchdogAutomaticDeadlineUtc\.AddMilliseconds\(-\$initialHandoffReserveMilliseconds\)[\s\S]*?if \(\$handoffDeadlineUtc -ge \$watchdogAutomaticDeadlineUtc\) \{[\s\S]*?automatic termination after disarm handoff[\s\S]*?Complete-HarnessSuspendedProcessWatchdog -Watchdog \$suspendedProcessWatchdog -Action "disarm" -DeadlineUtc \$handoffDeadlineUtc/,
+      );
+      assert.match(
+        behavior,
+        /public static class DelayedDisarmWatchdog[\s\S]*?DISARM_CONFIRMATION_DELAY_MILLISECONDS = 100[\s\S]*?Write\(args\[2\], "armed"\)[\s\S]*?IsDisarmCommand\(args\[1\]\)[\s\S]*?Thread\.Sleep\(DISARM_CONFIRMATION_DELAY_MILLISECONDS\)[\s\S]*?Write\(args\[3\], "disarmed"\)[\s\S]*?behavior\.watchdog-disarm-handoff[\s\S]*?TimeoutSeconds 2[\s\S]*?HarnessDeadlineUtc \(\[DateTime\]::UtcNow\.AddSeconds\(4\)\)[\s\S]*?suspended-process-watchdog-disarmed[\s\S]*?completion=disarmed[\s\S]*?state=resumed-job-assigned/,
+      );
+      assert.match(
+        harness,
         /if \(\$Action -eq "disarm" -and \[Environment\]::GetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", \[EnvironmentVariableTarget\]::Process\) -eq "1"\) \{\s+\[Environment\]::SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", \$null, \[EnvironmentVariableTarget\]::Process\)\s+throw \[InvalidOperationException\]::new\("fixture forced watchdog disarm command write failure"\)\s+\}\s+\$completion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog \$Watchdog[\s\S]*?Write-HarnessWatchdogCommand \$Watchdog\.commandPath \$command/,
       );
       assert.match(
