@@ -108,6 +108,16 @@ describe("Vision release installer fixtures", () => {
     assert.doesNotMatch(source, /\.Replace\("\\\\","\/"\)/);
   });
 
+  boundedIt("uses file-safe ACL inheritance in the Factory provisioner", () => {
+    const source = readFileSync(
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "utf8",
+    );
+    assert.match(source, /\.PSIsContainer/);
+    assert.match(source, /\$inheritanceFlags/);
+    assert.match(source, /else \{\s*"None"\s*\}/);
+  });
+
   boundedIt(
     "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",
     () => {

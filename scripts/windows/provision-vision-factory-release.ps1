@@ -43,12 +43,17 @@ function Get-Sha256Digest([string]$Path) {
 
 function Set-SystemOnlyAcl([string]$Path) {
   if ($env:OS -ne "Windows_NT") { return }
+  $inheritanceFlags = if ((Get-Item -LiteralPath $Path -Force).PSIsContainer) {
+    "ContainerInherit,ObjectInherit"
+  } else {
+    "None"
+  }
   $acl = Get-Acl -LiteralPath $Path
   $acl.SetAccessRuleProtection($true, $false)
   foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
   foreach ($identity in @("SYSTEM", "BUILTIN\Administrators")) {
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
-      $identity, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
+      $identity, "FullControl", $inheritanceFlags, "None", "Allow"
     ))
   }
   Set-Acl -LiteralPath $Path -AclObject $acl
