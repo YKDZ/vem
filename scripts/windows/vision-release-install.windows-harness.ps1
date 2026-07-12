@@ -2085,7 +2085,7 @@ try {
   Wait-Job -Job $blocked -Timeout 30 | Out-Null
   Receive-Job -Job $blocked -ErrorAction Stop | Out-Null
   Remove-Job -Job $blocked -Force
-  & (Join-Path $context.harnessScriptRoot "verify-vem-runtime.ps1") -RequireVisionOnline
+  & (Join-Path $context.harnessScriptRoot "verify-vem-runtime.ps1") -RequireVisionOnline -VisionOnly
 } catch {
   [IO.File]::WriteAllText((Join-Path $context.root "process-mutex-runtime-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
   throw

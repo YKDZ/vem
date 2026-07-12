@@ -94,9 +94,14 @@ describe("Vision release installer fixtures", () => {
       "utf8",
     );
     assert.match(source, /binding = \$null/);
+    assert.match(source, /\[switch\]\$VisionOnly/);
     assert.match(
       source,
-      /\$checks\.vision\.binding = Test-VisionRuntimeBinding/,
+      /\$checks\.vision\.binding = @\(Test-VisionRuntimeBinding \$failures\)\[-1\]/,
+    );
+    assert.match(
+      readFileSync(windowsHarness, "utf8"),
+      /-RequireVisionOnline -VisionOnly/,
     );
   });
 

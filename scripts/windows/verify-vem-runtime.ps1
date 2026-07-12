@@ -6,6 +6,7 @@ param(
   [switch]$RequireScannerOnline,
   [switch]$RequireHardwareOnline,
   [switch]$RequireVisionOnline,
+  [switch]$VisionOnly,
   [switch]$RequireBackendOnline,
   [switch]$RequireMqttConnected,
   [switch]$RequireCanSell,
@@ -158,9 +159,9 @@ function Get-ScheduledTaskStartupEvidence {
 $failures = [System.Collections.Generic.List[string]]::new()
 $checks = [ordered]@{}
 
-$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$service = if ($VisionOnly) { $null } else { Get-Service -Name $ServiceName -ErrorAction SilentlyContinue }
 if ($null -eq $service) {
-  Add-Failure $failures "service not found: $ServiceName"
+  if (-not $VisionOnly) { Add-Failure $failures "service not found: $ServiceName" }
 } else {
   $checks.service = [pscustomobject]@{
     name = $service.Name
@@ -173,7 +174,7 @@ if ($null -eq $service) {
 }
 
 $config = $null
-if (Test-Path $DaemonConfig) {
+if (-not $VisionOnly -and (Test-Path $DaemonConfig)) {
   $config = Read-JsonFile $DaemonConfig
   $checks.config = [pscustomobject]@{
     machineCode = $config.machineCode
@@ -184,7 +185,7 @@ if (Test-Path $DaemonConfig) {
     apiBaseUrl = $config.apiBaseUrl
     mqttUrl = $config.mqttUrl
   }
-} else {
+} elseif (-not $VisionOnly) {
   Add-Failure $failures "daemon config not found: $DaemonConfig"
 }
 
@@ -247,7 +248,7 @@ if ($RequireVisionOnline) {
   if ($null -eq $visionProcess) {
     Add-Failure $failures "vision process is not running from $VisionDirectory"
   }
-  $checks.vision.binding = Test-VisionRuntimeBinding $failures
+  $checks.vision.binding = @(Test-VisionRuntimeBinding $failures)[-1]
 }
 
 $startupEvidenceExists = Test-Path -LiteralPath $StartupBringupEvidenceFile
@@ -356,7 +357,7 @@ if ($RequireProductionBringup) {
   }
 }
 
-if (Test-Path $ReadyFile) {
+if (-not $VisionOnly -and (Test-Path $ReadyFile)) {
   $ready = Read-JsonFile $ReadyFile
   $base = Get-IpcBaseUrl $ready
   $headers = @{ Authorization = ("Bearer " + $ready.ipcToken) }
@@ -399,7 +400,7 @@ if (Test-Path $ReadyFile) {
     $blocking = @($readyz.blockingCodes) -join ","
     Add-Failure $failures "machine cannot sell: mode=$($readyz.mode) route=$($readyz.suggestedRoute) blockers=$blocking"
   }
-} else {
+} elseif (-not $VisionOnly) {
   Add-Failure $failures "daemon ready file not found: $ReadyFile"
 }
 
