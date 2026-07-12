@@ -876,6 +876,7 @@ function Rollback-PreviousRelease([object]$Previous, [object]$Candidate) {
   }
   Assert-ReleaseContracts $metadata.descriptor $metadata.attestation $metadata.approval $priorDocuments.manifest.value $priorDocuments
   Write-AtomicJson $selectionPath $Previous
+  Set-SystemInstallerAcl $selectionPath $true
   Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"
   Test-VisionProtocol $Previous $metadata.descriptor
 }
@@ -960,7 +961,7 @@ try {
   $existingDocuments = @{}
   foreach($name in @("descriptor","attestation","sbom","provenance","conformance","approval","manifest")) { $existingDocuments[$name]=[pscustomobject]@{ value=$existing.documents.$name.value; digest=$existing.documents.$name.digest; path=$null } }
   Assert-ReleaseContracts $existing.descriptor $existing.attestation $existing.approval $existingDocuments.manifest.value $existingDocuments
-  Write-VisionLauncher; Ensure-VisionTask; $previous=if(Test-Path $selectionPath){(Read-StrictJson $selectionPath "Vision selection").value}else{$null}; if($previous){$evidence.previousDigest=$previous.bundleDigest}; $next=$candidate; $activationStarted=$true; if($previous){Stop-RecordedVision $previous}; Write-AtomicJson $selectionPath $next; Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"; Test-VisionProtocol $next $descriptor; $evidence.healthOk=$true; $evidence.webSocketOk=$true; $evidence.installedDigest=$record.bundleDigest
+  Write-VisionLauncher; Ensure-VisionTask; $previous=if(Test-Path $selectionPath){(Read-StrictJson $selectionPath "Vision selection").value}else{$null}; if($previous){$evidence.previousDigest=$previous.bundleDigest}; $next=$candidate; $activationStarted=$true; if($previous){Stop-RecordedVision $previous}; Write-AtomicJson $selectionPath $next; Set-SystemInstallerAcl $selectionPath $true; Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"; Test-VisionProtocol $next $descriptor; $evidence.healthOk=$true; $evidence.webSocketOk=$true; $evidence.installedDigest=$record.bundleDigest
 } catch {
   $evidence.failure=Sanitize $_.Exception.Message
   if($activationStarted){$evidence.rollbackAttempted=$true; try { Rollback-PreviousRelease $previous $next; $evidence.rollbackOk=$true } catch {$evidence.rollbackOk=$false} }

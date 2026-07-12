@@ -124,6 +124,15 @@ describe("Vision release installer fixtures", () => {
     );
     assert.match(provisioner, /\$installedFiles \+= \$destination/);
     assert.match(provisioner, /\+ \$installedFiles \| Select-Object -Unique/);
+    const installer = readFileSync(
+      "scripts/windows/install-vision-release.ps1",
+      "utf8",
+    );
+    assert.equal(
+      installer.match(/Set-SystemInstallerAcl \$selectionPath \$true/g)
+        ?.length,
+      2,
+    );
   });
 
   boundedIt("uses object fields for strict install evidence", () => {
