@@ -129,8 +129,7 @@ describe("Vision release installer fixtures", () => {
       "utf8",
     );
     assert.equal(
-      installer.match(/Set-SystemInstallerAcl \$selectionPath \$true/g)
-        ?.length,
+      installer.match(/Set-SystemInstallerAcl \$selectionPath \$true/g)?.length,
       2,
     );
   });
