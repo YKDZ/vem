@@ -77,16 +77,29 @@ function Start-HardWatchdogHost {
     [Parameter(Mandatory = $true)][string]$RunDeadlineUtcTicks,
     [Parameter(Mandatory = $true)][string]$FaultSignalPath,
     [Parameter(Mandatory = $true)][string]$TelemetryPath,
-    [Parameter(Mandatory = $true)][string]$ObservedChildPowerShellPath
+    [Parameter(Mandatory = $true)][string]$ObservedChildPowerShellPath,
+    [Parameter(Mandatory = $true)][DateTime]$LifetimeDeadlineUtc
   )
 
-  $start = [Diagnostics.ProcessStartInfo]::new()
-  $start.FileName = $PowerShellPath
-  $start.UseShellExecute = $false
-  $start.CreateNoWindow = $true
-  $arguments = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $HostPath, "-HarnessPath", $HarnessPath, "-HarnessRoot", $HarnessRoot, "-HarnessContextPath", $HarnessContextPath, "-ChildPowerShellPath", $ChildPowerShellPath, "-IdentityPath", $IdentityPath, "-ReadySignalPath", $ReadySignalPath, "-RunSignalPath", $RunSignalPath, "-RunDeadlineUtcTicks", $RunDeadlineUtcTicks, "-FaultSignalPath", $FaultSignalPath, "-TelemetryPath", $TelemetryPath, "-ObservedChildPowerShellPath", $ObservedChildPowerShellPath)
-  $start.Arguments = (($arguments | ForEach-Object { [VemVisionHarness.SuspendedProcess]::QuoteArgument([string]$_) }) -join " ")
-  return [Diagnostics.Process]::Start($start)
+  $arguments = [string[]]@("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $HostPath, "-HarnessPath", $HarnessPath, "-HarnessRoot", $HarnessRoot, "-HarnessContextPath", $HarnessContextPath, "-ChildPowerShellPath", $ChildPowerShellPath, "-IdentityPath", $IdentityPath, "-ReadySignalPath", $ReadySignalPath, "-RunSignalPath", $RunSignalPath, "-RunDeadlineUtcTicks", $RunDeadlineUtcTicks, "-FaultSignalPath", $FaultSignalPath, "-TelemetryPath", $TelemetryPath, "-ObservedChildPowerShellPath", $ObservedChildPowerShellPath)
+  $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($PowerShellPath, $arguments, $HarnessRoot)
+  $lifetimeWatchdog = $null
+  try {
+    $lifetimeWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $HarnessRoot "hard-watchdog-host-lifetime") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $LifetimeDeadlineUtc
+    $nativeProcess.Resume()
+    return [pscustomobject]@{ process=$nativeProcess; lifetimeWatchdog=$lifetimeWatchdog; deadlineWatchdog=$null }
+  } catch {
+    try {
+      if ($null -ne $lifetimeWatchdog) {
+        Complete-HarnessSuspendedProcessWatchdog -Watchdog $lifetimeWatchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5)) | Out-Null
+      } else {
+        $nativeProcess.TerminateUnresumed(5000)
+      }
+    } finally {
+      $nativeProcess.Dispose()
+    }
+    throw
+  }
 }
 
 function Wait-ForSignal([string]$Path, [DateTime]$DeadlineUtc, [string]$FailureMessage) {
@@ -100,6 +113,25 @@ function Wait-ForSignal([string]$Path, [DateTime]$DeadlineUtc, [string]$FailureM
 function Write-FaultTelemetryRecordToHost([object]$Record) {
   $message = if ($Record -is [Management.Automation.InformationRecord]) { [string]$Record.MessageData } else { [string]$Record }
   $Host.UI.WriteLine($message)
+}
+
+function Stop-HardWatchdogHost([object]$HostProcess, [DateTime]$DeadlineUtc) {
+  if ($null -eq $HostProcess) { return }
+  $failures = New-Object 'System.Collections.Generic.List[System.Exception]'
+  try {
+    foreach ($watchdog in @($HostProcess.deadlineWatchdog, $HostProcess.lifetimeWatchdog)) {
+      if ($null -ne $watchdog -and -not $watchdog.completed) {
+        try {
+          Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc $DeadlineUtc | Out-Null
+        } catch {
+          $failures.Add($_.Exception)
+        }
+      }
+    }
+  } finally {
+    $HostProcess.process.Dispose()
+  }
+  if ($failures.Count -gt 0) { throw [AggregateException]::new("hard watchdog host cleanup could not confirm termination", $failures) }
 }
 
 if ($Library) { return }
@@ -154,7 +186,6 @@ $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcess
 $runDeadlineUtc = [DateTime]::new([Int64]$RunDeadlineUtcTicks, [DateTimeKind]::Utc)
 while (-not (Test-Path -LiteralPath $RunSignalPath -PathType Leaf) -and [DateTime]::UtcNow -lt $runDeadlineUtc) { Start-Sleep -Milliseconds 25 }
 if (-not (Test-Path -LiteralPath $RunSignalPath -PathType Leaf)) { throw "hard watchdog host did not receive its run signal before the behavior deadline" }
-$watchdog = Arm-HarnessFailFastWatchdog -Message "behavior terminate-job hard watchdog" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4))
 $env:VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_JOB_FAILURE = "1"
 $caughtExpectedFailure = $false
 try {
@@ -182,10 +213,10 @@ try {
   [IO.File]::WriteAllText($FaultSignalPath, "fault-observed", [Text.UTF8Encoding]::new($false))
   Start-Sleep -Seconds 30
 } finally {
-  # The watchdog must remain armed: this process owns the unclosed Job Object.
+  # The inherited-handle watchdog must terminate this process so Windows closes the unconfirmed Job Object.
 }
 '@
-  $hardWatchdogHost = Start-HardWatchdogHost -PowerShellPath $pwshPath -HostPath $hardWatchdogHostPath -HarnessPath $HarnessPath -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -IdentityPath $hardWatchdogIdentityPath -ReadySignalPath $hardWatchdogReadySignalPath -RunSignalPath $hardWatchdogRunSignalPath -RunDeadlineUtcTicks $deadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) -FaultSignalPath $hardWatchdogFaultSignalPath -TelemetryPath $hardWatchdogTelemetryPath -ObservedChildPowerShellPath $observedChildPowerShellPath
+  $hardWatchdogHost = Start-HardWatchdogHost -PowerShellPath $pwshPath -HostPath $hardWatchdogHostPath -HarnessPath $HarnessPath -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -IdentityPath $hardWatchdogIdentityPath -ReadySignalPath $hardWatchdogReadySignalPath -RunSignalPath $hardWatchdogRunSignalPath -RunDeadlineUtcTicks $deadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) -FaultSignalPath $hardWatchdogFaultSignalPath -TelemetryPath $hardWatchdogTelemetryPath -ObservedChildPowerShellPath $observedChildPowerShellPath -LifetimeDeadlineUtc $deadlineUtc
   Wait-ForSignal -Path $hardWatchdogReadySignalPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5)) -FailureMessage "hard watchdog host did not become ready"
   Assert-True ((Get-Content -LiteralPath $observedChildPowerShellPath -Raw) -ceq $pwshPath) "hard watchdog host did not receive the exact ChildPowerShellPath"
 
@@ -402,24 +433,32 @@ try {
   Write-HarnessStage "behavior.hard-watchdog" "run-signal-created"
   Wait-ForSignal -Path $hardWatchdogFaultSignalPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3)) -FailureMessage "hard watchdog host did not validate its unconfirmed cleanup telemetry"
   Write-HarnessStage "behavior.hard-watchdog" "fault-observed"
+  Write-HarnessStage "behavior.hard-watchdog" "fault-signal-reading"
   Assert-True ((Get-Content -LiteralPath $hardWatchdogFaultSignalPath -Raw).Trim() -ceq "fault-observed") "hard watchdog host did not acknowledge the expected cleanup fault"
+  Write-HarnessStage "behavior.hard-watchdog" "fault-signal-validated"
+  Write-HarnessStage "behavior.hard-watchdog" "inherited-watchdog-arming"
+  $hardWatchdogHost.deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "hard-watchdog-host-deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hardWatchdogHost.process -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4))
+  Write-HarnessStage "behavior.hard-watchdog" "inherited-watchdog-armed" "processId=$($hardWatchdogHost.deadlineWatchdog.processId) identity=original-process-handle"
+  Write-HarnessStage "behavior.hard-watchdog" "descendant-identity-reading"
   Assert-True (Test-Path -LiteralPath $hardWatchdogIdentityPath -PathType Leaf) "hard watchdog host did not create a live descendant"
   $hardWatchdogDescendantIdentity = Get-Content -LiteralPath $hardWatchdogIdentityPath -Raw | ConvertFrom-Json
-  $liveDescendant = Get-RunningProcess -ProcessId ([int]$hardWatchdogDescendantIdentity.processId)
-  try {
-    Assert-True ($null -ne $liveDescendant) "hard watchdog host did not retain its live descendant before the watchdog deadline"
-  } finally {
-    if ($null -ne $liveDescendant) { $liveDescendant.Dispose() }
-  }
-  Assert-True ($hardWatchdogHost.WaitForExit(10000)) "hard watchdog did not terminate its independent host"
-  Assert-True ($hardWatchdogHost.HasExited) "hard watchdog host was still running after the bounded parent wait"
+  Write-HarnessStage "behavior.hard-watchdog" "descendant-identity-read"
+  Write-HarnessStage "behavior.hard-watchdog" "host-termination-waiting"
+  Wait-ForSignal -Path $hardWatchdogHost.deadlineWatchdog.completionPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(6)) -FailureMessage "hard watchdog did not terminate its independent host before its absolute deadline"
+  Assert-True ((Get-Content -LiteralPath $hardWatchdogHost.deadlineWatchdog.completionPath -Raw).Trim() -ceq "terminated") "hard watchdog did not terminate its independent host"
+  Write-HarnessStage "behavior.hard-watchdog" "host-termination-confirmed"
+  Write-HarnessStage "behavior.hard-watchdog" "descendant-termination-waiting"
   $terminatedDescendant = Get-RunningProcess -ProcessId ([int]$hardWatchdogDescendantIdentity.processId)
   try {
+    if ($null -ne $terminatedDescendant -and ($terminatedDescendant.StartTime.ToUniversalTime().Ticks -ne [Int64]$hardWatchdogDescendantIdentity.creationTimeUtcTicks -or [IO.Path]::GetFullPath($terminatedDescendant.Path) -cne [IO.Path]::GetFullPath([string]$hardWatchdogDescendantIdentity.executablePath))) {
+      throw "hard watchdog descendant process identity no longer matches the original handle-owned process"
+    }
     Assert-True ($null -eq $terminatedDescendant) "hard watchdog left its live descendant"
   } finally {
     if ($null -ne $terminatedDescendant) { $terminatedDescendant.Dispose() }
   }
-  $hardWatchdogHost.Dispose()
+  Write-HarnessStage "behavior.hard-watchdog" "descendant-termination-confirmed"
+  Stop-HardWatchdogHost -HostProcess $hardWatchdogHost -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5))
   $hardWatchdogHost = $null
 
   Assert-BeforeDeadline
@@ -475,9 +514,9 @@ try {
     }
     if ($null -ne $hardWatchdogHost) {
       try {
-        if (-not $hardWatchdogHost.HasExited -and -not $hardWatchdogHost.WaitForExit(5000)) { $hardWatchdogHost.Kill(); $hardWatchdogHost.WaitForExit(5000) | Out-Null }
+        Stop-HardWatchdogHost -HostProcess $hardWatchdogHost -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5))
       } finally {
-        $hardWatchdogHost.Dispose()
+        $hardWatchdogHost = $null
       }
     }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

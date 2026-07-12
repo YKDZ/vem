@@ -353,9 +353,10 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
   );
 
   boundedIt(
-    "keeps behavior fault telemetry transcript-free and bounds hard-watchdog signal waits",
+    "keeps behavior fault telemetry transcript-free and hard watchdogs bound to inherited handles",
     () => {
       const behavior = readFileSync(behaviorHarness, "utf8");
+      const harness = readFileSync(windowsHarness, "utf8");
       const faultLoop = behavior.match(
         /\$faultRecords = New-Object 'System\.Collections\.Generic\.List\[object\]'([\s\S]*?)\n    if \(\$fault\.expectedOwnership/,
       )?.[1];
@@ -387,6 +388,79 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
         behavior,
         /hard watchdog host did not receive its run signal before the behavior deadline/,
       );
+      assert.match(
+        behavior,
+        /\[VemVisionHarness\.SuspendedProcess\]::Create\(\$PowerShellPath, \$arguments, \$HarnessRoot\)/,
+      );
+      assert.match(
+        behavior,
+        /Start-HarnessSuspendedProcessWatchdog -StageRoot \(Join-Path \$HarnessRoot "hard-watchdog-host-lifetime"\)/,
+      );
+      assert.match(
+        behavior,
+        /function Stop-HardWatchdogHost[\s\S]*?Complete-HarnessSuspendedProcessWatchdog -Watchdog \$watchdog -Action "terminate" -DeadlineUtc \$DeadlineUtc/,
+      );
+      assert.match(
+        harness,
+        /DuplicateHandle\(GetCurrentProcess\(\), processHandle, GetCurrentProcess\(\), out inheritedHandle, 0, true, DUPLICATE_SAME_ACCESS\)/,
+      );
+      assert.match(
+        behavior,
+        /Write-HarnessStage "behavior\.hard-watchdog" "host-termination-confirmed"/,
+      );
+      assert.doesNotMatch(behavior, /\$hardWatchdogHost\.WaitForExit\(/);
+      assert.doesNotMatch(behavior, /\$hardWatchdogHost\.HasExited/);
+      const inheritedWatchdog = harness.match(
+        /public static class SuspendedProcessWatchdog \{([\s\S]*?)\n  \}\n}\n'@/,
+      )?.[1];
+      assert.ok(
+        inheritedWatchdog,
+        "inherited-handle watchdog source is missing",
+      );
+      assert.doesNotMatch(inheritedWatchdog, /OpenProcess/);
+      assert.doesNotMatch(inheritedWatchdog, /GetProcessById/);
+    },
+  );
+
+  boundedIt(
+    "cleans up a pre-run hard-watchdog host through its inherited handle on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install-harness.behavior.ps1") -HarnessPath (Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1") -Library
+. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-inherited-watchdog-early-cleanup-" + [guid]::NewGuid().ToString("N"))
+$hostProcess = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+  $hostPath = Join-Path $root "host.ps1"
+  $hostScript = @'
+param($HarnessPath, $HarnessRoot, $HarnessContextPath, $ChildPowerShellPath, $IdentityPath, $ReadySignalPath, $RunSignalPath, $RunDeadlineUtcTicks, $FaultSignalPath, $TelemetryPath, $ObservedChildPowerShellPath)
+Start-Sleep -Seconds 30
+'@
+  [IO.File]::WriteAllText($hostPath, $hostScript, [Text.UTF8Encoding]::new($false))
+  $hostProcess = Start-HardWatchdogHost -PowerShellPath $powerShellPath -HostPath $hostPath -HarnessPath $hostPath -HarnessRoot $root -HarnessContextPath (Join-Path $root "context.json") -ChildPowerShellPath $powerShellPath -IdentityPath (Join-Path $root "identity.json") -ReadySignalPath (Join-Path $root "ready") -RunSignalPath (Join-Path $root "run") -RunDeadlineUtcTicks ([DateTime]::UtcNow.AddSeconds(20).Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -FaultSignalPath (Join-Path $root "fault") -TelemetryPath (Join-Path $root "telemetry") -ObservedChildPowerShellPath (Join-Path $root "observed") -LifetimeDeadlineUtc ([DateTime]::UtcNow.AddSeconds(10))
+  Stop-HardWatchdogHost -HostProcess $hostProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4))
+  if ((Get-Content -LiteralPath $hostProcess.lifetimeWatchdog.completionPath -Raw).Trim() -notin @("terminated", "exited")) { throw "pre-run hard-watchdog cleanup did not confirm inherited-handle termination" }
+  $hostProcess = $null
+} finally {
+  if ($null -ne $hostProcess) { Stop-HardWatchdogHost -HostProcess $hostProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     },
   );
 

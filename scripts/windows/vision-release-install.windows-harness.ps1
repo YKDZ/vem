@@ -563,6 +563,7 @@ namespace VemVisionHarness {
       GC.SuppressFinalize(this);
     }
   }
+
 }
 '@
   }
@@ -715,7 +716,7 @@ function Start-HarnessSuspendedProcessWatchdog {
   $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId)
 
   $readyDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds([Math]::Min(1000, $remainingMilliseconds))
-  while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadlineUtc -and -not $process.HasExited) { Start-Sleep -Milliseconds 10 }
+  while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadlineUtc) { Start-Sleep -Milliseconds 10 }
   if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) {
     try { $process.Dispose() } finally { throw "suspended-process watchdog did not inherit the original process handle before setup continued" }
   }
