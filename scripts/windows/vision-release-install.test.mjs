@@ -316,40 +316,24 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
         /public static class MissingCompletionWatchdog[\s\S]*?behavior\.watchdog-missing-completion-native[\s\S]*?authority="native-process-handle"[\s\S]*?behavior\.watchdog-missing-completion-job[\s\S]*?authority="job-object"/,
       );
       assert.match(
-        behavior,
-        /public static class BlockingCommandWatchdog[\s\S]*?behavior\.watchdog-command-write-failure[\s\S]*?could not acquire the command path/,
+        harness,
+        /\$job\.Assign\(\$nativeProcess\.ProcessHandle\)[\s\S]*?if \(\[Environment\]::GetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", \[EnvironmentVariableTarget\]::Process\) -eq "1"\) \{\s+\[Environment\]::SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", \$null, \[EnvironmentVariableTarget\]::Process\)\s+throw "fixture forced pre-disarm operation failure"\s+\}[\s\S]*?Complete-HarnessSuspendedProcessWatchdog -Watchdog \$suspendedProcessWatchdog -Action "disarm"/,
       );
       assert.match(
         harness,
-        /VEM_VISION_HARNESS_FIXTURE_WATCHDOG_ARMED_SIGNAL_PATH[\s\S]*?VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCKED_SIGNAL_PATH[\s\S]*?Start-HarnessSuspendedProcessWatchdog -StageRoot \$stageRoot[\s\S]*?Wait-HarnessFixtureWatchdogCommandBlock -DeadlineUtc \$watchdogSetupDeadlineUtc[\s\S]*?\$job\.Assign/,
+        /if \(\$Action -eq "disarm" -and \[Environment\]::GetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", \[EnvironmentVariableTarget\]::Process\) -eq "1"\) \{\s+\[Environment\]::SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", \$null, \[EnvironmentVariableTarget\]::Process\)\s+throw \[InvalidOperationException\]::new\("fixture forced watchdog disarm command write failure"\)\s+\}\s+\$completion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog \$Watchdog[\s\S]*?Write-HarnessWatchdogCommand \$Watchdog\.commandPath \$command/,
       );
       assert.match(
+        behavior,
+        /VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE[\s\S]*?VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE[\s\S]*?"1"[\s\S]*?behavior\.watchdog-command-write-failure[\s\S]*?fixture forced pre-disarm operation failure[\s\S]*?fixture forced watchdog disarm command write failure[\s\S]*?suspended-process-termination-confirmed[\s\S]*?suspended-process-watchdog-closed[\s\S]*?SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", \$previousPreDisarmOperationFailure[\s\S]*?SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", \$previousWatchdogDisarmCommandWriteFailure/,
+      );
+      assert.doesNotMatch(
         harness,
-        /VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PATH[\s\S]*?\$fixtureDeadlineText = \$FixtureDeadlineUtc\.Ticks\.ToString\([Globalization\.CultureInfo\]::InvariantCulture\) \+ "`n"[\s\S]*?\[IO\.File\]::WriteAllText\(\$commandBlockDeadlinePath, \$fixtureDeadlineText[\s\S]*?Wait-HarnessFixtureWatchdogCommandBlock -DeadlineUtc \$watchdogSetupDeadlineUtc -FixtureDeadlineUtc \$cleanupDeadlineUtc/,
+        /Wait-HarnessFixtureWatchdogCommandBlock|VEM_VISION_HARNESS_FIXTURE_WATCHDOG_(ARMED_SIGNAL_PATH|COMMAND_BLOCKED_SIGNAL_PATH|COMMAND_BLOCK_DEADLINE_PATH)/,
       );
-      assert.match(
-        harness,
-        /VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PARTIAL_WRITE_DELAY_MILLISECONDS[\s\S]*?\[IO\.FileMode\]::Create[\s\S]*?\$stream\.Flush\(\$true\)[\s\S]*?Start-Sleep -Milliseconds \$partialWriteDelayMilliseconds[\s\S]*?\$stream\.Flush\(\$true\)/,
-      );
-      assert.match(
+      assert.doesNotMatch(
         behavior,
-        /public static class BlockingCommandWatchdog[\s\S]*?private static bool TryReadFixtureDeadline\(string path, out long ticks\)[\s\S]*?new FileStream\(path, FileMode\.Open, FileAccess\.Read, FileShare\.ReadWrite\)[\s\S]*?var frame = Encoding\.UTF8\.GetString\(bytes, 0, count\)[\s\S]*?if \(!frame\.EndsWith\("\\n", StringComparison\.Ordinal\)\) \{ return false; \}[\s\S]*?Int64\.TryParse\(frame\.Substring\(0, frame\.Length - 1\), NumberStyles\.None, CultureInfo\.InvariantCulture, out ticks\)[\s\S]*?catch \(IOException\) \{ return false; \}[\s\S]*?if \(DateTime\.UtcNow >= setupDeadlineUtc\) \{ exitReason = "deadline"; return 0; \}[\s\S]*?TryReadFixtureDeadline\(commandBlockDeadlinePath, out fixtureDeadlineTicks\)[\s\S]*?if \(DateTime\.UtcNow >= setupDeadlineUtc\) \{ exitReason = "deadline"; return 0; \}[\s\S]*?File\.Exists\(armedSignalPath\)[\s\S]*?Directory\.CreateDirectory\(args\[1\]\)/,
-      );
-      assert.match(
-        behavior,
-        /fixtureDeadlineUtc <= setupDeadlineUtc \|\| fixtureDeadlineUtc > setupDeadlineUtc\.AddMilliseconds\(2000\)[\s\S]*?fixture-deadline-invalid/,
-      );
-      assert.match(
-        behavior,
-        /VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PARTIAL_WRITE_DELAY_MILLISECONDS[\s\S]*?"50"[\s\S]*?behavior\.watchdog-command-write-failure[\s\S]*?SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PARTIAL_WRITE_DELAY_MILLISECONDS", \$previousCommandBlockDeadlinePartialWriteDelay/,
-      );
-      assert.match(
-        behavior,
-        /public static class BlockingCommandWatchdog[\s\S]*?new DateTime\(Int64\.Parse\(args\[4\][\s\S]*?WaitForSingleObject\(process, waitMilliseconds\)[\s\S]*?WAIT_OBJECT_0[\s\S]*?finally \{\s+CloseHandle\(process\);[\s\S]*?VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_EXIT_PATH/,
-      );
-      assert.match(
-        behavior,
-        /blocking command watchdog did not observe native target termination while waiting for its armed signal/,
+        /BlockingCommandWatchdog|VEM_VISION_HARNESS_FIXTURE_WATCHDOG_(ARMED_SIGNAL_PATH|COMMAND_BLOCKED_SIGNAL_PATH|COMMAND_BLOCK_DEADLINE_PATH|COMMAND_BLOCK_EXIT_PATH)/,
       );
       assert.match(
         behavior,

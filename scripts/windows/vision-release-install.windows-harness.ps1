@@ -1214,6 +1214,10 @@ function Complete-HarnessSuspendedProcessWatchdog {
   }
   if ($Watchdog.disposed) { throw "suspended-process watchdog process handle was disposed without a terminal completion" }
   if ($Watchdog.completed) { throw "suspended-process watchdog was marked completed without a terminal completion" }
+  if ($Action -eq "disarm" -and [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", [EnvironmentVariableTarget]::Process) -eq "1") {
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", $null, [EnvironmentVariableTarget]::Process)
+    throw [InvalidOperationException]::new("fixture forced watchdog disarm command write failure")
+  }
 
   $completion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog
   if ($null -ne $completion) {
@@ -1253,49 +1257,6 @@ function Get-HarnessTerminationConfirmationReserveMilliseconds {
   param([Parameter(Mandatory = $true)][int]$TotalMilliseconds)
 
   return [Math]::Min(2000, [Math]::Max(1000, [int][Math]::Floor($TotalMilliseconds / 4)))
-}
-function Wait-HarnessFixtureWatchdogCommandBlock {
-  param(
-    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
-    [Parameter(Mandatory = $true)][DateTime]$FixtureDeadlineUtc
-  )
-
-  $armedSignalPath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_ARMED_SIGNAL_PATH", [EnvironmentVariableTarget]::Process)
-  $commandBlockedSignalPath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCKED_SIGNAL_PATH", [EnvironmentVariableTarget]::Process)
-  $commandBlockDeadlinePath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PATH", [EnvironmentVariableTarget]::Process)
-  $partialWriteDelayValue = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_COMMAND_BLOCK_DEADLINE_PARTIAL_WRITE_DELAY_MILLISECONDS", [EnvironmentVariableTarget]::Process)
-  if ([string]::IsNullOrWhiteSpace($armedSignalPath) -and [string]::IsNullOrWhiteSpace($commandBlockedSignalPath) -and [string]::IsNullOrWhiteSpace($commandBlockDeadlinePath)) { return }
-  if ([string]::IsNullOrWhiteSpace($armedSignalPath) -or [string]::IsNullOrWhiteSpace($commandBlockedSignalPath) -or [string]::IsNullOrWhiteSpace($commandBlockDeadlinePath)) { throw "watchdog command-block fixture requires armed, blocked, and deadline signal paths" }
-
-  $fixtureDeadlineText = $FixtureDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) + "`n"
-  if ([string]::IsNullOrWhiteSpace($partialWriteDelayValue)) {
-    [IO.File]::WriteAllText($commandBlockDeadlinePath, $fixtureDeadlineText, [Text.UTF8Encoding]::new($false))
-  } else {
-    [int]$partialWriteDelayMilliseconds = 0
-    if (-not [int]::TryParse($partialWriteDelayValue, [ref]$partialWriteDelayMilliseconds) -or $partialWriteDelayMilliseconds -lt 1 -or $partialWriteDelayMilliseconds -gt 250) { throw "watchdog command-block fixture partial deadline write delay must be between 1 and 250 milliseconds" }
-    $deadlineBytes = [Text.UTF8Encoding]::new($false).GetBytes($fixtureDeadlineText)
-    $firstWriteLength = [Math]::Max(1, [int][Math]::Floor($deadlineBytes.Length / 2))
-    $stream = $null
-    try {
-      $stream = [IO.FileStream]::new($commandBlockDeadlinePath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-      $stream.Write($deadlineBytes, 0, $firstWriteLength)
-      $stream.Flush($true)
-      $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
-      if ($remainingMilliseconds -le $partialWriteDelayMilliseconds) { throw "watchdog command-block fixture partial deadline write could not complete before the setup deadline" }
-      Start-Sleep -Milliseconds $partialWriteDelayMilliseconds
-      if ((Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc) -le 0) { throw "watchdog command-block fixture partial deadline write completed after the setup deadline" }
-      $stream.Write($deadlineBytes, $firstWriteLength, $deadlineBytes.Length - $firstWriteLength)
-      $stream.Flush($true)
-    } finally {
-      if ($null -ne $stream) { $stream.Dispose() }
-    }
-  }
-  [IO.File]::WriteAllText($armedSignalPath, "armed", [Text.UTF8Encoding]::new($false))
-  while (-not (Test-Path -LiteralPath $commandBlockedSignalPath -PathType Leaf)) {
-    $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
-    if ($remainingMilliseconds -le 0) { throw "watchdog command-block fixture did not acknowledge its armed command path before the setup deadline" }
-    Start-Sleep -Milliseconds ([Math]::Min(10, $remainingMilliseconds))
-  }
 }
 function Wait-HarnessJobTermination {
   param(
@@ -1503,11 +1464,14 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
       }
       throw
     }
-    Wait-HarnessFixtureWatchdogCommandBlock -DeadlineUtc $watchdogSetupDeadlineUtc -FixtureDeadlineUtc $cleanupDeadlineUtc
     Write-HarnessStage $Stage "suspended-process-watchdog-armed" "processId=$($nativeProcess.ProcessId) identity=original-process-handle"
     $job.Assign($nativeProcess.ProcessHandle)
     $cleanupState.processOwnership = "job-assigned-suspended"
     Write-HarnessStage $Stage "process-ownership" "state=job-assigned-suspended processId=$($nativeProcess.ProcessId)"
+    if ([Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", [EnvironmentVariableTarget]::Process) -eq "1") {
+      [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", $null, [EnvironmentVariableTarget]::Process)
+      throw "fixture forced pre-disarm operation failure"
+    }
     $handoffDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($confirmationReserveMilliseconds)
     if ($handoffDeadlineUtc -gt $harnessCleanupDeadlineUtc) { $handoffDeadlineUtc = $harnessCleanupDeadlineUtc }
     try {
@@ -1591,6 +1555,7 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
                 $cleanupFailures.Add($_.Exception)
                 try {
                   Close-HarnessSuspendedProcessWatchdog -Watchdog $suspendedProcessWatchdog
+                  Write-HarnessStage $Stage "suspended-process-watchdog-closed" "reason=completion-failed"
                 } catch {
                   $cleanupFailures.Add($_.Exception)
                 }
