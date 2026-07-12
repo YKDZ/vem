@@ -114,8 +114,7 @@ function Invoke-HarnessFixtureCleanup {
   }
   if (-not $runtimeCleaned) { throw "fixture runtime cleanup could not verify and terminate the selected process" }
 }
-function New-HarnessKillOnCloseJob {
-  if ($env:OS -ne "Windows_NT") { throw "Windows Job Objects are required for bounded fixture execution" }
+function Initialize-HarnessNativeTypes {
   if ($null -eq ("VemVisionHarness.KillOnCloseJob" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -252,10 +251,49 @@ namespace VemVisionHarness {
       GC.SuppressFinalize(this);
     }
   }
+
+  public sealed class FailFastWatchdog : IDisposable {
+    private Timer timer;
+
+    public FailFastWatchdog(string message, TimeSpan dueTime) {
+      if (String.IsNullOrWhiteSpace(message)) { throw new ArgumentException("message is required", "message"); }
+      if (dueTime <= TimeSpan.Zero) { throw new ArgumentOutOfRangeException("dueTime"); }
+      timer = new Timer(FailFast, message, dueTime, Timeout.InfiniteTimeSpan);
+    }
+
+    private static void FailFast(object state) {
+      Environment.FailFast((string)state);
+    }
+
+    public void Dispose() {
+      var timer = Interlocked.Exchange(ref this.timer, null);
+      if (timer == null) { return; }
+
+      using (var drained = new ManualResetEvent(false)) {
+        timer.Dispose(drained);
+        drained.WaitOne();
+      }
+      GC.SuppressFinalize(this);
+    }
+  }
 }
 '@
   }
+}
+function New-HarnessKillOnCloseJob {
+  if ($env:OS -ne "Windows_NT") { throw "Windows Job Objects are required for bounded fixture execution" }
+  Initialize-HarnessNativeTypes
   return [VemVisionHarness.KillOnCloseJob]::new()
+}
+function Arm-HarnessFailFastWatchdog {
+  param(
+    [Parameter(Mandatory = $true)][string]$Message,
+    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+  )
+
+  $remaining = $DeadlineUtc - [DateTime]::UtcNow
+  if ($remaining -le [TimeSpan]::Zero) { throw "watchdog deadline elapsed before it could be armed" }
+  return [VemVisionHarness.FailFastWatchdog]::new($Message, $remaining)
 }
 function Invoke-BoundedPowerShell {
   param(
@@ -407,12 +445,13 @@ $certificateCleanupMarkerPath = Join-Path $root "fixture-certificate-cleanup.jso
 $certificateSubject = "CN=VEM Vision CI Fixture " + [guid]::NewGuid().ToString("N")
 $HarnessDeadlineSeconds = 480
 $CleanupReserveSeconds = 75
-$harnessDeadlineUtc = [DateTime]::UtcNow.AddSeconds($HarnessDeadlineSeconds)
-$cleanupDeadlineUtc = $harnessDeadlineUtc.AddSeconds($CleanupReserveSeconds)
 $hardWatchdogSeconds = $HarnessDeadlineSeconds + $CleanupReserveSeconds
+Initialize-HarnessNativeTypes
+$deadlineStartUtc = [DateTime]::UtcNow
+$harnessDeadlineUtc = $deadlineStartUtc.AddSeconds($HarnessDeadlineSeconds)
+$cleanupDeadlineUtc = $deadlineStartUtc.AddSeconds($hardWatchdogSeconds)
 $watchdogMessage = "vision installer harness exceeded its $hardWatchdogSeconds-second hard deadline"
-$watchdogCallback = [Threading.TimerCallback]{ param($state) [Environment]::FailFast([string]$state) }
-$watchdog = [Threading.Timer]::new($watchdogCallback, $watchdogMessage, [TimeSpan]::FromSeconds($hardWatchdogSeconds), [Threading.Timeout]::InfiniteTimeSpan)
+$watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $cleanupDeadlineUtc
 $harnessContext = [ordered]@{
   root = $root
   media = $media

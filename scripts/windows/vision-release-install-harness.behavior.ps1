@@ -62,11 +62,14 @@ function Stop-TrackedProcess([object]$Identity) {
   }
 }
 
-$deadlineUtc = [DateTime]::UtcNow.AddSeconds($DeadlineSeconds)
 if ($HardDeadlineSeconds -le $DeadlineSeconds) { throw "HardDeadlineSeconds must leave time for cleanup after DeadlineSeconds" }
+. $HarnessPath -Library
+Initialize-HarnessNativeTypes
+$deadlineStartUtc = [DateTime]::UtcNow
+$deadlineUtc = $deadlineStartUtc.AddSeconds($DeadlineSeconds)
+$hardDeadlineUtc = $deadlineStartUtc.AddSeconds($HardDeadlineSeconds)
 $watchdogMessage = "vision installer harness behavior test exceeded its $HardDeadlineSeconds-second hard deadline"
-$watchdogCallback = [Threading.TimerCallback]{ param($state) [Environment]::FailFast([string]$state) }
-$watchdog = [Threading.Timer]::new($watchdogCallback, $watchdogMessage, [TimeSpan]::FromSeconds($HardDeadlineSeconds), [Threading.Timeout]::InfiniteTimeSpan)
+$watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $hardDeadlineUtc
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-harness-behavior-" + [guid]::NewGuid().ToString("N"))
 $contextPath = Join-Path $root "context.json"
 $certificateSubject = "CN=VEM Vision Harness Behavior " + [guid]::NewGuid().ToString("N")
@@ -76,7 +79,6 @@ $descendantIdentity = $null
 try {
   Assert-BeforeDeadline
   New-Item -ItemType Directory -Force -Path $root | Out-Null
-  . $HarnessPath -Library
   $layoutJob = New-HarnessKillOnCloseJob
   try {
     [VemVisionHarness.KillOnCloseJob]::AssertNativeLayout()

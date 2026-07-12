@@ -209,6 +209,106 @@ describe("Vision release installer fixtures", () => {
   );
 
   boundedIt(
+    "uses an initialized, absolute-deadline, drained hard-deadline watchdog in both Windows harnesses",
+    () => {
+      const behavior = readFileSync(behaviorHarness, "utf8");
+      const harness = readFileSync(windowsHarness, "utf8");
+
+      for (const source of [behavior, harness]) {
+        assert.doesNotMatch(source, /\[Threading\.TimerCallback\]\s*\{/);
+        assert.doesNotMatch(source, /\$watchdogCallback/);
+      }
+      assert.match(harness, /function Initialize-HarnessNativeTypes/);
+      assert.match(harness, /function Arm-HarnessFailFastWatchdog/);
+      assert.match(
+        harness,
+        /public sealed class FailFastWatchdog : IDisposable/,
+      );
+      assert.match(harness, /private static void FailFast\(object state\)/);
+      assert.match(harness, /Environment\.FailFast\(\(string\)state\)/);
+      assert.match(harness, /timer\.Dispose\(drained\);/);
+      assert.match(harness, /drained\.WaitOne\(\);/);
+      assert.match(
+        behavior,
+        /Initialize-HarnessNativeTypes\r?\n\$deadlineStartUtc = \[DateTime\]::UtcNow\r?\n\$deadlineUtc = \$deadlineStartUtc\.AddSeconds\(\$DeadlineSeconds\)\r?\n\$hardDeadlineUtc = \$deadlineStartUtc\.AddSeconds\(\$HardDeadlineSeconds\)/,
+      );
+      assert.match(
+        harness,
+        /Initialize-HarnessNativeTypes\r?\n\$deadlineStartUtc = \[DateTime\]::UtcNow\r?\n\$harnessDeadlineUtc = \$deadlineStartUtc\.AddSeconds\(\$HarnessDeadlineSeconds\)\r?\n\$cleanupDeadlineUtc = \$deadlineStartUtc\.AddSeconds\(\$hardWatchdogSeconds\)/,
+      );
+      assert.match(
+        behavior,
+        /\$watchdog = Arm-HarnessFailFastWatchdog -Message \$watchdogMessage -DeadlineUtc \$hardDeadlineUtc/,
+      );
+      assert.match(
+        harness,
+        /\$watchdog = Arm-HarnessFailFastWatchdog -Message \$watchdogMessage -DeadlineUtc \$cleanupDeadlineUtc/,
+      );
+
+      const armFunction = harness.match(
+        /function Arm-HarnessFailFastWatchdog \{([\s\S]*?)\r?\n\}/,
+      )?.[1];
+      assert.ok(armFunction, "watchdog arm function is missing");
+      assert.match(
+        armFunction,
+        /\$remaining = \$DeadlineUtc - \[DateTime\]::UtcNow/,
+      );
+      assert.match(
+        armFunction,
+        /\[VemVisionHarness\.FailFastWatchdog\]::new\(\$Message, \$remaining\)/,
+      );
+      assert.doesNotMatch(
+        armFunction,
+        /Initialize-HarnessNativeTypes|Add-Type/,
+      );
+    },
+  );
+
+  boundedIt(
+    "disposes and drains the watchdog under both PowerShell editions on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const disposalProbe =
+        ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; Initialize-HarnessNativeTypes; $deadlineUtc = [DateTime]::UtcNow.AddSeconds(1); $watchdog = Arm-HarnessFailFastWatchdog -Message 'watchdog disposal probe' -DeadlineUtc $deadlineUtc; try { $watchdog.Dispose(); Start-Sleep -Seconds 2 } finally { $watchdog.Dispose() }";
+
+      for (const command of ["pwsh", "powershell.exe"]) {
+        const result = spawnBounded(command, [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          disposalProbe,
+        ]);
+        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      }
+    },
+  );
+
+  boundedIt(
+    "lets an armed watchdog terminate only its bounded child process on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const childProbe =
+        ". ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; Initialize-HarnessNativeTypes; $deadlineUtc = [DateTime]::UtcNow.AddSeconds(1); $watchdog = Arm-HarnessFailFastWatchdog -Message 'watchdog child probe deadline reached' -DeadlineUtc $deadlineUtc; Start-Sleep -Seconds 10";
+      const result = spawnBounded("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        childProbe,
+      ]);
+
+      assert.notEqual(
+        result.status,
+        0,
+        "armed watchdog child unexpectedly succeeded",
+      );
+    },
+  );
+
+  boundedIt(
     "keeps Node coverage to parser, fixture, and workflow guards",
     () => {
       const source = readFileSync(new URL(import.meta.url), "utf8");
