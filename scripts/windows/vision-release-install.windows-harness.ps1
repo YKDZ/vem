@@ -2049,7 +2049,10 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
     }
   }
 
-  Invoke-BoundedPowerShell -Stage "fixture.process-mutex-runtime" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  $runtimeDiagnosticPath = Join-Path $root "process-mutex-runtime-error.txt"
+  try {
+    Invoke-BoundedPowerShell -Stage "fixture.process-mutex-runtime" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+try {
   $factoryRoot = $context.factoryRoot
   $stateRoot = $context.stateRoot
   $evidencePath = $context.evidencePath
@@ -2079,7 +2082,17 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
   Receive-Job -Job $blocked -ErrorAction Stop | Out-Null
   Remove-Job -Job $blocked -Force
   & (Join-Path $context.harnessScriptRoot "verify-vem-runtime.ps1") -RequireVisionOnline
+} catch {
+  [IO.File]::WriteAllText((Join-Path $context.root "process-mutex-runtime-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
+  throw
+}
 '@ | Out-Null
+  } catch {
+    if (Test-Path -LiteralPath $runtimeDiagnosticPath -PathType Leaf) {
+      throw "fixture process/mutex/runtime verification failed: $(Get-Content -LiteralPath $runtimeDiagnosticPath -Raw)"
+    }
+    throw
+  }
   Write-HarnessStage "harness" "completed" "first-install task acl process-record mutex reinstall protocol runtime-verifier"
 } finally {
   $cleanupFailure = $null
