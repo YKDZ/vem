@@ -1918,7 +1918,10 @@ Write-Json (Join-Path $context.trust "vision-release-trust-anchor.json") @{schem
   $bundleDigest = (Get-Content -LiteralPath (Join-Path $root "release-context.json") -Raw | ConvertFrom-Json).bundleDigest
   $harnessContext.bundleDigest = $bundleDigest
   Write-Json $harnessContextPath $harnessContext
-  Invoke-BoundedPowerShell -Stage "fixture.provision" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  $provisionDiagnosticPath = Join-Path $root "provision-error.txt"
+  try {
+    Invoke-BoundedPowerShell -Stage "fixture.provision" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+try {
 Copy-Item -LiteralPath $context.installerPath -Destination (Join-Path $context.installerMedia "install-vision-release.ps1")
 Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $context.installerPath) "provision-vision-factory-release.ps1") -Destination (Join-Path $context.installerMedia "provision-vision-factory-release.ps1")
 $files = @{}; Get-ChildItem -LiteralPath (Join-Path $context.media "VEM") -Recurse -File | ForEach-Object { $relative=$_.FullName.Substring((Join-Path $context.media "VEM").Length+1).Replace("\\","/"); $files[$relative]=Get-Digest $_.FullName }
@@ -1933,7 +1936,17 @@ Write-Json (Join-Path $context.media "VEM\VISION-FACTORY-PROVISIONING.JSON") @{s
 & (Join-Path $context.installerMedia "provision-vision-factory-release.ps1") -FactoryMediaRoot $context.visionMediaRoot
 New-Item -ItemType Directory -Force -Path (Join-Path $context.stateRoot "config") | Out-Null
 Write-Utf8 (Join-Path $context.stateRoot "config\fixture.json") "{}"
+} catch {
+  [IO.File]::WriteAllText((Join-Path $context.root "provision-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
+  throw
+}
 '@ | Out-Null
+  } catch {
+    if (Test-Path -LiteralPath $provisionDiagnosticPath -PathType Leaf) {
+      throw "fixture provisioning failed: $(Get-Content -LiteralPath $provisionDiagnosticPath -Raw)"
+    }
+    throw
+  }
   foreach ($corePowerShellPath in $corePowerShellPaths) {
     $corePowerShellName = [IO.Path]::GetFileNameWithoutExtension($corePowerShellPath).ToLowerInvariant()
     Invoke-BoundedPowerShell -Stage "fixture.signed-install.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
