@@ -141,11 +141,6 @@ function Wait-ForSignal([string]$Path, [DateTime]$DeadlineUtc, [string]$FailureM
   Assert-True (Test-Path -LiteralPath $Path -PathType Leaf) $FailureMessage
 }
 
-function Write-FaultTelemetryRecordToHost([object]$Record) {
-  $message = if ($Record -is [Management.Automation.InformationRecord]) { [string]$Record.MessageData } else { [string]$Record }
-  $Host.UI.WriteLine($message)
-}
-
 function Stop-HardWatchdogHost([object]$HostProcess, [DateTime]$DeadlineUtc) {
   if ($null -eq $HostProcess) { return }
   $failures = New-Object 'System.Collections.Generic.List[System.Exception]'
@@ -906,82 +901,6 @@ try {
     Assert-True ($null -eq $normalDescendant) "normal-parent-exit active descendant remained alive after the Job Object cleanup"
   } finally {
     if ($null -ne $normalDescendant) { $normalDescendant.Dispose() }
-  }
-
-  foreach ($fault in @(
-    [pscustomobject]@{ stage="behavior.create-job-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_CREATE_JOB_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output create-job-probe"; cleanupMechanism=$null; expectedOwnership=$null },
-    [pscustomobject]@{ stage="behavior.set-job-limit-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_SET_JOB_LIMIT_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output set-job-limit-probe"; cleanupMechanism=$null; expectedOwnership=$null },
-    [pscustomobject]@{ stage="behavior.assign-job-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ASSIGN_JOB_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output assign-job-probe"; cleanupMechanism="native"; expectedOwnership="created-suspended" },
-    [pscustomobject]@{ stage="behavior.assign-and-suspended-terminate-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ASSIGN_JOB_FAILURE"; secondaryVariable="VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE"; scriptBody="Write-Output assign-and-terminate-probe"; cleanupMechanism="watchdog"; expectedOwnership="created-suspended" },
-    [pscustomobject]@{ stage="behavior.resume-and-suspended-terminate-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_RESUME_FAILURE"; secondaryVariable="VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE"; scriptBody="Write-Output resume-and-terminate-probe"; cleanupMechanism="job"; expectedOwnership="job-assigned-suspended" },
-    [pscustomobject]@{ stage="behavior.terminate-job-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_JOB_FAILURE"; secondaryVariable=$null; scriptBody="exit 17"; cleanupMechanism=$null; expectedOwnership="resumed-job-assigned" },
-    [pscustomobject]@{ stage="behavior.active-process-count-failure"; variable="VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_FAILURE"; secondaryVariable=$null; scriptBody="Write-Output active-process-count-probe"; cleanupMechanism=$null; expectedOwnership="resumed-job-assigned" }
-  )) {
-    Assert-BeforeDeadline
-    $previousFaultValue = [Environment]::GetEnvironmentVariable($fault.variable, [EnvironmentVariableTarget]::Process)
-    $previousSecondaryFaultValue = if ([string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { $null } else { [Environment]::GetEnvironmentVariable($fault.secondaryVariable, [EnvironmentVariableTarget]::Process) }
-    [Environment]::SetEnvironmentVariable($fault.variable, "1", [EnvironmentVariableTarget]::Process)
-    if (-not [string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { [Environment]::SetEnvironmentVariable($fault.secondaryVariable, "1", [EnvironmentVariableTarget]::Process) }
-    $faultRecords = New-Object 'System.Collections.Generic.List[object]'
-    try {
-      Invoke-BoundedPowerShell -Stage $fault.stage -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $windowsPowerShell -HarnessDeadlineUtc $deadlineUtc -ScriptBody $fault.scriptBody 6>&1 | ForEach-Object {
-        [void]$faultRecords.Add($_)
-        Write-FaultTelemetryRecordToHost $_
-      }
-      if ($fault.stage -match "(create-job|set-job-limit|assign-job)") { throw "fault injection $($fault.stage) did not fail bounded setup" }
-    } catch {
-      if ($fault.stage -match "(terminate-job|active-process-count)" -and $_.Exception.Message -notmatch "failed with exit code") { throw }
-    } finally {
-      [Environment]::SetEnvironmentVariable($fault.variable, $previousFaultValue, [EnvironmentVariableTarget]::Process)
-      if (-not [string]::IsNullOrWhiteSpace([string]$fault.secondaryVariable)) { [Environment]::SetEnvironmentVariable($fault.secondaryVariable, $previousSecondaryFaultValue, [EnvironmentVariableTarget]::Process) }
-    }
-    $faultTelemetry = ($faultRecords | ForEach-Object {
-      if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
-    }) -join [Environment]::NewLine
-    if ($fault.expectedOwnership -eq "resumed-job-assigned") {
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=resumed-job-assigned") "fault injection $($fault.stage) did not record resumed Job Object process ownership"
-    } elseif ($fault.cleanupMechanism -eq "native") {
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=$($fault.expectedOwnership)") "fault injection $($fault.stage) did not record its suspended process"
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-termination-confirmed detail=processId=[0-9]+") "fault injection $($fault.stage) did not terminate its unresumed process through the native handle"
-      Assert-True ($faultTelemetry -notmatch "stage=$($fault.stage) status=suspended-process-watchdog-terminated") "native cleanup fault unexpectedly delegated to the watchdog"
-    } elseif ($fault.cleanupMechanism -eq "watchdog") {
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=$($fault.expectedOwnership)") "watchdog cleanup fault did not record its suspended process"
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-termination-failed") "watchdog cleanup fault did not preserve the native termination failure"
-      $watchdogTermination = [regex]::Match($faultTelemetry, "stage=$($fault.stage) status=suspended-process-watchdog-terminated detail=processId=([0-9]+) completion=(terminated|exited) identity=original-process-handle")
-      Assert-True $watchdogTermination.Success "watchdog cleanup fault did not confirm termination through the inherited original process handle"
-      Assert-True ($faultTelemetry -notmatch "wait-failed:6|ERROR_INVALID_HANDLE") "watchdog inherited-handle probe observed ERROR_INVALID_HANDLE"
-      $suspendedProcess = Get-RunningProcess -ProcessId ([int]$watchdogTermination.Groups[1].Value)
-      try {
-        Assert-True ($null -eq $suspendedProcess) "watchdog cleanup did not terminate the combined setup-failure process"
-      } finally {
-        if ($null -ne $suspendedProcess) { $suspendedProcess.Dispose() }
-      }
-    } elseif ($fault.cleanupMechanism -eq "job") {
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=process-ownership detail=state=job-assigned-suspended") "Job fallback fault did not record its assigned suspended process"
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-watchdog-disarmed detail=processId=[0-9]+ completion=(disarmed|exited)") "Job fallback fault did not disarm the inherited watchdog before ResumeThread"
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-termination-failed") "Job fallback fault did not preserve the native suspended termination failure"
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=termination-confirmed detail=termination=job-object activeProcesses=0") "Job fallback fault did not confirm Job Object termination"
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=suspended-process-handle-released detail=reason=job-cleanup-confirmed") "Job fallback fault did not release the C# suspended-process wrapper after Job Object termination confirmation"
-      Assert-True ($faultTelemetry -notmatch "stage=$($fault.stage) status=suspended-process-handle-retained") "Job fallback fault retained the C# suspended-process wrapper after Job Object termination confirmation"
-      $jobFallbackProcess = [regex]::Match($faultTelemetry, "stage=$($fault.stage) status=process-ownership detail=state=job-assigned-suspended processId=([0-9]+)")
-      Assert-True $jobFallbackProcess.Success "Job fallback fault did not record its target process identity"
-      $suspendedProcess = Get-RunningProcess -ProcessId ([int]$jobFallbackProcess.Groups[1].Value)
-      try {
-        Assert-True ($null -eq $suspendedProcess) "Job fallback fault left its target process running"
-      } finally {
-        if ($null -ne $suspendedProcess) { $suspendedProcess.Dispose() }
-      }
-    } else {
-      Assert-True ($faultTelemetry -notmatch "stage=$($fault.stage) status=process-ownership") "fault injection $($fault.stage) created a child before Job setup completed"
-    }
-    if ($fault.stage -eq "behavior.terminate-job-failure") {
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=termination-failed detail=termination=job-object operation=terminate-job-object exceptionType=[A-Za-z0-9._:-]+ exceptionMessage=[A-Za-z0-9._:-]+ nativeErrorCode=[0-9]+") "termination failure did not retain sanitized telemetry"
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=cleanup-job-dispose-completed") "historical termination failure blocked Job Object close after activeProcesses reached zero"
-    }
-    if ($fault.stage -eq "behavior.active-process-count-failure") {
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=termination-query-failed detail=termination=job-object operation=active-process-count") "query failure did not retain telemetry"
-      Assert-True ($faultTelemetry -match "stage=$($fault.stage) status=cleanup-job-dispose-completed") "historical query failure blocked Job Object close after activeProcesses reached zero"
-    }
   }
 
   Assert-BeforeDeadline

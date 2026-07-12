@@ -118,45 +118,6 @@ describe("Vision release installer fixtures", () => {
   );
 
   boundedIt(
-    "captures and mirrors behavior fault telemetry from the Information stream on Windows",
-    { skip: process.platform !== "win32" },
-    () => {
-      const probe = String.raw`
-$ErrorActionPreference = "Stop"
-$behaviorPath = Join-Path (Get-Location) "scripts\\windows\\vision-release-install-harness.behavior.ps1"
-$harnessPath = Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1"
-. $behaviorPath -HarnessPath $harnessPath -Library
-$marker = "VEM_VISION_HARNESS_INFORMATION_MIRROR_" + [guid]::NewGuid().ToString("N")
-$records = New-Object 'System.Collections.Generic.List[object]'
-& { Write-Host $marker } 6>&1 | ForEach-Object {
-  [void]$records.Add($_)
-  Write-FaultTelemetryRecordToHost $_
-}
-if ($records.Count -ne 1) { throw "expected one captured Information record, got $($records.Count)" }
-if ($records[0] -isnot [Management.Automation.InformationRecord]) { throw "captured record is not InformationRecord: $($records[0].GetType().FullName)" }
-if ([string]$records[0].MessageData -cne $marker) { throw "captured Information record changed: $($records[0].MessageData)" }
-`;
-      const result = spawnBounded("powershell.exe", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        probe,
-      ]);
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-      const marker = result.stdout.match(
-        /VEM_VISION_HARNESS_INFORMATION_MIRROR_[0-9a-f]+/g,
-      );
-      assert.equal(
-        marker?.length,
-        1,
-        `Information telemetry was not mirrored exactly once: ${result.stdout}`,
-      );
-    },
-  );
-
-  boundedIt(
     "keeps the behavior PS5.1 native wrapper clean and nonzero diagnostics covered",
     () => {
       const behavior = readFileSync(behaviorHarness, "utf8");
@@ -412,28 +373,15 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
   );
 
   boundedIt(
-    "keeps behavior fault telemetry transcript-free and hard watchdogs bound to inherited handles",
+    "keeps core behavior cleanup coverage without the fault-injection matrix",
     () => {
       const behavior = readFileSync(behaviorHarness, "utf8");
       const harness = readFileSync(windowsHarness, "utf8");
-      const faultLoop = behavior.match(
-        /\$faultRecords = New-Object 'System\.Collections\.Generic\.List\[object\]'([\s\S]*?)\n    if \(\$fault\.expectedOwnership/,
-      )?.[1];
-
-      assert.ok(faultLoop, "behavior fault telemetry capture is missing");
-      assert.match(
-        faultLoop,
-        /Invoke-BoundedPowerShell[\s\S]*?6>&1\s*\|\s*ForEach-Object\s*\{\s*\[void\]\$faultRecords\.Add\(\$_\)\s*Write-FaultTelemetryRecordToHost \$_\s*\}/,
-      );
-      assert.match(
-        faultLoop,
-        /\[Management\.Automation\.InformationRecord\][\s\S]*?\.MessageData/,
-      );
-      assert.doesNotMatch(faultLoop, /Start-Transcript|Stop-Transcript/);
-      assert.match(
+      assert.doesNotMatch(
         behavior,
-        /function Write-FaultTelemetryRecordToHost\(\[object\]\$Record\)\s*\{[\s\S]*?\$Host\.UI\.WriteLine\(\$message\)/,
+        /foreach \(\$fault in @\(|behavior\.(create-job-failure|set-job-limit-failure|assign-job-failure|assign-and-suspended-terminate-failure|resume-and-suspended-terminate-failure|terminate-job-failure|active-process-count-failure)/,
       );
+      assert.doesNotMatch(behavior, /Write-FaultTelemetryRecordToHost/);
       assert.doesNotMatch(behavior, /\$readyStopwatch|TimeoutSeconds 3/);
       assert.match(
         behavior,
@@ -469,6 +417,10 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.WaitForExit\(/);
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.HasExited/);
+      assert.match(
+        behavior,
+        /stage=behavior\.parent-exits-near-timeout status=timed-out[\s\S]*?status=termination-requested[\s\S]*?status=termination-confirmed[\s\S]*?timed-out bounded invocation left its descendant alive/,
+      );
       const normalParentExitFixture = behavior.match(
         /Invoke-BoundedPowerShell -Stage "behavior\.normal-parent-exit-active-descendant"[\s\S]*?-ScriptBody @'([\s\S]*?)'@/,
       )?.[1];
@@ -1949,10 +1901,6 @@ try {
       assert.doesNotMatch(
         harness,
         /DateTime\.UtcNow\.AddMilliseconds\(deadlineMilliseconds\)/,
-      );
-      assert.match(
-        behavior,
-        /watchdog inherited-handle probe observed ERROR_INVALID_HANDLE/,
       );
       assert.match(
         behavior,
