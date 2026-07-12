@@ -411,7 +411,7 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.WaitForExit\(/);
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.HasExited/);
       const inheritedWatchdog = harness.match(
-        /public static class SuspendedProcessWatchdog \{([\s\S]*?)\n  \}\n}\n'@/,
+        /public static class SuspendedProcessWatchdog \{([\s\S]*?)\r?\n  \}\r?\n}\r?\n'@/,
       )?.[1];
       assert.ok(
         inheritedWatchdog,
