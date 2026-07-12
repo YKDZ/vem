@@ -328,7 +328,9 @@ function Assert-InstalledRelease([object]$Record, [object]$Selection) {
       [string]$actual[$index].path -cne [string]$expected[$index].path -or
       [Int64]$actual[$index].bytes -ne [Int64]$expected[$index].bytes -or
       [string]$actual[$index].digest -cne [string]$expected[$index].digest
-    ) { Throw-InstallError "installed Vision release files do not match immutable metadata" }
+    ) {
+      Throw-InstallError ("installed Vision release file[{0}] mismatch: actual={1} expected={2}" -f $index, ($actual[$index] | ConvertTo-Json -Compress), ($expected[$index] | ConvertTo-Json -Compress))
+    }
   }
   $entrypoint = Join-TrustedRelativePath $Record.installDirectory $Record.entrypoint "Vision entrypoint"
   if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf) -or ("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $Record.entrypointDigest) { Throw-InstallError "installed Vision entrypoint digest does not match immutable metadata" }
