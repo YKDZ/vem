@@ -1949,7 +1949,11 @@ Write-Utf8 (Join-Path $context.stateRoot "config\fixture.json") "{}"
   }
   foreach ($corePowerShellPath in $corePowerShellPaths) {
     $corePowerShellName = [IO.Path]::GetFileNameWithoutExtension($corePowerShellPath).ToLowerInvariant()
-    Invoke-BoundedPowerShell -Stage "fixture.signed-install.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+    $signedInstallDiagnosticPath = Join-Path $root "signed-install-error.txt"
+    Remove-Item -LiteralPath $signedInstallDiagnosticPath -Force -ErrorAction SilentlyContinue
+    try {
+      Invoke-BoundedPowerShell -Stage "fixture.signed-install.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+try {
 $factoryDelivery = Join-Path $context.factoryRoot "vision-release"
 & "C:\VEM\bringup\install-vision-release.ps1" -BundlePath (Join-Path $factoryDelivery "bundle.bin") -DescriptorPath (Join-Path $factoryDelivery "descriptor.json") -AttestationPath (Join-Path $factoryDelivery "attestation.json") -SbomPath (Join-Path $factoryDelivery "sbom.json") -ProvenancePath (Join-Path $factoryDelivery "provenance.json") -ConformanceEvidencePath (Join-Path $factoryDelivery "conformance.json") -ApprovalPath (Join-Path $factoryDelivery "approval.json") -FactoryManifestPath (Join-Path $factoryDelivery "factory-manifest.json") -ConfigurationPath (Join-Path $context.stateRoot "config\fixture.json") -EvidencePath $context.evidencePath -TaskUser $env:USERNAME
 $evidence = Get-Content -LiteralPath $context.evidencePath -Raw | ConvertFrom-Json
@@ -1958,7 +1962,17 @@ Assert-True (Test-Path -LiteralPath "C:\ProgramData\VEM\vision\current.json") "s
 Assert-True ($null -ne (Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue)) "Vision task missing"
 $acl = Get-Acl -LiteralPath "C:\ProgramData\VEM\vision\current.json"
 Assert-True ($acl.AreAccessRulesProtected) "selection ACL is inherited"
+} catch {
+  [IO.File]::WriteAllText((Join-Path $context.root "signed-install-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
+  throw
+}
 '@ | Out-Null
+    } catch {
+      if (Test-Path -LiteralPath $signedInstallDiagnosticPath -PathType Leaf) {
+        throw "fixture signed install failed under ${corePowerShellName}: $(Get-Content -LiteralPath $signedInstallDiagnosticPath -Raw)"
+      }
+      throw
+    }
     Invoke-BoundedPowerShell -Stage "fixture.rollback-reinstall.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $factoryRoot = $context.factoryRoot
 $stateRoot = $context.stateRoot
