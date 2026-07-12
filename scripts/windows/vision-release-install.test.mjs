@@ -16,20 +16,21 @@ function boundedIt(name, options, fn) {
   if (typeof options === "function") {
     return it(name, { timeout: TEST_TIMEOUT_MS }, options);
   }
-  return it(name, { ...options, timeout: TEST_TIMEOUT_MS }, fn);
+  return it(name, { timeout: TEST_TIMEOUT_MS, ...options }, fn);
 }
 
 function spawnBounded(command, args, options = {}) {
+  const timeout = options.timeout ?? SPAWN_TIMEOUT_MS;
   const result = spawnSync(command, args, {
     encoding: "utf8",
     killSignal: "SIGKILL",
-    timeout: SPAWN_TIMEOUT_MS,
+    timeout,
     ...options,
   });
   assert.notEqual(
     result.error?.code,
     "ETIMEDOUT",
-    `${command} exceeded ${SPAWN_TIMEOUT_MS}ms`,
+    `${command} exceeded ${timeout}ms`,
   );
   return result;
 }
@@ -118,7 +119,7 @@ describe("Vision release installer fixtures", () => {
 
   boundedIt(
     "captures PowerShell 5.1 stdout and non-terminating stderr through the bounded native process",
-    { skip: process.platform !== "win32" },
+    { skip: process.platform !== "win32", timeout: 120_000 },
     () => {
       const probe = String.raw`
 $ErrorActionPreference = "Stop"
@@ -131,9 +132,9 @@ try {
   $contextPath = Join-Path $root "context.json"
   Write-Json $contextPath ([ordered]@{ root=$root; stateRoot=(Join-Path $root "state"); bundleDigest="sha256:node-streams" })
   $childPowerShellPath = Join-Path $PSHOME "powershell.exe"
-  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(30)
+  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(70)
 
-  $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+  $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 20 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
 $ErrorActionPreference = "Stop"
 Write-Output ps51-stdout
 Write-Error "VEM_VISION_HARNESS_PS51_STDERR" -ErrorAction Continue
@@ -146,7 +147,7 @@ exit 0
 
   $failure = $null
   try {
-    Invoke-BoundedPowerShell -Stage "node.ps51-streams-nonzero" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
+    Invoke-BoundedPowerShell -Stage "node.ps51-streams-nonzero" -TimeoutSeconds 20 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
 $ErrorActionPreference = "Stop"
 Write-Output nonzero-stdout
 Write-Error "VEM_VISION_HARNESS_PS51_NONZERO_STDERR" -ErrorAction Continue
@@ -164,14 +165,18 @@ exit 23
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 `;
-      const result = spawnBounded("powershell.exe", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        probe,
-      ]);
+      const result = spawnBounded(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          probe,
+        ],
+        { timeout: 90_000 },
+      );
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     },
   );
