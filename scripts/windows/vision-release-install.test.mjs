@@ -182,7 +182,9 @@ exit 23
     () => {
       const probe = String.raw`
 $ErrorActionPreference = "Stop"
-. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install-harness.behavior.ps1") -Library
+$behaviorPath = Join-Path (Get-Location) "scripts\\windows\\vision-release-install-harness.behavior.ps1"
+$harnessPath = Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1"
+. $behaviorPath -HarnessPath $harnessPath -Library
 $marker = "VEM_VISION_HARNESS_INFORMATION_MIRROR_" + [guid]::NewGuid().ToString("N")
 $records = New-Object 'System.Collections.Generic.List[object]'
 & { Write-Host $marker } 6>&1 | ForEach-Object {
