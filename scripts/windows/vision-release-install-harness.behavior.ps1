@@ -24,10 +24,10 @@ function Assert-HarnessWatchdogStagePathBudget([string]$Stage) {
   $watchdogRoot = Join-Path (Join-Path $stageRoot "suspended-process-watchdog") ("0" * 32)
   $fixtureDeadlinePath = Join-Path $watchdogRoot "ready.deadline"
   $fixtureConfirmationPath = Join-Path $watchdogRoot "ready.confirm"
-  Assert-True ($stageRoot.Length -lt 248) "$Stage stage root exceeds the Windows current-directory length budget"
-  Assert-True ($watchdogRoot.Length -lt 248) "$Stage watchdog root exceeds the Windows current-directory length budget"
-  Assert-True ($fixtureDeadlinePath.Length -lt 248) "$Stage fixture deadline path exceeds the Windows current-directory length budget"
-  Assert-True ($fixtureConfirmationPath.Length -lt 248) "$Stage fixture confirmation path exceeds the Windows current-directory length budget"
+  Assert-True ($stageRoot.Length -le 220) "$Stage stage root exceeds the Windows current-directory length budget"
+  Assert-True ($watchdogRoot.Length -le 220) "$Stage watchdog root exceeds the Windows current-directory length budget"
+  Assert-True ($fixtureDeadlinePath.Length -le 220) "$Stage fixture deadline path exceeds the Windows current-directory length budget"
+  Assert-True ($fixtureConfirmationPath.Length -le 220) "$Stage fixture confirmation path exceeds the Windows current-directory length budget"
 }
 
 function Get-RunningProcess([int]$ProcessId) {
@@ -485,7 +485,9 @@ public static class DelayedDisarmWatchdog {
   try {
     Start-Transcript -Path $delayedDisarmTranscriptPath -Force | Out-Null
     try {
-      $delayedDisarm = Invoke-BoundedPowerShell -Stage "behavior.watchdog-disarm-handoff" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output watchdog-disarm-handoff'
+      $delayedDisarmStage = "b.dh"
+      Assert-HarnessWatchdogStagePathBudget -Stage $delayedDisarmStage
+      $delayedDisarm = Invoke-BoundedPowerShell -Stage $delayedDisarmStage -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output watchdog-disarm-handoff'
       Assert-True ($delayedDisarm.stdout.Trim() -ceq "watchdog-disarm-handoff") "delayed disarm handoff did not resume and run the child"
     } finally {
       Stop-Transcript | Out-Null
@@ -494,9 +496,9 @@ public static class DelayedDisarmWatchdog {
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
   }
   $delayedDisarmTelemetry = Get-Content -LiteralPath $delayedDisarmTranscriptPath -Raw
-  Assert-True ($delayedDisarmTelemetry -match "stage=behavior.watchdog-disarm-handoff status=suspended-process-watchdog-disarmed detail=processId=[0-9]+ completion=disarmed") "delayed disarm handoff did not confirm the watchdog before resume"
-  Assert-True ($delayedDisarmTelemetry -match "stage=behavior.watchdog-disarm-handoff status=process-ownership detail=state=resumed-job-assigned processId=[0-9]+") "delayed disarm handoff did not resume the Job-owned child"
-  Assert-True ($delayedDisarmTelemetry -notmatch "stage=behavior.watchdog-disarm-handoff status=suspended-process-termination-confirmed") "delayed disarm handoff allowed automatic watchdog termination before disarm"
+  Assert-True ($delayedDisarmTelemetry -match "stage=$delayedDisarmStage status=suspended-process-watchdog-disarmed detail=processId=[0-9]+ completion=disarmed") "delayed disarm handoff did not confirm the watchdog before resume"
+  Assert-True ($delayedDisarmTelemetry -match "stage=$delayedDisarmStage status=process-ownership detail=state=resumed-job-assigned processId=[0-9]+") "delayed disarm handoff did not resume the Job-owned child"
+  Assert-True ($delayedDisarmTelemetry -notmatch "stage=$delayedDisarmStage status=suspended-process-termination-confirmed") "delayed disarm handoff allowed automatic watchdog termination before disarm"
 
   Assert-BeforeDeadline
   $missingCompletionWatchdogPath = Join-Path $root "missing-completion-watchdog.exe"
@@ -584,7 +586,7 @@ public static class MissingCompletionWatchdog {
   try {
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", "1", [EnvironmentVariableTarget]::Process)
-    $commandWriteFailureStage = "behavior.watchdog-write-failure"
+    $commandWriteFailureStage = "b.wf"
     Assert-HarnessWatchdogStagePathBudget -Stage $commandWriteFailureStage
     $commandWriteFailureRecords = New-Object 'System.Collections.Generic.List[object]'
     $commandWriteFailure = $null
@@ -618,7 +620,7 @@ public static class MissingCompletionWatchdog {
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE", "1", [EnvironmentVariableTarget]::Process)
-    $unconfirmedStage = "behavior.watchdog-unconfirmed"
+    $unconfirmedStage = "b.wu"
     Assert-HarnessWatchdogStagePathBudget -Stage $unconfirmedStage
     $unconfirmedRecords = New-Object 'System.Collections.Generic.List[object]'
     $unconfirmedFailure = $null
@@ -642,7 +644,7 @@ public static class MissingCompletionWatchdog {
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $null, [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", $null, [EnvironmentVariableTarget]::Process)
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
-    $primaryFailureStage = "behavior.primary-job-unavailable"
+    $primaryFailureStage = "b.pj"
     Assert-HarnessWatchdogStagePathBudget -Stage $primaryFailureStage
     $primaryFailureRecords = New-Object 'System.Collections.Generic.List[object]'
     $primaryFailure = $null
@@ -710,7 +712,7 @@ public static class SetupTimeoutWatchdog {
   & $csc /nologo /target:exe ("/out:{0}" -f $setupTimeoutWatchdogPath) $setupTimeoutWatchdogSourcePath
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $setupTimeoutWatchdogPath -PathType Leaf)) { throw "setup timeout watchdog fixture compilation failed" }
   $setupTimeoutTranscriptPath = Join-Path $root "setup-timeout-watchdog.telemetry.log"
-  $setupTimeoutStage = "behavior.watchdog-setup-timeout"
+  $setupTimeoutStage = "b.st"
   Assert-HarnessWatchdogStagePathBudget -Stage $setupTimeoutStage
   $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
   $previousTerminateUnresumedFailure = $env:VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE
@@ -737,7 +739,7 @@ public static class SetupTimeoutWatchdog {
     $automaticConfirmationDeadlineUtc = [DateTime]::new([Int64](Get-Content -LiteralPath $automaticConfirmationDeadlinePath -Raw), [DateTimeKind]::Utc)
     Assert-True ($automaticDeadlineUtc -lt $setupTimeoutStartUtc.AddSeconds(6)) "setup timeout watchdog received the harness deadline instead of its setup deadline"
     $setupTimeoutTelemetry = Get-Content -LiteralPath $setupTimeoutTranscriptPath -Raw
-    Assert-True ($setupTimeoutTelemetry -match "stage=behavior.watchdog-setup-timeout status=suspended-process-watchdog-setup-failed detail=watchdogProcess=running;ready=missing;completion=missing;temporaryFiles=command:0,invalid:0,overflow:false;setupDeadlineUtcTicks=[0-9]+;automaticDeadlineUtcTicks=[0-9]+;automaticConfirmationDeadlineUtcTicks=[0-9]+;lastWin32Error=[0-9]+") "setup timeout did not record bounded watchdog setup diagnostics"
+    Assert-True ($setupTimeoutTelemetry -match "stage=$setupTimeoutStage status=suspended-process-watchdog-setup-failed detail=watchdogProcess=running;ready=missing;completion=missing;temporaryFiles=command:0,invalid:0,overflow:false;setupDeadlineUtcTicks=[0-9]+;automaticDeadlineUtcTicks=[0-9]+;automaticConfirmationDeadlineUtcTicks=[0-9]+;lastWin32Error=[0-9]+") "setup timeout did not record bounded watchdog setup diagnostics"
     $setupTimeoutDeadlines = [regex]::Match($setupTimeoutTelemetry, "setupDeadlineUtcTicks=([0-9]+);automaticDeadlineUtcTicks=([0-9]+);automaticConfirmationDeadlineUtcTicks=([0-9]+)")
     Assert-True $setupTimeoutDeadlines.Success "setup timeout did not record ordered watchdog deadlines"
     [Int64]$setupDeadlineTicks = $setupTimeoutDeadlines.Groups[1].Value
@@ -748,7 +750,7 @@ public static class SetupTimeoutWatchdog {
     Assert-True ($automaticConfirmationDeadlineTicks -le $setupTimeoutHarnessDeadlineUtc.Ticks) "setup timeout watchdog automatic confirmation deadline exceeded the harness cleanup deadline"
     Assert-True ($automaticDeadlineTicks -eq $automaticDeadlineUtc.Ticks) "setup timeout watchdog recorded inconsistent automatic target deadline"
     Assert-True ($automaticConfirmationDeadlineTicks -eq $automaticConfirmationDeadlineUtc.Ticks) "setup timeout watchdog recorded inconsistent automatic confirmation deadline"
-    $takeover = [regex]::Match($setupTimeoutTelemetry, "stage=behavior.watchdog-setup-timeout status=suspended-process-watchdog-terminated detail=processId=([0-9]+) completion=terminated identity=original-process-handle")
+    $takeover = [regex]::Match($setupTimeoutTelemetry, "stage=$setupTimeoutStage status=suspended-process-watchdog-terminated detail=processId=([0-9]+) completion=terminated identity=original-process-handle")
     Assert-True $takeover.Success "setup timeout did not confirm delayed watchdog takeover"
     $suspendedProcess = Get-RunningProcess -ProcessId ([int]$takeover.Groups[1].Value)
     try {
