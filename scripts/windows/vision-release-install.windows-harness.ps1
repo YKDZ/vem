@@ -132,6 +132,7 @@ function Initialize-HarnessNativeTypes {
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -696,6 +697,22 @@ public static class SuspendedProcessWatchdog {
   }
 
   public static int Main(string[] args) {
+    if (args == null || args.Length == 0) {
+      var argumentCountPath = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_ARGUMENT_COUNT_PATH");
+      if (!String.IsNullOrWhiteSpace(argumentCountPath)) { File.WriteAllText(argumentCountPath, "0"); }
+      var processIdPath = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_PROCESS_ID_PATH");
+      if (!String.IsNullOrWhiteSpace(processIdPath)) {
+        using (var currentProcess = Process.GetCurrentProcess()) {
+          File.WriteAllText(processIdPath, currentProcess.Id.ToString(CultureInfo.InvariantCulture));
+        }
+      }
+      var delayMilliseconds = 0;
+      Int32.TryParse(Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_DELAY_MILLISECONDS"), NumberStyles.None, CultureInfo.InvariantCulture, out delayMilliseconds);
+      if (delayMilliseconds > 0) { Thread.Sleep(delayMilliseconds); }
+      var exitCode = 0;
+      Int32.TryParse(Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_EXIT_CODE"), NumberStyles.Integer, CultureInfo.InvariantCulture, out exitCode);
+      return exitCode;
+    }
     if (args == null || args.Length != 6) { return 2; }
     ulong inheritedHandleValue;
     long deadlineUtcTicks;
@@ -778,6 +795,9 @@ public static class SuspendedProcessWatchdog {
         }
         Thread.Sleep(10);
       }
+    } catch (Win32Exception exception) {
+      Write(completionPath, "watchdog-failed:Win32Exception:" + exception.NativeErrorCode.ToString(CultureInfo.InvariantCulture));
+      return 1;
     } catch (Exception exception) {
       Write(completionPath, "watchdog-failed:" + exception.GetType().Name);
       return 1;
@@ -792,6 +812,66 @@ public static class SuspendedProcessWatchdog {
   & $csc /nologo /target:exe ("/out:{0}" -f $watchdogPath) $sourcePath
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $watchdogPath -PathType Leaf)) { throw "suspended-process watchdog compilation failed" }
   return $watchdogPath
+}
+function Invoke-HarnessSuspendedProcessWatchdogPreflight {
+  param(
+    [Parameter(Mandatory = $true)][string]$WatchdogPath,
+    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
+    [ValidateRange(100, 5000)][int]$CleanupReserveMilliseconds = 1000
+  )
+
+  $preflightFailFastWatchdog = Arm-HarnessFailFastWatchdog -Message "suspended-process watchdog preflight exceeded its hard deadline" -DeadlineUtc $DeadlineUtc
+  try {
+    $operationFailure = $null
+    $cleanupFailures = New-Object 'System.Collections.Generic.List[System.Exception]'
+    $process = $null
+    try {
+      try {
+        if (-not (Test-Path -LiteralPath $WatchdogPath -PathType Leaf)) { throw "suspended-process watchdog executable is missing: $WatchdogPath" }
+        $executionDeadlineUtc = $DeadlineUtc.AddMilliseconds(-$CleanupReserveMilliseconds)
+        if ((Get-HarnessRemainingMilliseconds -DeadlineUtc $executionDeadlineUtc) -le 0) { throw "suspended-process watchdog preflight cannot start before its cleanup reserve" }
+
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $WatchdogPath
+        $startInfo.Arguments = ""
+        $startInfo.WorkingDirectory = Split-Path -Parent $WatchdogPath
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $process = [Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $process) { throw "suspended-process watchdog preflight did not start" }
+        $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $executionDeadlineUtc
+        if (-not $process.WaitForExit($remainingMilliseconds)) { throw "suspended-process watchdog preflight timed out before its cleanup reserve" }
+        if ($process.ExitCode -ne 0) { throw "suspended-process watchdog preflight exited with code $($process.ExitCode)" }
+      } catch {
+        $operationFailure = $_.Exception
+      }
+    } finally {
+      if ($null -ne $process) {
+        try {
+          if (-not $process.HasExited) {
+            try { $process.Kill() } catch { if (-not $process.HasExited) { throw } }
+            $cleanupMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
+            if (-not $process.WaitForExit($cleanupMilliseconds)) { throw "suspended-process watchdog preflight cleanup could not confirm process termination before its hard deadline" }
+          }
+          if ($env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_FORCE_CLEANUP_FAILURE -eq "1") { throw "suspended-process watchdog preflight fixture forced cleanup failure" }
+        } catch {
+          $cleanupFailures.Add($_.Exception)
+        } finally {
+          try { $process.Dispose() } catch { $cleanupFailures.Add($_.Exception) }
+        }
+      }
+    }
+    if ($null -ne $operationFailure -and $cleanupFailures.Count -gt 0) {
+      $failures = New-Object 'System.Collections.Generic.List[System.Exception]'
+      $failures.Add($operationFailure)
+      foreach ($cleanupFailure in $cleanupFailures) { $failures.Add($cleanupFailure) }
+      throw [AggregateException]::new("suspended-process watchdog preflight failed and cleanup failed", $failures)
+    }
+    if ($null -ne $operationFailure) { throw $operationFailure }
+    if ($cleanupFailures.Count -gt 0) { throw [AggregateException]::new("suspended-process watchdog preflight cleanup failed", $cleanupFailures) }
+  } finally {
+    $preflightFailFastWatchdog.Dispose()
+  }
 }
 function Start-HarnessSuspendedProcessWatchdog {
   param(
@@ -856,7 +936,7 @@ function Get-HarnessSuspendedProcessWatchdogCompletion {
 
   if (-not (Test-Path -LiteralPath $Watchdog.completionPath -PathType Leaf)) { return $null }
   $completion = (Get-Content -LiteralPath $Watchdog.completionPath -Raw -Encoding UTF8).Trim()
-  if ($completion -notmatch "^(exited|terminated|disarmed|wait-failed:[0-9]+|terminate-failed:[0-9]+|terminate-unconfirmed|command-invalid|watchdog-failed:[A-Za-z0-9_]+)$") { return $null }
+  if ($completion -notmatch "^(exited|terminated|disarmed|wait-failed:[0-9]+|terminate-failed:[0-9]+|terminate-unconfirmed|command-invalid|watchdog-failed:[A-Za-z0-9_]+(?::[0-9]+)?)$") { return $null }
   return $completion
 }
 function Assert-HarnessSuspendedProcessWatchdogCompletion {
@@ -1309,6 +1389,11 @@ try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   Assert-True (Test-Path -LiteralPath $csc -PathType Leaf) "C# compiler missing from Windows runner"
   $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $watchdogPreflightDeadlineUtc = [DateTime]::UtcNow.AddSeconds(35)
+  $harnessPreflightDeadlineUtc = $harnessDeadlineUtc.AddSeconds(-$CleanupReserveSeconds)
+  if ($watchdogPreflightDeadlineUtc -gt $harnessPreflightDeadlineUtc) { $watchdogPreflightDeadlineUtc = $harnessPreflightDeadlineUtc }
+  Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc $watchdogPreflightDeadlineUtc
+  Write-HarnessStage "harness" "suspended-process-watchdog-preflight-completed"
   Write-Json $certificateCleanupMarkerPath @{ schemaVersion="vem-vision-harness-certificate-cleanup/v1"; certificateSubject=$certificateSubject; certificateThumbprint=$null }
   Write-Json $harnessContextPath $harnessContext
   Write-HarnessStage "harness" "started"

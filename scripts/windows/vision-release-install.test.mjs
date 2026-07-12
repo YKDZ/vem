@@ -119,7 +119,7 @@ describe("Vision release installer fixtures", () => {
 
   boundedIt(
     "captures a Windows PowerShell 5.1 child stdout and non-terminating stderr through the bounded native process",
-    { skip: process.platform !== "win32" },
+    { skip: process.platform !== "win32", timeout: 120_000 },
     () => {
       const probe = String.raw`
 $ErrorActionPreference = "Stop"
@@ -129,6 +129,8 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-node-streams-" + [guid
 try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $watchdogPreflightDeadlineUtc = [DateTime]::UtcNow.AddSeconds(35)
+  Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc $watchdogPreflightDeadlineUtc
   $contextPath = Join-Path $root "context.json"
   Write-Json $contextPath ([ordered]@{ root=$root; stateRoot=(Join-Path $root "state"); bundleDigest="sha256:node-streams" })
   $childPowerShellPath = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -166,14 +168,18 @@ exit 23
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 `;
-      const result = spawnBounded("pwsh", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        probe,
-      ]);
+      const result = spawnBounded(
+        "pwsh",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          probe,
+        ],
+        { timeout: 90_000 },
+      );
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     },
   );
@@ -240,6 +246,10 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.match(streamProbe, /spawnBounded\(\s*"pwsh"/);
       assert.doesNotMatch(streamProbe, /spawnBounded\(\s*"powershell\.exe"/);
+      assert.match(
+        streamProbe,
+        /\$script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot \$root[\s\S]*?Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath \$script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc \$watchdogPreflightDeadlineUtc[\s\S]*?\$clean = Invoke-BoundedPowerShell/,
+      );
       assert.match(source, /function Invoke-BoundedPowerShell/);
     },
   );
@@ -656,6 +666,36 @@ Start-Sleep -Seconds 30
         '. ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; $budget=Get-HarnessWatchdogSetupBudgetMilliseconds -AvailableMilliseconds 45000; if($budget -ne 30000){throw "expected 30000ms bounded watchdog setup budget, got $budget"}',
       ]);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "keeps watchdog preflight bounded across synchronous process operations",
+    () => {
+      const harness = readFileSync(windowsHarness, "utf8");
+      const preflight = harness.match(
+        /function Invoke-HarnessSuspendedProcessWatchdogPreflight \{([\s\S]*?)\r?\n\}\r?\nfunction Start-HarnessSuspendedProcessWatchdog/,
+      )?.[1];
+
+      assert.ok(preflight, "watchdog preflight helper is missing");
+      assert.match(
+        preflight,
+        /\$preflightFailFastWatchdog = Arm-HarnessFailFastWatchdog -Message "suspended-process watchdog preflight exceeded its hard deadline" -DeadlineUtc \$DeadlineUtc/,
+      );
+      assert.match(preflight, /\$operationFailure = \$null/);
+      assert.match(
+        preflight,
+        /\$cleanupFailures = New-Object 'System\.Collections\.Generic\.List\[System\.Exception\]'/,
+      );
+      assert.match(
+        preflight,
+        /\[AggregateException\]::new\("suspended-process watchdog preflight failed and cleanup failed", \$failures\)/,
+      );
+      assert.match(
+        preflight,
+        /finally \{\s+\$preflightFailFastWatchdog\.Dispose\(\)\s+\}/,
+      );
+      assert.doesNotMatch(preflight, /\bTask\b/);
     },
   );
 

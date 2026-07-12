@@ -170,14 +170,14 @@ $hardWatchdogHost = $null
 $watchdog = $null
 
 try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(35))
   $deadlineStartUtc = [DateTime]::UtcNow
   $script:deadlineUtc = $deadlineStartUtc.AddSeconds($DeadlineSeconds)
   $hardDeadlineUtc = $deadlineStartUtc.AddSeconds($HardDeadlineSeconds)
   $watchdogMessage = "vision installer harness behavior test exceeded its $HardDeadlineSeconds-second hard deadline"
   $watchdog = Arm-HarnessFailFastWatchdog -Message $watchdogMessage -DeadlineUtc $hardDeadlineUtc
-
-  New-Item -ItemType Directory -Force -Path $root | Out-Null
-  $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
   $layoutJob = New-HarnessKillOnCloseJob
   try {
     [VemVisionHarness.KillOnCloseJob]::AssertNativeLayout()
@@ -263,6 +263,70 @@ try {
   Assert-True (Test-Path -LiteralPath (Join-Path $returned.diagnosticsPath "stdout.log") -PathType Leaf) "bounded invocation did not write a stdout log"
   Assert-True (Test-Path -LiteralPath (Join-Path $returned.diagnosticsPath "stderr.log") -PathType Leaf) "bounded invocation did not write a stderr log"
   Assert-True (($returned.PSObject.Properties.Name -join ",") -ceq "stdout,stderr,diagnosticsPath") "bounded invocation result shape changed"
+
+  Assert-BeforeDeadline
+  $preflightArgumentCountPath = Join-Path $root "watchdog-preflight-argument-count"
+  $preflightProcessIdPath = Join-Path $root "watchdog-preflight-process-id"
+  $previousPreflightArgumentCountPath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_ARGUMENT_COUNT_PATH", [EnvironmentVariableTarget]::Process)
+  $previousPreflightProcessIdPath = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_PROCESS_ID_PATH", [EnvironmentVariableTarget]::Process)
+  $previousPreflightDelay = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_DELAY_MILLISECONDS", [EnvironmentVariableTarget]::Process)
+  $previousPreflightExitCode = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_EXIT_CODE", [EnvironmentVariableTarget]::Process)
+  $previousPreflightCleanupFailure = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_FORCE_CLEANUP_FAILURE", [EnvironmentVariableTarget]::Process)
+  try {
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_ARGUMENT_COUNT_PATH", $preflightArgumentCountPath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_PROCESS_ID_PATH", $preflightProcessIdPath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_DELAY_MILLISECONDS", "75", [EnvironmentVariableTarget]::Process)
+    Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) -CleanupReserveMilliseconds 250
+    Assert-True ((Get-Content -LiteralPath $preflightArgumentCountPath -Raw).Trim() -ceq "0") "watchdog preflight passed arguments to the executable"
+    $preflightProcess = Get-RunningProcess -ProcessId ([int](Get-Content -LiteralPath $preflightProcessIdPath -Raw))
+    try {
+      Assert-True ($null -eq $preflightProcess) "watchdog preflight leaked its completed process"
+    } finally {
+      if ($null -ne $preflightProcess) { $preflightProcess.Dispose() }
+    }
+    $watchdogRoot = Split-Path -Parent $script:HarnessSuspendedProcessWatchdogPath
+    Assert-True (@(Get-ChildItem -LiteralPath $watchdogRoot -Recurse -File | Where-Object { $_.Name -in @("ready", "command") }).Count -eq 0) "watchdog preflight wrote a runtime signal"
+
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_DELAY_MILLISECONDS", $null, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_EXIT_CODE", "23", [EnvironmentVariableTarget]::Process)
+    $nonzeroFailure = $null
+    try { Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) -CleanupReserveMilliseconds 250 } catch { $nonzeroFailure = $_.Exception.Message }
+    Assert-True ($nonzeroFailure -match "exited with code 23") "watchdog preflight did not diagnose its nonzero exit: $nonzeroFailure"
+
+    Remove-Item -LiteralPath $preflightProcessIdPath -Force -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_EXIT_CODE", $null, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_DELAY_MILLISECONDS", "5000", [EnvironmentVariableTarget]::Process)
+    $timeoutFailure = $null
+    try { Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3)) -CleanupReserveMilliseconds 1000 } catch { $timeoutFailure = $_.Exception.Message }
+    Assert-True ($timeoutFailure -match "timed out") "watchdog preflight timeout did not fail: $timeoutFailure"
+    $timedOutPreflightProcess = Get-RunningProcess -ProcessId ([int](Get-Content -LiteralPath $preflightProcessIdPath -Raw))
+    try {
+      Assert-True ($null -eq $timedOutPreflightProcess) "watchdog preflight timeout leaked its process"
+    } finally {
+      if ($null -ne $timedOutPreflightProcess) { $timedOutPreflightProcess.Dispose() }
+    }
+
+    Remove-Item -LiteralPath $preflightProcessIdPath -Force -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_FORCE_CLEANUP_FAILURE", "1", [EnvironmentVariableTarget]::Process)
+    $aggregateFailure = $null
+    try { Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3)) -CleanupReserveMilliseconds 1000 } catch { $aggregateFailure = $_.Exception }
+    Assert-True ($aggregateFailure -is [AggregateException]) "preflight timeout cleanup failure did not produce AggregateException: $aggregateFailure"
+    $aggregateMessages = @($aggregateFailure.InnerExceptions | ForEach-Object { $_.Message }) -join "`n"
+    Assert-True ($aggregateMessages -match "timed out") "preflight aggregate omitted its timeout failure: $aggregateMessages"
+    Assert-True ($aggregateMessages -match "fixture forced cleanup failure") "preflight aggregate omitted its cleanup failure: $aggregateMessages"
+    $aggregatePreflightProcess = Get-RunningProcess -ProcessId ([int](Get-Content -LiteralPath $preflightProcessIdPath -Raw))
+    try {
+      Assert-True ($null -eq $aggregatePreflightProcess) "preflight aggregate cleanup leaked its process"
+    } finally {
+      if ($null -ne $aggregatePreflightProcess) { $aggregatePreflightProcess.Dispose() }
+    }
+  } finally {
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_ARGUMENT_COUNT_PATH", $previousPreflightArgumentCountPath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_PROCESS_ID_PATH", $previousPreflightProcessIdPath, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_DELAY_MILLISECONDS", $previousPreflightDelay, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_EXIT_CODE", $previousPreflightExitCode, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_PREFLIGHT_FORCE_CLEANUP_FAILURE", $previousPreflightCleanupFailure, [EnvironmentVariableTarget]::Process)
+  }
 
   Assert-BeforeDeadline
   $slowWatchdogPath = Join-Path $root "slow-watchdog.exe"
