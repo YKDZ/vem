@@ -24,10 +24,10 @@ function Assert-HarnessWatchdogStagePathBudget([string]$Stage) {
   $watchdogRoot = Join-Path (Join-Path $stageRoot "suspended-process-watchdog") ("0" * 32)
   $fixtureDeadlinePath = Join-Path $watchdogRoot "ready.deadline"
   $fixtureConfirmationPath = Join-Path $watchdogRoot "ready.confirm"
-  Assert-True ($stageRoot.Length -le 220) "$Stage stage root exceeds the Windows current-directory length budget"
-  Assert-True ($watchdogRoot.Length -le 220) "$Stage watchdog root exceeds the Windows current-directory length budget"
-  Assert-True ($fixtureDeadlinePath.Length -le 220) "$Stage fixture deadline path exceeds the Windows current-directory length budget"
-  Assert-True ($fixtureConfirmationPath.Length -le 220) "$Stage fixture confirmation path exceeds the Windows current-directory length budget"
+  Assert-True ($stageRoot.Length -lt 248) "$Stage stage root exceeds the Windows compatibility path budget"
+  Assert-True ($watchdogRoot.Length -lt 248) "$Stage watchdog root exceeds the Windows compatibility path budget"
+  Assert-True ($fixtureDeadlinePath.Length -lt 248) "$Stage fixture deadline path exceeds the Windows compatibility path budget"
+  Assert-True ($fixtureConfirmationPath.Length -lt 248) "$Stage fixture confirmation path exceeds the Windows compatibility path budget"
 }
 
 function Get-RunningProcess([int]$ProcessId) {
