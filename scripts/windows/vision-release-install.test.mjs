@@ -384,6 +384,15 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.doesNotMatch(inheritedWatchdog, /OpenProcess/);
       assert.doesNotMatch(inheritedWatchdog, /GetProcessById/);
+      assert.match(inheritedWatchdog, /File\.Move\(temporaryPath, path\);/);
+      assert.match(
+        inheritedWatchdog,
+        /finally \{\s+if \(File\.Exists\(temporaryPath\)\) \{ File\.Delete\(temporaryPath\); \}\s+\}/,
+      );
+      assert.doesNotMatch(
+        inheritedWatchdog,
+        /MoveFileExW|MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH/,
+      );
     },
   );
 
@@ -626,7 +635,7 @@ Start-Sleep -Seconds 30
   );
 
   boundedIt(
-    "atomically overwrites an existing watchdog signal with Windows PowerShell 5.1",
+    "atomically overwrites an existing watchdog command signal with Windows PowerShell 5.1",
     { skip: process.platform !== "win32" },
     () => {
       const probe = String.raw`
@@ -640,6 +649,40 @@ try {
   Write-HarnessAtomicUtf8 -Path $path -Text "new"
   if ((Get-Content -LiteralPath $path -Raw -Encoding UTF8) -cne "new") { throw "atomic write did not replace an existing target" }
   if (@(Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -like ".command.*.tmp" }).Count -ne 0) { throw "atomic write left a temporary file" }
+} finally {
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "keeps watchdog ready and completion signals create-once with Windows PowerShell 5.1",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-create-once-" + [guid]::NewGuid().ToString("N"))
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $destinationPath = Join-Path $root "ready"
+  $temporaryPath = Join-Path $root ".ready.0123456789abcdef0123456789abcdef.tmp"
+  [IO.File]::WriteAllText($destinationPath, "armed", [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($temporaryPath, "replacement", [Text.UTF8Encoding]::new($false))
+  $moveFailure = $null
+  try { [IO.File]::Move($temporaryPath, $destinationPath) } catch [IO.IOException] { $moveFailure = $_.Exception }
+  if ($null -eq $moveFailure) { throw "create-once watchdog signal unexpectedly replaced its destination" }
+  if ((Get-Content -LiteralPath $destinationPath -Raw -Encoding UTF8) -cne "armed") { throw "create-once watchdog signal modified its destination" }
+  if (-not (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) { throw "failed create-once publish unexpectedly removed its temporary file" }
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -642,20 +642,12 @@ public static class SuspendedProcessWatchdog {
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern bool CloseHandle(IntPtr handle);
 
-  private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
-  private const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
-
-  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  private static extern bool MoveFileExW(string existingFileName, string newFileName, uint flags);
-
   private static void Write(string path, string value) {
     var directory = Path.GetDirectoryName(path);
     var temporaryPath = Path.Combine(directory, "." + Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
     try {
       File.WriteAllText(temporaryPath, value);
-      if (!MoveFileExW(temporaryPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        throw new Win32Exception(Marshal.GetLastWin32Error(), "MoveFileExW atomic replace failed");
-      }
+      File.Move(temporaryPath, path);
     } finally {
       if (File.Exists(temporaryPath)) { File.Delete(temporaryPath); }
     }
