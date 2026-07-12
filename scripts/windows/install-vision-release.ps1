@@ -321,7 +321,15 @@ function Assert-InstalledRelease([object]$Record, [object]$Selection) {
   Assert-Digest ([string]$Record.entrypointDigest) "Vision entrypoint"; [void](Get-CanonicalContainedPath $releaseRoot ([string]$Record.installDirectory) "Vision release directory")
   $actual = Get-ExtractedFileManifest ([string]$Record.installDirectory)
   $expected = @($Record.files)
-  if ($actual.Count -ne $expected.Count -or (($actual | ConvertTo-Json -Depth 8 -Compress) -cne ($expected | ConvertTo-Json -Depth 8 -Compress))) { Throw-InstallError "installed Vision release files do not match immutable metadata" }
+  if ($actual.Count -ne $expected.Count) { Throw-InstallError "installed Vision release files do not match immutable metadata" }
+  for ($index = 0; $index -lt $actual.Count; $index++) {
+    Assert-Keys $expected[$index] @("path", "bytes", "digest") "Vision release file record"
+    if (
+      [string]$actual[$index].path -cne [string]$expected[$index].path -or
+      [Int64]$actual[$index].bytes -ne [Int64]$expected[$index].bytes -or
+      [string]$actual[$index].digest -cne [string]$expected[$index].digest
+    ) { Throw-InstallError "installed Vision release files do not match immutable metadata" }
+  }
   $entrypoint = Join-TrustedRelativePath $Record.installDirectory $Record.entrypoint "Vision entrypoint"
   if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf) -or ("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $Record.entrypointDigest) { Throw-InstallError "installed Vision entrypoint digest does not match immutable metadata" }
 }

@@ -132,6 +132,11 @@ describe("Vision release installer fixtures", () => {
       "utf8",
     );
     assert.match(source, /\$evidence = \[pscustomobject\]\[ordered\]@\{/);
+    assert.match(source, /Assert-Keys \$expected\[\$index\]/);
+    assert.doesNotMatch(
+      source,
+      /\$actual \| ConvertTo-Json[^\n]+\$expected \| ConvertTo-Json/,
+    );
   });
 
   boundedIt("binds Factory approval identities to approval bytes", () => {
