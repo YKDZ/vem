@@ -1960,6 +1960,7 @@ Write-Utf8 (Join-Path $context.stateRoot "config\fixture.json") "{}"
     try {
       Invoke-BoundedPowerShell -Stage "fixture.signed-install.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 try {
+if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
 $factoryDelivery = Join-Path $context.factoryRoot "vision-release"
 & "C:\VEM\bringup\install-vision-release.ps1" -BundlePath (Join-Path $factoryDelivery "bundle.bin") -DescriptorPath (Join-Path $factoryDelivery "descriptor.json") -AttestationPath (Join-Path $factoryDelivery "attestation.json") -SbomPath (Join-Path $factoryDelivery "sbom.json") -ProvenancePath (Join-Path $factoryDelivery "provenance.json") -ConformanceEvidencePath (Join-Path $factoryDelivery "conformance.json") -ApprovalPath (Join-Path $factoryDelivery "approval.json") -FactoryManifestPath (Join-Path $factoryDelivery "factory-manifest.json") -ConfigurationPath (Join-Path $context.stateRoot "config\fixture.json") -EvidencePath $context.evidencePath -TaskUser $env:USERNAME
 $evidence = Get-Content -LiteralPath $context.evidencePath -Raw | ConvertFrom-Json
@@ -1984,6 +1985,7 @@ Assert-True ($acl.AreAccessRulesProtected) "selection ACL is inherited"
     try {
       Invoke-BoundedPowerShell -Stage "fixture.rollback-reinstall.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 try {
+if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
 $factoryRoot = $context.factoryRoot
 $stateRoot = $context.stateRoot
 $evidencePath = $context.evidencePath

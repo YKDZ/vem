@@ -187,6 +187,16 @@ describe("Vision release installer fixtures", () => {
     assert.match(source, /kiosk-account-created/);
   });
 
+  boundedIt("restores system modules for Windows PowerShell installs", () => {
+    const source = readFileSync(windowsHarness, "utf8");
+    assert.equal(
+      source.match(
+        /\$PSVersionTable\.PSEdition -eq "Desktop"\) \{ \$env:PSModulePath = "\$env:WINDIR\\System32\\WindowsPowerShell\\v1\.0\\Modules;/g,
+      )?.length,
+      2,
+    );
+  });
+
   boundedIt(
     "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",
     () => {
