@@ -382,6 +382,14 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
         inheritedWatchdog,
         "inherited-handle watchdog source is missing",
       );
+      assert.match(
+        harness,
+        /public sealed class RetainedWatchdogProcess : IDisposable \{[\s\S]*?public bool WaitForExit\(uint waitMilliseconds\)[\s\S]*?public bool HasExited[\s\S]*?public int ExitCode[\s\S]*?public void Dispose\(\)/,
+      );
+      assert.match(
+        harness,
+        /public RetainedWatchdogProcess StartInheritedHandleWatchdog\([\s\S]*?return new RetainedWatchdogProcess\(processInformation\.hProcess, processInformation\.dwProcessId\);/,
+      );
       assert.doesNotMatch(inheritedWatchdog, /OpenProcess/);
       assert.doesNotMatch(inheritedWatchdog, /GetProcessById/);
       assert.match(inheritedWatchdog, /File\.Move\(temporaryPath, path\);/);
@@ -711,6 +719,7 @@ try {
     )?.[1];
     assert.ok(startFunction, "watchdog start helper is missing");
     assert.doesNotMatch(startFunction, /Write-Output/);
+    assert.doesNotMatch(startFunction, /GetProcessById|watchdogProcessId/);
     assert.match(
       startFunction,
       /catch \{[\s\S]*?if \(\$null -ne \$process\) \{[\s\S]*?\[void\]\(\$WatchdogReference\.Value = \$watchdog\)[\s\S]*?\$_\.Exception\.Data\["VemVisionHarness\.SuspendedProcessWatchdog"\] = \$watchdog[\s\S]*?\}[\s\S]*?\$diagnostic = Get-HarnessSuspendedProcessWatchdogSetupFailureDiagnostic/,
@@ -755,6 +764,57 @@ try {
       /try \{\s+Start-HarnessSuspendedProcessWatchdog -StageRoot \$stageRoot[\s\S]*?\} catch \{\s+\$watchdogSetupDiagnostic = \[string\]\$_.Exception.Data\["VemVisionHarness\.SuspendedProcessWatchdogSetupDiagnostic"\][\s\S]*?Write-HarnessStage \$Stage "suspended-process-watchdog-setup-failed" \$watchdogSetupDiagnostic[\s\S]*?throw\s+\}/,
     );
   });
+
+  boundedIt(
+    "retains an immediate watchdog exit handle without reopening its PID on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-retained-watchdog-" + [guid]::NewGuid().ToString("N"))
+$nativeProcess = $null
+$watchdogProcess = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+  if (-not (Test-Path -LiteralPath $csc -PathType Leaf)) { throw "C# compiler missing" }
+  $sourcePath = Join-Path $root "ExitTwo.cs"
+  $watchdogPath = Join-Path $root "exit-two.exe"
+  [IO.File]::WriteAllText($sourcePath, 'public static class ExitTwo { public static int Main(string[] args) { return 2; } }', [Text.UTF8Encoding]::new($false))
+  & $csc /nologo /target:exe ("/out:{0}" -f $watchdogPath) $sourcePath
+  if ($LASTEXITCODE -ne 0) { throw "immediate-exit watchdog fixture compilation failed" }
+  $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+  $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
+  $watchdogProcess = $nativeProcess.StartInheritedHandleWatchdog($watchdogPath, [string[]]@("reserved", "command", "ready", "completion", "1", "2"), $root)
+  if (-not $watchdogProcess.WaitForExit(5000) -or -not $watchdogProcess.HasExited) { throw "retained watchdog did not report its immediate exit" }
+  if ($watchdogProcess.ExitCode -ne 2) { throw "retained watchdog lost its immediate exit code: $($watchdogProcess.ExitCode)" }
+  $watchdogProcess.Dispose()
+  $watchdogProcess.Dispose()
+  $disposedFailure = $null
+  try { $watchdogProcess.WaitForExit(0) | Out-Null } catch [ObjectDisposedException] { $disposedFailure = $_.Exception }
+  if ($null -eq $disposedFailure) { throw "retained watchdog wrapper remained usable after Dispose" }
+  $watchdogProcess = $null
+} finally {
+  if ($null -ne $watchdogProcess) { $watchdogProcess.Dispose() }
+  if ($null -ne $nativeProcess) {
+    try { if (-not $nativeProcess.WaitForExit(0)) { $nativeProcess.TerminateUnresumed(2000) } } finally { $nativeProcess.Dispose() }
+  }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
 
   boundedIt(
     "returns a watchdog only through ref without success-stream output on Windows",
@@ -900,7 +960,7 @@ foreach ($terminationResult in @("success", "failure")) {
     $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
     $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
     Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -ConfirmationReserveMilliseconds 100 -Watchdog ([ref]$watchdog) | Out-Null
-    $watchdogProcessId = $watchdog.process.Id
+    $watchdogProcessId = $watchdog.process.ProcessId
     $confirmationDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(1500)
     $parentDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
     Write-HarnessAtomicUtf8 $watchdog.commandPath ("terminate:" + $confirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) | Out-Null
@@ -999,6 +1059,7 @@ $ErrorActionPreference = "Stop"
 . (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-slow-start-" + [guid]::NewGuid().ToString("N"))
 $child = $null
+$watchdogWrapper = $null
 $watchdog = $null
 try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
@@ -1007,12 +1068,17 @@ try {
   $startInfo.Arguments = '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 30"'
   $startInfo.UseShellExecute = $false
   $child = [Diagnostics.Process]::Start($startInfo)
-  $nativeProcess = [pscustomobject]@{ ProcessId=4243; child=$child }
+  $watchdogWrapper = [pscustomobject]@{ child=$child; ProcessId=$child.Id; disposeCalls=0 }
+  $watchdogWrapper | Add-Member -MemberType ScriptProperty -Name HasExited -Value { $this.child.HasExited }
+  $watchdogWrapper | Add-Member -MemberType ScriptProperty -Name ExitCode -Value { $this.child.ExitCode }
+  $watchdogWrapper | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($milliseconds) return $this.child.WaitForExit($milliseconds) }
+  $watchdogWrapper | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.disposeCalls++ }
+  $nativeProcess = [pscustomobject]@{ ProcessId=4243; watchdogWrapper=$watchdogWrapper }
   $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value {
     param($watchdogPath, $arguments, $workingDirectory)
     [IO.File]::WriteAllText((Join-Path $workingDirectory ".ready.0123456789abcdef0123456789abcdef.tmp"), "temporary", [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $workingDirectory ".ready.fixture.tmp"), "invalid", [Text.UTF8Encoding]::new($false))
-    return $this.child.Id
+    return $this.watchdogWrapper
   }
   $failure = $null
   try { Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_ }
@@ -1023,7 +1089,7 @@ try {
   if ($diagnostic -notmatch "watchdogProcess=running;ready=missing;completion=missing;temporaryFiles=ready:1,command:0,completion:0,invalid:1,overflow:false;setupDeadlineUtcTicks=[0-9]+;automaticDeadlineUtcTicks=[0-9]+;automaticConfirmationDeadlineUtcTicks=[0-9]+;lastWin32Error=[0-9]+") { throw "slow watchdog start did not attach bounded setup diagnostics: $diagnostic" }
   if ($diagnostic -match [regex]::Escape($root) -or $diagnostic -match "processId|handle|0123456789abcdef|fixture") { throw "slow watchdog setup diagnostics leaked a secret process detail: $diagnostic" }
   Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null
-  if (-not $watchdog.disposed) { throw "failed watchdog setup leaked its watchdog process wrapper" }
+  if (-not $watchdog.disposed -or $watchdogWrapper.disposeCalls -ne 1) { throw "failed watchdog setup leaked its watchdog process wrapper" }
   $watchdog = $null
 } finally {
   if ($null -ne $watchdog -and -not $watchdog.disposed) { Close-HarnessSuspendedProcessWatchdog -Watchdog $watchdog | Out-Null }
@@ -1065,7 +1131,7 @@ try {
   $startInfo.UseShellExecute = $false
   $child = [Diagnostics.Process]::Start($startInfo)
   $nativeProcess = [pscustomobject]@{ ProcessId=4242; child=$child }
-  $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value { param($watchdogPath, $arguments, $workingDirectory) return $this.child.Id }
+  $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value { param($watchdogPath, $arguments, $workingDirectory) return $this.child }
   $failure = $null
   try { Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(800)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_.Exception.Message }
   if ([string]::IsNullOrWhiteSpace($failure) -or $failure -notmatch "did not inherit") { throw "stale ready signal was accepted: $failure" }

@@ -153,6 +153,57 @@ namespace VemVisionHarness {
     }
   }
 
+  public sealed class RetainedWatchdogProcess : IDisposable {
+    private const uint WAIT_OBJECT_0 = 0;
+    private const uint WAIT_FAILED = 0xFFFFFFFF;
+    private IntPtr processHandle;
+    private readonly uint processId;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    internal RetainedWatchdogProcess(IntPtr processHandle, uint processId) {
+      if (processHandle == IntPtr.Zero) { throw new ArgumentException("watchdog process handle is required", "processHandle"); }
+      this.processHandle = processHandle;
+      this.processId = processId;
+    }
+
+    public uint ProcessId { get { return processId; } }
+
+    public bool WaitForExit(uint waitMilliseconds) {
+      var handle = processHandle;
+      if (handle == IntPtr.Zero) { throw new ObjectDisposedException("RetainedWatchdogProcess"); }
+      var waitResult = WaitForSingleObject(handle, waitMilliseconds);
+      if (waitResult == WAIT_OBJECT_0) { return true; }
+      if (waitResult == WAIT_FAILED) { throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject for watchdog failed"); }
+      return false;
+    }
+
+    public bool HasExited { get { return WaitForExit(0); } }
+
+    public int ExitCode {
+      get {
+        var handle = processHandle;
+        if (handle == IntPtr.Zero) { throw new ObjectDisposedException("RetainedWatchdogProcess"); }
+        uint exitCode;
+        if (!GetExitCodeProcess(handle, out exitCode)) { throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess for watchdog failed"); }
+        return unchecked((int)exitCode);
+      }
+    }
+
+    public void Dispose() {
+      var handle = Interlocked.Exchange(ref processHandle, IntPtr.Zero);
+      if (handle != IntPtr.Zero && !CloseHandle(handle)) { throw new Win32Exception(Marshal.GetLastWin32Error(), "CloseHandle for watchdog process failed"); }
+      GC.SuppressFinalize(this);
+    }
+  }
+
   public sealed class SuspendedProcess : IDisposable {
     private const uint CREATE_SUSPENDED = 0x00000004;
     private const uint CREATE_NO_WINDOW = 0x08000000;
@@ -300,7 +351,7 @@ namespace VemVisionHarness {
       return new SuspendedProcess(processInformation.hProcess, processInformation.hThread, processInformation.dwProcessId);
     }
 
-    public uint StartInheritedHandleWatchdog(string applicationName, string[] arguments, string currentDirectory) {
+    public RetainedWatchdogProcess StartInheritedHandleWatchdog(string applicationName, string[] arguments, string currentDirectory) {
       if (processHandle == IntPtr.Zero) { throw new ObjectDisposedException("SuspendedProcess"); }
       if (arguments == null || arguments.Length < 1) { throw new ArgumentException("watchdog arguments must reserve index zero for its inherited process handle", "arguments"); }
       IntPtr inheritedHandle;
@@ -321,10 +372,16 @@ namespace VemVisionHarness {
         if (!CreateProcessW(applicationName, commandLine, IntPtr.Zero, IntPtr.Zero, true, CREATE_NO_WINDOW, IntPtr.Zero, currentDirectory, ref startupInfo, out processInformation)) {
           throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessW for watchdog failed");
         }
-        if (processInformation.hThread != IntPtr.Zero) { CloseHandle(processInformation.hThread); }
-        if (processInformation.hProcess == IntPtr.Zero) { throw new InvalidOperationException("CreateProcessW for watchdog returned no process handle"); }
-        CloseHandle(processInformation.hProcess);
-        return processInformation.dwProcessId;
+        if (processInformation.hProcess == IntPtr.Zero) {
+          if (processInformation.hThread != IntPtr.Zero) { CloseHandle(processInformation.hThread); }
+          throw new InvalidOperationException("CreateProcessW for watchdog returned no process handle");
+        }
+        if (processInformation.hThread != IntPtr.Zero && !CloseHandle(processInformation.hThread)) {
+          var errorCode = Marshal.GetLastWin32Error();
+          CloseHandle(processInformation.hProcess);
+          throw new Win32Exception(errorCode, "CloseHandle for watchdog thread failed");
+        }
+        return new RetainedWatchdogProcess(processInformation.hProcess, processInformation.dwProcessId);
       } finally {
         CloseHandle(inheritedHandle);
       }
@@ -997,12 +1054,10 @@ function Start-HarnessSuspendedProcessWatchdog {
   $automaticConfirmationDeadlineUtcTicks = $automaticConfirmationDeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   # StartInheritedHandleWatchdog replaces this reserved argument with the inheritable DuplicateHandle value.
   $arguments = @("inherited-process-handle", $commandPath, $readyPath, $completionPath, $deadlineUtcTicks, $automaticConfirmationDeadlineUtcTicks)
-  $watchdogProcessId = $null
   $process = $null
   $setupCleanupDeadlineUtc = $DeadlineUtc
   try {
-    $watchdogProcessId = $NativeProcess.StartInheritedHandleWatchdog($WatchdogPath, [string[]]$arguments, $watchdogRoot)
-    $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId)
+    $process = $NativeProcess.StartInheritedHandleWatchdog($WatchdogPath, [string[]]$arguments, $watchdogRoot)
 
     $setupCleanupReserveMilliseconds = [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($remainingMilliseconds / 4)))
     $readyDeadlineUtc = $SetupDeadlineUtc.AddMilliseconds(-$setupCleanupReserveMilliseconds)
@@ -1015,7 +1070,6 @@ function Start-HarnessSuspendedProcessWatchdog {
     [void]($WatchdogReference.Value = $watchdog)
     return
   } catch {
-    if ($null -eq $process -and $null -ne $watchdogProcessId) { try { $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId) } catch { } }
     if ($null -ne $process) {
       $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
       [void]($WatchdogReference.Value = $watchdog)
