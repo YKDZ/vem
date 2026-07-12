@@ -461,6 +461,23 @@ exit 0
 '
       Assert-True ($ps51Returned.stdout.Trim() -ceq "ps51-stdout") "PS5.1 native wrapper did not capture stdout"
       Assert-True ($ps51Returned.stderr -match "(?m)(?<!\S)VEM_VISION_HARNESS_PS51_STDERR(?!\S)") "PS5.1 native wrapper did not capture its non-terminating stderr marker"
+
+      $ps51NonzeroFailure = $null
+      try {
+        Invoke-BoundedPowerShell -Stage "behavior.ps51-native-wrapper-nonzero" -TimeoutSeconds 5 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $windowsPowerShell -HarnessDeadlineUtc $deadlineUtc -ScriptBody '
+if ($env:VEM_VISION_HARNESS_PS51_ENV -cne "native-wrapper") { throw "PS5.1 native wrapper nonzero invocation did not inherit its environment" }
+Write-Output nonzero-stdout
+Write-Error "VEM_VISION_HARNESS_PS51_NONZERO_STDERR" -ErrorAction Continue
+exit 23
+' | Out-Null
+      } catch {
+        $ps51NonzeroFailure = $_.Exception.Message
+      }
+      Assert-True (-not [string]::IsNullOrWhiteSpace($ps51NonzeroFailure)) "PS5.1 native wrapper nonzero invocation did not fail"
+      foreach ($expectedDiagnostic in @("exit code 23", "command=", "nonzero-stdout")) {
+        Assert-True ($ps51NonzeroFailure -match [regex]::Escape($expectedDiagnostic)) "PS5.1 native wrapper nonzero invocation omitted diagnostic '$expectedDiagnostic': $ps51NonzeroFailure"
+      }
+      Assert-True ($ps51NonzeroFailure -match "(?m)(?<!\S)VEM_VISION_HARNESS_PS51_NONZERO_STDERR(?!\S)") "PS5.1 native wrapper nonzero invocation omitted its stderr marker: $ps51NonzeroFailure"
     } finally {
       Stop-Transcript | Out-Null
     }
@@ -470,6 +487,8 @@ exit 0
     }
     Assert-True ($ps51Telemetry -match "stage=behavior.ps51-native-wrapper status=completed") "PS5.1 native wrapper did not record normal exit"
     Assert-True ($ps51Telemetry -match "stage=behavior.ps51-native-wrapper status=cleanup-job-dispose-completed") "PS5.1 native wrapper did not complete Job Object cleanup"
+    Assert-True ($ps51Telemetry -match "stage=behavior.ps51-native-wrapper-nonzero status=failed detail=exitCode=23") "PS5.1 native wrapper nonzero invocation did not record its exit code"
+    Assert-True ($ps51Telemetry -match "stage=behavior.ps51-native-wrapper-nonzero status=cleanup-job-dispose-completed") "PS5.1 native wrapper nonzero invocation did not complete Job Object cleanup"
   } finally {
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_PS51_ENV", $previousPs51Environment, [EnvironmentVariableTarget]::Process)
   }

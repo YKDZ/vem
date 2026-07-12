@@ -118,71 +118,6 @@ describe("Vision release installer fixtures", () => {
   );
 
   boundedIt(
-    "captures a Windows PowerShell 5.1 child stdout and non-terminating stderr through the bounded native process",
-    { skip: process.platform !== "win32", timeout: 180_000 },
-    () => {
-      const probe = String.raw`
-$ErrorActionPreference = "Stop"
-. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1") -Library
-Initialize-HarnessNativeTypes
-$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-node-streams-" + [guid]::NewGuid().ToString("N"))
-try {
-  New-Item -ItemType Directory -Force -Path $root | Out-Null
-  $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
-  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(100)
-  Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc $deadlineUtc
-  $contextPath = Join-Path $root "context.json"
-  Write-Json $contextPath ([ordered]@{ root=$root; stateRoot=(Join-Path $root "state"); bundleDigest="sha256:node-streams" })
-  $childPowerShellPath = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-  if (-not (Test-Path -LiteralPath $childPowerShellPath -PathType Leaf)) { throw "Windows PowerShell 5.1 is missing" }
-  $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
-$ErrorActionPreference = "Stop"
-Write-Output ps51-stdout
-Write-Error "VEM_VISION_HARNESS_PS51_STDERR" -ErrorAction Continue
-exit 0
-'@
-  if ($clean.stdout.Trim() -cne "ps51-stdout") { throw "bounded PS5.1 invocation did not capture stdout: $($clean.stdout)" }
-  if ($clean.stderr -notmatch "(?m)(?<!\S)VEM_VISION_HARNESS_PS51_STDERR(?!\S)") { throw "bounded PS5.1 invocation did not capture its non-terminating stderr marker: $($clean.stderr)" }
-  if (-not (Test-Path -LiteralPath (Join-Path $clean.diagnosticsPath "stdout.log") -PathType Leaf)) { throw "bounded PS5.1 invocation did not retain stdout diagnostics" }
-  if (-not (Test-Path -LiteralPath (Join-Path $clean.diagnosticsPath "stderr.log") -PathType Leaf)) { throw "bounded PS5.1 invocation did not retain stderr diagnostics" }
-
-  $failure = $null
-  try {
-    Invoke-BoundedPowerShell -Stage "node.ps51-streams-nonzero" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
-$ErrorActionPreference = "Stop"
-Write-Output nonzero-stdout
-Write-Error "VEM_VISION_HARNESS_PS51_NONZERO_STDERR" -ErrorAction Continue
-exit 23
-'@ | Out-Null
-  } catch {
-    $failure = $_.Exception.Message
-  }
-  if ([string]::IsNullOrWhiteSpace($failure)) { throw "bounded PS5.1 nonzero invocation did not fail" }
-  foreach ($expectedDiagnostic in @("exit code 23", "command=", "nonzero-stdout")) {
-    if ($failure -notmatch [regex]::Escape($expectedDiagnostic)) { throw "bounded PS5.1 nonzero invocation omitted diagnostic '$expectedDiagnostic': $failure" }
-  }
-  if ($failure -notmatch "(?m)(?<!\S)VEM_VISION_HARNESS_PS51_NONZERO_STDERR(?!\S)") { throw "bounded PS5.1 nonzero invocation omitted its stderr marker: $failure" }
-} finally {
-  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-}
-`;
-      const result = spawnBounded(
-        "pwsh",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          probe,
-        ],
-        { timeout: 150_000 },
-      );
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    },
-  );
-
-  boundedIt(
     "captures and mirrors behavior fault telemetry from the Information stream on Windows",
     { skip: process.platform !== "win32" },
     () => {
@@ -222,43 +157,26 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
   );
 
   boundedIt(
-    "keeps the Node PS5.1 stream probe host and child boundaries explicit",
+    "keeps the behavior PS5.1 native wrapper clean and nonzero diagnostics covered",
     () => {
-      const source = readFileSync(windowsHarness, "utf8");
-      const testSource = readFileSync(
-        "scripts/windows/vision-release-install.test.mjs",
-        "utf8",
-      );
-      const streamProbe = testSource.match(
-        /captures a Windows PowerShell 5\.1 child stdout and non-terminating stderr through the bounded native process[\s\S]*?(?=\n  boundedIt\()/,
-      )?.[0];
+      const behavior = readFileSync(behaviorHarness, "utf8");
 
-      assert.ok(streamProbe, "Node PS5.1 stream probe is missing");
       assert.match(
-        streamProbe,
-        /\$childPowerShellPath = Join-Path \$env:WINDIR "System32\\WindowsPowerShell\\v1\.0\\powershell\.exe"/,
+        behavior,
+        /Invoke-BoundedPowerShell -Stage "behavior\.ps51-native-wrapper"[\s\S]*?VEM_VISION_HARNESS_PS51_STDERR[\s\S]*?PS5\.1 native wrapper did not capture stdout[\s\S]*?PS5\.1 native wrapper did not capture its non-terminating stderr marker/,
       );
       assert.match(
-        streamProbe,
-        /if \(-not \(Test-Path -LiteralPath \$childPowerShellPath -PathType Leaf\)\) \{ throw "Windows PowerShell 5\.1 is missing" \}/,
+        behavior,
+        /Invoke-BoundedPowerShell -Stage "behavior\.ps51-native-wrapper-nonzero"[\s\S]*?Write-Output nonzero-stdout[\s\S]*?VEM_VISION_HARNESS_PS51_NONZERO_STDERR[\s\S]*?exit 23[\s\S]*?PS5\.1 native wrapper nonzero invocation did not fail[\s\S]*?"exit code 23", "command=", "nonzero-stdout"/,
       );
-      assert.match(streamProbe, /spawnBounded\(\s*"pwsh"/);
-      assert.doesNotMatch(streamProbe, /spawnBounded\(\s*"powershell\.exe"/);
       assert.match(
-        streamProbe,
-        /\$script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot \$root[\s\S]*?\$deadlineUtc = \[DateTime\]::UtcNow\.AddSeconds\(100\)[\s\S]*?Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath \$script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc \$deadlineUtc[\s\S]*?\$clean = Invoke-BoundedPowerShell[\s\S]*?-HarnessDeadlineUtc \$deadlineUtc/,
+        behavior,
+        /PS5\.1 native wrapper nonzero invocation omitted its stderr marker/,
       );
-      assert.match(streamProbe, /timeout: 180_000/);
-      assert.match(streamProbe, /\{ timeout: 150_000 \}/);
       assert.match(
-        streamProbe,
-        /Invoke-BoundedPowerShell -Stage "node\.ps51-streams-nonzero"[\s\S]*?-HarnessDeadlineUtc \$deadlineUtc/,
+        behavior,
+        /stage=behavior\.ps51-native-wrapper status=process-ownership detail=state=\$status[\s\S]*?stage=behavior\.ps51-native-wrapper status=cleanup-job-dispose-completed/,
       );
-      assert.doesNotMatch(
-        streamProbe,
-        /watchdogPreflightDeadlineUtc|AddSeconds\(30\)/,
-      );
-      assert.match(source, /function Invoke-BoundedPowerShell/);
     },
   );
 
