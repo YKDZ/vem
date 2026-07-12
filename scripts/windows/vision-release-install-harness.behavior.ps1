@@ -822,8 +822,10 @@ try {
   Write-HarnessStage "behavior.hard-watchdog" "descendant-identity-read"
   Write-HarnessStage "behavior.hard-watchdog" "host-termination-waiting"
   Wait-ForSignal -Path $hardWatchdogHost.deadlineWatchdog.completionPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(6)) -FailureMessage "hard watchdog did not terminate its independent host before its absolute deadline"
-  Assert-True ((Get-Content -LiteralPath $hardWatchdogHost.deadlineWatchdog.completionPath -Raw).Trim() -ceq "terminated") "hard watchdog did not terminate its independent host"
-  Write-HarnessStage "behavior.hard-watchdog" "host-termination-confirmed"
+  $hardWatchdogCompletion = (Get-Content -LiteralPath $hardWatchdogHost.deadlineWatchdog.completionPath -Raw).Trim()
+  Assert-True ($hardWatchdogCompletion -in @("terminated", "exited")) "hard watchdog returned an invalid independent-host completion: $hardWatchdogCompletion"
+  Assert-True ($hardWatchdogHost.process.WaitForExit([uint32]0)) "hard watchdog completion did not signal the independent host original process handle"
+  Write-HarnessStage "behavior.hard-watchdog" "host-termination-confirmed" "completion=$hardWatchdogCompletion identity=original-process-handle"
   Write-HarnessStage "behavior.hard-watchdog" "descendant-termination-waiting"
   $terminatedDescendant = Get-RunningProcess -ProcessId ([int]$hardWatchdogDescendantIdentity.processId)
   try {

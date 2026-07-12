@@ -409,7 +409,7 @@ describe("Vision release installer fixtures", () => {
       );
       assert.match(
         behavior,
-        /Write-HarnessStage "behavior\.hard-watchdog" "host-termination-confirmed"/,
+        /Wait-ForSignal -Path \$hardWatchdogHost\.deadlineWatchdog\.completionPath -DeadlineUtc \(\[DateTime\]::UtcNow\.AddSeconds\(6\)\)[\s\S]*?\$hardWatchdogCompletion = \(Get-Content -LiteralPath \$hardWatchdogHost\.deadlineWatchdog\.completionPath -Raw\)\.Trim\(\)[\s\S]*?Assert-True \(\$hardWatchdogCompletion -in @\("terminated", "exited"\)\)[\s\S]*?Assert-True \(\$hardWatchdogHost\.process\.WaitForExit\(\[uint32\]0\)\)[\s\S]*?Write-HarnessStage "behavior\.hard-watchdog" "host-termination-confirmed" "completion=\$hardWatchdogCompletion identity=original-process-handle"/,
       );
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.WaitForExit\(/);
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.HasExited/);
