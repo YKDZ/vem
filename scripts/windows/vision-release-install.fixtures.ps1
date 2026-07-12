@@ -505,6 +505,37 @@ try {
   & '$escapedFixtureLauncherPath'
   throw "aggregate failure fixture did not throw"
 } catch {
+  function Get-CleanupFailureDiagnostic([Exception]`$cleanupFailure, [int]`$index) {
+    `$wrapperType = "<missing>"
+    `$wrapperMessage = "<missing>"
+    `$rootType = "<missing>"
+    `$rootMessage = "<missing>"
+    `$rootNativeErrorCode = "<not an exact Win32Exception>"
+    `$root = `$null
+    if (`$null -ne `$cleanupFailure) {
+      `$wrapperType = `$cleanupFailure.GetType().FullName
+      `$wrapperMessage = `$cleanupFailure.Message
+      `$root = `$cleanupFailure.InnerException
+    }
+    if (`$null -ne `$root) {
+      `$rootType = `$root.GetType().FullName
+      `$rootMessage = `$root.Message
+      if (`$root.GetType() -eq [ComponentModel.Win32Exception]) { `$rootNativeErrorCode = [string]`$root.NativeErrorCode }
+    }
+    "cleanup failure index=`$index; wrapper type=`$wrapperType; wrapper message=`$wrapperMessage; root type=`$rootType; root NativeErrorCode=`$rootNativeErrorCode; root message=`$rootMessage"
+  }
+
+  function Unwrap-CleanupFailureWin32Exception([Exception]`$cleanupFailure, [int]`$index) {
+    `$diagnostic = Get-CleanupFailureDiagnostic `$cleanupFailure `$index
+    if (`$null -eq `$cleanupFailure) { throw "aggregate failure fixture cleanup failure is missing; `$diagnostic" }
+    if (`$cleanupFailure.GetType() -ne [Management.Automation.MethodInvocationException]) { throw "aggregate failure fixture cleanup failure has unexpected wrapper; `$diagnostic" }
+    `$root = `$cleanupFailure.InnerException
+    if (`$null -eq `$root) { throw "aggregate failure fixture cleanup failure is missing the allowed MethodInvocationException InnerException; `$diagnostic" }
+    if (`$root.GetType() -ne [ComponentModel.Win32Exception]) { throw "aggregate failure fixture cleanup failure root is not an exact Win32Exception; `$diagnostic" }
+    if (`$null -ne `$root.InnerException) { throw "aggregate failure fixture cleanup failure has unexpected nested cleanup failure wrapper; `$diagnostic" }
+    [pscustomobject]@{ Root=`$root; Diagnostic=`$diagnostic }
+  }
+
   `$identity = (Get-Content -LiteralPath `$fixtureIdentityPath -Raw -Encoding UTF8).Trim().Split(',')
   [int]`$parentId = 0
   [int]`$descendantId = 0
@@ -518,17 +549,14 @@ try {
   if (`$outerFailures[1] -isnot [AggregateException] -or `$outerFailures[1].Message -notlike "Vision launcher cleanup failed*") { throw "aggregate failure fixture did not preserve the cleanup aggregate" }
   `$cleanupFailures = @(`$outerFailures[1].InnerExceptions)
   `$cleanupFailureDiagnostics = @(
-    for (`$index = 0; `$index -lt `$cleanupFailures.Count; `$index++) {
-      `$cleanupFailure = `$cleanupFailures[`$index]
-      `$nativeErrorCode = "<not a Win32Exception>"
-      if (`$cleanupFailure -is [ComponentModel.Win32Exception]) { `$nativeErrorCode = [string]`$cleanupFailure.NativeErrorCode }
-      "cleanup failure inner index=`$index; type=`$(`$cleanupFailure.GetType().FullName); NativeErrorCode=`$nativeErrorCode; message=`$(`$cleanupFailure.Message)"
-    }
+    "cleanup failure count=`$(`$cleanupFailures.Count)"
+    for (`$index = 0; `$index -lt `$cleanupFailures.Count; `$index++) { Get-CleanupFailureDiagnostic `$cleanupFailures[`$index] `$index }
   ) -join [Environment]::NewLine
   if (`$cleanupFailures.Count -ne 2) { throw "aggregate failure fixture did not preserve both cleanup failures; `$cleanupFailureDiagnostics" }
-  `$jobCleanupFailures = @(`$cleanupFailures | Where-Object { `$_ -is [ComponentModel.Win32Exception] -and `$_.Message.StartsWith("TerminateJobObject failed", [StringComparison]::Ordinal) -and `$_.NativeErrorCode -eq 87 })
+  `$unwrappedCleanupFailures = @(for (`$index = 0; `$index -lt `$cleanupFailures.Count; `$index++) { Unwrap-CleanupFailureWin32Exception `$cleanupFailures[`$index] `$index })
+  `$jobCleanupFailures = @(`$unwrappedCleanupFailures | Where-Object { `$_.Root.Message -ceq "TerminateJobObject failed" -and `$_.Root.NativeErrorCode -eq 87 })
   if (`$jobCleanupFailures.Count -ne 1) { throw "aggregate failure fixture did not preserve exactly one TerminateJobObject failed error with NativeErrorCode 87; `$cleanupFailureDiagnostics" }
-  `$processCleanupFailures = @(`$cleanupFailures | Where-Object { `$_ -is [ComponentModel.Win32Exception] -and `$_.Message.StartsWith("TerminateProcess failed", [StringComparison]::Ordinal) -and `$_.NativeErrorCode -eq 5 })
+  `$processCleanupFailures = @(`$unwrappedCleanupFailures | Where-Object { `$_.Root.Message -ceq "TerminateProcess failed" -and `$_.Root.NativeErrorCode -eq 5 })
   if (`$processCleanupFailures.Count -ne 1) { throw "aggregate failure fixture did not preserve exactly one TerminateProcess failed error with NativeErrorCode 5; `$cleanupFailureDiagnostics" }
 }
 if (`$null -eq `$fixtureRuntimeIdentities) { throw "aggregate failure fixture runner did not collect runtime process identities" }

@@ -259,19 +259,60 @@ describe("Vision release installer fixtures", () => {
         fixtureSource,
         /\[DllImport\("kernel32\.dll", SetLastError = true, EntryPoint = "SetLastError"\)\]\s+private static extern void SetLastErrorForFixture\(uint dwErrCode\);/,
       );
-      assert.match(fixtureSource, /cleanup failure inner index=/);
-      assert.match(fixtureSource, /NativeErrorCode=/);
+      assert.match(fixtureSource, /function Get-CleanupFailureDiagnostic/);
+      assert.match(
+        fixtureSource,
+        /function Unwrap-CleanupFailureWin32Exception/,
+      );
+      assert.match(fixtureSource, /\$cleanupFailure\.InnerException/);
+      assert.match(
+        fixtureSource,
+        /\$cleanupFailure\.GetType\(\) -ne \[Management\.Automation\.MethodInvocationException\]/,
+      );
+      assert.match(
+        fixtureSource,
+        /\$root\.GetType\(\) -ne \[ComponentModel\.Win32Exception\]/,
+      );
+      assert.doesNotMatch(
+        fixtureSource,
+        /\$cleanupFailure -is(?:not)? \[Management\.Automation\.MethodInvocationException\]/,
+      );
+      assert.doesNotMatch(
+        fixtureSource,
+        /\$root -is(?:not)? \[ComponentModel\.Win32Exception\]/,
+      );
+      assert.match(fixtureSource, /unexpected nested cleanup failure wrapper/);
+      assert.match(fixtureSource, /wrapper type=/);
+      assert.match(fixtureSource, /root type=/);
+      assert.match(fixtureSource, /root NativeErrorCode=/);
       assert.match(fixtureSource, /FIXTURE_TERMINATE_JOB_ERROR/);
       assert.match(fixtureSource, /FIXTURE_TERMINATE_PROCESS_ERROR/);
       assert.doesNotMatch(fixtureSource, /\$cleanupFailures\[0\]/);
       assert.doesNotMatch(fixtureSource, /\$cleanupFailures\[1\]/);
       assert.match(
         fixtureSource,
-        /`?\$jobCleanupFailures = @\(`?\$cleanupFailures \| Where-Object { `?\$_ -is \[ComponentModel\.Win32Exception\] -and `?\$_\.Message\.StartsWith\("TerminateJobObject failed", \[StringComparison\]::Ordinal\) -and `?\$_\.NativeErrorCode -eq 87 }\)/,
+        /`?\$cleanupFailureDiagnostics = @\(\s+"cleanup failure count=`?\$\(`?\$cleanupFailures\.Count\)"\s+for \(`?\$index = 0; `?\$index -lt `?\$cleanupFailures\.Count; `?\$index\+\+\) { Get-CleanupFailureDiagnostic `?\$cleanupFailures\[`?\$index\] `?\$index }\s+\) -join \[Environment\]::NewLine/,
       );
       assert.match(
         fixtureSource,
-        /`?\$processCleanupFailures = @\(`?\$cleanupFailures \| Where-Object { `?\$_ -is \[ComponentModel\.Win32Exception\] -and `?\$_\.Message\.StartsWith\("TerminateProcess failed", \[StringComparison\]::Ordinal\) -and `?\$_\.NativeErrorCode -eq 5 }\)/,
+        /if \(`?\$cleanupFailures\.Count -ne 2\) \{ throw "aggregate failure fixture did not preserve both cleanup failures; `?\$cleanupFailureDiagnostics" \}/,
+      );
+      assert.ok(
+        fixtureSource.indexOf("`$cleanupFailureDiagnostics = @(") <
+          fixtureSource.indexOf("if (`$cleanupFailures.Count -ne 2)"),
+        "cleanup diagnostics must be built before the count guard for every existing entry",
+      );
+      assert.match(
+        fixtureSource,
+        /`?\$unwrappedCleanupFailures = @\(for \(`?\$index = 0; `?\$index -lt `?\$cleanupFailures\.Count; `?\$index\+\+\) { Unwrap-CleanupFailureWin32Exception `?\$cleanupFailures\[`?\$index\] `?\$index }\)/,
+      );
+      assert.match(
+        fixtureSource,
+        /`?\$jobCleanupFailures = @\(`?\$unwrappedCleanupFailures \| Where-Object { `?\$_\.Root\.Message -ceq "TerminateJobObject failed" -and `?\$_\.Root\.NativeErrorCode -eq 87 }\)/,
+      );
+      assert.match(
+        fixtureSource,
+        /`?\$processCleanupFailures = @\(`?\$unwrappedCleanupFailures \| Where-Object { `?\$_\.Root\.Message -ceq "TerminateProcess failed" -and `?\$_\.Root\.NativeErrorCode -eq 5 }\)/,
       );
       assert.match(
         fixtureSource,
