@@ -138,6 +138,18 @@ describe("Vision release installer fixtures", () => {
       source,
       /approvalIdentity=\(Evidence-Identity \$approvalDigest\)/,
     );
+    const installer = readFileSync(
+      "scripts/windows/install-vision-release.ps1",
+      "utf8",
+    );
+    assert.match(
+      installer,
+      /\$selection\.approvalDigest -cne \$Documents\.approval\.digest/,
+    );
+    assert.doesNotMatch(
+      installer,
+      /\$selection\.approvalDigest -cne \$Approval\.identity/,
+    );
   });
 
   boundedIt(
