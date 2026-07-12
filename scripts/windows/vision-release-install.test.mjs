@@ -415,6 +415,18 @@ describe("Vision release installer fixtures", () => {
         behavior,
         /Wait-ForSignal -Path \$hardWatchdogHost\.deadlineWatchdog\.completionPath -DeadlineUtc \(\[DateTime\]::UtcNow\.AddSeconds\(6\)\)[\s\S]*?\$hardWatchdogCompletion = \(Get-Content -LiteralPath \$hardWatchdogHost\.deadlineWatchdog\.completionPath -Raw\)\.Trim\(\)[\s\S]*?Assert-True \(\$hardWatchdogCompletion -in @\("terminated", "exited"\)\)[\s\S]*?Assert-True \(\$hardWatchdogHost\.process\.WaitForExit\(\[uint32\]0\)\)[\s\S]*?Write-HarnessStage "behavior\.hard-watchdog" "host-termination-confirmed" "completion=\$hardWatchdogCompletion identity=original-process-handle"/,
       );
+      const hardWatchdogSuccessCleanup = behavior.match(
+        /Write-HarnessStage "behavior\.hard-watchdog" "descendant-termination-confirmed"([\s\S]*?)\$hardWatchdogHost = \$null/,
+      )?.[1];
+      assert.ok(
+        hardWatchdogSuccessCleanup,
+        "hard watchdog success cleanup is missing",
+      );
+      assert.match(
+        hardWatchdogSuccessCleanup,
+        /Write-HarnessStage "behavior\.hard-watchdog" "cleanup-started"[\s\S]*?Close-HarnessSuspendedProcessWatchdog -Watchdog \$hardWatchdogHost\.deadlineWatchdog[\s\S]*?\$hardWatchdogHost\.deadlineWatchdog = \$null[\s\S]*?\$hardWatchdogHost\.process\.Dispose\(\)[\s\S]*?Write-HarnessStage "behavior\.hard-watchdog" "cleanup-completed"/,
+      );
+      assert.doesNotMatch(hardWatchdogSuccessCleanup, /Stop-HardWatchdogHost/);
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.WaitForExit\(/);
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.HasExited/);
       assert.match(

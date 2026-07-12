@@ -837,7 +837,11 @@ try {
     if ($null -ne $terminatedDescendant) { $terminatedDescendant.Dispose() }
   }
   Write-HarnessStage "behavior.hard-watchdog" "descendant-termination-confirmed"
-  Stop-HardWatchdogHost -HostProcess $hardWatchdogHost -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5))
+  Write-HarnessStage "behavior.hard-watchdog" "cleanup-started" "completion=$hardWatchdogCompletion identity=original-process-handle"
+  Close-HarnessSuspendedProcessWatchdog -Watchdog $hardWatchdogHost.deadlineWatchdog
+  $hardWatchdogHost.deadlineWatchdog = $null
+  $hardWatchdogHost.process.Dispose()
+  Write-HarnessStage "behavior.hard-watchdog" "cleanup-completed" "completion=$hardWatchdogCompletion identity=original-process-handle"
   $hardWatchdogHost = $null
 
   Assert-BeforeDeadline
