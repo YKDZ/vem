@@ -1838,10 +1838,12 @@ $certificate = Get-Item -LiteralPath ("Cert:\CurrentUser\My\{0}" -f $context.cer
 Export-Certificate -Cert $certificate -FilePath $context.certificateExportPath -Force | Out-Null
 '@ | Out-Null
   Invoke-BoundedPowerShell -Stage "fixture.trust-root" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
-Import-Certificate -FilePath $context.certificateExportPath -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
+& certutil.exe -user -f -addstore Root $context.certificateExportPath
+if ($LASTEXITCODE -ne 0) { throw "certutil failed to trust the fixture root with exit code $LASTEXITCODE" }
 '@ | Out-Null
   Invoke-BoundedPowerShell -Stage "fixture.trust-publisher" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
-Import-Certificate -FilePath $context.certificateExportPath -CertStoreLocation "Cert:\CurrentUser\TrustedPublisher" | Out-Null
+& certutil.exe -user -f -addstore TrustedPublisher $context.certificateExportPath
+if ($LASTEXITCODE -ne 0) { throw "certutil failed to trust the fixture publisher with exit code $LASTEXITCODE" }
 '@ | Out-Null
   $signatureResultPath = Join-Path $root "signature.json"
   Invoke-BoundedPowerShell -Stage "fixture.sign-runtime" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
