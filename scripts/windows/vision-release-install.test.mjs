@@ -152,6 +152,14 @@ describe("Vision release installer fixtures", () => {
     );
   });
 
+  boundedIt("owns the disposable kiosk account lifecycle", () => {
+    const source = readFileSync(windowsHarness, "utf8");
+    assert.match(source, /-Stage "fixture\.create-kiosk-account"/);
+    assert.match(source, /user VEMKiosk \$password \/add/);
+    assert.match(source, /user VEMKiosk \/delete/);
+    assert.match(source, /kiosk-account-created/);
+  });
+
   boundedIt(
     "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",
     () => {

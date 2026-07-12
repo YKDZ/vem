@@ -1803,6 +1803,13 @@ try {
 Remove-Item -LiteralPath "C:\VEM", "C:\ProgramData\VEM" -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $context.delivery, $context.trust, $context.installerMedia | Out-Null
 '@ | Out-Null
+  Invoke-BoundedPowerShell -Stage "fixture.create-kiosk-account" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+if ($null -ne (Get-LocalUser -Name "VEMKiosk" -ErrorAction SilentlyContinue)) { throw "fixture VEMKiosk account already exists" }
+$password = "Vem!" + [guid]::NewGuid().ToString("N") + "aA1"
+& "$env:SystemRoot\System32\net.exe" user VEMKiosk $password /add /passwordchg:no | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "fixture VEMKiosk account creation failed with exit code $LASTEXITCODE" }
+New-Item -ItemType File -Path (Join-Path $context.root "kiosk-account-created") -Force | Out-Null
+'@ | Out-Null
   $runtimeSource = @'
 using System; using System.IO; using System.Net; using System.Net.WebSockets; using System.Diagnostics; using System.Security.Cryptography; using System.Text; using System.Threading;
 class VisionFixture {
@@ -2060,6 +2067,12 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
   Write-HarnessStage "harness" "completed" "first-install task acl process-record mutex reinstall protocol runtime-verifier"
 } finally {
   $cleanupFailure = $null
+  if (Test-Path -LiteralPath (Join-Path $root "kiosk-account-created") -PathType Leaf) {
+    & "$env:SystemRoot\System32\net.exe" user VEMKiosk /delete | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      $cleanupFailure = [Exception]::new("fixture VEMKiosk account cleanup failed with exit code $LASTEXITCODE")
+    }
+  }
   if (Test-Path -LiteralPath $certificateCleanupMarkerPath) {
     try {
       Invoke-BoundedPowerShell -Stage "fixture.cleanup-certificates" -TimeoutSeconds 30 -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody 'Invoke-HarnessFixtureCleanup -Context $context' | Out-Null
