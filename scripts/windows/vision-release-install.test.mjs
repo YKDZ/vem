@@ -508,6 +508,58 @@ try {
   );
 
   boundedIt(
+    "stops an automatically completed hard-watchdog host without waiting for its cleanup deadline on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install-harness.behavior.ps1") -HarnessPath (Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1") -Library
+. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-completed-hard-watchdog-stop-" + [guid]::NewGuid().ToString("N"))
+$hostProcess = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+  $hostPath = Join-Path $root "host.ps1"
+  $hostScript = @'
+param($HarnessPath, $HarnessRoot, $HarnessContextPath, $ChildPowerShellPath, $IdentityPath, $ReadySignalPath, $RunSignalPath, $RunDeadlineUtcTicks, $FaultSignalPath, $TelemetryPath, $ObservedChildPowerShellPath)
+Start-Sleep -Seconds 30
+'@
+  [IO.File]::WriteAllText($hostPath, $hostScript, [Text.UTF8Encoding]::new($false))
+  $hostProcess = Start-HardWatchdogHost -PowerShellPath $powerShellPath -HostPath $hostPath -HarnessPath $hostPath -HarnessRoot $root -HarnessContextPath (Join-Path $root "context.json") -ChildPowerShellPath $powerShellPath -IdentityPath (Join-Path $root "identity.json") -ReadySignalPath (Join-Path $root "ready") -RunSignalPath (Join-Path $root "run") -RunDeadlineUtcTicks ([DateTime]::UtcNow.AddSeconds(20).Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)) -FaultSignalPath (Join-Path $root "fault") -TelemetryPath (Join-Path $root "telemetry") -ObservedChildPowerShellPath (Join-Path $root "observed") -LifetimeDeadlineUtc ([DateTime]::UtcNow.AddSeconds(10))
+  $hostProcess.deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hostProcess.process -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1))
+  Complete-HarnessSuspendedProcessWatchdog -Watchdog $hostProcess.lifetimeWatchdog -Action "disarm" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null
+  $hostProcess.lifetimeWatchdog = $null
+  $completionDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
+  while (-not (Test-Path -LiteralPath $hostProcess.deadlineWatchdog.completionPath -PathType Leaf) -and [DateTime]::UtcNow -lt $completionDeadlineUtc) { Start-Sleep -Milliseconds 10 }
+  if (-not (Test-Path -LiteralPath $hostProcess.deadlineWatchdog.completionPath -PathType Leaf)) { throw "automatic hard-watchdog deadline did not write a completion state" }
+  if ((Get-Content -LiteralPath $hostProcess.deadlineWatchdog.completionPath -Raw).Trim() -cne "terminated") { throw "automatic hard-watchdog did not confirm host termination" }
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  Stop-HardWatchdogHost -HostProcess $hostProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4))
+  $stopwatch.Stop()
+  if ($stopwatch.ElapsedMilliseconds -ge 1000) { throw "Stop-HardWatchdogHost waited $($stopwatch.ElapsedMilliseconds)ms after automatic watchdog completion" }
+  if (-not $hostProcess.deadlineWatchdog.completed) { throw "automatic hard-watchdog completion was not consumed during host cleanup" }
+  $hostProcess = $null
+} finally {
+  if ($null -ne $hostProcess) { Stop-HardWatchdogHost -HostProcess $hostProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
     "passes complete Factory release inputs to every signed-install shell",
     () => {
       const harness = readFileSync(windowsHarness, "utf8");
@@ -561,6 +613,286 @@ try {
   );
 
   boundedIt(
+    "atomically overwrites an existing watchdog signal with Windows PowerShell 5.1",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-atomic-replace-" + [guid]::NewGuid().ToString("N"))
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $path = Join-Path $root "command"
+  [IO.File]::WriteAllText($path, "old", [Text.UTF8Encoding]::new($false))
+  Write-HarnessAtomicUtf8 -Path $path -Text "new"
+  if ((Get-Content -LiteralPath $path -Raw -Encoding UTF8) -cne "new") { throw "atomic write did not replace an existing target" }
+  if (@(Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -like ".command.*.tmp" }).Count -ne 0) { throw "atomic write left a temporary file" }
+} finally {
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "extends a live watchdog termination deadline after its first command times out",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-extend-" + [guid]::NewGuid().ToString("N"))
+$nativeProcess = $null
+$watchdog = $null
+$previousGate = $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_GATE_PATH
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $gatePath = Join-Path $root "allow-terminate"
+  $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_GATE_PATH = $gatePath
+  $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+  $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
+  $watchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(10)) -Watchdog ([ref]$watchdog)
+
+  $firstDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(250)
+  $firstFailure = $null
+  try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc $firstDeadlineUtc | Out-Null } catch { $firstFailure = $_.Exception.Message }
+  if ($firstFailure -notmatch "did not complete 'terminate' before the cleanup deadline") { throw "first watchdog command did not time out: $firstFailure" }
+  $firstCommand = (Get-Content -LiteralPath $watchdog.commandPath -Raw -Encoding UTF8).Trim()
+  if ($firstCommand -notmatch "^terminate:([0-9]+)$") { throw "first watchdog command was invalid: $firstCommand" }
+  [Int64]$firstTicks = $Matches[1]
+  if ($watchdog.disposed -or $watchdog.completed -or (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf)) { throw "watchdog stopped after its first command timed out" }
+
+  New-Item -ItemType File -Path $gatePath | Out-Null
+  $extendedDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
+  $completion = Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc $extendedDeadlineUtc
+  if ($completion -cne "terminated") { throw "extended watchdog command did not confirm termination: $completion" }
+  $extendedCommand = (Get-Content -LiteralPath $watchdog.commandPath -Raw -Encoding UTF8).Trim()
+  if ($extendedCommand -notmatch "^terminate:([0-9]+)$") { throw "extended watchdog command was invalid: $extendedCommand" }
+  if ([Int64]$Matches[1] -le $firstTicks) { throw "watchdog confirmation deadline did not increase monotonically" }
+  if (-not $nativeProcess.WaitForExit(1000)) { throw "watchdog completion did not signal the original suspended process handle" }
+} finally {
+  if ($null -ne $watchdog -and -not $watchdog.completed) { try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null } catch { } }
+  if ($null -ne $nativeProcess) {
+    try { if (-not $nativeProcess.WaitForExit(0)) { $nativeProcess.TerminateUnresumed(2000) } } finally { $nativeProcess.Dispose() }
+  }
+  $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_GATE_PATH = $previousGate
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "expires unconfirmed watchdog termination and releases both watchdog handles",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+foreach ($terminationResult in @("success", "failure")) {
+  $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-unconfirmed-" + $terminationResult + "-" + [guid]::NewGuid().ToString("N"))
+  $nativeProcess = $null
+  $watchdog = $null
+  $previousTerminationResult = $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_RESULT
+  try {
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_RESULT = $terminationResult
+    $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+    $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+    $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
+    $watchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) -ConfirmationReserveMilliseconds 100 -Watchdog ([ref]$watchdog)
+    $watchdogProcessId = $watchdog.process.Id
+    $failure = $null
+    try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(1400)) | Out-Null } catch { $failure = $_.Exception.Message }
+    if ($failure -notmatch "could not terminate process .*: terminate-unconfirmed") { throw "$terminationResult termination did not become unconfirmed: $failure" }
+    if ($watchdog.completed -or -not $watchdog.disposed -or $watchdog.terminalCompletion -cne "terminate-unconfirmed") { throw "$terminationResult termination did not retain its unconfirmed terminal state" }
+    if ($null -ne (Get-Process -Id $watchdogProcessId -ErrorAction SilentlyContinue)) { throw "$terminationResult watchdog did not exit" }
+    if ($nativeProcess.WaitForExit(0)) { throw "$terminationResult fixture unexpectedly signaled the inherited process handle" }
+    $commandBeforeRetry = Get-Content -LiteralPath $watchdog.commandPath -Raw -Encoding UTF8
+    $retryFailure = $null
+    try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null } catch { $retryFailure = $_.Exception.Message }
+    if ($retryFailure -notmatch "could not terminate process .*: terminate-unconfirmed") { throw "$terminationResult post-expiry retry revived the watchdog: $retryFailure" }
+    if ((Get-Content -LiteralPath $watchdog.commandPath -Raw -Encoding UTF8) -cne $commandBeforeRetry) { throw "$terminationResult post-expiry retry extended the command deadline" }
+  } finally {
+    if ($null -ne $nativeProcess) {
+      try { if (-not $nativeProcess.WaitForExit(0)) { $nativeProcess.TerminateUnresumed(2000) } } finally { $nativeProcess.Dispose() }
+    }
+    $env:VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_RESULT = $previousTerminationResult
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "retries only live watchdog timeouts and keeps invalid terminal completions failed",
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-completion-" + [guid]::NewGuid().ToString("N"))
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $completionPath = Join-Path $root "completion"
+  [IO.File]::WriteAllText($completionPath, "termin", [Text.UTF8Encoding]::new($false))
+  $partialWatchdog = [pscustomobject]@{ completionPath=$completionPath }
+  if ($null -ne (Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $partialWatchdog)) { throw "partial completion was consumed as a terminal state" }
+
+  Remove-Item -LiteralPath $completionPath -Force
+  $timeoutProcess = [pscustomobject]@{ waitCalls=0; disposeCalls=0 }
+  $timeoutProcess | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($milliseconds) $this.waitCalls++; return $false }
+  $timeoutProcess | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.disposeCalls++ }
+  $timeoutWatchdog = [pscustomobject]@{ process=$timeoutProcess; commandPath=(Join-Path $root "timeout-command"); completionPath=$completionPath; processId=4241; completed=$false; commandAction="terminate"; disposed=$false; terminalCompletion=$null }
+  foreach ($attempt in @(1, 2)) {
+    $failure = $null
+    try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $timeoutWatchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(20)) | Out-Null } catch { $failure = $_.Exception.Message }
+    if ($failure -notmatch "did not complete 'terminate' before the cleanup deadline") { throw "timeout attempt $attempt was not retryable: $failure" }
+  }
+  if ($timeoutWatchdog.disposed -or $timeoutWatchdog.completed -or $timeoutProcess.disposeCalls -ne 0 -or $timeoutProcess.waitCalls -ne 2) { throw "timed out watchdog was not left live for a safe retry" }
+
+  [IO.File]::WriteAllText($completionPath, "terminate-unconfirmed", [Text.UTF8Encoding]::new($false))
+  $fakeProcess = [pscustomobject]@{ disposeCalls=0 }
+  $fakeProcess | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.disposeCalls++ }
+  $watchdog = [pscustomobject]@{ process=$fakeProcess; commandPath=(Join-Path $root "command"); completionPath=$completionPath; processId=4242; completed=$false; commandAction=$null; disposed=$false; terminalCompletion=$null }
+  foreach ($attempt in @(1, 2)) {
+    $failure = $null
+    try { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null } catch { $failure = $_.Exception.Message }
+    if ($failure -notmatch "could not terminate process 4242: terminate-unconfirmed") { throw "attempt $attempt accepted an invalid watchdog completion: $failure" }
+  }
+  if ($watchdog.completed -or -not $watchdog.disposed -or $watchdog.terminalCompletion -cne "terminate-unconfirmed" -or $fakeProcess.disposeCalls -ne 1) { throw "invalid watchdog completion was not retained as one terminal failure" }
+} finally {
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "keeps a failed watchdog setup live until its suspended process cleanup starts",
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-slow-start-" + [guid]::NewGuid().ToString("N"))
+$child = $null
+$watchdog = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = (Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source)
+  $startInfo.Arguments = '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 30"'
+  $startInfo.UseShellExecute = $false
+  $child = [Diagnostics.Process]::Start($startInfo)
+  $nativeProcess = [pscustomobject]@{ ProcessId=4243; child=$child }
+  $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value { param($watchdogPath, $arguments, $workingDirectory) Start-Sleep -Milliseconds 350; return $this.child.Id }
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  $failure = $null
+  try { Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "stage") -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(650)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_.Exception.Message }
+  $stopwatch.Stop()
+  if ($failure -notmatch "did not inherit") { throw "slow watchdog start did not fail readiness: $failure" }
+  if ($stopwatch.ElapsedMilliseconds -ge 620) { throw "slow watchdog readiness exceeded its absolute deadline budget: $($stopwatch.ElapsedMilliseconds)ms" }
+} finally {
+  if ($null -ne $child) {
+    try { if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit(1000) | Out-Null } } finally { $child.Dispose() }
+  }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
+    "rejects stale watchdog stage signals without discarding a live fallback",
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts/windows/vision-release-install.windows-harness.ps1") -Library
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-watchdog-stale-stage-" + [guid]::NewGuid().ToString("N"))
+$child = $null
+$watchdog = $null
+try {
+  $stageRoot = Join-Path $root "stage"
+  $staleRoot = Join-Path $stageRoot "suspended-process-watchdog"
+  New-Item -ItemType Directory -Force -Path $staleRoot | Out-Null
+  [IO.File]::WriteAllText((Join-Path $staleRoot "command"), "disarm", [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText((Join-Path $staleRoot "ready"), "armed", [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText((Join-Path $staleRoot "completion"), "terminated", [Text.UTF8Encoding]::new($false))
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = (Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source)
+  $startInfo.Arguments = '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 30"'
+  $startInfo.UseShellExecute = $false
+  $child = [Diagnostics.Process]::Start($startInfo)
+  $nativeProcess = [pscustomobject]@{ ProcessId=4242; child=$child }
+  $nativeProcess | Add-Member -MemberType ScriptMethod -Name StartInheritedHandleWatchdog -Value { param($watchdogPath, $arguments, $workingDirectory) return $this.child.Id }
+  $failure = $null
+  try { Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath "unused" -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(800)) -Watchdog ([ref]$watchdog) | Out-Null } catch { $failure = $_.Exception.Message }
+  if ([string]::IsNullOrWhiteSpace($failure) -or $failure -notmatch "did not inherit") { throw "stale ready signal was accepted: $failure" }
+  foreach ($staleSignalPath in @((Join-Path $staleRoot "command"), (Join-Path $staleRoot "ready"), (Join-Path $staleRoot "completion"))) {
+    if (Test-Path -LiteralPath $staleSignalPath -PathType Leaf) { throw "stale watchdog signal was not removed: $staleSignalPath" }
+  }
+} finally {
+  if ($null -ne $child) {
+    try { if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit(1000) | Out-Null } } finally { $child.Dispose() }
+  }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
     "passes the inherited watchdog handle with bounded trigger and confirmation deadlines",
     () => {
       const harness = readFileSync(windowsHarness, "utf8");
@@ -592,15 +924,53 @@ try {
       );
       assert.match(
         harness,
+        /if \(terminationRequested && DateTime\.UtcNow >= confirmationDeadlineUtc\) \{\s+Write\(completionPath, "terminate-unconfirmed"\);/,
+      );
+      assert.doesNotMatch(
+        harness,
+        /!terminationRequested \|\| requestedDeadlineUtc > confirmationDeadlineUtc/,
+      );
+      assert.match(
+        harness,
+        /VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_RESULT/,
+      );
+      assert.match(harness, /finally \{\s+CloseHandle\(process\);\s+\}/);
+      assert.match(
+        harness,
         /\$command = if \(\$Action -eq "terminate"\) \{ "terminate:" \+ \$DeadlineUtc\.Ticks\.ToString/,
       );
       assert.match(
         harness,
         /using System\.Globalization;\s+using System\.IO;\s+using System\.Runtime\.InteropServices;/,
       );
+      assert.match(harness, /File\.WriteAllText\(temporaryPath, value\)/);
+      assert.match(
+        harness,
+        /MoveFileExW\(temporaryPath, path, MOVEFILE_REPLACE_EXISTING \| MOVEFILE_WRITE_THROUGH\)/,
+      );
+      assert.match(
+        harness,
+        /\[VemVisionHarness\.AtomicFile\]::Replace\(\$temporaryPath, \$Path\)/,
+      );
+      assert.match(
+        harness,
+        /foreach \(\$staleSignalPath in @\(\(Join-Path \$watchdogStageRoot "command"\), \(Join-Path \$watchdogStageRoot "ready"\), \(Join-Path \$watchdogStageRoot "completion"\)\)\)/,
+      );
+      assert.match(
+        harness,
+        /\$watchdogRoot = Join-Path \$watchdogStageRoot \(\[guid\]::NewGuid\(\)\.ToString\("N"\)\)/,
+      );
+      assert.match(
+        harness,
+        /\$_\.Exception\.Data\["VemVisionHarness\.SuspendedProcessWatchdog"\] = \$watchdog/,
+      );
       assert.doesNotMatch(
         harness,
         /DateTime\.UtcNow\.AddMilliseconds\(deadlineMilliseconds\)/,
+      );
+      assert.match(
+        harness,
+        /\$readyDeadlineUtc = \$DeadlineUtc\.AddMilliseconds\(-\$setupCleanupReserveMilliseconds\)/,
       );
       assert.match(
         behavior,

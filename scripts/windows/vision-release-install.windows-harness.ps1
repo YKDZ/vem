@@ -15,6 +15,18 @@ function Write-Utf8([string]$Path, [string]$Text) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
   [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
 }
+function Write-HarnessAtomicUtf8([string]$Path, [string]$Text) {
+  $directory = Split-Path -Parent $Path
+  New-Item -ItemType Directory -Force -Path $directory | Out-Null
+  $temporaryPath = Join-Path $directory (".{0}.{1}.tmp" -f (Split-Path -Leaf $Path), [guid]::NewGuid().ToString("N"))
+  try {
+    [IO.File]::WriteAllText($temporaryPath, $Text, [Text.UTF8Encoding]::new($false))
+    Initialize-HarnessNativeTypes
+    [VemVisionHarness.AtomicFile]::Replace($temporaryPath, $Path)
+  } finally {
+    if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
+  }
+}
 function Get-Digest([string]$Path) { "sha256:" + (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Write-Json([string]$Path, [object]$Value) { Write-Utf8 $Path ($Value | ConvertTo-Json -Depth 32 -Compress) }
 function Evidence-Identity([string]$Digest) { "factory-evidence://" + $Digest.Replace(":", "/") }
@@ -121,11 +133,26 @@ function Initialize-HarnessNativeTypes {
 using System;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
 namespace VemVisionHarness {
+  public static class AtomicFile {
+    private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
+    private const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool MoveFileExW(string existingFileName, string newFileName, uint flags);
+
+    public static void Replace(string temporaryPath, string path) {
+      if (!MoveFileExW(temporaryPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "MoveFileExW atomic replace failed");
+      }
+    }
+  }
+
   public sealed class SuspendedProcess : IDisposable {
     private const uint CREATE_SUSPENDED = 0x00000004;
     private const uint CREATE_NO_WINDOW = 0x08000000;
@@ -614,28 +641,58 @@ public static class SuspendedProcessWatchdog {
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern bool CloseHandle(IntPtr handle);
 
+  private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
+  private const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
+
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  private static extern bool MoveFileExW(string existingFileName, string newFileName, uint flags);
+
   private static void Write(string path, string value) {
-    File.WriteAllText(path, value);
+    var directory = Path.GetDirectoryName(path);
+    var temporaryPath = Path.Combine(directory, "." + Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+    try {
+      File.WriteAllText(temporaryPath, value);
+      if (!MoveFileExW(temporaryPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "MoveFileExW atomic replace failed");
+      }
+    } finally {
+      if (File.Exists(temporaryPath)) { File.Delete(temporaryPath); }
+    }
   }
 
-  private static int Terminate(IntPtr process, string completionPath, DateTime confirmationDeadlineUtc) {
-    if (!TerminateProcess(process, 1)) {
-      var error = Marshal.GetLastWin32Error();
-      var signal = WaitForSingleObject(process, 0);
-      if (signal == WAIT_OBJECT_0) {
-        Write(completionPath, "exited");
-        return 0;
+  private static bool TryReadCommand(string path, out string command) {
+    command = null;
+    try {
+      if (!File.Exists(path)) { return false; }
+      command = File.ReadAllText(path).Trim();
+      return true;
+    } catch (IOException) {
+      return false;
+    } catch (UnauthorizedAccessException) {
+      return false;
+    }
+  }
+
+  private static bool TryGetTerminationDeadline(string command, out DateTime deadlineUtc) {
+    deadlineUtc = DateTime.MinValue;
+    if (command.StartsWith("terminate:", StringComparison.Ordinal)) {
+      long deadlineUtcTicks;
+      if (!Int64.TryParse(command.Substring("terminate:".Length), NumberStyles.None, CultureInfo.InvariantCulture, out deadlineUtcTicks)) { return false; }
+      try {
+        deadlineUtc = new DateTime(deadlineUtcTicks, DateTimeKind.Utc);
+        return true;
+      } catch (ArgumentOutOfRangeException) {
+        return false;
       }
-      Write(completionPath, signal == WAIT_FAILED ? "wait-failed:" + Marshal.GetLastWin32Error() : "terminate-failed:" + error);
-      return 1;
     }
-    var remainingMilliseconds = Math.Max(0, (int)Math.Floor((confirmationDeadlineUtc - DateTime.UtcNow).TotalMilliseconds));
-    if (WaitForSingleObject(process, (uint)remainingMilliseconds) != WAIT_OBJECT_0) {
-      Write(completionPath, "terminate-unconfirmed");
-      return 1;
-    }
-    Write(completionPath, "terminated");
-    return 0;
+    return false;
+  }
+
+  private static bool TryTerminateProcess(IntPtr process, uint exitCode) {
+    var fixtureResult = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_RESULT");
+    if (String.Equals(fixtureResult, "success", StringComparison.Ordinal)) { return true; }
+    if (String.Equals(fixtureResult, "failure", StringComparison.Ordinal)) { return false; }
+    return TerminateProcess(process, exitCode);
   }
 
   public static int Main(string[] args) {
@@ -660,6 +717,9 @@ public static class SuspendedProcessWatchdog {
       }
       if (automaticConfirmationDeadlineUtc <= deadlineUtc) { return 2; }
       Write(readyPath, "armed");
+      var terminationRequested = false;
+      var terminationSignaled = false;
+      var confirmationDeadlineUtc = automaticConfirmationDeadlineUtc;
       for (;;) {
         var signal = WaitForSingleObject(process, 0);
         if (signal == WAIT_OBJECT_0) {
@@ -670,27 +730,52 @@ public static class SuspendedProcessWatchdog {
           Write(completionPath, "wait-failed:" + Marshal.GetLastWin32Error());
           return 1;
         }
-        if (File.Exists(commandPath)) {
-          var command = File.ReadAllText(commandPath).Trim();
-          if (String.Equals(command, "disarm", StringComparison.Ordinal)) {
+        if (terminationRequested && DateTime.UtcNow >= confirmationDeadlineUtc) {
+          Write(completionPath, "terminate-unconfirmed");
+          return 1;
+        }
+        string command;
+        if (TryReadCommand(commandPath, out command)) {
+          if (!terminationRequested && String.Equals(command, "disarm", StringComparison.Ordinal)) {
             Write(completionPath, "disarmed");
             return 0;
           }
-          if (command.StartsWith("terminate:", StringComparison.Ordinal)) {
-            long commandConfirmationDeadlineUtcTicks;
-            if (!Int64.TryParse(command.Substring("terminate:".Length), NumberStyles.None, CultureInfo.InvariantCulture, out commandConfirmationDeadlineUtcTicks)) {
-              Write(completionPath, "command-invalid");
-              return 1;
+          DateTime requestedDeadlineUtc;
+          if (TryGetTerminationDeadline(command, out requestedDeadlineUtc)) {
+            if (requestedDeadlineUtc > confirmationDeadlineUtc) {
+              confirmationDeadlineUtc = requestedDeadlineUtc;
             }
-            try {
-              return Terminate(process, completionPath, new DateTime(commandConfirmationDeadlineUtcTicks, DateTimeKind.Utc));
-            } catch (ArgumentOutOfRangeException) {
-              Write(completionPath, "command-invalid");
-              return 1;
-            }
+            terminationRequested = true;
           }
         }
-        if (DateTime.UtcNow >= deadlineUtc) { return Terminate(process, completionPath, automaticConfirmationDeadlineUtc); }
+        if (!terminationRequested && DateTime.UtcNow >= deadlineUtc) { terminationRequested = true; }
+        if (terminationRequested) {
+          var terminateGatePath = Environment.GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_WATCHDOG_TERMINATE_GATE_PATH");
+          if (!terminationSignaled && (String.IsNullOrWhiteSpace(terminateGatePath) || File.Exists(terminateGatePath))) {
+            if (TryTerminateProcess(process, 1)) {
+              terminationSignaled = true;
+            } else {
+              signal = WaitForSingleObject(process, 0);
+              if (signal == WAIT_OBJECT_0) {
+                Write(completionPath, "exited");
+                return 0;
+              }
+              if (signal == WAIT_FAILED) {
+                Write(completionPath, "wait-failed:" + Marshal.GetLastWin32Error());
+                return 1;
+              }
+            }
+          }
+          signal = WaitForSingleObject(process, 0);
+          if (signal == WAIT_OBJECT_0) {
+            Write(completionPath, "terminated");
+            return 0;
+          }
+          if (signal == WAIT_FAILED) {
+            Write(completionPath, "wait-failed:" + Marshal.GetLastWin32Error());
+            return 1;
+          }
+        }
         Thread.Sleep(10);
       }
     } catch (Exception exception) {
@@ -714,10 +799,16 @@ function Start-HarnessSuspendedProcessWatchdog {
     [Parameter(Mandatory = $true)][string]$WatchdogPath,
     [Parameter(Mandatory = $true)][object]$NativeProcess,
     [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
-    [ValidateRange(100, 5000)][int]$ConfirmationReserveMilliseconds = 1000
+    [ValidateRange(100, 5000)][int]$ConfirmationReserveMilliseconds = 1000,
+    [AllowNull()][ref]$Watchdog = $null
   )
 
-  $watchdogRoot = Join-Path $StageRoot "suspended-process-watchdog"
+  $watchdogStageRoot = Join-Path $StageRoot "suspended-process-watchdog"
+  New-Item -ItemType Directory -Force -Path $watchdogStageRoot | Out-Null
+  foreach ($staleSignalPath in @((Join-Path $watchdogStageRoot "command"), (Join-Path $watchdogStageRoot "ready"), (Join-Path $watchdogStageRoot "completion"))) {
+    if (Test-Path -LiteralPath $staleSignalPath -PathType Leaf) { Remove-Item -LiteralPath $staleSignalPath -Force -ErrorAction Stop }
+  }
+  $watchdogRoot = Join-Path $watchdogStageRoot ([guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $watchdogRoot | Out-Null
   $commandPath = Join-Path $watchdogRoot "command"
   $readyPath = Join-Path $watchdogRoot "ready"
@@ -728,19 +819,90 @@ function Start-HarnessSuspendedProcessWatchdog {
   $automaticConfirmationDeadlineUtcTicks = $DeadlineUtc.AddMilliseconds($ConfirmationReserveMilliseconds).Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   # StartInheritedHandleWatchdog replaces this reserved argument with the inheritable DuplicateHandle value.
   $arguments = @("inherited-process-handle", $commandPath, $readyPath, $completionPath, $deadlineUtcTicks, $automaticConfirmationDeadlineUtcTicks)
-  $watchdogProcessId = $NativeProcess.StartInheritedHandleWatchdog($WatchdogPath, [string[]]$arguments, $watchdogRoot)
-  $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId)
+  $watchdogProcessId = $null
+  $process = $null
+  $setupCleanupDeadlineUtc = $DeadlineUtc
+  try {
+    $watchdogProcessId = $NativeProcess.StartInheritedHandleWatchdog($WatchdogPath, [string[]]$arguments, $watchdogRoot)
+    $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId)
 
-  $readyDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds([Math]::Min(1000, $remainingMilliseconds))
-  while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadlineUtc) { Start-Sleep -Milliseconds 10 }
-  if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) {
-    try { $process.Dispose() } finally { throw "suspended-process watchdog did not inherit the original process handle before setup continued" }
+    $setupCleanupReserveMilliseconds = [Math]::Min(250, [Math]::Max(50, [int][Math]::Floor($remainingMilliseconds / 4)))
+    $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
+    $readyBudgetMilliseconds = [Math]::Max(0, $remainingMilliseconds - $setupCleanupReserveMilliseconds)
+    $readyDeadlineUtc = $DeadlineUtc.AddMilliseconds(-$setupCleanupReserveMilliseconds)
+    $readyPollDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds([Math]::Min(1000, $readyBudgetMilliseconds))
+    if ($readyPollDeadlineUtc -lt $readyDeadlineUtc) { $readyDeadlineUtc = $readyPollDeadlineUtc }
+    while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadlineUtc) { Start-Sleep -Milliseconds 10 }
+    if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) { throw "suspended-process watchdog did not inherit the original process handle before setup continued" }
+    $ready = (Get-Content -LiteralPath $readyPath -Raw -Encoding UTF8).Trim()
+    if ($ready -ne "armed") { throw "suspended-process watchdog reported invalid ready state '$ready'" }
+    $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
+    if ($null -ne $Watchdog) { $Watchdog.Value = $watchdog }
+    return $watchdog
+  } catch {
+    if ($null -eq $process -and $null -ne $watchdogProcessId) { try { $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId) } catch { } }
+    if ($null -ne $process) {
+      $watchdog = [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false; commandAction=$null; confirmationDeadlineUtcTicks=$null; disposed=$false; terminalCompletion=$null }
+      if ($null -ne $Watchdog) { $Watchdog.Value = $watchdog }
+      $_.Exception.Data["VemVisionHarness.SuspendedProcessWatchdog"] = $watchdog
+    }
+    throw
   }
-  $ready = (Get-Content -LiteralPath $readyPath -Raw -Encoding UTF8).Trim()
-  if ($ready -ne "armed") {
-    try { $process.Dispose() } finally { throw "suspended-process watchdog reported invalid ready state '$ready'" }
+}
+function Get-HarnessSuspendedProcessWatchdogCompletion {
+  param(
+    [Parameter(Mandatory = $true)][object]$Watchdog
+  )
+
+  if (-not (Test-Path -LiteralPath $Watchdog.completionPath -PathType Leaf)) { return $null }
+  $completion = (Get-Content -LiteralPath $Watchdog.completionPath -Raw -Encoding UTF8).Trim()
+  if ($completion -notmatch "^(exited|terminated|disarmed|wait-failed:[0-9]+|terminate-failed:[0-9]+|terminate-unconfirmed|command-invalid|watchdog-failed:[A-Za-z0-9_]+)$") { return $null }
+  return $completion
+}
+function Assert-HarnessSuspendedProcessWatchdogCompletion {
+  param(
+    [Parameter(Mandatory = $true)][object]$Watchdog,
+    [Parameter(Mandatory = $true)][ValidateSet("disarm", "terminate")][string]$Action,
+    [Parameter(Mandatory = $true)][string]$Completion
+  )
+
+  if ($Action -eq "terminate" -and $Completion -notin @("terminated", "exited")) { throw "suspended-process watchdog could not terminate process $($Watchdog.processId): $Completion" }
+  if ($Action -eq "disarm" -and $Completion -notin @("disarmed", "exited")) { throw "suspended-process watchdog could not disarm process $($Watchdog.processId): $Completion" }
+}
+function Initialize-HarnessSuspendedProcessWatchdogState {
+  param([Parameter(Mandatory = $true)][object]$Watchdog)
+
+  foreach ($property in @(@{ name="disposed"; value=$false }, @{ name="terminalCompletion"; value=$null }, @{ name="confirmationDeadlineUtcTicks"; value=$null })) {
+    if ($null -eq $Watchdog.PSObject.Properties[$property.name]) {
+      $Watchdog | Add-Member -MemberType NoteProperty -Name $property.name -Value $property.value
+    }
   }
-  return [pscustomobject]@{ process=$process; commandPath=$commandPath; completionPath=$completionPath; processId=$NativeProcess.ProcessId; completed=$false }
+}
+function Close-HarnessSuspendedProcessWatchdog {
+  param([Parameter(Mandatory = $true)][object]$Watchdog)
+
+  if ($Watchdog.disposed) { return }
+  try {
+    $Watchdog.process.Dispose()
+  } finally {
+    $Watchdog.disposed = $true
+  }
+}
+function Complete-HarnessSuspendedProcessWatchdogTerminal {
+  param(
+    [Parameter(Mandatory = $true)][object]$Watchdog,
+    [Parameter(Mandatory = $true)][ValidateSet("disarm", "terminate")][string]$Action,
+    [Parameter(Mandatory = $true)][string]$Completion
+  )
+
+  $Watchdog.terminalCompletion = $Completion
+  try {
+    Assert-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog -Action $Action -Completion $Completion
+    $Watchdog.completed = $true
+    return $Completion
+  } finally {
+    Close-HarnessSuspendedProcessWatchdog -Watchdog $Watchdog
+  }
 }
 function Complete-HarnessSuspendedProcessWatchdog {
   param(
@@ -749,17 +911,35 @@ function Complete-HarnessSuspendedProcessWatchdog {
     [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
   )
 
-  if ($Watchdog.completed) { return "already-completed" }
-  $command = if ($Action -eq "terminate") { "terminate:" + $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) } else { $Action }
-  Write-Utf8 $Watchdog.commandPath $command
-  $remainingMilliseconds = [Math]::Max(0, [int][Math]::Floor(($DeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds))
+  Initialize-HarnessSuspendedProcessWatchdogState -Watchdog $Watchdog
+  if ($null -ne $Watchdog.terminalCompletion) {
+    Assert-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog -Action $Action -Completion $Watchdog.terminalCompletion
+    return "already-completed"
+  }
+  if ($Watchdog.disposed) { throw "suspended-process watchdog process handle was disposed without a terminal completion" }
+  if ($Watchdog.completed) { throw "suspended-process watchdog was marked completed without a terminal completion" }
+
+  $completion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog
+  if ($null -ne $completion) {
+    return Complete-HarnessSuspendedProcessWatchdogTerminal -Watchdog $Watchdog -Action $Action -Completion $completion
+  }
+
+  if ($null -ne $Watchdog.commandAction -and $Watchdog.commandAction -ne $Action) { throw "suspended-process watchdog was already commanded to '$($Watchdog.commandAction)', not '$Action'" }
+  $writeCommand = $null -eq $Watchdog.commandAction
+  if ($Action -eq "terminate" -and $null -ne $Watchdog.confirmationDeadlineUtcTicks -and $DeadlineUtc.Ticks -gt [Int64]$Watchdog.confirmationDeadlineUtcTicks) {
+    $writeCommand = $true
+  }
+  if ($writeCommand) {
+    $command = if ($Action -eq "terminate") { "terminate:" + $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) } else { $Action }
+    Write-HarnessAtomicUtf8 $Watchdog.commandPath $command
+    $Watchdog.commandAction = $Action
+    if ($Action -eq "terminate") { $Watchdog.confirmationDeadlineUtcTicks = $DeadlineUtc.Ticks }
+  }
+  $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
   if (-not $Watchdog.process.WaitForExit($remainingMilliseconds)) { throw "suspended-process watchdog did not complete '$Action' before the cleanup deadline" }
-  $completion = if (Test-Path -LiteralPath $Watchdog.completionPath -PathType Leaf) { (Get-Content -LiteralPath $Watchdog.completionPath -Raw -Encoding UTF8).Trim() } else { "missing-completion" }
-  $Watchdog.completed = $true
-  $Watchdog.process.Dispose()
-  if ($Action -eq "terminate" -and $completion -notin @("terminated", "exited")) { throw "suspended-process watchdog could not terminate process $($Watchdog.processId): $completion" }
-  if ($Action -eq "disarm" -and $completion -notin @("disarmed", "exited")) { throw "suspended-process watchdog could not disarm process $($Watchdog.processId): $completion" }
-  return $completion
+  $completion = Get-HarnessSuspendedProcessWatchdogCompletion -Watchdog $Watchdog
+  if ($null -eq $completion) { $completion = "missing-completion" }
+  return Complete-HarnessSuspendedProcessWatchdogTerminal -Watchdog $Watchdog -Action $Action -Completion $completion
 }
 function Get-HarnessRemainingMilliseconds {
   param(
@@ -963,7 +1143,7 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($ChildPowerShellPath, $nativeArguments, $stageRoot)
     $cleanupState.processOwnership = "created-suspended"
     Write-HarnessStage $Stage "process-ownership" "state=created-suspended processId=$($nativeProcess.ProcessId)"
-    $suspendedProcessWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $cleanupDeadlineUtc
+    $suspendedProcessWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot $stageRoot -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $cleanupDeadlineUtc -Watchdog ([ref]$suspendedProcessWatchdog)
     Write-HarnessStage $Stage "suspended-process-watchdog-armed" "processId=$($nativeProcess.ProcessId) identity=original-process-handle"
     $job.Assign($nativeProcess.ProcessHandle)
     $cleanupState.processOwnership = "job-assigned-suspended"
@@ -1029,7 +1209,8 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
         }
       }
     } catch {
-      $nativeCleanupFailure = $_
+      if ($null -eq $nativeCleanupFailure) { $nativeCleanupFailure = $_ }
+      else { $cleanupFailures.Add($_.Exception) }
     } finally {
       try {
         if ($null -ne $nativeProcess -and $nativeCleanupConfirmed) { $nativeProcess.Dispose() }
@@ -1047,7 +1228,10 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     if ($null -ne $nativeCleanupFailure) { $cleanupFailures.Add($nativeCleanupFailure.Exception) }
   }
   if ($null -ne $operationFailure -and $cleanupFailures.Count -gt 0) {
-    throw [Exception]::new("$($operationFailure.Exception.Message); cleanup failure: $($cleanupFailures[0].Message)", [AggregateException]::new($cleanupFailures))
+    $failures = New-Object 'System.Collections.Generic.List[System.Exception]'
+    $failures.Add($operationFailure.Exception)
+    foreach ($cleanupFailure in $cleanupFailures) { $failures.Add($cleanupFailure) }
+    throw [AggregateException]::new("fixture stage '$Stage' failed and cleanup could not confirm the suspended process was terminated", $failures)
   }
   if ($null -ne $operationFailure) { throw $operationFailure }
   if ($cleanupFailures.Count -gt 0) { throw [AggregateException]::new("fixture stage '$Stage' cleanup failed", $cleanupFailures) }

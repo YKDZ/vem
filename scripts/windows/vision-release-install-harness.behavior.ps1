@@ -85,20 +85,40 @@ function Start-HardWatchdogHost {
   $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($PowerShellPath, $arguments, $HarnessRoot)
   $lifetimeWatchdog = $null
   try {
-    $lifetimeWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $HarnessRoot "hard-watchdog-host-lifetime") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $LifetimeDeadlineUtc
+    $lifetimeWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $HarnessRoot "hard-watchdog-host-lifetime") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $nativeProcess -DeadlineUtc $LifetimeDeadlineUtc -Watchdog ([ref]$lifetimeWatchdog)
     $nativeProcess.Resume()
     return [pscustomobject]@{ process=$nativeProcess; lifetimeWatchdog=$lifetimeWatchdog; deadlineWatchdog=$null }
   } catch {
+    $failures = New-Object 'System.Collections.Generic.List[System.Exception]'
+    $failures.Add($_.Exception)
+    $nativeCleanupConfirmed = $false
     try {
-      if ($null -ne $lifetimeWatchdog) {
-        Complete-HarnessSuspendedProcessWatchdog -Watchdog $lifetimeWatchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5)) | Out-Null
-      } else {
+      if ($nativeProcess.IsResumed) {
+        throw "hard watchdog host resumed before setup completed"
+      }
+      try {
         $nativeProcess.TerminateUnresumed(5000)
+        $nativeCleanupConfirmed = $true
+      } catch {
+        $failures.Add($_.Exception)
+      }
+      if ($null -ne $lifetimeWatchdog) {
+        try {
+          $action = if ($nativeCleanupConfirmed) { "disarm" } else { "terminate" }
+          Complete-HarnessSuspendedProcessWatchdog -Watchdog $lifetimeWatchdog -Action $action -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5)) | Out-Null
+          if (-not $nativeCleanupConfirmed) {
+            if (-not $nativeProcess.WaitForExit(5000)) { throw "hard watchdog host watchdog completion did not signal the original process handle" }
+            $nativeCleanupConfirmed = $true
+          }
+        } catch {
+          $failures.Add($_.Exception)
+        }
       }
     } finally {
-      $nativeProcess.Dispose()
+      if ($nativeCleanupConfirmed) { $nativeProcess.Dispose() }
     }
-    throw
+    if (-not $nativeCleanupConfirmed) { $failures.Add([InvalidOperationException]::new("hard watchdog host retained the suspended process handle because termination was not confirmed")) }
+    throw [AggregateException]::new("hard watchdog host setup failed", $failures)
   }
 }
 
