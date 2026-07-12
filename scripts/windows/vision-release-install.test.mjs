@@ -150,6 +150,7 @@ describe("Vision release installer fixtures", () => {
       source,
       /\$actual \| ConvertTo-Json[^\n]+\$expected \| ConvertTo-Json/,
     );
+    assert.match(source, /\$rollbackFailure=Sanitize \$_\.Exception\.Message/);
   });
 
   boundedIt("binds Factory approval identities to approval bytes", () => {

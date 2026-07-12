@@ -964,7 +964,7 @@ try {
   Write-VisionLauncher; Ensure-VisionTask; $previous=if(Test-Path $selectionPath){(Read-StrictJson $selectionPath "Vision selection").value}else{$null}; if($previous){$evidence.previousDigest=$previous.bundleDigest}; $next=$candidate; $activationStarted=$true; if($previous){Stop-RecordedVision $previous}; Write-AtomicJson $selectionPath $next; Set-SystemInstallerAcl $selectionPath $true; Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"; Test-VisionProtocol $next $descriptor; $evidence.healthOk=$true; $evidence.webSocketOk=$true; $evidence.installedDigest=$record.bundleDigest
 } catch {
   $evidence.failure=Sanitize $_.Exception.Message
-  if($activationStarted){$evidence.rollbackAttempted=$true; try { Rollback-PreviousRelease $previous $next; $evidence.rollbackOk=$true } catch {$evidence.rollbackOk=$false} }
+  if($activationStarted){$evidence.rollbackAttempted=$true; try { Rollback-PreviousRelease $previous $next; $evidence.rollbackOk=$true } catch {$evidence.rollbackOk=$false; $rollbackFailure=Sanitize $_.Exception.Message; if(-not [string]::IsNullOrWhiteSpace($rollbackFailure)){$evidence.failure=Sanitize ("$($evidence.failure); rollback: $rollbackFailure")} } }
   throw
 } finally {
   try { Write-InstallEvidence $evidence } finally { if($mutex){if($lockHeld){ $mutex.ReleaseMutex() };$mutex.Dispose()} }
