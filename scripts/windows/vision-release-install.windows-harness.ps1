@@ -1033,7 +1033,7 @@ function Get-HarnessRemainingMilliseconds {
 function Get-HarnessWatchdogSetupBudgetMilliseconds {
   param([Parameter(Mandatory = $true)][int]$AvailableMilliseconds)
 
-  return [Math]::Min(30000, [Math]::Max(0, $AvailableMilliseconds))
+  return [Math]::Min(60000, [Math]::Max(0, $AvailableMilliseconds))
 }
 function Get-HarnessTerminationConfirmationReserveMilliseconds {
   param([Parameter(Mandatory = $true)][int]$TotalMilliseconds)

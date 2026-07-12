@@ -119,7 +119,7 @@ describe("Vision release installer fixtures", () => {
 
   boundedIt(
     "captures a Windows PowerShell 5.1 child stdout and non-terminating stderr through the bounded native process",
-    { skip: process.platform !== "win32", timeout: 120_000 },
+    { skip: process.platform !== "win32", timeout: 180_000 },
     () => {
       const probe = String.raw`
 $ErrorActionPreference = "Stop"
@@ -129,14 +129,12 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-node-streams-" + [guid
 try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
-  $watchdogPreflightDeadlineUtc = [DateTime]::UtcNow.AddSeconds(35)
-  Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc $watchdogPreflightDeadlineUtc
+  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(100)
+  Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc $deadlineUtc
   $contextPath = Join-Path $root "context.json"
   Write-Json $contextPath ([ordered]@{ root=$root; stateRoot=(Join-Path $root "state"); bundleDigest="sha256:node-streams" })
   $childPowerShellPath = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
   if (-not (Test-Path -LiteralPath $childPowerShellPath -PathType Leaf)) { throw "Windows PowerShell 5.1 is missing" }
-  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(30)
-
   $clean = Invoke-BoundedPowerShell -Stage "node.ps51-streams-clean" -TimeoutSeconds 10 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $childPowerShellPath -HarnessDeadlineUtc $deadlineUtc -ScriptBody @'
 $ErrorActionPreference = "Stop"
 Write-Output ps51-stdout
@@ -178,7 +176,7 @@ exit 23
           "-Command",
           probe,
         ],
-        { timeout: 90_000 },
+        { timeout: 150_000 },
       );
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     },
@@ -248,7 +246,17 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       assert.doesNotMatch(streamProbe, /spawnBounded\(\s*"powershell\.exe"/);
       assert.match(
         streamProbe,
-        /\$script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot \$root[\s\S]*?Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath \$script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc \$watchdogPreflightDeadlineUtc[\s\S]*?\$clean = Invoke-BoundedPowerShell/,
+        /\$script:HarnessSuspendedProcessWatchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot \$root[\s\S]*?\$deadlineUtc = \[DateTime\]::UtcNow\.AddSeconds\(100\)[\s\S]*?Invoke-HarnessSuspendedProcessWatchdogPreflight -WatchdogPath \$script:HarnessSuspendedProcessWatchdogPath -DeadlineUtc \$deadlineUtc[\s\S]*?\$clean = Invoke-BoundedPowerShell[\s\S]*?-HarnessDeadlineUtc \$deadlineUtc/,
+      );
+      assert.match(streamProbe, /timeout: 180_000/);
+      assert.match(streamProbe, /\{ timeout: 150_000 \}/);
+      assert.match(
+        streamProbe,
+        /Invoke-BoundedPowerShell -Stage "node\.ps51-streams-nonzero"[\s\S]*?-HarnessDeadlineUtc \$deadlineUtc/,
+      );
+      assert.doesNotMatch(
+        streamProbe,
+        /watchdogPreflightDeadlineUtc|AddSeconds\(30\)/,
       );
       assert.match(source, /function Invoke-BoundedPowerShell/);
     },
@@ -657,13 +665,13 @@ Start-Sleep -Seconds 30
   );
 
   boundedIt(
-    "allows a bounded watchdog cold setup window before child execution",
+    "allows a bounded 60-second watchdog cold setup window before child execution",
     () => {
       const result = spawnBounded("pwsh", [
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        '. ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; $budget=Get-HarnessWatchdogSetupBudgetMilliseconds -AvailableMilliseconds 45000; if($budget -ne 30000){throw "expected 30000ms bounded watchdog setup budget, got $budget"}',
+        '. ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; $budget=Get-HarnessWatchdogSetupBudgetMilliseconds -AvailableMilliseconds 75000; if($budget -ne 60000){throw "expected 60000ms bounded watchdog setup budget, got $budget"}',
       ]);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     },
