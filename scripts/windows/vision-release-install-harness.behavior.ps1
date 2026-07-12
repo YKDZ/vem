@@ -437,8 +437,12 @@ try {
   Assert-True ((Get-Content -LiteralPath $hardWatchdogFaultSignalPath -Raw).Trim() -ceq "fault-observed") "hard watchdog host did not acknowledge the expected cleanup fault"
   Write-HarnessStage "behavior.hard-watchdog" "fault-signal-validated"
   Write-HarnessStage "behavior.hard-watchdog" "inherited-watchdog-arming"
-  $hardWatchdogHost.deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "hard-watchdog-host-deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hardWatchdogHost.process -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(4))
+  $hardWatchdogDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
+  $hardWatchdogHost.deadlineWatchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "hard-watchdog-host-deadline") -WatchdogPath $script:HarnessSuspendedProcessWatchdogPath -NativeProcess $hardWatchdogHost.process -DeadlineUtc $hardWatchdogDeadlineUtc
   Write-HarnessStage "behavior.hard-watchdog" "inherited-watchdog-armed" "processId=$($hardWatchdogHost.deadlineWatchdog.processId) identity=original-process-handle"
+  Complete-HarnessSuspendedProcessWatchdog -Watchdog $hardWatchdogHost.lifetimeWatchdog -Action "disarm" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null
+  $hardWatchdogHost.lifetimeWatchdog = $null
+  Write-HarnessStage "behavior.hard-watchdog" "lifetime-watchdog-disarmed"
   Write-HarnessStage "behavior.hard-watchdog" "descendant-identity-reading"
   Assert-True (Test-Path -LiteralPath $hardWatchdogIdentityPath -PathType Leaf) "hard watchdog host did not create a live descendant"
   $hardWatchdogDescendantIdentity = Get-Content -LiteralPath $hardWatchdogIdentityPath -Raw | ConvertFrom-Json

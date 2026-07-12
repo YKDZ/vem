@@ -465,6 +465,49 @@ Start-Sleep -Seconds 30
   );
 
   boundedIt(
+    "confirms an automatic inherited-handle deadline termination on Windows",
+    { skip: process.platform !== "win32" },
+    () => {
+      const probe = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path (Get-Location) "scripts\\windows\\vision-release-install.windows-harness.ps1") -Library
+Initialize-HarnessNativeTypes
+$root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-inherited-watchdog-deadline-" + [guid]::NewGuid().ToString("N"))
+$nativeProcess = $null
+$watchdog = $null
+try {
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $watchdogPath = Initialize-HarnessSuspendedProcessWatchdog -HarnessRoot $root
+  $powerShellPath = Get-Command pwsh -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+  $nativeProcess = [VemVisionHarness.SuspendedProcess]::Create($powerShellPath, [string[]]@("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"), $root)
+  $watchdog = Start-HarnessSuspendedProcessWatchdog -StageRoot (Join-Path $root "deadline") -WatchdogPath $watchdogPath -NativeProcess $nativeProcess -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1))
+  $nativeProcess.Resume()
+  $completionDeadlineUtc = [DateTime]::UtcNow.AddSeconds(4)
+  while (-not (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf) -and [DateTime]::UtcNow -lt $completionDeadlineUtc) { Start-Sleep -Milliseconds 10 }
+  if (-not (Test-Path -LiteralPath $watchdog.completionPath -PathType Leaf)) { throw "automatic watchdog deadline did not write a completion state" }
+  if ((Get-Content -LiteralPath $watchdog.completionPath -Raw).Trim() -cne "terminated") { throw "automatic watchdog did not confirm termination" }
+  if (-not $nativeProcess.WaitForExit(1000)) { throw "automatic watchdog left its host process running" }
+  Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null
+  $watchdog = $null
+} finally {
+  if ($null -ne $watchdog) { Complete-HarnessSuspendedProcessWatchdog -Watchdog $watchdog -Action "terminate" -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2)) | Out-Null }
+  if ($null -ne $nativeProcess) { $nativeProcess.Dispose() }
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        probe,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
     "passes complete Factory release inputs to every signed-install shell",
     () => {
       const harness = readFileSync(windowsHarness, "utf8");
@@ -518,7 +561,7 @@ Start-Sleep -Seconds 30
   );
 
   boundedIt(
-    "passes the inherited watchdog handle and one absolute UTC deadline to the child",
+    "passes the inherited watchdog handle with bounded trigger and confirmation deadlines",
     () => {
       const harness = readFileSync(windowsHarness, "utf8");
       const behavior = readFileSync(behaviorHarness, "utf8");
@@ -533,6 +576,26 @@ Start-Sleep -Seconds 30
       );
       assert.match(
         harness,
+        /new DateTime\(automaticConfirmationDeadlineUtcTicks, DateTimeKind\.Utc\)/,
+      );
+      assert.match(
+        harness,
+        /if \(args == null \|\| args\.Length != 6\) \{ return 2; \}/,
+      );
+      assert.match(
+        harness,
+        /if \(automaticConfirmationDeadlineUtc <= deadlineUtc\) \{ return 2; \}/,
+      );
+      assert.match(
+        harness,
+        /if \(command\.StartsWith\("terminate:", StringComparison\.Ordinal\)\)/,
+      );
+      assert.match(
+        harness,
+        /\$command = if \(\$Action -eq "terminate"\) \{ "terminate:" \+ \$DeadlineUtc\.Ticks\.ToString/,
+      );
+      assert.match(
+        harness,
         /using System\.Globalization;\s+using System\.IO;\s+using System\.Runtime\.InteropServices;/,
       );
       assert.doesNotMatch(
@@ -542,6 +605,10 @@ Start-Sleep -Seconds 30
       assert.match(
         behavior,
         /watchdog inherited-handle probe observed ERROR_INVALID_HANDLE/,
+      );
+      assert.match(
+        behavior,
+        /inherited-watchdog-armed[\s\S]*?Complete-HarnessSuspendedProcessWatchdog -Watchdog \$hardWatchdogHost\.lifetimeWatchdog -Action "disarm"[\s\S]*?\$hardWatchdogHost\.lifetimeWatchdog = \$null[\s\S]*?lifetime-watchdog-disarmed/,
       );
     },
   );

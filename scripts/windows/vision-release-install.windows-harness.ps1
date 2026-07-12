@@ -618,7 +618,7 @@ public static class SuspendedProcessWatchdog {
     File.WriteAllText(path, value);
   }
 
-  private static int Terminate(IntPtr process, string completionPath, DateTime deadlineUtc) {
+  private static int Terminate(IntPtr process, string completionPath, DateTime confirmationDeadlineUtc) {
     if (!TerminateProcess(process, 1)) {
       var error = Marshal.GetLastWin32Error();
       var signal = WaitForSingleObject(process, 0);
@@ -629,7 +629,7 @@ public static class SuspendedProcessWatchdog {
       Write(completionPath, signal == WAIT_FAILED ? "wait-failed:" + Marshal.GetLastWin32Error() : "terminate-failed:" + error);
       return 1;
     }
-    var remainingMilliseconds = Math.Max(0, (int)Math.Floor((deadlineUtc - DateTime.UtcNow).TotalMilliseconds));
+    var remainingMilliseconds = Math.Max(0, (int)Math.Floor((confirmationDeadlineUtc - DateTime.UtcNow).TotalMilliseconds));
     if (WaitForSingleObject(process, (uint)remainingMilliseconds) != WAIT_OBJECT_0) {
       Write(completionPath, "terminate-unconfirmed");
       return 1;
@@ -639,10 +639,11 @@ public static class SuspendedProcessWatchdog {
   }
 
   public static int Main(string[] args) {
-    if (args == null || args.Length != 5) { return 2; }
+    if (args == null || args.Length != 6) { return 2; }
     ulong inheritedHandleValue;
     long deadlineUtcTicks;
-    if (!UInt64.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out inheritedHandleValue) || !Int64.TryParse(args[4], NumberStyles.None, CultureInfo.InvariantCulture, out deadlineUtcTicks)) { return 2; }
+    long automaticConfirmationDeadlineUtcTicks;
+    if (!UInt64.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out inheritedHandleValue) || !Int64.TryParse(args[4], NumberStyles.None, CultureInfo.InvariantCulture, out deadlineUtcTicks) || !Int64.TryParse(args[5], NumberStyles.None, CultureInfo.InvariantCulture, out automaticConfirmationDeadlineUtcTicks)) { return 2; }
     var commandPath = args[1];
     var readyPath = args[2];
     var completionPath = args[3];
@@ -650,11 +651,14 @@ public static class SuspendedProcessWatchdog {
     if (process == IntPtr.Zero) { return 2; }
     try {
       DateTime deadlineUtc;
+      DateTime automaticConfirmationDeadlineUtc;
       try {
         deadlineUtc = new DateTime(deadlineUtcTicks, DateTimeKind.Utc);
+        automaticConfirmationDeadlineUtc = new DateTime(automaticConfirmationDeadlineUtcTicks, DateTimeKind.Utc);
       } catch (ArgumentOutOfRangeException) {
         return 2;
       }
+      if (automaticConfirmationDeadlineUtc <= deadlineUtc) { return 2; }
       Write(readyPath, "armed");
       for (;;) {
         var signal = WaitForSingleObject(process, 0);
@@ -672,11 +676,21 @@ public static class SuspendedProcessWatchdog {
             Write(completionPath, "disarmed");
             return 0;
           }
-          if (String.Equals(command, "terminate", StringComparison.Ordinal)) {
-            return Terminate(process, completionPath, deadlineUtc);
+          if (command.StartsWith("terminate:", StringComparison.Ordinal)) {
+            long commandConfirmationDeadlineUtcTicks;
+            if (!Int64.TryParse(command.Substring("terminate:".Length), NumberStyles.None, CultureInfo.InvariantCulture, out commandConfirmationDeadlineUtcTicks)) {
+              Write(completionPath, "command-invalid");
+              return 1;
+            }
+            try {
+              return Terminate(process, completionPath, new DateTime(commandConfirmationDeadlineUtcTicks, DateTimeKind.Utc));
+            } catch (ArgumentOutOfRangeException) {
+              Write(completionPath, "command-invalid");
+              return 1;
+            }
           }
         }
-        if (DateTime.UtcNow >= deadlineUtc) { return Terminate(process, completionPath, deadlineUtc); }
+        if (DateTime.UtcNow >= deadlineUtc) { return Terminate(process, completionPath, automaticConfirmationDeadlineUtc); }
         Thread.Sleep(10);
       }
     } catch (Exception exception) {
@@ -699,7 +713,8 @@ function Start-HarnessSuspendedProcessWatchdog {
     [Parameter(Mandatory = $true)][string]$StageRoot,
     [Parameter(Mandatory = $true)][string]$WatchdogPath,
     [Parameter(Mandatory = $true)][object]$NativeProcess,
-    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
+    [ValidateRange(100, 5000)][int]$ConfirmationReserveMilliseconds = 1000
   )
 
   $watchdogRoot = Join-Path $StageRoot "suspended-process-watchdog"
@@ -710,8 +725,9 @@ function Start-HarnessSuspendedProcessWatchdog {
   $remainingMilliseconds = Get-HarnessRemainingMilliseconds -DeadlineUtc $DeadlineUtc
   if ($remainingMilliseconds -le 0) { throw "suspended-process watchdog deadline elapsed before it could be started" }
   $deadlineUtcTicks = $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $automaticConfirmationDeadlineUtcTicks = $DeadlineUtc.AddMilliseconds($ConfirmationReserveMilliseconds).Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   # StartInheritedHandleWatchdog replaces this reserved argument with the inheritable DuplicateHandle value.
-  $arguments = @("inherited-process-handle", $commandPath, $readyPath, $completionPath, $deadlineUtcTicks)
+  $arguments = @("inherited-process-handle", $commandPath, $readyPath, $completionPath, $deadlineUtcTicks, $automaticConfirmationDeadlineUtcTicks)
   $watchdogProcessId = $NativeProcess.StartInheritedHandleWatchdog($WatchdogPath, [string[]]$arguments, $watchdogRoot)
   $process = [Diagnostics.Process]::GetProcessById([int]$watchdogProcessId)
 
@@ -734,7 +750,8 @@ function Complete-HarnessSuspendedProcessWatchdog {
   )
 
   if ($Watchdog.completed) { return "already-completed" }
-  Write-Utf8 $Watchdog.commandPath $Action
+  $command = if ($Action -eq "terminate") { "terminate:" + $DeadlineUtc.Ticks.ToString([Globalization.CultureInfo]::InvariantCulture) } else { $Action }
+  Write-Utf8 $Watchdog.commandPath $command
   $remainingMilliseconds = [Math]::Max(0, [int][Math]::Floor(($DeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds))
   if (-not $Watchdog.process.WaitForExit($remainingMilliseconds)) { throw "suspended-process watchdog did not complete '$Action' before the cleanup deadline" }
   $completion = if (Test-Path -LiteralPath $Watchdog.completionPath -PathType Leaf) { (Get-Content -LiteralPath $Watchdog.completionPath -Raw -Encoding UTF8).Trim() } else { "missing-completion" }
