@@ -375,6 +375,23 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.WaitForExit\(/);
       assert.doesNotMatch(behavior, /\$hardWatchdogHost\.HasExited/);
+      for (const fixtureName of ["SlowWatchdog", "SetupTimeoutWatchdog"]) {
+        const fixtureSource = behavior.match(
+          new RegExp(
+            `public static class ${fixtureName} \\{([\\s\\S]*?)\\r?\\n\\}`,
+            "",
+          ),
+        )?.[1];
+        assert.ok(fixtureSource, `${fixtureName} source is missing`);
+        assert.match(
+          fixtureSource,
+          /new UTF8Encoding\(false\)\.GetBytes\(value\)[\s\S]*?new FileStream\(path, FileMode\.CreateNew, FileAccess\.Write, FileShare\.Read\)[\s\S]*?stream\.Write\(bytes, 0, bytes\.Length\);[\s\S]*?stream\.Flush\(true\);/,
+        );
+        assert.doesNotMatch(
+          fixtureSource,
+          /temporaryPath|File\.Move|Guid\.NewGuid/,
+        );
+      }
       const inheritedWatchdog = harness.match(
         /public static class SuspendedProcessWatchdog \{([\s\S]*?)\r?\n  \}\r?\n}\r?\n'@/,
       )?.[1];

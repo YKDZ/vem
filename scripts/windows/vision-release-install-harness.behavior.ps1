@@ -334,13 +334,16 @@ try {
   Write-Utf8 $slowWatchdogSourcePath @'
 using System;
 using System.IO;
+using System.Text;
 using System.Threading;
 
 public static class SlowWatchdog {
   private static void Write(string path, string value) {
-    var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-    File.WriteAllText(temporaryPath, value);
-    File.Move(temporaryPath, path);
+    var bytes = new UTF8Encoding(false).GetBytes(value);
+    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
+      stream.Write(bytes, 0, bytes.Length);
+      stream.Flush(true);
+    }
   }
 
   public static int Main(string[] args) {
@@ -380,6 +383,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 public static class SetupTimeoutWatchdog {
@@ -387,9 +391,11 @@ public static class SetupTimeoutWatchdog {
   private static extern bool TerminateProcess(IntPtr process, uint exitCode);
 
   private static void Write(string path, string value) {
-    var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-    File.WriteAllText(temporaryPath, value);
-    File.Move(temporaryPath, path);
+    var bytes = new UTF8Encoding(false).GetBytes(value);
+    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
+      stream.Write(bytes, 0, bytes.Length);
+      stream.Flush(true);
+    }
   }
 
   public static int Main(string[] args) {
