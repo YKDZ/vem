@@ -319,7 +319,7 @@ function Assert-InstalledRelease([object]$Record, [object]$Selection) {
   Assert-Keys $Record @("schemaVersion","bundleDigest","descriptorDigest","approvalDigest","installDirectory","entrypoint","entrypointDigest","files","descriptor","attestation","approval","documents") "Vision release record"
   if ($Record.schemaVersion -cne "vem-vision-release-record/v2" -or $Record.bundleDigest -cne $Selection.bundleDigest -or $Record.descriptorDigest -cne $Selection.descriptorDigest -or $Record.approvalDigest -cne $Selection.approvalDigest -or $Record.installDirectory -cne $Selection.installDirectory -or $Record.entrypoint -cne $Selection.entrypoint) { Throw-InstallError "installed Vision release metadata does not bind selection" }
   Assert-Digest ([string]$Record.entrypointDigest) "Vision entrypoint"; [void](Get-CanonicalContainedPath $releaseRoot ([string]$Record.installDirectory) "Vision release directory")
-  $actual = Get-ExtractedFileManifest ([string]$Record.installDirectory)
+  $actual = @(Get-ExtractedFileManifest ([string]$Record.installDirectory))
   $expected = @($Record.files)
   if ($actual.Count -ne $expected.Count) { Throw-InstallError "installed Vision release files do not match immutable metadata" }
   for ($index = 0; $index -lt $actual.Count; $index++) {
@@ -948,7 +948,7 @@ try {
   foreach($name in @("descriptor","attestation","sbom","provenance","conformance","approval","manifest")){
     $storedDocuments[$name]=[ordered]@{ digest=$documents[$name].digest; value=$documents[$name].value }
   }
-  $record=[ordered]@{ schemaVersion="vem-vision-release-record/v2"; bundleDigest=$descriptor.bundle.digest; descriptorDigest=$descriptor.identity; approvalDigest=$documents.approval.digest; installDirectory=$install; entrypoint=$descriptor.entrypoint.command; entrypointDigest=("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()); files=(Get-ExtractedFileManifest $install); descriptor=$descriptor; attestation=$documents.attestation.value; approval=$documents.approval.value; documents=$storedDocuments }
+  $record=[ordered]@{ schemaVersion="vem-vision-release-record/v2"; bundleDigest=$descriptor.bundle.digest; descriptorDigest=$descriptor.identity; approvalDigest=$documents.approval.digest; installDirectory=$install; entrypoint=$descriptor.entrypoint.command; entrypointDigest=("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()); files=@(Get-ExtractedFileManifest $install); descriptor=$descriptor; attestation=$documents.attestation.value; approval=$documents.approval.value; documents=$storedDocuments }
   if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) {
     Write-AtomicJson $metadata $record
     Set-SystemInstallerAcl $metadata $false

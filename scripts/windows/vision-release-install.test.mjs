@@ -133,6 +133,11 @@ describe("Vision release installer fixtures", () => {
     );
     assert.match(source, /\$evidence = \[pscustomobject\]\[ordered\]@\{/);
     assert.match(source, /Assert-Keys \$expected\[\$index\]/);
+    assert.match(
+      source,
+      /\$actual = @\(Get-ExtractedFileManifest \(\[string\]\$Record\.installDirectory\)\)/,
+    );
+    assert.match(source, /files=@\(Get-ExtractedFileManifest \$install\)/);
     assert.doesNotMatch(
       source,
       /\$actual \| ConvertTo-Json[^\n]+\$expected \| ConvertTo-Json/,
