@@ -623,6 +623,19 @@ Start-Sleep -Seconds 30
   );
 
   boundedIt(
+    "allows a bounded watchdog cold setup window before child execution",
+    () => {
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        '. ./scripts/windows/vision-release-install.windows-harness.ps1 -Library; $budget=Get-HarnessWatchdogSetupBudgetMilliseconds -AvailableMilliseconds 45000; if($budget -ne 30000){throw "expected 30000ms bounded watchdog setup budget, got $budget"}',
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    },
+  );
+
+  boundedIt(
     "atomically overwrites an existing watchdog signal with Windows PowerShell 5.1",
     { skip: process.platform !== "win32" },
     () => {
@@ -1072,10 +1085,6 @@ try {
       assert.doesNotMatch(
         harness,
         /DateTime\.UtcNow\.AddMilliseconds\(deadlineMilliseconds\)/,
-      );
-      assert.match(
-        harness,
-        /\$readyDeadlineUtc = \$DeadlineUtc\.AddMilliseconds\(-\$setupCleanupReserveMilliseconds\)/,
       );
       assert.match(
         behavior,

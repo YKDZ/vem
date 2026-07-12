@@ -264,6 +264,123 @@ try {
   Assert-True (Test-Path -LiteralPath (Join-Path $returned.diagnosticsPath "stderr.log") -PathType Leaf) "bounded invocation did not write a stderr log"
   Assert-True (($returned.PSObject.Properties.Name -join ",") -ceq "stdout,stderr,diagnosticsPath") "bounded invocation result shape changed"
 
+  Assert-BeforeDeadline
+  $slowWatchdogPath = Join-Path $root "slow-watchdog.exe"
+  $slowWatchdogSourcePath = Join-Path $root "SlowWatchdog.cs"
+  Write-Utf8 $slowWatchdogSourcePath @'
+using System;
+using System.IO;
+using System.Threading;
+
+public static class SlowWatchdog {
+  private static void Write(string path, string value) {
+    var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+    File.WriteAllText(temporaryPath, value);
+    File.Move(temporaryPath, path);
+  }
+
+  public static int Main(string[] args) {
+    if (args == null || args.Length != 6) { return 2; }
+    Thread.Sleep(4000);
+    Write(args[2], "armed");
+    for (;;) {
+      if (File.Exists(args[1])) {
+        var command = File.ReadAllText(args[1]).Trim();
+        if (String.Equals(command, "disarm", StringComparison.Ordinal)) {
+          Write(args[3], "disarmed");
+          return 0;
+        }
+      }
+      Thread.Sleep(10);
+    }
+  }
+}
+'@
+  $csc = Join-Path $env:WINDIR "Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"
+  & $csc /nologo /target:exe ("/out:{0}" -f $slowWatchdogPath) $slowWatchdogSourcePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $slowWatchdogPath -PathType Leaf)) { throw "slow watchdog fixture compilation failed" }
+  $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
+  $script:HarnessSuspendedProcessWatchdogPath = $slowWatchdogPath
+  try {
+    $delayedWatchdogSetup = Invoke-BoundedPowerShell -Stage "behavior.watchdog-setup-budget" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(15)) -ScriptBody 'Start-Sleep -Milliseconds 500; Write-Output watchdog-setup-budget'
+    Assert-True ($delayedWatchdogSetup.stdout.Trim() -ceq "watchdog-setup-budget") "watchdog setup consumed the child execution timeout before resume"
+  } finally {
+    $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+  }
+
+  Assert-BeforeDeadline
+  $setupTimeoutWatchdogPath = Join-Path $root "setup-timeout-watchdog.exe"
+  $setupTimeoutWatchdogSourcePath = Join-Path $root "SetupTimeoutWatchdog.cs"
+  Write-Utf8 $setupTimeoutWatchdogSourcePath @'
+using System;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+public static class SetupTimeoutWatchdog {
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+  private static void Write(string path, string value) {
+    var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+    File.WriteAllText(temporaryPath, value);
+    File.Move(temporaryPath, path);
+  }
+
+  public static int Main(string[] args) {
+    if (args == null || args.Length != 6) { return 2; }
+    Write(args[2] + ".deadline", args[4]);
+    var deadlineUtc = new DateTime(Int64.Parse(args[4], NumberStyles.None, CultureInfo.InvariantCulture), DateTimeKind.Utc);
+    while (DateTime.UtcNow < deadlineUtc) { Thread.Sleep(10); }
+    var process = new IntPtr(unchecked((long)UInt64.Parse(args[0], CultureInfo.InvariantCulture)));
+    if (!TerminateProcess(process, 1)) {
+      Write(args[3], "terminate-failed:" + Marshal.GetLastWin32Error());
+      return 1;
+    }
+    Write(args[3], "terminated");
+    return 0;
+  }
+}
+'@
+  & $csc /nologo /target:exe ("/out:{0}" -f $setupTimeoutWatchdogPath) $setupTimeoutWatchdogSourcePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $setupTimeoutWatchdogPath -PathType Leaf)) { throw "setup timeout watchdog fixture compilation failed" }
+  $setupTimeoutTranscriptPath = Join-Path $root "setup-timeout-watchdog.telemetry.log"
+  $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
+  $previousTerminateUnresumedFailure = $env:VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE
+  $script:HarnessSuspendedProcessWatchdogPath = $setupTimeoutWatchdogPath
+  $env:VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE = "1"
+  $setupTimeoutStartUtc = [DateTime]::UtcNow
+  $setupTimeoutHarnessDeadlineUtc = $setupTimeoutStartUtc.AddSeconds(7)
+  try {
+    $setupTimeoutFailure = $null
+    Start-Transcript -Path $setupTimeoutTranscriptPath -Force | Out-Null
+    try {
+      Invoke-BoundedPowerShell -Stage "behavior.watchdog-setup-timeout" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc $setupTimeoutHarnessDeadlineUtc -ScriptBody 'Write-Output must-not-run' | Out-Null
+    } catch {
+      $setupTimeoutFailure = $_.Exception.Message
+    } finally {
+      Stop-Transcript | Out-Null
+    }
+    Assert-True ($setupTimeoutFailure -match "did not inherit|setup deadline elapsed") "watchdog setup timeout did not fail its bounded invocation: $setupTimeoutFailure"
+    $automaticDeadlinePath = Get-ChildItem -LiteralPath $root -Recurse -Filter "ready.deadline" | Select-Object -First 1 -ExpandProperty FullName
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$automaticDeadlinePath)) "setup timeout watchdog did not record its automatic termination deadline"
+    $automaticDeadlineUtc = [DateTime]::new([Int64](Get-Content -LiteralPath $automaticDeadlinePath -Raw), [DateTimeKind]::Utc)
+    Assert-True ($automaticDeadlineUtc -lt $setupTimeoutStartUtc.AddSeconds(6)) "setup timeout watchdog received the harness deadline instead of its setup deadline"
+    $setupTimeoutTelemetry = Get-Content -LiteralPath $setupTimeoutTranscriptPath -Raw
+    $takeover = [regex]::Match($setupTimeoutTelemetry, "stage=behavior.watchdog-setup-timeout status=suspended-process-watchdog-terminated detail=processId=([0-9]+) completion=terminated identity=original-process-handle")
+    Assert-True $takeover.Success "setup timeout did not confirm delayed watchdog takeover"
+    $suspendedProcess = Get-RunningProcess -ProcessId ([int]$takeover.Groups[1].Value)
+    try {
+      Assert-True ($null -eq $suspendedProcess) "watchdog setup timeout left its suspended native process running"
+    } finally {
+      if ($null -ne $suspendedProcess) { $suspendedProcess.Dispose() }
+    }
+  } finally {
+    $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+    $env:VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE = $previousTerminateUnresumedFailure
+  }
+
   $windowsPowerShell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
   Assert-True (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf) "Windows PowerShell 5.1 is missing"
   $previousPs51Environment = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_PS51_ENV", [EnvironmentVariableTarget]::Process)
