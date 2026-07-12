@@ -128,6 +128,18 @@ describe("Vision release installer fixtures", () => {
     assert.match(source, /\$evidence = \[pscustomobject\]\[ordered\]@\{/);
   });
 
+  boundedIt("binds Factory approval identities to approval bytes", () => {
+    const source = readFileSync(windowsHarness, "utf8");
+    assert.doesNotMatch(
+      source,
+      /approvalIdentity=\(Evidence-Identity \$(?:bad|orphan)?Approval\.identity\)/,
+    );
+    assert.match(
+      source,
+      /approvalIdentity=\(Evidence-Identity \$approvalDigest\)/,
+    );
+  });
+
   boundedIt(
     "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",
     () => {
