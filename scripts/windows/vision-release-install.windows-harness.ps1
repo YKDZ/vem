@@ -53,7 +53,7 @@ function Write-HarnessStage([string]$Stage, [string]$Status, [string]$Detail = $
 function Remove-HarnessFixtureCertificates {
   param([Parameter(Mandatory = $true)][string]$CertificateSubject)
 
-  foreach ($storePath in @("Cert:\CurrentUser\My", "Cert:\CurrentUser\Root", "Cert:\CurrentUser\TrustedPublisher")) {
+  foreach ($storePath in @("Cert:\CurrentUser\My", "Cert:\CurrentUser\TrustedPeople")) {
     $certificates = @(Get-ChildItem -Path $storePath -ErrorAction Stop | Where-Object { $_.Subject -eq $CertificateSubject })
     foreach ($certificate in $certificates) {
       try {
@@ -1837,20 +1837,9 @@ $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $context
 $certificate = Get-Item -LiteralPath ("Cert:\CurrentUser\My\{0}" -f $context.certificateThumbprint)
 Export-Certificate -Cert $certificate -FilePath $context.certificateExportPath -Force | Out-Null
 '@ | Out-Null
-  Invoke-BoundedPowerShell -Stage "fixture.trust-root" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  Invoke-BoundedPowerShell -Stage "fixture.trust-signer" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($context.certificateExportPath)
-$store = [Security.Cryptography.X509Certificates.X509Store]::new("Root", "CurrentUser")
-try {
-  $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-  $store.Add($certificate)
-} finally {
-  $store.Dispose()
-  $certificate.Dispose()
-}
-'@ | Out-Null
-  Invoke-BoundedPowerShell -Stage "fixture.trust-publisher" -TimeoutSeconds 30 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
-$certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($context.certificateExportPath)
-$store = [Security.Cryptography.X509Certificates.X509Store]::new("TrustedPublisher", "CurrentUser")
+$store = [Security.Cryptography.X509Certificates.X509Store]::new("TrustedPeople", "CurrentUser")
 try {
   $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
   $store.Add($certificate)
