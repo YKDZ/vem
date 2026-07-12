@@ -151,6 +151,8 @@ describe("Vision release installer fixtures", () => {
       /\$actual \| ConvertTo-Json[^\n]+\$expected \| ConvertTo-Json/,
     );
     assert.match(source, /\$rollbackFailure=Sanitize \$_\.Exception\.Message/);
+    assert.doesNotMatch(source, /\[IO\.File\]::Replace\([^\n]+\$null\)/);
+    assert.equal(source.match(/\[IO\.File\]::Replace\(/g)?.length, 2);
   });
 
   boundedIt("binds Factory approval identities to approval bytes", () => {

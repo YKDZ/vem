@@ -397,7 +397,8 @@ function Expand-ZipSafely {
 function Write-AtomicJson([string]$Path, [object]$Value) {
   $parent = Split-Path -Parent $Path; New-Item -ItemType Directory -Path $parent -Force | Out-Null
   $temporary = Join-Path $parent ("." + [guid]::NewGuid().ToString("N") + ".tmp")
-  try { [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 64 -Compress), [Text.UTF8Encoding]::new($false)); if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $null) } else { [IO.File]::Move($temporary, $Path) } } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+  $backup = Join-Path $parent ("." + [guid]::NewGuid().ToString("N") + ".bak")
+  try { [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 64 -Compress), [Text.UTF8Encoding]::new($false)); if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $backup) } else { [IO.File]::Move($temporary, $Path) } } finally { Remove-Item -LiteralPath $temporary,$backup -Force -ErrorAction SilentlyContinue }
 }
 
 function Set-SystemInstallerAcl([string]$Path, [bool]$KioskReadable) {
@@ -775,8 +776,8 @@ try {
     throw "Vision selection changed before process record"
   }
   $record = [ordered]@{ bundleDigest=$selection.bundleDigest; processId=$process.Id; creationTimeUtcTicks=$process.StartTime.ToUniversalTime().Ticks; executablePath=$entrypoint; executableDigest=("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()); selectionRevision=$selection.revision }
-  $target = Join-Path $processState "active-process.json"; $temporary = Join-Path $processState ("." + [guid]::NewGuid().ToString("N") + ".tmp")
-  [IO.File]::WriteAllText($temporary, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); if (Test-Path -LiteralPath $target) { [IO.File]::Replace($temporary, $target, $null) } else { [IO.File]::Move($temporary, $target) }
+  $target = Join-Path $processState "active-process.json"; $temporary = Join-Path $processState ("." + [guid]::NewGuid().ToString("N") + ".tmp"); $backup = Join-Path $processState ("." + [guid]::NewGuid().ToString("N") + ".bak")
+  try { [IO.File]::WriteAllText($temporary, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); if (Test-Path -LiteralPath $target) { [IO.File]::Replace($temporary, $target, $backup) } else { [IO.File]::Move($temporary, $target) } } finally { Remove-Item -LiteralPath $temporary,$backup -Force -ErrorAction SilentlyContinue }
   $job.Release()
   $job = $null
   $recordCommitted = $true
