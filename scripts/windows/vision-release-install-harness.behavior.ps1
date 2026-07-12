@@ -384,6 +384,7 @@ public static class SlowWatchdog {
   $missingCompletionWatchdogSourcePath = Join-Path $root "MissingCompletionWatchdog.cs"
   Write-Utf8 $missingCompletionWatchdogSourcePath @'
 using System;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -402,7 +403,12 @@ public static class MissingCompletionWatchdog {
     Write(args[2], "armed");
     for (;;) {
       try {
-        if (File.Exists(args[1]) && String.Equals(File.ReadAllText(args[1]).Trim(), "disarm", StringComparison.Ordinal)) { return 0; }
+        if (File.Exists(args[1])) {
+          var command = File.ReadAllText(args[1]).Trim();
+          if (String.Equals(command, "disarm", StringComparison.Ordinal)) { return 0; }
+          long terminationDeadlineTicks;
+          if (command.StartsWith("terminate:", StringComparison.Ordinal) && Int64.TryParse(command.Substring("terminate:".Length), NumberStyles.None, CultureInfo.InvariantCulture, out terminationDeadlineTicks) && terminationDeadlineTicks > 0 && terminationDeadlineTicks <= DateTime.MaxValue.Ticks) { return 0; }
+        }
       } catch (IOException) {
       } catch (UnauthorizedAccessException) {
       }
@@ -482,23 +488,25 @@ public static class MissingCompletionWatchdog {
   }
 
   Assert-BeforeDeadline
+  $previousUnconfirmedPreDisarmOperationFailure = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", [EnvironmentVariableTarget]::Process)
   $previousTerminateUnresumedFailure = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", [EnvironmentVariableTarget]::Process)
   $previousPersistentActiveProcessCountFailure = [Environment]::GetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE", [EnvironmentVariableTarget]::Process)
   $originalWatchdogPath = $script:HarnessSuspendedProcessWatchdogPath
   $script:HarnessSuspendedProcessWatchdogPath = $missingCompletionWatchdogPath
   try {
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     $unconfirmedRecords = New-Object 'System.Collections.Generic.List[object]'
     $unconfirmedFailure = $null
     try {
-      Invoke-BoundedPowerShell -Stage "behavior.watchdog-missing-completion-unconfirmed" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$unconfirmedRecords.Add($_) }
+      Invoke-BoundedPowerShell -Stage "behavior.watchdog-missing-completion-unconfirmed" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(8)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$unconfirmedRecords.Add($_) }
     } catch {
       $unconfirmedFailure = $_.Exception
     }
     Assert-True ($unconfirmedFailure -is [AggregateException]) "missing completion without native or Job confirmation did not aggregate: $unconfirmedFailure"
     $unconfirmedMessages = @($unconfirmedFailure.InnerExceptions | ForEach-Object { $_.Message }) -join [Environment]::NewLine
-    Assert-True ($unconfirmedMessages -match "could not disarm process [0-9]+: missing-completion") "unconfirmed aggregate omitted the original missing completion: $unconfirmedMessages"
+    Assert-True ($unconfirmedMessages -match "could not terminate process [0-9]+: missing-completion") "unconfirmed aggregate omitted the original missing termination completion: $unconfirmedMessages"
     Assert-True ($unconfirmedMessages -match "could not confirm its Job Object was empty") "unconfirmed aggregate omitted the Job confirmation failure: $unconfirmedMessages"
     $unconfirmedTelemetry = ($unconfirmedRecords | ForEach-Object {
       if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
@@ -520,6 +528,7 @@ public static class MissingCompletionWatchdog {
     Assert-True ($primaryMessages -match "could not confirm its Job Object was empty") "primary operation aggregate omitted the unavailable Job confirmation: $primaryMessages"
   } finally {
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
+    [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", $previousUnconfirmedPreDisarmOperationFailure, [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $previousTerminateUnresumedFailure, [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE", $previousPersistentActiveProcessCountFailure, [EnvironmentVariableTarget]::Process)
   }

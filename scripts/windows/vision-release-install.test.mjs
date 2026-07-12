@@ -313,7 +313,7 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.match(
         behavior,
-        /public static class MissingCompletionWatchdog[\s\S]*?behavior\.watchdog-missing-completion-native[\s\S]*?authority="native-process-handle"[\s\S]*?behavior\.watchdog-missing-completion-job[\s\S]*?authority="job-object"/,
+        /public static class MissingCompletionWatchdog[\s\S]*?String\.Equals\(command, "disarm", StringComparison\.Ordinal\)[\s\S]*?command\.StartsWith\("terminate:", StringComparison\.Ordinal\)[\s\S]*?Int64\.TryParse\(command\.Substring\("terminate:"\.Length\), NumberStyles\.None, CultureInfo\.InvariantCulture, out terminationDeadlineTicks\)[\s\S]*?terminationDeadlineTicks > 0[\s\S]*?terminationDeadlineTicks <= DateTime\.MaxValue\.Ticks[\s\S]*?behavior\.watchdog-missing-completion-native[\s\S]*?authority="native-process-handle"[\s\S]*?behavior\.watchdog-missing-completion-job[\s\S]*?authority="job-object"/,
       );
       assert.match(
         harness,
@@ -337,7 +337,7 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
       );
       assert.match(
         behavior,
-        /VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE[\s\S]*?behavior\.watchdog-missing-completion-unconfirmed[\s\S]*?behavior\.primary-failure-job-confirmation-unavailable/,
+        /\$previousUnconfirmedPreDisarmOperationFailure = \[Environment\]::GetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", \[EnvironmentVariableTarget\]::Process\)[\s\S]*?SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", "1", \[EnvironmentVariableTarget\]::Process\)[\s\S]*?behavior\.watchdog-missing-completion-unconfirmed[\s\S]*?HarnessDeadlineUtc \(\[DateTime\]::UtcNow\.AddSeconds\(8\)\)[\s\S]*?could not terminate process \[0-9\]\+: missing-completion[\s\S]*?behavior\.primary-failure-job-confirmation-unavailable[\s\S]*?SetEnvironmentVariable\("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", \$previousUnconfirmedPreDisarmOperationFailure/,
       );
       assert.match(
         behavior,
