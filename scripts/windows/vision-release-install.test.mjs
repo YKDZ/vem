@@ -74,6 +74,10 @@ describe("Vision release installer fixtures", () => {
 
   for (const [name, path] of [
     ["production installer", "scripts/windows/install-vision-release.ps1"],
+    [
+      "Factory Vision provisioner",
+      "scripts/windows/provision-vision-factory-release.ps1",
+    ],
     ["Vision runtime verifier", "scripts/windows/verify-vem-runtime.ps1"],
     ["Windows harness library seam", windowsHarness],
     ["Windows behavior harness", behaviorHarness],
@@ -83,6 +87,20 @@ describe("Vision release installer fixtures", () => {
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     });
   }
+
+  boundedIt("stops non-reparse traversal at a Windows drive root", () => {
+    for (const path of [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+    ]) {
+      const source = readFileSync(path, "utf8");
+      assert.match(
+        source,
+        /if \(\[string\]::IsNullOrWhiteSpace\(\$parent\) -or \$parent -eq \$cursor\) \{ break \}/,
+        `${path} can traverse past a Windows drive root`,
+      );
+    }
+  });
 
   boundedIt(
     "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",

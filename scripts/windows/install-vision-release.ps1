@@ -109,7 +109,7 @@ function Assert-NonReparsePath([string]$Path, [string]$Label) {
       }
     }
     $parent = Split-Path -Parent $cursor
-    if ($parent -eq $cursor) { break }
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
     $cursor = $parent
   }
 }
