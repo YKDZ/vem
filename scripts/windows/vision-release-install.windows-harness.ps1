@@ -2076,7 +2076,7 @@ try {
   $mutex = [Threading.Mutex]::new($false, "Global\VEMVisionReleaseInstaller")
   try {
     Assert-True ($mutex.WaitOne([TimeSpan]::FromSeconds(5))) "could not acquire installer mutex"
-    $blocked = Start-Job -ScriptBlock { param($script,$config,$evidence,$user) & $script -ConfigurationPath $config -EvidencePath $evidence -TaskUser $user } -ArgumentList "C:\VEM\bringup\install-vision-release.ps1", (Join-Path $stateRoot "config\fixture.json"), $evidencePath, $env:USERNAME
+    $blocked = Start-Job -ScriptBlock { param($script,$factory,$config,$evidence,$user) $delivery=Join-Path $factory "vision-release"; & $script -BundlePath (Join-Path $delivery "bundle.bin") -DescriptorPath (Join-Path $delivery "descriptor.json") -AttestationPath (Join-Path $delivery "attestation.json") -SbomPath (Join-Path $delivery "sbom.json") -ProvenancePath (Join-Path $delivery "provenance.json") -ConformanceEvidencePath (Join-Path $delivery "conformance.json") -ApprovalPath (Join-Path $delivery "approval.json") -FactoryManifestPath (Join-Path $delivery "factory-manifest.json") -ConfigurationPath $config -EvidencePath $evidence -TaskUser $user } -ArgumentList "C:\VEM\bringup\install-vision-release.ps1", $factoryRoot, (Join-Path $stateRoot "config\fixture.json"), $evidencePath, $env:USERNAME
     Start-Sleep -Seconds 2
     Assert-True ($blocked.State -eq "Running") "concurrent installer did not wait on mutex"
   } finally {
