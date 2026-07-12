@@ -202,8 +202,14 @@ if ([string]$records[0].MessageData -cne $marker) { throw "captured Information 
         probe,
       ]);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-      const marker = result.stdout.match(/VEM_VISION_HARNESS_INFORMATION_MIRROR_[0-9a-f]+/g);
-      assert.equal(marker?.length, 1, `Information telemetry was not mirrored exactly once: ${result.stdout}`);
+      const marker = result.stdout.match(
+        /VEM_VISION_HARNESS_INFORMATION_MIRROR_[0-9a-f]+/g,
+      );
+      assert.equal(
+        marker?.length,
+        1,
+        `Information telemetry was not mirrored exactly once: ${result.stdout}`,
+      );
     },
   );
 
