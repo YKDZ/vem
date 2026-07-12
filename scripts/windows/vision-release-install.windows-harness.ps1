@@ -2058,13 +2058,17 @@ try {
   $evidencePath = $context.evidencePath
   $bundleDigest = $context.bundleDigest
   $reinstalled = Get-Content -LiteralPath "C:\ProgramData\VEM\vision\current.json" -Raw | ConvertFrom-Json
-  # A kiosk-writable process record must never authorize stopping an unrelated
-  # process. The production installer ignores it and completes its reinstall.
+  # A forged process record must fail closed without authorizing termination of
+  # an unrelated process. Restore the retained trusted record before continuing.
   $victim = Start-Process -FilePath "$env:WINDIR\System32\cmd.exe" -ArgumentList "/c", "timeout /t 60 /nobreak" -PassThru
   $forged = @{ bundleDigest=$bundleDigest; processId=$victim.Id; creationTimeUtcTicks=$victim.StartTime.ToUniversalTime().Ticks; executablePath=$victim.Path; executableDigest=("sha256:" + ("0" * 64)); selectionRevision=$reinstalled.revision }
-  Write-Json (Join-Path $stateRoot "process-state\active-process.json") $forged
-  & "C:\VEM\bringup\install-vision-release.ps1" -BundlePath (Join-Path $factoryRoot "vision-release\bundle.bin") -DescriptorPath (Join-Path $factoryRoot "vision-release\descriptor.json") -AttestationPath (Join-Path $factoryRoot "vision-release\attestation.json") -SbomPath (Join-Path $factoryRoot "vision-release\sbom.json") -ProvenancePath (Join-Path $factoryRoot "vision-release\provenance.json") -ConformanceEvidencePath (Join-Path $factoryRoot "vision-release\conformance.json") -ApprovalPath (Join-Path $factoryRoot "vision-release\approval.json") -FactoryManifestPath (Join-Path $factoryRoot "vision-release\factory-manifest.json") -ConfigurationPath (Join-Path $stateRoot "config\fixture.json") -EvidencePath $evidencePath -TaskUser $env:USERNAME
-  Assert-True (-not $victim.HasExited) "forged process record stopped an unrelated process"
+  $processRecordPath = Join-Path $stateRoot "process-state\active-process.json"
+  $trustedProcessRecord = Get-Content -LiteralPath $processRecordPath -Raw
+  Write-Json $processRecordPath $forged
+  $forgedRejected = $false
+  try { & "C:\VEM\bringup\install-vision-release.ps1" -BundlePath (Join-Path $factoryRoot "vision-release\bundle.bin") -DescriptorPath (Join-Path $factoryRoot "vision-release\descriptor.json") -AttestationPath (Join-Path $factoryRoot "vision-release\attestation.json") -SbomPath (Join-Path $factoryRoot "vision-release\sbom.json") -ProvenancePath (Join-Path $factoryRoot "vision-release\provenance.json") -ConformanceEvidencePath (Join-Path $factoryRoot "vision-release\conformance.json") -ApprovalPath (Join-Path $factoryRoot "vision-release\approval.json") -FactoryManifestPath (Join-Path $factoryRoot "vision-release\factory-manifest.json") -ConfigurationPath (Join-Path $stateRoot "config\fixture.json") -EvidencePath $evidencePath -TaskUser $env:USERNAME } catch { $forgedRejected = $true }
+  Assert-True ($forgedRejected -and -not $victim.HasExited) "forged process record did not fail closed"
+  Write-Utf8 $processRecordPath $trustedProcessRecord
   $victim | Stop-Process -Force
 
   # Hold the named mutex from a second process long enough to prove that a
