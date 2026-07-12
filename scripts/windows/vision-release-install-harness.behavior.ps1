@@ -19,6 +19,13 @@ function Assert-BeforeDeadline {
   }
 }
 
+function Assert-HarnessWatchdogStagePathBudget([string]$Stage) {
+  $stageRoot = Join-Path $root ("diagnostics\" + $Stage + "-" + ("0" * 32))
+  $watchdogRoot = Join-Path (Join-Path $stageRoot "suspended-process-watchdog") ("0" * 32)
+  Assert-True ($stageRoot.Length -lt 248) "$Stage stage root exceeds the Windows current-directory length budget"
+  Assert-True ($watchdogRoot.Length -lt 248) "$Stage watchdog root exceeds the Windows current-directory length budget"
+}
+
 function Get-RunningProcess([int]$ProcessId) {
   try {
     $process = [Diagnostics.Process]::GetProcessById($ProcessId)
@@ -465,10 +472,12 @@ public static class MissingCompletionWatchdog {
   try {
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", "1", [EnvironmentVariableTarget]::Process)
+    $commandWriteFailureStage = "behavior.watchdog-command-write-failure"
+    Assert-HarnessWatchdogStagePathBudget -Stage $commandWriteFailureStage
     $commandWriteFailureRecords = New-Object 'System.Collections.Generic.List[object]'
     $commandWriteFailure = $null
     try {
-      Invoke-BoundedPowerShell -Stage "behavior.watchdog-command-write-failure" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$commandWriteFailureRecords.Add($_) }
+      Invoke-BoundedPowerShell -Stage $commandWriteFailureStage -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(4)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$commandWriteFailureRecords.Add($_) }
     } catch {
       $commandWriteFailure = $_.Exception
     }
@@ -479,9 +488,9 @@ public static class MissingCompletionWatchdog {
     $commandWriteFailureTelemetry = ($commandWriteFailureRecords | ForEach-Object {
       if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
     }) -join [Environment]::NewLine
-    Assert-True ($commandWriteFailureTelemetry -match "stage=behavior.watchdog-command-write-failure status=suspended-process-termination-confirmed detail=processId=[0-9]+") "watchdog command write fixture did not confirm native suspended target termination"
-    Assert-True ($commandWriteFailureTelemetry -match "stage=behavior.watchdog-command-write-failure status=suspended-process-watchdog-closed detail=reason=completion-failed") "watchdog command write cleanup did not release the retained watchdog wrapper"
-    Assert-True ($commandWriteFailureTelemetry -notmatch "stage=behavior.watchdog-command-write-failure status=suspended-process-watchdog-completion-ignored") "watchdog command write failure was incorrectly downgraded"
+    Assert-True ($commandWriteFailureTelemetry -match "stage=$commandWriteFailureStage status=suspended-process-termination-confirmed detail=processId=[0-9]+") "watchdog command write fixture did not confirm native suspended target termination"
+    Assert-True ($commandWriteFailureTelemetry -match "stage=$commandWriteFailureStage status=suspended-process-watchdog-closed detail=reason=completion-failed") "watchdog command write cleanup did not release the retained watchdog wrapper"
+    Assert-True ($commandWriteFailureTelemetry -notmatch "stage=$commandWriteFailureStage status=suspended-process-watchdog-completion-ignored") "watchdog command write failure was incorrectly downgraded"
   } finally {
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", $previousPreDisarmOperationFailure, [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_WATCHDOG_DISARM_COMMAND_WRITE_FAILURE", $previousWatchdogDisarmCommandWriteFailure, [EnvironmentVariableTarget]::Process)
@@ -497,10 +506,12 @@ public static class MissingCompletionWatchdog {
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", "1", [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_ACTIVE_PROCESS_COUNT_PERSISTENT_FAILURE", "1", [EnvironmentVariableTarget]::Process)
+    $unconfirmedStage = "behavior.watchdog-unconfirmed"
+    Assert-HarnessWatchdogStagePathBudget -Stage $unconfirmedStage
     $unconfirmedRecords = New-Object 'System.Collections.Generic.List[object]'
     $unconfirmedFailure = $null
     try {
-      Invoke-BoundedPowerShell -Stage "behavior.watchdog-missing-completion-unconfirmed" -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(12)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$unconfirmedRecords.Add($_) }
+      Invoke-BoundedPowerShell -Stage $unconfirmedStage -TimeoutSeconds 2 -HarnessRoot $root -HarnessContextPath $contextPath -ChildPowerShellPath $pwshPath -HarnessDeadlineUtc ([DateTime]::UtcNow.AddSeconds(12)) -ScriptBody 'Write-Output must-not-run' 6>&1 | ForEach-Object { [void]$unconfirmedRecords.Add($_) }
     } catch {
       $unconfirmedFailure = $_.Exception
     }
@@ -512,18 +523,15 @@ public static class MissingCompletionWatchdog {
     $unconfirmedTelemetry = ($unconfirmedRecords | ForEach-Object {
       if ($_ -is [Management.Automation.InformationRecord]) { [string]$_.MessageData } else { [string]$_ }
     }) -join [Environment]::NewLine
-    Assert-True ($unconfirmedTelemetry -match "stage=behavior.watchdog-missing-completion-unconfirmed status=suspended-process-watchdog-armed detail=processId=[0-9]+ identity=original-process-handle") "unconfirmed missing completion did not arm the watchdog"
-    Assert-True ($unconfirmedTelemetry -match "stage=behavior.watchdog-missing-completion-unconfirmed status=process-ownership detail=state=job-assigned-suspended processId=[0-9]+") "unconfirmed missing completion did not assign the suspended target to the Job Object"
-    Assert-True ($unconfirmedTelemetry -notmatch "stage=behavior.watchdog-missing-completion-unconfirmed status=suspended-process-watchdog-completion-ignored") "unconfirmed missing completion was incorrectly ignored"
+    Assert-True ($unconfirmedTelemetry -match "stage=$unconfirmedStage status=suspended-process-watchdog-armed detail=processId=[0-9]+ identity=original-process-handle") "unconfirmed missing completion did not arm the watchdog"
+    Assert-True ($unconfirmedTelemetry -match "stage=$unconfirmedStage status=process-ownership detail=state=job-assigned-suspended processId=[0-9]+") "unconfirmed missing completion did not assign the suspended target to the Job Object"
+    Assert-True ($unconfirmedTelemetry -notmatch "stage=$unconfirmedStage status=suspended-process-watchdog-completion-ignored") "unconfirmed missing completion was incorrectly ignored"
 
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_TERMINATE_UNRESUMED_FAILURE", $null, [EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable("VEM_VISION_HARNESS_FIXTURE_FORCE_PRE_DISARM_OPERATION_FAILURE", $null, [EnvironmentVariableTarget]::Process)
     $script:HarnessSuspendedProcessWatchdogPath = $originalWatchdogPath
     $primaryFailureStage = "behavior.primary-job-unavailable"
-    $primaryFailureStageRoot = Join-Path $root ("diagnostics\" + $primaryFailureStage + "-" + ("0" * 32))
-    $primaryFailureWatchdogRoot = Join-Path (Join-Path $primaryFailureStageRoot "suspended-process-watchdog") ("0" * 32)
-    Assert-True ($primaryFailureStageRoot.Length -lt 248) "primary failure stage root exceeds the Windows current-directory length budget"
-    Assert-True ($primaryFailureWatchdogRoot.Length -lt 248) "primary failure watchdog root exceeds the Windows current-directory length budget"
+    Assert-HarnessWatchdogStagePathBudget -Stage $primaryFailureStage
     $primaryFailureRecords = New-Object 'System.Collections.Generic.List[object]'
     $primaryFailure = $null
     try {
