@@ -57,32 +57,22 @@ function runHostPersonalizationIngestFixture({
   );
   const runner = join(root, `run-personalization-ingest-${scenario}.ps1`);
   mkdirSync(mediaRoot, { recursive: true });
-  if (scenario === "success" || scenario === "fixed")
+  if (scenario === "success" || scenario === "fixed" || scenario === "mixed")
     writeFileSync(join(mediaRoot, "personalization.json"), personalization);
   writeFileSync(
     runner,
     `param([string]$Mode, [string]$MediaRoot, [string]$DestinationPath, [string]$IngestScript)
 $ErrorActionPreference = 'Stop'
-New-PSDrive -Name P -PSProvider FileSystem -Root $MediaRoot | Out-Null
-function Get-Volume {
-  [CmdletBinding()]
-  param()
-  if ($Mode -eq 'multiple') {
-    return @(
-      [pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 5 },
-      [pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'Q'; DriveType = 5 }
-    )
-  }
-  if ($Mode -eq 'fixed') {
-    return @([pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 3 })
-  }
-  return @([pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 5 })
+$root = [pscustomobject]@{ FullName = $MediaRoot }
+$valid = [pscustomobject]@{ IsReady = $true; VolumeLabel = 'VEM_PERSONALIZATION'; DriveType = 5; RootDirectory = $root }
+$drives = switch ($Mode) {
+  'multiple' { @($valid, $valid) }
+  'mixed' { @($valid, [pscustomobject]@{ IsReady = $true; VolumeLabel = 'VEM_PERSONALIZATION'; DriveType = 3; RootDirectory = $root }) }
+  'fixed' { @([pscustomobject]@{ IsReady = $true; VolumeLabel = 'VEM_PERSONALIZATION'; DriveType = 3; RootDirectory = $root }) }
+  'missing' { @([pscustomobject]@{ IsReady = $true; VolumeLabel = 'OTHER'; DriveType = 5; RootDirectory = $root }) }
+  default { @($valid) }
 }
-try {
-  & $IngestScript -DestinationPath $DestinationPath
-} finally {
-  Remove-PSDrive -Name P -ErrorAction SilentlyContinue
-}
+& $IngestScript -DestinationPath $DestinationPath -CandidateDrives $drives
 `,
   );
   const result = run("pwsh", [
@@ -117,7 +107,13 @@ test("host personalization ingest runs under required PowerShell without Factory
     assert.equal(success.status, 0, success.output);
     assert.equal(readFileSync(success.destination, "utf8"), personalization);
     assert.doesNotMatch(success.output, /host-only-personalization/);
-    for (const scenario of ["missing", "multiple", "fixed"]) {
+    const rejectedScenarios = new Map([
+      ["missing", "VEM_PERSONALIZATION_MEDIA_COUNT_INVALID"],
+      ["multiple", "VEM_PERSONALIZATION_MEDIA_COUNT_INVALID"],
+      ["mixed", "VEM_PERSONALIZATION_MEDIA_COUNT_INVALID"],
+      ["fixed", "VEM_PERSONALIZATION_MEDIA_TYPE_INVALID"],
+    ]);
+    for (const [scenario, errorCode] of rejectedScenarios) {
       const rejected = runHostPersonalizationIngestFixture({
         root,
         ingestScript,
@@ -125,6 +121,7 @@ test("host personalization ingest runs under required PowerShell without Factory
         personalization,
       });
       assert.notEqual(rejected.status, 0, `${scenario} must be rejected`);
+      assert.match(rejected.output, new RegExp(errorCode));
       assert.doesNotMatch(rejected.output, /host-only-personalization/);
     }
   } finally {

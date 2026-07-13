@@ -103,6 +103,11 @@ consumes the restricted one-time personalization media and writes an
 installation-unique `oobeSystem` answer file through Windows Setup's
 `HKLM\\SYSTEM\\Setup\\UnattendFile` lookup. The deterministic Factory ISO
 contains neither an account password nor a machine-specific OOBE answer.
+The specialize bootstrap discovers that medium through the .NET drive API,
+without loading the Storage module, and accepts exactly one ready CD-ROM with
+the fixed `VEM_PERSONALIZATION` label. It also writes a credential-free staged
+status record under `C:\\ProgramData\\VEM\\factory` so failed clean installs can
+identify the bootstrap operation that stopped before OOBE.
 Factory Manifest v1 accepts only the `Professional` install image and writes
 Microsoft's published Windows 10 Pro Generic Volume License Key into unattended
 setup for edition selection. This setup key is not an activation credential;

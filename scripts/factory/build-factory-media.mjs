@@ -903,9 +903,25 @@ $ErrorActionPreference = 'Stop'
 $factoryRoot = 'C:\\ProgramData\\VEM\\factory'
 $personalizationPath = Join-Path $factoryRoot 'one-time-personalization.json'
 $answerPath = Join-Path $factoryRoot 'oobe-unattend.xml'
+$diagnosticPath = Join-Path $factoryRoot 'oobe-bootstrap-status.json'
+$stage = 'initialize'
+function Write-BootstrapStatus([string]$State, [string]$Stage, [string]$ErrorType = '') {
+  $status = [ordered]@{
+    schemaVersion = 'vem-factory-oobe-bootstrap-status/v1'
+    state = $State
+    stage = $Stage
+    errorType = $ErrorType
+  } | ConvertTo-Json -Compress
+  $temporaryPath = "$diagnosticPath.tmp"
+  [IO.File]::WriteAllText($temporaryPath, $status, [Text.UTF8Encoding]::new($false))
+  Move-Item -LiteralPath $temporaryPath -Destination $diagnosticPath -Force
+}
 New-Item -ItemType Directory -Force -Path $factoryRoot | Out-Null
 try {
+  Write-BootstrapStatus 'running' $stage
+  $stage = 'ingest-personalization'
   & (Join-Path $MediaRoot 'ingest-host-personalization.ps1') -DestinationPath $personalizationPath
+  $stage = 'validate-personalization'
   $media = Get-Content -LiteralPath $personalizationPath -Raw | ConvertFrom-Json
   if ([string]$media.schemaVersion -cne 'vem-factory-personalization-media/v1' -or [string]$media.kind -cne 'factory-personalization-media' -or [string]$media.profile -cne '${profile}') { throw 'Factory OOBE personalization identity is invalid' }
   $credential = $media.credentials.${credentialName}
@@ -914,6 +930,7 @@ try {
   if ($null -eq $kiosk -or [string]$kiosk.user -cne 'VEMKiosk' -or $kiosk.password -isnot [string] -or $kiosk.password.Length -lt 16 -or $kiosk.password -notmatch '^[\\x20-\\x7E]+$') { throw 'Factory OOBE kiosk credential is invalid' }
   $user = [Security.SecurityElement]::Escape([string]$kiosk.user)
   $password = [Security.SecurityElement]::Escape([string]$kiosk.password)
+  $stage = 'write-oobe-answer'
   $answer = @"
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -931,11 +948,15 @@ try {
 "@
   [IO.File]::WriteAllText($answerPath, $answer, [Text.UTF8Encoding]::new($false))
   New-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -Value $answerPath -PropertyType String -Force | Out-Null
+  $stage = 'bootstrap-runtime'
   & (Join-Path $MediaRoot 'bootstrap-factory-runtime.ps1') -MediaRoot $MediaRoot
+  $stage = 'register-cleanup'
   $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\complete-oobe-bootstrap.ps1'
   $cleanupTrigger = New-ScheduledTaskTrigger -AtLogOn -User 'VEMKiosk'
   Register-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Action $cleanupAction -Trigger $cleanupTrigger -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+  Write-BootstrapStatus 'succeeded' 'complete'
 } catch {
+  $failureType = [string]$_.Exception.GetType().FullName
   Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoAdminLogon -Value '0' -Force -ErrorAction SilentlyContinue
   Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name ForceAutoLogon -Value '0' -Force -ErrorAction SilentlyContinue
   Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name DefaultPassword -ErrorAction SilentlyContinue
@@ -945,6 +966,7 @@ try {
   if ($configuredAnswer -ceq $answerPath) { Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath $answerPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
+  Write-BootstrapStatus 'failed' $stage $failureType
   throw
 }
 `;
@@ -988,17 +1010,23 @@ export function factoryProfileImplementationScript(source, profile) {
 }
 
 export function hostPersonalizationIngestScript() {
-  return `param([Parameter(Mandatory = $true)][string]$DestinationPath)
+  return `param(
+  [Parameter(Mandatory = $true)][string]$DestinationPath,
+  [object[]]$CandidateDrives = @([IO.DriveInfo]::GetDrives())
+)
 $ErrorActionPreference = 'Stop'
 $expectedLabel = 'VEM_PERSONALIZATION'
 $sourceFileName = 'personalization.json'
-$volumes = @(Get-Volume -ErrorAction Stop | Where-Object { $_.FileSystemLabel -ceq $expectedLabel })
-if ($volumes.Count -ne 1) { throw 'expected exactly one VEM_PERSONALIZATION medium' }
-$volume = $volumes[0]
-$driveLetter = [string]$volume.DriveLetter
-if ([string]::IsNullOrWhiteSpace($driveLetter)) { throw 'VEM_PERSONALIZATION medium has no drive letter' }
-if ([int]$volume.DriveType -ne 5) { throw 'VEM_PERSONALIZATION medium must be a CD-ROM' }
-$sourcePath = '{0}:\\{1}' -f $driveLetter, $sourceFileName
+$reservedLabelDrives = @($CandidateDrives | Where-Object {
+  [bool]$_.IsReady -and
+  [string]$_.VolumeLabel -ceq $expectedLabel
+})
+if ($reservedLabelDrives.Count -ne 1) { throw 'VEM_PERSONALIZATION_MEDIA_COUNT_INVALID' }
+$media = $reservedLabelDrives[0]
+if ([int]$media.DriveType -ne [int][IO.DriveType]::CDRom) { throw 'VEM_PERSONALIZATION_MEDIA_TYPE_INVALID' }
+$rootPath = [string]$media.RootDirectory.FullName
+if ([string]::IsNullOrWhiteSpace($rootPath) -or -not [IO.Path]::IsPathRooted($rootPath)) { throw 'VEM_PERSONALIZATION_MEDIA_ROOT_INVALID' }
+$sourcePath = Join-Path $rootPath $sourceFileName
 $source = Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
 if ($source.PSIsContainer -or -not ($source -is [IO.FileInfo]) -or (($source.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
   throw 'VEM_PERSONALIZATION personalization.json must be a regular file at the media root'

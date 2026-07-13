@@ -1565,6 +1565,14 @@ describe("real deterministic Factory ISO builder", () => {
       assert.ok(prepareOobe.includes("^[\\x20-\\x7E]+$"));
       assert.match(prepareOobe, /bootstrap-factory-runtime\.ps1/);
       assert.match(prepareOobe, /VEMFactoryOobeCleanup/);
+      assert.match(prepareOobe, /oobe-bootstrap-status\.json/);
+      assert.match(prepareOobe, /'ingest-personalization'/);
+      assert.match(prepareOobe, /'bootstrap-runtime'/);
+      assert.match(prepareOobe, /Write-BootstrapStatus 'failed'/);
+      assert.doesNotMatch(
+        prepareOobe,
+        /Exception\.Message|ScriptStackTrace|FullyQualifiedErrorId|errorId/,
+      );
       assert.match(
         prepareOobe,
         /New-ScheduledTaskTrigger -AtLogOn -User 'VEMKiosk'/,
@@ -1618,9 +1626,10 @@ describe("real deterministic Factory ISO builder", () => {
       );
       const ingest = await readFile(ingestScript, "utf8");
       assert.match(ingest, /VEM_PERSONALIZATION/);
-      assert.match(ingest, /\[int\]\$volume\.DriveType -ne 5/);
+      assert.match(ingest, /\[IO\.DriveInfo\]::GetDrives\(\)/);
+      assert.match(ingest, /\[IO\.DriveType\]::CDRom/);
       assert.match(ingest, /Copy-Item -LiteralPath \$sourcePath/);
-      assert.doesNotMatch(ingest, /Get-Partition|Get-Disk/);
+      assert.doesNotMatch(ingest, /Get-Volume|Get-Partition|Get-Disk/);
       assert.deepEqual(
         JSON.parse(
           await readFile(
