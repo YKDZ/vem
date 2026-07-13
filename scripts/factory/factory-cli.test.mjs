@@ -119,10 +119,13 @@ async function fixture() {
     join(sourceTree, "setup.exe"),
     "Windows Setup synthetic fixture\n",
   );
-  await writeFile(join(sourceTree, "boot", "etfsboot.com"), Buffer.alloc(2048));
+  await writeFile(
+    join(sourceTree, "boot", "etfsboot.com"),
+    Buffer.alloc(4096, 0x42),
+  );
   await writeFile(
     join(sourceTree, "efi", "microsoft", "boot", "efisys.bin"),
-    Buffer.alloc(2048),
+    Buffer.alloc(2048, 0x55),
   );
   const wimInput = join(root, "wim-input");
   await mkdir(wimInput, { recursive: true });

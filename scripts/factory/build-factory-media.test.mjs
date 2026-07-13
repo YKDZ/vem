@@ -60,11 +60,62 @@ const BUILDER_IMAGE_HASH = "f".repeat(64);
 const EVIDENCE_BUILDER =
   "github-actions://vem/vem/.github/workflows/build.yml@refs/heads/main";
 const ISO_SECTOR_BYTES = 2048;
+const EL_TORITO_VIRTUAL_SECTOR_BYTES = 512;
 const PINNED_UDF_WRITER_VERSION = "1.1.11";
 const PINNED_UDF_WRITER_DIGEST = process.env.VEM_FACTORY_TEST_UDF_WRITER_DIGEST;
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+async function sha256File(path) {
+  const hash = createHash("sha256");
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        buffer.length,
+        position,
+      );
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function decodeWimXmlForTest(value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  if (bytes.subarray(0, 2).equals(Buffer.from([0xff, 0xfe])))
+    return bytes.subarray(2).toString("utf16le");
+  if (bytes.subarray(0, 2).equals(Buffer.from([0xfe, 0xff]))) {
+    const swapped = Buffer.from(bytes.subarray(2));
+    swapped.swap16();
+    return swapped.toString("utf16le");
+  }
+  return bytes.toString("utf8");
+}
+
+function expectedFirstWimImage(path) {
+  const xml = decodeWimXmlForTest(
+    execFileSync(WIMLIB_PATH, ["info", path, "1", "--xml"]),
+  );
+  const images = [...xml.matchAll(/<IMAGE\b([^>]*)>([\s\S]*?)<\/IMAGE>/gi)]
+    .filter(([, attributes]) => /\bINDEX\s*=\s*"1"/i.test(attributes))
+    .map(([, , image]) => image);
+  assert.equal(images.length, 1, "real install image has exactly one IMAGE 1");
+  const edition =
+    /<EDITIONID>([\s\S]*?)<\/EDITIONID>/i.exec(images[0])?.[1].trim() ??
+    /<NAME>([\s\S]*?)<\/NAME>/i.exec(images[0])?.[1].trim();
+  assert.ok(edition, "real install IMAGE 1 has EDITIONID or NAME");
+  return { index: 1, edition };
 }
 
 function toolVersion(path, args, expression, label) {
@@ -348,7 +399,43 @@ function sharedExtentIso({ cycle = false, malformedMultiExtent = false } = {}) {
   return media;
 }
 
-async function fixture() {
+function iso9660EmptyExtensionFixture() {
+  const media = Buffer.alloc(40 * ISO_SECTOR_BYTES);
+  const descriptor = 16 * ISO_SECTOR_BYTES;
+  media[descriptor] = 1;
+  media.write("CD001", descriptor + 1, "ascii");
+  media[descriptor + 6] = 1;
+  isoDirectoryRecord({
+    sector: 20,
+    bytes: ISO_SECTOR_BYTES,
+    flags: 2,
+    identifier: Buffer.from([0]),
+  }).copy(media, descriptor + 156);
+  const terminator = 17 * ISO_SECTOR_BYTES;
+  media[terminator] = 255;
+  media.write("CD001", terminator + 1, "ascii");
+  writeIsoDirectory(media, 20, [
+    isoDirectoryRecord({
+      sector: 30,
+      bytes: 1,
+      identifier: "README.;1",
+    }),
+    isoDirectoryRecord({
+      sector: 31,
+      bytes: 1,
+      identifier: "NOTICE.TXT;1",
+    }),
+  ]);
+  return media;
+}
+
+async function fixture({
+  sourceHasJoliet = true,
+  sourceIsoHiddenPaths = [],
+  sourceBootCatalogHidden = false,
+  sourceIso9660Collision = false,
+  uefiBootBytes = 2048,
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "vem-factory-media-"));
   const udfExtractorDigest = `sha256:${createHash("sha256")
     .update(await readFile(UDF_EXTRACTOR_PATH))
@@ -394,6 +481,7 @@ async function fixture() {
   await mkdir(join(sourceTree, "efi", "microsoft", "boot"), {
     recursive: true,
   });
+  await mkdir(join(sourceTree, "other"), { recursive: true });
   await mkdir(join(sourceTree, "sources"), { recursive: true });
   await writeFile(
     join(sourceTree, "setup.exe"),
@@ -401,14 +489,14 @@ async function fixture() {
   );
   await writeFile(
     join(sourceTree, "boot", "etfsboot.com"),
-    Buffer.alloc(2048, 0),
+    Buffer.alloc(4096, 0x42),
   );
   await writeFile(
     join(sourceTree, "efi", "microsoft", "boot", "efisys.bin"),
-    Buffer.alloc(2048, 0),
+    Buffer.alloc(uefiBootBytes, 0x55),
   );
   await writeFile(
-    join(sourceTree, "sources", "adversarial-udf-timestamp.bin"),
+    join(sourceTree, "sources", "adversarial_udf_timestamp.bin"),
     Buffer.from([
       0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0,
       0xe8, 0x07, 12, 31, 23, 59, 59, 0, 0, 0, 0, 0,
@@ -431,18 +519,32 @@ async function fixture() {
     join(sourceTree, "sources", "boot.wim"),
     await readFile(join(sourceTree, "sources", "install.wim")),
   );
+  await writeFile(join(sourceTree, "other", "boot.wim"), "other boot wim\n");
+  if (sourceIso9660Collision) {
+    await writeFile(join(sourceTree, "A_B.TXT"), "visible ISO9660 collision\n");
+    await writeFile(join(sourceTree, "A-B.TXT"), "hidden ISO9660 collision\n");
+  }
   execFileSync(SYNTHETIC_ISO_TOOL, [
     "-udf",
-    "-J",
+    ...(sourceHasJoliet ? ["-J"] : []),
     "-R",
     "-iso-level",
     "3",
     "-hide",
-    "UDF-ONLY-MARKER.TXT",
+    join(sourceTree, "UDF-ONLY-MARKER.TXT"),
+    ...sourceIsoHiddenPaths.flatMap((path) => [
+      "-hide",
+      join(sourceTree, path),
+    ]),
+    ...(sourceBootCatalogHidden
+      ? ["-hide", join(sourceTree, "boot.catalog")]
+      : []),
     "-o",
     sourceIsoPath,
     "-b",
     "boot/etfsboot.com",
+    "-c",
+    "boot.catalog",
     "-no-emul-boot",
     "-boot-load-size",
     "8",
@@ -736,6 +838,7 @@ async function fixture() {
   });
   return {
     root,
+    sourceTree,
     manifest,
     sourcePaths,
     evidenceStoreRoot,
@@ -755,6 +858,134 @@ async function fixture() {
     builderImage,
     definitions,
   };
+}
+
+async function writeHiddenElToritoFixture(
+  data,
+  {
+    biosPayload,
+    uefiPayload,
+    biosImageSector,
+    uefiImageSector,
+    biosLoadSectors,
+    uefiLoadSectors,
+    includeHiddenPayloads = true,
+  } = {},
+) {
+  const sourcePath =
+    data.sourcePaths[data.manifest.source.windowsMedia.identity];
+  const source = await readFile(sourcePath);
+  assert.equal(source.length % ISO_SECTOR_BYTES, 0);
+  const boot = inspectBootableIso(source);
+  assert.equal(boot.bootEntries.length, 2);
+  const bios =
+    biosPayload ??
+    (await readFile(join(data.sourceTree, "boot", "etfsboot.com")));
+  const uefi =
+    uefiPayload ??
+    (await readFile(
+      join(data.sourceTree, "efi", "microsoft", "boot", "efisys.bin"),
+    ));
+  assert.equal(bios.length % EL_TORITO_VIRTUAL_SECTOR_BYTES, 0);
+  assert.equal(uefi.length % EL_TORITO_VIRTUAL_SECTOR_BYTES, 0);
+
+  const sourceSectors = source.length / ISO_SECTOR_BYTES;
+  const firstHiddenSector = sourceSectors + 1;
+  const hiddenBiosSector = biosImageSector ?? firstHiddenSector;
+  const hiddenUefiSector =
+    uefiImageSector ??
+    hiddenBiosSector + Math.ceil(bios.length / ISO_SECTOR_BYTES);
+  const requiredSectors = includeHiddenPayloads
+    ? Math.max(
+        sourceSectors + 257,
+        hiddenBiosSector + Math.ceil(bios.length / ISO_SECTOR_BYTES),
+        hiddenUefiSector + Math.ceil(uefi.length / ISO_SECTOR_BYTES),
+      )
+    : sourceSectors;
+  const media = Buffer.alloc(requiredSectors * ISO_SECTOR_BYTES);
+  source.copy(media);
+  if (includeHiddenPayloads && hiddenBiosSector >= firstHiddenSector)
+    bios.copy(media, hiddenBiosSector * ISO_SECTOR_BYTES);
+  if (includeHiddenPayloads && hiddenUefiSector >= firstHiddenSector)
+    uefi.copy(media, hiddenUefiSector * ISO_SECTOR_BYTES);
+  if (includeHiddenPayloads) {
+    const sourceLastSector = sourceSectors - 1;
+    const sourceTrailingAnchor = sourceLastSector - 256;
+    const trailingAnchor = requiredSectors - 1;
+    const secondaryAnchor = trailingAnchor - 256;
+    source.copy(
+      media,
+      secondaryAnchor * ISO_SECTOR_BYTES,
+      sourceTrailingAnchor * ISO_SECTOR_BYTES,
+      (sourceTrailingAnchor + 1) * ISO_SECTOR_BYTES,
+    );
+    source.copy(
+      media,
+      trailingAnchor * ISO_SECTOR_BYTES,
+      sourceLastSector * ISO_SECTOR_BYTES,
+      (sourceLastSector + 1) * ISO_SECTOR_BYTES,
+    );
+    for (const sector of [secondaryAnchor, trailingAnchor]) {
+      const descriptor = media.subarray(
+        sector * ISO_SECTOR_BYTES,
+        (sector + 1) * ISO_SECTOR_BYTES,
+      );
+      descriptor.writeUInt32LE(sector, 12);
+      rewriteUdfTag(descriptor);
+    }
+  }
+
+  const catalog = boot.bootCatalogSector * ISO_SECTOR_BYTES;
+  media.writeUInt16LE(
+    biosLoadSectors ?? bios.length / EL_TORITO_VIRTUAL_SECTOR_BYTES,
+    catalog + 38,
+  );
+  media.writeUInt32LE(hiddenBiosSector, catalog + 40);
+  media.writeUInt16LE(
+    uefiLoadSectors ?? uefi.length / EL_TORITO_VIRTUAL_SECTOR_BYTES,
+    catalog + 64 + 32 + 6,
+  );
+  media.writeUInt32LE(hiddenUefiSector, catalog + 64 + 32 + 8);
+
+  const path = join(data.root, "hidden-el-torito.iso");
+  await writeFile(path, media);
+  return path;
+}
+
+function inspectFixtureWindowsSetup(data, isoPath) {
+  return inspectWindowsSetupIso({
+    isoPath,
+    expectedInstallImage: {
+      index: data.manifest.source.installImageIndex,
+      edition: data.manifest.source.installImageEdition,
+      digest: data.manifest.source.installImageDigest,
+    },
+    udfExtractorPath: UDF_EXTRACTOR_PATH,
+    udfExtractor: data.manifest.toolchain.udfExtractor,
+    wimlibPath: WIMLIB_PATH,
+    wimlib: data.manifest.toolchain.wimlib,
+  });
+}
+
+async function writeVisibleElToritoCatalogFixture(
+  data,
+  { biosImagePath = "boot/etfsboot.com", biosLoadSectors } = {},
+) {
+  const sourcePath =
+    data.sourcePaths[data.manifest.source.windowsMedia.identity];
+  const media = Buffer.from(await readFile(sourcePath));
+  const boot = inspectBootableIso(media);
+  const image = inspectIsoFilesystemExtents(media).find(
+    (entry) => entry.path.toLocaleLowerCase("en-US") === biosImagePath,
+  );
+  assert.ok(image, `fixture ISO9660 image exists: ${biosImagePath}`);
+  const catalog = boot.bootCatalogSector * ISO_SECTOR_BYTES;
+  media.writeUInt32LE(image.sector, catalog + 40);
+  if (biosLoadSectors !== undefined)
+    media.writeUInt16LE(biosLoadSectors, catalog + 38);
+  const path = join(data.root, "visible-el-torito-catalog.iso");
+  await writeFile(path, media);
+  return path;
 }
 
 describe("real deterministic Factory ISO builder", () => {
@@ -833,6 +1064,181 @@ describe("real deterministic Factory ISO builder", () => {
           digest: data.manifest.source.installImageDigest,
         }),
         /selected Windows image edition mismatch: expected Enterprise, got Professional/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds hidden El Torito images using BIOS 8x512 and UEFI 1x512 catalog load sizes", async () => {
+    const data = await fixture({ uefiBootBytes: 4096 });
+    try {
+      assert.equal(
+        (await stat(join(data.sourceTree, "boot", "etfsboot.com"))).size,
+        8 * EL_TORITO_VIRTUAL_SECTOR_BYTES,
+      );
+      assert.equal(
+        (
+          await stat(
+            join(data.sourceTree, "efi", "microsoft", "boot", "efisys.bin"),
+          )
+        ).size,
+        8 * EL_TORITO_VIRTUAL_SECTOR_BYTES,
+      );
+      const inspect = await inspectFixtureWindowsSetup(
+        data,
+        await writeHiddenElToritoFixture(data, { uefiLoadSectors: 1 }),
+      );
+      assert.deepEqual(
+        inspect.bootCatalog.map(({ platform, isoEntry, loadSize }) => ({
+          platform,
+          isoEntry,
+          loadSize,
+        })),
+        [
+          {
+            platform: "BIOS",
+            isoEntry: "boot/etfsboot.com",
+            loadSize: 8,
+          },
+          {
+            platform: "UEFI",
+            isoEntry: "efi/microsoft/boot/efisys.bin",
+            loadSize: 1,
+          },
+        ],
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a visible El Torito extent that is not the platform canonical boot file", async () => {
+    const data = await fixture();
+    try {
+      await assert.rejects(
+        inspectFixtureWindowsSetup(
+          data,
+          await writeVisibleElToritoCatalogFixture(data, {
+            biosImagePath: "other/boot.wim",
+          }),
+        ),
+        /El Torito catalog image LBA .* maps to noncanonical ISO9660 file other\/boot\.wim/i,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a visible El Torito image whose catalog load size exceeds its canonical file", async () => {
+    const data = await fixture();
+    try {
+      await assert.rejects(
+        inspectFixtureWindowsSetup(
+          data,
+          await writeVisibleElToritoCatalogFixture(data, {
+            biosLoadSectors: 9,
+          }),
+        ),
+        /El Torito catalog image LBA .* does not match extracted boot\/etfsboot\.com/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a hidden El Torito image whose complete canonical boot file differs", async () => {
+    const data = await fixture();
+    try {
+      const bios = Buffer.from(
+        await readFile(join(data.sourceTree, "boot", "etfsboot.com")),
+      );
+      bios[bios.length - 1] ^= 0xff;
+      await assert.rejects(
+        inspectFixtureWindowsSetup(
+          data,
+          await writeHiddenElToritoFixture(data, { biosPayload: bios }),
+        ),
+        /El Torito catalog image LBA .* does not match extracted boot\/etfsboot\.com/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a hidden UEFI El Torito image changed beyond its catalog load size", async () => {
+    const data = await fixture({ uefiBootBytes: 4096 });
+    try {
+      const uefi = Buffer.from(
+        await readFile(
+          join(data.sourceTree, "efi", "microsoft", "boot", "efisys.bin"),
+        ),
+      );
+      uefi[EL_TORITO_VIRTUAL_SECTOR_BYTES] ^= 0xff;
+      await assert.rejects(
+        inspectFixtureWindowsSetup(
+          data,
+          await writeHiddenElToritoFixture(data, {
+            uefiPayload: uefi,
+            uefiLoadSectors: 1,
+          }),
+        ),
+        /El Torito catalog image LBA .* does not match extracted efi\/microsoft\/boot\/efisys\.bin/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a hidden El Torito image that extends beyond the ISO boundary", async () => {
+    const data = await fixture();
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const sourceSectors = (await stat(sourcePath)).size / ISO_SECTOR_BYTES;
+      await assert.rejects(
+        inspectFixtureWindowsSetup(
+          data,
+          await writeHiddenElToritoFixture(data, {
+            biosImageSector: sourceSectors,
+            uefiImageSector: sourceSectors,
+            includeHiddenPayloads: false,
+          }),
+        ),
+        /El Torito catalog image LBA .* does not match extracted boot\/etfsboot\.com/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a hidden El Torito image whose catalog load size exceeds its canonical file", async () => {
+    const data = await fixture();
+    try {
+      await assert.rejects(
+        inspectFixtureWindowsSetup(
+          data,
+          await writeHiddenElToritoFixture(data, { biosLoadSectors: 9 }),
+        ),
+        /El Torito catalog image LBA .* does not match extracted boot\/etfsboot\.com/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a hidden El Torito image from the other platform's canonical path", async () => {
+    const data = await fixture();
+    try {
+      const uefi = await readFile(
+        join(data.sourceTree, "efi", "microsoft", "boot", "efisys.bin"),
+      );
+      await assert.rejects(
+        inspectFixtureWindowsSetup(
+          data,
+          await writeHiddenElToritoFixture(data, { biosPayload: uefi }),
+        ),
+        /El Torito catalog image LBA .* does not match extracted boot\/etfsboot\.com/,
       );
     } finally {
       await rm(data.root, { recursive: true, force: true });
@@ -1175,6 +1581,160 @@ describe("real deterministic Factory ISO builder", () => {
     }
   });
 
+  it("preserves hidden ISO9660 paths with absolute patterns without hiding another basename", async () => {
+    const data = await fixture({
+      sourceHasJoliet: false,
+      sourceIsoHiddenPaths: ["sources/boot.wim"],
+      sourceBootCatalogHidden: true,
+    });
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const sourceViews = inspectIsoFilesystemViews(await readFile(sourcePath));
+      assert.equal(sourceViews.joliet.length, 0);
+      assert.equal(sourceViews.iso9660.includes("sources/boot.wim"), false);
+      assert.equal(sourceViews.iso9660.includes("other/boot.wim"), true);
+      assert.equal(sourceViews.iso9660.includes("boot.catalog"), false);
+
+      const result = await buildFactoryMedia({
+        manifest: data.manifest,
+        store: new ContentAddressedAssetStore(join(data.root, "cas")),
+        sourcePaths: data.sourcePaths,
+        evidenceStoreRoot: data.evidenceStoreRoot,
+        approvalPolicy: data.approvalPolicy,
+        visionReleaseDeliveryUnit: data.visionReleaseDeliveryUnit,
+        repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
+        factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
+        visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
+        udfExtractorPath: UDF_EXTRACTOR_PATH,
+        udfWriterPath: UDF_WRITER_PATH,
+        wimlibPath: WIMLIB_PATH,
+        executedBuilderImage: data.builderImage.identity,
+        outputDirectory: join(data.root, "output"),
+        reproducibility: false,
+      });
+      const outputViews = inspectIsoFilesystemViews(
+        await readFile(result.output.path),
+      );
+      assert.equal(outputViews.joliet.length, 0);
+      assert.equal(outputViews.iso9660.includes("sources/boot.wim"), false);
+      assert.equal(outputViews.iso9660.includes("other/boot.wim"), true);
+      assert.equal(outputViews.iso9660.includes("boot.catalog"), false);
+      const outputListing = execFileSync(
+        UDF_EXTRACTOR_PATH,
+        ["l", "-slt", "-tUdf", result.output.path],
+        { encoding: "utf8" },
+      );
+      assert.match(outputListing, /Path = sources\/boot\.wim/i);
+      assert.match(outputListing, /Path = boot\.catalog/i);
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a writer that drifts source ISO9660 visibility", async () => {
+    const data = await fixture({
+      sourceHasJoliet: false,
+      sourceIsoHiddenPaths: ["A-B.TXT"],
+      sourceIso9660Collision: true,
+    });
+    const writer = join(data.root, "writer-without-hide");
+    try {
+      await writeFile(
+        writer,
+        `#!${process.execPath}
+const { spawnSync } = require("node:child_process");
+const args = [];
+for (let index = 2; index < process.argv.length; index += 1) {
+  if (["-hide", "-hide-joliet"].includes(process.argv[index])) {
+    index += 1;
+    continue;
+  }
+  args.push(process.argv[index]);
+}
+const result = spawnSync(${JSON.stringify(UDF_WRITER_PATH)}, args, { stdio: "inherit" });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`,
+        { mode: 0o755 },
+      );
+      const writerBytes = await readFile(writer);
+      const manifest = createFactoryManifest({
+        ...data.manifest,
+        toolchain: {
+          ...data.manifest.toolchain,
+          udfWriter: {
+            identity: `tool://fixture@${sha256(writerBytes)}`,
+            digest: sha256(writerBytes),
+            version: PINNED_UDF_WRITER_VERSION,
+          },
+        },
+      });
+      await assert.rejects(
+        buildFactoryMedia({
+          manifest,
+          store: new ContentAddressedAssetStore(join(data.root, "cas")),
+          sourcePaths: data.sourcePaths,
+          evidenceStoreRoot: data.evidenceStoreRoot,
+          approvalPolicy: data.approvalPolicy,
+          visionReleaseDeliveryUnit: data.visionReleaseDeliveryUnit,
+          repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
+          factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
+          visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
+          udfExtractorPath: UDF_EXTRACTOR_PATH,
+          udfWriterPath: writer,
+          wimlibPath: WIMLIB_PATH,
+          executedBuilderImage: data.builderImage.identity,
+          outputDirectory: join(data.root, "output"),
+          reproducibility: false,
+        }),
+        /serviced ISO ISO9660 visibility file count mismatch:/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an exact A_B ISO9660 source path while hiding colliding A-B", async () => {
+    const data = await fixture({
+      sourceHasJoliet: false,
+      sourceIsoHiddenPaths: ["A-B.TXT"],
+      sourceIso9660Collision: true,
+    });
+    try {
+      const sourcePath =
+        data.sourcePaths[data.manifest.source.windowsMedia.identity];
+      const sourceViews = inspectIsoFilesystemViews(await readFile(sourcePath));
+      assert.equal(sourceViews.iso9660.includes("a_b.txt"), true);
+      assert.equal(sourceViews.iso9660.includes("a_b000.txt"), false);
+
+      const result = await buildFactoryMedia({
+        manifest: data.manifest,
+        store: new ContentAddressedAssetStore(join(data.root, "cas")),
+        sourcePaths: data.sourcePaths,
+        evidenceStoreRoot: data.evidenceStoreRoot,
+        approvalPolicy: data.approvalPolicy,
+        visionReleaseDeliveryUnit: data.visionReleaseDeliveryUnit,
+        repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
+        factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
+        visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
+        udfExtractorPath: UDF_EXTRACTOR_PATH,
+        udfWriterPath: UDF_WRITER_PATH,
+        wimlibPath: WIMLIB_PATH,
+        executedBuilderImage: data.builderImage.identity,
+        outputDirectory: join(data.root, "output"),
+        reproducibility: false,
+      });
+      const outputViews = inspectIsoFilesystemViews(
+        await readFile(result.output.path),
+      );
+      assert.equal(outputViews.iso9660.includes("a_b.txt"), true);
+      assert.equal(outputViews.iso9660.includes("a_b000.txt"), false);
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
   it("retains shared ISO9660 and Joliet directory extents for each logical path and aggregates level-3 file segments", () => {
     const media = sharedExtentIso();
     assert.deepEqual(inspectIsoFilesystemViews(media), {
@@ -1190,6 +1750,15 @@ describe("real deterministic Factory ISO builder", () => {
         assert.equal(file.bytes, 0x100000020);
       }
     }
+  });
+
+  it("normalizes ISO9660 empty extensions after removing the version only", () => {
+    assert.deepEqual(
+      inspectIsoFilesystemExtents(iso9660EmptyExtensionFixture()).map(
+        ({ path }) => path,
+      ),
+      ["README", "NOTICE.TXT"],
+    );
   });
 
   it("rejects ISO9660 directory cycles and malformed level-3 multi-extent ordering", () => {
@@ -1540,97 +2109,107 @@ describe("real deterministic Factory ISO builder", () => {
   });
 
   it(
-    "parses ISO9660 and Joliet install-image extents from a supplied real Windows ISO",
+    "validates the known real Windows ISO UDF Windows Setup tree and hidden El Torito images",
     { skip: !process.env.VEM_FACTORY_REAL_WINDOWS_ISO },
     async () => {
       const realIso = process.env.VEM_FACTORY_REAL_WINDOWS_ISO;
       const before = process.memoryUsage().rss;
       const structure = await inspectBootableIsoFile(realIso);
       const { media, close } = rangeBackedIsoMedia(realIso);
-      let iso9660;
-      let joliet;
+      let filesystemViews;
       try {
-        iso9660 = inspectIsoFilesystemExtents(media);
-        joliet = inspectIsoFilesystemExtents(media, { joliet: true });
+        filesystemViews = inspectIsoFilesystemViews(media);
       } finally {
         close();
       }
       const growth = process.memoryUsage().rss - before;
       assert.equal(structure.iso9660, true);
       assert.equal(structure.udf, true);
-      const installImage = (entries, label) => {
-        const matches = entries.filter(({ path }) =>
-          ["sources/install.wim", "sources/install.esd"].includes(
-            path.toLocaleLowerCase("en-US"),
-          ),
-        );
-        assert.equal(
-          matches.length,
-          1,
-          `${label} view locates one install image`,
-        );
-        const entry = matches[0];
-        assert.ok(
-          entry.bytes > 0,
-          `${label} install image has a positive size`,
-        );
-        assert.equal(
-          entry.bytes,
-          entry.segments.reduce((total, segment) => total + segment.bytes, 0),
-          `${label} segment sizes equal the install image size`,
-        );
-        for (const segment of entry.segments) {
-          assert.ok(segment.bytes > 0, `${label} extent has a positive size`);
-          assert.ok(
-            segment.sector >= 0,
-            `${label} extent has a non-negative sector`,
-          );
-          assert.ok(
-            (segment.sector + Math.ceil(segment.bytes / ISO_SECTOR_BYTES)) *
-              ISO_SECTOR_BYTES <=
-              media.length,
-            `${label} extent remains within the ISO media`,
-          );
-        }
-        if (entry.bytes > 4 * 1024 ** 3) {
-          assert.ok(
-            entry.segments.length > 1,
-            `${label} install image above 4 GiB uses ISO9660 multi-extent records`,
-          );
-          for (let index = 1; index < entry.segments.length; index += 1) {
-            const previous = entry.segments[index - 1];
-            const current = entry.segments[index];
-            assert.equal(
-              current.sector,
-              previous.sector + Math.ceil(previous.bytes / ISO_SECTOR_BYTES),
-              `${label} install-image multi-extent segments are contiguous`,
-            );
-          }
-        } else if (media.length < 4 * 1024 ** 3) {
-          assert.equal(
-            entry.segments.length,
-            1,
-            `${label} install image is a single extent because the supplied media is below 4 GiB`,
-          );
-        }
-        return entry;
-      };
-      const isoInstallImage = installImage(iso9660, "ISO9660");
-      const jolietInstallImage = installImage(joliet, "Joliet");
-      assert.equal(
-        jolietInstallImage.path.toLocaleLowerCase("en-US"),
-        isoInstallImage.path.toLocaleLowerCase("en-US"),
-        "ISO9660 and Joliet select the same install image path",
-      );
-      assert.equal(
-        jolietInstallImage.bytes,
-        isoInstallImage.bytes,
-        "ISO9660 and Joliet report the same install image size",
-      );
+      assert.deepEqual(filesystemViews.iso9660, ["readme"]);
+      assert.deepEqual(filesystemViews.joliet, []);
       assert.ok(
         growth < 96 * 1024 * 1024,
         `real ISO inspection grew RSS by ${growth}`,
       );
+
+      const probe = await mkdtemp(join(tmpdir(), "vem-real-windows-setup-"));
+      try {
+        execFileSync(UDF_EXTRACTOR_PATH, [
+          "x",
+          "-y",
+          "-tUdf",
+          `-o${probe}`,
+          realIso,
+          "sources/install.wim",
+          "sources/install.esd",
+        ]);
+        let installImagePath;
+        for (const candidate of [
+          "sources/install.wim",
+          "sources/install.esd",
+        ]) {
+          try {
+            await stat(join(probe, candidate));
+            installImagePath = join(probe, candidate);
+            break;
+          } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+        }
+        assert.ok(installImagePath, "UDF view contains an install image");
+        const expectedInstallImage = {
+          ...expectedFirstWimImage(installImagePath),
+          digest: await sha256File(installImagePath),
+        };
+        const udfExtractorBytes = await readFile(UDF_EXTRACTOR_PATH);
+        const wimlibBytes = await readFile(WIMLIB_PATH);
+        const setup = await inspectWindowsSetupIso({
+          isoPath: realIso,
+          expectedInstallImage,
+          udfExtractorPath: UDF_EXTRACTOR_PATH,
+          udfExtractor: {
+            identity: `tool://7z@${sha256(udfExtractorBytes)}`,
+            digest: sha256(udfExtractorBytes),
+            version: `${sevenZipVersion(UDF_EXTRACTOR_PATH)
+              .split(".")
+              .map((part) => String(Number(part)))
+              .join(".")}.0`,
+          },
+          wimlibPath: WIMLIB_PATH,
+          wimlib: {
+            identity: `tool://wimlib-imagex@${sha256(wimlibBytes)}`,
+            digest: sha256(wimlibBytes),
+            version: toolVersion(
+              WIMLIB_PATH,
+              ["--version"],
+              /wimlib-imagex\s+([0-9.]+)/i,
+              "wimlib-imagex",
+            ),
+          },
+        });
+        assert.ok(
+          ["sources/install.wim", "sources/install.esd"].includes(
+            setup.installImage.toLocaleLowerCase("en-US"),
+          ),
+          "Windows Setup inspector found the UDF install image",
+        );
+        assert.deepEqual(
+          setup.bootCatalog.map(({ platform, isoEntry }) => ({
+            platform,
+            isoEntry: isoEntry.toLocaleLowerCase("en-US"),
+          })),
+          [
+            { platform: "BIOS", isoEntry: "boot/etfsboot.com" },
+            {
+              platform: "UEFI",
+              isoEntry: "efi/microsoft/boot/efisys.bin",
+            },
+          ],
+          "Windows Setup inspector binds hidden El Torito images to canonical UDF files",
+        );
+      } finally {
+        await rm(probe, { recursive: true, force: true });
+      }
     },
   );
 
