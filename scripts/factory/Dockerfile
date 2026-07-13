@@ -11,6 +11,7 @@ RUN --mount=type=cache,target=/var/cache/apt \
       genisoimage=9:1.1.11-3.5 \
       7zip=23.01+dfsg-11 \
       xorriso=1:1.5.6-1.1ubuntu3 \
+      openssl \
       osslsigncode \
       gcc-mingw-w64-x86-64 \
       wimtools=1.14.4-1.1build2 \

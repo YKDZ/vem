@@ -26,6 +26,7 @@ describe("Factory builder definition", () => {
       "wimtools=1.14.4-1.1build2",
     ])
       assert.match(dockerfile, new RegExp(tool.replaceAll("+", "\\+")));
+    assert.match(dockerfile, /\n\s+openssl \\\n/);
     assert.match(dockerfile, /FROM toolchain AS runtime/);
     assert.match(dockerfile, /RUN corepack enable pnpm/);
     assert.doesNotMatch(dockerfile, /ENTRYPOINT/);
