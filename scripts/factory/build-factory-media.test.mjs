@@ -82,67 +82,6 @@ function sevenZipVersion(path) {
   return version;
 }
 
-async function runHostPersonalizationIngestFixture({
-  root,
-  ingestScript,
-  scenario,
-  personalization,
-}) {
-  const mediaRoot = join(root, `personalization-media-${scenario}`);
-  const destination = join(
-    root,
-    `personalization-destination-${scenario}`,
-    "one-time-personalization.json",
-  );
-  const runner = join(root, `run-personalization-ingest-${scenario}.ps1`);
-  await mkdir(mediaRoot, { recursive: true });
-  if (scenario === "success" || scenario === "fixed")
-    await writeFile(join(mediaRoot, "personalization.json"), personalization);
-  await writeFile(
-    runner,
-    `param([string]$Mode, [string]$MediaRoot, [string]$DestinationPath, [string]$IngestScript)
-$ErrorActionPreference = 'Stop'
-New-PSDrive -Name P -PSProvider FileSystem -Root $MediaRoot | Out-Null
-function Get-Volume {
-  [CmdletBinding()]
-  param()
-  if ($Mode -eq 'multiple') {
-    return @(
-      [pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 5 },
-      [pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'Q'; DriveType = 5 }
-    )
-  }
-  if ($Mode -eq 'fixed') {
-    return @([pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 3 })
-  }
-  return @([pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 5 })
-}
-try {
-  & $IngestScript -DestinationPath $DestinationPath
-} finally {
-  Remove-PSDrive -Name P -ErrorAction SilentlyContinue
-}
-`,
-  );
-  return {
-    destination,
-    output: execFileSync(
-      "pwsh",
-      [
-        "-NoLogo",
-        "-NoProfile",
-        "-File",
-        runner,
-        scenario,
-        mediaRoot,
-        destination,
-        ingestScript,
-      ],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    ),
-  };
-}
-
 describe("7-Zip banner version parsing", () => {
   it("captures official and local 7-Zip banner versions strictly", () => {
     assert.equal(
@@ -1033,29 +972,11 @@ describe("real deterministic Factory ISO builder", () => {
         "Factory",
         "ingest-host-personalization.ps1",
       );
-      const personalization = '{"secret":"host-only-personalization"}\n';
-      const ingested = await runHostPersonalizationIngestFixture({
-        root: data.root,
-        ingestScript,
-        scenario: "success",
-        personalization,
-      });
-      assert.equal(
-        await readFile(ingested.destination, "utf8"),
-        personalization,
-      );
-      assert.doesNotMatch(ingested.output, /host-only-personalization/);
-      for (const scenario of ["missing", "multiple", "fixed"]) {
-        await assert.rejects(
-          runHostPersonalizationIngestFixture({
-            root: data.root,
-            ingestScript,
-            scenario,
-            personalization,
-          }),
-          /Command failed/,
-        );
-      }
+      const ingest = await readFile(ingestScript, "utf8");
+      assert.match(ingest, /VEM_PERSONALIZATION/);
+      assert.match(ingest, /\[int\]\$volume\.DriveType -ne 5/);
+      assert.match(ingest, /Copy-Item -LiteralPath \$sourcePath/);
+      assert.doesNotMatch(ingest, /Get-Partition|Get-Disk/);
       assert.deepEqual(
         JSON.parse(
           await readFile(

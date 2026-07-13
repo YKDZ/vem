@@ -142,6 +142,36 @@ function Get-FactoryMaintenanceProfilePolicy {
   return $policies[$Profile]
 }
 
+function Get-FactoryMaintenanceIngressPolicy {
+  param(
+    [string]$Profile,
+    [string]$WireGuardInterfaceAlias,
+    [string]$WireGuardListenAddress
+  )
+
+  if ($Profile -eq "production") {
+    if ([string]::IsNullOrWhiteSpace($WireGuardInterfaceAlias)) {
+      throw "production FactoryProfile requires a WireGuard maintenance interface alias"
+    }
+    if ([string]::IsNullOrWhiteSpace($WireGuardListenAddress) -or $WireGuardListenAddress -eq "0.0.0.0") {
+      throw "production FactoryProfile requires a concrete WireGuard maintenance ListenAddress"
+    }
+    return [ordered]@{
+      mode = "wireguard-only"
+      effectiveListenAddress = $WireGuardListenAddress
+      effectiveFirewallInterfaceScope = $WireGuardInterfaceAlias
+    }
+  }
+  if ($Profile -eq "testbed") {
+    return [ordered]@{
+      mode = "testbed-bootstrap-certificate"
+      effectiveListenAddress = "0.0.0.0"
+      effectiveFirewallInterfaceScope = "Any"
+    }
+  }
+  throw "FactoryProfile must be production or testbed"
+}
+
 function Assert-ProductionHostIsolation {
   param(
     [string]$DaemonConfigPath = "C:\ProgramData\VEM\vending-daemon\machine-config.json",
@@ -362,11 +392,31 @@ function Assert-RolePools {
     throw "Controlled Maintenance Ingress requires runner and maintainer role pools"
   }
   foreach ($source in $all) {
-    if ([string]::IsNullOrWhiteSpace([string]$source) -or [string]$source -match "^(Any|Internet|LocalSubnet|0\.0\.0\.0/0|::/0)$") {
-      throw "maintenance role pools must contain only explicit WireGuard addresses or CIDRs"
+    foreach ($candidate in ([string]$source -split ",")) {
+      $value = $candidate.Trim()
+      if ([string]::IsNullOrWhiteSpace($value) -or $value -match "^(Any|\*|Internet|LocalSubnet|DefaultGateway|DHCP|DNS|WINS|0\.0\.0\.0|::|0\.0\.0\.0/0|::/0)$") {
+        throw "maintenance role pools must contain only explicit source addresses or CIDRs"
+      }
+      $parts = $value -split "/", 2
+      $address = [System.Net.IPAddress]::None
+      if (-not [System.Net.IPAddress]::TryParse($parts[0], [ref]$address)) {
+        throw "maintenance role pools must contain only explicit source addresses or CIDRs"
+      }
+      if ($parts.Count -eq 2) {
+        $prefix = 0
+        if (-not [int]::TryParse($parts[1], [ref]$prefix)) {
+          throw "maintenance role pools must contain only explicit source addresses or CIDRs"
+        }
+        $maximumPrefix = if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+        if ($prefix -le 0 -or $prefix -gt $maximumPrefix) {
+          throw "maintenance role pools must contain only explicit source addresses or CIDRs"
+        }
+      } elseif ($parts.Count -ne 1) {
+        throw "maintenance role pools must contain only explicit source addresses or CIDRs"
+      }
     }
   }
-  return @($all | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+  return @($all | ForEach-Object { ([string]$_ -split ",") } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
 }
 
 function Invoke-NamedPowerShellScript {
@@ -754,6 +804,7 @@ function Assert-FactoryRuntimePreflight {
   $wireGuardPackage = Assert-PinnedLocalPackage -Name "WireGuard" -Path $WireGuardPackagePath -Source $WireGuardPackageSource -Version $WireGuardPackageVersion -ExpectedSha256 $WireGuardPackageSha256 -ApprovedSignerThumbprint $WireGuardApprovedSignerThumbprint -ApprovedRootThumbprint $WireGuardApprovedRootThumbprint
   $maintenanceCa = Assert-MaintenanceCaInput
   $rolePools = Assert-RolePools
+  $maintenanceIngress = Get-FactoryMaintenanceIngressPolicy -Profile $FactoryProfile -WireGuardInterfaceAlias $MaintenanceWireGuardInterfaceAlias -WireGuardListenAddress $MaintenanceWireGuardListenAddress
   $supportScripts = @(
     "setup-scheduled-tasks.ps1",
     "verify-factory-runtime.ps1",
@@ -783,6 +834,7 @@ function Assert-FactoryRuntimePreflight {
     MaintainerSourceAllowlist = @($MaintenanceMaintainerSourceAllowlist)
     WireGuardInterfaceAlias = $MaintenanceWireGuardInterfaceAlias
     WireGuardListenAddress = $MaintenanceWireGuardListenAddress
+    MaintenanceIngress = $maintenanceIngress
     SupportScripts = @($supportScripts)
   }
 }
@@ -819,6 +871,7 @@ function New-FactoryRuntimePlan {
       visionConfigurationSourcePath = $VisionConfigurationSourcePath
       wireGuardInterfaceAlias = $Preflight.WireGuardInterfaceAlias
       wireGuardListenAddress = $Preflight.WireGuardListenAddress
+      maintenanceIngress = $Preflight.MaintenanceIngress
       display = [ordered]@{
         width = $ExpectedDisplayWidth
         height = $ExpectedDisplayHeight
@@ -1375,6 +1428,9 @@ function Write-FactoryRuntimeFiles {
       maintainerSourceAllowlist = @($Preflight.MaintainerSourceAllowlist)
       wireGuardInterfaceAlias = [string]$Preflight.WireGuardInterfaceAlias
       wireGuardListenAddress = [string]$Preflight.WireGuardListenAddress
+      ingressMode = [string]$Preflight.MaintenanceIngress.mode
+      effectiveListenAddress = [string]$Preflight.MaintenanceIngress.effectiveListenAddress
+      effectiveFirewallInterfaceScope = [string]$Preflight.MaintenanceIngress.effectiveFirewallInterfaceScope
     }
     wireGuard = [ordered]@{
       serviceName = Get-WireGuardTunnelServiceName

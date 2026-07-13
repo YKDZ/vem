@@ -829,7 +829,7 @@ function registerBootstrapCmd() {
   return '@echo off\r\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "C:\\VEM\\Factory\\ingest-host-personalization.ps1" -DestinationPath "C:\\ProgramData\\VEM\\factory\\one-time-personalization.json"\r\nif errorlevel 1 exit /b 1\r\nschtasks.exe /Create /TN VemFactoryBootstrap /RU SYSTEM /SC ONSTART /RL HIGHEST /F /TR "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\bootstrap-factory-runtime.ps1 -MediaRoot C:\\VEM\\Factory"\r\nif errorlevel 1 exit /b 1\r\nexit /b 0\r\n';
 }
 
-function hostPersonalizationIngestScript() {
+export function hostPersonalizationIngestScript() {
   return `param([Parameter(Mandatory = $true)][string]$DestinationPath)
 $ErrorActionPreference = 'Stop'
 $expectedLabel = 'VEM_PERSONALIZATION'

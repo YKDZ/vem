@@ -363,6 +363,38 @@ function Assert-WireGuardListenAddress {
   }
 }
 
+function Get-ControlledMaintenanceIngressPolicy {
+  param(
+    [string]$Profile,
+    [string]$WireGuardInterfaceAlias,
+    [string]$WireGuardListenAddress
+  )
+
+  if ($Profile -eq "production") {
+    if ([string]::IsNullOrWhiteSpace($WireGuardInterfaceAlias)) {
+      throw "production Controlled Maintenance Ingress requires a WireGuard interface alias"
+    }
+    if ([string]::IsNullOrWhiteSpace($WireGuardListenAddress) -or $WireGuardListenAddress -eq "0.0.0.0") {
+      throw "production Controlled Maintenance Ingress requires a concrete WireGuard ListenAddress"
+    }
+    return [ordered]@{
+      mode = "wireguard-only"
+      sshListenAddress = $WireGuardListenAddress
+      firewallInterfaceScope = $WireGuardInterfaceAlias
+      requiresWireGuardAddress = $true
+    }
+  }
+  if ($Profile -eq "testbed") {
+    return [ordered]@{
+      mode = "testbed-bootstrap-certificate"
+      sshListenAddress = "0.0.0.0"
+      firewallInterfaceScope = "Any"
+      requiresWireGuardAddress = $false
+    }
+  }
+  throw "FactoryProfile must be production or testbed"
+}
+
 function Assert-ProfileMaintenanceCa {
   param(
     [string]$Path,
@@ -594,7 +626,8 @@ function Assert-ControlledMaintenanceIngressSourceAllowlist {
 function Ensure-ControlledMaintenanceIngressFirewall {
   param(
     [string[]]$SourceAllowlist,
-    [string]$InterfaceAlias
+    [string]$InterfaceAlias,
+    [string]$IngressMode
   )
 
   $ruleName = "VEM Controlled Maintenance SSH"
@@ -602,16 +635,20 @@ function Ensure-ControlledMaintenanceIngressFirewall {
 
   Get-EnabledInboundSshFirewallRules | Remove-NetFirewallRule
 
-  New-NetFirewallRule `
-    -DisplayName $ruleName `
-    -Direction Inbound `
-    -Action Allow `
-    -Protocol TCP `
-    -LocalPort 22 `
-    -RemoteAddress $validatedSources `
-    -InterfaceAlias $InterfaceAlias `
-    -Profile Any `
-    -Description "VEM-managed SSH ingress scoped to WireGuard runner and maintainer role pools." | Out-Null
+  $ruleArguments = @{
+    DisplayName = $ruleName
+    Direction = "Inbound"
+    Action = "Allow"
+    Protocol = "TCP"
+    LocalPort = 22
+    RemoteAddress = $validatedSources
+    Profile = "Any"
+    Description = "VEM-managed $IngressMode SSH ingress scoped to explicit runner and maintainer role pools."
+  }
+  if (-not [string]::IsNullOrWhiteSpace($InterfaceAlias)) {
+    $ruleArguments.InterfaceAlias = $InterfaceAlias
+  }
+  New-NetFirewallRule @ruleArguments | Out-Null
 }
 
 function Reject-ControlledMaintenanceIngressMigration {
@@ -653,18 +690,22 @@ function Ensure-ControlledMaintenanceIngress {
     throw "kiosk account not found: $KioskUser. Configure it before enabling Controlled Maintenance Ingress."
   }
   Assert-RemoteMaintenanceAccountSeparation -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser
-  Assert-WireGuardListenAddress -InterfaceAlias $InterfaceAlias -ListenAddress $ListenAddress
+  $ingressPolicy = Get-ControlledMaintenanceIngressPolicy -Profile $FactoryProfile -WireGuardInterfaceAlias $InterfaceAlias -WireGuardListenAddress $ListenAddress
+  if ([bool]$ingressPolicy.requiresWireGuardAddress) {
+    Assert-WireGuardListenAddress -InterfaceAlias $InterfaceAlias -ListenAddress $ListenAddress
+  }
 
   Assert-ProfileMaintenanceCa -Path $CaPath -Profile $FactoryProfile
   Ensure-OpenSshServer
-  Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser -MaintenanceUser $MaintenanceUser -CaPath $CaPath -ListenAddress $ListenAddress
+  Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser -MaintenanceUser $MaintenanceUser -CaPath $CaPath -ListenAddress ([string]$ingressPolicy.sshListenAddress)
   $sshdExePath = Get-OpenSshServerExePath
   if ([string]::IsNullOrWhiteSpace($sshdExePath)) {
     throw "OpenSSH sshd executable is unavailable after pinned local installation"
   }
   $sshdProbeSource = ([string]$validatedSources[0] -split "/", 2)[0]
   Test-SshdConfiguration -SshdExePath $sshdExePath -ConfigPath $SshdConfigPath -MaintenanceUser $MaintenanceUser -SourceAddress $sshdProbeSource | Out-Null
-  Ensure-ControlledMaintenanceIngressFirewall -SourceAllowlist $validatedSources -InterfaceAlias $InterfaceAlias
+  $firewallInterfaceAlias = if ([string]$ingressPolicy.firewallInterfaceScope -ceq "Any") { $null } else { [string]$ingressPolicy.firewallInterfaceScope }
+  Ensure-ControlledMaintenanceIngressFirewall -SourceAllowlist $validatedSources -InterfaceAlias $firewallInterfaceAlias -IngressMode ([string]$ingressPolicy.mode)
   Ensure-LocalGroupExists -Group "OpenSSH Users"
   Add-LocalGroupMember -Group "OpenSSH Users" -Member $MaintenanceUser -ErrorAction SilentlyContinue
   Remove-LocalGroupMember -Group "OpenSSH Users" -Member $KioskUser -ErrorAction SilentlyContinue
@@ -674,7 +715,7 @@ function Ensure-ControlledMaintenanceIngress {
 
   Start-Service -Name "sshd"
 
-  Write-Host "Configured Controlled Maintenance Ingress SSH access for $MaintenanceUser on $InterfaceAlias; $KioskUser is excluded."
+  Write-Host "Configured $($ingressPolicy.mode) Controlled Maintenance Ingress SSH access for $MaintenanceUser on $($ingressPolicy.firewallInterfaceScope); $KioskUser is excluded."
 }
 
 function Get-LocalAccountSid {

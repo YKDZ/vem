@@ -99,6 +99,12 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Require Host PowerShell For Factory Personalization Behavior
+        run: |
+          command -v pwsh
+          pwsh --version
+          node --test scripts/check-windows-factory-maintenance.test.mjs
+
       - name: Build Factory Media Test Toolchain
         run: |
           docker build \

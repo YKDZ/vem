@@ -250,6 +250,27 @@ describe("Factory Manifest and media workflow contract", () => {
       read("scripts/factory/factory-builder-definition.test.mjs"),
       /skip:/,
     );
+    assert.doesNotMatch(
+      read("scripts/factory/build-factory-media.test.mjs"),
+      /spawnSync\(\s*["']pwsh["']|execFileSync\(\s*["']pwsh["']/,
+    );
+  });
+
+  it("requires host PowerShell for non-optional Factory personalization behavior", () => {
+    const workflow = read(ciWorkflowPath);
+    const hostBehaviorStep = workflow.slice(
+      workflow.indexOf(
+        "- name: Require Host PowerShell For Factory Personalization Behavior",
+      ),
+      workflow.indexOf("- name: Build Factory Media Test Toolchain"),
+    );
+    assert.match(hostBehaviorStep, /command -v pwsh/);
+    assert.match(hostBehaviorStep, /pwsh --version/);
+    assert.match(
+      hostBehaviorStep,
+      /node --test scripts\/check-windows-factory-maintenance\.test\.mjs/,
+    );
+    assert.doesNotMatch(hostBehaviorStep, /\bskip\b/i);
   });
 
   it("binds reusable runtime outputs and exact build toolchain into artifact identity", () => {

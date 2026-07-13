@@ -3,6 +3,22 @@
   "ok": true,
   "checks": {
     "factoryProfile": "testbed",
+    "factoryRemoteMaintenanceCapability": {
+      "ingress": {
+        "profile": "testbed",
+        "mode": "testbed-bootstrap-certificate",
+        "effectiveListenAddress": "0.0.0.0",
+        "effectiveFirewallInterfaceScope": "Any",
+        "profileBound": true,
+        "bootstrapTestbedOnly": true
+      },
+      "firewallScope": {
+        "sourceRolePoolsMatch": true,
+        "interfaceAlias": "Any",
+        "unexpectedEnabledInboundTcp22Rules": [],
+        "unexpectedListeners": []
+      }
+    },
     "packageVersions": {
       "openSsh": {
         "version": "9.8.1",
