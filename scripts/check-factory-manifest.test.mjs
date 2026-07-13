@@ -414,6 +414,42 @@ describe("Factory Manifest and media workflow contract", () => {
     }
   });
 
+  it("requires exact protected runner labels with Bash before checkout", () => {
+    const parsed = parse(read(workflowPath));
+    const guard = parsed.jobs.build.steps[0].run;
+    const labelGuardStart = guard.indexOf(
+      `expected_runner_labels_json='["self-hosted","Linux","X64","vem-factory"]'`,
+    );
+    const labelGuardEnd = guard.indexOf("for name in", labelGuardStart);
+    assert.ok(labelGuardStart >= 0, "runner label guard is present");
+    assert.ok(
+      labelGuardEnd > labelGuardStart,
+      "runner label guard ends before service checks",
+    );
+    const labelGuard = guard.slice(labelGuardStart, labelGuardEnd);
+    assert.doesNotMatch(guard, /\bnode\b|\bjq\b|\bpython(?:3)?\b/);
+
+    const runLabelGuard = (runnerLabels) =>
+      execFileSync("bash", ["-c", `set -euo pipefail\n${labelGuard}`], {
+        env: { ...process.env, RUNNER_LABELS_JSON: runnerLabels },
+        stdio: "ignore",
+      });
+
+    runLabelGuard('["self-hosted","Linux","X64","vem-factory"]');
+    for (const runnerLabels of [
+      '["self-hosted","Linux","X64","vem-factory","additional-label"]',
+      '["self-hosted","Linux","X64"]',
+      '["evil-self-hosted","Linux","X64","vem-factory"]',
+      '[["self-hosted","Linux","X64","vem-factory"]]',
+      '{"labels":["self-hosted","Linux","X64","vem-factory"]}',
+      '["self-hosted" "Linux","X64","vem-factory"]',
+      '["Linux","self-hosted","X64","vem-factory"]',
+      '["self-hosted", "Linux", "X64", "vem-factory"]',
+    ]) {
+      assert.throws(() => runLabelGuard(runnerLabels));
+    }
+  });
+
   it("executes manifest-pinned tools offline and uploads only validated bounded JSON evidence", () => {
     const workflow = read(workflowPath);
     assert.match(workflow, /VEM_FACTORY_EXECUTED_BUILDER_IMAGE/);
