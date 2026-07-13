@@ -24,6 +24,7 @@ import {
   syncStatusSchema,
   transactionSnapshotSchema,
   visionStatusSchema,
+  wifiScanResponseSchema,
   type CatalogSnapshot,
   type BringUpSnapshot,
   type ConfigSummary,
@@ -44,6 +45,7 @@ import {
   type TransactionSnapshot,
   type UnknownDaemonEvent,
   type VisionStatus,
+  type WifiScanResponse,
 } from "./schemas";
 
 export class DaemonUnavailableError extends Error {
@@ -202,6 +204,12 @@ export class DaemonApiClient {
       if (structured) return structured;
       throw error;
     }
+  }
+
+  async scanWifiNetworks(): Promise<WifiScanResponse> {
+    return wifiScanResponseSchema.parse(
+      await this.request("/v1/network/available"),
+    );
   }
 
   async getConfig(): Promise<ConfigSummary> {

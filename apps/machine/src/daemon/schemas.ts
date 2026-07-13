@@ -215,6 +215,28 @@ export const networkSettingsResponseSchema = z.object({
   updatedAt: z.string(),
 });
 
+export const wifiNetworkSchema = z.object({
+  ssid: z.string(),
+  signalQuality: z.number().int().min(0).max(100),
+  security: z.enum([
+    "open",
+    "wpa_personal",
+    "wpa2_personal",
+    "wpa3_personal",
+    "enterprise",
+    "unknown",
+  ]),
+  connected: z.boolean(),
+  profileSaved: z.boolean(),
+});
+
+export const wifiScanResponseSchema = z.object({
+  status: z.enum(["available", "failed", "unsupported"]),
+  networks: z.array(wifiNetworkSchema),
+  operatorGuidance: z.string(),
+  updatedAt: z.string(),
+});
+
 export const provisioningClaimResponseSchema = z.object({
   status: z.literal("provisioned"),
   machineCode: z.string(),
@@ -532,6 +554,8 @@ export type NetworkSettingsResponse = z.infer<
 export type ProvisioningClaimResponse = z.infer<
   typeof provisioningClaimResponseSchema
 >;
+export type WifiNetwork = z.infer<typeof wifiNetworkSchema>;
+export type WifiScanResponse = z.infer<typeof wifiScanResponseSchema>;
 export type MaintenanceEnrollmentStatus = z.infer<
   typeof maintenanceEnrollmentStatusSchema
 >;

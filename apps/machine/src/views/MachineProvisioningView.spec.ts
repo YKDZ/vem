@@ -13,6 +13,7 @@ const {
   getMaintenanceStatusMock,
   claimMachineMock,
   applyNetworkSettingsMock,
+  scanWifiNetworksMock,
   downloadLogExportMock,
 } = vi.hoisted(() => ({
   DaemonUnavailableErrorMock: class DaemonUnavailableError extends Error {
@@ -32,6 +33,7 @@ const {
   getMaintenanceStatusMock: vi.fn(),
   claimMachineMock: vi.fn(),
   applyNetworkSettingsMock: vi.fn(),
+  scanWifiNetworksMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
 }));
 
@@ -53,6 +55,7 @@ vi.mock("@/daemon/client", () => ({
     getMaintenanceStatus: getMaintenanceStatusMock,
     claimMachine: claimMachineMock,
     applyNetworkSettings: applyNetworkSettingsMock,
+    scanWifiNetworks: scanWifiNetworksMock,
     downloadLogExport: downloadLogExportMock,
   },
 }));
@@ -165,6 +168,20 @@ beforeEach(() => {
     operatorGuidance: "现场网络已连通",
     updatedAt: "2026-07-04T00:01:00Z",
   });
+  scanWifiNetworksMock.mockResolvedValue({
+    status: "available",
+    networks: [
+      {
+        ssid: "Store-WiFi",
+        signalQuality: 91,
+        security: "wpa2_personal",
+        connected: false,
+        profileSaved: false,
+      },
+    ],
+    operatorGuidance: "请选择现场无线网络。",
+    updatedAt: "2026-07-04T00:00:30Z",
+  });
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
 });
 
@@ -263,8 +280,12 @@ describe("Bring-Up Console", () => {
 
   it("submits protected network settings through the daemon contract", async () => {
     const host = await mountView();
-    inputByLabel(host, "无线网络名称").value = "Store-WiFi";
-    inputByLabel(host, "无线网络名称").dispatchEvent(new Event("input"));
+    await vi.waitFor(() => {
+      expect(scanWifiNetworksMock).toHaveBeenCalled();
+      expect(host.textContent).toContain("Store-WiFi");
+    });
+    buttonByText(host, "Store-WiFi").click();
+    await nextTick();
     inputByLabel(host, "无线网络密码").value = "secret-pass";
     inputByLabel(host, "无线网络密码").dispatchEvent(new Event("input"));
     await nextTick();
@@ -290,8 +311,11 @@ describe("Bring-Up Console", () => {
       new Error("adapter rejected password secret-pass"),
     );
     const host = await mountView();
-    inputByLabel(host, "无线网络名称").value = "Store-WiFi";
-    inputByLabel(host, "无线网络名称").dispatchEvent(new Event("input"));
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Store-WiFi");
+    });
+    buttonByText(host, "Store-WiFi").click();
+    await nextTick();
     inputByLabel(host, "无线网络密码").value = "secret-pass";
     inputByLabel(host, "无线网络密码").dispatchEvent(new Event("input"));
     await nextTick();

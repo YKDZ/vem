@@ -58,5 +58,6 @@ tower = "0.5"
 windows-service = "0.7"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
+  "Win32_NetworkManagement_WiFi",
   "Win32_Security_Cryptography",
 ] }
