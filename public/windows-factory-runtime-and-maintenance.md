@@ -93,9 +93,13 @@ The source must contain
 `setup.exe`, `sources/boot.wim`, `sources/install.wim` or `install.esd`, BIOS
 `boot/etfsboot.com`, EFI `efisys.bin`, and a complete BIOS+UEFI El Torito
 catalog; fixture, non-Windows, and BIOS-only media are rejected. The unattended
-file pins the image index, locale/OOBE behavior, and lets Setup select the
-firmware-appropriate disk layout on the host-owned fresh disk. Specialize
-registers an idempotent SYSTEM bootstrap and FirstLogon supplies a fallback.
+file pins the image index, locale/OOBE behavior, and an explicit disk layout
+selected by `source.targetFirmware`. A `uefi` target creates EFI, MSR, Windows,
+and GPT recovery partitions; a `bios` target creates an active NTFS system
+partition, Windows partition, and MBR recovery partition. The ISO remains
+BIOS+UEFI bootable in either case, but acceptance must boot it using the
+firmware mode declared by the manifest. Specialize registers an idempotent
+SYSTEM bootstrap and FirstLogon supplies a fallback.
 The bootstrap records durable status, fails closed with reboot, and runs the
 baseline installer, `prepare-factory-runtime`, and `verify-factory-runtime`
 only after a host one-time personalization channel is available.

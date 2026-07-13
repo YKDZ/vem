@@ -719,13 +719,8 @@ function validateManifestShape(manifest, { requireManifestId }) {
       "source.installImageDigest",
       issues,
     );
-    if (manifest.source.targetFirmware !== "uefi") {
-      issues.push(
-        issue(
-          "source.targetFirmware",
-          "must be uefi for the current Factory acceptance target",
-        ),
-      );
+    if (!new Set(["bios", "uefi"]).has(manifest.source.targetFirmware)) {
+      issues.push(issue("source.targetFirmware", "must be bios or uefi"));
     }
   }
 
