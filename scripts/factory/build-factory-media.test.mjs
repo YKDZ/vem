@@ -1517,6 +1517,85 @@ describe("real deterministic Factory ISO builder", () => {
     }
   });
 
+  it("passes -allow-limited-size to the serviced ISO writer for Windows install.wim rebuilds", async () => {
+    const data = await fixture();
+    try {
+      const writerLogPath = join(data.root, "writer-args.json");
+      const fakeWriterPath = join(data.root, "recording-udf-writer");
+      await writeFile(
+        fakeWriterPath,
+        `#!${process.execPath}
+const { readFileSync, statSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const { spawnSync } = require("node:child_process");
+
+const realWriter = ${JSON.stringify(UDF_WRITER_PATH)};
+const logPath = ${JSON.stringify(writerLogPath)};
+const args = process.argv.slice(2);
+
+if (args.length === 1 && args[0] === "--version") {
+  process.stdout.write("genisoimage ${PINNED_UDF_WRITER_VERSION}\\n");
+  process.exit(0);
+}
+
+writeFileSync(logPath, JSON.stringify(args));
+const stageDirectory = args.at(-1);
+const installImagePath = join(stageDirectory, "sources", "install.wim");
+const hasInstallImage = statSync(installImagePath).isFile();
+if (hasInstallImage && !args.includes("-allow-limited-size")) {
+  process.stderr.write(
+    "missing -allow-limited-size for Windows install.wim limited-size contract\\n",
+  );
+  process.exit(91);
+}
+
+const result = spawnSync(realWriter, args, { stdio: "inherit" });
+if (result.error) throw result.error;
+process.exit(result.status ?? 0);
+`,
+        { mode: 0o755 },
+      );
+      const fakeWriterBytes = await readFile(fakeWriterPath);
+      const manifest = createFactoryManifest({
+        ...data.manifest,
+        toolchain: {
+          ...data.manifest.toolchain,
+          udfWriter: {
+            identity: `tool://genisoimage-test@${sha256(fakeWriterBytes)}`,
+            digest: sha256(fakeWriterBytes),
+            version: PINNED_UDF_WRITER_VERSION,
+          },
+        },
+      });
+
+      await buildFactoryMedia({
+        manifest,
+        store: new ContentAddressedAssetStore(join(data.root, "cas")),
+        sourcePaths: data.sourcePaths,
+        evidenceStoreRoot: data.evidenceStoreRoot,
+        approvalPolicy: data.approvalPolicy,
+        visionReleaseDeliveryUnit: data.visionReleaseDeliveryUnit,
+        repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
+        factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
+        visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
+        udfExtractorPath: UDF_EXTRACTOR_PATH,
+        udfWriterPath: fakeWriterPath,
+        wimlibPath: WIMLIB_PATH,
+        executedBuilderImage: data.builderImage.identity,
+        outputDirectory: join(data.root, "output"),
+        reproducibility: false,
+      });
+
+      const writerArgs = JSON.parse(await readFile(writerLogPath, "utf8"));
+      const isoLevelIndex = writerArgs.indexOf("-iso-level");
+      assert.notEqual(isoLevelIndex, -1);
+      assert.equal(writerArgs[isoLevelIndex + 1], "3");
+      assert.equal(writerArgs[isoLevelIndex + 2], "-allow-limited-size");
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
   it("replays an ISO9660 and Joliet README missing from the UDF extraction without duplicating an overlay replacement", async () => {
     const data = await fixture({
       sourceIsoVisibleReadme: true,
