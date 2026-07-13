@@ -61,12 +61,11 @@ jobs:
             "$GITHUB_REPOSITORY"/.github/workflows/*@"$GITHUB_REF") ;;
             *) echo "Factory media requires a same-repository workflow on the trusted ref" >&2; exit 1 ;;
           esac
-          node -e '
-            const labels = JSON.parse(process.env.RUNNER_LABELS_JSON);
-            for (const required of ["self-hosted", "Linux", "X64", "vem-factory"]) {
-              if (!labels.includes(required)) throw new Error(`missing trusted runner label: ${required}`);
-            }
-          '
+          expected_runner_labels_json='["self-hosted","Linux","X64","vem-factory"]'
+          test "${RUNNER_LABELS_JSON:-}" = "$expected_runner_labels_json" || {
+            echo "trusted runner labels must exactly equal protected labels: $expected_runner_labels_json" >&2
+            exit 1
+          }
           for name in \
             VEM_FACTORY_ASSET_STORE \
             VEM_FACTORY_MANIFEST_STORE \
