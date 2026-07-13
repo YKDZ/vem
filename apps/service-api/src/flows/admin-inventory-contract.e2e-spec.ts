@@ -6,8 +6,11 @@ import {
   adminInventoryResponseSchema,
   adminMachineResponseSchema,
   adminMachineSlotResponseSchema,
+  adminProductDisplayImageUploadContract,
   adminProductResponseSchema,
   adminProductVariantResponseSchema,
+  adminTryOnSilhouetteUploadContract,
+  parseAdminApiResponse,
 } from "@vem/shared";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -69,6 +72,32 @@ describe("admin-inventory-contract.e2e", { concurrent: false }, () => {
     const unique = Date.now().toString(36);
     const token = await loginAndGetToken(api, appConfig);
     const auth = { Authorization: `Bearer ${token}` };
+
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    await Promise.all(
+      [
+        adminProductDisplayImageUploadContract,
+        adminTryOnSilhouetteUploadContract,
+      ].map(async (contract) => {
+        const uploadResponse = await api
+          .post(`/api${contract.path}`)
+          .set(auth)
+          .attach("file", png, {
+            filename: "contract.png",
+            contentType: "image/png",
+          });
+        expect(uploadResponse.status).toBe(201);
+        const uploaded = parseAdminApiResponse(
+          contract,
+          (uploadResponse.body as ApiResponse<unknown>).data,
+        );
+        expect(Object.keys(uploaded).sort()).toEqual([
+          "contentType",
+          "id",
+          "publicUrl",
+        ]);
+      }),
+    );
 
     const productResponse = await api
       .post("/api/products")

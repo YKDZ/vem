@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   patchContract,
+  postAdminApiContract,
   postContract,
-  postResponseContract,
 } from "@/api/request";
 
 import {
@@ -22,7 +22,7 @@ vi.mock("@/api/request", () => ({
   patchContract: vi.fn().mockResolvedValue({}),
   post: vi.fn(),
   postContract: vi.fn().mockResolvedValue({}),
-  postResponseContract: vi.fn().mockResolvedValue({}),
+  postAdminApiContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("products api", () => {
@@ -82,14 +82,20 @@ describe("products api", () => {
     await uploadProductDisplayImage(file);
     await uploadTryOnSilhouette(file);
 
-    expect(postResponseContract).toHaveBeenCalledWith(
-      "/media-assets/product-display-images",
-      expect.any(Object),
+    expect(postAdminApiContract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/media-assets/product-display-images",
+        responseSchema: expect.any(Object),
+      }),
       expect.any(FormData),
     );
-    expect(postResponseContract).toHaveBeenCalledWith(
-      "/media-assets/try-on-silhouettes",
-      expect.any(Object),
+    expect(postAdminApiContract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/media-assets/try-on-silhouettes",
+        responseSchema: expect.any(Object),
+      }),
       expect.any(FormData),
     );
   });

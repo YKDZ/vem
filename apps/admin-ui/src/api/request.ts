@@ -1,3 +1,5 @@
+import type { AdminApiResponseContract } from "@vem/shared";
+
 import axios, {
   AxiosError,
   type AxiosRequestConfig,
@@ -276,6 +278,19 @@ export async function postResponseContract<TResponseSchema extends z.ZodType>(
 ): Promise<z.output<TResponseSchema>> {
   const data = await post<unknown>(url, body, config);
   return parseAdminContract(responseSchema, data, `${url} response`);
+}
+
+export async function postAdminApiContract<TResponseSchema extends z.ZodType>(
+  contract: AdminApiResponseContract<"POST", string, TResponseSchema>,
+  body: FormData,
+  config?: AxiosRequestConfig,
+): Promise<z.output<TResponseSchema>> {
+  const data = await post<unknown>(contract.path, body, config);
+  return parseAdminContract(
+    contract.responseSchema,
+    data,
+    `${contract.path} response`,
+  );
 }
 
 export async function patchContract<

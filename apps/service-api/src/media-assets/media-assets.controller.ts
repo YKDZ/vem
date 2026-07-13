@@ -13,9 +13,14 @@ import {
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiConsumes, ApiTags } from "@nestjs/swagger";
+import {
+  adminProductDisplayImageUploadContract,
+  adminTryOnSilhouetteUploadContract,
+} from "@vem/shared";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { Public } from "../auth/public.decorator";
+import { AdminResponseContract } from "../common/admin-response-contract.decorator";
 import {
   MAX_PRODUCT_DISPLAY_IMAGE_BYTES,
   MAX_TRY_ON_SILHOUETTE_BYTES,
@@ -38,6 +43,7 @@ export class MediaAssetsController {
   @RequirePermissions("products.write")
   @Post("product-display-images")
   @ApiConsumes("multipart/form-data")
+  @AdminResponseContract(adminProductDisplayImageUploadContract)
   @UseInterceptors(
     FileInterceptor("file", {
       limits: { fileSize: MAX_PRODUCT_DISPLAY_IMAGE_BYTES },
@@ -55,6 +61,7 @@ export class MediaAssetsController {
   @RequirePermissions("products.write")
   @Post("try-on-silhouettes")
   @ApiConsumes("multipart/form-data")
+  @AdminResponseContract(adminTryOnSilhouetteUploadContract)
   @UseInterceptors(
     FileInterceptor("file", {
       limits: { fileSize: MAX_TRY_ON_SILHOUETTE_BYTES },
