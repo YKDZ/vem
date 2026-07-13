@@ -145,7 +145,10 @@ describe("Vision release installer fixtures", () => {
           /\$PSVersionTable\.PSEdition -eq "Desktop"[\s\S]*?\$env:PSModulePath = "\$env:WINDIR\\System32\\WindowsPowerShell\\v1\.0\\Modules;\$env:PSModulePath"/,
         );
       }
-      assert.match(provisioner, /\[Security\.Cryptography\.SHA256\]::Create\(\)/);
+      assert.match(
+        provisioner,
+        /\[Security\.Cryptography\.SHA256\]::Create\(\)/,
+      );
       assert.match(provisioner, /\.TransformBlock\(/);
       assert.match(provisioner, /\.TransformFinalBlock\(/);
       assert.match(
@@ -156,7 +159,10 @@ describe("Vision release installer fixtures", () => {
       const provisionFixture = harness.match(
         /foreach \(\$corePowerShellPath in \$corePowerShellPaths\) \{[\s\S]*?Invoke-BoundedPowerShell -Stage "fixture\.provision\.\$corePowerShellName"[\s\S]*?-ChildPowerShellPath \$corePowerShellPath[\s\S]*?-ScriptBody @'([\s\S]*?)'@ \| Out-Null/,
       );
-      assert.ok(provisionFixture, "provisioning must run under each PowerShell edition");
+      assert.ok(
+        provisionFixture,
+        "provisioning must run under each PowerShell edition",
+      );
       assert.doesNotMatch(provisionFixture[1], /PSModulePath/);
     },
   );
@@ -240,10 +246,16 @@ describe("Vision release installer fixtures", () => {
     assert.match(source, /kiosk-account-created/);
   });
 
-  boundedIt("does not pre-restore system modules for isolated Windows release scripts", () => {
-    const harness = readFileSync(windowsHarness, "utf8");
-    assert.doesNotMatch(harness, /\$env:PSModulePath = "\$env:WINDIR\\System32\\WindowsPowerShell\\v1\.0\\Modules;/);
-  });
+  boundedIt(
+    "does not pre-restore system modules for isolated Windows release scripts",
+    () => {
+      const harness = readFileSync(windowsHarness, "utf8");
+      assert.doesNotMatch(
+        harness,
+        /\$env:PSModulePath = "\$env:WINDIR\\System32\\WindowsPowerShell\\v1\.0\\Modules;/,
+      );
+    },
+  );
 
   boundedIt(
     "uses a PS 5.1-compatible Windows command-line quote for spaced child paths",
