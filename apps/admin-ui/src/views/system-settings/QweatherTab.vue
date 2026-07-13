@@ -79,14 +79,6 @@ onMounted(load);
 <template>
   <a-spin :spinning="loading">
     <section aria-label="和风天气配置">
-      <a-alert
-        class="mb-4"
-        type="info"
-        show-icon
-        message="供机器自然环境、推荐与语音场景使用"
-        description="保存后服务端请求会立即使用数据库配置；私钥只写不回显，留空表示保留现有私钥。"
-      />
-
       <a-descriptions v-if="current" class="mb-4" bordered size="small">
         <a-descriptions-item label="配置来源">
           {{
@@ -111,7 +103,7 @@ onMounted(load);
         <a-form-item label="启用和风天气">
           <a-switch v-model:checked="form.enabled" :disabled="!canWrite" />
         </a-form-item>
-        <a-form-item label="账户专属 API Host" required>
+        <a-form-item label="API Host" required>
           <a-input
             v-model:value="form.apiHost"
             placeholder="例如 abcxyz.qweatherapi.com"

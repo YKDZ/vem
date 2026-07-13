@@ -28,7 +28,7 @@ export const updateQweatherConfigSchema = z.strictObject({
           "devapi.qweather.com",
           "geoapi.qweather.com",
         ].includes(value),
-      "必须填写账户专属 API Host",
+      "必须填写 API Host",
     ),
   jwtKeyId: z.string().trim().min(1),
   jwtProjectId: z.string().trim().min(1),
