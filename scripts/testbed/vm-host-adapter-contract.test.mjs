@@ -82,6 +82,21 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
       operation === "cancel" ? "vm-operation://op-fedcba9876543210" : null,
     target: { identity: "vm-target://runtime-testbed" },
     factoryMedia: null,
+    audioCapture:
+      operation === "capture-default-audio"
+        ? {
+            schemaVersion: "vm-default-audio-capture-request/v1",
+            activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
+            nativeCue: {
+              source: "tauri_native_audio",
+              command: "play_machine_audio",
+            },
+            threshold: {
+              minimumPeakAbsoluteSample: 512,
+              minimumNonSilentFrames: 2,
+            },
+          }
+        : null,
     assets: [
       {
         role: "approved-runtime-base",
@@ -141,6 +156,7 @@ function reportFor(request, overrides = {}) {
               role: "default-audio-capture",
               identity: `factory-evidence://sha256/${"c".repeat(64)}`,
               digest: `sha256:${"c".repeat(64)}`,
+              fileName: `${"c".repeat(64)}.wav`,
             },
           ]
         : [];
@@ -160,6 +176,7 @@ function reportFor(request, overrides = {}) {
       cancelOperationReference: request.cancelOperationReference,
       targetIdentity: request.target.identity,
       factoryMedia: request.factoryMedia,
+      audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
     },
     result: "succeeded",
@@ -210,6 +227,39 @@ function reportFor(request, overrides = {}) {
       startedAt: "2026-07-11T00:00:00.000Z",
       completedAt: "2026-07-11T00:00:01.000Z",
     },
+    defaultAudioCapture:
+      request.operation === "capture-default-audio"
+        ? {
+            schemaVersion: "vm-default-audio-capture-result/v1",
+            runId: request.runId,
+            lifecycleReference: request.lifecycleReference,
+            captureOperationReference: request.operationReference,
+            activeKioskSession: request.audioCapture.activeKioskSession,
+            endpoint: {
+              status: "selected",
+              identity: "guest-audio://runtime-testbed-001",
+            },
+            nativeCue: {
+              status: "emitted",
+              source: "tauri_native_audio",
+              command: "play_machine_audio",
+              emittedAt: "2026-07-11T00:00:00.500Z",
+            },
+            capture: {
+              artifact: evidence[0].identity,
+              format: "wav_pcm",
+              encoding: "pcm_s16le",
+              sampleRateHz: 48_000,
+              channels: 2,
+              frameCount: 240,
+              threshold: request.audioCapture.threshold,
+              nonSilentFrameCount: 8,
+              peakAbsoluteSample: 1_024,
+              startedAt: "2026-07-11T00:00:00.000Z",
+              completedAt: "2026-07-11T00:00:01.000Z",
+            },
+          }
+        : null,
     cleanup:
       request.operation === "cleanup" || request.operation === "cancel"
         ? {
@@ -261,7 +311,7 @@ describe("VM Host Adapter contract", () => {
     assert.deepEqual(validateVmHostAdapterRequest(request), request);
     assert.doesNotMatch(
       JSON.stringify(request),
-      /\/mnt\/|unraid:|qcow2|C:\\\\/i,
+      /\/mnt\/|retired-host:|qcow2|C:\\\\/i,
     );
   });
 
@@ -567,7 +617,7 @@ describe("VM Host Adapter contract", () => {
     assert.throws(() =>
       validateVmHostAdapterReport(
         reportFor(request, {
-          observed: { ...report.observed, hostPath: "/mnt/user/secret" },
+          observed: { ...report.observed, hostPath: "/host-private/secret" },
         }),
         request,
       ),
@@ -731,6 +781,98 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("rejects default-audio evidence without an active kiosk binding, selected endpoint, native cue, or synchronized non-silent capture", () => {
+    const request = createVmHostAdapterRequest(
+      requestFor("capture-default-audio"),
+    );
+    const report = reportFor(request);
+    const cases = [
+      {
+        defaultAudioCapture: {
+          ...report.defaultAudioCapture,
+          lifecycleReference: "vm-lifecycle://other-run.runtime",
+        },
+      },
+      {
+        defaultAudioCapture: {
+          ...report.defaultAudioCapture,
+          activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 4 },
+        },
+      },
+      {
+        defaultAudioCapture: {
+          ...report.defaultAudioCapture,
+          endpoint: { status: "missing", identity: null },
+        },
+      },
+      {
+        defaultAudioCapture: {
+          ...report.defaultAudioCapture,
+          nativeCue: {
+            ...report.defaultAudioCapture.nativeCue,
+            command: "browser_audio_play",
+          },
+        },
+      },
+      {
+        defaultAudioCapture: {
+          ...report.defaultAudioCapture,
+          capture: {
+            ...report.defaultAudioCapture.capture,
+            nonSilentFrameCount: 0,
+          },
+        },
+      },
+      {
+        defaultAudioCapture: {
+          ...report.defaultAudioCapture,
+          nativeCue: {
+            ...report.defaultAudioCapture.nativeCue,
+            emittedAt: "2026-07-11T00:00:02.000Z",
+          },
+        },
+      },
+      {
+        evidence: [
+          {
+            ...report.evidence[0],
+            fileName: "audio.wav",
+          },
+        ],
+      },
+    ];
+    for (const override of cases)
+      assert.throws(() =>
+        validateVmHostAdapterReport(reportFor(request, override), request),
+      );
+  });
+
+  it("treats a silent exported WAV as evidence-invalid and recovers the active lifecycle", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-audio-silent-"));
+    const cleanupFile = join(root, "cleanup.txt");
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request: createVmHostAdapterRequest(
+            requestFor("capture-default-audio"),
+          ),
+          workDirectory: root,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence"),
+            VEM_VM_HOST_ADAPTER_FAKE_AUDIO_WAV: "silent",
+            VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+          },
+        }),
+      (error) =>
+        error instanceof VmHostAdapterExecutionError &&
+        error.diagnostic.result === "failed" &&
+        error.diagnostic.diagnostics[0].code === "evidence_invalid" &&
+        error.diagnostic.cleanup.status === "completed",
+    );
+    assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+  });
+
   it("requires the runner to supply an absolute display evidence export directory", async () => {
     await assert.rejects(
       () =>
@@ -833,7 +975,7 @@ describe("VM Host Adapter contract", () => {
     for (const candidate of cases)
       assert.throws(() => validateVmHostAdapterReport(candidate, request));
     assert.throws(() =>
-      createVmHostAdapterRequest({ ...request, hostPath: "/mnt/user/base" }),
+      createVmHostAdapterRequest({ ...request, hostPath: "/host-private/base" }),
     );
   });
 

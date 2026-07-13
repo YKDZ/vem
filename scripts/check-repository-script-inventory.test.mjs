@@ -330,7 +330,7 @@ describe("repository script inventory guard", () => {
             {
               schemaVersion: "clean-base-source-contract/v1",
               iso: {
-                uriPrefix: "unraid://192.168.2.23/isos/",
+                uriPrefix: "vm-host://factory/isos/",
               },
             },
             null,
@@ -374,7 +374,7 @@ describe("repository script inventory guard", () => {
     withFixture(
       {
         "public/clean-base.md":
-          "ISO source: `unraid://192.168.2.23/isos/<win10.iso>`",
+          "ISO source: `vm-host://factory/isos/<win10.iso>`",
       },
       (root) => {
         const result = checkRepositoryScriptInventory({

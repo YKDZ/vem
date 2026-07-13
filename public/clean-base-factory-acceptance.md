@@ -1,23 +1,23 @@
 # Clean-Base Factory Acceptance
 
-> Migration notice: the platform-specific source and Unraid values in this
+> Migration notice: the platform-specific source and retired host values in this
 > document describe the current legacy testbed only. They are superseded as
 > normative architecture by
 > [Windows Factory Runtime And Controlled Maintenance](./windows-factory-runtime-and-maintenance.md).
 > New implementation must use the platform-neutral Factory ISO, Factory
 > Personalization Media, runner-local adapter, and hash-addressed evidence
-> contracts defined there. The Unraid source contract below must be removed
+> contracts defined there. The retired host source contract below must be removed
 > before the new Factory Image Acceptance gate is declared passing.
 
 `scripts/testbed/win10-vem-e2e.mjs --mode clean-base-factory-acceptance` 是 clean-base factory preparation 的规范入口。它记录干净 Windows 基础来源、必需基线、状态缺失检查、准备关口、验证器证据以及可复用的 snapshot/report 路径；只有显式允许 live mode 后，才会把固定 runtime artifacts 分发到既有 clean VM，执行 factory preparation 和 verifier，并写出机器可校验的 clean-base acceptance evidence。
 
 ## Clean Source Boundary
 
-这个 gate 的干净 Windows 来源必须是 Unraid 主机 `/mnt/user/isos` 目录下的一个已确认 Windows 10 ISO，然后由该 ISO 新建 canonical clean-base VM，并在 factory preparation 前创建 clean snapshot。现场记录不能只写目录、URI prefix 或占位符；必须记录具体 ISO 文件名和 ISO 文件的 SHA-256。
+这个 gate 的干净 Windows 来源必须是一个已确认 Windows 10 ISO，然后由该 ISO 新建 canonical clean-base VM，并在 factory preparation 前创建 clean snapshot。现场记录不能只写本机目录、URI prefix 或占位符；必须记录具体 ISO 文件名和 ISO 文件的 SHA-256。
 
-仓库当前不知道最终批准使用的 ISO 文件名，因此 runbook 只固定证据字段和命名规则，不把尖括号形式的示例占位符当作 source identity。clean-base evidence 必须在 `source.iso.fileName`、`source.iso.sha256` 和 `source.iso.uri` 中记录实际 ISO 身份，其中 `source.iso.uri` 必须等于 `unraid://192.168.2.23/isos/` 加上实际 ISO 文件名。
+仓库当前不知道最终批准使用的 ISO 文件名，因此 runbook 只固定证据字段和命名规则，不把尖括号形式的示例占位符当作 source identity。clean-base evidence 必须在 `source.iso.fileName`、`source.iso.sha256` 和 `source.iso.uri` 中记录实际 ISO 身份，其中 `source.iso.uri` 必须等于 `vm-host://factory/isos/` 加上实际 ISO 文件名。
 
-后续来源链是：实际 ISO identity -> `unraid://192.168.2.23/vms/win10-vem-clean-base` -> `snapshot:vem-clean-base-before-factory-prep`。现有 retained-state Machine Runtime Testbed VM 即使本地 reset，仍然只能作为 dirty-host evidence。它可以用于开发和 dirty-host runtime acceptance，但 clean-base evidence 必须来自 ISO 新建的 canonical VM 及其 clean snapshot。
+后续来源链是：实际 ISO identity -> `vm-host://factory/vms/win10-vem-clean-base` -> `snapshot:vem-clean-base-before-factory-prep`。现有 retained-state Machine Runtime Testbed VM 即使本地 reset，仍然只能作为 dirty-host evidence。它可以用于开发和 dirty-host runtime acceptance，但 clean-base evidence 必须来自 ISO 新建的 canonical VM 及其 clean snapshot。
 
 ## Source Contract
 
@@ -27,9 +27,7 @@
 {
   "schemaVersion": "clean-base-source-contract/v1",
   "iso": {
-    "storageHost": "192.168.2.23",
-    "storageDirectory": "/mnt/user/isos",
-    "uriPrefix": "unraid://192.168.2.23/isos/",
+    "uriPrefix": "vm-host://factory/isos/",
     "fileNameEvidenceField": "source.iso.fileName",
     "sha256EvidenceField": "source.iso.sha256",
     "uriEvidenceField": "source.iso.uri",
@@ -39,7 +37,7 @@
     "placeholderIdentityAllowed": false
   },
   "canonicalVm": {
-    "uri": "unraid://192.168.2.23/vms/win10-vem-clean-base",
+    "uri": "vm-host://factory/vms/win10-vem-clean-base",
     "sourceEvidenceField": "source.uri"
   },
   "cleanSnapshot": {
@@ -81,7 +79,7 @@
 }
 ```
 
-clean-base acceptance report 的 `source.uri` 必须是 `unraid://192.168.2.23/vms/win10-vem-clean-base`，`source.snapshot` 必须是 `vem-clean-base-before-factory-prep`。ISO provenance 需要记录实际文件名、实际 SHA-256 和实际 `source.iso.uri`；runtime acceptance 消费 VM URI 和 snapshot boundary，因为仓库 runner 只准备既有 VM，不创建 Unraid VM。
+clean-base acceptance report 的 `source.uri` 必须是 `vm-host://factory/vms/win10-vem-clean-base`，`source.snapshot` 必须是 `vem-clean-base-before-factory-prep`。ISO provenance 需要记录实际文件名、实际 SHA-256 和实际 `source.iso.uri`；runtime acceptance 消费 VM URI 和 snapshot boundary，因为仓库 runner 只准备既有 VM，不创建 retired host VM。
 
 retained-state Machine Runtime Testbed VM 只有在从上述 ISO-created canonical clean base 重建，并且 clean-base acceptance report 记录完整 source chain 后，才能成为 clean-base evidence。仅执行本地 reset、删除 VEM 目录、重新跑 factory preparation 或拿到 passing dirty-host acceptance report，都不能把 retained-state VM 提升为 clean-base evidence。
 
@@ -91,7 +89,7 @@ clean snapshot 前允许的人工初始化范围必须保持很小。
 
 clean snapshot 前只允许以下人工初始化：
 
-- 从已记录具体文件名和 SHA-256 的 Unraid ISO 安装 Windows。
+- 从已记录具体文件名和 SHA-256 的 retired host ISO 安装 Windows。
 - 为完成安装、进入 VM、执行基线设置而使用的临时管理员访问。
 - 为验证维护访问而启用 SSH reachability。
 - 为所需竖屏交互式桌面姿态记录显示基线。
@@ -139,7 +137,7 @@ Live clean-base preparation requires `--allow-clean-base-prepare` before the run
 node scripts/testbed/win10-vem-e2e.mjs \
   --mode clean-base-factory-acceptance \
   --run-id RUN-185 \
-  --clean-base-source unraid://192.168.2.23/vms/win10-vem-clean-base \
+  --clean-base-source vm-host://factory/vms/win10-vem-clean-base \
   --clean-base-snapshot vem-clean-base-before-factory-prep \
   --daemon-artifact ./path/to/vending-daemon.exe \
   --machine-ui-artifact ./path/to/machine.exe \
@@ -406,11 +404,11 @@ Minimal report shape:
 
 ## Destructive Gate
 
-Live clean-base preparation must require `--allow-clean-base-prepare`. The repository entrypoint only accepts an existing clean VM; it does not create, reimage, or snapshot Unraid VMs. Any future script that cleans, reimages, or snapshots the VM must keep the same explicit allow flag and must not target the real `vem` industrial PC, a retained dirty-host testbed, or any production machine identity.
+Live clean-base preparation must require `--allow-clean-base-prepare`. The repository entrypoint only accepts an existing clean VM; it does not create, reimage, or snapshot retired host VMs. Any future script that cleans, reimages, or snapshots the VM must keep the same explicit allow flag and must not target the real `vem` industrial PC, a retained dirty-host testbed, or any production machine identity.
 
 ## Repository Script Boundary
 
-Factory image preparation scripts kept in the repository must be repeatable production or testbed entrypoints, verifier/test guards for those entrypoints, or currently referenced runbook operations. One-off scripts for a specific Unraid VM, ISO installation attempt, local path, temporary credential handoff, or historical smoke must stay outside the repository unless they are promoted into a parameterized canonical runner with tests and documented evidence output.
+Factory image preparation scripts kept in the repository must be repeatable production or testbed entrypoints, verifier/test guards for those entrypoints, or currently referenced runbook operations. One-off scripts for a specific retired host VM, ISO installation attempt, local path, temporary credential handoff, or historical smoke must stay outside the repository unless they are promoted into a parameterized canonical runner with tests and documented evidence output.
 
 The clean-base implementation must include a script inventory check before delivery. Each script under `scripts/` should have an owner/use category or be removed when it is no longer referenced by a package script, public runbook, acceptance entrypoint, or verifier. No retained script may bypass factory manifests, verifier output, or acceptance evidence for the image preparation path.
 

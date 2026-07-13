@@ -84,6 +84,21 @@ function requestFor({ operation, run, targetIdentity, assets }) {
     cancelOperationReference: null,
     target: { identity: targetIdentity },
     factoryMedia: null,
+    audioCapture:
+      operation === "capture-default-audio"
+        ? {
+            schemaVersion: "vm-default-audio-capture-request/v1",
+            activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
+            nativeCue: {
+              source: "tauri_native_audio",
+              command: "play_machine_audio",
+            },
+            threshold: {
+              minimumPeakAbsoluteSample: 512,
+              minimumNonSilentFrames: 2,
+            },
+          }
+        : null,
     assets,
     requestedCapabilities: CAPABILITIES[operation],
   });
@@ -109,6 +124,27 @@ function assertActiveRuntimeEvidence(report) {
 function assertCaptureEvidence(report, role) {
   if (report.evidence.length !== 1 || report.evidence[0].role !== role)
     throw new Error(`adapter did not produce ${role} evidence`);
+}
+
+function assertDefaultAudioEvidence(report) {
+  assertCaptureEvidence(report, "default-audio-capture");
+  const audio = report.defaultAudioCapture;
+  if (
+    audio?.runId !== report.request.runId ||
+    audio.lifecycleReference !== report.request.lifecycleReference ||
+    audio.captureOperationReference !== report.request.operationReference ||
+    audio?.endpoint?.status !== "selected" ||
+    audio.endpoint.identity !== report.guest.defaultAudioIdentity ||
+    audio.nativeCue?.status !== "emitted" ||
+    audio.nativeCue.source !== "tauri_native_audio" ||
+    audio.nativeCue.command !== "play_machine_audio" ||
+    audio.capture?.artifact !== report.evidence[0].identity ||
+    audio.capture.nonSilentFrameCount <
+      audio.capture.threshold.minimumNonSilentFrames ||
+    audio.capture.peakAbsoluteSample <
+      audio.capture.threshold.minimumPeakAbsoluteSample
+  )
+    throw new Error("adapter did not produce semantic default-audio evidence");
 }
 
 function assertRemoved(report) {
@@ -284,7 +320,7 @@ async function main() {
       }),
       workDirectory,
     });
-    assertCaptureEvidence(audio, "default-audio-capture");
+    assertDefaultAudioEvidence(audio);
     evidence.audio = audio;
 
     const cleanup = await runVmHostAdapter({

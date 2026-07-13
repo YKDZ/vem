@@ -1,7 +1,7 @@
 # Windows Factory Runtime And Controlled Maintenance
 
-Status: accepted target architecture. The existing Unraid-backed testbed is the
-first implementation target, but Unraid paths, VM names, and disk operations are
+Status: accepted target architecture. The existing retired host-backed testbed is the
+first implementation target, but retired host paths, VM names, and disk operations are
 not part of the repository contract. A gate may claim conformance only after the
 implementation and evidence listed here are present.
 
@@ -68,8 +68,8 @@ The Vision repository owns:
   metadata, SBOM, build provenance, and its self-tests.
 - An immutable release bundle whose internal runtime technology may change.
 
-The VEM repository must not contain Unraid-only VM scripts, `/mnt/user` paths,
-libvirt disk allowlists, or another platform's deployment adapter. Platform
+The VEM repository must not contain platform-specific VM scripts, host filesystem
+paths, disk allowlists, or another platform's deployment adapter. Platform
 implementations live on their hosts. The repository may contain only the
 request/report schemas and platform-neutral fake adapters used by tests.
 
@@ -676,8 +676,8 @@ SBOM, provenance, clean-Windows conformance evidence, and VEM approval.
 
 Acceptance of this architecture requires deleting, not retaining, the old paths:
 
-- repository-owned Unraid/libvirt VM host adapters and allowlists;
-- `/mnt/user` and `unraid://` values in workflow contracts and normative source
+- repository-owned platform-specific VM host adapters and allowlists;
+- host filesystem and host-specific URI values in workflow contracts and normative source
   schemas;
 - static Service API relay plans and iptables command rendering;
 - Windows Capability or online OpenSSH installation, optional WireGuard installation, and floating package sources;

@@ -21,6 +21,40 @@ function evidence(role, hash) {
   };
 }
 
+function defaultAudioCapture(request, evidenceEntry) {
+  if (request.operation !== "capture-default-audio") return null;
+  return {
+    schemaVersion: "vm-default-audio-capture-result/v1",
+    runId: request.runId,
+    lifecycleReference: request.lifecycleReference,
+    captureOperationReference: request.operationReference,
+    activeKioskSession: request.audioCapture.activeKioskSession,
+    endpoint: {
+      status: "selected",
+      identity: "guest-audio://fake-runtime-testbed-001",
+    },
+    nativeCue: {
+      status: "emitted",
+      source: "tauri_native_audio",
+      command: "play_machine_audio",
+      emittedAt: "2026-07-11T00:00:00.500Z",
+    },
+    capture: {
+      artifact: evidenceEntry.identity,
+      format: "wav_pcm",
+      encoding: "pcm_s16le",
+      sampleRateHz: 48_000,
+      channels: 2,
+      frameCount: 240,
+      threshold: request.audioCapture.threshold,
+      nonSilentFrameCount: 240,
+      peakAbsoluteSample: 1_024,
+      startedAt: "2026-07-11T00:00:00.000Z",
+      completedAt: "2026-07-11T00:00:01.000Z",
+    },
+  };
+}
+
 function materializeDisplayEvidence() {
   const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
   if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
@@ -30,6 +64,36 @@ function materializeDisplayEvidence() {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   writeFileSync(join(directory, fileName), bytes, { mode: 0o600 });
   return { ...evidence("display-capture", hash), fileName };
+}
+
+function materializeDefaultAudioEvidence() {
+  const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
+  if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
+  const frameCount = 240;
+  const bytes = Buffer.alloc(44 + frameCount * 2 * 2);
+  bytes.write("RIFF", 0);
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write("WAVEfmt ", 8);
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(2, 22);
+  bytes.writeUInt32LE(48_000, 24);
+  bytes.writeUInt32LE(192_000, 28);
+  bytes.writeUInt16LE(4, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write("data", 36);
+  bytes.writeUInt32LE(frameCount * 4, 40);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const sample =
+      process.env.VEM_VM_HOST_ADAPTER_FAKE_AUDIO_WAV === "silent" ? 0 : 1_024;
+    bytes.writeInt16LE(sample, 44 + frame * 4);
+    bytes.writeInt16LE(-sample, 46 + frame * 4);
+  }
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const fileName = `${hash}.wav`;
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, fileName), bytes, { mode: 0o600 });
+  return { ...evidence("default-audio-capture", hash), fileName };
 }
 
 function fakeReport(request, scenario) {
@@ -50,7 +114,7 @@ function fakeReport(request, scenario) {
     request.operation === "capture-display"
       ? [materializeDisplayEvidence()]
       : request.operation === "capture-default-audio"
-        ? [evidence("default-audio-capture", "c".repeat(64))]
+        ? [materializeDefaultAudioEvidence()]
         : [];
   const deviceMappings = [];
   if (negotiatedCapabilities.includes("serial:lower-controller"))
@@ -82,6 +146,7 @@ function fakeReport(request, scenario) {
       cancelOperationReference: request.cancelOperationReference,
       targetIdentity: request.target.identity,
       factoryMedia: request.factoryMedia,
+      audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
     },
     result,
@@ -123,6 +188,10 @@ function fakeReport(request, scenario) {
       startedAt: "2026-07-11T00:00:00.000Z",
       completedAt: "2026-07-11T00:00:01.000Z",
     },
+    defaultAudioCapture:
+      result === "succeeded"
+        ? defaultAudioCapture(request, evidenceEntries[0])
+        : null,
     cleanup:
       request.operation === "cleanup" ||
       request.operation === "cancel" ||

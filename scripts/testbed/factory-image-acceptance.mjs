@@ -318,6 +318,7 @@ function adapterRequest(input, operation, assets, factoryMedia = null) {
     cancelOperationReference: null,
     target: { identity: input.targetIdentity },
     factoryMedia,
+    audioCapture: null,
     assets,
     requestedCapabilities: capabilities,
   });

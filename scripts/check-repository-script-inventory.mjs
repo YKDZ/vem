@@ -315,24 +315,6 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/testbed/validate-vm-runtime-acceptance-inputs.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/vm-host-adapter.mjs",
-    owner: "field-operations",
-    category: "canonical entrypoint",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/vm-host-adapter.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
     path: "scripts/testbed/vm-host-adapter-contract.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
@@ -340,6 +322,30 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/testbed/vm-host-adapter-contract.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/default-audio-evidence.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/default-audio-evidence.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/windows-native-audio-evidence.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/windows-native-audio-evidence.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["runtime acceptance", "testbed workflows"],
@@ -360,12 +366,6 @@ const DEFAULT_INVENTORY = [
     path: "scripts/testbed/run-vm-host-adapter.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json",
-    owner: "field-operations",
-    category: "public runbook operation",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
@@ -494,9 +494,7 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
       {
         schemaVersion: "clean-base-source-contract/v1",
         requiredFields: {
-          "iso.storageHost": "192.168.2.23",
-          "iso.storageDirectory": "/mnt/user/isos",
-          "iso.uriPrefix": "unraid://192.168.2.23/isos/",
+          "iso.uriPrefix": "vm-host://factory/isos/",
           "iso.fileNameEvidenceField": "source.iso.fileName",
           "iso.sha256EvidenceField": "source.iso.sha256",
           "iso.uriEvidenceField": "source.iso.uri",
@@ -505,7 +503,7 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
           "iso.uriRule":
             "source.iso.uri == iso.uriPrefix + source.iso.fileName",
           "iso.placeholderIdentityAllowed": false,
-          "canonicalVm.uri": "unraid://192.168.2.23/vms/win10-vem-clean-base",
+          "canonicalVm.uri": "vm-host://factory/vms/win10-vem-clean-base",
           "canonicalVm.sourceEvidenceField": "source.uri",
           "cleanSnapshot.name": "vem-clean-base-before-factory-prep",
           "cleanSnapshot.uri": "snapshot:vem-clean-base-before-factory-prep",
@@ -547,8 +545,8 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
     path: "public/vm-runtime-acceptance.md",
     scripts: [
       "scripts/testbed/win10-vem-e2e.mjs",
-      "scripts/testbed/vm-host-adapter.mjs",
-      "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json",
+      "scripts/testbed/run-vm-host-adapter.mjs",
+      "scripts/testbed/vm-host-adapter-contract.mjs",
     ],
     requiredText: [
       "[Maintenance Relay bring-up runbook](./maintenance-relay-bring-up.md)",

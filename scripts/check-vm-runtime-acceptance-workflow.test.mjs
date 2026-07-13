@@ -159,7 +159,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
 
     for (const forbidden of [
       /inputs\.(?:base_image|overlay_disk|target_vm)/,
-      /\/mnt\/user|unraid:\/\/|qcow2|libvirt/i,
+      /host filesystem path|platform-specific adapter|qcow2|libvirt/i,
       /VEM_VM_HOST_ADAPTER:\s*\$\{\{/,
     ]) {
       assert.doesNotMatch(workflow, forbidden);
@@ -302,16 +302,30 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       workflow,
       "Capture Windows Default Audio Evidence Through Host Adapter",
     );
+    const bindAudioSession = stepBlock(
+      workflow,
+      "Bind Active Kiosk Session For Native Audio Capture",
+    );
+    const verifyAudio = stepBlock(workflow, "Verify Windows Native Audio Evidence");
     const cleanup = stepBlock(workflow, "Cleanup VM Host Adapter Overlay");
 
     assert.doesNotMatch(restore, /windowsSshReadiness=failed/);
     assert.match(display, /if:\s+success\(\)/);
     assert.match(audio, /if:\s+success\(\)/);
+    assert.match(bindAudioSession, /win10-runtime-acceptance-report\.json/);
+    assert.match(bindAudioSession, /kiosk\?\.sessionUser !== "VEMKiosk"/);
+    assert.match(bindAudioSession, /VEM_ACTIVE_KIOSK_SESSION_ID/);
+    assert.match(audio, /--active-kiosk-session-user/);
+    assert.match(audio, /--active-kiosk-session-id/);
+    assert.match(verifyAudio, /windows-native-audio-evidence\.mjs/);
+    assert.match(verifyAudio, /windows-native-audio-evidence\.json/);
     assert.match(cleanup, /if:\s+always\(\)/);
     assert.match(cleanup, /--operation cleanup/);
     assert.ok(workflow.indexOf(restore) < workflow.indexOf(acceptance));
-    assert.ok(workflow.indexOf(acceptance) < workflow.indexOf(display));
+    assert.ok(workflow.indexOf(acceptance) < workflow.indexOf(bindAudioSession));
+    assert.ok(workflow.indexOf(bindAudioSession) < workflow.indexOf(display));
     assert.ok(workflow.indexOf(display) < workflow.indexOf(audio));
-    assert.ok(workflow.indexOf(audio) < workflow.indexOf(cleanup));
+    assert.ok(workflow.indexOf(audio) < workflow.indexOf(verifyAudio));
+    assert.ok(workflow.indexOf(verifyAudio) < workflow.indexOf(cleanup));
   });
 });

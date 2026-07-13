@@ -101,6 +101,28 @@ function factoryMediaForOperation(operation) {
   };
 }
 
+function audioCaptureForOperation(operation) {
+  if (operation !== "capture-default-audio") return null;
+  const sessionId = Number(readOption("--active-kiosk-session-id"));
+  if (!Number.isInteger(sessionId) || sessionId < 1)
+    throw new Error("--active-kiosk-session-id must be a positive integer");
+  return {
+    schemaVersion: "vm-default-audio-capture-request/v1",
+    activeKioskSession: {
+      sessionUser: readOption("--active-kiosk-session-user"),
+      sessionId,
+    },
+    nativeCue: {
+      source: "tauri_native_audio",
+      command: "play_machine_audio",
+    },
+    threshold: {
+      minimumPeakAbsoluteSample: 512,
+      minimumNonSilentFrames: 2,
+    },
+  };
+}
+
 async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
   if (!["clean-install", "capture-approved-base"].includes(operation))
     return null;
@@ -159,6 +181,7 @@ async function main() {
     .digest("hex")
     .slice(0, 32);
   const factoryMedia = factoryMediaForOperation(operation);
+  const audioCapture = audioCaptureForOperation(operation);
   const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
   const request = createVmHostAdapterRequest({
     schemaVersion: "vem-vm-host-adapter-request/v1",
@@ -174,6 +197,7 @@ async function main() {
         : null,
     target: { identity: targetIdentity },
     factoryMedia,
+    audioCapture,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
   });

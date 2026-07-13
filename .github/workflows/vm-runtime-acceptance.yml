@@ -576,7 +576,28 @@ jobs:
             --ssh-port "$VM_GUEST_MAINTENANCE_PORT" \
             --maintenance-ingress-source-allowlist "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP" \
             --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
-            --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
+            --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
+
+      - name: Bind Active Kiosk Session For Native Audio Capture
+        if: success()
+        run: |
+          set -euo pipefail
+          report="artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
+          node - "$report" >> "$GITHUB_ENV" <<'NODE'
+          const fs = require("node:fs");
+          const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const runtime = value.runtimeAcceptanceReport ?? value;
+          const kiosk = runtime.kioskRuntime;
+          if (
+            runtime.result?.runtimeReady?.status !== "passed" ||
+            kiosk?.sessionUser !== "VEMKiosk" ||
+            !Number.isInteger(kiosk.sessionId) ||
+            kiosk.sessionId < 1
+          ) throw new Error("runtime acceptance did not observe an active VEMKiosk session");
+          process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_USER=${kiosk.sessionUser}\n`);
+          process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_ID=${kiosk.sessionId}\n`);
+          NODE
 
       - name: Capture Windows Display Evidence Through Host Adapter
         if: success()
@@ -598,7 +619,19 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
+            --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-audio-capture-report.json"
+
+      - name: Verify Windows Native Audio Evidence
+        if: success()
+        run: |
+          set -euo pipefail
+          node scripts/testbed/windows-native-audio-evidence.mjs \
+            --run-id "$RUN_ID" \
+            --runtime-report "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json" \
+            --adapter-report "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-audio-capture-report.json" \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/windows-native-audio-evidence.json"
 
       - name: Cleanup VM Host Adapter Overlay
         if: always()

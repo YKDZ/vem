@@ -1,8 +1,8 @@
 # VM Runtime Acceptance Entrypoint
 
-> Migration notice: the fixed Unraid paths, repository-owned libvirt adapter,
-> static relay plan, and password SSH steps in this document describe the
-> current legacy testbed. The accepted replacement is
+> Migration notice: the fixed host paths, repository-owned adapter, static relay
+> plan, and password SSH steps in this document have been removed. The accepted
+> replacement is
 > [Windows Factory Runtime And Controlled Maintenance](./windows-factory-runtime-and-maintenance.md).
 > None of those legacy mechanisms may satisfy the new Factory Image Acceptance
 > or VM Runtime Acceptance gates, and they must be removed during migration.
@@ -49,9 +49,11 @@ The simulated sale-flow step is only planned after the same run's `ephemeral-pla
 
 ## Self-Hosted Windows Runtime Gate
 
-The first automated Windows runtime gate should run through a self-hosted runner on the current Unraid host at `192.168.2.23`, restoring or preparing the canonical Windows testbed VM before each acceptance run. The first version does not introduce a separate controller machine. This gate is the primary automation target for Windows-specific behavior, not a later replacement for GitHub hosted Windows smoke.
-
-The runner contract must stay host-portable. Repository workflows should call a small VM restore/start/wait contract rather than depending directly on Unraid-only paths or UI behavior. The current implementation may use a `libvirt-qcow2` adapter on Unraid, but a later dedicated host or cloud server should be able to provide the same contract with a different adapter.
+The automated Windows runtime gate runs through a self-hosted runner and an
+externally deployed VM Host Adapter. The repository owns the adapter protocol,
+not VM names, paths, disk tools, or provider configuration. This gate is the
+primary automation target for Windows-specific behavior, not a replacement for
+GitHub-hosted Windows smoke.
 
 Testbed Runner Maintenance Ingress is the explicit control-plane path from a self-hosted runner to a disposable Machine Runtime Testbed VM. It is not production controlled remote maintenance access. It may allow the runner to reach Windows SSH for the maintenance account through a narrowly scoped source allowlist, while preserving kiosk-account SSH denial and production defaults.
 
@@ -74,8 +76,8 @@ contract is absent, restore fails clearly before destructive disk operations or
 at Windows SSH readiness; it must not claim to auto-configure the VM peer or
 Windows ingress.
 
-Produce that relay-capable base image through the existing clean-base factory
-preparation path, not a one-off Unraid-only mutation. Run
+Produce that relay-capable base image through the clean-base factory
+preparation path, not a one-off host-specific mutation. Run
 `scripts/testbed/win10-vem-e2e.mjs --mode clean-base-factory-acceptance` with
 the optional Maintenance Relay inputs:
 
@@ -120,13 +122,12 @@ timed-out, and cancelled attempts write validated sanitized adapter diagnostics
 for artifact upload, rather than being reported as Windows SSH readiness
 failures.
 
-The retained legacy `scripts/testbed/vm-host-adapter.mjs` and its
-`scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json` allowlist remain
-documented deployment operations until Issue13 proves the host replacement.
-They are not selected by this workflow and are not an input to the adapter
-request/report contract.
-
-The first version should restore the runtime acceptance VM by rebuilding the `win10-vem-solidified-acceptance` qcow2 overlay from the approved factory runtime base image before each run. It should not rerun clean-base factory preparation for every runtime acceptance attempt. Clean-base factory acceptance remains the upstream evidence gate for producing or approving the factory runtime base image.
+The external adapter is selected by the runner service. The repository only
+ships `scripts/testbed/run-vm-host-adapter.mjs`,
+`scripts/testbed/vm-host-adapter-contract.mjs`, the request/report contract,
+and a deterministic fake adapter for conformance tests. It should restore a
+disposable runtime overlay from the approved factory runtime base image before
+each run and must not rerun clean-base preparation for every runtime attempt.
 
 The first self-hosted workflow is manually triggered with `workflow_dispatch` only. It must run as a single-flight infrastructure job and must not attach to pull-request or push events until VM restore, cleanup, locking, and failure recovery are proven stable.
 
