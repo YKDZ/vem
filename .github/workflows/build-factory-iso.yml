@@ -448,7 +448,7 @@ jobs:
             --label "io.vem.factory.runner=$RUNNER_NAME" \
             --label "io.vem.factory.run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --network none --read-only --user "$(id -u):$(id -g)" \
-            --memory 16g --memory-swap 16g --pids-limit 512 --cpus 6 \
+            --memory 16g --memory-swap 16g --pids-limit 512 --cpus 4 \
             --log-driver=none \
             --tmpfs /tmp:rw,nosuid,nodev,size=512m \
             --env "VEM_FACTORY_EXECUTED_BUILDER_IMAGE=$VEM_FACTORY_BUILDER_IMAGE" \
