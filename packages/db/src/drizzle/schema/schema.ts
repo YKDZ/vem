@@ -1865,6 +1865,40 @@ export const machineHeartbeats = t.pgTable(
   ],
 );
 
+export const qweatherConfigs = t.pgTable(
+  "qweather_configs",
+  {
+    id: id(),
+    providerCode: t.varchar("provider_code", { length: 32 }).notNull(),
+    enabled: t.boolean("enabled").default(true).notNull(),
+    apiHost: t.varchar("api_host", { length: 255 }).notNull(),
+    jwtKeyId: t.varchar("jwt_key_id", { length: 128 }).notNull(),
+    jwtProjectId: t.varchar("jwt_project_id", { length: 128 }).notNull(),
+    privateKeyEncryptedJson: t
+      .jsonb("private_key_encrypted_json")
+      .$type<JsonObject>(),
+    weatherNowPath: t
+      .varchar("weather_now_path", { length: 255 })
+      .default("/v7/weather/now")
+      .notNull(),
+    sunPath: t
+      .varchar("sun_path", { length: 255 })
+      .default("/v7/astronomy/sun")
+      .notNull(),
+    timeoutMs: t.integer("timeout_ms").default(3000).notNull(),
+    updatedByAdminUserId: t
+      .uuid("updated_by_admin_user_id")
+      .references(() => adminUsers.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("qweather_configs_provider_code_unique")
+      .on(table.providerCode),
+  ],
+);
+
 export const notificationTargets = t.pgTable(
   "notification_targets",
   {

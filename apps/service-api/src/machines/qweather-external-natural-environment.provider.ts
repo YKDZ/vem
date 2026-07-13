@@ -11,7 +11,7 @@ import type {
   ExternalNaturalEnvironmentWeather,
 } from "./external-natural-environment.provider";
 
-import { AppConfigService } from "../config/app-config.service";
+import { QweatherConfigService } from "./qweather-config.service";
 
 type QWeatherClientConfig = {
   apiHost?: string;
@@ -277,33 +277,24 @@ export class QWeatherClient {
 @Injectable()
 export class QWeatherExternalNaturalEnvironmentProvider implements ExternalNaturalEnvironmentProvider {
   constructor(
-    @Inject(AppConfigService)
-    private readonly config: AppConfigService,
+    @Inject(QweatherConfigService)
+    private readonly config: QweatherConfigService,
   ) {}
 
   async fetchWeatherNow(
     input: ExternalNaturalEnvironmentProviderInput,
   ): Promise<ExternalNaturalEnvironmentWeather> {
-    return await this.client().fetchWeatherNow(input);
+    return await (await this.client()).fetchWeatherNow(input);
   }
 
   async fetchSun(
     input: ExternalNaturalEnvironmentProviderInput,
   ): Promise<ExternalNaturalEnvironmentSun> {
-    return await this.client().fetchSun(input);
+    return await (await this.client()).fetchSun(input);
   }
 
-  private client(): QWeatherClient {
-    return new QWeatherClient({
-      apiHost: this.config.qweatherApiHost,
-      jwtKeyId: this.config.qweatherJwtKeyId,
-      jwtProjectId: this.config.qweatherJwtProjectId,
-      jwtPrivateKey: this.config.qweatherJwtPrivateKey,
-      jwtPrivateKeyPath: this.config.qweatherJwtPrivateKeyPath,
-      weatherNowPath: this.config.qweatherWeatherNowPath,
-      sunPath: this.config.qweatherSunPath,
-      timeoutMs: this.config.qweatherTimeoutMs,
-    });
+  private async client(): Promise<QWeatherClient> {
+    return new QWeatherClient(await this.config.resolveRuntimeConfig());
   }
 }
 

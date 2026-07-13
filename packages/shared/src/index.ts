@@ -23,6 +23,7 @@ export * from "./schemas/orders";
 export * from "./schemas/pagination";
 export * from "./schemas/payments";
 export * from "./schemas/products";
+export * from "./schemas/qweather";
 export * from "./schemas/runtime-acceptance";
 export * from "./schemas/simulated-hardware-sale-flow";
 export * from "./schemas/vision";

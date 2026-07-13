@@ -14,6 +14,7 @@ import {
   SafetyOutlined,
   ShopOutlined,
   TransactionOutlined,
+  CloudOutlined,
   TeamOutlined,
 } from "@antdv-next/icons";
 import { computed } from "vue";
@@ -30,6 +31,7 @@ const ROUTE_ICON_MAP: Record<string, Component> = {
   inventory: OrderedListOutlined,
   orders: TransactionOutlined,
   payments: TransactionOutlined,
+  qweather: CloudOutlined,
   notifications: BellOutlined,
   "admin-users": TeamOutlined,
   roles: SafetyOutlined,

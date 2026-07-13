@@ -10,6 +10,8 @@ import { PaymentProvidersModule } from "../payments/payment-providers.module";
 import { EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER } from "./external-natural-environment.provider";
 import { MachinesController } from "./machines.controller";
 import { MachinesService } from "./machines.service";
+import { QweatherConfigController } from "./qweather-config.controller";
+import { QweatherConfigService } from "./qweather-config.service";
 import { QWeatherExternalNaturalEnvironmentProvider } from "./qweather-external-natural-environment.provider";
 
 @Module({
@@ -22,15 +24,16 @@ import { QWeatherExternalNaturalEnvironmentProvider } from "./qweather-external-
     MaintenanceAccessModule,
     NotificationsModule,
   ],
-  controllers: [MachinesController],
+  controllers: [MachinesController, QweatherConfigController],
   providers: [
     MachinesService,
+    QweatherConfigService,
     QWeatherExternalNaturalEnvironmentProvider,
     {
       provide: EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER,
       useExisting: QWeatherExternalNaturalEnvironmentProvider,
     },
   ],
-  exports: [MachinesService],
+  exports: [MachinesService, QweatherConfigService],
 })
 export class MachinesModule {}
