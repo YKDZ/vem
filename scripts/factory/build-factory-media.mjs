@@ -826,7 +826,34 @@ function specializeBootstrapCommand() {
 }
 
 function registerBootstrapCmd() {
-  return '@echo off\r\nschtasks.exe /Create /TN VemFactoryBootstrap /RU SYSTEM /SC ONSTART /RL HIGHEST /F /TR "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\bootstrap-factory-runtime.ps1 -MediaRoot C:\\VEM\\Factory"\r\nif errorlevel 1 exit /b 1\r\nexit /b 0\r\n';
+  return '@echo off\r\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "C:\\VEM\\Factory\\ingest-host-personalization.ps1" -DestinationPath "C:\\ProgramData\\VEM\\factory\\one-time-personalization.json"\r\nif errorlevel 1 exit /b 1\r\nschtasks.exe /Create /TN VemFactoryBootstrap /RU SYSTEM /SC ONSTART /RL HIGHEST /F /TR "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\bootstrap-factory-runtime.ps1 -MediaRoot C:\\VEM\\Factory"\r\nif errorlevel 1 exit /b 1\r\nexit /b 0\r\n';
+}
+
+function hostPersonalizationIngestScript() {
+  return `param([Parameter(Mandatory = $true)][string]$DestinationPath)
+$ErrorActionPreference = 'Stop'
+$expectedLabel = 'VEM_PERSONALIZATION'
+$sourceFileName = 'personalization.json'
+$volumes = @(Get-Volume -ErrorAction Stop | Where-Object { $_.FileSystemLabel -ceq $expectedLabel })
+if ($volumes.Count -ne 1) { throw 'expected exactly one VEM_PERSONALIZATION medium' }
+$volume = $volumes[0]
+$driveLetter = [string]$volume.DriveLetter
+if ([string]::IsNullOrWhiteSpace($driveLetter)) { throw 'VEM_PERSONALIZATION medium has no drive letter' }
+if ([int]$volume.DriveType -ne 5) { throw 'VEM_PERSONALIZATION medium must be a CD-ROM' }
+$sourcePath = '{0}:\\{1}' -f $driveLetter, $sourceFileName
+$source = Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
+if ($source.PSIsContainer -or -not ($source -is [IO.FileInfo]) -or (($source.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+  throw 'VEM_PERSONALIZATION personalization.json must be a regular file at the media root'
+}
+$destinationDirectory = Split-Path -Parent $DestinationPath
+if ([string]::IsNullOrWhiteSpace($destinationDirectory)) { throw 'personalization destination has no parent directory' }
+New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
+Copy-Item -LiteralPath $sourcePath -Destination $DestinationPath -Force -ErrorAction Stop
+$destination = Get-Item -LiteralPath $DestinationPath -Force -ErrorAction Stop
+if ($destination.PSIsContainer -or -not ($destination -is [IO.FileInfo]) -or (($destination.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+  throw 'personalization destination is not a regular file'
+}
+`;
 }
 
 function factoryPreparationDescriptor(manifest, resolvedAssets) {
@@ -3260,6 +3287,10 @@ export async function createWindowsFactoryFirstBootMedia({
   await writeFile(
     join(mediaRoot, "bootstrap-factory-runtime.ps1"),
     factoryBootstrapScript(manifest.profile),
+  );
+  await writeFile(
+    join(mediaRoot, "ingest-host-personalization.ps1"),
+    hostPersonalizationIngestScript(),
   );
   await writeFile(
     join(mediaRoot, "register-factory-bootstrap.cmd"),
