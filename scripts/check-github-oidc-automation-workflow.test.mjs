@@ -29,6 +29,14 @@ describe("GitHub OIDC maintenance automation workflow guard", () => {
       /runs-on:\s*\[self-hosted, Linux, X64, vem-runtime\]/,
     );
     assert.match(workflow, /audience=vem-maintenance/);
+    assert.match(
+      workflow,
+      /MAINTENANCE_ALLOW_INSECURE_HTTP:\s*\$\{\{ vars\.VEM_MAINTENANCE_ALLOW_INSECURE_HTTP \}\}/,
+    );
+    assert.match(
+      workflow,
+      /url\.protocol === "http:" && process\.env\.MAINTENANCE_ALLOW_INSECURE_HTTP === "true"/,
+    );
     assert.doesNotMatch(workflow, /runner_labels:/);
     assert.doesNotMatch(workflow, /maintenance_runner_peer_id:/);
     assert.doesNotMatch(workflow, /maintenance_target_machine_id:/);

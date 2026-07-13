@@ -50,6 +50,7 @@ jobs:
       EPHEMERAL_MQTT_URL: mqtt://127.0.0.1:18883
       PAYMENT_MOCK_ENABLED: "true"
       MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
+      MAINTENANCE_ALLOW_INSECURE_HTTP: ${{ vars.VEM_MAINTENANCE_ALLOW_INSECURE_HTTP }}
       MAINTENANCE_RUNNER_PEER_ID: ${{ vars.VEM_MAINTENANCE_RUNNER_PEER_ID }}
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
@@ -189,8 +190,11 @@ jobs:
               if (!process.env[name]) throw new Error(`protected environment variable is required: ${name}`);
             }
             const url = new URL(process.env.MAINTENANCE_CONTROL_PLANE_URL);
-            if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
-              throw new Error("MAINTENANCE_CONTROL_PLANE_URL must be a credential-free HTTPS URL");
+            const transportAllowed =
+              url.protocol === "https:" ||
+              (url.protocol === "http:" && process.env.MAINTENANCE_ALLOW_INSECURE_HTTP === "true");
+            if (!transportAllowed || url.username || url.password || url.search || url.hash) {
+              throw new Error("MAINTENANCE_CONTROL_PLANE_URL must be credential-free HTTPS unless protected testbed HTTP is explicitly enabled");
             }
             const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
             for (const name of ["MAINTENANCE_RUNNER_PEER_ID", "MAINTENANCE_TARGET_MACHINE_ID"]) {
