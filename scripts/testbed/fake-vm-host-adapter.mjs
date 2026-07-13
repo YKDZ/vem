@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { validateVmHostAdapterRequest } from "./vm-host-adapter-contract.mjs";
 
@@ -19,6 +21,17 @@ function evidence(role, hash) {
   };
 }
 
+function materializeDisplayEvidence() {
+  const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
+  if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
+  const bytes = Buffer.from("deterministic fake display capture\n");
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const fileName = `${hash}.png`;
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, fileName), bytes, { mode: 0o600 });
+  return { ...evidence("display-capture", hash), fileName };
+}
+
 function fakeReport(request, scenario) {
   const resultByScenario = {
     success: "succeeded",
@@ -35,7 +48,7 @@ function fakeReport(request, scenario) {
     result === "succeeded" ? request.requestedCapabilities : [];
   const evidenceEntries =
     request.operation === "capture-display"
-      ? [evidence("display-capture", "b".repeat(64))]
+      ? [materializeDisplayEvidence()]
       : request.operation === "capture-default-audio"
         ? [evidence("default-audio-capture", "c".repeat(64))]
         : [];
@@ -80,10 +93,14 @@ function fakeReport(request, scenario) {
         relation: "host-target-mapping/v1",
         targetIdentity: request.target.identity,
       },
-      baseIdentity: request.assets[0].identity,
+      baseIdentity:
+        request.operation === "capture-approved-base"
+          ? `factory-cas://sha256/${"f".repeat(64)}`
+          : request.assets[0].identity,
       overlayIdentity: "vm-overlay://fake-run-001",
       factoryProvenanceDigest:
-        request.operation === "clean-install"
+        request.operation === "clean-install" ||
+        request.operation === "capture-approved-base"
           ? request.factoryMedia.provenanceDigest
           : null,
     },
@@ -141,6 +158,13 @@ const reportPath = readOption("--report");
 const request = validateVmHostAdapterRequest(
   JSON.parse(readFileSync(requestPath, "utf8")),
 );
+if (process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG) {
+  writeFileSync(
+    process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG,
+    `${request.operation}\n`,
+    { flag: "a", mode: 0o600 },
+  );
+}
 if (
   process.env.VEM_VM_HOST_ADAPTER_PID_FILE &&
   request.operation !== "cleanup" &&
@@ -177,8 +201,12 @@ if (
 }
 const configuredScenario =
   process.env.VEM_VM_HOST_ADAPTER_FAKE_SCENARIO ?? "success";
+const scenarioForOperation =
+  process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION === request.operation
+    ? "failure"
+    : configuredScenario;
 if (
-  configuredScenario === "hang" &&
+  scenarioForOperation === "hang" &&
   request.operation !== "cleanup" &&
   request.operation !== "cancel"
 ) {
@@ -195,9 +223,9 @@ if (
   const scenario =
     request.operation === "cleanup" || request.operation === "cancel"
       ? "success"
-      : configuredScenario === "hang"
+      : scenarioForOperation === "hang"
         ? "success"
-        : configuredScenario;
+        : scenarioForOperation;
   writeFileSync(
     reportPath,
     `${JSON.stringify(fakeReport(request, scenario))}\n`,

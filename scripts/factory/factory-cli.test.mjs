@@ -34,9 +34,7 @@ const IMAGE_HASH = "f".repeat(64);
 const BUILDER_IDENTITY =
   "github-actions://vem/vem/.github/workflows/build.yml@refs/heads/main";
 const PINNED_UDF_WRITER_VERSION = "1.1.11";
-const PINNED_UDF_WRITER_DIGEST =
-  process.env.VEM_FACTORY_TEST_UDF_WRITER_DIGEST ??
-  "sha256:9bacc5951ca0767701cfd8e6b47537f199977e51a6e943f4edfdcf9d639d99d2";
+const PINNED_UDF_WRITER_DIGEST = process.env.VEM_FACTORY_TEST_UDF_WRITER_DIGEST;
 
 function toolVersion(path, args, expression, label) {
   const output = execFileSync(path, args, { encoding: "utf8" });
@@ -86,6 +84,10 @@ async function fixture() {
   const observedUdfWriterDigest = `sha256:${createHash("sha256")
     .update(await readFile(UDF_WRITER_PATH))
     .digest("hex")}`;
+  assert.ok(
+    PINNED_UDF_WRITER_DIGEST,
+    "Factory media tests require the executing genisoimage digest",
+  );
   assert.equal(
     observedUdfWriterDigest,
     PINNED_UDF_WRITER_DIGEST,

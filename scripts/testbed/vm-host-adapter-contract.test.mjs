@@ -47,6 +47,12 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
       "cancellation",
       "cleanup",
     ],
+    "capture-approved-base": [
+      "approved-base-capture",
+      "disposable-overlay",
+      "cancellation",
+      "cleanup",
+    ],
     "capture-display": ["display-capture", "cancellation", "cleanup"],
     "capture-default-audio": [
       "default-audio-capture",
@@ -89,6 +95,7 @@ function reportFor(request, overrides = {}) {
             role: "display-capture",
             identity: `factory-evidence://sha256/${"b".repeat(64)}`,
             digest: `sha256:${"b".repeat(64)}`,
+            fileName: `${"b".repeat(64)}.png`,
           },
         ]
       : request.operation === "capture-default-audio"
@@ -130,7 +137,8 @@ function reportFor(request, overrides = {}) {
       baseIdentity: request.assets[0].identity,
       overlayIdentity: "vm-overlay://run-12-contract",
       factoryProvenanceDigest:
-        request.operation === "clean-install"
+        request.operation === "clean-install" ||
+        request.operation === "capture-approved-base"
           ? request.factoryMedia.provenanceDigest
           : null,
     },
@@ -190,6 +198,26 @@ function reportFor(request, overrides = {}) {
 }
 
 describe("VM Host Adapter contract", () => {
+  it("permits lifecycle cleanup to recover a failed clean install from its Factory ISO", () => {
+    const request = createVmHostAdapterRequest(
+      requestFor("cleanup", {
+        assets: [
+          {
+            role: "factory-iso",
+            identity: `factory-cas://sha256/${HASH}`,
+            digest: `sha256:${HASH}`,
+          },
+        ],
+      }),
+    );
+    assert.equal(request.assets[0].role, "factory-iso");
+    assert.equal(
+      validateVmHostAdapterReport(reportFor(request), request).observed
+        .baseIdentity,
+      request.assets[0].identity,
+    );
+  });
+
   it("accepts a strict logical restore request with operation and lifecycle references", () => {
     const request = createVmHostAdapterRequest(requestFor());
     assert.deepEqual(validateVmHostAdapterRequest(request), request);
@@ -270,6 +298,72 @@ describe("VM Host Adapter contract", () => {
         }),
         request,
       ),
+    );
+  });
+
+  it("captures a distinct approved base from the clean Factory ISO lifecycle", () => {
+    const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
+    const request = requestFor("capture-approved-base", {
+      factoryMedia: {
+        assemblyMode: "windows-serviced-iso",
+        manifestIdentity: `sha256:${"e".repeat(64)}`,
+        provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
+        provenanceDigest: `sha256:${"f".repeat(64)}`,
+        outputIdentity: factoryIso,
+        outputDigest: `sha256:${"d".repeat(64)}`,
+      },
+      assets: [
+        {
+          role: "factory-iso",
+          identity: factoryIso,
+          digest: `sha256:${"d".repeat(64)}`,
+        },
+      ],
+    });
+    const report = reportFor(request);
+    report.observed.baseIdentity = `factory-cas://sha256/${"1".repeat(64)}`;
+    assert.equal(
+      validateVmHostAdapterReport(report, request).observed.baseIdentity,
+      `factory-cas://sha256/${"1".repeat(64)}`,
+    );
+  });
+
+  it("accepts an idempotent approved-base capture that truthfully reports completed cleanup", () => {
+    const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
+    const request = createVmHostAdapterRequest(
+      requestFor("capture-approved-base", {
+        factoryMedia: {
+          assemblyMode: "windows-serviced-iso",
+          manifestIdentity: `sha256:${"e".repeat(64)}`,
+          provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
+          provenanceDigest: `sha256:${"f".repeat(64)}`,
+          outputIdentity: factoryIso,
+          outputDigest: `sha256:${"d".repeat(64)}`,
+        },
+        assets: [
+          {
+            role: "factory-iso",
+            identity: factoryIso,
+            digest: `sha256:${"d".repeat(64)}`,
+          },
+        ],
+      }),
+    );
+    const report = reportFor(request, {
+      cleanup: {
+        status: "completed",
+        overlayDisposition: "removed",
+        observed: {
+          overlay: "removed",
+          runDirectory: "removed",
+          personalizationMedia: "removed",
+        },
+      },
+    });
+
+    assert.deepEqual(
+      validateVmHostAdapterReport(report, request).cleanup,
+      report.cleanup,
     );
   });
 
@@ -427,6 +521,42 @@ describe("VM Host Adapter contract", () => {
       validateVmHostAdapterReport(reportFor(cleanup), cleanup).cleanup
         .overlayDisposition,
       "removed",
+    );
+  });
+
+  it("requires a digest-bound relative image file name for a display capture", () => {
+    const capture = createVmHostAdapterRequest(requestFor("capture-display"));
+    assert.equal(
+      validateVmHostAdapterReport(reportFor(capture), capture).evidence[0]
+        .fileName,
+      `${"b".repeat(64)}.png`,
+    );
+    assert.throws(
+      () =>
+        validateVmHostAdapterReport(
+          reportFor(capture, {
+            evidence: [
+              {
+                ...reportFor(capture).evidence[0],
+                fileName: "/runner/evidence/display.png",
+              },
+            ],
+          }),
+          capture,
+        ),
+      /fileName/,
+    );
+  });
+
+  it("requires the runner to supply an absolute display evidence export directory", async () => {
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request: createVmHostAdapterRequest(requestFor("capture-display")),
+          workDirectory: mkdtempSync(join(tmpdir(), "vem-vm-host-display-")),
+          environment: { VEM_VM_HOST_ADAPTER: FAKE_ADAPTER },
+        }),
+      /VEM_VM_HOST_EVIDENCE_EXPORT_DIR must be an absolute runner-owned directory/,
     );
   });
 
@@ -718,6 +848,7 @@ describe("VM Host Adapter contract", () => {
           VEM_VM_HOST_APPROVED_BASE_ID: `factory-cas://sha256/${HASH}`,
           VEM_VM_HOST_FACTORY_ISO_ID: `factory-cas://sha256/${"d".repeat(64)}`,
           VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID: `factory-cas://sha256/${"e".repeat(64)}`,
+          VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence-export"),
           VEM_VM_HOST_CLEAN_INSTALL_STATUS: "blocked-issue15",
           VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
         },

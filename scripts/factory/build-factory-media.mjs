@@ -982,10 +982,8 @@ try {
     MaintenanceWireGuardInterfaceAlias = $descriptor.parameters.maintenance.wireGuardInterfaceAlias; MaintenanceWireGuardListenAddress = $descriptor.parameters.maintenance.wireGuardListenAddress; ResetExistingVemState = $true
   }
   & (Join-Path $MediaRoot 'scripts\\prepare-factory-runtime.ps1') @prepare
-  if ($descriptor.profile -ceq 'production') {
-    & (Join-Path $MediaRoot 'scripts\\provision-vision-factory-release.ps1') -FactoryMediaRoot (Join-Path $MediaRoot 'VEM')
-    & (Join-Path $MediaRoot 'scripts\\install-vision-release.ps1') -ConfigurationPath (Join-Path $MediaRoot $descriptor.assets.visionConfiguration.path) -EvidencePath 'C:\\ProgramData\\VEM\\evidence\\vision-install-bootstrap.json' -TaskUser $descriptor.parameters.accounts.autoLogonUser
-  }
+  # prepare-factory-runtime.ps1 owns the selected Vision release provisioning,
+  # installation, and evidence for the first-install lifecycle.
   & (Join-Path $MediaRoot 'scripts\\verify-factory-runtime.ps1')
   Write-Status 'succeeded' 'factory runtime verified'
   Unregister-ScheduledTask -TaskName 'VemFactoryBootstrap' -Confirm:$false -ErrorAction SilentlyContinue
@@ -1054,8 +1052,6 @@ powercfg.exe /hibernate off | Out-Null
 
 function factoryBaselineManifest(manifest, resolvedAssets) {
   const names = {
-    "openssh-installer": "openssh-installer.bin",
-    "wireguard-installer": "wireguard-installer.bin",
     "vem-daemon": "vending-daemon.exe",
     "vem-machine-ui": "machine.exe",
     "webview2-loader": "WebView2Loader.dll",
@@ -1075,12 +1071,30 @@ function factoryBaselineManifest(manifest, resolvedAssets) {
       .sort(({ reference: left }, { reference: right }) =>
         left.role.localeCompare(right.role),
       )
-      .map(({ reference }) => ({
-        role: reference.role,
-        fileName: reference.mediaFileName ?? names[reference.role],
-        path: `assets/${reference.mediaFileName ?? names[reference.role]}`,
-        sha256: reference.digest.slice(7),
-      })),
+      .map(({ reference }) => {
+        const fileName = reference.mediaFileName ?? names[reference.role];
+        if (!fileName) {
+          throw new Error(
+            `Factory baseline is missing a media file name for ${reference.role}`,
+          );
+        }
+        if (
+          ["openssh-installer", "wireguard-installer"].includes(
+            reference.role,
+          ) &&
+          !/\.(?:msi|exe)$/i.test(fileName)
+        ) {
+          throw new Error(
+            `Factory installer must preserve its pinned MSI or EXE extension: ${reference.role}`,
+          );
+        }
+        return {
+          role: reference.role,
+          fileName,
+          path: `assets/${fileName}`,
+          sha256: reference.digest.slice(7),
+        };
+      }),
   };
 }
 

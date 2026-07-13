@@ -97,10 +97,11 @@ file pins the image index, locale/OOBE behavior, and lets Setup select the
 firmware-appropriate disk layout on the host-owned fresh disk. Specialize
 registers an idempotent SYSTEM bootstrap and FirstLogon supplies a fallback.
 The bootstrap records durable status, fails closed with reboot, and runs the
-baseline installer, `prepare-factory-runtime`, Vision provision/install, and
-`verify-factory-runtime` only after a host one-time personalization channel is
-available. The common ISO carries no credential, machine identity, private key,
-or personalization media.
+baseline installer, `prepare-factory-runtime`, and `verify-factory-runtime`
+only after a host one-time personalization channel is available.
+`prepare-factory-runtime` is the sole owner of the selected Vision
+provision/install/evidence lifecycle. The common ISO carries no credential,
+machine identity, private key, or personalization media.
 
 The Factory media pipeline emits:
 
@@ -109,6 +110,7 @@ The Factory media pipeline emits:
 - a provenance report containing every input identity and toolchain identity;
 - a sanitized evidence index that records whether Windows Setup was customized.
 
+The tracked builder definition is [`scripts/factory/Dockerfile`](../scripts/factory/Dockerfile).
 The media builder runs in a pinned, platform-neutral Linux container. It executes
 the manifest-pinned extractor, writer, and `wimlib-imagex`, and produces
 byte-identical output from two independent build directories and processes.
@@ -241,10 +243,14 @@ Three workflows compose the Windows gates:
    repository scripts, templates, trusted roots, verifier, release documents,
    and pinned builder are digest-recorded in provenance and embedded in the
    output identity.
-2. `factory-image-acceptance.yml` performs a clean install from that ISO,
-   validates the pre-claim image, creates an approved runtime base identity,
-   then uses a disposable overlay to claim the machine and reach the vending
-   screen.
+2. `factory-image-acceptance.yml` directly invokes the typed Factory Image
+   Acceptance orchestrator. It performs pre-claim verification from that ISO,
+   captures an approved runtime base identity, creates a disposable overlay,
+   binds protected ephemeral-platform inputs to the adapter-discovered guest
+   endpoint, executes Machine Claim through daemon IPC, then verifies runtime
+   acceptance and display capture. Its lifecycle finalizer and the independent
+   cleanup-only invocation both require adapter proof that the overlay and
+   personalization media were removed.
 3. `vm-runtime-acceptance.yml` restores an approved runtime base, deploys the
    current commit's shared Windows artifacts, and runs the real API, MQTT, and
    simulated-device sale flow.

@@ -99,25 +99,30 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Factory Media Fixture Tools
+      - name: Build Factory Media Test Toolchain
         run: |
-          sudo apt-get update
-          apt-cache policy genisoimage=9:1.1.11-3.5 7zip xorriso
-          apt-cache show genisoimage=9:1.1.11-3.5 >/dev/null
-          apt-cache show 7zip=23.01+dfsg-11 >/dev/null
-          apt-cache show xorriso=1:1.5.6-1.1ubuntu3 >/dev/null
-          sudo apt-get install -y --no-install-recommends \
-            genisoimage=9:1.1.11-3.5 \
-            7zip=23.01+dfsg-11 \
-            xorriso=1:1.5.6-1.1ubuntu3 \
-            osslsigncode \
-            gcc-mingw-w64-x86-64 \
-            wimtools=1.14.4-1.1build2
+          docker build \
+            --file scripts/factory/Dockerfile \
+            --tag vem-factory-media-test:${{ github.sha }} \
+            .
 
-      - name: Run Factory Media Contract Tests
-        env:
-          VEM_FACTORY_TEST_UDF_WRITER_DIGEST: sha256:9bacc5951ca0767701cfd8e6b47537f199977e51a6e943f4edfdcf9d639d99d2
-        run: pnpm check:factory-manifest
+      - name: Run Factory Media Contract Tests In Builder
+        run: |
+          docker run --rm \
+            --env CI=true \
+            --env HOME=/tmp \
+            --user "$(id -u):$(id -g)" \
+            --mount type=bind,src="$GITHUB_WORKSPACE",dst=/workspace \
+            --workdir /workspace \
+            vem-factory-media-test:${{ github.sha }} \
+            sh -lc '
+              export VEM_FACTORY_TEST_UDF_EXTRACTOR=/usr/bin/7z
+              export VEM_FACTORY_TEST_UDF_WRITER=/usr/bin/genisoimage
+              export VEM_FACTORY_TEST_WIMLIB=/usr/bin/wimlib-imagex
+              export VEM_FACTORY_TEST_XORRISO=/usr/bin/xorriso
+              export VEM_FACTORY_TEST_UDF_WRITER_DIGEST="sha256:$(sha256sum /usr/bin/genisoimage | awk "{print \$1}")"
+              pnpm check:factory-manifest
+            '
 
       - name: Restore Turbo cache
         uses: actions/cache@v4

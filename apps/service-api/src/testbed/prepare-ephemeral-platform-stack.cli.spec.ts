@@ -9,6 +9,12 @@ import {
 function repositoryFixture(): EphemeralPlatformStackRepository {
   return {
     prepareRun: vi.fn().mockResolvedValue({
+      maintenanceRelay: {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+        status: "active",
+      },
       machine: {
         id: "machine-1",
         code: "VEM-TESTBED-ACCEPT-RUN-179",
@@ -94,6 +100,11 @@ describe("prepareEphemeralPlatformStack", () => {
       databaseUrl: "postgres://test",
       apiBaseUrl: "http://127.0.0.1:3000/api",
       mqttUrl: "mqtt://127.0.0.1:1883",
+      maintenanceRelay: {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
       reset: true,
       now: new Date("2026-07-04T00:00:00.000Z"),
     });
@@ -104,6 +115,11 @@ describe("prepareEphemeralPlatformStack", () => {
       reset: true,
       now: new Date("2026-07-04T00:00:00.000Z"),
       prepareMockPayment: false,
+      maintenanceRelay: {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
     });
     expect(result).toEqual({
       runId: "RUN-179",
@@ -134,6 +150,12 @@ describe("prepareEphemeralPlatformStack", () => {
         ],
       },
       seededData: {
+        maintenanceRelay: {
+          id: "550e8400-e29b-41d4-a716-446655440010",
+          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          tunnelAddress: "10.91.0.1",
+          status: "active",
+        },
         products: [
           {
             productId: "product-1",
@@ -201,6 +223,11 @@ describe("prepareEphemeralPlatformStack", () => {
         databaseUrl: "postgres://test",
         apiBaseUrl: "http://127.0.0.1:3000/api",
         mqttUrl: "mqtt://127.0.0.1:1883",
+        maintenanceRelay: {
+          id: "550e8400-e29b-41d4-a716-446655440010",
+          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          tunnelAddress: "10.91.0.1",
+        },
       }),
     ).rejects.toThrow(/Refusing to prepare non-testbed machine identity/);
 
@@ -216,6 +243,11 @@ describe("prepareEphemeralPlatformStack", () => {
       databaseUrl: "postgres://test",
       apiBaseUrl: "http://127.0.0.1:3000/api",
       mqttUrl: "mqtt://127.0.0.1:1883",
+      maintenanceRelay: {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
       allowMockPayment: true,
       runtimePaymentMockEnabled: false,
       now: new Date("2026-07-04T00:00:00.000Z"),
@@ -242,6 +274,11 @@ describe("prepareEphemeralPlatformStack", () => {
       databaseUrl: "postgres://test",
       apiBaseUrl: "http://127.0.0.1:3000/api",
       mqttUrl: "mqtt://127.0.0.1:1883",
+      maintenanceRelay: {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
       allowMockPayment: true,
       runtimePaymentMockEnabled: true,
       now: new Date("2026-07-04T00:00:00.000Z"),
@@ -271,6 +308,12 @@ describe("parseCliOptions", () => {
     "http://127.0.0.1:3000/api",
     "--mqtt-url",
     "mqtt://127.0.0.1:1883",
+    "--maintenance-relay-peer-id",
+    "550e8400-e29b-41d4-a716-446655440010",
+    "--maintenance-relay-public-key",
+    "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+    "--maintenance-relay-tunnel-address",
+    "10.91.0.1",
     "--allow-ephemeral-target",
     "--allow-mock-payment",
   ];
@@ -304,6 +347,19 @@ describe("parseCliOptions", () => {
         { PAYMENT_MOCK_ENABLED: "true" },
       ),
     ).toThrow("--allow-ephemeral-target is required");
+  });
+
+  it("requires an explicit maintenance relay identity", () => {
+    expect(() =>
+      parseCliOptions(
+        explicitSafeArgs.filter(
+          (arg) =>
+            arg !== "--maintenance-relay-peer-id" &&
+            arg !== "550e8400-e29b-41d4-a716-446655440010",
+        ),
+        { PAYMENT_MOCK_ENABLED: "true" },
+      ),
+    ).toThrow("--maintenance-relay-peer-id is required");
   });
 
   it("rejects known production and VPS-looking targets", () => {
@@ -345,6 +401,18 @@ describe("parseCliOptions", () => {
     });
   });
 
+  it("rejects claim TTLs shorter than a clean install and defaults to two hours", () => {
+    expect(
+      parseCliOptions(explicitSafeArgs, { PAYMENT_MOCK_ENABLED: "true" }),
+    ).toMatchObject({ claimCodeTtlSeconds: 7200 });
+    expect(() =>
+      parseCliOptions(explicitSafeArgs, {
+        PAYMENT_MOCK_ENABLED: "true",
+        MACHINE_CLAIM_CODE_TTL_SECONDS: "7199",
+      }),
+    ).toThrow("MACHINE_CLAIM_CODE_TTL_SECONDS must be at least 7200 seconds");
+  });
+
   it("parses run id, explicit stack targets, reset, and output", () => {
     expect(
       parseCliOptions(
@@ -358,6 +426,12 @@ describe("parseCliOptions", () => {
           "http://127.0.0.1:3000/api",
           "--mqtt-url",
           "mqtt://127.0.0.1:1883",
+          "--maintenance-relay-peer-id",
+          "550e8400-e29b-41d4-a716-446655440010",
+          "--maintenance-relay-public-key",
+          "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          "--maintenance-relay-tunnel-address",
+          "10.91.0.1",
           "--allow-ephemeral-target",
           "--allow-mock-payment",
           "--reset",
@@ -373,6 +447,11 @@ describe("parseCliOptions", () => {
         "postgres://testbed:testbed@127.0.0.1:5432/vem_testbed_issue_179",
       apiBaseUrl: "http://127.0.0.1:3000/api",
       mqttUrl: "mqtt://127.0.0.1:1883",
+      maintenanceRelay: {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
       allowEphemeralTarget: true,
       allowMockPayment: true,
       runtimePaymentMockEnabled: true,

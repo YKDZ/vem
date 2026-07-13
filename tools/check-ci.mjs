@@ -443,6 +443,7 @@ async function runStaticJob() {
   await run("pnpm", ["check:script-inventory"]);
   await run("pnpm", ["check:vision-release-installer"]);
   await run("pnpm", ["check:vm-host-adapter"]);
+  await run("pnpm", ["check:factory-image-acceptance"]);
   await run("pnpm", ["check:admin-api-contracts"]);
   await ensureCargoTypify();
   await run("pnpm", ["check:daemon-ipc-contracts"]);

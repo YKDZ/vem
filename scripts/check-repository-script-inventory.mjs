@@ -42,6 +42,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/check-factory-image-acceptance-workflow.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "runtime acceptance"],
+  },
+  {
     path: "scripts/factory/build-factory-media.mjs",
     owner: "field-operations",
     category: "public runbook operation",
@@ -49,6 +55,18 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/factory/build-factory-media.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/factory/Dockerfile",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/factory/factory-builder-definition.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation"],
@@ -264,6 +282,26 @@ const DEFAULT_INVENTORY = [
     path: "scripts/testbed/win10-vem-e2e.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
+    workflows: [
+      "factory preparation",
+      "runtime acceptance",
+      "testbed workflows",
+    ],
+  },
+  {
+    path: "scripts/testbed/factory-image-acceptance.mjs",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: [
+      "factory preparation",
+      "runtime acceptance",
+      "testbed workflows",
+    ],
+  },
+  {
+    path: "scripts/testbed/factory-image-acceptance.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
     workflows: [
       "factory preparation",
       "runtime acceptance",

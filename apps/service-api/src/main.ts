@@ -27,7 +27,7 @@ async function bootstrap(): Promise<void> {
     });
   }
 
-  await app.listen(config.servicePort);
+  await app.listen(config.servicePort, config.serviceHost);
 }
 
 void bootstrap();
