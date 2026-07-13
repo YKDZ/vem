@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  adapterEnvironment,
   buildFactoryPreclaimVerifyInvocation,
   buildFactoryMachineClaimInvocation,
   buildFactoryRuntimeAcceptanceInvocation,
@@ -67,6 +68,23 @@ function typedInput(root) {
 }
 
 describe("Factory Image Acceptance lifecycle", () => {
+  it("extends only clean-install adapter execution", () => {
+    const environment = {
+      VEM_VM_HOST_ADAPTER_TIMEOUT_MS: "600000",
+      VEM_FACTORY_CLEAN_INSTALL_ADAPTER_TIMEOUT_MS: "2700000",
+    };
+    assert.equal(
+      adapterEnvironment("clean-install", environment)
+        .VEM_VM_HOST_ADAPTER_TIMEOUT_MS,
+      "2700000",
+    );
+    assert.strictEqual(adapterEnvironment("cleanup", environment), environment);
+    assert.equal(
+      adapterEnvironment("cleanup", environment).VEM_VM_HOST_ADAPTER_TIMEOUT_MS,
+      "600000",
+    );
+  });
+
   it("verifies the installed Factory runtime before base capture and binds claim to the discovered endpoint", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-factory-image-command-"));
     const input = typedInput(root);

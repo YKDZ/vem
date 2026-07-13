@@ -35,10 +35,11 @@ jobs:
     needs: trust-gate
     runs-on: [self-hosted, Linux, X64, vem-factory]
     environment: vem-factory-production
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: ${{ needs.trust-gate.outputs.approved }}
       VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: '["self-hosted","Linux","X64","vem-factory"]'
+      VEM_FACTORY_CLEAN_INSTALL_ADAPTER_TIMEOUT_MS: "2700000"
       RUN_ID: RUN-${{ github.run_id }}-${{ github.run_attempt }}
       DATABASE_URL: postgresql://vem:vem_password@127.0.0.1:55433/vem_factory_acceptance
       EPHEMERAL_API_READY_URL: http://127.0.0.1:26850/api

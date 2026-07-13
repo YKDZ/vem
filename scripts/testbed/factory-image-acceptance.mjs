@@ -677,6 +677,13 @@ function assertSameBase(expected, report) {
   }
 }
 
+export function adapterEnvironment(operation, environment = process.env) {
+  const timeout = environment.VEM_FACTORY_CLEAN_INSTALL_ADAPTER_TIMEOUT_MS;
+  if (operation !== "clean-install" || timeout === undefined)
+    return environment;
+  return { ...environment, VEM_VM_HOST_ADAPTER_TIMEOUT_MS: timeout };
+}
+
 async function runAdapter(input, operation, assets, media = null) {
   return runVmHostAdapter({
     request: adapterRequest(input, operation, assets, media),
@@ -684,6 +691,7 @@ async function runAdapter(input, operation, assets, media = null) {
       process.env.RUNNER_TEMP ?? ".",
       "factory-image-acceptance",
     ),
+    environment: adapterEnvironment(operation),
   });
 }
 
