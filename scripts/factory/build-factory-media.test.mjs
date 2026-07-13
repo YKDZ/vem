@@ -22,6 +22,7 @@ import {
   assertWimMagic,
   createWindowsFactoryFirstBootMedia,
   factoryAutounattendXml,
+  factoryProfileImplementationScript,
   expectedFactoryEffectiveInputRoles,
   factoryPreparationSplat,
   inspectBootableIso,
@@ -802,8 +803,8 @@ async function fixture({
       maintenance: {
         wireGuardInterfaceAlias: "VEM-Maintenance",
         wireGuardListenAddress: "10.0.0.2/32",
-        runnerSourceAllowlist: ["runner:fixture"],
-        maintainerSourceAllowlist: ["maintainer:fixture"],
+        runnerSourceAllowlist: ["10.77.20.2/32"],
+        maintainerSourceAllowlist: ["fd00:77:20::3/128"],
         openSsh: {
           version: "1.0.0",
           approvedSignerThumbprint: "A".repeat(40),
@@ -1046,9 +1047,27 @@ describe("real deterministic Factory ISO builder", () => {
       bios,
       /<settings pass="windowsPE">\s*<component name="Microsoft-Windows-International-Core-WinPE"[^>]*>\s*<SetupUILanguage><UILanguage>zh-CN<\/UILanguage><\/SetupUILanguage>\s*<InputLocale>zh-CN<\/InputLocale>\s*<SystemLocale>zh-CN<\/SystemLocale>\s*<UILanguage>zh-CN<\/UILanguage>\s*<UserLocale>zh-CN<\/UserLocale>\s*<\/component>/,
     );
-    assert.match(
+    assert.match(bios, /<settings pass="specialize">/);
+    assert.match(bios, /prepare-oobe-bootstrap\.ps1/);
+    assert.doesNotMatch(
       bios,
-      /<settings pass="oobeSystem">\s*<component name="Microsoft-Windows-International-Core"[^>]*>\s*<InputLocale>zh-CN<\/InputLocale>\s*<SystemLocale>zh-CN<\/SystemLocale>\s*<UILanguage>zh-CN<\/UILanguage>\s*<UserLocale>zh-CN<\/UserLocale>\s*<\/component>/,
+      /<settings pass="oobeSystem">|<UserAccounts>|<AutoLogon>|<FirstLogonCommands>/,
+    );
+    assert.doesNotMatch(bios, /<Password>|YKDZ/);
+
+    const production = factoryAutounattendXml(
+      "production",
+      4,
+      "bios",
+      "Professional",
+    );
+    assert.doesNotMatch(production, /<Name>Admin<\/Name>/);
+    assert.doesNotMatch(production, /<Username>Admin<\/Username>/);
+    assert.doesNotMatch(production, /YKDZ/);
+    assert.doesNotMatch(
+      production,
+      /<Password><Value>[^<]+<\/Value>/,
+      "deterministic Factory media must not embed a credential",
     );
     assert.throws(
       () => factoryAutounattendXml("testbed", 4, "bios", "Enterprise"),
@@ -1352,7 +1371,7 @@ describe("real deterministic Factory ISO builder", () => {
       assert.equal(media.unattended, "Autounattend.xml");
       assert.equal(
         media.firstBoot,
-        "specialize/RunSynchronous + FirstLogonCommands + VemFactoryBootstrap(SYSTEM)",
+        "specialize SYSTEM Factory bootstrap with kiosk-logon cleanup",
       );
       const unattended = await readFile(
         join(directory, "Autounattend.xml"),
@@ -1363,7 +1382,12 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(unattended, /DE94BBA4-06D1-4D40-A16A-BFD50179D6AC/);
       assert.match(unattended, /<PartitionID>3<\/PartitionID>/);
       assert.match(unattended, /\/IMAGE\/INDEX/);
-      assert.equal(/password|private.?key|credential/i.test(unattended), false);
+      assert.doesNotMatch(unattended, /private.?key|credential/i);
+      assert.doesNotMatch(
+        unattended,
+        /<Password><Value>[^<]+<\/Value>/,
+        "Factory unattended media must not embed a password value",
+      );
       const baseline = JSON.parse(
         await readFile(
           join(
@@ -1379,6 +1403,24 @@ describe("real deterministic Factory ISO builder", () => {
         ),
       );
       assert.equal(baseline.accounts.maintenance, "YKDZ");
+      const baselineScript = await readFile(
+        join(
+          directory,
+          "sources",
+          "$OEM$",
+          "$1",
+          "VEM",
+          "Factory",
+          "install-factory-baseline.ps1",
+        ),
+        "utf8",
+      );
+      assert.match(baselineScript, /New-LocalUser[^\n]+accounts\.maintenance/);
+      assert.match(baselineScript, /S-1-5-32-544/);
+      assert.match(
+        baselineScript,
+        /Add-LocalGroupMember[^\n]+accounts\.maintenance/,
+      );
       assert.equal(baseline.assets.length, 8);
       assert.match(
         baseline.assets.find((asset) => asset.role === "openssh-installer")
@@ -1480,9 +1522,23 @@ describe("real deterministic Factory ISO builder", () => {
         assert.match(bootstrap, new RegExp(`\\b${key}\\b`));
       assert.match(bootstrap, /prepare-factory-runtime\.ps1/);
       assert.match(bootstrap, /verify-factory-runtime\.ps1/);
+      assert.match(
+        bootstrap,
+        /\$LASTEXITCODE -ne 0[\s\S]+Factory runtime verifier failed/,
+      );
       assert.doesNotMatch(bootstrap, /provision-vision-factory-release\.ps1/);
       assert.doesNotMatch(bootstrap, /install-vision-release\.ps1/);
-      const registration = await readFile(
+      assert.match(unattended, /RunSynchronous/);
+      assert.match(unattended, /prepare-oobe-bootstrap\.ps1/);
+      assert.doesNotMatch(unattended, /VemFactoryBootstrap/);
+      assert.doesNotMatch(bootstrap, /ingest-host-personalization\.ps1/);
+      assert.match(bootstrap, /Write-Status 'succeeded'/);
+      assert.match(
+        bootstrap,
+        /catch \{[\s\S]+AutoAdminLogon[\s\S]+ForceAutoLogon[\s\S]+DefaultPassword[\s\S]+AutoLogonCount/,
+      );
+      assert.doesNotMatch(bootstrap, /Restart-Computer|FirstLogonCommands/);
+      const prepareOobe = await readFile(
         join(
           directory,
           "sources",
@@ -1490,14 +1546,67 @@ describe("real deterministic Factory ISO builder", () => {
           "$1",
           "VEM",
           "Factory",
-          "register-factory-bootstrap.cmd",
+          "prepare-oobe-bootstrap.ps1",
         ),
         "utf8",
       );
-      assert.ok(
-        registration.indexOf("ingest-host-personalization.ps1") <
-          registration.indexOf("schtasks.exe /Create"),
+      assert.match(prepareOobe, /ingest-host-personalization\.ps1/);
+      assert.match(prepareOobe, /one-time-personalization\.json/);
+      assert.match(prepareOobe, /credentials\.bootstrap/);
+      assert.match(prepareOobe, /-cne 'YKDZ'/);
+      assert.match(prepareOobe, /oobe-unattend\.xml/);
+      assert.match(prepareOobe, /HideWirelessSetupInOOBE/);
+      assert.match(prepareOobe, /<Value>\$password<\/Value>/);
+      assert.match(prepareOobe, /<Username>\$user<\/Username>/);
+      assert.doesNotMatch(
+        prepareOobe,
+        /<FirstLogonCommands>|RequiresUserInput/,
       );
+      assert.ok(prepareOobe.includes("^[\\x20-\\x7E]+$"));
+      assert.match(prepareOobe, /bootstrap-factory-runtime\.ps1/);
+      assert.match(prepareOobe, /VEMFactoryOobeCleanup/);
+      assert.match(
+        prepareOobe,
+        /New-ScheduledTaskTrigger -AtLogOn -User 'VEMKiosk'/,
+      );
+      assert.doesNotMatch(prepareOobe, /New-ScheduledTaskTrigger -AtStartup/);
+      assert.match(
+        prepareOobe,
+        /catch \{[\s\S]+Remove-Item[^\n]+\$personalizationPath/,
+      );
+      assert.match(
+        prepareOobe,
+        /catch \{[\s\S]+AutoAdminLogon[\s\S]+ForceAutoLogon[\s\S]+DefaultPassword[\s\S]+AutoLogonCount/,
+      );
+      assert.match(
+        prepareOobe,
+        /Unregister-ScheduledTask[^\n]+VEMFactoryOobeCleanup/,
+      );
+      assert.ok(prepareOobe.includes("HKLM:\\SYSTEM\\Setup"));
+      assert.match(prepareOobe, /New-ItemProperty[^\n]+UnattendFile/);
+      const completeOobe = await readFile(
+        join(
+          directory,
+          "sources",
+          "$OEM$",
+          "$1",
+          "VEM",
+          "Factory",
+          "complete-oobe-bootstrap.ps1",
+        ),
+        "utf8",
+      );
+      assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
+      assert.match(completeOobe, /Remove-ItemProperty[^\n]+UnattendFile/);
+      assert.ok(completeOobe.includes("Panther\\unattend.xml"));
+      assert.match(completeOobe, /VEM_PERSONALIZATION/);
+      assert.match(completeOobe, /InvokeVerb\('Eject'\)/);
+      assert.match(completeOobe, /attempt -lt 30/);
+      assert.match(
+        completeOobe,
+        /medium remains mounted after cleanup retries/,
+      );
+      assert.match(completeOobe, /Unregister-ScheduledTask/);
       const ingestScript = join(
         directory,
         "sources",
@@ -1532,6 +1641,31 @@ describe("real deterministic Factory ISO builder", () => {
       );
     } finally {
       await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("specializes production runtime scripts without embedding the testbed account literal", async () => {
+    const source = 'Get-LocalUser -Name "YKDZ"; "reject YKDZ"';
+    const production = factoryProfileImplementationScript(
+      source,
+      "production",
+    ).toString("utf8");
+    assert.doesNotMatch(production, /YKDZ/);
+    assert.match(production, /YK\$\(\[char\]68\)Z/);
+    assert.equal(
+      factoryProfileImplementationScript(source, "testbed").toString("utf8"),
+      source,
+    );
+    for (const name of [
+      "prepare-factory-runtime.ps1",
+      "setup-scheduled-tasks.ps1",
+      "verify-factory-runtime.ps1",
+    ]) {
+      const specialized = factoryProfileImplementationScript(
+        await readFile(new URL(`../windows/${name}`, import.meta.url)),
+        "production",
+      ).toString("utf8");
+      assert.doesNotMatch(specialized, /YKDZ/);
     }
   });
 

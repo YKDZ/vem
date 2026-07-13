@@ -359,11 +359,13 @@ $testbedIngress = Get-ControlledMaintenanceIngressPolicy -Profile "testbed" -Wir
 Assert-Fixture ($testbedIngress.mode -ceq "testbed-bootstrap-certificate") "testbed must declare bootstrap certificate ingress"
 Assert-Fixture ($testbedIngress.sshListenAddress -ceq "0.0.0.0" -and $testbedIngress.firewallInterfaceScope -ceq "Any") "testbed bootstrap ingress must listen on LAN without a WireGuard interface binding"
 
-$script:MaintenanceRunnerSourceAllowlist = @("10.77.0.2")
-$script:MaintenanceMaintainerSourceAllowlist = @("10.77.0.3")
-Assert-Fixture (@(Assert-RolePools).Count -eq 2) "explicit runner and maintainer source pools must remain accepted"
-$script:MaintenanceRunnerSourceAllowlist = @("0.0.0.0/0")
-Assert-ThrowsLike -Action { Assert-RolePools } -Pattern "explicit source addresses" -Message "wide runner source pools must be rejected before factory mutation"
+$script:MaintenanceRunnerSourceAllowlist = @("10.77.0.2/32")
+$script:MaintenanceMaintainerSourceAllowlist = @("fd00:77::3/128")
+$rolePools = Assert-RolePools
+Assert-Fixture ($rolePools.Runner.Count -eq 1 -and $rolePools.Runner[0] -ceq "10.77.0.2") "runner source pools must normalize to bare host addresses"
+Assert-Fixture ($rolePools.Maintainer.Count -eq 1 -and $rolePools.Maintainer[0] -ceq "fd00:77::3") "maintainer source pools must normalize to bare host addresses"
+$script:MaintenanceRunnerSourceAllowlist = @("10.77.0.0/24")
+Assert-ThrowsLike -Action { Assert-RolePools } -Pattern "exact host addresses" -Message "wide runner source pools must be rejected before factory mutation"
 $script:MaintenanceRunnerSourceAllowlist = @("10.77.0.2")
 
 $script:removedFirewallRules = [System.Collections.Generic.List[string]]::new()

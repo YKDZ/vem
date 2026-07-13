@@ -386,12 +386,11 @@ function Assert-MaintenanceCaInput {
   }
 }
 
-function Assert-RolePools {
-  $all = @($MaintenanceRunnerSourceAllowlist) + @($MaintenanceMaintainerSourceAllowlist)
-  if ($all.Count -eq 0) {
-    throw "Controlled Maintenance Ingress requires runner and maintainer role pools"
-  }
-  foreach ($source in $all) {
+function ConvertTo-ExactHostAddresses {
+  param([string[]]$Sources)
+
+  $normalized = [System.Collections.Generic.List[string]]::new()
+  foreach ($source in @($Sources)) {
     foreach ($candidate in ([string]$source -split ",")) {
       $value = $candidate.Trim()
       if ([string]::IsNullOrWhiteSpace($value) -or $value -match "^(Any|\*|Internet|LocalSubnet|DefaultGateway|DHCP|DNS|WINS|0\.0\.0\.0|::|0\.0\.0\.0/0|::/0)$") {
@@ -407,16 +406,33 @@ function Assert-RolePools {
         if (-not [int]::TryParse($parts[1], [ref]$prefix)) {
           throw "maintenance role pools must contain only explicit source addresses or CIDRs"
         }
-        $maximumPrefix = if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
-        if ($prefix -le 0 -or $prefix -gt $maximumPrefix) {
-          throw "maintenance role pools must contain only explicit source addresses or CIDRs"
+        $requiredPrefix = if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+        if ($prefix -ne $requiredPrefix) {
+          throw "maintenance role pools must contain only exact host addresses"
         }
       } elseif ($parts.Count -ne 1) {
         throw "maintenance role pools must contain only explicit source addresses or CIDRs"
       }
+      $hostAddress = [string]$address.IPAddressToString
+      if (-not $normalized.Contains($hostAddress)) {
+        $normalized.Add($hostAddress) | Out-Null
+      }
     }
   }
-  return @($all | ForEach-Object { ([string]$_ -split ",") } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
+  return @($normalized | Sort-Object -Unique)
+}
+
+function Assert-RolePools {
+  $runner = @(ConvertTo-ExactHostAddresses -Sources $MaintenanceRunnerSourceAllowlist)
+  $maintainer = @(ConvertTo-ExactHostAddresses -Sources $MaintenanceMaintainerSourceAllowlist)
+  if ($runner.Count -eq 0 -or $maintainer.Count -eq 0) {
+    throw "Controlled Maintenance Ingress requires runner and maintainer role pools"
+  }
+  return [pscustomobject]@{
+    Runner = $runner
+    Maintainer = $maintainer
+    All = @($runner + $maintainer | Sort-Object -Unique)
+  }
 }
 
 function Invoke-NamedPowerShellScript {
@@ -503,7 +519,7 @@ function Assert-FactoryPersonalizationMedia {
     throw "Factory Personalization Media account profile is invalid"
   }
   foreach ($password in @($maintenancePassword, $kioskPassword)) {
-    if ($password -isnot [string] -or $password.Length -lt 16 -or $password -match "(?i)shared-password") {
+    if ($password -isnot [string] -or $password.Length -lt 16 -or $password -notmatch "^[\x20-\x7E]+$" -or $password -match "(?i)shared-password") {
       throw "Factory Personalization Media contains an invalid or shared password"
     }
   }
@@ -562,7 +578,7 @@ function Mark-FactoryPersonalizationConsumed {
       profile = [string]$Preflight.FactoryProfile
       mediaId = [string]$Preflight.MediaId
     })
-  icacls.exe $markerPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
+  icacls.exe $markerPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "Factory Personalization Media consumption marker ACL setup failed"
   }
@@ -829,9 +845,9 @@ function Assert-FactoryRuntimePreflight {
     OpenSshPackage = $openSshPackage
     WireGuardPackage = $wireGuardPackage
     MaintenanceCa = $maintenanceCa
-    RolePools = $rolePools
-    RunnerSourceAllowlist = @($MaintenanceRunnerSourceAllowlist)
-    MaintainerSourceAllowlist = @($MaintenanceMaintainerSourceAllowlist)
+    RolePools = @($rolePools.All)
+    RunnerSourceAllowlist = @($rolePools.Runner)
+    MaintainerSourceAllowlist = @($rolePools.Maintainer)
     WireGuardInterfaceAlias = $MaintenanceWireGuardInterfaceAlias
     WireGuardListenAddress = $MaintenanceWireGuardListenAddress
     MaintenanceIngress = $maintenanceIngress
@@ -1075,7 +1091,8 @@ function Ensure-LocalWireGuardTunnelService {
       "# VEM daemon replaces peer/address state after Machine Claim"
     )
     Set-Content -LiteralPath $configPath -Value $config -Encoding ASCII
-    icacls.exe $configPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
+    icacls.exe $configPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "WireGuard private-key configuration ACL setup failed" }
   }
   $serviceName = Get-WireGuardTunnelServiceName
   if ($null -eq (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
@@ -1114,6 +1131,7 @@ function Set-FactoryMaintenanceAccountPassword {
   if ($null -eq $account) { throw "Factory Personalization Media requires the existing maintenance account $User" }
   $securePassword = ConvertTo-SecureString $Password -AsPlainText -Force
   Set-LocalUser -Name $User -Password $securePassword
+  Enable-LocalUser -Name $User
 }
 
 function New-EvidenceItem {
@@ -1380,15 +1398,16 @@ function Write-FactoryRuntimeFiles {
 
   $baselineApplication = Apply-FactoryWindowsBaseline -Policy $Plan.factoryWindowsBaselinePolicy
 
+  Set-FactoryMaintenanceAccountPassword -User $ExpectedMaintenanceUser -Password $Preflight.MaintenancePassword
   $openSshInstallation = Install-PinnedWindowsPackage -Package $Preflight.OpenSshPackage
   $wireGuardInstallation = Install-PinnedWindowsPackage -Package $Preflight.WireGuardPackage
-  Set-FactoryMaintenanceAccountPassword -User $ExpectedMaintenanceUser -Password $Preflight.MaintenancePassword
 
   Copy-Item -LiteralPath $DaemonArtifactPath -Destination (Join-Path $RuntimeRoot "vending-daemon.exe") -Force
   Copy-Item -LiteralPath $MachineUiArtifactPath -Destination (Join-Path $RuntimeRoot "machine.exe") -Force
   Copy-Item -LiteralPath $machineUiSidecarPath -Destination (Join-Path $RuntimeRoot "WebView2Loader.dll") -Force
   Copy-Item -LiteralPath $MaintenanceSshCaPublicKeyPath -Destination ([string]$Plan.layout.maintenanceCaPath) -Force
-  icacls.exe ([string]$Plan.layout.maintenanceCaPath) /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
+  icacls.exe ([string]$Plan.layout.maintenanceCaPath) /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Maintenance SSH CA ACL setup failed" }
 
   $scriptsRoot = [string]$Plan.layout.scriptsRoot
   Copy-ScriptIfPresent -Name "setup-scheduled-tasks.ps1" -TargetDirectory $scriptsRoot

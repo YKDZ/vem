@@ -207,10 +207,18 @@ function Ensure-KioskAccount {
     }
   }
 
-  Add-LocalGroupMember -Group "Users" -Member $User -ErrorAction SilentlyContinue
-  Remove-LocalGroupMember -Group "Administrators" -Member $User -ErrorAction SilentlyContinue
-  Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $User -ErrorAction SilentlyContinue
-  Remove-LocalGroupMember -Group "Remote Management Users" -Member $User -ErrorAction SilentlyContinue
+  Add-LocalGroupMember -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-545") -Member $User -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544") -Member $User -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-555") -Member $User -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-580") -Member $User -ErrorAction SilentlyContinue
+}
+
+function Get-BuiltinLocalGroup {
+  param([Parameter(Mandatory = $true)][string]$Sid)
+
+  $group = Get-LocalGroup -SID ([Security.Principal.SecurityIdentifier]::new($Sid)) -ErrorAction Stop
+  if ($null -eq $group) { throw "required builtin local group is unavailable: $Sid" }
+  return $group
 }
 
 function Ensure-LocalGroupExists {
@@ -224,12 +232,13 @@ function Ensure-LocalGroupExists {
 function Test-LocalUserInGroup {
   param(
     [string]$User,
-    [string]$Group
+    $Group
   )
 
+  $initialGroupName = if ($Group.PSObject.Properties.Name -contains "Name") { [string]$Group.Name } else { [string]$Group }
   $pending = [System.Collections.Generic.Queue[string]]::new()
   $visited = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-  $pending.Enqueue($Group)
+  $pending.Enqueue($initialGroupName)
   while ($pending.Count -gt 0) {
     $currentGroup = $pending.Dequeue()
     if (-not $visited.Add($currentGroup)) { continue }
@@ -262,7 +271,7 @@ function Assert-ExistingMaintenanceAdministrator {
   if ($account.PSObject.Properties.Name -contains "Enabled" -and -not [bool]$account.Enabled) {
     throw "profile maintenance administrator must be enabled: $User"
   }
-  if (-not (Test-LocalUserInGroup -User $User -Group "Administrators")) {
+  if (-not (Test-LocalUserInGroup -User $User -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544"))) {
     throw "profile maintenance account must already be an administrator: $User"
   }
 }
@@ -270,7 +279,7 @@ function Assert-ExistingMaintenanceAdministrator {
 function Assert-KioskRemoteAdministrationDenied {
   param([string]$User)
 
-  $boundaries = @("Administrators", "OpenSSH Users", "Remote Desktop Users", "Remote Management Users")
+  $boundaries = @((Get-BuiltinLocalGroup -Sid "S-1-5-32-544"), "OpenSSH Users", (Get-BuiltinLocalGroup -Sid "S-1-5-32-555"), (Get-BuiltinLocalGroup -Sid "S-1-5-32-580"))
   $granted = @($boundaries | Where-Object { Test-LocalUserInGroup -User $User -Group $_ })
   if ($granted.Count -gt 0) {
     throw "kiosk account has effective nested remote-administration membership: $($granted -join ', ')"
@@ -283,10 +292,10 @@ function Assert-RemoteMaintenanceAccountSeparation {
     [string]$KioskUser
   )
 
-  if (-not (Test-LocalUserInGroup -User $MaintenanceUser -Group "Administrators")) {
+  if (-not (Test-LocalUserInGroup -User $MaintenanceUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544"))) {
     throw "maintenance account must be a local administrator before enabling remote maintenance access: $MaintenanceUser"
   }
-  if (Test-LocalUserInGroup -User $KioskUser -Group "Administrators") {
+  if (Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544")) {
     throw "kiosk account must not be a local administrator before enabling remote maintenance access: $KioskUser"
   }
 }
@@ -602,14 +611,14 @@ function Assert-ControlledMaintenanceIngressSourceAllowlist {
       if ($ip.Equals([System.Net.IPAddress]::Any) -or $ip.Equals([System.Net.IPAddress]::IPv6Any)) {
         throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
       }
-      $maximumPrefix = if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+      $requiredPrefix = if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
       if ($null -ne $prefixLength) {
-        if ($prefixLength -le 0 -or $prefixLength -gt $maximumPrefix) {
+        if ($prefixLength -ne $requiredPrefix) {
           throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
         }
       }
 
-      $normalized = if ($null -ne $prefixLength) { "$($ip.IPAddressToString)/$prefixLength" } else { [string]$ip.IPAddressToString }
+      $normalized = [string]$ip.IPAddressToString
       if (-not $validated.Contains($normalized)) {
         $validated.Add($normalized) | Out-Null
       }
@@ -709,8 +718,8 @@ function Ensure-ControlledMaintenanceIngress {
   Ensure-LocalGroupExists -Group "OpenSSH Users"
   Add-LocalGroupMember -Group "OpenSSH Users" -Member $MaintenanceUser -ErrorAction SilentlyContinue
   Remove-LocalGroupMember -Group "OpenSSH Users" -Member $KioskUser -ErrorAction SilentlyContinue
-  Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $KioskUser -ErrorAction SilentlyContinue
-  Remove-LocalGroupMember -Group "Remote Management Users" -Member $KioskUser -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-555") -Member $KioskUser -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-580") -Member $KioskUser -ErrorAction SilentlyContinue
   Assert-KioskRemoteAdministrationDenied -User $KioskUser
 
   Start-Service -Name "sshd"
@@ -838,12 +847,11 @@ function Configure-KioskShell {
       DefaultAction = 0
     }
     Assert-CimMethodSucceeded -Result $customShellResult -Operation "Shell Launcher SetCustomShell for $User"
+    Set-PerUserWinlogonShell -User $User -Sid $sid -ShellCommand $shellCommand -UserPassword $UserPassword -Reason "Shell Launcher kiosk startup evidence"
+    Write-Host "Configured OS-level kiosk shell for $User ($sid): $shellCommand"
   } else {
-    Write-Warning "Shell Launcher WMI class not available; using per-user Winlogon shell for $User"
+    Write-Warning "Shell Launcher WMI class not available; VEMMachineUI logon task is the sole kiosk UI owner for $User"
   }
-
-  Set-PerUserWinlogonShell -User $User -Sid $sid -ShellCommand $shellCommand -UserPassword $UserPassword -Reason "deterministic kiosk startup evidence"
-  Write-Host "Configured OS-level kiosk shell for $User ($sid): $shellCommand"
 }
 
 function Ensure-DaemonDataDirectory {
@@ -1099,6 +1107,7 @@ function Configure-WinlogonAutoLogon {
   }
 
   $path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+  Remove-ItemProperty -Path $path -Name "AutoLogonCount" -ErrorAction SilentlyContinue
   New-ItemProperty -Path $path -Name "AutoAdminLogon" -Value "1" -PropertyType String -Force | Out-Null
   New-ItemProperty -Path $path -Name "ForceAutoLogon" -Value "1" -PropertyType String -Force | Out-Null
   New-ItemProperty -Path $path -Name "DefaultUserName" -Value $User -PropertyType String -Force | Out-Null

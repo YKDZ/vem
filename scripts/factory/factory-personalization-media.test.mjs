@@ -119,6 +119,24 @@ describe("Factory Personalization Media v1", () => {
       }),
       productionMedia({ profile: "toString" }),
       productionMedia({ profile: "__proto__" }),
+      productionMedia({
+        credentials: {
+          administrator: {
+            user: "Admin",
+            password: "unique-admin-with-control\u0001",
+          },
+          kiosk: { user: "VEMKiosk", password: "unique-production-kiosk-1" },
+        },
+      }),
+      productionMedia({
+        credentials: {
+          administrator: {
+            user: "Admin",
+            password: "unique-admin-invalid-\ufffe",
+          },
+          kiosk: { user: "VEMKiosk", password: "unique-production-kiosk-1" },
+        },
+      }),
     ]) {
       assert.throws(
         () => validateFactoryPersonalizationMedia(candidate),
@@ -160,6 +178,24 @@ describe("Factory Personalization Media v1", () => {
         credentials: {
           bootstrap: { user: "YKDZ", password: "dedicated-WireGuard-123" },
           kiosk: { user: "VEMKiosk", password: "dedicated-testbed-kiosk-1" },
+        },
+      }),
+      productionMedia({
+        credentials: {
+          administrator: {
+            user: "Admin",
+            password: "unique-admin-with-newline\n",
+          },
+          kiosk: { user: "VEMKiosk", password: "unique-production-kiosk-1" },
+        },
+      }),
+      productionMedia({
+        credentials: {
+          administrator: {
+            user: "Admin",
+            password: "unique-admin-invalid-\ufffe",
+          },
+          kiosk: { user: "VEMKiosk", password: "unique-production-kiosk-1" },
         },
       }),
     ]) {

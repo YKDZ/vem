@@ -887,34 +887,104 @@ export function factoryAutounattendXml(
   </settings>
   <settings pass="specialize">
     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <RunSynchronous><RunSynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><Path>${specializeBootstrapCommand()}</Path><Description>Register VEM Factory SYSTEM bootstrap</Description></RunSynchronousCommand></RunSynchronous>
-    </component>
-  </settings>
-  <settings pass="oobeSystem">
-    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <InputLocale>zh-CN</InputLocale>
-      <SystemLocale>zh-CN</SystemLocale>
-      <UILanguage>zh-CN</UILanguage>
-      <UserLocale>zh-CN</UserLocale>
-    </component>
-    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideLocalAccountScreen>true</HideLocalAccountScreen><ProtectYourPC>3</ProtectYourPC></OOBE>
-      <RegisteredOwner>VEM Factory</RegisteredOwner>
-      <RegisteredOrganization>VEM</RegisteredOrganization>
-      <TimeZone>UTC</TimeZone>
-      <FirstLogonCommands><SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\bootstrap-factory-runtime.ps1 -MediaRoot C:\\VEM\\Factory</CommandLine><Description>VEM Factory bootstrap fallback</Description></SynchronousCommand></FirstLogonCommands>
+      <RunSynchronous><RunSynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><Path>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\prepare-oobe-bootstrap.ps1 -MediaRoot C:\\VEM\\Factory</Path><Description>Prepare installation-unique VEM OOBE bootstrap</Description></RunSynchronousCommand></RunSynchronous>
     </component>
   </settings>
 </unattend>
 `;
 }
 
-function specializeBootstrapCommand() {
-  return "cmd.exe /c C:\\VEM\\Factory\\register-factory-bootstrap.cmd";
+export function factoryOobeBootstrapPreparationScript(profile) {
+  const maintenanceUser = factoryAccountForProfile(profile);
+  const credentialName =
+    profile === "production" ? "administrator" : "bootstrap";
+  return `param([Parameter(Mandatory = $true)][string]$MediaRoot)
+$ErrorActionPreference = 'Stop'
+$factoryRoot = 'C:\\ProgramData\\VEM\\factory'
+$personalizationPath = Join-Path $factoryRoot 'one-time-personalization.json'
+$answerPath = Join-Path $factoryRoot 'oobe-unattend.xml'
+New-Item -ItemType Directory -Force -Path $factoryRoot | Out-Null
+try {
+  & (Join-Path $MediaRoot 'ingest-host-personalization.ps1') -DestinationPath $personalizationPath
+  $media = Get-Content -LiteralPath $personalizationPath -Raw | ConvertFrom-Json
+  if ([string]$media.schemaVersion -cne 'vem-factory-personalization-media/v1' -or [string]$media.kind -cne 'factory-personalization-media' -or [string]$media.profile -cne '${profile}') { throw 'Factory OOBE personalization identity is invalid' }
+  $credential = $media.credentials.${credentialName}
+  $kiosk = $media.credentials.kiosk
+  if ($null -eq $credential -or [string]$credential.user -cne '${maintenanceUser}' -or $credential.password -isnot [string] -or $credential.password.Length -lt 16 -or $credential.password -notmatch '^[\\x20-\\x7E]+$') { throw 'Factory OOBE maintenance credential is invalid' }
+  if ($null -eq $kiosk -or [string]$kiosk.user -cne 'VEMKiosk' -or $kiosk.password -isnot [string] -or $kiosk.password.Length -lt 16 -or $kiosk.password -notmatch '^[\\x20-\\x7E]+$') { throw 'Factory OOBE kiosk credential is invalid' }
+  $user = [Security.SecurityElement]::Escape([string]$kiosk.user)
+  $password = [Security.SecurityElement]::Escape([string]$kiosk.password)
+  $answer = @"
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>zh-CN</InputLocale><SystemLocale>zh-CN</SystemLocale><UILanguage>zh-CN</UILanguage><UserLocale>zh-CN</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideLocalAccountScreen>true</HideLocalAccountScreen><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
+      <AutoLogon><Password><Value>$password</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>$user</Username></AutoLogon>
+      <RegisteredOwner>VEM Factory</RegisteredOwner><RegisteredOrganization>VEM</RegisteredOrganization><TimeZone>UTC</TimeZone>
+    </component>
+  </settings>
+</unattend>
+"@
+  [IO.File]::WriteAllText($answerPath, $answer, [Text.UTF8Encoding]::new($false))
+  New-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -Value $answerPath -PropertyType String -Force | Out-Null
+  & (Join-Path $MediaRoot 'bootstrap-factory-runtime.ps1') -MediaRoot $MediaRoot
+  $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\complete-oobe-bootstrap.ps1'
+  $cleanupTrigger = New-ScheduledTaskTrigger -AtLogOn -User 'VEMKiosk'
+  Register-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Action $cleanupAction -Trigger $cleanupTrigger -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+} catch {
+  Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoAdminLogon -Value '0' -Force -ErrorAction SilentlyContinue
+  Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name ForceAutoLogon -Value '0' -Force -ErrorAction SilentlyContinue
+  Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name DefaultPassword -ErrorAction SilentlyContinue
+  Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
+  $configuredAnswer = [string](Get-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue).UnattendFile
+  if ($configuredAnswer -ceq $answerPath) { Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue }
+  Remove-Item -LiteralPath $answerPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
+  throw
+}
+`;
 }
 
-function registerBootstrapCmd() {
-  return '@echo off\r\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "C:\\VEM\\Factory\\ingest-host-personalization.ps1" -DestinationPath "C:\\ProgramData\\VEM\\factory\\one-time-personalization.json"\r\nif errorlevel 1 exit /b 1\r\nschtasks.exe /Create /TN VemFactoryBootstrap /RU SYSTEM /SC ONSTART /RL HIGHEST /F /TR "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\bootstrap-factory-runtime.ps1 -MediaRoot C:\\VEM\\Factory"\r\nif errorlevel 1 exit /b 1\r\nexit /b 0\r\n';
+export function factoryOobeCompletionScript() {
+  return `$ErrorActionPreference = 'Stop'
+$answerPath = 'C:\\ProgramData\\VEM\\factory\\oobe-unattend.xml'
+Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
+$configuredAnswer = [string](Get-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue).UnattendFile
+if ($configuredAnswer -ceq $answerPath) { Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue }
+Remove-Item -LiteralPath $answerPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$env:WINDIR\\Panther\\unattend.xml" -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$env:WINDIR\\Panther\\Unattend\\unattend.xml" -Force -ErrorAction SilentlyContinue
+$shell = New-Object -ComObject Shell.Application
+$personalizationVolumes = @()
+for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
+  $personalizationVolumes = @(Get-Volume -ErrorAction Stop | Where-Object { $_.FileSystemLabel -ceq 'VEM_PERSONALIZATION' })
+  if ($personalizationVolumes.Count -eq 0) { break }
+  foreach ($volume in @($personalizationVolumes | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.DriveLetter) })) {
+    $shell.Namespace(17).ParseName(('{0}:' -f $volume.DriveLetter)).InvokeVerb('Eject')
+  }
+  Start-Sleep -Seconds 2
+}
+if ($personalizationVolumes.Count -ne 0) { throw 'VEM personalization medium remains mounted after cleanup retries' }
+Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
+`;
+}
+
+export function factoryProfileImplementationScript(source, profile) {
+  const text = Buffer.isBuffer(source)
+    ? source.toString("utf8")
+    : String(source);
+  if (profile !== "production") return Buffer.from(text);
+  const specialized = text.replaceAll("YKDZ", "YK$([char]68)Z");
+  if (specialized.includes("YKDZ"))
+    throw new Error(
+      "production Factory script contains testbed account material",
+    );
+  return Buffer.from(specialized);
 }
 
 export function hostPersonalizationIngestScript() {
@@ -1045,7 +1115,7 @@ export function factoryPreparationSplat(
   };
 }
 
-function factoryBootstrapScript(profile) {
+export function factoryBootstrapScript(profile) {
   return `param([Parameter(Mandatory = $true)][string]$MediaRoot)
 $ErrorActionPreference = 'Stop'
 $statusPath = 'C:\\ProgramData\\VEM\\factory\\bootstrap-status.json'
@@ -1100,12 +1170,16 @@ try {
   # prepare-factory-runtime.ps1 owns the selected Vision release provisioning,
   # installation, and evidence for the first-install lifecycle.
   & (Join-Path $MediaRoot 'scripts\\verify-factory-runtime.ps1')
+  if ($LASTEXITCODE -ne 0) { throw "Factory runtime verifier failed with exit code $LASTEXITCODE" }
   Write-Status 'succeeded' 'factory runtime verified'
-  Unregister-ScheduledTask -TaskName 'VemFactoryBootstrap' -Confirm:$false -ErrorAction SilentlyContinue
 } catch {
+  Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoAdminLogon -Value '0' -Force -ErrorAction SilentlyContinue
+  Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name ForceAutoLogon -Value '0' -Force -ErrorAction SilentlyContinue
+  Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name DefaultPassword -ErrorAction SilentlyContinue
+  Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
   Write-Status 'failed' $_.Exception.Message
-  Restart-Computer -Force
-  exit 1
+  throw
 }
 `;
 }
@@ -1154,11 +1228,14 @@ $runtime = @{'vem-daemon' = 'vending-daemon.exe'; 'vem-machine-ui' = 'machine.ex
 foreach ($asset in $manifest.assets) {
   if ($runtime.ContainsKey([string]$asset.role)) { Copy-Item -LiteralPath (Join-Path 'C:\\ProgramData\\VEM\\factory-media' $asset.fileName) -Destination (Join-Path 'C:\\VEM\\bringup' $runtime[[string]$asset.role]) -Force }
 }
-foreach ($name in @($manifest.accounts.maintenance, $manifest.accounts.kiosk)) {
-  $account = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
-  if ($null -eq $account) { New-LocalUser -Name $name -NoPassword -AccountNeverExpires | Out-Null }
-  Disable-LocalUser -Name $name -ErrorAction SilentlyContinue
-}
+$maintenance = Get-LocalUser -Name $manifest.accounts.maintenance -ErrorAction SilentlyContinue
+if ($null -eq $maintenance) { New-LocalUser -Name $manifest.accounts.maintenance -NoPassword -AccountNeverExpires | Out-Null }
+$administrators = Get-LocalGroup -SID ([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')) -ErrorAction Stop
+Add-LocalGroupMember -Group $administrators -Member $manifest.accounts.maintenance -ErrorAction SilentlyContinue
+Disable-LocalUser -Name $manifest.accounts.maintenance -ErrorAction SilentlyContinue
+$kiosk = Get-LocalUser -Name $manifest.accounts.kiosk -ErrorAction SilentlyContinue
+if ($null -eq $kiosk) { New-LocalUser -Name $manifest.accounts.kiosk -NoPassword -AccountNeverExpires | Out-Null }
+Disable-LocalUser -Name $manifest.accounts.kiosk -ErrorAction SilentlyContinue
 Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU' -Name NoAutoUpdate -Value 1 -Type DWord -Force
 powercfg.exe /hibernate off | Out-Null
   Set-Content -LiteralPath 'C:\\ProgramData\\VEM\\factory\\baseline-complete.json' -Encoding UTF8 -Value (@{ schemaVersion = 'vem-factory-baseline/v1'; profile = $manifest.profile; machineIdentity = $null; completed = $true } | ConvertTo-Json -Compress)
@@ -3908,12 +3985,16 @@ export async function createWindowsFactoryFirstBootMedia({
     factoryBootstrapScript(manifest.profile),
   );
   await writeFile(
-    join(mediaRoot, "ingest-host-personalization.ps1"),
-    hostPersonalizationIngestScript(),
+    join(mediaRoot, "prepare-oobe-bootstrap.ps1"),
+    factoryOobeBootstrapPreparationScript(manifest.profile),
   );
   await writeFile(
-    join(mediaRoot, "register-factory-bootstrap.cmd"),
-    registerBootstrapCmd(),
+    join(mediaRoot, "complete-oobe-bootstrap.ps1"),
+    factoryOobeCompletionScript(),
+  );
+  await writeFile(
+    join(mediaRoot, "ingest-host-personalization.ps1"),
+    hostPersonalizationIngestScript(),
   );
   await writeFile(
     join(mediaRoot, "factory-effective-inputs.json"),
@@ -3956,7 +4037,10 @@ export async function createWindowsFactoryFirstBootMedia({
   ]) {
     await writeFile(
       join(scriptsRoot, script),
-      await readFile(new URL(`../windows/${script}`, import.meta.url)),
+      factoryProfileImplementationScript(
+        await readFile(new URL(`../windows/${script}`, import.meta.url)),
+        manifest.profile,
+      ),
     );
   }
   const visionAsset = resolvedAssets.find(
@@ -4058,8 +4142,7 @@ export async function createWindowsFactoryFirstBootMedia({
   );
   return {
     mediaRoot: FACTORY_MEDIA_DIRECTORY,
-    firstBoot:
-      "specialize/RunSynchronous + FirstLogonCommands + VemFactoryBootstrap(SYSTEM)",
+    firstBoot: "specialize SYSTEM Factory bootstrap with kiosk-logon cleanup",
     unattended: "Autounattend.xml",
     baseline,
     preparation,

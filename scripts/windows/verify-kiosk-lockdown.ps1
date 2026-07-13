@@ -40,7 +40,15 @@ function Get-LocalAccountSidOrNull([string]$User) {
   }
 }
 
-function Test-LocalUserInGroup([string]$User, [string]$Group) {
+function Get-BuiltinLocalGroup {
+  param([Parameter(Mandatory = $true)][string]$Sid)
+
+  $group = Get-LocalGroup -SID ([Security.Principal.SecurityIdentifier]::new($Sid)) -ErrorAction Stop
+  if ($null -eq $group) { throw "required builtin local group is unavailable: $Sid" }
+  return $group
+}
+
+function Test-LocalUserInGroup([string]$User, $Group) {
   try {
     $members = Get-LocalGroupMember -Group $Group -ErrorAction Stop
     return $null -ne ($members | Where-Object { $_.Name -eq "$env:COMPUTERNAME\$User" -or $_.Name -eq $User } | Select-Object -First 1)
@@ -351,8 +359,8 @@ if ($null -eq $kioskSid) {
   Add-Failure $failures "could not resolve kiosk account SID: $KioskUser"
 }
 
-$kioskIsAdmin = Test-LocalUserInGroup -User $KioskUser -Group "Administrators"
-$maintenanceIsAdmin = Test-LocalUserInGroup -User $MaintenanceUser -Group "Administrators"
+$kioskIsAdmin = Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544")
+$maintenanceIsAdmin = Test-LocalUserInGroup -User $MaintenanceUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544")
 if ($kioskIsAdmin) {
   Add-Failure $failures "kiosk account is a local administrator: $KioskUser"
 }
@@ -362,7 +370,7 @@ if (-not $maintenanceIsAdmin) {
 
 $maintenanceInOpenSshUsers = Test-LocalUserInGroup -User $MaintenanceUser -Group "OpenSSH Users"
 $kioskInOpenSshUsers = Test-LocalUserInGroup -User $KioskUser -Group "OpenSSH Users"
-$kioskInRemoteDesktopUsers = Test-LocalUserInGroup -User $KioskUser -Group "Remote Desktop Users"
+$kioskInRemoteDesktopUsers = Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-555")
 if (-not $maintenanceInOpenSshUsers) {
   Add-Failure $failures "maintenance account is not allowed through OpenSSH Users: $MaintenanceUser"
 }
@@ -422,9 +430,6 @@ if ($null -eq $debugLauncher) {
 
 $expectedShell = ('"{0}"' -f $MachineUiExe)
 $shellState = if ($null -ne $kioskSid) { Get-KioskShellState -Sid $kioskSid -ExpectedShell $expectedShell } else { $null }
-if ($null -eq $shellState -or -not [bool]$shellState.configured) {
-  Add-Failure $failures "OS-level kiosk shell is not configured for $KioskUser with expected shell $expectedShell"
-}
 
 $port9222 = Test-NetConnection -ComputerName "127.0.0.1" -Port 9222 -WarningAction SilentlyContinue
 if ([bool]$port9222.TcpTestSucceeded) {
@@ -462,8 +467,16 @@ foreach ($taskName in @("VEMMachineUI", "VEMMaintenanceUI")) {
 }
 
 $machineUiTask = $tasks["VEMMachineUI"]
-if ($null -ne $machineUiTask -and (Test-PrincipalMatches -Principal $machineUiTask.userId -User $KioskUser)) {
-  Add-Failure $failures "VEMMachineUI task still targets kiosk user while Shell Launcher should own the kiosk UI process"
+$shellLauncherAvailable = $null -ne $shellState -and [bool]$shellState.shellLauncher.available
+if ($shellLauncherAvailable) {
+  if (-not [bool]$shellState.configured) {
+    Add-Failure $failures "OS-level kiosk shell is not configured for $KioskUser with expected shell $expectedShell"
+  }
+  if ($null -ne $machineUiTask -and (Test-PrincipalMatches -Principal $machineUiTask.userId -User $KioskUser)) {
+    Add-Failure $failures "VEMMachineUI task still targets kiosk user while Shell Launcher should own the kiosk UI process"
+  }
+} elseif ($null -eq $machineUiTask -or -not (Test-PrincipalMatches -Principal $machineUiTask.userId -User $KioskUser)) {
+  Add-Failure $failures "VEMMachineUI task must be the kiosk UI owner when Shell Launcher is unavailable"
 }
 $maintenanceUiTask = $tasks["VEMMaintenanceUI"]
 if ($MaintenanceDebugTaskExpected -and $null -eq $maintenanceUiTask) {
