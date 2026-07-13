@@ -126,6 +126,25 @@ describe("Vision release installer fixtures", () => {
   });
 
   boundedIt(
+    "rebuilds Factory provisioning manifests without self-inclusion",
+    () => {
+      const source = readFileSync(windowsHarness, "utf8");
+      assert.match(
+        source,
+        /Get-ChildItem -LiteralPath \$context\.visionMediaRoot -Recurse -File \| Where-Object \{ \$_.FullName -ine \$provisioningManifestPath \}/,
+      );
+      const provisioner = readFileSync(
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "utf8",
+      );
+      assert.match(
+        provisioner,
+        /relative=\$relative expected=\$expected actual=\$actual/,
+      );
+    },
+  );
+
+  boundedIt(
     "keeps isolated Factory provisioning compatible with Windows PowerShell 5.1",
     () => {
       const provisioner = readFileSync(

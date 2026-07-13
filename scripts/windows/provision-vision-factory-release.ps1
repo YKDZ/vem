@@ -98,8 +98,10 @@ foreach ($property in @($manifest.files.PSObject.Properties)) {
   }
   $source = Join-Path $FactoryMediaRoot ($relative.Replace('/', '\\'))
   Assert-NonReparsePath $source "Factory Vision source"
-  if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-Sha256Digest $source) -cne $expected) {
-    throw "Factory Vision source hash does not match provisioning manifest"
+  $sourceExists = Test-Path -LiteralPath $source -PathType Leaf
+  $actual = if ($sourceExists) { Get-Sha256Digest $source } else { "missing" }
+  if (-not $sourceExists -or $actual -cne $expected) {
+    throw "Factory Vision source hash does not match provisioning manifest: relative=$relative expected=$expected actual=$actual"
   }
   $destination = $null
   foreach ($prefix in $destinations.Keys) {
