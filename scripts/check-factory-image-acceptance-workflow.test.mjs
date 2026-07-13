@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { parse } from "yaml";
 
 const workflow = readFileSync(
   ".github/workflows/factory-image-acceptance.yml",
@@ -10,6 +11,7 @@ const factoryMedia = readFileSync(
   "scripts/factory/build-factory-media.mjs",
   "utf8",
 );
+const workflowDocument = parse(workflow);
 
 describe("Factory Image Acceptance workflow", () => {
   it("requires the real platform-neutral Factory lifecycle orchestrator", () => {
@@ -31,6 +33,25 @@ describe("Factory Image Acceptance workflow", () => {
     assert.doesNotMatch(workflow, /post-claim-command-json/);
     assert.doesNotMatch(workflow, /win10-vem-e2e\.mjs/);
     assert.doesNotMatch(workflow, /unraid|libvirt|qcow2|\/mnt\/user/i);
+  });
+
+  it("allows a clean Windows installation to outlive the adapter client default", () => {
+    assert.equal(
+      workflowDocument.jobs.accept.env
+        .VEM_FACTORY_CLEAN_INSTALL_ADAPTER_TIMEOUT_MS,
+      "2700000",
+    );
+    assert.equal(
+      workflowDocument.jobs.accept.env.VEM_VM_HOST_ADAPTER_TIMEOUT_MS,
+      undefined,
+    );
+    const jobTimeoutMs =
+      workflowDocument.jobs.accept["timeout-minutes"] * 60_000;
+    const cleanInstallTimeoutMs = Number(
+      workflowDocument.jobs.accept.env
+        .VEM_FACTORY_CLEAN_INSTALL_ADAPTER_TIMEOUT_MS,
+    );
+    assert.ok(jobTimeoutMs - cleanInstallTimeoutMs >= 90 * 60_000);
   });
 
   it("provides a runner-owned evidence export directory before lifecycle capture", () => {
