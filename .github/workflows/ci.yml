@@ -114,11 +114,18 @@ jobs:
             vem-factory-media-test:${{ github.sha }} \
             node --input-type=module --eval 'import("/workspace/repo/scripts/factory/factory-manifest.mjs")'
 
+      - name: Run Factory Host Docker Lifecycle Contract
+        run: >
+          node --test --test-name-pattern
+          "does not remove a real Docker name collision without current Factory labels"
+          scripts/check-factory-manifest.test.mjs
+
       - name: Run Factory Media Contract Tests In Builder
         run: |
           docker run --rm \
             --env CI=true \
             --env HOME=/tmp \
+            --env VEM_FACTORY_TEST_SKIP_HOST_DOCKER_LIFECYCLE=1 \
             --user "$(id -u):$(id -g)" \
             --mount type=bind,src="$GITHUB_WORKSPACE",dst=/workspace \
             --workdir /workspace \

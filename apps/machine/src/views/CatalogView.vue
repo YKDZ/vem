@@ -7,7 +7,8 @@ import type { MachineCatalogItem } from "@/types/catalog";
 
 import carouselImage1 from "@/assets/home/carousel-1.jpg";
 import carouselImage2 from "@/assets/home/carousel-2.jpg";
-import carouselImage3 from "@/assets/home/carousel-3.jpg";
+import carouselImage3 from "@/assets/home/carousel-3.png";
+import carouselImage4 from "@/assets/home/carousel-4.png";
 import iconSocksImage from "@/assets/home/icon-socks.png";
 import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
@@ -64,6 +65,7 @@ const carouselSlides = [
   carouselImage1,
   carouselImage2,
   carouselImage3,
+  carouselImage4,
 ] as const;
 const homeCategoryMeta: Record<
   CatalogTopCategoryKey,
