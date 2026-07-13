@@ -99,8 +99,9 @@ jobs:
           for digest in "$VEM_FACTORY_UDF_EXTRACTOR_DIGEST" "$VEM_FACTORY_UDF_WRITER_DIGEST" "$VEM_FACTORY_WIMLIB_DIGEST"; do
             [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           done
+          factory_tool_semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           for version in "$VEM_FACTORY_UDF_EXTRACTOR_VERSION" "$VEM_FACTORY_UDF_WRITER_VERSION" "$VEM_FACTORY_WIMLIB_VERSION"; do
-            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            [[ "$version" =~ $factory_tool_semver ]]
           done
           echo "MANIFEST_IDENTITY=$VEM_FACTORY_MANIFEST_IDENTITY" >> "$GITHUB_ENV"
           for path in \

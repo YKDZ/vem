@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { parse } from "yaml";
@@ -11,6 +12,20 @@ const runtimeWorkflowPath =
 function read(path) {
   assert.equal(existsSync(path), true, `${path} should exist`);
   return readFileSync(path, "utf8");
+}
+
+function matchesWorkflowSemver(pattern, version) {
+  try {
+    execFileSync(
+      "bash",
+      ["-c", '[[ "$1" =~ $2 ]]', "factory-tool-semver", version, pattern],
+      { stdio: "ignore" },
+    );
+    return true;
+  } catch (error) {
+    if (error?.status === 1) return false;
+    throw error;
+  }
 }
 
 describe("Factory Manifest and media workflow contract", () => {
@@ -98,6 +113,32 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.match(upload, /factory-provenance\.json/);
     assert.match(upload, /factory-build-result\.json/);
     assert.doesNotMatch(upload, /\.iso|windows-source|cache/i);
+  });
+
+  it("accepts only strict Factory Manifest SemVer forms for pinned tools", () => {
+    const parsed = parse(read(workflowPath));
+    const guard = parsed.jobs.build.steps[0].run;
+    const pattern = guard.match(/^\s*factory_tool_semver='([^']+)'$/m)?.[1];
+    assert.ok(pattern, "Factory runner guard defines the tool SemVer pattern");
+    assert.match(guard, /\[\[ "\$version" =~ \$factory_tool_semver \]\]/);
+    for (const version of [
+      "0.0.0",
+      "1.14.4-1.1build2",
+      "1.2.3-alpha.1+build.7",
+      "1.2.3+build.7",
+    ]) {
+      assert.equal(matchesWorkflowSemver(pattern, version), true, version);
+    }
+    for (const version of [
+      "1.2",
+      "01.2.3",
+      "1.2.3-01",
+      "1.2.3+build..7",
+      "1.2.3-",
+      "not-a-version",
+    ]) {
+      assert.equal(matchesWorkflowSemver(pattern, version), false, version);
+    }
   });
 
   it("uses a validated Docker reference while preserving the OCI builder identity", () => {
