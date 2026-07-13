@@ -92,6 +92,7 @@ function factoryMediaForOperation(operation) {
   const outputDigest = `sha256:${outputIdentity.match(/^factory-cas:\/\/sha256\/([a-f0-9]{64})$/)?.[1] ?? ""}`;
   return {
     assemblyMode: readOption("--factory-assembly-mode"),
+    targetFirmware: readOption("--factory-target-firmware"),
     manifestIdentity: readOption("--factory-manifest"),
     provenanceIdentity: readOption("--factory-provenance"),
     provenanceDigest: readOption("--factory-provenance-digest"),

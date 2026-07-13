@@ -1025,7 +1025,14 @@ describe("real deterministic Factory ISO builder", () => {
 
     const bios = factoryAutounattendXml("testbed", 4, "bios");
     assert.match(bios, /<Active>true<\/Active>/);
-    assert.match(bios, /<TypeID>0x27<\/TypeID>/);
+    assert.match(
+      bios,
+      /<ModifyPartition[^>]*>.*<PartitionID>3<\/PartitionID>.*<TypeID>0x27<\/TypeID>.*<\/ModifyPartition>/,
+    );
+    assert.doesNotMatch(
+      bios,
+      /<CreatePartition[^>]*>.*<TypeID>.*<\/CreatePartition>/,
+    );
     assert.match(
       bios,
       /<InstallTo><DiskID>0<\/DiskID><PartitionID>2<\/PartitionID>/,

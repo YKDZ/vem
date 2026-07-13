@@ -103,6 +103,7 @@ function fakeReport(request, scenario) {
         request.operation === "capture-approved-base"
           ? request.factoryMedia.provenanceDigest
           : null,
+      firmwareMode: request.factoryMedia?.targetFirmware ?? "bios",
     },
     consumedAssets: request.assets,
     guest: {

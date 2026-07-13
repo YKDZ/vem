@@ -472,6 +472,7 @@ export function validateVmHostAdapterRequest(input) {
         request.factoryMedia,
         [
           "assemblyMode",
+          "targetFirmware",
           "manifestIdentity",
           "provenanceIdentity",
           "provenanceDigest",
@@ -489,6 +490,12 @@ export function validateVmHostAdapterRequest(input) {
           issues,
           "request.factoryMedia.assemblyMode",
           "must be windows-serviced-iso",
+        );
+      if (!new Set(["bios", "uefi"]).has(request.factoryMedia.targetFirmware))
+        issue(
+          issues,
+          "request.factoryMedia.targetFirmware",
+          "must be bios or uefi",
         );
       if (
         !/^sha256:[a-f0-9]{64}$/.test(
@@ -781,6 +788,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "baseIdentity",
         "overlayIdentity",
         "factoryProvenanceDigest",
+        "firmwareMode",
       ],
       "report.observed",
       issues,
@@ -845,6 +853,17 @@ export function validateVmHostAdapterReport(input, requestInput) {
         issues,
         "report.observed.factoryProvenanceDigest",
         "must bind the requested Factory provenance digest for clean install and be null otherwise",
+      );
+    if (!new Set(["bios", "uefi"]).has(report.observed.firmwareMode))
+      issue(issues, "report.observed.firmwareMode", "must attest bios or uefi");
+    if (
+      request.factoryMedia &&
+      report.observed.firmwareMode !== request.factoryMedia.targetFirmware
+    )
+      issue(
+        issues,
+        "report.observed.firmwareMode",
+        "must match the requested Factory target firmware",
       );
   }
   if (!Array.isArray(report.consumedAssets))
@@ -1126,6 +1145,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
       baseIdentity: report.observed.baseIdentity,
       overlayIdentity: report.observed.overlayIdentity,
       factoryProvenanceDigest: report.observed.factoryProvenanceDigest,
+      firmwareMode: report.observed.firmwareMode,
     },
     consumedAssets: report.consumedAssets.map((asset) => ({
       role: asset.role,

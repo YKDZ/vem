@@ -211,6 +211,8 @@ jobs:
           const buildResultPath = path.join(outputRoot, "factory-build-result.json");
           const build = JSON.parse(fs.readFileSync(buildResultPath, "utf8"));
           const manifestHash = String(build.manifestIdentity).replace(/^sha256:/, "");
+          const manifestPath = path.join(process.env.VEM_FACTORY_MANIFEST_STORE, "sha256", `${manifestHash}.json`);
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
           const runId = process.env.RUN_ID;
           const evidenceRoot = path.join(process.env.GITHUB_WORKSPACE, "artifacts", "factory-image-acceptance");
           const machineCode = `VEM-TESTBED-FACTORY-${runId}`;
@@ -218,6 +220,7 @@ jobs:
               !/^factory-cas:\/\/sha256\/[a-f0-9]{64}$/.test(build.isoIdentity) ||
               !/^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/.test(build.provenanceIdentity) ||
               !/^sha256:[a-f0-9]{64}$/.test(build.provenanceDigest) ||
+              !["bios", "uefi"].includes(manifest.source?.targetFirmware) ||
               !/^[A-Z0-9][A-Z0-9-]{2,63}$/.test(runId) ||
               !/^VEM-TESTBED-[A-Z0-9-]+$/.test(machineCode)) {
             throw new Error("protected factory host values cannot form a typed lifecycle input");
@@ -229,11 +232,12 @@ jobs:
             targetIdentity: process.env.VEM_VM_HOST_TARGET_ID,
             factory: {
               assemblyMode: "windows-serviced-iso",
+              targetFirmware: manifest.source.targetFirmware,
               isoIdentity: build.isoIdentity,
               manifestIdentity: build.manifestIdentity,
               provenanceIdentity: build.provenanceIdentity,
               provenanceDigest: build.provenanceDigest,
-              manifestPath: path.join(process.env.VEM_FACTORY_MANIFEST_STORE, "sha256", `${manifestHash}.json`),
+              manifestPath,
               provenancePath: path.join(outputRoot, build.provenanceFileName),
               isoPath: path.join(process.env.VEM_FACTORY_ASSET_STORE, "sha256", build.isoDigest.replace(/^sha256:/, "")),
               udfExtractorPath: process.env.VEM_FACTORY_UDF_EXTRACTOR_HOST_PATH,

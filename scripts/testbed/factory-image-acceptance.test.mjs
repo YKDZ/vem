@@ -38,6 +38,7 @@ function typedInput(root) {
     targetIdentity: "vm-target://factory-testbed",
     factory: {
       assemblyMode: "windows-serviced-iso",
+      targetFirmware: "bios",
       isoIdentity: `factory-cas://sha256/${"a".repeat(64)}`,
       manifestIdentity: `sha256:${"b".repeat(64)}`,
       provenanceIdentity: `factory-evidence://sha256/${"c".repeat(64)}`,
@@ -82,6 +83,19 @@ describe("Factory Image Acceptance lifecycle", () => {
     assert.equal(
       adapterEnvironment("cleanup", environment).VEM_VM_HOST_ADAPTER_TIMEOUT_MS,
       "600000",
+    );
+  });
+
+  it("requires the typed input to bind a supported target firmware", () => {
+    const input = typedInput("/tmp/factory-firmware-input");
+    assert.equal(
+      validateFactoryImageAcceptanceInput(input).factory.targetFirmware,
+      "bios",
+    );
+    input.factory.targetFirmware = "auto";
+    assert.throws(
+      () => validateFactoryImageAcceptanceInput(input),
+      /targetFirmware/,
     );
   });
 
