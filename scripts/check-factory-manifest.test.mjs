@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { parse } from "yaml";
 
@@ -77,6 +80,35 @@ describe("Factory Manifest and media workflow contract", () => {
       "VEM_FACTORY_VISION_EVIDENCE_VERIFIER",
     ]) {
       assert.match(workflow, new RegExp(name));
+    }
+  });
+
+  it("allows regular Vision factory input files through the runner guard", async () => {
+    const parsed = parse(read(workflowPath));
+    const guard = parsed.jobs.build.steps[0].run;
+    const visionInputGuard = guard.slice(guard.lastIndexOf("for path in"));
+    const root = await mkdtemp(join(tmpdir(), "vem-factory-vision-guard-"));
+    try {
+      const inputs = Object.fromEntries(
+        [
+          ["VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT", "delivery-unit.json"],
+          [
+            "VEM_FACTORY_REPOSITORY_VISION_TRUSTED_ROOTS",
+            "repository-roots.json",
+          ],
+          ["VEM_FACTORY_FACTORY_VISION_TRUSTED_ROOTS", "factory-roots.json"],
+          ["VEM_FACTORY_VISION_EVIDENCE_VERIFIER", "verifier"],
+        ].map(([name, fileName]) => [name, join(root, fileName)]),
+      );
+      await Promise.all(
+        Object.values(inputs).map((path) => writeFile(path, "fixture\n")),
+      );
+      execFileSync("bash", ["-c", `set -euo pipefail\n${visionInputGuard}`], {
+        env: { ...process.env, ...inputs },
+        stdio: "ignore",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

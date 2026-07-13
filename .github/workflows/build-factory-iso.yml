@@ -117,7 +117,10 @@ jobs:
               *\\*|*..*|//* ) echo "Vision factory input path is unsafe" >&2; exit 1 ;;
             esac
             test -f "$path" || { echo "Vision factory input is not a regular file" >&2; exit 1; }
-            test -L "$path" && { echo "Vision factory input must not be a symlink" >&2; exit 1; }
+            if test -L "$path"; then
+              echo "Vision factory input must not be a symlink" >&2
+              exit 1
+            fi
           done
 
       - name: Checkout Trusted Ref
