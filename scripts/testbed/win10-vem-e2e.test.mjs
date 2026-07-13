@@ -542,6 +542,246 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
   };
 }
 
+function runProvisioningRecoveryPowerShellHarness(scenario) {
+  const generated = buildRemotePowerShellScript({
+    mode: "provision",
+    claimCode: "ABCD-2345",
+    machineCode: "VEM-TESTBED-WINVM-01",
+    platformTarget: "vem-vps",
+  });
+  const functionDefinitions = generated.slice(
+    0,
+    generated.indexOf("\n$mode = "),
+  );
+  const root = mkdtempSync(join(tmpdir(), "vem-provisioning-recovery-"));
+  const scriptPath = join(root, "harness.ps1");
+  const harness = String.raw`
+$script:serviceStatus = "Running"
+$script:startCalls = 0
+$script:startErrorAction = $null
+$script:restartCalls = 0
+$script:restartErrorAction = $null
+$script:restartShouldFail = $false
+$script:requireRestartBeforeHealth = $false
+$script:healthShouldFail = $false
+$script:healthCalls = 0
+$script:claimed = $false
+$script:timeouts = [System.Collections.Generic.List[object]]::new()
+
+function Get-Service {
+  param([string]$Name, $ErrorAction)
+  [pscustomobject]@{ Status = $script:serviceStatus }
+}
+
+function Start-Service {
+  param([string]$Name, $ErrorAction)
+  $script:startCalls++
+  $script:startErrorAction = [string]$ErrorAction
+  $script:serviceStatus = "Running"
+}
+
+function Restart-Service {
+  param([string]$Name, [switch]$Force, $ErrorAction)
+  $script:restartCalls++
+  $script:restartErrorAction = [string]$ErrorAction
+  if ($script:restartShouldFail) {
+    throw "SCM restart failed"
+  }
+  $script:serviceStatus = "Running"
+}
+
+function Read-JsonFile {
+  param([string]$Path)
+  [pscustomobject]@{
+    ipcToken = "test-ipc-token"
+    healthzUrl = "http://127.0.0.1:4012/healthz"
+  }
+}
+
+function Get-IpcBaseUrl {
+  param($Ready)
+  "http://127.0.0.1:4012"
+}
+
+function Test-Path {
+  param([string]$LiteralPath)
+  $false
+}
+
+function New-Item {
+  param($ItemType, $Path, [switch]$Force)
+  [pscustomobject]@{}
+}
+
+function Set-Content {
+  param([string]$LiteralPath, $Value, $Encoding)
+}
+
+function Start-Sleep {
+  param([int]$Seconds)
+}
+
+function Invoke-RestMethod {
+  param(
+    [string]$Method,
+    [string]$Uri,
+    $Headers,
+    $ContentType,
+    $Body,
+    [int]$TimeoutSec
+  )
+  $script:timeouts.Add([pscustomobject]@{
+    method = $Method
+    uri = $Uri
+    timeoutSec = $TimeoutSec
+  }) | Out-Null
+
+  if ($Uri.EndsWith("/healthz")) {
+    $script:healthCalls++
+    if ($script:requireRestartBeforeHealth -and $script:restartCalls -ne 1) {
+      throw "health checked before SCM restart"
+    }
+    if ($script:healthShouldFail) {
+      throw "daemon IPC unavailable"
+    }
+    return [pscustomobject]@{
+      status = "degraded"
+      hardwareOnline = $false
+      scannerOnline = $false
+      backendOnline = $true
+      mqttConnected = $true
+    }
+  }
+  if ($Uri.EndsWith("/readyz")) {
+    return [pscustomobject]@{ ready = $true; canSell = $false; blockingCodes = @() }
+  }
+  if ($Uri.EndsWith("/v1/provisioning/claim")) {
+    $script:claimed = $true
+    return [pscustomobject]@{
+      machineCode = "VEM-TESTBED-WINVM-01"
+      restartRequested = $true
+    }
+  }
+  if ($Uri.EndsWith("/v1/config")) {
+    return [pscustomobject]@{
+      provisioned = $script:claimed
+      public = [pscustomobject]@{
+        machineCode = if ($script:claimed) { "VEM-TESTBED-WINVM-01" } else { $null }
+        machineId = $null
+        machineName = $null
+        machineStatus = $null
+        machineLocationLabel = $null
+        mqttUsername = $null
+        mqttClientId = $null
+        runtimeEndpoints = $null
+        hardwareProfile = $null
+        paymentCapability = $null
+        provisioningMetadata = $null
+        hardwareAdapter = "serial"
+        serialPortPath = "COM31"
+        lowerControllerUsbIdentity = $null
+        scannerAdapter = "serial_text"
+        scannerSerialPortPath = "COM32"
+        scannerUsbIdentity = $null
+        scannerBaudRate = 9600
+        scannerFrameSuffix = "crlf"
+        visionEnabled = $false
+        visionWsUrl = $null
+        visionRequestTimeoutMs = 1000
+        machineAudioVolume = 80
+        audioCueSettings = $null
+        kioskMode = $true
+        stockMovementRetentionDays = 30
+        apiBaseUrl = "http://118.25.104.160:26849/api"
+        mqttUrl = "mqtt://118.25.104.160:1883"
+      }
+      machineSecretConfigured = $script:claimed
+      mqttSigningSecretConfigured = $script:claimed
+      mqttPasswordConfigured = $false
+      provisioningIssues = @()
+    }
+  }
+  throw "unexpected IPC request: $Method $Uri"
+}
+
+switch ($args[0]) {
+  "stopped-starts" {
+    $script:serviceStatus = "Stopped"
+    $recovery = Wait-DaemonIpcAfterProvisioningRestart "C:\\fake\\daemon-ready.json"
+    $result = [ordered]@{
+      recovered = [bool]$recovery.recovered
+      attempts = [int]$recovery.attempts
+      startCalls = $script:startCalls
+      startErrorAction = $script:startErrorAction
+      healthTimeouts = @($script:timeouts | Where-Object { $_.uri.EndsWith("/healthz") } | ForEach-Object { $_.timeoutSec })
+    }
+  }
+  "claim-restarts" {
+    $script:requireRestartBeforeHealth = $true
+    $actions = [System.Collections.Generic.List[object]]::new()
+    Invoke-TestbedProvisioningClaim $actions
+    $action = $actions[0]
+    $result = [ordered]@{
+      actionStatus = [string]$action.status
+      restartCalls = $script:restartCalls
+      restartErrorAction = $script:restartErrorAction
+      recoveredAfterRestart = [bool]$action.evidence.claimResult.recoveredAfterRestart
+      recoveryAttempts = [int]$action.evidence.claimResult.recoveryAttempts
+      healthCalls = $script:healthCalls
+      healthTimeouts = @($script:timeouts | Where-Object { $_.uri.EndsWith("/healthz") } | ForEach-Object { $_.timeoutSec })
+      configTimeouts = @($script:timeouts | Where-Object { $_.uri.EndsWith("/v1/config") } | ForEach-Object { $_.timeoutSec })
+      claimTimeouts = @($script:timeouts | Where-Object { $_.uri.EndsWith("/v1/provisioning/claim") } | ForEach-Object { $_.timeoutSec })
+    }
+  }
+  "restart-fails" {
+    $script:restartShouldFail = $true
+    $actions = [System.Collections.Generic.List[object]]::new()
+    Invoke-TestbedProvisioningClaim $actions
+    $action = $actions[0]
+    $result = [ordered]@{
+      actionStatus = [string]$action.status
+      actionMessage = [string]$action.message
+      restartCalls = $script:restartCalls
+      recoveredAfterRestart = [bool]$action.evidence.claimResult.recoveredAfterRestart
+      recoveryAttempts = [int]$action.evidence.claimResult.recoveryAttempts
+      healthCalls = $script:healthCalls
+    }
+  }
+  "health-fails" {
+    $script:healthShouldFail = $true
+    $actions = [System.Collections.Generic.List[object]]::new()
+    Invoke-TestbedProvisioningClaim $actions
+    $action = $actions[0]
+    $result = [ordered]@{
+      actionStatus = [string]$action.status
+      actionMessage = [string]$action.message
+      restartCalls = $script:restartCalls
+      recoveredAfterRestart = [bool]$action.evidence.claimResult.recoveredAfterRestart
+      recoveryAttempts = [int]$action.evidence.claimResult.recoveryAttempts
+      healthCalls = $script:healthCalls
+    }
+  }
+  default { throw "unknown harness scenario" }
+}
+
+$result | ConvertTo-Json -Compress
+`;
+  try {
+    writeFileSync(scriptPath, `${functionDefinitions}\n${harness}`, "utf8");
+    const result = spawnSync(
+      "pwsh",
+      ["-NoProfile", "-File", scriptPath, scenario],
+      {
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 function commandArg(command, flag) {
   const index = command.indexOf(flag);
   return index === -1 ? undefined : command[index + 1];
@@ -1493,6 +1733,51 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /mqttSigningSecret\s*=/);
     assert.doesNotMatch(script, /mqttPassword\s*=/);
     assert.doesNotMatch(script, /vms_local/);
+  });
+
+  it("uses SCM restart evidence before accepting post-claim daemon IPC recovery", () => {
+    const stoppedStarts =
+      runProvisioningRecoveryPowerShellHarness("stopped-starts");
+    assert.deepEqual(stoppedStarts, {
+      recovered: true,
+      attempts: 1,
+      startCalls: 1,
+      startErrorAction: "Stop",
+      healthTimeouts: [2],
+    });
+
+    const recovered =
+      runProvisioningRecoveryPowerShellHarness("claim-restarts");
+    assert.equal(recovered.actionStatus, "succeeded");
+    assert.equal(recovered.restartCalls, 1);
+    assert.equal(recovered.restartErrorAction, "Stop");
+    assert.equal(recovered.recoveredAfterRestart, true);
+    assert.equal(recovered.recoveryAttempts, 1);
+    assert.equal(recovered.healthCalls, 2);
+    assert.deepEqual(recovered.healthTimeouts, [2, 20]);
+    assert.deepEqual(recovered.configTimeouts, [20, 60, 20]);
+    assert.deepEqual(recovered.claimTimeouts, [60]);
+
+    const restartFailure =
+      runProvisioningRecoveryPowerShellHarness("restart-fails");
+    assert.equal(restartFailure.actionStatus, "failed");
+    assert.match(restartFailure.actionMessage, /SCM restart failed/);
+    assert.equal(restartFailure.restartCalls, 1);
+    assert.equal(restartFailure.recoveredAfterRestart, false);
+    assert.equal(restartFailure.recoveryAttempts, 0);
+    assert.equal(restartFailure.healthCalls, 0);
+
+    const healthFailure =
+      runProvisioningRecoveryPowerShellHarness("health-fails");
+    assert.equal(healthFailure.actionStatus, "failed");
+    assert.match(
+      healthFailure.actionMessage,
+      /did not recover after provisioning restart/,
+    );
+    assert.equal(healthFailure.restartCalls, 1);
+    assert.equal(healthFailure.recoveredAfterRestart, false);
+    assert.equal(healthFailure.recoveryAttempts, 20);
+    assert.equal(healthFailure.healthCalls, 20);
   });
 
   it("emits provision diagnostics for missing ready file and token failures", () => {

@@ -4185,9 +4185,9 @@ function Get-HttpErrorInfo($ErrorRecord) {
   }
 }
 
-function Invoke-IpcJson([string]$Method, [string]$Uri, $Headers, $Body = $null) {
+function Invoke-IpcJson([string]$Method, [string]$Uri, $Headers, $Body = $null, [int]$TimeoutSec = 20) {
   if ($null -eq $Body) {
-    return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -TimeoutSec 20
+    return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -TimeoutSec $TimeoutSec
   }
   $json = $Body | ConvertTo-Json -Depth 40 -Compress
   return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -ContentType "application/json" -Body $json -TimeoutSec 60
@@ -4374,12 +4374,14 @@ function Get-SafeReadyzEvidence([string]$BaseUrl) {
 }
 
 function Wait-DaemonIpcAfterProvisioningRestart([string]$ReadyFilePath) {
+  $maxAttempts = 20
+  $retryDelaySeconds = 1
   $lastError = $null
-  for ($attempt = 0; $attempt -lt 18; $attempt++) {
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
     try {
       $service = Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
       if ($null -ne $service -and $service.Status -eq "Stopped") {
-        Start-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
+        Start-Service -Name "VemVendingDaemon" -ErrorAction Stop
       }
 
       $ready = Read-JsonFile $ReadyFilePath
@@ -4388,20 +4390,30 @@ function Wait-DaemonIpcAfterProvisioningRestart([string]$ReadyFilePath) {
       }
       $baseUrl = Get-IpcBaseUrl $ready
       $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
-      Invoke-IpcJson "GET" "$baseUrl/healthz" @{} | Out-Null
+      Invoke-IpcJson "GET" "$baseUrl/healthz" @{} -TimeoutSec 2 | Out-Null
       return [ordered]@{
         ready = $ready
         baseUrl = $baseUrl
         headers = $headers
-        attempts = $attempt + 1
+        attempts = $attempt
         recovered = $true
+        error = $null
       }
     } catch {
       $lastError = $_.Exception.Message
-      Start-Sleep -Seconds 2
+      if ($attempt -lt $maxAttempts) {
+        Start-Sleep -Seconds $retryDelaySeconds
+      }
     }
   }
-  throw "daemon IPC did not recover after provisioning restart: $lastError"
+  return [ordered]@{
+    ready = $null
+    baseUrl = $null
+    headers = $null
+    attempts = $maxAttempts
+    recovered = $false
+    error = "daemon IPC did not recover after provisioning restart: $lastError"
+  }
 }
 
 function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
@@ -4521,6 +4533,9 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     claimHttpStatus = $null
     claimResult = [ordered]@{
       restartRequested = $null
+      restartAttempted = $false
+      recoveredAfterRestart = $null
+      recoveryAttempts = 0
     }
     machineCode = $null
     provisioned = $false
@@ -4567,20 +4582,27 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       $evidence.claimHttpStatus = 200
       $evidence.machineCode = $claimResult.machineCode
       $evidence.claimResult.restartRequested = if ($null -ne $claimResult.restartRequested) { [bool]$claimResult.restartRequested } else { $null }
-      if ([bool]$evidence.claimResult.restartRequested) {
-        $recoveredIpc = Wait-DaemonIpcAfterProvisioningRestart ${psString(bringUpPlan.arguments.DaemonReadyFile)}
-        $ready = $recoveredIpc.ready
-        $baseUrl = $recoveredIpc.baseUrl
-        $headers = $recoveredIpc.headers
-        $evidence.claimResult.recoveredAfterRestart = [bool]$recoveredIpc.recovered
-        $evidence.claimResult.recoveryAttempts = [int]$recoveredIpc.attempts
-      }
     } catch {
       $claimError = Get-HttpErrorInfo $_
       $evidence.claimStatus = "failed"
       $evidence.claimFailureCode = Convert-ClaimFailureClassification $claimError
       $evidence.claimHttpStatus = $claimError.statusCode
       throw "daemon IPC claim failed: $($evidence.claimFailureCode)"
+    }
+
+    if ([bool]$evidence.claimResult.restartRequested) {
+      $evidence.claimResult.restartAttempted = $true
+      $evidence.claimResult.recoveredAfterRestart = $false
+      Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
+      $recoveredIpc = Wait-DaemonIpcAfterProvisioningRestart ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+      $evidence.claimResult.recoveryAttempts = [int]$recoveredIpc.attempts
+      if (-not [bool]$recoveredIpc.recovered) {
+        throw [string]$recoveredIpc.error
+      }
+      $ready = $recoveredIpc.ready
+      $baseUrl = $recoveredIpc.baseUrl
+      $headers = $recoveredIpc.headers
+      $evidence.claimResult.recoveredAfterRestart = $true
     }
 
     $evidence.healthzAfterClaim = Get-SafeHealthzEvidence $baseUrl
