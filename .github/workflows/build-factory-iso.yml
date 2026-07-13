@@ -149,7 +149,7 @@ jobs:
             --env "VEM_FACTORY_EXPECTED_UDF_WRITER_VERSION=$VEM_FACTORY_UDF_WRITER_VERSION" \
             --env "VEM_FACTORY_EXPECTED_WIMLIB_DIGEST=$VEM_FACTORY_WIMLIB_DIGEST" \
             --env "VEM_FACTORY_EXPECTED_WIMLIB_VERSION=$VEM_FACTORY_WIMLIB_VERSION" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace/repo,readonly" \
             --mount "type=bind,src=$VEM_FACTORY_ASSET_STORE,dst=/factory-assets" \
             --mount "type=bind,src=$VEM_FACTORY_MANIFEST_STORE,dst=/factory-manifests,readonly" \
             --mount "type=bind,src=$VEM_FACTORY_WINDOWS_SOURCE_STORE,dst=/windows-source,readonly" \
@@ -162,7 +162,7 @@ jobs:
             --mount "type=bind,src=$VEM_FACTORY_AUTHENTICODE_CA_BUNDLE,dst=/factory-policy/authenticode-ca.pem,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/vem-factory-output,dst=/factory-output" \
             "$docker_builder_image" \
-            node /workspace/scripts/factory/factory-cli.mjs \
+            node /workspace/repo/scripts/factory/factory-cli.mjs \
               --manifest-store /factory-manifests \
               --asset-store /factory-assets \
               --windows-source-store /windows-source \

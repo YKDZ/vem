@@ -199,8 +199,13 @@ describe("Factory Manifest and media workflow contract", () => {
     );
     assert.match(
       script,
-      /"\$docker_builder_image" \\\n\s+node \/workspace\/scripts\/factory\/factory-cli\.mjs/,
+      /--mount "type=bind,src=\$GITHUB_WORKSPACE,dst=\/workspace\/repo,readonly"/,
     );
+    assert.match(
+      script,
+      /"\$docker_builder_image" \\\n\s+node \/workspace\/repo\/scripts\/factory\/factory-cli\.mjs/,
+    );
+    assert.doesNotMatch(script, /pnpm(?:\s+install)?/);
     assert.doesNotMatch(script, /docker pull "\$VEM_FACTORY_BUILDER_IMAGE"/);
   });
 
@@ -253,6 +258,28 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.doesNotMatch(
       read("scripts/factory/build-factory-media.test.mjs"),
       /spawnSync\(\s*["']pwsh["']|execFileSync\(\s*["']pwsh["']/,
+    );
+    const runtimeDependencyStep = workflow.slice(
+      workflow.indexOf(
+        "- name: Load Factory Manifest Runtime Dependency Without Host node_modules",
+      ),
+      workflow.indexOf("- name: Run Factory Media Contract Tests In Builder"),
+    );
+    assert.match(
+      runtimeDependencyStep,
+      /docker run --rm --network none --read-only --tmpfs \/tmp/,
+    );
+    assert.match(
+      runtimeDependencyStep,
+      /src="\$GITHUB_WORKSPACE\/scripts",dst=\/workspace\/repo\/scripts,readonly/,
+    );
+    assert.match(
+      runtimeDependencyStep,
+      /src="\$GITHUB_WORKSPACE\/public",dst=\/workspace\/repo\/public,readonly/,
+    );
+    assert.match(
+      runtimeDependencyStep,
+      /node --input-type=module --eval 'import\("\/workspace\/repo\/scripts\/factory\/factory-manifest\.mjs"\)'/,
     );
   });
 

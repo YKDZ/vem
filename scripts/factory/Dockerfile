@@ -17,7 +17,16 @@ RUN --mount=type=cache,target=/var/cache/apt \
       wimtools=1.14.4-1.1build2 \
     && rm -rf /var/lib/apt/lists/*
 
-FROM toolchain AS runtime
+FROM node-source AS factory-runtime-dependencies
 WORKDIR /workspace
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=vem-factory-pnpm-store,target=/pnpm/store \
+    corepack enable pnpm \
+    && pnpm config set store-dir /pnpm/store \
+    && pnpm install --prod --frozen-lockfile --ignore-scripts
+
+FROM toolchain AS runtime
 RUN corepack enable pnpm
-CMD ["node", "/workspace/scripts/factory/factory-cli.mjs"]
+COPY --from=factory-runtime-dependencies /workspace/node_modules /workspace/node_modules
+WORKDIR /workspace/repo
+CMD ["node", "/workspace/repo/scripts/factory/factory-cli.mjs"]

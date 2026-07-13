@@ -106,6 +106,14 @@ jobs:
             --tag vem-factory-media-test:${{ github.sha }} \
             .
 
+      - name: Load Factory Manifest Runtime Dependency Without Host node_modules
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            --mount type=bind,src="$GITHUB_WORKSPACE/scripts",dst=/workspace/repo/scripts,readonly \
+            --mount type=bind,src="$GITHUB_WORKSPACE/public",dst=/workspace/repo/public,readonly \
+            vem-factory-media-test:${{ github.sha }} \
+            node --input-type=module --eval 'import("/workspace/repo/scripts/factory/factory-manifest.mjs")'
+
       - name: Run Factory Media Contract Tests In Builder
         run: |
           docker run --rm \
