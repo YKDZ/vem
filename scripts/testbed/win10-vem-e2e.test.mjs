@@ -27,6 +27,10 @@ import {
   buildReadyFileEvidence,
   buildInteractiveDesktopDisplayBaseline,
   assertSimulatedSaleFlowPreMutationTarget,
+  buildScannerFrame,
+  evaluateDualComSaleFlowEvidence,
+  parseHostScannerSimulatorOptions,
+  resolveDualComSaleFlowOptions,
   readEphemeralPlatformSetupEvidence,
   buildKioskRuntimeEvidence,
   buildPortraitKioskAcceptance,
@@ -49,6 +53,7 @@ import {
   findActiveKioskSession,
   getRuntimeAcceptanceExitStatus,
   isStrictTauriHashRouteUrl,
+  writeHostScannerFrames,
 } from "./win10-vem-e2e.mjs";
 
 describe("factory acceptance cancellation cleanup", () => {
@@ -1689,6 +1694,108 @@ describe("win10-vem-e2e reset planning", () => {
     }
   });
 
+  it("requires distinct real COM roles and rejects mock, tcp, and software scanner evidence", () => {
+    assert.deepEqual(
+      resolveDualComSaleFlowOptions({
+        lowerControllerComPort: "com31",
+        scannerComPort: "COM32",
+        hostScannerDevice: "/dev/ttyVEMScanner",
+      }),
+      {
+        lowerControllerComPort: "COM31",
+        scannerComPort: "COM32",
+        hostScannerDevice: "/dev/ttyVEMScanner",
+        scannerPaymentCodeEnv: "VEM_TESTBED_SCANNER_PAYMENT_CODE",
+      },
+    );
+    assert.throws(
+      () =>
+        resolveDualComSaleFlowOptions({
+          lowerControllerComPort: "COM31",
+          scannerComPort: "COM31",
+          hostScannerDevice: "/dev/ttyVEMScanner",
+        }),
+      /must be distinct/,
+    );
+    assert.throws(
+      () =>
+        resolveDualComSaleFlowOptions({
+          lowerControllerComPort: "COM31",
+          scannerComPort: "COM32",
+          hostScannerDevice: "tcp://127.0.0.1:17992",
+        }),
+      /not a tcp:\/\/ transport/,
+    );
+
+    const accepted = evaluateDualComSaleFlowEvidence({
+      lowerController: { adapter: "serial", port: "COM31" },
+      scanner: { adapter: "serial_text", port: "COM32", online: true },
+      observedComPorts: ["COM31", "COM32"],
+      scannerInput: { source: "host_serial_simulator", transport: "serial" },
+    });
+    assert.deepEqual(accepted, { ok: true, diagnostics: [] });
+    for (const scannerInput of [
+      { source: "manual_dev", transport: "serial" },
+      { source: "host_serial_simulator", transport: "tcp://127.0.0.1:17992" },
+    ]) {
+      const rejected = evaluateDualComSaleFlowEvidence({
+        lowerController: { adapter: "mock", port: "COM31" },
+        scanner: { adapter: "serial_text", port: "COM32", online: true },
+        observedComPorts: ["COM31", "COM32"],
+        scannerInput,
+      });
+      assert.equal(rejected.ok, false);
+      assert.ok(
+        rejected.diagnostics.includes(
+          "mock_tcp_or_software_injection_rejected",
+        ),
+      );
+    }
+  });
+
+  it("writes masked, framed host scanner input without accepting raw codes on the command line", async () => {
+    const options = parseHostScannerSimulatorOptions(
+      {
+        hostScannerDevice: "/dev/ttyVEMScanner",
+        scannerPaymentCodeEnv: "TEST_PAYMENT_CODE",
+        scannerAttempts: 2,
+        scannerInitialDelayMs: 0,
+        scannerIntervalMs: 0,
+      },
+      { TEST_PAYMENT_CODE: "621234567890123456" },
+    );
+    assert.deepEqual(
+      buildScannerFrame("621234567890123456"),
+      Buffer.from("621234567890123456\r\n"),
+    );
+    const writes = [];
+    const result = await writeHostScannerFrames(options, {
+      open: () => 99,
+      write: (_descriptor, frame) => writes.push(frame.toString("ascii")),
+      close: () => {},
+      wait: async () => {},
+    });
+    assert.deepEqual(writes, [
+      "621234567890123456\r\n",
+      "621234567890123456\r\n",
+    ]);
+    assert.deepEqual(result, {
+      kind: "host-scanner-simulator/v1",
+      transport: "serial",
+      device: "/dev/ttyVEMScanner",
+      frameSuffix: "crlf",
+      maskedCode: "6212****3456",
+      framesWritten: 2,
+    });
+    assert.throws(
+      () =>
+        parseHostScannerSimulatorOptions({
+          hostScannerDevice: "/dev/ttyVEMScanner",
+        }),
+      /payment code must contain/,
+    );
+  });
+
   it("allows provision to use same-run ephemeral target evidence instead of the static allowlist", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-provision-evidence-"));
     try {
@@ -2041,6 +2148,9 @@ describe("win10-vem-e2e reset planning", () => {
         machineCode: "VEM-TESTBED-WINVM-01",
         runId: "RUN-180",
         ephemeralPlatformEvidence: evidencePath,
+        lowerControllerComPort: "COM31",
+        scannerComPort: "COM32",
+        hostScannerDevice: "/dev/ttyVEMScanner",
       });
     } finally {
       rmSync(temp, { recursive: true, force: true });
@@ -2070,10 +2180,12 @@ describe("win10-vem-e2e reset planning", () => {
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/create-order"/,
     );
-    assert.match(
-      script,
-      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/mock-payment"/,
-    );
+    assert.doesNotMatch(script, /v1\/intents\/mock-payment/);
+    assert.doesNotMatch(script, /v1\/intents\/dev-submit-payment-code/);
+    assert.match(script, /function Configure-DualComSaleFlow/);
+    assert.match(script, /paymentMethod = "payment_code"/);
+    assert.match(script, /host_serial_simulator/);
+    assert.match(script, /distinct_real_com_roles_required/);
     assert.match(
       script,
       /Invoke-TestbedProvisioningClaim \$provisioningActions/,

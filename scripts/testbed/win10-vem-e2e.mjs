@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -256,6 +259,9 @@ const DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX = "VEM-TESTBED-WINVM";
 const DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT = "artifacts/vm-runtime-acceptance";
 const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
   "artifacts/clean-base-factory-acceptance";
+const WINDOWS_COM_PORT_PATTERN = /^COM[1-9][0-9]*$/i;
+const DEFAULT_HOST_SCANNER_PAYMENT_CODE_ENV =
+  "VEM_TESTBED_SCANNER_PAYMENT_CODE";
 
 export function buildBringUpPlan(options = {}) {
   const maintenanceIngressSourceAllowlist = String(
@@ -588,6 +594,207 @@ export function assertSimulatedSaleFlowPreMutationTarget({
     return { ok: false, code: "ephemeral_platform_target_mismatch" };
   }
   return { ok: true, code: "pre_mutation_target_verified" };
+}
+
+function normalizeWindowsComPort(value, optionName) {
+  const port = String(value ?? "")
+    .trim()
+    .toUpperCase();
+  if (!WINDOWS_COM_PORT_PATTERN.test(port)) {
+    throw new Error(`${optionName} must be a Windows COM port such as COM3`);
+  }
+  return port;
+}
+
+export function resolveDualComSaleFlowOptions(options = {}) {
+  const lowerControllerComPort = normalizeWindowsComPort(
+    options.lowerControllerComPort,
+    "--lower-controller-com-port",
+  );
+  const scannerComPort = normalizeWindowsComPort(
+    options.scannerComPort,
+    "--scanner-com-port",
+  );
+  if (lowerControllerComPort === scannerComPort) {
+    throw new Error(
+      "--lower-controller-com-port and --scanner-com-port must be distinct",
+    );
+  }
+
+  const hostScannerDevice = String(options.hostScannerDevice ?? "").trim();
+  if (!hostScannerDevice || /^tcp:\/\//i.test(hostScannerDevice)) {
+    throw new Error(
+      "--host-scanner-device must name the host side of the scanner serial device, not a tcp:// transport",
+    );
+  }
+
+  const scannerPaymentCodeEnv = String(
+    options.scannerPaymentCodeEnv ?? DEFAULT_HOST_SCANNER_PAYMENT_CODE_ENV,
+  ).trim();
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(scannerPaymentCodeEnv)) {
+    throw new Error(
+      "--scanner-payment-code-env must be an environment variable name",
+    );
+  }
+
+  return {
+    lowerControllerComPort,
+    scannerComPort,
+    hostScannerDevice,
+    scannerPaymentCodeEnv,
+  };
+}
+
+export function evaluateDualComSaleFlowEvidence(evidence = {}) {
+  const diagnostics = [];
+  const lowerControllerPort = String(
+    evidence.lowerController?.port ?? "",
+  ).toUpperCase();
+  const scannerPort = String(evidence.scanner?.port ?? "").toUpperCase();
+  const observedPorts = new Set(
+    (evidence.observedComPorts ?? []).map((port) => String(port).toUpperCase()),
+  );
+
+  if (evidence.lowerController?.adapter !== "serial") {
+    diagnostics.push("lower_controller_serial_adapter_required");
+  }
+  if (evidence.scanner?.adapter !== "serial_text") {
+    diagnostics.push("scanner_serial_text_adapter_required");
+  }
+  if (
+    !WINDOWS_COM_PORT_PATTERN.test(lowerControllerPort) ||
+    !WINDOWS_COM_PORT_PATTERN.test(scannerPort) ||
+    lowerControllerPort === scannerPort ||
+    !observedPorts.has(lowerControllerPort) ||
+    !observedPorts.has(scannerPort)
+  ) {
+    diagnostics.push("distinct_real_com_roles_required");
+  }
+  if (evidence.scanner?.online !== true) {
+    diagnostics.push("scanner_not_online");
+  }
+  if (evidence.scannerInput?.source !== "host_serial_simulator") {
+    diagnostics.push("host_serial_scanner_input_required");
+  }
+
+  const rejectedValues = [
+    evidence.lowerController?.adapter,
+    evidence.lowerController?.port,
+    evidence.scanner?.adapter,
+    evidence.scanner?.port,
+    evidence.scannerInput?.source,
+    evidence.scannerInput?.transport,
+  ]
+    .filter((value) => value !== null && value !== undefined)
+    .map((value) => String(value).toLowerCase());
+  if (
+    rejectedValues.some(
+      (value) =>
+        value === "mock" ||
+        value.includes("tcp://") ||
+        value.includes("software") ||
+        value.includes("manual_dev") ||
+        value.includes("browser_test"),
+    )
+  ) {
+    diagnostics.push("mock_tcp_or_software_injection_rejected");
+  }
+
+  return { ok: diagnostics.length === 0, diagnostics };
+}
+
+export function buildScannerFrame(paymentCode, suffix = "crlf") {
+  const code = String(paymentCode ?? "").trim();
+  if (!/^[0-9]{8,32}$/.test(code)) {
+    throw new Error("payment code must contain 8 to 32 digits");
+  }
+  const terminator = { crlf: "\r\n", lf: "\n", cr: "\r", none: "" }[suffix];
+  if (terminator === undefined) {
+    throw new Error("frame suffix must be crlf, lf, cr, or none");
+  }
+  return Buffer.from(`${code}${terminator}`, "ascii");
+}
+
+export function maskScannerPaymentCode(paymentCode) {
+  const code = String(paymentCode ?? "").trim();
+  return code.length < 8 ? "****" : `${code.slice(0, 4)}****${code.slice(-4)}`;
+}
+
+export function parseHostScannerSimulatorOptions(
+  options = {},
+  env = process.env,
+) {
+  const hostScannerDevice = String(options.hostScannerDevice ?? "").trim();
+  const scannerPaymentCodeEnv = String(
+    options.scannerPaymentCodeEnv ?? DEFAULT_HOST_SCANNER_PAYMENT_CODE_ENV,
+  ).trim();
+  const attempts = Number(options.scannerAttempts ?? 12);
+  const initialDelayMs = Number(options.scannerInitialDelayMs ?? 2_000);
+  const intervalMs = Number(options.scannerIntervalMs ?? 1_000);
+  const suffix = String(options.scannerFrameSuffix ?? "crlf");
+  if (!hostScannerDevice || /^tcp:\/\//i.test(hostScannerDevice)) {
+    throw new Error(
+      "--host-scanner-device must be a host serial device, not a tcp:// transport",
+    );
+  }
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(scannerPaymentCodeEnv)) {
+    throw new Error(
+      "--scanner-payment-code-env must be an environment variable name",
+    );
+  }
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 120) {
+    throw new Error("--scanner-attempts must be an integer between 1 and 120");
+  }
+  for (const [name, value] of [
+    ["--scanner-initial-delay-ms", initialDelayMs],
+    ["--scanner-interval-ms", intervalMs],
+  ]) {
+    if (!Number.isInteger(value) || value < 0 || value > 60_000) {
+      throw new Error(`${name} must be an integer between 0 and 60000`);
+    }
+  }
+  const paymentCode = env[scannerPaymentCodeEnv];
+  return {
+    device: hostScannerDevice,
+    attempts,
+    initialDelayMs,
+    intervalMs,
+    suffix,
+    frame: buildScannerFrame(paymentCode, suffix),
+    maskedCode: maskScannerPaymentCode(paymentCode),
+  };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function writeHostScannerFrames(options, io = {}) {
+  const open = io.open ?? ((device) => openSync(device, "w"));
+  const write =
+    io.write ?? ((descriptor, frame) => writeSync(descriptor, frame));
+  const close = io.close ?? ((descriptor) => closeSync(descriptor));
+  const wait = io.wait ?? delay;
+  await wait(options.initialDelayMs);
+  const descriptor = open(options.device);
+  let framesWritten = 0;
+  try {
+    for (let attempt = 0; attempt < options.attempts; attempt += 1) {
+      write(descriptor, options.frame);
+      framesWritten += 1;
+      if (attempt + 1 < options.attempts) await wait(options.intervalMs);
+    }
+  } finally {
+    close(descriptor);
+  }
+  return {
+    kind: "host-scanner-simulator/v1",
+    transport: "serial",
+    device: options.device,
+    frameSuffix: options.suffix,
+    maskedCode: options.maskedCode,
+    framesWritten,
+  };
 }
 
 function present(value) {
@@ -2439,6 +2646,24 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
     options.platformTarget,
     ...extraArgs,
   ];
+  if (
+    mode === "simulated-hardware-sale-flow" &&
+    options.lowerControllerComPort &&
+    options.scannerComPort &&
+    options.hostScannerDevice
+  ) {
+    command.push(
+      "--lower-controller-com-port",
+      options.lowerControllerComPort,
+      "--scanner-com-port",
+      options.scannerComPort,
+      "--host-scanner-device",
+      options.hostScannerDevice,
+    );
+    if (options.scannerPaymentCodeEnv) {
+      command.push("--scanner-payment-code-env", options.scannerPaymentCodeEnv);
+    }
+  }
   if (options.remote) {
     command.push("--remote", options.remote);
   }
@@ -3652,6 +3877,15 @@ export function buildRemotePowerShellScript(options = {}) {
     runId,
     machineCode,
   });
+  const dualComSaleFlow =
+    mode === "simulated-hardware-sale-flow"
+      ? resolveDualComSaleFlowOptions(options)
+      : {
+          lowerControllerComPort: null,
+          scannerComPort: null,
+          hostScannerDevice: null,
+          scannerPaymentCodeEnv: null,
+        };
   const platformOverride =
     options.platformApiBaseUrl && options.platformMqttUrl
       ? {
@@ -4063,6 +4297,10 @@ function Convert-ConfigSnapshotEvidence($Config) {
       machineSecretConfigured = $false
       mqttSigningSecretConfigured = $false
       mqttPasswordConfigured = $false
+      hardwareAdapter = $null
+      serialPortPath = $null
+      scannerAdapter = $null
+      scannerSerialPortPath = $null
       provisioningIssues = @()
       error = $null
     }
@@ -4076,6 +4314,10 @@ function Convert-ConfigSnapshotEvidence($Config) {
     machineSecretConfigured = [bool]$Config.machineSecretConfigured
     mqttSigningSecretConfigured = [bool]$Config.mqttSigningSecretConfigured
     mqttPasswordConfigured = [bool]$Config.mqttPasswordConfigured
+    hardwareAdapter = if ($null -ne $Config.public) { $Config.public.hardwareAdapter } else { $null }
+    serialPortPath = if ($null -ne $Config.public) { $Config.public.serialPortPath } else { $null }
+    scannerAdapter = if ($null -ne $Config.public) { $Config.public.scannerAdapter } else { $null }
+    scannerSerialPortPath = if ($null -ne $Config.public) { $Config.public.scannerSerialPortPath } else { $null }
     provisioningIssues = @($Config.provisioningIssues | ForEach-Object { [string]$_ })
     error = $null
   }
@@ -6093,6 +6335,46 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if (-not [bool]$Facts.platformSetup.mockPaymentReady) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "mock_payment_readiness_missing" "Ephemeral platform setup must prepare mock payment readiness for the sale flow."
   }
+  if (-not [bool]$Facts.platformSetup.paymentCodeOptionReady) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "payment_code_option_missing" "Ephemeral platform setup must expose a ready payment-code option for the scanner sale flow."
+  }
+  if (
+    [string]$Facts.hardware.lowerController.adapter -ne "serial" -or
+    [string]$Facts.hardware.scanner.adapter -ne "serial_text" -or
+    -not [bool]$Facts.hardware.lowerController.online -or
+    -not [bool]$Facts.hardware.scanner.online
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "production_serial_adapters_required" "Simulated sale flow requires the production lower-controller and serial-text scanner adapters."
+  }
+  $lowerControllerPort = ([string]$Facts.hardware.lowerController.port).ToUpperInvariant()
+  $scannerPort = ([string]$Facts.hardware.scanner.port).ToUpperInvariant()
+  $observedComPorts = @($Facts.hardware.observedComPorts | ForEach-Object { ([string]$_).ToUpperInvariant() })
+  if (
+    $lowerControllerPort -notmatch "^COM[1-9][0-9]*$" -or
+    $scannerPort -notmatch "^COM[1-9][0-9]*$" -or
+    $lowerControllerPort -eq $scannerPort -or
+    $observedComPorts -notcontains $lowerControllerPort -or
+    $observedComPorts -notcontains $scannerPort
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "distinct_real_com_roles_required" "Lower Controller and scanner must use distinct observed Windows COM devices."
+  }
+  if (
+    [string]$Facts.hardware.scannerInput.source -ne "host_serial_simulator" -or
+    [string]::IsNullOrWhiteSpace([string]$Facts.hardware.scannerInput.hostDevice)
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "host_serial_scanner_input_required" "Accepted scanner evidence must identify the host-side serial simulator input path."
+  }
+  $hardwareEvidenceText = @(
+    $Facts.hardware.lowerController.adapter,
+    $Facts.hardware.lowerController.port,
+    $Facts.hardware.scanner.adapter,
+    $Facts.hardware.scanner.port,
+    $Facts.hardware.scannerInput.source,
+    $Facts.hardware.scannerInput.transport
+  ) -join " "
+  if ($hardwareEvidenceText -match "(?i)(^|\\s)mock($|\\s)|tcp://|software|manual_dev|browser_test") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "mock_tcp_or_software_injection_rejected" "Mock adapters, tcp transports, and software payment-code injection cannot satisfy accepted scanner evidence."
+  }
   if (
     -not [bool]$Facts.provisioning.provisioned -or
     -not [bool]$Facts.provisioning.usedMachineClaimCodePath -or
@@ -6138,11 +6420,12 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     [string]::IsNullOrWhiteSpace($Facts.sale.orderId) -or
     [string]::IsNullOrWhiteSpace($Facts.sale.orderNo) -or
     [string]$Facts.sale.orderStatus -ne "fulfilled" -or
-    [string]$Facts.sale.paymentMethod -ne "mock" -or
-    [string]$Facts.sale.paymentProviderCode -ne "mock" -or
+    [string]$Facts.sale.paymentMethod -ne "payment_code" -or
+    [string]::IsNullOrWhiteSpace($Facts.sale.paymentProviderCode) -or
     [string]::IsNullOrWhiteSpace($Facts.sale.paymentNo) -or
     [string]$Facts.sale.paymentStatus -ne "paid" -or
     -not [bool]$Facts.sale.paymentSucceeded -or
+    [string]$Facts.sale.scannerInputSource -ne "serial_text" -or
     [string]::IsNullOrWhiteSpace($Facts.sale.vendingCommandId) -or
     -not [bool]$Facts.sale.dispenseSimulated -or
     [string]$Facts.sale.dispenseResult -ne "dispensed" -or
@@ -6164,6 +6447,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     mode = $Facts.mode
     target = $Facts.target
     runtimeState = $Facts.runtimeState
+    hardware = $Facts.hardware
     provisioning = $Facts.provisioning
     platformSetup = $Facts.platformSetup
     topology = $Facts.topology
@@ -6214,6 +6498,33 @@ function Assert-SimulatedSaleFlowPreMutationTarget($Target, $DaemonMachineCode, 
   return [ordered]@{ ok = $true; code = "pre_mutation_target_verified" }
 }
 
+function Set-ObjectProperty($Object, [string]$Name, $Value) {
+  if ($Object.PSObject.Properties.Name -contains $Name) {
+    $Object.$Name = $Value
+  } else {
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+  }
+}
+
+function Configure-DualComSaleFlow($BaseUrl, $Headers) {
+  $config = Invoke-IpcJson "GET" "$BaseUrl/v1/config" $Headers
+  if ($null -eq $config.public) {
+    throw "daemon config does not include public hardware settings"
+  }
+  $public = $config.public
+  Set-ObjectProperty $public "hardwareAdapter" "serial"
+  Set-ObjectProperty $public "serialPortPath" ${psString(dualComSaleFlow.lowerControllerComPort)}
+  Set-ObjectProperty $public "lowerControllerUsbIdentity" $null
+  Set-ObjectProperty $public "scannerAdapter" "serial_text"
+  Set-ObjectProperty $public "scannerSerialPortPath" ${psString(dualComSaleFlow.scannerComPort)}
+  Set-ObjectProperty $public "scannerUsbIdentity" $null
+  Set-ObjectProperty $public "scannerBaudRate" 9600
+  Set-ObjectProperty $public "scannerFrameSuffix" "crlf"
+  Invoke-IpcJson "PUT" "$BaseUrl/v1/config" $Headers ([ordered]@{ public = $public; secrets = $null }) | Out-Null
+  Restart-Service -Name "VemVendingDaemon" -Force
+  return Wait-DaemonIpcAfterProvisioningRestart ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+}
+
 function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $reportPath = ${psString(SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE)}
   $ready = $null
@@ -6227,9 +6538,12 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $attestation = $null
   $saleView = $null
   $paymentOptions = $null
+  $paymentOption = $null
   $createOrder = $null
-  $mockPayment = $null
   $currentTransaction = $null
+  $scannerStatus = $null
+  $hardwareSelfCheck = $null
+  $dualComConfiguration = $null
   $selectedItem = $null
   $flowError = $null
 
@@ -6242,7 +6556,6 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
 
     $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
-    $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
     $daemonIpcBeforeMutation = Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)}
     $platformSetupGuardEvidence = [ordered]@{
       target = ${psString(ephemeralPlatformSetup?.target ?? "")}
@@ -6257,6 +6570,19 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     if (-not [bool]$preMutationGuard.ok) {
       throw "simulated sale-flow pre-mutation target guard failed: $($preMutationGuard.code)"
     }
+    $recoveredIpc = Configure-DualComSaleFlow $baseUrl $headers
+    $ready = $recoveredIpc.ready
+    $baseUrl = $recoveredIpc.baseUrl
+    $headers = $recoveredIpc.headers
+    $dualComConfiguration = [ordered]@{
+      lowerControllerPort = ${psString(dualComSaleFlow.lowerControllerComPort)}
+      scannerPort = ${psString(dualComSaleFlow.scannerComPort)}
+      restartAttempts = [int]$recoveredIpc.attempts
+    }
+    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
+    $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
+    $scannerStatus = Invoke-IpcJson "GET" "$baseUrl/v1/scanner/status" $headers
+    $hardwareSelfCheck = Invoke-IpcJson "POST" "$baseUrl/v1/hardware/self-check" $headers
 
     $syncPlanogram = Invoke-IpcJson "POST" "$baseUrl/v1/stock/planogram/sync" $headers
     $saleViewBeforeStock = Invoke-IpcJson "GET" "$baseUrl/v1/sale-view" $headers
@@ -6294,31 +6620,41 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     }
     $selectedItem = $selectedItem[0]
     $paymentOptions = Invoke-IpcJson "GET" "$baseUrl/v1/payment-options" $headers
+    $paymentOption = @($paymentOptions.options | Where-Object {
+      [string]$_.method -eq "payment_code" -and
+      -not [string]::IsNullOrWhiteSpace([string]$_.providerCode) -and
+      [bool]$_.ready
+    } | Select-Object -First 1)
+    if ($paymentOption.Count -eq 0) {
+      throw "ephemeral platform must expose a ready payment_code option for the host scanner sale flow"
+    }
+    $paymentOption = $paymentOption[0]
     $orderPayload = [ordered]@{
       inventoryId = [string]$selectedItem.inventoryId
       quantity = 1
       planogramVersion = [string]$saleView.planogramVersion
       slotId = [string]$selectedItem.slotId
       slotCode = [string]$selectedItem.slotCode
-      paymentMethod = "mock"
-      paymentProviderCode = "mock"
+      paymentMethod = "payment_code"
+      paymentProviderCode = [string]$paymentOption.providerCode
       profileSnapshot = [ordered]@{
         source = "testbed_simulated_hardware_sale_flow"
         runId = ${psString(runId)}
       }
     }
     $createOrder = Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order" $headers $orderPayload
-    $mockPayment = Invoke-IpcJson "POST" "$baseUrl/v1/intents/mock-payment" $headers ([ordered]@{
-      orderNo = [string]$createOrder.orderNo
-      succeed = $true
-    })
-    Start-Sleep -Seconds 2
-    $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+      Start-Sleep -Seconds 1
+      $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
+      if ([string]$currentTransaction.paymentStatus -eq "paid" -or [string]$currentTransaction.orderStatus -eq "failed") {
+        break
+      }
+    }
   } catch {
     $flowError = [string]$_
   }
 
-  $daemonIpc = if ($null -ne $daemonIpcBeforeMutation) { $daemonIpcBeforeMutation } else { Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)} }
+  $daemonIpc = Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)}
   $provisioningFacts = Convert-ProvisioningFacts $daemonIpc @($ProvisioningActions)
   $activePlanogramVersion = if ($null -ne $saleView -and -not [string]::IsNullOrWhiteSpace($saleView.planogramVersion)) {
     [string]$saleView.planogramVersion
@@ -6340,29 +6676,21 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   }
   $orderNo = if ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.orderNo)) {
     [string]$createOrder.orderNo
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.orderNo)) {
-    [string]$mockPayment.orderNo
   } else {
     $null
   }
   $paymentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentStatus)) {
     [string]$currentTransaction.paymentStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentStatus)) {
-    [string]$mockPayment.paymentStatus
   } else {
     "unknown"
   }
   $fulfillmentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.fulfillmentStatus)) {
     [string]$currentTransaction.fulfillmentStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.fulfillmentStatus)) {
-    [string]$mockPayment.fulfillmentStatus
   } else {
     "unknown"
   }
   $orderStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderStatus)) {
     [string]$currentTransaction.orderStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.orderStatus)) {
-    [string]$mockPayment.orderStatus
   } else {
     "unknown"
   }
@@ -6432,12 +6760,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $null
   }
-  $paymentNo = if ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentNo)) {
-    [string]$mockPayment.paymentNo
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentNumber)) {
-    [string]$mockPayment.paymentNumber
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.providerTradeNo)) {
-    [string]$mockPayment.providerTradeNo
+  $paymentNo = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentNo)) {
+    [string]$currentTransaction.paymentNo
   } else {
     $null
   }
@@ -6469,6 +6793,27 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       bringUpState = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.state)) { [string]$bringUp.state } else { "unknown" }
       uiDiagnosticsExplicit = $null -ne $bringUp -and [string]$bringUp.hardwareMode -eq "simulated"
     }
+    hardware = [ordered]@{
+      lowerController = [ordered]@{
+        adapter = if ($null -ne $daemonIpc.config) { [string]$daemonIpc.config.hardwareAdapter } else { "unknown" }
+        port = if ($null -ne $daemonIpc.config) { [string]$daemonIpc.config.serialPortPath } else { $null }
+        online = $null -ne $hardwareSelfCheck -and [bool]$hardwareSelfCheck.online
+      }
+      scanner = [ordered]@{
+        adapter = if ($null -ne $daemonIpc.config) { [string]$daemonIpc.config.scannerAdapter } else { "unknown" }
+        port = if ($null -ne $scannerStatus -and -not [string]::IsNullOrWhiteSpace($scannerStatus.port)) { [string]$scannerStatus.port } elseif ($null -ne $daemonIpc.config) { [string]$daemonIpc.config.scannerSerialPortPath } else { $null }
+        online = $null -ne $scannerStatus -and [bool]$scannerStatus.online
+        code = if ($null -ne $scannerStatus) { [string]$scannerStatus.code } else { "missing" }
+      }
+      observedComPorts = @([System.IO.Ports.SerialPort]::GetPortNames() | ForEach-Object { ([string]$_).ToUpperInvariant() } | Sort-Object)
+      scannerInput = [ordered]@{
+        source = "host_serial_simulator"
+        transport = "serial"
+        hostDevice = ${psString(dualComSaleFlow.hostScannerDevice)}
+        paymentCodeEnvironment = ${psString(dualComSaleFlow.scannerPaymentCodeEnv)}
+      }
+      configured = $dualComConfiguration
+    }
     provisioning = [ordered]@{
       provisioned = [bool]$provisioningFacts.provisioned
       usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
@@ -6487,6 +6832,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       evidenceStatus = "prepared"
       claimPath = ${psString(ephemeralPlatformSetup?.claimPath ?? "/api/machines/claim")}
       mockPaymentReady = ${ephemeralPlatformSetup?.mockPaymentReady ? "$true" : "$false"} -and $null -ne $paymentOptions -and @($paymentOptions.options | Where-Object { [string]$_.method -eq "mock" -and [string]$_.providerCode -eq "mock" }).Count -gt 0
+      paymentCodeOptionReady = $null -ne $paymentOption
     }
     topology = [ordered]@{
       expectedIdentity = ${psString(ephemeralPlatformSetup?.hardwareTopologyIdentity ?? "unknown")}
@@ -6517,11 +6863,12 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       orderId = $orderId
       orderNo = $orderNo
       orderStatus = $orderStatus
-      paymentMethod = "mock"
-      paymentProviderCode = "mock"
+      paymentMethod = if ($null -ne $paymentOption) { [string]$paymentOption.method } else { "unknown" }
+      paymentProviderCode = if ($null -ne $paymentOption) { [string]$paymentOption.providerCode } else { "unknown" }
       paymentNo = $paymentNo
       paymentStatus = $paymentStatus
       paymentSucceeded = $paymentStatus -eq "paid"
+      scannerInputSource = if ($null -ne $currentTransaction -and $null -ne $currentTransaction.paymentCodeAttempt) { [string]$currentTransaction.paymentCodeAttempt.source } else { "unknown" }
       vendingCommandId = $vendingCommandId
       dispenseSimulated = $true
       dispenseResult = $dispenseResult
@@ -7356,9 +7703,77 @@ export function getRuntimeAcceptanceExitStatus({
   }
 }
 
+function startHostScannerSimulator(options) {
+  if (options.mode !== "simulated-hardware-sale-flow") return null;
+  const dualCom = resolveDualComSaleFlowOptions(options);
+  const child = spawn(
+    process.execPath,
+    [
+      process.argv[1],
+      "--mode",
+      "host-scanner-simulator",
+      "--host-scanner-device",
+      dualCom.hostScannerDevice,
+      "--payment-code-env",
+      dualCom.scannerPaymentCodeEnv,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  return {
+    child,
+    result: new Promise((resolve) => {
+      child.once("error", (error) => {
+        resolve({ status: 1, stdout, stderr: `${stderr}${error.message}` });
+      });
+      child.once("exit", (status) => resolve({ status, stdout, stderr }));
+    }),
+  };
+}
+
+function applyHostScannerSimulatorResult(stdout, hostScannerResult) {
+  if (!hostScannerResult) return stdout;
+  let output;
+  let scannerEvidence;
+  try {
+    output = JSON.parse(stdout);
+    scannerEvidence = JSON.parse(hostScannerResult.stdout);
+  } catch {
+    return stdout;
+  }
+  output.hostScannerSimulator = {
+    status: hostScannerResult.status === 0 ? "completed" : "failed",
+    evidence: hostScannerResult.status === 0 ? scannerEvidence : null,
+  };
+  if (hostScannerResult.status !== 0) {
+    output.ok = false;
+    output.simulatedHardwareSaleFlow ??= {};
+    output.simulatedHardwareSaleFlow.result ??= {};
+    output.simulatedHardwareSaleFlow.result.simulatedHardwareReady = {
+      status: "failed",
+      asserted: false,
+    };
+    output.simulatedHardwareSaleFlow.diagnostics ??= [];
+    output.simulatedHardwareSaleFlow.diagnostics.push({
+      code: "host_scanner_simulator_failed",
+      message: "Host scanner simulator did not complete its serial writes.",
+    });
+  }
+  return `${JSON.stringify(output, null, 2)}\n`;
+}
+
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--lower-controller-com-port COM] [--scanner-com-port COM] [--host-scanner-device PATH] [--scanner-payment-code-env NAME] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -7370,7 +7785,7 @@ Provision mode reads the daemon ready file, applies only pre-claim platform endp
 
 Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
 
-Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json on the remote host and includes the same report in stdout. It requires --ephemeral-platform-evidence from service-api testbed:prepare-ephemeral-platform, an explicit non-shared --platform-target, a same-run daemon IPC claim, simulated hardware mode, platform planogram sync, stock attestation upload acceptance, mock payment readiness, and simulated dispense success.
+Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json on the remote host and includes the same report in stdout. It requires --ephemeral-platform-evidence, distinct --lower-controller-com-port and --scanner-com-port values, and --host-scanner-device for the host side of the scanner pair. The host scanner simulator reads its payment code from VEM_TESTBED_SCANNER_PAYMENT_CODE by default, writes framed serial input, and never records the raw code. Accepted evidence rejects mock adapters, tcp:// transports, and daemon software injection; it requires a ready payment_code platform option and simulated dispense success.
 
 Dirty-host factory acceptance mode stages specified local artifacts and factory scripts under C:\\ProgramData\\VEM\\evidence\\<run-id>, runs scripted factory preparation with explicit local reset, runs the verifier, and writes dirty-host-factory-acceptance.json. It requires --run-id, --daemon-artifact, --machine-ui-artifact, and remote VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD.
 --use-existing-remote-artifacts is a test-only escape hatch for intentionally accepting C:\\VEM\\bringup\\*.exe instead of uploaded artifacts.
@@ -7420,6 +7835,30 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--platform-target") {
       options.platformTarget = next;
+      index += 1;
+    } else if (arg === "--lower-controller-com-port") {
+      options.lowerControllerComPort = next;
+      index += 1;
+    } else if (arg === "--scanner-com-port") {
+      options.scannerComPort = next;
+      index += 1;
+    } else if (arg === "--host-scanner-device") {
+      options.hostScannerDevice = next;
+      index += 1;
+    } else if (arg === "--scanner-payment-code-env") {
+      options.scannerPaymentCodeEnv = next;
+      index += 1;
+    } else if (arg === "--scanner-attempts") {
+      options.scannerAttempts = next;
+      index += 1;
+    } else if (arg === "--scanner-initial-delay-ms") {
+      options.scannerInitialDelayMs = next;
+      index += 1;
+    } else if (arg === "--scanner-interval-ms") {
+      options.scannerIntervalMs = next;
+      index += 1;
+    } else if (arg === "--scanner-frame-suffix") {
+      options.scannerFrameSuffix = next;
       index += 1;
     } else if (arg === "--claim-code") {
       options.claimCode = next;
@@ -7645,6 +8084,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (options.help) {
         usage();
         process.exit(0);
+      }
+      if (options.mode === "host-scanner-simulator") {
+        const result = await writeHostScannerFrames(
+          parseHostScannerSimulatorOptions(options),
+        );
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return;
       }
       if (options.cleanupFactoryStaging === true) {
         const cleanup = cleanupFactoryAcceptanceStaging(options);
@@ -8070,6 +8516,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           }
         }
 
+        const hostScanner = startHostScannerSimulator(options);
         const result = spawnSync(
           sshCommand[0],
           [...sshCommand.slice(1), remoteCommand],
@@ -8079,11 +8526,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           },
         );
         cancellation.throwIfCancellationRequested();
+        const hostScannerResult = hostScanner ? await hostScanner.result : null;
+        const stdout = applyHostScannerSimulatorResult(
+          result.stdout,
+          hostScannerResult,
+        );
         if (result.stdout && options.out) {
-          writeFileSync(options.out, result.stdout, "utf8");
+          writeFileSync(options.out, stdout, "utf8");
           console.error(`wrote report: ${options.out}`);
         } else if (result.stdout) {
-          process.stdout.write(result.stdout);
+          process.stdout.write(stdout);
         }
         if (result.stderr) {
           process.stderr.write(result.stderr);
@@ -8091,7 +8543,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         process.exitCode = getRuntimeAcceptanceExitStatus({
           mode: options.mode,
           sshStatus: result.status,
-          stdout: result.stdout,
+          stdout,
         });
       } finally {
         try {
