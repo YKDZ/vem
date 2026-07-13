@@ -781,6 +781,64 @@ describe("real deterministic Factory ISO builder", () => {
     }
   });
 
+  it("selects the requested Windows IMAGE from wimlib XML containing every image", async () => {
+    const data = await fixture();
+    const fakeWimlib = join(data.root, "fake-wimlib-imagex");
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<WIM>
+  <IMAGE INDEX="1"><NAME>Windows Home</NAME></IMAGE>
+  <IMAGE INDEX="2"><EDITIONID>Core</EDITIONID></IMAGE>
+  <IMAGE INDEX="3"><NAME>Windows Education</NAME></IMAGE>
+  <IMAGE INDEX="4"><EDITIONID>Professional</EDITIONID><NAME>Windows Pro</NAME></IMAGE>
+  <IMAGE INDEX="5"><NAME>Windows Enterprise</NAME></IMAGE>
+  <IMAGE INDEX="6"><NAME>Windows Pro Education</NAME></IMAGE>
+</WIM>`;
+    await writeFile(fakeWimlib, `#!/bin/sh\ncat <<'XML'\n${xml}\nXML\n`, {
+      mode: 0o755,
+    });
+    const wimlibBytes = await readFile(fakeWimlib);
+    try {
+      const inspect = (expectedInstallImage) =>
+        inspectWindowsSetupIso({
+          isoPath: data.sourcePaths[data.manifest.source.windowsMedia.identity],
+          expectedInstallImage,
+          udfExtractorPath: UDF_EXTRACTOR_PATH,
+          udfExtractor: data.manifest.toolchain.udfExtractor,
+          wimlibPath: fakeWimlib,
+          wimlib: {
+            identity: `tool://fixture@${sha256(wimlibBytes)}`,
+            digest: sha256(wimlibBytes),
+            version: "1.14.4",
+          },
+        });
+      const result = await inspect({
+        index: 4,
+        edition: "Professional",
+        digest: data.manifest.source.installImageDigest,
+      });
+      assert.equal(result.selectedImage.index, 4);
+      assert.equal(result.selectedImage.edition, "Professional");
+      await assert.rejects(
+        inspect({
+          index: 7,
+          edition: "Professional",
+          digest: data.manifest.source.installImageDigest,
+        }),
+        /selected Windows image index 7 does not exist/,
+      );
+      await assert.rejects(
+        inspect({
+          index: 4,
+          edition: "Enterprise",
+          digest: data.manifest.source.installImageDigest,
+        }),
+        /selected Windows image edition mismatch: expected Enterprise, got Professional/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
   it("creates Windows Setup OEM media with deterministic unattended baseline inputs and no personalization", async () => {
     const data = await fixture();
     try {

@@ -741,6 +741,16 @@ function wimXmlValue(xml, name) {
   return match ? match[1].trim() : null;
 }
 
+function wimXmlImageByIndex(xml, expectedIndex) {
+  const matches = [...xml.matchAll(/<IMAGE\b([^>]*)>([\s\S]*?)<\/IMAGE>/gi)]
+    .filter(([, attributes]) => {
+      const index = /\bINDEX\s*=\s*"(\d+)"/i.exec(attributes)?.[1];
+      return Number(index) === expectedIndex;
+    })
+    .map(([, , image]) => image);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function decodeWimXml(value) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
   if (bytes.subarray(0, 2).equals(Buffer.from([0xff, 0xfe])))
@@ -771,8 +781,12 @@ async function inspectSelectedWindowsImage({
     },
   );
   const xml = `${decodeWimXml(result.stdout)}\n${decodeWimXml(result.stderr)}`;
-  const index = Number(/<IMAGE\s+INDEX="(\d+)"/i.exec(xml)?.[1]);
-  const edition = wimXmlValue(xml, "EDITIONID") ?? wimXmlValue(xml, "NAME");
+  const selectedImage = wimXmlImageByIndex(xml, expected.index);
+  const index = selectedImage === null ? undefined : expected.index;
+  const edition = selectedImage
+    ? (wimXmlValue(selectedImage, "EDITIONID") ??
+      wimXmlValue(selectedImage, "NAME"))
+    : null;
   const digest = await hashFile(imagePath);
   if (index !== expected.index)
     throw new Error(
