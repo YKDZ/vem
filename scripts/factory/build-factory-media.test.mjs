@@ -1042,6 +1042,14 @@ describe("real deterministic Factory ISO builder", () => {
       bios,
       /<ProductKey><Key>W269N-WFGWX-YVC9B-4J6C9-T83GX<\/Key><WillShowUI>OnError<\/WillShowUI><\/ProductKey>/,
     );
+    assert.match(
+      bios,
+      /<settings pass="windowsPE">\s*<component name="Microsoft-Windows-International-Core-WinPE"[^>]*>\s*<SetupUILanguage><UILanguage>zh-CN<\/UILanguage><\/SetupUILanguage>\s*<InputLocale>zh-CN<\/InputLocale>\s*<SystemLocale>zh-CN<\/SystemLocale>\s*<UILanguage>zh-CN<\/UILanguage>\s*<UserLocale>zh-CN<\/UserLocale>\s*<\/component>/,
+    );
+    assert.match(
+      bios,
+      /<settings pass="oobeSystem">\s*<component name="Microsoft-Windows-International-Core"[^>]*>\s*<InputLocale>zh-CN<\/InputLocale>\s*<SystemLocale>zh-CN<\/SystemLocale>\s*<UILanguage>zh-CN<\/UILanguage>\s*<UserLocale>zh-CN<\/UserLocale>\s*<\/component>/,
+    );
     assert.throws(
       () => factoryAutounattendXml("testbed", 4, "bios", "Enterprise"),
       /unsupported Factory Windows image edition/,
