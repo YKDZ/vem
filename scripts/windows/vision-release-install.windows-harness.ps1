@@ -42,18 +42,16 @@ function Write-HarnessWatchdogCommand([string]$Path, [string]$Command, [DateTime
   }
 }
 function Get-Digest([string]$Path) {
-  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-  $hash = [Security.Cryptography.SHA256]::Create()
+  $stream = $null
+  $hash = $null
   try {
-    $buffer = [byte[]]::new(1048576)
-    while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-      $hash.TransformBlock($buffer, 0, $count, $null, 0) | Out-Null
-    }
-    $hash.TransformFinalBlock([byte[]]::new(0), 0, 0) | Out-Null
-    return "sha256:" + ([BitConverter]::ToString($hash.Hash).Replace("-", "")).ToLowerInvariant()
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $digest = $hash.ComputeHash($stream)
+    return "sha256:" + ([BitConverter]::ToString($digest).Replace("-", "")).ToLowerInvariant()
   } finally {
-    $hash.Dispose()
-    $stream.Dispose()
+    if ($null -ne $hash) { $hash.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
   }
 }
 function Write-Json([string]$Path, [object]$Value) { Write-Utf8 $Path ($Value | ConvertTo-Json -Depth 32 -Compress) }

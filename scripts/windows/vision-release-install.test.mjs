@@ -145,16 +145,18 @@ describe("Vision release installer fixtures", () => {
           /\$PSVersionTable\.PSEdition -eq "Desktop"[\s\S]*?\$env:PSModulePath = "\$env:WINDIR\\System32\\WindowsPowerShell\\v1\.0\\Modules;\$env:PSModulePath"/,
         );
       }
-      assert.match(
-        provisioner,
-        /\[Security\.Cryptography\.SHA256\]::Create\(\)/,
-      );
-      assert.match(provisioner, /\.TransformBlock\(/);
-      assert.match(provisioner, /\.TransformFinalBlock\(/);
-      assert.match(
-        harness,
-        /function Get-Digest\(\[string\]\$Path\) \{[\s\S]*?\[Security\.Cryptography\.SHA256\]::Create\(\)[\s\S]*?\.TransformFinalBlock\(/,
-      );
+      for (const source of [provisioner, harness]) {
+        assert.match(
+          source,
+          /\[Security\.Cryptography\.SHA256\]::Create\(\)[\s\S]*?\$hash\.ComputeHash\(\$stream\)/,
+        );
+        assert.match(
+          source,
+          /\$hash\.Dispose\(\)[\s\S]*?\$stream\.Dispose\(\)/,
+        );
+      }
+      assert.doesNotMatch(provisioner, /\.Transform(?:Block|FinalBlock)\(/);
+      assert.doesNotMatch(harness, /\.Transform(?:Block|FinalBlock)\(/);
       assert.doesNotMatch(harness, /Get-FileHash\b/);
       const provisionFixture = harness.match(
         /foreach \(\$corePowerShellPath in \$corePowerShellPaths\) \{[\s\S]*?Invoke-BoundedPowerShell -Stage "fixture\.provision\.\$corePowerShellName"[\s\S]*?-ChildPowerShellPath \$corePowerShellPath[\s\S]*?-ScriptBody @'([\s\S]*?)'@ \| Out-Null/,
