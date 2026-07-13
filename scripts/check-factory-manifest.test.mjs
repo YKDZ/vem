@@ -1065,8 +1065,9 @@ describe("Factory Manifest and media workflow contract", () => {
       assert.match(buildScript, /--user "\$\(id -u\):\$\(id -g\)"/);
       assert.match(
         buildScript,
-        /--memory 16g --memory-swap 16g --pids-limit 512 --cpus 6/,
+        /--memory 16g --memory-swap 16g --pids-limit 512 --cpus 4/,
       );
+      assert.doesNotMatch(buildScript, /--cpus (?:[5-9]|[1-9][0-9]+)/);
       assert.match(buildScript, /--tmpfs \/tmp:rw,nosuid,nodev,size=512m/);
       assert.match(buildScript, /--log-driver=none/);
       assert.match(
