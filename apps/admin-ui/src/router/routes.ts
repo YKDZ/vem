@@ -72,7 +72,7 @@ export const routes: RouteRecordRaw[] = [
         name: "system-settings",
         component: async () =>
           import("@/views/system-settings/SystemSettingsView.vue"),
-        meta: { title: "系统配置", requiredPermissions: ["machines.read"] },
+        meta: { title: "系统配置" },
       },
       {
         path: "notifications",
@@ -83,18 +83,6 @@ export const routes: RouteRecordRaw[] = [
           title: "通知中心",
           requiredPermissions: ["notifications.read"],
         },
-      },
-      {
-        path: "admin-users",
-        name: "admin-users",
-        component: async () => import("@/views/admin-users/AdminUsersView.vue"),
-        meta: { title: "后台用户", requiredPermissions: ["adminUsers.read"] },
-      },
-      {
-        path: "roles",
-        name: "roles",
-        component: async () => import("@/views/roles/RolesView.vue"),
-        meta: { title: "角色权限", requiredPermissions: ["roles.write"] },
       },
       {
         path: "audit-logs",

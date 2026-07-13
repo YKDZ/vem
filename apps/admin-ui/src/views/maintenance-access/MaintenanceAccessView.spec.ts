@@ -344,11 +344,9 @@ describe("MaintenanceAccessView", () => {
     expect(
       root.querySelector("[data-testid='observed-state-projection']")
         ?.textContent,
-    ).toContain("Insecure HTTP");
-    expect(root.textContent).toContain("Degraded");
-    expect(root.textContent).toContain(
-      "Service API uses explicitly allowed insecure HTTP",
-    );
+    ).toContain("非加密 HTTP");
+    expect(root.textContent).toContain("降级");
+    expect(root.textContent).toContain("服务接口使用已明确允许的非加密 HTTP");
     expect(
       root.querySelector("[data-testid='relay-overall-health']")?.textContent,
     ).toBe("降级");
@@ -361,7 +359,7 @@ describe("MaintenanceAccessView", () => {
     );
     expect(
       root.querySelector("[data-testid='relay-failure']")?.textContent,
-    ).toBe("Relay could not apply the maintenance firewall policy.");
+    ).toBe("中继服务无法应用维护防火墙策略。");
     expect(
       root.querySelector("[data-testid='relay-observed-at']")?.textContent,
     ).not.toBe("-");
@@ -443,7 +441,7 @@ describe("MaintenanceAccessView", () => {
     expect(
       root.querySelector("[data-testid='relay-observed-at']")?.textContent,
     ).toBe("-");
-    expect(root.textContent).toContain("Unreported");
+    expect(root.textContent).toContain("未上报");
   });
 
   it("enables session creation only for an operator with write permission", async () => {

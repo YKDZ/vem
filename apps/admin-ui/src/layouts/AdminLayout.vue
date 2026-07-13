@@ -11,11 +11,9 @@ import {
   MenuUnfoldOutlined,
   OrderedListOutlined,
   ProductOutlined,
-  SafetyOutlined,
   ShopOutlined,
   TransactionOutlined,
   SettingOutlined,
-  TeamOutlined,
 } from "@antdv-next/icons";
 import { computed } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
@@ -33,10 +31,8 @@ const ROUTE_ICON_MAP: Record<string, Component> = {
   payments: TransactionOutlined,
   "system-settings": SettingOutlined,
   notifications: BellOutlined,
-  "admin-users": TeamOutlined,
-  roles: SafetyOutlined,
   "audit-logs": AuditOutlined,
-  "maintenance-access": SafetyOutlined,
+  "maintenance-access": SettingOutlined,
 };
 
 type MenuItem = {
