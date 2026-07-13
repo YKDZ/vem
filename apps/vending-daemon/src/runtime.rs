@@ -91,11 +91,12 @@ mod tests {
     #[tokio::test]
     async fn runtime_starts_when_stock_movement_retention_is_huge() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
             .await
             .expect("state");
         let config_store = Arc::new(crate::config::ConfigStore::new(
-            temp.path().to_path_buf(),
+            data_dir.clone(),
             state.clone(),
             Arc::new(InMemorySecretStore::default()),
         ));
@@ -111,7 +112,7 @@ mod tests {
         let runtime = DaemonRuntime::start(RuntimeStartInput {
             state,
             config_store,
-            data_dir: temp.path().to_path_buf(),
+            data_dir,
         })
         .await
         .expect("runtime start");
@@ -125,7 +126,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_uses_configured_stock_movement_retention_window() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
             .await
             .expect("state");
         seed_accepted_stock_movement(&state, "MOVE-RUNTIME-PRUNE").await;
@@ -141,7 +143,7 @@ mod tests {
         .expect("age accepted movement");
 
         let config_store = Arc::new(crate::config::ConfigStore::new(
-            temp.path().to_path_buf(),
+            data_dir.clone(),
             state.clone(),
             Arc::new(InMemorySecretStore::default()),
         ));
@@ -157,7 +159,7 @@ mod tests {
         let runtime = DaemonRuntime::start(RuntimeStartInput {
             state: state.clone(),
             config_store,
-            data_dir: temp.path().to_path_buf(),
+            data_dir,
         })
         .await
         .expect("runtime start");
@@ -253,11 +255,12 @@ mod tests {
     async fn runtime_starts_with_missing_deployment_config() {
         let _ = KeyringSecretStore;
         let temp = tempfile::tempdir().expect("tempdir");
-        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
             .await
             .expect("state");
         let config_store = Arc::new(crate::config::ConfigStore::new(
-            temp.path().to_path_buf(),
+            data_dir.clone(),
             state.clone(),
             Arc::new(InMemorySecretStore::default()),
         ));
@@ -265,7 +268,7 @@ mod tests {
         let runtime = DaemonRuntime::start(RuntimeStartInput {
             state,
             config_store,
-            data_dir: temp.path().to_path_buf(),
+            data_dir,
         })
         .await
         .expect("runtime start");
