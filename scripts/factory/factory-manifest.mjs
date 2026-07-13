@@ -714,6 +714,14 @@ function validateManifestShape(manifest, { requireManifestId }) {
       "source.installImageEdition",
       issues,
     );
+    if (manifest.source.installImageEdition !== "Professional") {
+      issues.push(
+        issue(
+          "source.installImageEdition",
+          "must be Professional in Factory Manifest v1",
+        ),
+      );
+    }
     assertDigest(
       manifest.source.installImageDigest,
       "source.installImageDigest",

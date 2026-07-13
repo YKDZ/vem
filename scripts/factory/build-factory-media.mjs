@@ -836,6 +836,10 @@ function factoryAccountForProfile(profile) {
   return profile === "production" ? "Admin" : "YKDZ";
 }
 
+const WINDOWS_SETUP_KEY_BY_EDITION = new Map([
+  ["Professional", "W269N-WFGWX-YVC9B-4J6C9-T83GX"],
+]);
+
 function unattendedDiskLayout(targetFirmware) {
   if (targetFirmware === "uefi") {
     return {
@@ -852,15 +856,26 @@ function unattendedDiskLayout(targetFirmware) {
   throw new Error(`unsupported Factory target firmware: ${targetFirmware}`);
 }
 
-export function factoryAutounattendXml(profile, imageIndex, targetFirmware) {
+export function factoryAutounattendXml(
+  profile,
+  imageIndex,
+  targetFirmware,
+  installImageEdition,
+) {
   const disk = unattendedDiskLayout(targetFirmware);
+  const setupKey = WINDOWS_SETUP_KEY_BY_EDITION.get(installImageEdition);
+  if (!setupKey) {
+    throw new Error(
+      `unsupported Factory Windows image edition: ${installImageEdition}`,
+    );
+  }
   return `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="windowsPE">
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       ${disk.configuration}
       <ImageInstall><OSImage><InstallFrom><MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Key>/IMAGE/INDEX</Key><Value>${imageIndex}</Value></MetaData></InstallFrom><InstallTo><DiskID>0</DiskID><PartitionID>${disk.windowsPartition}</PartitionID></InstallTo><WillShowUI>OnError</WillShowUI></OSImage></ImageInstall>
-      <UserData><AcceptEula>true</AcceptEula></UserData>
+      <UserData><AcceptEula>true</AcceptEula><ProductKey><Key>${setupKey}</Key><WillShowUI>OnError</WillShowUI></ProductKey></UserData>
     </component>
   </settings>
   <settings pass="specialize">
@@ -3868,6 +3883,7 @@ export async function createWindowsFactoryFirstBootMedia({
       manifest.profile,
       manifest.source.installImageIndex,
       manifest.source.targetFirmware,
+      manifest.source.installImageEdition,
     ),
   );
   await writeFile(

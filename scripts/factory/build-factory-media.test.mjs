@@ -530,7 +530,7 @@ async function fixture({
     "capture",
     wimInput,
     join(sourceTree, "sources", "install.wim"),
-    "VEM Factory Fixture",
+    "Professional",
   ]);
   await writeFile(
     join(sourceTree, "sources", "boot.wim"),
@@ -775,7 +775,7 @@ async function fixture({
     source: {
       windowsMedia: (({ bytes, ...definition }) => definition)(definitions[0]),
       installImageIndex: 1,
-      installImageEdition: "VEM Factory Fixture",
+      installImageEdition: "Professional",
       installImageDigest,
       targetFirmware: "uefi",
     },
@@ -1007,7 +1007,7 @@ async function writeVisibleElToritoCatalogFixture(
 
 describe("real deterministic Factory ISO builder", () => {
   it("emits schema-valid disk layouts for the selected BIOS or UEFI target", () => {
-    const uefi = factoryAutounattendXml("testbed", 4, "uefi");
+    const uefi = factoryAutounattendXml("testbed", 4, "uefi", "Professional");
     assert.match(uefi, /<Type>EFI<\/Type><Size>260<\/Size>/);
     assert.match(uefi, /<Type>MSR<\/Type><Size>16<\/Size>/);
     assert.match(
@@ -1023,7 +1023,7 @@ describe("real deterministic Factory ISO builder", () => {
       /<InstallTo><DiskID>0<\/DiskID><PartitionID>3<\/PartitionID>/,
     );
 
-    const bios = factoryAutounattendXml("testbed", 4, "bios");
+    const bios = factoryAutounattendXml("testbed", 4, "bios", "Professional");
     assert.match(bios, /<Active>true<\/Active>/);
     assert.match(
       bios,
@@ -1038,6 +1038,18 @@ describe("real deterministic Factory ISO builder", () => {
       /<InstallTo><DiskID>0<\/DiskID><PartitionID>2<\/PartitionID>/,
     );
     assert.doesNotMatch(bios, /<Type>EFI<\/Type>|<Type>MSR<\/Type>|DE94BBA4/);
+    assert.match(
+      bios,
+      /<ProductKey><Key>W269N-WFGWX-YVC9B-4J6C9-T83GX<\/Key><WillShowUI>OnError<\/WillShowUI><\/ProductKey>/,
+    );
+    assert.throws(
+      () => factoryAutounattendXml("testbed", 4, "bios", "Enterprise"),
+      /unsupported Factory Windows image edition/,
+    );
+    assert.throws(
+      () => factoryAutounattendXml("testbed", 4, "bios", "toString"),
+      /unsupported Factory Windows image edition/,
+    );
   });
 
   it("recognizes the exact eight-byte magic from a wimlib-produced WIM", async () => {
