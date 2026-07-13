@@ -212,6 +212,12 @@ flags. The ISO remains in the runner-local CAS; source media, ISO bytes,
 personalization, private keys, and restricted paths are never uploaded or put
 in GitHub cache.
 
+The build job explicitly clears `VEM_FACTORY_PERSONALIZATION_MEDIA_PATH` at the
+job boundary. A protected runner may therefore keep its acceptance-only
+personalization path in the runner service environment without leaking that
+input into a generic Factory ISO build or requiring an operator to restart and
+retune the runner between build and acceptance workflows.
+
 OpenSSH and WireGuard are mandatory Factory Runtime capabilities. Windows
 Capability installation and floating online downloads are not accepted. The
 Factory Manifest pins the installer version and hash, and the Windows verifier

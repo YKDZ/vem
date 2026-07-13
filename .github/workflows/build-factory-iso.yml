@@ -40,6 +40,7 @@ jobs:
     timeout-minutes: 90
     env:
       VEM_FACTORY_WORK_ROOT: ${{ vars.VEM_FACTORY_WORK_ROOT }}
+      VEM_FACTORY_PERSONALIZATION_MEDIA_PATH: ""
     concurrency:
       group: vem-factory-iso-single-flight
       cancel-in-progress: false

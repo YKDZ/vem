@@ -341,6 +341,7 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.equal(parsed.jobs.build.needs, "trust-gate");
     assert.deepEqual(parsed.jobs.build.env, {
       VEM_FACTORY_WORK_ROOT: "${{ vars.VEM_FACTORY_WORK_ROOT }}",
+      VEM_FACTORY_PERSONALIZATION_MEDIA_PATH: "",
     });
     assert.deepEqual(parsed.jobs.build.concurrency, {
       group: "vem-factory-iso-single-flight",
@@ -1227,6 +1228,7 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.equal(parsed.jobs.build.needs, "trust-gate");
     assert.deepEqual(parsed.jobs.build.env, {
       VEM_FACTORY_WORK_ROOT: "${{ vars.VEM_FACTORY_WORK_ROOT }}",
+      VEM_FACTORY_PERSONALIZATION_MEDIA_PATH: "",
     });
     assert.doesNotMatch(
       workflow,
