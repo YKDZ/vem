@@ -152,6 +152,9 @@ function localizeMaintenanceText(value: string | null | undefined): string {
   if (value.toLowerCase() === "relay transport has not been reported") {
     return "中继服务传输状态尚未上报";
   }
+  if (value.toLowerCase() === "private test transport exception") {
+    return "专用测试传输例外";
+  }
   return value
     .replaceAll(/relay/gi, "中继服务")
     .replaceAll(/peers?/gi, "节点")
