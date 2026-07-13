@@ -2,6 +2,7 @@
   "compilerOptions": {
     "module": "es2022",
     "moduleResolution": "bundler",
+    "customConditions": ["vem-source"],
     "resolvePackageJsonExports": true,
     "esModuleInterop": true,
     "isolatedModules": true,
