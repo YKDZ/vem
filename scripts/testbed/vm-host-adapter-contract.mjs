@@ -63,7 +63,7 @@ const REQUIRED_ASSET_ROLES_BY_OPERATION = {
   "capture-display": ["approved-runtime-base"],
   "capture-default-audio": ["approved-runtime-base"],
   cleanup: ["approved-runtime-base", "factory-iso"],
-  cancel: ["approved-runtime-base"],
+  cancel: ["approved-runtime-base", "factory-iso"],
 };
 
 const SANITIZED_DIAGNOSTIC_CODES = new Set([
@@ -354,6 +354,20 @@ function reconstructRequest(request) {
   };
 }
 
+function lifecycleSourceAsset(request) {
+  if (
+    request.operation === "clean-install" ||
+    request.operation === "capture-approved-base"
+  )
+    return request.assets.find((asset) => asset.role === "factory-iso");
+  if (["cleanup", "cancel"].includes(request.operation))
+    return (
+      request.assets.find((asset) => asset.role === "factory-iso") ??
+      request.assets.find((asset) => asset.role === "approved-runtime-base")
+    );
+  return request.assets.find((asset) => asset.role === "approved-runtime-base");
+}
+
 export function validateVmHostAdapterRequest(input) {
   const request = structuredClone(input);
   const issues = [];
@@ -533,13 +547,33 @@ export function validateVmHostAdapterRequest(input) {
         );
     }
   } else if (request.factoryMedia !== null) {
-    issue(issues, "request.factoryMedia", "must be null outside clean-install");
+    issue(
+      issues,
+      "request.factoryMedia",
+      "must be null outside Factory ISO operations",
+    );
   }
   if (!Array.isArray(request.assets) || request.assets.length === 0)
     issue(issues, "request.assets", "must contain immutable operation assets");
   else {
     request.assets.forEach((asset, index) => assertAsset(asset, index, issues));
     assertUniqueRoles(request.assets, "request.assets", issues);
+    if (["cleanup", "cancel"].includes(request.operation)) {
+      const base = request.assets.find(
+        (asset) => asset.role === "approved-runtime-base",
+      );
+      const iso = request.assets.find((asset) => asset.role === "factory-iso");
+      if (
+        base &&
+        iso &&
+        (base.identity !== iso.identity || base.digest !== iso.digest)
+      )
+        issue(
+          issues,
+          "request.assets",
+          "must bind cleanup and cancel to one unambiguous lifecycle source",
+        );
+    }
   }
   if (
     !Array.isArray(request.requestedCapabilities) ||
@@ -579,7 +613,7 @@ export function validateVmHostAdapterRequest(input) {
   const requiredRoles =
     REQUIRED_ASSET_ROLES_BY_OPERATION[request.operation] ?? [];
   const hasRequiredRole =
-    request.operation === "cleanup"
+    request.operation === "cleanup" || request.operation === "cancel"
       ? requiredRoles.some((role) =>
           request.assets?.some((asset) => asset?.role === role),
         )
@@ -590,7 +624,8 @@ export function validateVmHostAdapterRequest(input) {
     for (const role of requiredRoles) {
       if (request.assets?.some((asset) => asset?.role === role)) continue;
       issue(issues, "request.assets", `must include ${role}`);
-      if (request.operation === "cleanup") break;
+      if (request.operation === "cleanup" || request.operation === "cancel")
+        break;
     }
   }
   if (issues.length > 0) throw new VmHostAdapterContractError(issues);
@@ -789,15 +824,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
           "does not bind the observed VM to the requested target",
         );
     }
-    const observedSource = request.assets.find(
-      (asset) =>
-        asset.role ===
-        (request.operation === "clean-install" ||
-        (request.operation === "cleanup" &&
-          request.assets.some((asset) => asset.role === "factory-iso"))
-          ? "factory-iso"
-          : "approved-runtime-base"),
-    );
+    const observedSource = lifecycleSourceAsset(request);
     if (
       observedSource &&
       request.operation !== "capture-approved-base" &&
@@ -1392,6 +1419,7 @@ function cleanupRequestFor(request) {
     operationNonce: nonce,
     operationReference: `vm-operation://${nonce}`,
     cancelOperationReference: null,
+    factoryMedia: null,
     requestedCapabilities: ["cleanup", "cancellation"],
   });
 }
@@ -1404,6 +1432,7 @@ function cancelRequestFor(request) {
     operationNonce: nonce,
     operationReference: `vm-operation://${nonce}`,
     cancelOperationReference: request.operationReference,
+    factoryMedia: null,
     requestedCapabilities: ["cancellation", "cleanup"],
   });
 }
@@ -1459,16 +1488,26 @@ export async function runVmHostAdapter({
   };
   const requiresCancellation =
     outcome.result === "timed_out" || outcome.result === "cancelled";
-  const cancellationOutcome = requiresCancellation
-    ? await cancelInFlightOperation()
-    : null;
-  const recovery = await invokeAdapter({
-    request: cleanupRequestFor(request),
-    workDirectory,
-    environment,
-    timeoutMs: Math.min(timeoutMs, 30000),
-    signal: undefined,
-  });
+  let cancellationOutcome = null;
+  if (requiresCancellation) {
+    try {
+      cancellationOutcome = await cancelInFlightOperation();
+    } catch {
+      cancellationOutcome = { result: "failed", report: null };
+    }
+  }
+  let recovery;
+  try {
+    recovery = await invokeAdapter({
+      request: cleanupRequestFor(request),
+      workDirectory,
+      environment,
+      timeoutMs: Math.min(timeoutMs, 30000),
+      signal: undefined,
+    });
+  } catch {
+    recovery = { result: "failed", report: null };
+  }
   const recovered =
     recovery.result === "succeeded" &&
     recovery.report?.cleanup.status === "completed" &&
