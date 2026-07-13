@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
+import { defineAdminApiResponseContract } from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import {
   normalizeRequestParams,
+  postAdminApiContract,
   postContract,
   request,
   tokenStorage,
@@ -79,5 +81,29 @@ describe("schema-bound admin API helpers", () => {
     ).rejects.toThrow("Admin API contract validation failed");
 
     expect(postSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects extra wire fields through a shared Admin response contract", async () => {
+    const contract = defineAdminApiResponseContract({
+      method: "POST",
+      path: "/media-assets/example",
+      responseSchema: z.strictObject({ id: z.string() }),
+    });
+    const postSpy = vi.spyOn(request, "post").mockResolvedValue({
+      data: {
+        code: 0,
+        message: "ok",
+        data: { id: "asset-1", storageKey: "private/key.png" },
+      },
+    });
+
+    await expect(
+      postAdminApiContract(contract, new FormData()),
+    ).rejects.toThrow("Admin API contract validation failed");
+    expect(postSpy).toHaveBeenCalledWith(
+      contract.path,
+      expect.any(FormData),
+      undefined,
+    );
   });
 });

@@ -1,8 +1,13 @@
 import "reflect-metadata";
+import {
+  adminProductDisplayImageUploadContract,
+  adminTryOnSilhouetteUploadContract,
+} from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { REQUIRED_PERMISSIONS_KEY } from "../access/permissions.decorator";
 import { IS_PUBLIC_KEY } from "../auth/public.decorator";
+import { ADMIN_RESPONSE_CONTRACT } from "../common/admin-response-contract.decorator";
 import { MediaAssetsController } from "./media-assets.controller";
 
 describe("MediaAssetsController", () => {
@@ -19,6 +24,21 @@ describe("MediaAssetsController", () => {
         MediaAssetsController.prototype.readPublicContent,
       ),
     ).toBe(true);
+  });
+
+  it("declares shared response contracts at both upload seams", () => {
+    expect(
+      Reflect.getMetadata(
+        ADMIN_RESPONSE_CONTRACT,
+        MediaAssetsController.prototype.uploadProductDisplayImage,
+      ),
+    ).toBe(adminProductDisplayImageUploadContract);
+    expect(
+      Reflect.getMetadata(
+        ADMIN_RESPONSE_CONTRACT,
+        MediaAssetsController.prototype.uploadTryOnSilhouette,
+      ),
+    ).toBe(adminTryOnSilhouetteUploadContract);
   });
 
   it.each([

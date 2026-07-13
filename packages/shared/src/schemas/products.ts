@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { defineAdminApiResponseContract } from "../admin-api-contract";
 import { productStatusSchema, variantStatusSchema } from "../enums/catalog";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
@@ -70,6 +71,20 @@ export const adminMediaAssetSummarySchema = z.strictObject({
   publicUrl: z.string().min(1),
   contentType: z.string().min(1),
 });
+
+export const adminProductDisplayImageUploadContract =
+  defineAdminApiResponseContract({
+    method: "POST",
+    path: "/media-assets/product-display-images",
+    responseSchema: adminMediaAssetSummarySchema,
+  });
+
+export const adminTryOnSilhouetteUploadContract =
+  defineAdminApiResponseContract({
+    method: "POST",
+    path: "/media-assets/try-on-silhouettes",
+    responseSchema: adminMediaAssetSummarySchema,
+  });
 
 export const adminProductResponseSchema = z.strictObject({
   id: z.uuid(),

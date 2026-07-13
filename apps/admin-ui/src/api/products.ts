@@ -7,7 +7,8 @@ import {
   adminProductVariantPageResponseSchema,
   adminProductVariantResponseSchema,
   adminProductVariantListQuerySchema,
-  adminMediaAssetSummarySchema,
+  adminProductDisplayImageUploadContract,
+  adminTryOnSilhouetteUploadContract,
   createProductSchema,
   createProductVariantSchema,
   updateProductSchema,
@@ -25,7 +26,7 @@ import {
   getContract,
   patchContract,
   postContract,
-  postResponseContract,
+  postAdminApiContract,
 } from "./request";
 
 export type MediaAssetSummary = AdminMediaAssetSummary;
@@ -73,9 +74,8 @@ export async function uploadProductDisplayImage(
 ): Promise<MediaAssetSummary> {
   const body = new FormData();
   body.append("file", file);
-  return await postResponseContract(
-    "/media-assets/product-display-images",
-    adminMediaAssetSummarySchema,
+  return await postAdminApiContract(
+    adminProductDisplayImageUploadContract,
     body,
   );
 }
@@ -85,11 +85,7 @@ export async function uploadTryOnSilhouette(
 ): Promise<MediaAssetSummary> {
   const body = new FormData();
   body.append("file", file);
-  return await postResponseContract(
-    "/media-assets/try-on-silhouettes",
-    adminMediaAssetSummarySchema,
-    body,
-  );
+  return await postAdminApiContract(adminTryOnSilhouetteUploadContract, body);
 }
 
 export async function listProductVariants(
