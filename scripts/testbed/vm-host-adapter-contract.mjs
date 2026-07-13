@@ -290,6 +290,19 @@ function assertCleanupObservation(observed, path, issues) {
     );
 }
 
+function isPostCleanupIdempotentCapture(request, report) {
+  const observed = report.cleanup?.observed;
+  return (
+    request.operation === "capture-approved-base" &&
+    report.result === "succeeded" &&
+    report.cleanup?.status === "completed" &&
+    report.cleanup?.overlayDisposition === "removed" &&
+    observed?.overlay === "removed" &&
+    observed?.runDirectory === "removed" &&
+    observed?.personalizationMedia === "removed"
+  );
+}
+
 function assertSanitizedDiagnostic(
   diagnostic,
   index,
@@ -847,6 +860,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
     if (
       report.result === "succeeded" &&
       !["cleanup", "cancel"].includes(request.operation) &&
+      !isPostCleanupIdempotentCapture(request, report) &&
       !["discovered", "authenticated"].includes(
         report.guest.maintenanceEndpoint?.reachability,
       )
@@ -1025,11 +1039,10 @@ export function validateVmHostAdapterReport(input, requestInput) {
       ["not-mounted", "mounted"].includes(
         report.cleanup.observed?.personalizationMedia,
       );
-    const completedCaptureAfterCleanup =
-      request.operation === "capture-approved-base" &&
-      report.result === "succeeded" &&
-      state === "completed/removed" &&
-      cleaned;
+    const completedCaptureAfterCleanup = isPostCleanupIdempotentCapture(
+      request,
+      report,
+    );
     const expected =
       report.result === "failed" ||
       ["cleanup", "cancel"].includes(request.operation)

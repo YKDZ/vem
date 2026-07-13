@@ -1705,6 +1705,95 @@ if (args[0] === "x") {
     }
   });
 
+  it("accepts the generated El Torito catalog when source and output UDF views omit its placeholder", async () => {
+    const data = await fixture();
+    const extractor = join(data.root, "extractor-without-boot-catalog");
+    try {
+      await writeFile(
+        extractor,
+        `#!${process.execPath}
+const { rmSync } = require("node:fs");
+const { join } = require("node:path");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const result = spawnSync(${JSON.stringify(UDF_EXTRACTOR_PATH)}, args, { stdio: "inherit" });
+if (result.error) throw result.error;
+if (result.status) process.exit(result.status);
+if (args[0] === "x") {
+  const output = args.find((arg) => arg.startsWith("-o"))?.slice(2);
+  rmSync(join(output, "boot.catalog"), { force: true });
+}
+`,
+        { mode: 0o755 },
+      );
+      const extractorBytes = await readFile(extractor);
+      const manifest = createFactoryManifest({
+        ...data.manifest,
+        toolchain: {
+          ...data.manifest.toolchain,
+          udfExtractor: {
+            identity: `tool://fixture@${sha256(extractorBytes)}`,
+            digest: sha256(extractorBytes),
+            version: data.manifest.toolchain.udfExtractor.version,
+          },
+        },
+      });
+      const sourcePath =
+        data.sourcePaths[manifest.source.windowsMedia.identity];
+      const sourceUdf = join(data.root, "source-udf-without-boot-catalog");
+      execFileSync(extractor, [
+        "x",
+        "-y",
+        "-tUdf",
+        `-o${sourceUdf}`,
+        sourcePath,
+      ]);
+      await assert.rejects(stat(join(sourceUdf, "boot.catalog")), /ENOENT/);
+
+      const result = await buildFactoryMedia({
+        manifest,
+        store: new ContentAddressedAssetStore(join(data.root, "cas")),
+        sourcePaths: data.sourcePaths,
+        evidenceStoreRoot: data.evidenceStoreRoot,
+        approvalPolicy: data.approvalPolicy,
+        visionReleaseDeliveryUnit: data.visionReleaseDeliveryUnit,
+        repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
+        factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
+        visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
+        udfExtractorPath: extractor,
+        udfWriterPath: UDF_WRITER_PATH,
+        wimlibPath: WIMLIB_PATH,
+        executedBuilderImage: data.builderImage.identity,
+        outputDirectory: join(data.root, "output"),
+        reproducibility: false,
+      });
+      const outputUdf = join(data.root, "output-udf-without-boot-catalog");
+      execFileSync(extractor, [
+        "x",
+        "-y",
+        "-tUdf",
+        `-o${outputUdf}`,
+        result.output.path,
+      ]);
+      await assert.rejects(stat(join(outputUdf, "boot.catalog")), /ENOENT/);
+      assert.deepEqual(
+        (await inspectBootableIsoFile(result.output.path)).bootEntries.map(
+          ({ platform, loadSegment, loadSize }) => ({
+            platform,
+            loadSegment,
+            loadSize,
+          }),
+        ),
+        [
+          { platform: "BIOS", loadSegment: "0x0000", loadSize: 8 },
+          { platform: "UEFI", loadSegment: "0x0000", loadSize: 4 },
+        ],
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects conflicting ISO9660 and Joliet content for one missing canonical UDF path", async () => {
     const root = await mkdtemp(join(tmpdir(), "vem-factory-visible-conflict-"));
     try {

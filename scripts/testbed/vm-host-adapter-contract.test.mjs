@@ -328,7 +328,7 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
-  it("accepts an idempotent approved-base capture that truthfully reports completed cleanup", () => {
+  it("accepts an idempotent approved-base capture with cleanup-completed unavailable endpoint", () => {
     const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
     const request = createVmHostAdapterRequest(
       requestFor("capture-approved-base", {
@@ -350,6 +350,18 @@ describe("VM Host Adapter contract", () => {
       }),
     );
     const report = reportFor(request, {
+      guest: {
+        maintenanceEndpointIdentity:
+          "guest-maintenance://unreachable-runtime-testbed-001",
+        maintenanceEndpoint: {
+          protocol: "ssh",
+          host: "guest-unreachable.invalid",
+          port: 22,
+          reachability: "unavailable",
+        },
+        deviceMappings: [],
+        defaultAudioIdentity: "guest-audio://runtime-testbed-001",
+      },
       cleanup: {
         status: "completed",
         overlayDisposition: "removed",
@@ -365,6 +377,73 @@ describe("VM Host Adapter contract", () => {
       validateVmHostAdapterReport(report, request).cleanup,
       report.cleanup,
     );
+  });
+
+  it("rejects unavailable approved-base capture endpoints unless cleanup proves removal", () => {
+    const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
+    const request = createVmHostAdapterRequest(
+      requestFor("capture-approved-base", {
+        factoryMedia: {
+          assemblyMode: "windows-serviced-iso",
+          manifestIdentity: `sha256:${"e".repeat(64)}`,
+          provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
+          provenanceDigest: `sha256:${"f".repeat(64)}`,
+          outputIdentity: factoryIso,
+          outputDigest: `sha256:${"d".repeat(64)}`,
+        },
+        assets: [
+          {
+            role: "factory-iso",
+            identity: factoryIso,
+            digest: `sha256:${"d".repeat(64)}`,
+          },
+        ],
+      }),
+    );
+    const unavailableGuest = {
+      maintenanceEndpointIdentity:
+        "guest-maintenance://unreachable-runtime-testbed-001",
+      maintenanceEndpoint: {
+        protocol: "ssh",
+        host: "guest-unreachable.invalid",
+        port: 22,
+        reachability: "unavailable",
+      },
+      deviceMappings: [],
+      defaultAudioIdentity: "guest-audio://runtime-testbed-001",
+    };
+
+    assert.throws(() =>
+      validateVmHostAdapterReport(
+        reportFor(request, { guest: unavailableGuest }),
+        request,
+      ),
+    );
+
+    for (const [key, value] of [
+      ["overlay", "present"],
+      ["runDirectory", "present"],
+      ["personalizationMedia", "not-mounted"],
+    ]) {
+      assert.throws(() =>
+        validateVmHostAdapterReport(
+          reportFor(request, {
+            guest: unavailableGuest,
+            cleanup: {
+              status: "completed",
+              overlayDisposition: "removed",
+              observed: {
+                overlay: "removed",
+                runDirectory: "removed",
+                personalizationMedia: "removed",
+                [key]: value,
+              },
+            },
+          }),
+          request,
+        ),
+      );
+    }
   });
 
   it("requires a distinct canonical operation reference when cancelling", () => {
