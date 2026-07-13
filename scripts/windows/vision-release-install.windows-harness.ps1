@@ -41,7 +41,21 @@ function Write-HarnessWatchdogCommand([string]$Path, [string]$Command, [DateTime
     Start-Sleep -Milliseconds ([Math]::Min(10, $remainingMilliseconds))
   }
 }
-function Get-Digest([string]$Path) { "sha256:" + (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Digest([string]$Path) {
+  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  $hash = [Security.Cryptography.SHA256]::Create()
+  try {
+    $buffer = [byte[]]::new(1048576)
+    while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+      $hash.TransformBlock($buffer, 0, $count, $null, 0) | Out-Null
+    }
+    $hash.TransformFinalBlock([byte[]]::new(0), 0, 0) | Out-Null
+    return "sha256:" + ([BitConverter]::ToString($hash.Hash).Replace("-", "")).ToLowerInvariant()
+  } finally {
+    $hash.Dispose()
+    $stream.Dispose()
+  }
+}
 function Write-Json([string]$Path, [object]$Value) { Write-Utf8 $Path ($Value | ConvertTo-Json -Depth 32 -Compress) }
 function Evidence-Identity([string]$Digest) { "factory-evidence://" + $Digest.Replace(":", "/") }
 function Assert-True([bool]$Value, [string]$Message) { if (-not $Value) { throw $Message } }
@@ -1481,6 +1495,7 @@ function Invoke-BoundedPowerShell {
   $escapedScriptPath = $scriptPath.Replace("'", "''")
   $escapedStdoutPath = $stdoutPath.Replace("'", "''")
   $escapedStderrPath = $stderrPath.Replace("'", "''")
+  $digestFunction = ${function:Get-Digest}.ToString()
   $writeHarnessStageFunction = ${function:Write-HarnessStage}.ToString()
   $cleanupFunction = ${function:Remove-HarnessFixtureCertificates}.ToString()
   $runtimeCleanupFunction = ${function:Stop-HarnessFixtureRuntime}.ToString()
@@ -1491,7 +1506,9 @@ function Write-Utf8([string]`$Path, [string]`$Text) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent `$Path) | Out-Null
   [IO.File]::WriteAllText(`$Path, `$Text, [Text.UTF8Encoding]::new(`$false))
 }
-function Get-Digest([string]`$Path) { "sha256:" + (Get-FileHash -LiteralPath `$Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Digest {
+$digestFunction
+}
 function Write-Json([string]`$Path, [object]`$Value) { Write-Utf8 `$Path (`$Value | ConvertTo-Json -Depth 32 -Compress) }
 function Evidence-Identity([string]`$Digest) { "factory-evidence://" + `$Digest.Replace(":", "/") }
 function Assert-True([bool]`$Value, [string]`$Message) { if (-not `$Value) { throw `$Message } }
@@ -1961,7 +1978,6 @@ Write-Utf8 (Join-Path $context.stateRoot "config\fixture.json") "{}"
     try {
       Invoke-BoundedPowerShell -Stage "fixture.signed-install.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 try {
-if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
 $factoryDelivery = Join-Path $context.factoryRoot "vision-release"
 & "C:\VEM\bringup\install-vision-release.ps1" -BundlePath (Join-Path $factoryDelivery "bundle.bin") -DescriptorPath (Join-Path $factoryDelivery "descriptor.json") -AttestationPath (Join-Path $factoryDelivery "attestation.json") -SbomPath (Join-Path $factoryDelivery "sbom.json") -ProvenancePath (Join-Path $factoryDelivery "provenance.json") -ConformanceEvidencePath (Join-Path $factoryDelivery "conformance.json") -ApprovalPath (Join-Path $factoryDelivery "approval.json") -FactoryManifestPath (Join-Path $factoryDelivery "factory-manifest.json") -ConfigurationPath (Join-Path $context.stateRoot "config\fixture.json") -EvidencePath $context.evidencePath -TaskUser $env:USERNAME
 $evidence = Get-Content -LiteralPath $context.evidencePath -Raw | ConvertFrom-Json
@@ -1986,7 +2002,6 @@ Assert-True ($acl.AreAccessRulesProtected) "selection ACL is inherited"
     try {
       Invoke-BoundedPowerShell -Stage "fixture.rollback-reinstall.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 try {
-if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
 $factoryRoot = $context.factoryRoot
 $stateRoot = $context.stateRoot
 $evidencePath = $context.evidencePath

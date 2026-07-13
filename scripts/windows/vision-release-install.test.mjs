@@ -126,19 +126,38 @@ describe("Vision release installer fixtures", () => {
   });
 
   boundedIt(
-    "keeps Factory provisioning compatible with Windows PowerShell 5.1",
+    "keeps isolated Factory provisioning compatible with Windows PowerShell 5.1",
     () => {
       const provisioner = readFileSync(
         "scripts/windows/provision-vision-factory-release.ps1",
         "utf8",
       );
+      const installer = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
       const harness = readFileSync(windowsHarness, "utf8");
 
       assert.doesNotMatch(provisioner, /ConvertFrom-Json\s+-Depth\b/);
+      for (const source of [provisioner, installer]) {
+        assert.match(
+          source,
+          /\$PSVersionTable\.PSEdition -eq "Desktop"[\s\S]*?\$env:PSModulePath = "\$env:WINDIR\\System32\\WindowsPowerShell\\v1\.0\\Modules;\$env:PSModulePath"/,
+        );
+      }
+      assert.match(provisioner, /\[Security\.Cryptography\.SHA256\]::Create\(\)/);
+      assert.match(provisioner, /\.TransformBlock\(/);
+      assert.match(provisioner, /\.TransformFinalBlock\(/);
       assert.match(
         harness,
-        /foreach \(\$corePowerShellPath in \$corePowerShellPaths\) \{[\s\S]*?Invoke-BoundedPowerShell -Stage "fixture\.provision\.\$corePowerShellName"[\s\S]*?-ChildPowerShellPath \$corePowerShellPath/,
+        /function Get-Digest\(\[string\]\$Path\) \{[\s\S]*?\[Security\.Cryptography\.SHA256\]::Create\(\)[\s\S]*?\.TransformFinalBlock\(/,
       );
+      assert.doesNotMatch(harness, /Get-FileHash\b/);
+      const provisionFixture = harness.match(
+        /foreach \(\$corePowerShellPath in \$corePowerShellPaths\) \{[\s\S]*?Invoke-BoundedPowerShell -Stage "fixture\.provision\.\$corePowerShellName"[\s\S]*?-ChildPowerShellPath \$corePowerShellPath[\s\S]*?-ScriptBody @'([\s\S]*?)'@ \| Out-Null/,
+      );
+      assert.ok(provisionFixture, "provisioning must run under each PowerShell edition");
+      assert.doesNotMatch(provisionFixture[1], /PSModulePath/);
     },
   );
 
@@ -221,14 +240,9 @@ describe("Vision release installer fixtures", () => {
     assert.match(source, /kiosk-account-created/);
   });
 
-  boundedIt("restores system modules for Windows PowerShell installs", () => {
-    const source = readFileSync(windowsHarness, "utf8");
-    assert.equal(
-      source.match(
-        /\$PSVersionTable\.PSEdition -eq "Desktop"\) \{ \$env:PSModulePath = "\$env:WINDIR\\System32\\WindowsPowerShell\\v1\.0\\Modules;/g,
-      )?.length,
-      2,
-    );
+  boundedIt("does not pre-restore system modules for isolated Windows release scripts", () => {
+    const harness = readFileSync(windowsHarness, "utf8");
+    assert.doesNotMatch(harness, /\$env:PSModulePath = "\$env:WINDIR\\System32\\WindowsPowerShell\\v1\.0\\Modules;/);
   });
 
   boundedIt(

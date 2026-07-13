@@ -18,6 +18,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
 
 $releaseRoot = Join-Path $VisionRoot "releases"
 $visionRoot = $VisionRoot # Kept for task/runbook compatibility.
