@@ -95,6 +95,10 @@ overrides:
 importers:
 
   .:
+    dependencies:
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
     devDependencies:
       '@tsconfig/node24':
         specifier: ^24.0.4
@@ -105,9 +109,6 @@ importers:
       '@vem/shared':
         specifier: workspace:*
         version: link:packages/shared
-      ajv:
-        specifier: 8.20.0
-        version: 8.20.0
       jsdom:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@1.8.0)

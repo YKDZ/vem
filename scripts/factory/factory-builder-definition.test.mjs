@@ -5,6 +5,9 @@ import { describe, it } from "node:test";
 describe("Factory builder definition", () => {
   it("pins its Ubuntu toolchain and copies Node with Corepack from a pinned source", () => {
     const dockerfile = readFileSync("scripts/factory/Dockerfile", "utf8");
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+    assert.equal(packageJson.dependencies.ajv, "8.20.0");
+    assert.equal(packageJson.devDependencies.ajv, undefined);
     assert.match(dockerfile, /^# syntax=docker\/dockerfile:1\.7/m);
     assert.match(
       dockerfile,
@@ -27,12 +30,29 @@ describe("Factory builder definition", () => {
     ])
       assert.match(dockerfile, new RegExp(tool.replaceAll("+", "\\+")));
     assert.match(dockerfile, /\n\s+openssl \\\n/);
+    assert.match(
+      dockerfile,
+      /FROM node-source AS factory-runtime-dependencies/,
+    );
+    assert.match(
+      dockerfile,
+      /COPY package\.json pnpm-lock\.yaml pnpm-workspace\.yaml \.\//,
+    );
+    assert.match(
+      dockerfile,
+      /pnpm install --prod --frozen-lockfile --ignore-scripts/,
+    );
+    assert.match(
+      dockerfile,
+      /COPY --from=factory-runtime-dependencies \/workspace\/node_modules \/workspace\/node_modules/,
+    );
     assert.match(dockerfile, /FROM toolchain AS runtime/);
     assert.match(dockerfile, /RUN corepack enable pnpm/);
+    assert.match(dockerfile, /WORKDIR \/workspace\/repo/);
     assert.doesNotMatch(dockerfile, /ENTRYPOINT/);
     assert.match(
       dockerfile,
-      /CMD \["node", "\/workspace\/scripts\/factory\/factory-cli\.mjs"\]/,
+      /CMD \["node", "\/workspace\/repo\/scripts\/factory\/factory-cli\.mjs"\]/,
     );
   });
 });
