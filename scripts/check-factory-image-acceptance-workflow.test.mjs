@@ -17,6 +17,9 @@ describe("Factory Image Acceptance workflow", () => {
       "VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID",
       "VEM_VM_HOST_ADAPTER",
       "VEM_VM_HOST_EVIDENCE_EXPORT_DIR",
+      "VEM_FACTORY_UDF_EXTRACTOR_HOST_PATH",
+      "VEM_FACTORY_UDF_WRITER_HOST_PATH",
+      "VEM_FACTORY_WIMLIB_HOST_PATH",
     ])
       assert.match(workflow, new RegExp(input));
     assert.doesNotMatch(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
@@ -162,8 +165,31 @@ describe("Factory Image Acceptance workflow", () => {
     assert.doesNotMatch(workflow, /actions\/upload-artifact@v4/);
   });
 
+  it("uses runner-host Factory tools for admission, not builder-container paths", () => {
+    assert.match(
+      workflow,
+      /udfExtractorPath: process\.env\.VEM_FACTORY_UDF_EXTRACTOR_HOST_PATH/,
+    );
+    assert.match(
+      workflow,
+      /udfWriterPath: process\.env\.VEM_FACTORY_UDF_WRITER_HOST_PATH/,
+    );
+    assert.match(
+      workflow,
+      /wimlibPath: process\.env\.VEM_FACTORY_WIMLIB_HOST_PATH/,
+    );
+    assert.doesNotMatch(workflow, /LD_LIBRARY_PATH/);
+    assert.doesNotMatch(
+      workflow,
+      /udfExtractorPath: process\.env\.VEM_FACTORY_UDF_EXTRACTOR_CONTAINER_PATH/,
+    );
+  });
+
   it("uploads only the dedicated sanitized evidence directory", () => {
-    assert.match(workflow, /if: \$\{\{ always\(\) \}\}/);
+    assert.match(
+      workflow,
+      /if: \$\{\{ always\(\) && env\.VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH != '' \}\}/,
+    );
     assert.match(workflow, /actions\/upload-artifact@/);
     assert.match(
       workflow,

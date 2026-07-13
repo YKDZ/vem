@@ -272,17 +272,31 @@ contains private material must never be uploaded.
 
 `windows-serviced-iso` requires four manifest-pinned executable regular files:
 the 7-Zip UDF-view extractor, the ISO/UDF writer, `wimlib-imagex`, and the
-Factory builder image identity. The runner supplies absolute no-symlink paths;
-the builder opens each executable with no-follow semantics, hashes the opened
-bytes, checks the manifest digest and reported version, and records the exact
-tool identities as effective inputs and provenance. Factory admission repeats
-the pinned extractor/WIM inspection against the runner-local ISO. Missing,
+Factory builder image identity. The runner supplies two explicit path domains:
+`VEM_FACTORY_*_CONTAINER_PATH` names the executable inside the pinned builder
+image, while `VEM_FACTORY_*_HOST_PATH` names the executable used by Factory
+admission on the Linux runner host. Both domains must resolve to the same
+manifest-pinned executable bytes and reported versions; a container path must
+never be passed to host admission merely because both are absolute paths. Any
+runtime libraries and package support files required by a host executable must
+be installed through the runner host's standard loader and filesystem contract
+from the same pinned builder image or an equivalent verified package source;
+workflow-wide dynamic-library path injection is not allowed.
+
+The builder and admission code open each executable with no-follow semantics,
+hash the opened bytes, check the manifest digest and reported version, and
+record or verify the exact tool identities. Factory admission repeats the
+pinned extractor/WIM inspection against the runner-local ISO. Missing,
 symlinked, non-regular, digest-mismatched, or wrong-version tools fail before
-media inspection or build output admission. The extractor must first report a
-single authoritative `Type = Udf` view; extraction then uses that UDF view and
-performs a no-follow `lstat` tree inventory before any WIM inspection, hashing,
-overlay copy, or timestamp adjustment; symlinks, special files, and Windows
-case-colliding normalized paths are rejected.
+media inspection or build output admission. The host paths are protected
+runner-service configuration, so any Linux host can materialize them from the
+pinned builder image or an equivalent package source;
+repository workflows contain no hypervisor- or storage-platform-specific
+installation path. The extractor must first report a single authoritative
+`Type = Udf` view; extraction then uses that UDF view and performs a no-follow
+`lstat` tree inventory before any WIM inspection, hashing, overlay copy, or
+timestamp adjustment; symlinks, special files, and Windows case-colliding
+normalized paths are rejected.
 
 ## VM Host Adapter Contract
 
