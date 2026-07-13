@@ -99,33 +99,37 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.doesNotMatch(upload, /\.iso|windows-source|cache/i);
   });
 
-  it("installs UDF extractor/writer fixtures and pinned WIM inspection before Factory media tests", () => {
+  it("runs Factory media tests in the tracked builder image", () => {
     const workflow = read(ciWorkflowPath);
     assert.match(workflow, /runs-on:\s*ubuntu-24\.04/);
     assert.match(
       workflow,
-      /apt-cache policy genisoimage=9:1\.1\.11-3\.5 7zip xorriso/,
+      /docker build\s+\\\n\s+--file scripts\/factory\/Dockerfile/,
     );
-    assert.match(workflow, /apt-cache show genisoimage=9:1\.1\.11-3\.5/);
-    assert.match(workflow, /genisoimage=9:1\.1\.11-3\.5/);
+    assert.match(workflow, /Run Factory Media Contract Tests In Builder/);
+    assert.match(workflow, /docker run --rm/);
     assert.match(
       workflow,
-      /VEM_FACTORY_TEST_UDF_WRITER_DIGEST: sha256:9bacc5951ca0767701cfd8e6b47537f199977e51a6e943f4edfdcf9d639d99d2/,
+      /VEM_FACTORY_TEST_UDF_WRITER=\/usr\/bin\/genisoimage/,
     );
+    assert.match(workflow, /sha256sum \/usr\/bin\/genisoimage/);
     assert.match(
       read("scripts/factory/build-factory-media.test.mjs"),
       /fixture genisoimage digest must match the pinned contract/,
     );
-    assert.match(workflow, /7zip=23\.01\+dfsg-11/);
-    assert.match(workflow, /xorriso=1:1\.5\.6-1\.1ubuntu3/);
-    assert.match(workflow, /wimtools=1\.14\.4-1\.1build2/);
+    assert.doesNotMatch(workflow, /Install Factory Media Fixture Tools/);
+    assert.doesNotMatch(workflow, /apt-cache policy genisoimage/);
+    assert.doesNotMatch(
+      workflow,
+      /VEM_FACTORY_TEST_UDF_WRITER_DIGEST: sha256:/,
+    );
     assert.match(
       read("scripts/factory/build-factory-media.test.mjs"),
       /skip: !process\.env\.VEM_FACTORY_REAL_WINDOWS_ISO/,
     );
     assert.doesNotMatch(
-      read("scripts/factory/factory-cli.test.mjs"),
-      /\bskip\b/,
+      read("scripts/factory/factory-builder-definition.test.mjs"),
+      /skip:/,
     );
   });
 

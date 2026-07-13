@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 const REQUEST_SCHEMA_VERSION = "vem-vm-host-adapter-request/v1";
 const REPORT_SCHEMA_VERSION = "vem-vm-host-adapter-report/v1";
@@ -22,6 +22,7 @@ export const VM_HOST_ADAPTER_REPORT_SCHEMA_VERSION = REPORT_SCHEMA_VERSION;
 
 export const VM_HOST_ADAPTER_OPERATIONS = new Set([
   "clean-install",
+  "capture-approved-base",
   "restore-approved-base",
   "create-disposable-overlay",
   "capture-display",
@@ -32,6 +33,7 @@ export const VM_HOST_ADAPTER_OPERATIONS = new Set([
 
 export const VM_HOST_ADAPTER_CAPABILITIES = new Set([
   "clean-install",
+  "approved-base-capture",
   "approved-base-restore",
   "disposable-overlay",
   "display-capture",
@@ -44,6 +46,7 @@ export const VM_HOST_ADAPTER_CAPABILITIES = new Set([
 
 const REQUIRED_CAPABILITY_BY_OPERATION = {
   "clean-install": "clean-install",
+  "capture-approved-base": "approved-base-capture",
   "restore-approved-base": "approved-base-restore",
   "create-disposable-overlay": "disposable-overlay",
   "capture-display": "display-capture",
@@ -54,11 +57,12 @@ const REQUIRED_CAPABILITY_BY_OPERATION = {
 
 const REQUIRED_ASSET_ROLES_BY_OPERATION = {
   "clean-install": ["factory-iso", "factory-personalization-media"],
+  "capture-approved-base": ["factory-iso"],
   "restore-approved-base": ["approved-runtime-base"],
   "create-disposable-overlay": ["approved-runtime-base"],
   "capture-display": ["approved-runtime-base"],
   "capture-default-audio": ["approved-runtime-base"],
-  cleanup: ["approved-runtime-base"],
+  cleanup: ["approved-runtime-base", "factory-iso"],
   cancel: ["approved-runtime-base"],
 };
 
@@ -432,7 +436,10 @@ export function validateVmHostAdapterRequest(input) {
         issues,
       );
   }
-  if (request.operation === "clean-install") {
+  if (
+    request.operation === "clean-install" ||
+    request.operation === "capture-approved-base"
+  ) {
     if (
       !assertExactKeys(
         request.factoryMedia,
@@ -556,10 +563,22 @@ export function validateVmHostAdapterRequest(input) {
         `must include ${requiredCapability}`,
       );
   }
-  for (const role of REQUIRED_ASSET_ROLES_BY_OPERATION[request.operation] ??
-    []) {
-    if (!request.assets?.some((asset) => asset?.role === role))
+  const requiredRoles =
+    REQUIRED_ASSET_ROLES_BY_OPERATION[request.operation] ?? [];
+  const hasRequiredRole =
+    request.operation === "cleanup"
+      ? requiredRoles.some((role) =>
+          request.assets?.some((asset) => asset?.role === role),
+        )
+      : requiredRoles.every((role) =>
+          request.assets?.some((asset) => asset?.role === role),
+        );
+  if (!hasRequiredRole) {
+    for (const role of requiredRoles) {
+      if (request.assets?.some((asset) => asset?.role === role)) continue;
       issue(issues, "request.assets", `must include ${role}`);
+      if (request.operation === "cleanup") break;
+    }
   }
   if (issues.length > 0) throw new VmHostAdapterContractError(issues);
   return reconstructRequest(request);
@@ -760,12 +779,15 @@ export function validateVmHostAdapterReport(input, requestInput) {
     const observedSource = request.assets.find(
       (asset) =>
         asset.role ===
-        (request.operation === "clean-install"
+        (request.operation === "clean-install" ||
+        (request.operation === "cleanup" &&
+          request.assets.some((asset) => asset.role === "factory-iso"))
           ? "factory-iso"
           : "approved-runtime-base"),
     );
     if (
       observedSource &&
+      request.operation !== "capture-approved-base" &&
       report.observed.baseIdentity !== observedSource.identity
     )
       issue(
@@ -774,7 +796,8 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "does not match the requested operation source asset",
       );
     const expectedProvenance =
-      request.operation === "clean-install"
+      request.operation === "clean-install" ||
+      request.operation === "capture-approved-base"
         ? request.factoryMedia.provenanceDigest
         : null;
     if (report.observed.factoryProvenanceDigest !== expectedProvenance)
@@ -886,8 +909,11 @@ export function validateVmHostAdapterReport(input, requestInput) {
   else {
     report.evidence.forEach((entry, index) => {
       const path = `report.evidence[${index}]`;
-      if (!assertExactKeys(entry, ["role", "identity", "digest"], path, issues))
-        return;
+      const entryKeys =
+        entry?.role === "display-capture"
+          ? ["role", "identity", "digest", "fileName"]
+          : ["role", "identity", "digest"];
+      if (!assertExactKeys(entry, entryKeys, path, issues)) return;
       if (
         !new Set(["display-capture", "default-audio-capture"]).has(entry.role)
       )
@@ -909,6 +935,19 @@ export function validateVmHostAdapterReport(input, requestInput) {
         issue(issues, `${path}.digest`, "must be a lowercase SHA-256 digest");
       else if (identity && identity[1] !== entry.digest.slice(7))
         issue(issues, path, "identity and digest must name the same evidence");
+      if (entry.role === "display-capture") {
+        const expectedFileName = `${entry.digest?.slice(7)}.`;
+        if (
+          typeof entry.fileName !== "string" ||
+          !/^[a-f0-9]{64}\.(?:png|jpg|jpeg|webp)$/.test(entry.fileName) ||
+          !entry.fileName.startsWith(expectedFileName)
+        )
+          issue(
+            issues,
+            `${path}.fileName`,
+            "must be a digest-bound relative image file name",
+          );
+      }
     });
     assertUniqueRoles(report.evidence, "report.evidence", issues);
     const expectedEvidenceRole =
@@ -986,6 +1025,11 @@ export function validateVmHostAdapterReport(input, requestInput) {
       ["not-mounted", "mounted"].includes(
         report.cleanup.observed?.personalizationMedia,
       );
+    const completedCaptureAfterCleanup =
+      request.operation === "capture-approved-base" &&
+      report.result === "succeeded" &&
+      state === "completed/removed" &&
+      cleaned;
     const expected =
       report.result === "failed" ||
       ["cleanup", "cancel"].includes(request.operation)
@@ -1004,12 +1048,15 @@ export function validateVmHostAdapterReport(input, requestInput) {
     if (
       report.result !== "failed" &&
       !["cleanup", "cancel"].includes(request.operation) &&
+      !completedCaptureAfterCleanup &&
       (state !== "not-run/active" || !active)
     )
       issue(
         issues,
         "report.cleanup",
-        `must be ${expected} for this lifecycle operation`,
+        request.operation === "capture-approved-base"
+          ? "must be not-run/active with observed active resources or completed/removed with observed removal for an idempotent capture"
+          : `must be ${expected} for this lifecycle operation`,
       );
   }
   if (!Array.isArray(report.diagnostics))
@@ -1063,6 +1110,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
       role: entry.role,
       identity: entry.identity,
       digest: entry.digest,
+      ...(entry.role === "display-capture" ? { fileName: entry.fileName } : {}),
     })),
     timestamps: {
       startedAt: report.timestamps.startedAt,
@@ -1149,6 +1197,17 @@ function adapterExecutable(environment) {
   if (!value)
     throw new Error(
       "VEM_VM_HOST_ADAPTER must be configured by the runner service",
+    );
+  return value;
+}
+
+function evidenceExportDirectory(environment) {
+  const value = String(
+    environment.VEM_VM_HOST_EVIDENCE_EXPORT_DIR ?? "",
+  ).trim();
+  if (!isAbsolute(value))
+    throw new Error(
+      "VEM_VM_HOST_EVIDENCE_EXPORT_DIR must be an absolute runner-owned directory",
     );
   return value;
 }
@@ -1351,6 +1410,8 @@ export async function runVmHostAdapter({
     );
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1)
     throw new Error("VM Host Adapter timeout must be a positive integer");
+  if (request.operation === "capture-display")
+    evidenceExportDirectory(environment);
   mkdirSync(workDirectory, { recursive: true, mode: 0o700 });
   let cancellation;
   const cancelInFlightOperation = async () => {

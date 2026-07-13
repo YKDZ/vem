@@ -80,6 +80,7 @@ jobs:
             VEM_FACTORY_MANIFEST_STORE \
             VEM_FACTORY_WINDOWS_SOURCE_STORE \
             VEM_FACTORY_EVIDENCE_STORE \
+            VEM_FACTORY_ACCEPTANCE_OUTPUT_ROOT \
             VEM_FACTORY_APPROVAL_POLICY \
             VEM_FACTORY_MANIFEST_IDENTITY \
             VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT \
@@ -217,6 +218,20 @@ jobs:
           iso_identity=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).isoIdentity)' "$RUNNER_TEMP/vem-factory-output/factory-build-result.json")
           echo "iso_identity=$iso_identity" >> "$GITHUB_OUTPUT"
           echo "provenance_artifact_name=factory-provenance-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Immutable Factory Acceptance Handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VEM_FACTORY_ACCEPTANCE_OUTPUT_ROOT" = /* ]]
+          handoff="$VEM_FACTORY_ACCEPTANCE_OUTPUT_ROOT"
+          staging="${handoff}.tmp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$staging"
+          install -d -m 0700 "$staging"
+          install -m 0444 "$RUNNER_TEMP/vem-factory-output/factory-build-result.json" "$staging/factory-build-result.json"
+          install -m 0444 "$RUNNER_TEMP/vem-factory-output/factory-provenance.json" "$staging/factory-provenance.json"
+          rm -rf "$handoff"
+          mv "$staging" "$handoff"
 
       - name: Upload Sanitized Factory Evidence Only
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

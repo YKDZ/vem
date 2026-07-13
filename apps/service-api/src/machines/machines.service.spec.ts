@@ -3270,7 +3270,8 @@ describe("MachinesService claim code lifecycle", () => {
             machineClaimCodeTtlSeconds: 600,
             machineClaimLookupHmacKey:
               "test-machine-claim-lookup-hmac-key-change-me",
-            mqttUrl: "mqtt://localhost:1883",
+            mqttUrl: "mqtt://127.0.0.1:1883",
+            machineMqttUrl: "mqtt://platform.example.com:18884",
             mqttUsername: "machine-client",
             mqttPassword: "mqtt-password",
             machineApiBaseUrl: "https://platform.example.com/api",
@@ -3663,7 +3664,7 @@ describe("MachinesService claim code lifecycle", () => {
           machineSecretVersion: rotatedSecretVersion,
           mqttSigningSecret: "vms_rotated-mqtt-secret-change-before-production",
           mqttConnection: expect.objectContaining({
-            url: "mqtt://localhost:1883",
+            url: "mqtt://platform.example.com:18884",
             clientId: "vem-machine-M001",
           }),
         }),

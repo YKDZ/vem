@@ -61,9 +61,7 @@ const EVIDENCE_BUILDER =
   "github-actions://vem/vem/.github/workflows/build.yml@refs/heads/main";
 const ISO_SECTOR_BYTES = 2048;
 const PINNED_UDF_WRITER_VERSION = "1.1.11";
-const PINNED_UDF_WRITER_DIGEST =
-  process.env.VEM_FACTORY_TEST_UDF_WRITER_DIGEST ??
-  "sha256:9bacc5951ca0767701cfd8e6b47537f199977e51a6e943f4edfdcf9d639d99d2";
+const PINNED_UDF_WRITER_DIGEST = process.env.VEM_FACTORY_TEST_UDF_WRITER_DIGEST;
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -366,6 +364,10 @@ async function fixture() {
   const observedUdfWriterDigest = `sha256:${createHash("sha256")
     .update(await readFile(UDF_WRITER_PATH))
     .digest("hex")}`;
+  assert.ok(
+    PINNED_UDF_WRITER_DIGEST,
+    "Factory media tests require the executing genisoimage digest",
+  );
   assert.equal(
     observedUdfWriterDigest,
     PINNED_UDF_WRITER_DIGEST,
@@ -843,6 +845,16 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.equal(baseline.accounts.maintenance, "YKDZ");
       assert.equal(baseline.assets.length, 8);
+      assert.match(
+        baseline.assets.find((asset) => asset.role === "openssh-installer")
+          .fileName,
+        /\.(?:msi|exe)$/i,
+      );
+      assert.match(
+        baseline.assets.find((asset) => asset.role === "wireguard-installer")
+          .fileName,
+        /\.(?:msi|exe)$/i,
+      );
       assert.equal(JSON.stringify(baseline).includes("password"), false);
       assert.equal(JSON.stringify(baseline).includes(data.root), false);
       const descriptor = JSON.parse(
@@ -931,10 +943,10 @@ describe("real deterministic Factory ISO builder", () => {
       );
       for (const key of Object.keys(splat))
         assert.match(bootstrap, new RegExp(`\\b${key}\\b`));
-      assert.match(
-        bootstrap,
-        /prepare-factory-runtime\.ps1[\s\S]*provision-vision-factory-release\.ps1[\s\S]*verify-factory-runtime\.ps1/,
-      );
+      assert.match(bootstrap, /prepare-factory-runtime\.ps1/);
+      assert.match(bootstrap, /verify-factory-runtime\.ps1/);
+      assert.doesNotMatch(bootstrap, /provision-vision-factory-release\.ps1/);
+      assert.doesNotMatch(bootstrap, /install-vision-release\.ps1/);
       assert.deepEqual(
         JSON.parse(
           await readFile(

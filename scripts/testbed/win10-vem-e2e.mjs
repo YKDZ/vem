@@ -433,7 +433,18 @@ function requireEvidenceString(value, message) {
 }
 
 export function readEphemeralPlatformSetupEvidence(options = {}) {
-  if (options.mode !== "simulated-hardware-sale-flow") {
+  const consumesEphemeralPlatform = new Set([
+    "provision",
+    "runtime-acceptance",
+    "simulated-hardware-sale-flow",
+  ]).has(options.mode);
+  if (!consumesEphemeralPlatform) {
+    return null;
+  }
+  if (
+    options.mode !== "simulated-hardware-sale-flow" &&
+    !String(options.ephemeralPlatformEvidence ?? "").trim()
+  ) {
     return null;
   }
 
@@ -3473,6 +3484,129 @@ function splitTaskName(taskName) {
   };
 }
 
+export function buildFactoryPreclaimVerificationScript(options = {}) {
+  const runId = sanitizeRunId(options.runId);
+  const machineCode = assertTestbedMachineCode(options.machineCode);
+  const verifierPath = "C:\\VEM\\bringup\\verify-factory-runtime.ps1";
+  const verifierEvidencePath = `C:\\Windows\\Temp\\vem-factory-preclaim-${runId}.json`;
+  const machineConfigPath =
+    "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json";
+  const identityPaths = [
+    "C:\\ProgramData\\VEM\\provisioning\\machine-profile.json",
+    "C:\\ProgramData\\VEM\\provisioning\\provisioning-profile.json",
+  ];
+  return `
+$ErrorActionPreference = 'Stop'
+$verifierPath = ${psString(verifierPath)}
+$verifierEvidencePath = ${psString(verifierEvidencePath)}
+$machineConfigPath = ${psString(machineConfigPath)}
+$identityPaths = ${psString(JSON.stringify(identityPaths))} | ConvertFrom-Json
+if (-not (Test-Path -LiteralPath $verifierPath -PathType Leaf)) {
+  throw "Factory ISO verifier is missing: $verifierPath"
+}
+
+try {
+  $factoryVerificationJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifierPath -EvidencePath $verifierEvidencePath
+  $factoryVerifierExit = $LASTEXITCODE
+  $factoryVerification = $factoryVerificationJson | ConvertFrom-Json
+  $identityFiles = @($identityPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+  $machineConfig = [ordered]@{
+    exists = Test-Path -LiteralPath $machineConfigPath -PathType Leaf
+    structurallyValid = $false
+    unclaimed = $false
+    identityFields = @()
+    credentialFields = @()
+  }
+  if ($machineConfig.exists) {
+    try {
+      $machineConfigDocument = Get-Content -LiteralPath $machineConfigPath -Raw | ConvertFrom-Json -ErrorAction Stop
+      $machineCodeProperty = $machineConfigDocument.PSObject.Properties['machineCode']
+      $machineConfig.structurallyValid =
+        $machineConfigDocument -is [pscustomobject] -and
+        $null -ne $machineCodeProperty -and
+        $null -eq $machineCodeProperty.Value
+
+      $machineConfig.identityFields = @(
+        'machineCode', 'machineId', 'machineName', 'machineStatus',
+        'machineLocationLabel', 'mqttClientId', 'runtimeEndpoints',
+        'hardwareProfile', 'paymentCapability', 'provisioningMetadata' |
+          Where-Object {
+            $property = $machineConfigDocument.PSObject.Properties[$_]
+            $null -ne $property -and
+              $null -ne $property.Value -and
+              ($property.Value -isnot [string] -or -not [string]::IsNullOrWhiteSpace($property.Value))
+          }
+      )
+      $machineConfig.credentialFields = @(
+        'machineSecret', 'mqttSigningSecret', 'mqttPassword', 'mqttUsername' |
+          Where-Object {
+            $property = $machineConfigDocument.PSObject.Properties[$_]
+            $null -ne $property -and
+              $null -ne $property.Value -and
+              ($property.Value -isnot [string] -or -not [string]::IsNullOrWhiteSpace($property.Value))
+          }
+      ) + @(
+        'machineSecretConfigured', 'mqttSigningSecretConfigured', 'mqttPasswordConfigured' |
+          Where-Object {
+            $property = $machineConfigDocument.PSObject.Properties[$_]
+            $null -ne $property -and $property.Value -eq $true
+          }
+      )
+      $machineConfig.unclaimed =
+        $machineConfig.structurallyValid -and
+        $machineConfig.identityFields.Count -eq 0 -and
+        $machineConfig.credentialFields.Count -eq 0
+    } catch {
+      # A malformed config cannot prove this Factory image is unclaimed.
+    }
+  }
+  $provisioningFiles = if (Test-Path -LiteralPath 'C:\\ProgramData\\VEM\\provisioning') {
+    @(Get-ChildItem -LiteralPath 'C:\\ProgramData\\VEM\\provisioning' -File -Recurse -Force -ErrorAction Stop | ForEach-Object { $_.FullName })
+  } else { @() }
+  $secretFiles = if (Test-Path -LiteralPath 'C:\\ProgramData\\VEM\\secrets') {
+    @(Get-ChildItem -LiteralPath 'C:\\ProgramData\\VEM\\secrets' -File -Recurse -Force -ErrorAction Stop | ForEach-Object { $_.FullName })
+  } else { @() }
+  $identityAbsent =
+    $machineConfig.unclaimed -and
+    $identityFiles.Count -eq 0 -and
+    $provisioningFiles.Count -eq 0 -and
+    $secretFiles.Count -eq 0
+  $result = [ordered]@{
+    schemaVersion = 'factory-preclaim-verification/v1'
+    kind = 'factory-preclaim-verification'
+    runId = ${psString(runId)}
+    expectedUnclaimedMachineCode = ${psString(machineCode)}
+    readOnly = $true
+    ok = $factoryVerifierExit -eq 0 -and [bool]$factoryVerification.ok -and $identityAbsent
+    checks = [ordered]@{
+      factoryRuntime = [ordered]@{
+        ok = [bool]$factoryVerification.ok
+        baseline = $factoryVerification.checks.manifest
+        packages = $factoryVerification.checks.factoryRemoteMaintenanceCapability.packageVersions
+        daemonService = $factoryVerification.checks.daemonService
+        machineUiTask = $factoryVerification.checks.machineUiTask
+        maintenanceSshCa = $factoryVerification.checks.factoryRemoteMaintenanceCapability.caFingerprint
+        passwordSsh = $factoryVerification.checks.factoryRemoteMaintenanceCapability.passwordAuthentication
+        accounts = $factoryVerification.checks.factoryRemoteMaintenanceCapability.accountPolicy
+        kiosk = $factoryVerification.checks.kiosk
+      }
+      absentMachineIdentity = [ordered]@{
+        asserted = $identityAbsent
+        machineIdentityFileCount = $identityFiles.Count
+        machineConfig = $machineConfig
+        provisioningFileCount = $provisioningFiles.Count
+        protectedSecretFileCount = $secretFiles.Count
+      }
+    }
+  }
+  [pscustomobject]$result | ConvertTo-Json -Depth 40
+  if (-not [bool]$result.ok) { exit 1 }
+} finally {
+  Remove-Item -LiteralPath $verifierEvidencePath -Force -ErrorAction SilentlyContinue
+}
+`;
+}
+
 export function buildRemotePowerShellScript(options = {}) {
   const mode = options.mode ?? "inventory";
   const machineCode = options.machineCode ?? "VEM-TESTBED-WINVM-01";
@@ -3486,17 +3620,26 @@ export function buildRemotePowerShellScript(options = {}) {
     "simulated-hardware-sale-flow",
     "dirty-host-factory-acceptance",
     "clean-base-factory-acceptance",
+    "factory-preclaim-verify",
   ];
   if (!supportedModes.includes(mode)) {
     throw new Error(`unsupported mode: ${mode}`);
   }
-  if (mode !== "clean-base-factory-acceptance") {
+  if (
+    mode !== "clean-base-factory-acceptance" &&
+    mode !== "factory-preclaim-verify"
+  ) {
     assertTestbedMachineCode(machineCode);
+  }
+  if (mode === "factory-preclaim-verify") {
+    return buildFactoryPreclaimVerificationScript(options);
   }
   const runId =
     mode === "dirty-host-factory-acceptance" ||
     mode === "clean-base-factory-acceptance" ||
-    mode === "simulated-hardware-sale-flow"
+    mode === "simulated-hardware-sale-flow" ||
+    ((mode === "provision" || mode === "runtime-acceptance") &&
+      options.ephemeralPlatformEvidence)
       ? sanitizeRunId(options.runId)
       : "not-applicable";
   const cleanBasePlan =
@@ -3520,6 +3663,7 @@ export function buildRemotePowerShellScript(options = {}) {
     ephemeralPlatformSetup?.target ?? options.platformTarget ?? "vem-vps";
   if (
     mode === "provision" &&
+    !ephemeralPlatformSetup &&
     !Object.hasOwn(PLATFORM_TARGETS, platformTarget)
   ) {
     throw new Error(`unsupported platform target: ${platformTarget}`);
@@ -3530,7 +3674,8 @@ export function buildRemotePowerShellScript(options = {}) {
     PLATFORM_TARGETS[platformTarget] ??
     PLATFORM_TARGETS["vem-vps"];
   const claimCode =
-    mode === "simulated-hardware-sale-flow"
+    mode === "simulated-hardware-sale-flow" ||
+    (mode === "provision" && ephemeralPlatformSetup)
       ? ephemeralPlatformSetup.claimCode
       : (options.claimCode ?? "");
   if (mode === "provision" && String(claimCode).trim().length === 0) {
@@ -7238,6 +7383,8 @@ Validate-clean-base-evidence mode validates a clean-base factory acceptance repo
 
 Factory-image-delivery-unit mode reads a completed clean-base factory acceptance report and writes a sanitized Factory Image Delivery Unit report that indexes source identity, declared inputs, artifacts, manifest, preparation logs, verifier evidence, screenshots/session availability, readiness, and acceptance evidence without mutating a VM.
 
+Factory-preclaim-verify mode connects only through an adapter-discovered certificate SSH endpoint, invokes the Factory ISO-installed verifier without preparation, and emits structured baseline and unclaimed-identity evidence before approved-base capture.
+
 VM runtime acceptance mode is the future CI/manual gate entrypoint. It plans or runs dirty-host factory reset acceptance, ephemeral platform setup, runtime acceptance, and simulated hardware sale-flow in one non-interactive sequence. It requires --run-id, a non-shared --platform-target, explicit --ephemeral-database-url/--ephemeral-api-base-url/--ephemeral-mqtt-url, and local artifacts unless --use-existing-remote-artifacts is intentionally supplied. Reports and logs are written under artifacts/vm-runtime-acceptance/<run-id>/.
 `);
 }
@@ -7338,6 +7485,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--factory-iso") {
       options.factoryIso = next;
+      index += 1;
+    } else if (arg === "--factory-guest-endpoint-json") {
+      options.factoryGuestEndpointJson = next;
       index += 1;
     } else if (arg === "--factory-assembly-mode") {
       options.factoryAssemblyMode = next;
@@ -7451,10 +7601,47 @@ function parseArgs(argv) {
   return options;
 }
 
+function applyFactoryGuestEndpoint(options) {
+  if (!options.factoryGuestEndpointJson) return options;
+  let endpoint;
+  try {
+    endpoint = JSON.parse(options.factoryGuestEndpointJson);
+  } catch {
+    throw new Error(
+      "--factory-guest-endpoint-json must be adapter-discovered endpoint JSON",
+    );
+  }
+  if (
+    endpoint?.protocol !== "ssh" ||
+    typeof endpoint.host !== "string" ||
+    !endpoint.host ||
+    !Number.isInteger(endpoint.port) ||
+    endpoint.port < 1 ||
+    endpoint.port > 65535 ||
+    !["discovered", "authenticated"].includes(endpoint.reachability) ||
+    !options.expectedTestbedUser ||
+    options.remote ||
+    options.sshPort
+  ) {
+    throw new Error(
+      "Factory verification and post-claim acceptance require an adapter-discovered SSH endpoint, --expected-testbed-user, and no caller-supplied remote or SSH port",
+    );
+  }
+  return {
+    ...options,
+    remote: `${options.expectedTestbedUser}@${endpoint.host}`,
+    sshPort: endpoint.port,
+    expectedMaintenanceIngressHost:
+      options.expectedMaintenanceIngressHost ?? endpoint.host,
+  };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   void (async () => {
     try {
-      const options = parseArgs(process.argv.slice(2));
+      const options = applyFactoryGuestEndpoint(
+        parseArgs(process.argv.slice(2)),
+      );
       if (options.help) {
         usage();
         process.exit(0);
@@ -7469,6 +7656,32 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       }
       options.factoryMediaAdmission =
         await admitFactoryMediaBeforeAcceptance(options);
+      if (options.mode === "factory-preclaim-verify") {
+        const sshCommand = buildSshCommand(options);
+        const remoteCommand = buildEncodedPowerShellCommand(
+          buildRemotePowerShellScript(options),
+        );
+        const result = spawnSync(
+          sshCommand[0],
+          [...sshCommand.slice(1), remoteCommand],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+        );
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        let report;
+        try {
+          report = JSON.parse(result.stdout);
+        } catch {
+          throw new Error(
+            "factory-preclaim-verify did not return structured verifier evidence",
+          );
+        }
+        if (options.out) writeJsonOutput(options.out, report);
+        if (result.status !== 0 || report.ok !== true) {
+          process.exitCode = 1;
+        }
+        return;
+      }
       if (options.mode === "vm-runtime-acceptance") {
         const plan = buildVmRuntimeAcceptancePlan(options);
         if (options.dryRun) {
@@ -7666,10 +7879,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       }
 
       const cleanupRemoteFactoryStaging = () =>
-        cleanupFactoryAcceptanceStaging(options, {
-          localTempDirectory,
-          cleanupLocal: false,
-        }).remoteCleaned;
+        factoryAcceptanceMode
+          ? cleanupFactoryAcceptanceStaging(options, {
+              localTempDirectory,
+              cleanupLocal: false,
+            }).remoteCleaned
+          : true;
       const cleanupLocalFactoryStaging = () => {
         if (!localPersonalizationStaging) {
           return true;

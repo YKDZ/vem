@@ -196,20 +196,17 @@ describe("Factory Personalization Media v1", () => {
     );
   });
 
-  it("requires an independent always-run workflow cleanup without secret media input", async () => {
+  it("requires independent adapter cleanup-only lifecycle verification", async () => {
     const workflow = await readFile(
       ".github/workflows/factory-image-acceptance.yml",
       "utf8",
     );
     assert.match(
       workflow,
-      /Independently Remove Factory Personalization Staging\n        if: \$\{\{ always\(\) \}\}/,
+      /Independently Finalize Adapter Lifecycle\n        if: \$\{\{ always\(\) \}\}/,
     );
-    assert.match(workflow, /--cleanup-factory-staging/);
-    assert.match(
-      workflow,
-      /delete environment\.VEM_FACTORY_PERSONALIZATION_MEDIA_PATH/,
-    );
+    assert.match(workflow, /--cleanup-only/);
+    assert.doesNotMatch(workflow, /--cleanup-factory-staging/);
   });
 
   it("stages media only after the trusted gate and always removes deterministic staging on failure and retry", async () => {

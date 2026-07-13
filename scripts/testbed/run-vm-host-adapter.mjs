@@ -20,6 +20,12 @@ const CAPABILITIES_BY_OPERATION = {
     "cancellation",
     "cleanup",
   ],
+  "capture-approved-base": [
+    "approved-base-capture",
+    "disposable-overlay",
+    "cancellation",
+    "cleanup",
+  ],
   "restore-approved-base": [
     "approved-base-restore",
     "disposable-overlay",
@@ -68,6 +74,9 @@ function assetsForOperation(operation) {
       ),
     ];
   }
+  if (operation === "capture-approved-base") {
+    return [assetFromIdentity("factory-iso", readOption("--factory-iso"))];
+  }
   return [
     assetFromIdentity(
       "approved-runtime-base",
@@ -77,7 +86,8 @@ function assetsForOperation(operation) {
 }
 
 function factoryMediaForOperation(operation) {
-  if (operation !== "clean-install") return null;
+  if (!["clean-install", "capture-approved-base"].includes(operation))
+    return null;
   const outputIdentity = readOption("--factory-iso");
   const outputDigest = `sha256:${outputIdentity.match(/^factory-cas:\/\/sha256\/([a-f0-9]{64})$/)?.[1] ?? ""}`;
   return {
@@ -91,7 +101,8 @@ function factoryMediaForOperation(operation) {
 }
 
 async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
-  if (operation !== "clean-install") return null;
+  if (!["clean-install", "capture-approved-base"].includes(operation))
+    return null;
   const manifestPath = readOption("--factory-manifest-path", {
     optional: true,
   });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -15,6 +16,7 @@ import { describe, it } from "node:test";
 
 import {
   buildBringUpPlan,
+  buildFactoryPreclaimVerificationScript,
   buildRemotePowerShellCommand,
   buildResetPlan,
   buildRemotePowerShellScript,
@@ -571,7 +573,8 @@ describe("win10-vem-e2e reset planning", () => {
     );
     assert.match(workflow, /environment: vem-factory-production/);
     assert.match(workflow, /VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME/);
-    assert.match(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
+    assert.match(workflow, /VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH/);
+    assert.doesNotMatch(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
     for (const environment of [
       { ...trusted, VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: "" },
       { ...trusted, VEM_FACTORY_PERSONALIZATION_RUNNER_NAME: "other-runner" },
@@ -1684,6 +1687,61 @@ describe("win10-vem-e2e reset planning", () => {
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
+  });
+
+  it("allows provision to use same-run ephemeral target evidence instead of the static allowlist", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-provision-evidence-"));
+    try {
+      const evidencePath = join(root, "ephemeral-platform.json");
+      writeFileSync(
+        evidencePath,
+        JSON.stringify(ephemeralPlatformEvidence()),
+        "utf8",
+      );
+      const script = buildRemotePowerShellScript({
+        mode: "provision",
+        runId: "RUN-180",
+        machineCode: "VEM-TESTBED-WINVM-01",
+        platformTarget: "ephemeral-run-180",
+        ephemeralPlatformEvidence: evidencePath,
+      });
+      assert.match(script, /http:\/\/127\.0\.0\.1:26849\/api/);
+      assert.match(script, /mqtt:\/\/127\.0\.0\.1:1883/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("builds a read-only preclaim verifier from the Factory ISO-installed verifier", () => {
+    const script = buildFactoryPreclaimVerificationScript({
+      runId: "RUN-180",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+    assert.match(script, /C:\\VEM\\bringup\\verify-factory-runtime\.ps1/);
+    assert.match(script, /factory-preclaim-verification\/v1/);
+    assert.match(script, /absentMachineIdentity/);
+    assert.doesNotMatch(script, /prepare-factory-runtime\.ps1/);
+  });
+
+  it("accepts an unclaimed factory machine config but rejects retained identity or credentials", () => {
+    const script = buildFactoryPreclaimVerificationScript({
+      runId: "RUN-180",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+
+    assert.match(
+      script,
+      /Get-Content -LiteralPath \$machineConfigPath -Raw \| ConvertFrom-Json/,
+    );
+    assert.match(script, /\$null -eq \$machineCodeProperty\.Value/);
+    assert.match(script, /machineCode.*machineId.*machineName.*mqttClientId/s);
+    assert.match(
+      script,
+      /machineSecret.*mqttSigningSecret.*mqttPassword.*mqttUsername/s,
+    );
+    assert.match(script, /\$machineConfig\.unclaimed =/);
+    assert.match(script, /machineConfig = \[ordered\]@\{/);
+    assert.doesNotMatch(script, /\$identityPaths = .*machine-config\.json/s);
   });
 
   it("classifies sale-flow target mismatches before mutation is allowed", () => {

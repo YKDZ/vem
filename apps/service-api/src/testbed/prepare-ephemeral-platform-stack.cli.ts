@@ -11,6 +11,7 @@ import {
   machinePlanogramVersions,
   machines,
   machineSlots,
+  maintenancePeers,
   paymentProviders,
   productVariants,
   products,
@@ -28,7 +29,9 @@ import {
 
 const DEFAULT_MACHINE_CLAIM_LOOKUP_HMAC_KEY =
   "dev-machine-claim-lookup-hmac-key-change-me";
-const DEFAULT_MACHINE_CLAIM_CODE_TTL_SECONDS = 600;
+const MINIMUM_CLEAN_INSTALL_CLAIM_CODE_TTL_SECONDS = 7200;
+const DEFAULT_MACHINE_CLAIM_CODE_TTL_SECONDS =
+  MINIMUM_CLEAN_INSTALL_CLAIM_CODE_TTL_SECONDS;
 const TESTBED_MACHINE_CODE_PATTERN = /^VEM-TESTBED-[A-Z0-9][A-Z0-9-]{0,47}$/;
 const TESTBED_MACHINE_CODE_PREFIX_PATTERN =
   /^VEM-TESTBED-[A-Z0-9][A-Z0-9-]{0,40}$/;
@@ -82,6 +85,7 @@ export type PrepareEphemeralPlatformStackOptions = {
   databaseUrl: string;
   apiBaseUrl: string;
   mqttUrl: string;
+  maintenanceRelay?: MaintenanceRelaySeed;
   allowEphemeralTarget?: boolean;
   allowMockPayment?: boolean;
   runtimePaymentMockEnabled?: boolean;
@@ -89,7 +93,16 @@ export type PrepareEphemeralPlatformStackOptions = {
   now?: Date;
 };
 
+export type MaintenanceRelaySeed = {
+  id: string;
+  publicKey: string;
+  tunnelAddress: string;
+};
+
 export type PreparedRunData = {
+  maintenanceRelay?: MaintenanceRelaySeed & {
+    status: "active";
+  };
   machine: {
     id: string;
     code: string;
@@ -145,6 +158,7 @@ export type EphemeralPlatformStackRepository = {
     reset: boolean;
     now: Date;
     prepareMockPayment: boolean;
+    maintenanceRelay?: MaintenanceRelaySeed;
   }): Promise<PreparedRunData>;
 };
 
@@ -170,6 +184,7 @@ export type EphemeralPlatformSetupEvidence = {
   };
   hardwareSlotTopology: PreparedRunData["hardwareSlotTopology"];
   seededData: {
+    maintenanceRelay?: NonNullable<PreparedRunData["maintenanceRelay"]>;
     products: PreparedRunData["products"];
     planogram: Omit<PreparedRunData["planogram"], "inventory">;
     stockSetup: PreparedRunData["planogram"]["inventory"];
@@ -304,6 +319,20 @@ export function parseCliOptions(
     readFlag(args, "mqtt-url"),
     "--mqtt-url is required",
   );
+  const maintenanceRelay = {
+    id: requireOption(
+      readFlag(args, "maintenance-relay-peer-id"),
+      "--maintenance-relay-peer-id is required",
+    ),
+    publicKey: requireOption(
+      readFlag(args, "maintenance-relay-public-key"),
+      "--maintenance-relay-public-key is required",
+    ),
+    tunnelAddress: requireOption(
+      readFlag(args, "maintenance-relay-tunnel-address"),
+      "--maintenance-relay-tunnel-address is required",
+    ),
+  };
   const machineCodePrefix = requireOption(
     readFlag(args, "machine-code-prefix"),
     "--machine-code-prefix is required",
@@ -331,12 +360,26 @@ export function parseCliOptions(
   );
   assertAllowedEphemeralTarget({ name: "mqtt", flag: "--mqtt-url" }, mqttUrl);
 
+  const claimCodeTtlSeconds = Number(
+    env["MACHINE_CLAIM_CODE_TTL_SECONDS"] ??
+      DEFAULT_MACHINE_CLAIM_CODE_TTL_SECONDS,
+  );
+  if (
+    !Number.isInteger(claimCodeTtlSeconds) ||
+    claimCodeTtlSeconds < MINIMUM_CLEAN_INSTALL_CLAIM_CODE_TTL_SECONDS
+  ) {
+    throw new Error(
+      `MACHINE_CLAIM_CODE_TTL_SECONDS must be at least ${MINIMUM_CLEAN_INSTALL_CLAIM_CODE_TTL_SECONDS} seconds`,
+    );
+  }
+
   return {
     runId,
     machineCodePrefix,
     databaseUrl,
     apiBaseUrl,
     mqttUrl,
+    maintenanceRelay,
     allowEphemeralTarget: true,
     allowMockPayment: true,
     runtimePaymentMockEnabled: parseBooleanEnv(env["PAYMENT_MOCK_ENABLED"]),
@@ -345,10 +388,7 @@ export function parseCliOptions(
     machineClaimLookupHmacKey:
       env["MACHINE_CLAIM_LOOKUP_HMAC_KEY"] ??
       DEFAULT_MACHINE_CLAIM_LOOKUP_HMAC_KEY,
-    claimCodeTtlSeconds: Number(
-      env["MACHINE_CLAIM_CODE_TTL_SECONDS"] ??
-        DEFAULT_MACHINE_CLAIM_CODE_TTL_SECONDS,
-    ),
+    claimCodeTtlSeconds,
   };
 }
 
@@ -369,6 +409,7 @@ export async function prepareEphemeralPlatformStack(
     reset: options.reset ?? false,
     now,
     prepareMockPayment,
+    maintenanceRelay: options.maintenanceRelay,
   });
   const machineApiBase = `/api/machines/${prepared.machine.code}`;
   const paymentReadiness = prepareMockPayment
@@ -403,6 +444,9 @@ export async function prepareEphemeralPlatformStack(
     },
     hardwareSlotTopology: prepared.hardwareSlotTopology,
     seededData: {
+      ...(prepared.maintenanceRelay
+        ? { maintenanceRelay: prepared.maintenanceRelay }
+        : {}),
       products: prepared.products,
       planogram: {
         planogramVersion: prepared.planogram.planogramVersion,
@@ -438,9 +482,16 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
     reset: boolean;
     now: Date;
     prepareMockPayment: boolean;
+    maintenanceRelay?: MaintenanceRelaySeed;
   }): Promise<PreparedRunData> {
     return await this.db.transaction(
       async (tx) => {
+        const maintenanceRelay = input.maintenanceRelay
+          ? await this.prepareMaintenanceRelay(tx, {
+              relay: input.maintenanceRelay,
+              now: input.now,
+            })
+          : undefined;
         const machine = await this.prepareMachine(tx, input);
         const products = await this.prepareProducts(tx, input.runId);
         const planogram = await this.prepareSlotsInventoryAndPlanogram(tx, {
@@ -459,6 +510,7 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
         });
 
         return {
+          maintenanceRelay,
           machine,
           claim,
           hardwareSlotTopology: {
@@ -486,6 +538,53 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
       },
       { isolationLevel: "serializable" },
     );
+  }
+
+  private async prepareMaintenanceRelay(
+    tx: DrizzleClient,
+    input: { relay: MaintenanceRelaySeed; now: Date },
+  ): Promise<PreparedRunData["maintenanceRelay"]> {
+    const [relay] = await tx
+      .insert(maintenancePeers)
+      .values({
+        id: input.relay.id,
+        role: "relay",
+        publicKey: input.relay.publicKey,
+        tunnelAddress: input.relay.tunnelAddress,
+        machineId: null,
+        status: "active",
+        reclaimExpiresAt: null,
+        handshakeVerifiedAt: null,
+        reclaimFailedAt: null,
+        reclaimFailureReason: null,
+        revokedAt: null,
+        createdAt: input.now,
+        updatedAt: input.now,
+      })
+      .onConflictDoUpdate({
+        target: maintenancePeers.id,
+        set: {
+          role: "relay",
+          publicKey: input.relay.publicKey,
+          tunnelAddress: input.relay.tunnelAddress,
+          machineId: null,
+          status: "active",
+          reclaimExpiresAt: null,
+          handshakeVerifiedAt: null,
+          reclaimFailedAt: null,
+          reclaimFailureReason: null,
+          revokedAt: null,
+          updatedAt: input.now,
+        },
+      })
+      .returning({
+        id: maintenancePeers.id,
+        publicKey: maintenancePeers.publicKey,
+        tunnelAddress: maintenancePeers.tunnelAddress,
+        status: maintenancePeers.status,
+      });
+
+    return { ...relay, status: "active" };
   }
 
   private async prepareMachine(

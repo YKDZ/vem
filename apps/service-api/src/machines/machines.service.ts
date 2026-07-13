@@ -2153,7 +2153,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         machineSecretVersion: secretVersion,
         mqttSigningSecret: bundle.mqttSigningSecret,
         mqttConnection: {
-          url: this.config.mqttUrl,
+          url: this.config.machineMqttUrl,
           clientId: mqttClientId,
           ...(this.config.mqttUsername
             ? { username: this.config.mqttUsername }

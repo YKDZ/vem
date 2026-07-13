@@ -49,6 +49,10 @@ export class AppConfigService {
     return this.config.get("SERVICE_PORT", { infer: true });
   }
 
+  get serviceHost(): string {
+    return this.config.get("SERVICE_HOST", { infer: true });
+  }
+
   get databaseUrl(): string {
     return this.config.get("DATABASE_URL", { infer: true });
   }
@@ -97,6 +101,10 @@ export class AppConfigService {
 
   get mqttUrl(): string {
     return this.config.get("MQTT_URL", { infer: true });
+  }
+
+  get machineMqttUrl(): string {
+    return this.config.get("MACHINE_MQTT_URL", { infer: true });
   }
 
   get mqttUsername(): string | undefined {

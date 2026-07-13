@@ -74,6 +74,7 @@ describe("validateEnv", () => {
     const env = validateEnv(baseValidEnv);
     expect(env.PAYMENT_MOCK_ENABLED).toBe(true);
     expect(env.NODE_ENV).toBe("development");
+    expect(env.MACHINE_CLAIM_CODE_TTL_SECONDS).toBe(600);
   });
 
   it("accepts a WireGuard relay endpoint and rejects an HTTP URL", () => {
@@ -330,6 +331,20 @@ describe("validateEnv", () => {
     const { MACHINE_API_BASE_URL: _, ...withoutMachineApiBase } = baseValidEnv;
     const env = validateEnv(withoutMachineApiBase);
     expect(env.MACHINE_API_BASE_URL).toBe("http://localhost:3000/api");
+  });
+
+  it("defaults Machine MQTT URL to the Service API broker URL", () => {
+    const env = validateEnv(baseValidEnv);
+    expect(env.MACHINE_MQTT_URL).toBe("mqtt://localhost:1883");
+  });
+
+  it("keeps Machine MQTT URL independent from the Service API broker URL", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      MACHINE_MQTT_URL: "mqtt://platform.example.com:18884",
+    });
+    expect(env.MQTT_URL).toBe("mqtt://localhost:1883");
+    expect(env.MACHINE_MQTT_URL).toBe("mqtt://platform.example.com:18884");
   });
 
   it("keeps Machine API base URL independent from payment webhook base URL", () => {
