@@ -110,6 +110,8 @@ jobs:
         run: |
           docker run --rm \
             --env CI=true \
+            --env HOME=/tmp \
+            --user "$(id -u):$(id -g)" \
             --mount type=bind,src="$GITHUB_WORKSPACE",dst=/workspace \
             --workdir /workspace \
             vem-factory-media-test:${{ github.sha }} \

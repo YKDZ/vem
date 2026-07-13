@@ -108,6 +108,8 @@ describe("Factory Manifest and media workflow contract", () => {
     );
     assert.match(workflow, /Run Factory Media Contract Tests In Builder/);
     assert.match(workflow, /docker run --rm/);
+    assert.match(workflow, /--env HOME=\/tmp/);
+    assert.match(workflow, /--user "\$\(id -u\):\$\(id -g\)"/);
     assert.match(
       workflow,
       /VEM_FACTORY_TEST_UDF_WRITER=\/usr\/bin\/genisoimage/,
