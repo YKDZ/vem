@@ -588,6 +588,7 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
   $packageVersions = Get-FactoryPackageEvidence -Manifest $Manifest
   $caEvidence = Get-MaintenanceCaEvidence -Manifest $Manifest
   $firewallScope = Get-MaintenanceFirewallEvidence -Manifest $Manifest
+  $ingress = Get-MaintenanceIngressEvidence -Manifest $Manifest
   $wireGuardService = Get-WireGuardServiceEvidence -Manifest $Manifest
   $accountPolicy = [ordered]@{
     profile = [string]$Manifest.factoryProfile
@@ -644,6 +645,7 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
       wireGuard = $Manifest.signatureEvidence.wireGuard
     }
     caFingerprint = $caEvidence
+    ingress = $ingress
     sshdEffectiveConfig = $sshdEffectiveConfig
     firewallScope = $firewallScope
     accountPolicy = $accountPolicy
@@ -701,6 +703,45 @@ function Read-TextIfExists {
   return Get-Content -LiteralPath $Path -Raw
 }
 
+function Get-MaintenanceIngressEvidence {
+  param($Manifest)
+
+  $policy = $Manifest.maintenanceSsh
+  $profile = [string]$Manifest.factoryProfile
+  $mode = [string]$policy.ingressMode
+  $listenAddress = [string]$policy.effectiveListenAddress
+  $interfaceScope = [string]$policy.effectiveFirewallInterfaceScope
+  $expected = if ($profile -eq "production") {
+    [ordered]@{
+      mode = "wireguard-only"
+      listenAddress = [string]$policy.wireGuardListenAddress
+      interfaceScope = [string]$policy.wireGuardInterfaceAlias
+    }
+  } elseif ($profile -eq "testbed") {
+    [ordered]@{
+      mode = "testbed-bootstrap-certificate"
+      listenAddress = "0.0.0.0"
+      interfaceScope = "Any"
+    }
+  } else {
+    $null
+  }
+  return [ordered]@{
+    profile = $profile
+    mode = $mode
+    effectiveListenAddress = $listenAddress
+    effectiveFirewallInterfaceScope = $interfaceScope
+    expectedMode = if ($null -ne $expected) { [string]$expected.mode } else { $null }
+    expectedListenAddress = if ($null -ne $expected) { [string]$expected.listenAddress } else { $null }
+    expectedFirewallInterfaceScope = if ($null -ne $expected) { [string]$expected.interfaceScope } else { $null }
+    profileBound = $null -ne $expected -and
+      $mode -ceq [string]$expected.mode -and
+      $listenAddress -ceq [string]$expected.listenAddress -and
+      $interfaceScope -ceq [string]$expected.interfaceScope
+    bootstrapTestbedOnly = $profile -eq "testbed" -and $mode -eq "testbed-bootstrap-certificate"
+  }
+}
+
 function Get-SshdEffectiveConfigEvidence {
   param(
     [string]$ConfigPath,
@@ -739,7 +780,7 @@ function Get-SshdEffectiveConfigEvidence {
       }
     }
   }
-  $expectedListen = [string]$Manifest.maintenanceSsh.wireGuardListenAddress
+  $expectedListen = [string]$Manifest.maintenanceSsh.effectiveListenAddress
   $actualListen = [string]$values.listenaddress
   $allowUsers = [string]$values.allowusers
   $denyUsers = [string]$values.denyusers
@@ -913,7 +954,7 @@ function Get-MaintenanceFirewallEvidence {
   $listeners = @(Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
       [pscustomobject]@{ localAddress = [string]$_.LocalAddress; localPort = [int]$_.LocalPort; owningProcess = [int]$_.OwningProcess }
     })
-  $expectedListenAddress = [string]$policy.wireGuardListenAddress
+  $expectedListenAddress = [string]$policy.effectiveListenAddress
   $unexpectedRules = @($sshRules | Where-Object { $_.displayName -cne "VEM Controlled Maintenance SSH" })
   $unexpectedListeners = @($listeners | Where-Object { $_.localAddress -cne $expectedListenAddress })
   return [ordered]@{
@@ -922,7 +963,7 @@ function Get-MaintenanceFirewallEvidence {
     protocol = if ($null -ne $rule) { [string]$rule.protocol } else { $null }
     localPort = if ($null -ne $rule) { [string]$rule.localPort } else { $null }
     interfaceAlias = if ($null -ne $rule) { [string]$rule.interfaceAlias } else { $null }
-    expectedInterfaceAlias = [string]$policy.wireGuardInterfaceAlias
+    expectedInterfaceAlias = [string]$policy.effectiveFirewallInterfaceScope
     sourceRolePools = $actual
     expectedSourceRolePools = $expected
     sourceRolePoolsMatch = ($actual -join ",") -eq ($expected -join ",")
@@ -1406,6 +1447,17 @@ if ($null -ne $manifest) {
   if ([string]$manifest.factoryProfile -eq "testbed" -and [string]$manifest.expectations.maintenanceUser -cne "YKDZ") {
     Add-Failure $failures "testbed verifier requires the existing YKDZ maintenance administrator"
   }
+  $maintenanceIngress = $checks.factoryRemoteMaintenanceCapability.ingress
+  if (-not [bool]$maintenanceIngress.profileBound) {
+    Add-Failure $failures "Factory Maintenance SSH ingress mode, listen address, and firewall interface scope must match the selected profile"
+  }
+  if ([string]$manifest.factoryProfile -eq "production" -and
+      ([string]$maintenanceIngress.effectiveListenAddress -eq "0.0.0.0" -or [string]$maintenanceIngress.effectiveFirewallInterfaceScope -eq "Any")) {
+    Add-Failure $failures "production verifier rejects wildcard SSH listener or firewall interface scope"
+  }
+  if ([string]$manifest.factoryProfile -eq "testbed" -and -not [bool]$maintenanceIngress.bootstrapTestbedOnly) {
+    Add-Failure $failures "testbed verifier requires the explicit testbed bootstrap certificate ingress mode"
+  }
   if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.hardware.mode -ne "production") {
     Add-Failure $failures "production verifier rejects simulated hardware mode"
   }
@@ -1440,12 +1492,12 @@ if ($null -ne $manifest) {
       -not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.enabled -or
       [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.protocol -ne "TCP" -or
       [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.localPort -ne "22" -or
-      [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.interfaceAlias -ne [string]$manifest.maintenanceSsh.wireGuardInterfaceAlias -or
+      [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.interfaceAlias -ne [string]$manifest.maintenanceSsh.effectiveFirewallInterfaceScope -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.sourceRolePoolsMatch -or
       @($checks.factoryRemoteMaintenanceCapability.firewallScope.unexpectedEnabledInboundTcp22Rules).Count -gt 0 -or
       @($checks.factoryRemoteMaintenanceCapability.firewallScope.listeners).Count -eq 0 -or
       @($checks.factoryRemoteMaintenanceCapability.firewallScope.unexpectedListeners).Count -gt 0) {
-    Add-Failure $failures "Controlled Maintenance SSH firewall must be TCP 22 on WireGuard and exact runner/maintainer role pools"
+    Add-Failure $failures "Controlled Maintenance SSH firewall must be TCP 22 with the profile-bound listener/interface scope and exact runner/maintainer role pools"
   }
   if ([string]$checks.factoryRemoteMaintenanceCapability.wireGuardService.startupType -ne "Automatic" -or
       [string]$checks.factoryRemoteMaintenanceCapability.wireGuardService.status -ne "Running" -or

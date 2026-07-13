@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { hostPersonalizationIngestScript } from "./factory/build-factory-media.mjs";
 import {
   buildRemotePowerShellScript,
   resolveCleanBaseFactoryCapabilityInputs,
@@ -30,6 +37,95 @@ function assertPowerShellParses(path) {
   ]);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 }
+
+function runHostPersonalizationIngestFixture({
+  root,
+  ingestScript,
+  scenario,
+  personalization,
+}) {
+  const mediaRoot = join(root, `personalization-media-${scenario}`);
+  const destination = join(
+    root,
+    `personalization-destination-${scenario}`,
+    "one-time-personalization.json",
+  );
+  const runner = join(root, `run-personalization-ingest-${scenario}.ps1`);
+  mkdirSync(mediaRoot, { recursive: true });
+  if (scenario === "success" || scenario === "fixed")
+    writeFileSync(join(mediaRoot, "personalization.json"), personalization);
+  writeFileSync(
+    runner,
+    `param([string]$Mode, [string]$MediaRoot, [string]$DestinationPath, [string]$IngestScript)
+$ErrorActionPreference = 'Stop'
+New-PSDrive -Name P -PSProvider FileSystem -Root $MediaRoot | Out-Null
+function Get-Volume {
+  [CmdletBinding()]
+  param()
+  if ($Mode -eq 'multiple') {
+    return @(
+      [pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 5 },
+      [pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'Q'; DriveType = 5 }
+    )
+  }
+  if ($Mode -eq 'fixed') {
+    return @([pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 3 })
+  }
+  return @([pscustomobject]@{ FileSystemLabel = 'VEM_PERSONALIZATION'; DriveLetter = 'P'; DriveType = 5 })
+}
+try {
+  & $IngestScript -DestinationPath $DestinationPath
+} finally {
+  Remove-PSDrive -Name P -ErrorAction SilentlyContinue
+}
+`,
+  );
+  const result = run("pwsh", [
+    "-NoLogo",
+    "-NoProfile",
+    "-File",
+    runner,
+    scenario,
+    mediaRoot,
+    destination,
+    ingestScript,
+  ]);
+  return {
+    destination,
+    output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
+    status: result.status,
+  };
+}
+
+test("host personalization ingest runs under required PowerShell without Factory builder tools", () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-host-personalization-"));
+  try {
+    const ingestScript = join(root, "ingest-host-personalization.ps1");
+    const personalization = '{"secret":"host-only-personalization"}\n';
+    writeFileSync(ingestScript, hostPersonalizationIngestScript(), "utf8");
+    const success = runHostPersonalizationIngestFixture({
+      root,
+      ingestScript,
+      scenario: "success",
+      personalization,
+    });
+    assert.equal(success.status, 0, success.output);
+    assert.equal(readFileSync(success.destination, "utf8"), personalization);
+    assert.doesNotMatch(success.output, /host-only-personalization/);
+    for (const scenario of ["missing", "multiple", "fixed"]) {
+      const rejected = runHostPersonalizationIngestFixture({
+        root,
+        ingestScript,
+        scenario,
+        personalization,
+      });
+      assert.notEqual(rejected.status, 0, `${scenario} must be rejected`);
+      assert.doesNotMatch(rejected.output, /host-only-personalization/);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("PowerShell behavior fixtures execute through the real binder", () => {
   const result = run("pwsh", [
@@ -143,6 +239,19 @@ test("fixture evidence contains no credential or private-key material", () => {
   const serialized = JSON.stringify(evidence);
   assert.equal(evidence.schemaVersion, "vem-factory-runtime-verification/v2");
   assert.equal(evidence.checks.passwordAuthentication.passwordFallback, false);
+  assert.deepEqual(evidence.checks.factoryRemoteMaintenanceCapability.ingress, {
+    profile: "testbed",
+    mode: "testbed-bootstrap-certificate",
+    effectiveListenAddress: "0.0.0.0",
+    effectiveFirewallInterfaceScope: "Any",
+    profileBound: true,
+    bootstrapTestbedOnly: true,
+  });
+  assert.equal(
+    evidence.checks.factoryRemoteMaintenanceCapability.firewallScope
+      .sourceRolePoolsMatch,
+    true,
+  );
   assert.doesNotMatch(
     serialized,
     /BEGIN .*PRIVATE KEY|privateKeyValue|VEM_.*PASSWORD|shared-password/i,

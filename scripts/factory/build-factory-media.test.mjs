@@ -947,6 +947,36 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(bootstrap, /verify-factory-runtime\.ps1/);
       assert.doesNotMatch(bootstrap, /provision-vision-factory-release\.ps1/);
       assert.doesNotMatch(bootstrap, /install-vision-release\.ps1/);
+      const registration = await readFile(
+        join(
+          directory,
+          "sources",
+          "$OEM$",
+          "$1",
+          "VEM",
+          "Factory",
+          "register-factory-bootstrap.cmd",
+        ),
+        "utf8",
+      );
+      assert.ok(
+        registration.indexOf("ingest-host-personalization.ps1") <
+          registration.indexOf("schtasks.exe /Create"),
+      );
+      const ingestScript = join(
+        directory,
+        "sources",
+        "$OEM$",
+        "$1",
+        "VEM",
+        "Factory",
+        "ingest-host-personalization.ps1",
+      );
+      const ingest = await readFile(ingestScript, "utf8");
+      assert.match(ingest, /VEM_PERSONALIZATION/);
+      assert.match(ingest, /\[int\]\$volume\.DriveType -ne 5/);
+      assert.match(ingest, /Copy-Item -LiteralPath \$sourcePath/);
+      assert.doesNotMatch(ingest, /Get-Partition|Get-Disk/);
       assert.deepEqual(
         JSON.parse(
           await readFile(

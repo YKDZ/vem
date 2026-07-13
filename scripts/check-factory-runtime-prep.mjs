@@ -403,6 +403,26 @@ addCheck(
 );
 
 addCheck(
+  "testbed-bootstrap-certificate-ingress-is-explicit-and-production-remains-wireguard-only",
+  setupTasks.includes('mode = "wireguard-only"') &&
+    setupTasks.includes('mode = "testbed-bootstrap-certificate"') &&
+    setupTasks.includes('sshListenAddress = "0.0.0.0"') &&
+    setupTasks.includes('firewallInterfaceScope = "Any"') &&
+    setupTasks.includes("Assert-WireGuardListenAddress") &&
+    setupTasks.includes("if ([bool]$ingressPolicy.requiresWireGuardAddress)") &&
+    prepare.includes("Get-FactoryMaintenanceIngressPolicy") &&
+    prepare.includes("effectiveListenAddress") &&
+    prepare.includes("effectiveFirewallInterfaceScope") &&
+    verifier.includes("Get-MaintenanceIngressEvidence") &&
+    verifier.includes("bootstrapTestbedOnly") &&
+    verifier.includes(
+      "production verifier rejects wildcard SSH listener or firewall interface scope",
+    ) &&
+    verifier.includes("sourceRolePoolsMatch"),
+  "testbed bootstrap ingress must be explicit, certificate-only, source-pool scoped, and reject any production wildcard listener or interface scope",
+);
+
+addCheck(
   "testbed-runner-can-stage-clean-base-factory-capability-assets",
   testbedRunner.includes("resolveCleanBaseFactoryCapabilityInputs") &&
     testbedRunner.includes("--openssh-package") &&

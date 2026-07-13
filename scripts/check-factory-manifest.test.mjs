@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { parse } from "yaml";
 
@@ -77,6 +80,35 @@ describe("Factory Manifest and media workflow contract", () => {
       "VEM_FACTORY_VISION_EVIDENCE_VERIFIER",
     ]) {
       assert.match(workflow, new RegExp(name));
+    }
+  });
+
+  it("allows regular Vision factory input files through the runner guard", async () => {
+    const parsed = parse(read(workflowPath));
+    const guard = parsed.jobs.build.steps[0].run;
+    const visionInputGuard = guard.slice(guard.lastIndexOf("for path in"));
+    const root = await mkdtemp(join(tmpdir(), "vem-factory-vision-guard-"));
+    try {
+      const inputs = Object.fromEntries(
+        [
+          ["VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT", "delivery-unit.json"],
+          [
+            "VEM_FACTORY_REPOSITORY_VISION_TRUSTED_ROOTS",
+            "repository-roots.json",
+          ],
+          ["VEM_FACTORY_FACTORY_VISION_TRUSTED_ROOTS", "factory-roots.json"],
+          ["VEM_FACTORY_VISION_EVIDENCE_VERIFIER", "verifier"],
+        ].map(([name, fileName]) => [name, join(root, fileName)]),
+      );
+      await Promise.all(
+        Object.values(inputs).map((path) => writeFile(path, "fixture\n")),
+      );
+      execFileSync("bash", ["-c", `set -euo pipefail\n${visionInputGuard}`], {
+        env: { ...process.env, ...inputs },
+        stdio: "ignore",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -217,6 +249,49 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.doesNotMatch(
       read("scripts/factory/factory-builder-definition.test.mjs"),
       /skip:/,
+    );
+    assert.doesNotMatch(
+      read("scripts/factory/build-factory-media.test.mjs"),
+      /spawnSync\(\s*["']pwsh["']|execFileSync\(\s*["']pwsh["']/,
+    );
+  });
+
+  it("requires non-optional Factory personalization behavior on the Windows PowerShell job", () => {
+    const workflow = read(ciWorkflowPath);
+    const parsed = parse(workflow);
+    const windowsJob = parsed.jobs["windows-vision-release-installer"];
+    assert.equal(windowsJob["runs-on"], "windows-2022");
+    assert.equal(windowsJob.defaults.run.shell, "pwsh");
+    const nodeSetupStep = windowsJob.steps.find(
+      ({ name }) => name === "Setup Node.js",
+    );
+    assert.equal(nodeSetupStep.with.cache, "pnpm");
+    const installStep = windowsJob.steps.find(
+      ({ name }) => name === "Install Dependencies",
+    );
+    assert.equal(installStep.run, "pnpm install --frozen-lockfile");
+    const behaviorStep = windowsJob.steps.find(
+      ({ name }) => name === "Run Factory personalization behavior checks",
+    );
+    assert.ok(behaviorStep, "Windows PowerShell job must run factory behavior");
+    assert.ok(
+      windowsJob.steps.indexOf(installStep) <
+        windowsJob.steps.indexOf(behaviorStep),
+      "Windows job must install workspace dependencies before factory behavior",
+    );
+    assert.match(
+      behaviorStep.run,
+      /node --test scripts\/check-windows-factory-maintenance\.test\.mjs/,
+    );
+    assert.doesNotMatch(behaviorStep.run, /\bskip\b/i);
+    const staticJob = parsed.jobs.static;
+    assert.equal(
+      staticJob.steps.some(
+        ({ name }) =>
+          name ===
+          "Require Host PowerShell For Factory Personalization Behavior",
+      ),
+      false,
     );
   });
 
