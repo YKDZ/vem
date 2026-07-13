@@ -47,7 +47,9 @@ export class MediaAssetsController {
     @UploadedFile()
     file: UploadedImageFile,
   ) {
-    return await this.mediaAssetsService.storeProductDisplayImage(file);
+    return toAdminMediaAssetSummary(
+      await this.mediaAssetsService.storeProductDisplayImage(file),
+    );
   }
 
   @RequirePermissions("products.write")
@@ -62,7 +64,9 @@ export class MediaAssetsController {
     @UploadedFile()
     file: UploadedImageFile,
   ) {
-    return await this.mediaAssetsService.storeTryOnSilhouette(file);
+    return toAdminMediaAssetSummary(
+      await this.mediaAssetsService.storeTryOnSilhouette(file),
+    );
   }
 
   @Public()
@@ -76,4 +80,16 @@ export class MediaAssetsController {
     response.contentType(content.contentType);
     content.stream.pipe(response);
   }
+}
+
+function toAdminMediaAssetSummary(asset: {
+  id: string;
+  publicUrl: string;
+  contentType: string;
+}) {
+  return {
+    id: asset.id,
+    publicUrl: asset.publicUrl,
+    contentType: asset.contentType,
+  };
 }
