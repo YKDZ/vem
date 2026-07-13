@@ -32,28 +32,15 @@ jobs:
             *) echo "Factory media requires a same-repository workflow on the trusted ref" >&2; exit 1 ;;
           esac
 
-  build-runtime-artifacts:
-    name: Build Shared Windows Runtime Artifacts
-    needs: trust-gate
-    uses: ./.github/workflows/build-windows-runtime-artifacts.yml
-    with:
-      artifact_name: windows-runtime-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
-      retention_days: 1
-
   build:
     name: Build Reproducible Factory ISO
-    needs: [trust-gate, build-runtime-artifacts]
+    needs: trust-gate
     runs-on: [self-hosted, Linux, X64, vem-factory]
     environment: vem-factory-production
     timeout-minutes: 90
     outputs:
       iso_identity: ${{ steps.result.outputs.iso_identity }}
       provenance_artifact_name: ${{ steps.result.outputs.provenance_artifact_name }}
-    env:
-      RUNTIME_ARTIFACT_NAME: ${{ needs.build-runtime-artifacts.outputs.artifact_name }}
-      RUNTIME_ARTIFACT_IDENTITY: ${{ needs.build-runtime-artifacts.outputs.artifact_identity }}
-      RUNTIME_ARTIFACT_COMMIT: ${{ needs.build-runtime-artifacts.outputs.commit }}
-      RUNTIME_WORKFLOW_RUN_IDENTITY: ${{ needs.build-runtime-artifacts.outputs.workflow_run_identity }}
     steps:
       - name: Guard Protected Factory Runner Before Checkout
         shell: bash
@@ -140,32 +127,14 @@ jobs:
         with:
           node-version: 24.16.0
 
-      - name: Download Bound Windows Runtime Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: ${{ needs.build-runtime-artifacts.outputs.artifact_name }}
-          path: ${{ runner.temp }}/vem-runtime-artifacts
-
-      - name: Verify And Import Runtime Artifact Into Runner CAS
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/factory/import-runtime-artifacts.mjs \
-            --manifest-store "$VEM_FACTORY_MANIFEST_STORE" \
-            --manifest-identity "$MANIFEST_IDENTITY" \
-            --asset-store "$VEM_FACTORY_ASSET_STORE" \
-            --runtime-directory "$RUNNER_TEMP/vem-runtime-artifacts" \
-            --artifact-name "$RUNTIME_ARTIFACT_NAME" \
-            --artifact-identity "$RUNTIME_ARTIFACT_IDENTITY" \
-            --commit "$RUNTIME_ARTIFACT_COMMIT" \
-            --workflow-run-identity "$RUNTIME_WORKFLOW_RUN_IDENTITY" >/dev/null
-
       - name: Build Through Manifest-Pinned Offline Toolchain
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$VEM_FACTORY_BUILDER_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]]
-          docker pull "$VEM_FACTORY_BUILDER_IMAGE"
+          docker_builder_image="${VEM_FACTORY_BUILDER_IMAGE#oci://}"
+          [[ "$docker_builder_image" != "$VEM_FACTORY_BUILDER_IMAGE" ]]
+          [[ "$docker_builder_image" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+@sha256:[a-f0-9]{64}$ ]]
+          docker pull "$docker_builder_image"
           rm -rf "$RUNNER_TEMP/vem-factory-output"
           mkdir -p "$RUNNER_TEMP/vem-factory-output"
           docker run --rm --network none --read-only --tmpfs /tmp \
@@ -188,7 +157,7 @@ jobs:
             --mount "type=bind,src=$VEM_FACTORY_VISION_EVIDENCE_VERIFIER,dst=/factory-vision/vision-release-verifier,readonly" \
             --mount "type=bind,src=$VEM_FACTORY_AUTHENTICODE_CA_BUNDLE,dst=/factory-policy/authenticode-ca.pem,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/vem-factory-output,dst=/factory-output" \
-            "$VEM_FACTORY_BUILDER_IMAGE" \
+            "$docker_builder_image" \
             node /workspace/scripts/factory/factory-cli.mjs \
               --manifest-store /factory-manifests \
               --asset-store /factory-assets \
@@ -246,4 +215,4 @@ jobs:
       - name: Remove Ephemeral Sanitized Output
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/vem-factory-output" "$RUNNER_TEMP/vem-runtime-artifacts"
+        run: rm -rf "$RUNNER_TEMP/vem-factory-output"

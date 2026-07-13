@@ -692,7 +692,7 @@ function treeEntry(tree, path) {
 }
 
 async function extractUdfView({ extractor, isoPath, tree, workDirectory }) {
-  const listing = await run(extractor, ["l", "-slt", isoPath], {
+  const listing = await run(extractor, ["l", "-slt", "-tUdf", isoPath], {
     cwd: workDirectory,
     env: { PATH: "/usr/bin:/bin", HOME: workDirectory, LC_ALL: "C", TZ: "UTC" },
     maxBuffer: 4 * 1024 * 1024,
@@ -709,7 +709,7 @@ async function extractUdfView({ extractor, isoPath, tree, workDirectory }) {
       "UDF extractor must report exactly one authoritative Type = Udf view",
     );
   }
-  await run(extractor, ["x", "-y", `-o${tree}`, isoPath], {
+  await run(extractor, ["x", "-y", "-tUdf", `-o${tree}`, isoPath], {
     cwd: workDirectory,
     env: { PATH: "/usr/bin:/bin", HOME: workDirectory, LC_ALL: "C", TZ: "UTC" },
     maxBuffer: 4 * 1024 * 1024,

@@ -35,11 +35,7 @@ describe("Factory Manifest and media workflow contract", () => {
       "vem-factory",
     ]);
     assert.equal(parsed.jobs.build.environment, "vem-factory-production");
-    assert.deepEqual(parsed.jobs.build.needs, [
-      "trust-gate",
-      "build-runtime-artifacts",
-    ]);
-    assert.equal(parsed.jobs["build-runtime-artifacts"].needs, "trust-gate");
+    assert.equal(parsed.jobs.build.needs, "trust-gate");
     assert.match(workflow, /workflow_dispatch\) ;;/);
     assert.match(workflow, /refs\/heads\/main\|refs\/tags\/factory-v\*/);
     assert.match(workflow, /GITHUB_ACTOR.*GITHUB_REPOSITORY_OWNER/);
@@ -49,7 +45,7 @@ describe("Factory Manifest and media workflow contract", () => {
     const firstBuildStep = parsed.jobs.build.steps[0];
     assert.match(firstBuildStep.name, /Guard Protected Factory Runner/);
     assert.doesNotMatch(
-      JSON.stringify(parsed.jobs.build.env),
+      JSON.stringify(parsed.jobs.build.env ?? {}),
       /VEM_FACTORY_.*STORE/,
     );
     assert.doesNotMatch(workflow, /\$\{\{\s*vars\.VEM_FACTORY_/);
@@ -97,6 +93,49 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.match(upload, /factory-provenance\.json/);
     assert.match(upload, /factory-build-result\.json/);
     assert.doesNotMatch(upload, /\.iso|windows-source|cache/i);
+  });
+
+  it("uses a validated Docker reference while preserving the OCI builder identity", () => {
+    const parsed = parse(read(workflowPath));
+    const buildStep = parsed.jobs.build.steps.find(
+      ({ name }) => name === "Build Through Manifest-Pinned Offline Toolchain",
+    );
+    assert.ok(
+      buildStep,
+      "Factory build workflow has an offline toolchain step",
+    );
+    const script = buildStep.run;
+    assert.match(script, /\[\[ "\$docker_builder_image" =~ \^\[a-z0-9\]/);
+    assert.match(
+      script,
+      /docker_builder_image="\$\{VEM_FACTORY_BUILDER_IMAGE#oci:\/\/\}"/,
+    );
+    assert.match(
+      script,
+      /\[\[ "\$docker_builder_image" != "\$VEM_FACTORY_BUILDER_IMAGE" \]\]/,
+    );
+    assert.match(script, /docker pull "\$docker_builder_image"/);
+    assert.match(
+      script,
+      /--env "VEM_FACTORY_EXECUTED_BUILDER_IMAGE=\$VEM_FACTORY_BUILDER_IMAGE"/,
+    );
+    assert.match(
+      script,
+      /"\$docker_builder_image" \\\n\s+node \/workspace\/scripts\/factory\/factory-cli\.mjs/,
+    );
+    assert.doesNotMatch(script, /docker pull "\$VEM_FACTORY_BUILDER_IMAGE"/);
+  });
+
+  it("consumes host-published Factory Manifest and CAS inputs without a runtime artifact handoff", () => {
+    const workflow = read(workflowPath);
+    const parsed = parse(workflow);
+    assert.equal(parsed.jobs["build-runtime-artifacts"], undefined);
+    assert.equal(parsed.jobs.build.needs, "trust-gate");
+    assert.equal(parsed.jobs.build.env, undefined);
+    assert.doesNotMatch(
+      workflow,
+      /build-windows-runtime-artifacts|build-runtime-artifacts|RUNTIME_ARTIFACT|vem-runtime-artifacts|import-runtime-artifacts|actions\/download-artifact/,
+    );
   });
 
   it("runs Factory media tests in the tracked builder image", () => {
