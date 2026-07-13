@@ -975,7 +975,10 @@ describe("VM Host Adapter contract", () => {
     for (const candidate of cases)
       assert.throws(() => validateVmHostAdapterReport(candidate, request));
     assert.throws(() =>
-      createVmHostAdapterRequest({ ...request, hostPath: "/host-private/base" }),
+      createVmHostAdapterRequest({
+        ...request,
+        hostPath: "/host-private/base",
+      }),
     );
   });
 

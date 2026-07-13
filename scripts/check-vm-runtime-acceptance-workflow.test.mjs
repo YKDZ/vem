@@ -306,7 +306,10 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       workflow,
       "Bind Active Kiosk Session For Native Audio Capture",
     );
-    const verifyAudio = stepBlock(workflow, "Verify Windows Native Audio Evidence");
+    const verifyAudio = stepBlock(
+      workflow,
+      "Verify Windows Native Audio Evidence",
+    );
     const cleanup = stepBlock(workflow, "Cleanup VM Host Adapter Overlay");
 
     assert.doesNotMatch(restore, /windowsSshReadiness=failed/);
@@ -322,7 +325,9 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.match(cleanup, /if:\s+always\(\)/);
     assert.match(cleanup, /--operation cleanup/);
     assert.ok(workflow.indexOf(restore) < workflow.indexOf(acceptance));
-    assert.ok(workflow.indexOf(acceptance) < workflow.indexOf(bindAudioSession));
+    assert.ok(
+      workflow.indexOf(acceptance) < workflow.indexOf(bindAudioSession),
+    );
     assert.ok(workflow.indexOf(bindAudioSession) < workflow.indexOf(display));
     assert.ok(workflow.indexOf(display) < workflow.indexOf(audio));
     assert.ok(workflow.indexOf(audio) < workflow.indexOf(verifyAudio));

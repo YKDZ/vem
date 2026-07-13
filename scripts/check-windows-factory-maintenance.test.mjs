@@ -282,7 +282,10 @@ test("generated clean-base orchestration is profile-neutral and parses", () => {
     assert.match(productionInvocation, /HardwareMode = 'production'/);
     assert.match(productionInvocation, /ExpectedMaintenanceUser = 'Admin'/);
     assert.match(productionInvocation, /FactoryProfile = 'production'/);
-    assert.doesNotMatch(productionInvocation, /YKDZ|legacy-provider|simulated/i);
+    assert.doesNotMatch(
+      productionInvocation,
+      /YKDZ|legacy-provider|simulated/i,
+    );
     assert.match(
       productionInvocation,
       /MaintenanceWireGuardListenAddress = '10\.77\.0\.10'/,

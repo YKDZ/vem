@@ -32,7 +32,10 @@ describe("Factory Image Acceptance workflow", () => {
     assert.doesNotMatch(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
     assert.doesNotMatch(workflow, /post-claim-command-json/);
     assert.doesNotMatch(workflow, /win10-vem-e2e\.mjs/);
-    assert.doesNotMatch(workflow, /legacy-provider|libvirt|qcow2|host filesystem path/i);
+    assert.doesNotMatch(
+      workflow,
+      /legacy-provider|libvirt|qcow2|host filesystem path/i,
+    );
   });
 
   it("allows a clean Windows installation to outlive the adapter client default", () => {
