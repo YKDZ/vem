@@ -1007,7 +1007,7 @@ describe("real deterministic Factory ISO builder", () => {
     }
   });
 
-  it("replays a source marker through canonical ISO9660, Joliet, and UDF views", async () => {
+  it("replays a source marker through canonical ISO9660, Joliet, and explicit UDF views", async () => {
     const data = await fixture();
     try {
       const sourcePath =
@@ -1018,11 +1018,12 @@ describe("real deterministic Factory ISO builder", () => {
       assert.ok(sourceViews.joliet.includes("udf-only-marker.txt"));
       const sourceListing = execFileSync(
         UDF_EXTRACTOR_PATH,
-        ["l", "-slt", sourcePath],
+        ["l", "-slt", "-tUdf", sourcePath],
         {
           encoding: "utf8",
         },
       );
+      assert.match(sourceListing, /Type = Udf/);
       assert.match(sourceListing, /Path = UDF-ONLY-MARKER\.TXT/);
       const sourceIsoView = execFileSync(
         XORRISO_PATH,
@@ -1059,11 +1060,12 @@ describe("real deterministic Factory ISO builder", () => {
       });
       const outputListing = execFileSync(
         UDF_EXTRACTOR_PATH,
-        ["l", "-slt", result.output.path],
+        ["l", "-slt", "-tUdf", result.output.path],
         {
           encoding: "utf8",
         },
       );
+      assert.match(outputListing, /Type = Udf/);
       assert.match(outputListing, /Path = UDF-ONLY-MARKER\.TXT/);
       const outputIsoView = execFileSync(
         XORRISO_PATH,
@@ -1647,6 +1649,44 @@ describe("real deterministic Factory ISO builder", () => {
         }),
         /authoritative Type = Udf view/,
       );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the UDF archive type switch to extractor listing and extraction", async () => {
+    const data = await fixture();
+    try {
+      const extractor = join(data.root, "udf-view-extractor");
+      await writeFile(
+        extractor,
+        `#!/bin/sh
+set -eu
+case " $* " in
+  *" -tUdf "*) ;;
+  *) printf '%s\\n' 'missing required UDF archive type switch' >&2; exit 90 ;;
+esac
+exec ${JSON.stringify(UDF_EXTRACTOR_PATH)} "$@"
+`,
+        { mode: 0o755 },
+      );
+      const bytes = await readFile(extractor);
+      await inspectWindowsSetupIso({
+        isoPath: data.sourcePaths[data.manifest.source.windowsMedia.identity],
+        expectedInstallImage: {
+          index: data.manifest.source.installImageIndex,
+          edition: data.manifest.source.installImageEdition,
+          digest: data.manifest.source.installImageDigest,
+        },
+        udfExtractorPath: extractor,
+        udfExtractor: {
+          identity: `tool://fixture@${sha256(bytes)}`,
+          digest: sha256(bytes),
+          version: "1.0.0",
+        },
+        wimlibPath: WIMLIB_PATH,
+        wimlib: data.manifest.toolchain.wimlib,
+      });
     } finally {
       await rm(data.root, { recursive: true, force: true });
     }
