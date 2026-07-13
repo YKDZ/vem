@@ -550,7 +550,7 @@ addCheck(
       'Test-LocalUserInGroup -User $KioskUser -Group "OpenSSH Users"',
     ) &&
     verifier.includes(
-      'Test-LocalUserInGroup -User $KioskUser -Group "Remote Desktop Users"',
+      'Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-555")',
     ) &&
     verifier.includes(
       "File and Printer Sharing firewall rules must not be enabled as a maintenance entry",

@@ -82,8 +82,8 @@ function validInput() {
       maintenance: {
         wireGuardInterfaceAlias: "VEM-Maintenance",
         wireGuardListenAddress: "10.0.0.2/32",
-        runnerSourceAllowlist: ["runner:fixture"],
-        maintainerSourceAllowlist: ["maintainer:fixture"],
+        runnerSourceAllowlist: ["10.77.20.2/32"],
+        maintainerSourceAllowlist: ["fd00:77:20::3/128"],
         openSsh: {
           version: "9.8.1",
           approvedSignerThumbprint: "A".repeat(40),
@@ -329,6 +329,14 @@ describe("Factory Manifest v1", () => {
     assert.throws(
       () => createFactoryManifest(incomplete),
       /runnerSourceAllowlist/,
+    );
+    const broadIngress = validInput();
+    broadIngress.factoryPreparation.maintenance.runnerSourceAllowlist = [
+      "10.77.20.0/24",
+    ];
+    assert.throws(
+      () => createFactoryManifest(broadIngress),
+      /runnerSourceAllowlist|exact IPv4/,
     );
   });
 });

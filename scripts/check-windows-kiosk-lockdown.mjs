@@ -266,7 +266,7 @@ addCheck(
   "setup-configures-separate-kiosk-and-maintenance-accounts",
   setup.includes("$KioskUser") &&
     setup.includes("$MaintenanceUser") &&
-    setup.includes("Ensure-LocalAccount") &&
+    setup.includes("Ensure-KioskAccount") &&
     setup.includes("VEMMaintenanceUI"),
   `${setupPath} should configure separate kiosk and maintenance account paths`,
 );
@@ -279,10 +279,10 @@ addCheck(
     setup.includes("Ensure-ControlledMaintenanceIngress") &&
     setup.includes("Assert-RemoteMaintenanceAccountSeparation") &&
     setup.includes(
-      'Test-LocalUserInGroup -User $MaintenanceUser -Group "Administrators"',
+      'Test-LocalUserInGroup -User $MaintenanceUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544")',
     ) &&
     setup.includes(
-      'Test-LocalUserInGroup -User $KioskUser -Group "Administrators"',
+      'Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544")',
     ) &&
     setup.includes("Ensure-ControlledMaintenanceIngressFirewall") &&
     setup.includes("sshd") &&
@@ -290,7 +290,7 @@ addCheck(
     setup.includes("Reject-ControlledMaintenanceIngressMigration") &&
     setup.includes("ConfigureRemoteMaintenanceAccess has been removed") &&
     !setup.includes("Ensure-TailscaleScopedSshFirewall") &&
-    setup.includes("Disable-NetFirewallRule") &&
+    setup.includes("Get-EnabledInboundSshFirewallRules") &&
     setup.includes("New-NetFirewallRule") &&
     setup.includes("OpenSSH Users") &&
     setup.includes("Ensure-SshdConfigDenyKioskUser") &&
@@ -350,14 +350,14 @@ addCheck(
       "Ensure-LocalGroupExists",
       "Add-LocalGroupMember",
       "Remove-LocalGroupMember",
-      "Restart-Service",
+      "Start-Service",
     ],
   ) &&
     allTokensAfter(
       setupControlledMaintenanceFirewallBlock,
       "$validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist",
       [
-        "Disable-DefaultOpenSshInboundFirewall",
+        "Get-EnabledInboundSshFirewallRules | Remove-NetFirewallRule",
         "Remove-NetFirewallRule",
         "New-NetFirewallRule",
       ],
@@ -500,7 +500,7 @@ addCheck(
       'Test-LocalUserInGroup -User $KioskUser -Group "OpenSSH Users"',
     ) &&
     verifier.includes(
-      'Test-LocalUserInGroup -User $KioskUser -Group "Remote Desktop Users"',
+      'Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-555")',
     ) &&
     verifier.includes("Test-SshdConfigDeniesUser") &&
     verifier.includes("$KioskUser.ToLowerInvariant()") &&

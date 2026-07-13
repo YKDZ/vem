@@ -98,8 +98,11 @@ selected by `source.targetFirmware`. A `uefi` target creates EFI, MSR, Windows,
 and GPT recovery partitions; a `bios` target creates an active NTFS system
 partition, Windows partition, and MBR recovery partition. The ISO remains
 BIOS+UEFI bootable in either case, but acceptance must boot it using the
-firmware mode declared by the manifest. Specialize registers an idempotent
-SYSTEM bootstrap and FirstLogon supplies a fallback.
+firmware mode declared by the manifest. During `specialize`, the installer
+consumes the restricted one-time personalization media and writes an
+installation-unique `oobeSystem` answer file through Windows Setup's
+`HKLM\\SYSTEM\\Setup\\UnattendFile` lookup. The deterministic Factory ISO
+contains neither an account password nor a machine-specific OOBE answer.
 Factory Manifest v1 accepts only the `Professional` install image and writes
 Microsoft's published Windows 10 Pro Generic Volume License Key into unattended
 setup for edition selection. This setup key is not an activation credential;
@@ -108,9 +111,24 @@ Adding `source.targetFirmware` and restricting `source.installImageEdition` to
 `Professional` are hard v1 contract migrations: manifest producers, Factory
 builders, acceptance inputs, and VM host adapters must move in lockstep, and no
 compatibility reader for the earlier shape is retained.
-The bootstrap records durable status, fails closed with reboot, and runs the
-baseline installer, `prepare-factory-runtime`, and `verify-factory-runtime`
-only after a host one-time personalization channel is available.
+The `specialize` SYSTEM process is the sole runtime-preparation owner. It
+creates the profile accounts in a disabled state, records durable status, and
+runs the baseline installer, `prepare-factory-runtime`, and
+`verify-factory-runtime` before OOBE can expose any interactive desktop. The
+generated answer then performs one automatic login directly to the restricted
+kiosk account. A one-shot SYSTEM task triggered by that login removes the OOBE
+login counter, registry pointer, generated answer, cached Panther answer files,
+and personalization medium before deleting itself. Medium removal has bounded
+retries and a verified-absent postcondition; a failed removal retains the logon
+trigger for retry without introducing a pre-OOBE startup trigger. A preparation
+failure stops Windows Setup before OOBE rather than exposing a partially
+prepared administrator desktop.
+Every failure path removes the staged plaintext personalization and generated
+answer. Personalization passwords are restricted to printable ASCII so their
+XML value cannot be malformed or normalized into a different Windows password.
+On Windows editions without Shell Launcher, including Windows 10 Pro, the
+interactive logon task is the sole Machine UI process owner; the per-user
+Winlogon shell is configured only when Shell Launcher is available.
 `prepare-factory-runtime` is the sole owner of the selected Vision
 provision/install/evidence lifecycle. The common ISO carries no credential,
 machine identity, private key, or personalization media.

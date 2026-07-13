@@ -386,8 +386,8 @@ async function fixture() {
       maintenance: {
         wireGuardInterfaceAlias: "VEM-Maintenance",
         wireGuardListenAddress: "10.0.0.2/32",
-        runnerSourceAllowlist: ["runner:fixture"],
-        maintainerSourceAllowlist: ["maintainer:fixture"],
+        runnerSourceAllowlist: ["10.77.20.2/32"],
+        maintainerSourceAllowlist: ["fd00:77:20::3/128"],
         openSsh: {
           version: "1.0.0",
           approvedSignerThumbprint: "A".repeat(40),

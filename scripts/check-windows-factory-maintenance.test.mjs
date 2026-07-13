@@ -11,7 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { hostPersonalizationIngestScript } from "./factory/build-factory-media.mjs";
+import {
+  factoryBootstrapScript,
+  factoryOobeCompletionScript,
+  factoryOobeBootstrapPreparationScript,
+  hostPersonalizationIngestScript,
+} from "./factory/build-factory-media.mjs";
 import {
   buildRemotePowerShellScript,
   resolveCleanBaseFactoryCapabilityInputs,
@@ -146,6 +151,86 @@ test("all factory maintenance PowerShell entrypoints parse", () => {
   ]) {
     assertPowerShellParses(path);
   }
+
+  const root = mkdtempSync(join(tmpdir(), "vem-factory-generated-powershell-"));
+  try {
+    for (const profile of ["production", "testbed"]) {
+      for (const [name, source] of [
+        [
+          "prepare-oobe-bootstrap",
+          factoryOobeBootstrapPreparationScript(profile),
+        ],
+        ["bootstrap-factory-runtime", factoryBootstrapScript(profile)],
+        ["complete-oobe-bootstrap", factoryOobeCompletionScript()],
+      ]) {
+        const path = join(root, `${profile}-${name}.ps1`);
+        writeFileSync(path, source);
+        assertPowerShellParses(path);
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("factory preparation hardens maintenance login before network package installation", () => {
+  const preparation = readFileSync(
+    "scripts/windows/prepare-factory-runtime.ps1",
+    "utf8",
+  );
+  const writeRuntime = preparation.slice(
+    preparation.indexOf("function Write-FactoryRuntimeFiles"),
+  );
+  assert.ok(
+    writeRuntime.indexOf("Set-FactoryMaintenanceAccountPassword") <
+      writeRuntime.indexOf("Install-PinnedWindowsPackage"),
+  );
+  const passwordSetter = preparation.slice(
+    preparation.indexOf("function Set-FactoryMaintenanceAccountPassword"),
+    preparation.indexOf("function New-EvidenceItem"),
+  );
+  assert.match(passwordSetter, /Set-LocalUser[\s\S]+Enable-LocalUser/);
+  const rolePoolValidator = preparation.slice(
+    preparation.indexOf("function ConvertTo-ExactHostAddresses"),
+    preparation.indexOf("function Invoke-NamedPowerShellScript"),
+  );
+  assert.match(rolePoolValidator, /\$prefix -ne \$requiredPrefix/);
+  assert.doesNotMatch(rolePoolValidator, /\$maximumPrefix/);
+  assert.match(rolePoolValidator, /\$address\.IPAddressToString/);
+  assert.match(rolePoolValidator, /Runner = \$runner/);
+  assert.match(rolePoolValidator, /Maintainer = \$maintainer/);
+  assert.doesNotMatch(
+    preparation,
+    /icacls\.exe[^\r\n]+(?:\bSYSTEM\b|\bAdministrators\b)/,
+  );
+  assert.match(
+    preparation,
+    /icacls\.exe[^\r\n]+"\*S-1-5-18:F"[^\r\n]+"\*S-1-5-32-544:F"[\s\S]+\$LASTEXITCODE -ne 0/,
+  );
+
+  const scheduledTasks = readFileSync(
+    "scripts/windows/setup-scheduled-tasks.ps1",
+    "utf8",
+  );
+  const autoLogon = scheduledTasks.slice(
+    scheduledTasks.indexOf("function Configure-WinlogonAutoLogon"),
+    scheduledTasks.indexOf("function Get-ScheduledTaskStartupEvidence"),
+  );
+  assert.ok(
+    autoLogon.indexOf("AutoLogonCount") < autoLogon.indexOf("AutoAdminLogon"),
+  );
+  const configureKioskShell = scheduledTasks.slice(
+    scheduledTasks.indexOf("function Configure-KioskShell"),
+    scheduledTasks.indexOf("function Ensure-DaemonDataDirectory"),
+  );
+  assert.match(
+    configureKioskShell,
+    /if \(\$null -ne \$shellLauncher\)[\s\S]+Set-PerUserWinlogonShell[\s\S]+else \{[\s\S]+sole kiosk UI owner/,
+  );
+  assert.doesNotMatch(
+    configureKioskShell.slice(configureKioskShell.indexOf("} else {")),
+    /Set-PerUserWinlogonShell/,
+  );
 });
 
 test("generated clean-base orchestration is profile-neutral and parses", () => {

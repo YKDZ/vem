@@ -474,15 +474,24 @@ function Get-SecurityPostureEvidence {
   }
 }
 
+function Get-BuiltinLocalGroup {
+  param([Parameter(Mandatory = $true)][string]$Sid)
+
+  $group = Get-LocalGroup -SID ([Security.Principal.SecurityIdentifier]::new($Sid)) -ErrorAction Stop
+  if ($null -eq $group) { throw "required builtin local group is unavailable: $Sid" }
+  return $group
+}
+
 function Test-LocalUserInGroup {
   param(
     [string]$User,
-    [string]$Group
+    $Group
   )
 
+  $initialGroupName = if ($Group.PSObject.Properties.Name -contains "Name") { [string]$Group.Name } else { [string]$Group }
   $pending = [System.Collections.Generic.Queue[string]]::new()
   $visited = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-  $pending.Enqueue($Group)
+  $pending.Enqueue($initialGroupName)
   while ($pending.Count -gt 0) {
     $currentGroup = $pending.Dequeue()
     if (-not $visited.Add($currentGroup)) { continue }
@@ -577,10 +586,10 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
   $sshdConfigDeniesKioskUser = Test-SshdConfigDeniesUser -ConfigPath $sshdConfigPath -User $kioskUserForSshdDeny
   $maintenanceInOpenSshUsers = Test-LocalUserInGroup -User $MaintenanceUser -Group "OpenSSH Users"
   $kioskInOpenSshUsers = Test-LocalUserInGroup -User $KioskUser -Group "OpenSSH Users"
-  $kioskInRemoteDesktopUsers = Test-LocalUserInGroup -User $KioskUser -Group "Remote Desktop Users"
-  $kioskInRemoteManagementUsers = Test-LocalUserInGroup -User $KioskUser -Group "Remote Management Users"
-  $kioskAdministrator = Test-LocalUserInGroup -User $KioskUser -Group "Administrators"
-  $maintenanceAdministrator = Test-LocalUserInGroup -User $MaintenanceUser -Group "Administrators"
+  $kioskInRemoteDesktopUsers = Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-555")
+  $kioskInRemoteManagementUsers = Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-580")
+  $kioskAdministrator = Test-LocalUserInGroup -User $KioskUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544")
+  $maintenanceAdministrator = Test-LocalUserInGroup -User $MaintenanceUser -Group (Get-BuiltinLocalGroup -Sid "S-1-5-32-544")
   $kioskRemoteAccessDenied = $sshdConfigDeniesKioskUser -and -not $kioskInOpenSshUsers -and -not $kioskInRemoteDesktopUsers -and -not $kioskInRemoteManagementUsers -and -not $kioskAdministrator
   $sshdReady = $null -ne $sshd -and [string]$sshd.Status -eq "Running" -and [string]$sshd.StartType -eq "Automatic"
   $tailscaleAbsent = $null -eq $tailscale -and $null -eq $tailscaleCli

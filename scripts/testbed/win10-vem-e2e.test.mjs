@@ -1001,7 +1001,7 @@ describe("win10-vem-e2e reset planning", () => {
     ]);
   });
 
-  it("configures a per-user Winlogon shell even when Shell Launcher is available", () => {
+  it("configures a per-user Winlogon shell only with Shell Launcher", () => {
     const script = readFileSync(
       "scripts/windows/setup-scheduled-tasks.ps1",
       "utf8",
@@ -1013,7 +1013,8 @@ describe("win10-vem-e2e reset planning", () => {
       script,
       /Set-PerUserWinlogonShell -User \$User -Sid \$sid -ShellCommand \$shellCommand/,
     );
-    assert.match(script, /deterministic kiosk startup evidence/);
+    assert.match(script, /Shell Launcher kiosk startup evidence/);
+    assert.match(script, /VEMMachineUI logon task is the sole kiosk UI owner/);
     assert.match(script, /function Ensure-KioskDisplayProbeScript/);
     assert.match(script, /capture-kiosk-display\.ps1/);
     assert.match(script, /kiosk-display-evidence\.json/);
@@ -1050,7 +1051,7 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
-  it("requires factory kiosk shell evidence to include per-user Winlogon shell", () => {
+  it("requires Shell Launcher evidence to include its per-user Winlogon shell", () => {
     const script = readFileSync(
       "scripts/windows/verify-factory-runtime.ps1",
       "utf8",

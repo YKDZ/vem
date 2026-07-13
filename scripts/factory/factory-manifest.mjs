@@ -1,6 +1,7 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 
 const manifestSchema = JSON.parse(
   readFileSync(
@@ -36,6 +37,23 @@ const REQUIRED_ASSET_ROLES = new Set([
   "vision-configuration",
   "maintenance-ssh-ca-public-key",
 ]);
+
+function isExactHostSourceList(value) {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return value.every((entry) => {
+    if (typeof entry !== "string" || entry.length === 0) return false;
+    return entry.split(",").every((candidate) => {
+      const trimmed = candidate.trim();
+      if (trimmed.length === 0) return false;
+      const parts = trimmed.split("/");
+      if (parts.length > 2) return false;
+      const version = isIP(parts[0]);
+      if (version === 0) return false;
+      if (parts.length === 1) return true;
+      return parts[1] === (version === 6 ? "128" : "32");
+    });
+  });
+}
 const TOP_LEVEL_KEYS = [
   "schemaVersion",
   "kind",
@@ -235,17 +253,11 @@ function assertFactoryPreparation(value, profile, issues) {
         issues,
       );
     for (const key of ["runnerSourceAllowlist", "maintainerSourceAllowlist"]) {
-      if (
-        !Array.isArray(value.maintenance[key]) ||
-        value.maintenance[key].length === 0 ||
-        value.maintenance[key].some(
-          (entry) => typeof entry !== "string" || entry.length === 0,
-        )
-      )
+      if (!isExactHostSourceList(value.maintenance[key]))
         issues.push(
           issue(
             `factoryPreparation.maintenance.${key}`,
-            "must be a non-empty string array",
+            "must contain only exact IPv4 /32 or IPv6 /128 host addresses",
           ),
         );
     }

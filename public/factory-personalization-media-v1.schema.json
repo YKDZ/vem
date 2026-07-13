@@ -80,6 +80,7 @@
         "password": {
           "type": "string",
           "minLength": 16,
+          "pattern": "^[\\u0020-\\u007e]+$",
           "allOf": [
             { "not": { "$ref": "#/$defs/sharedPasswordMarker" } },
             { "not": { "$ref": "#/$defs/forbiddenPrivateNetworkMaterial" } },
@@ -97,6 +98,7 @@
         "password": {
           "type": "string",
           "minLength": 16,
+          "pattern": "^[\\u0020-\\u007e]+$",
           "allOf": [
             { "not": { "$ref": "#/$defs/sharedPasswordMarker" } },
             { "not": { "$ref": "#/$defs/forbiddenPrivateNetworkMaterial" } }
@@ -113,6 +115,7 @@
         "password": {
           "type": "string",
           "minLength": 16,
+          "pattern": "^[\\u0020-\\u007e]+$",
           "allOf": [
             { "not": { "$ref": "#/$defs/sharedPasswordMarker" } },
             { "not": { "$ref": "#/$defs/forbiddenPrivateNetworkMaterial" } }
@@ -129,6 +132,7 @@
         "password": {
           "type": "string",
           "minLength": 16,
+          "pattern": "^[\\u0020-\\u007e]+$",
           "allOf": [
             { "not": { "$ref": "#/$defs/sharedPasswordMarker" } },
             { "not": { "$ref": "#/$defs/forbiddenPrivateNetworkMaterial" } },

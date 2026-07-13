@@ -60,6 +60,17 @@ function assertCredential(value, path, expectedUser, issues) {
   }
   if (
     typeof value.password === "string" &&
+    !/^[\u0020-\u007e]+$/u.test(value.password)
+  ) {
+    issues.push(
+      issue(
+        `${path}.password`,
+        "must contain only printable ASCII characters safe for Windows answer files",
+      ),
+    );
+  }
+  if (
+    typeof value.password === "string" &&
     /shared-password/i.test(value.password)
   ) {
     issues.push(
