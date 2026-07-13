@@ -134,7 +134,7 @@ async function fixture() {
     "capture",
     wimInput,
     join(sourceTree, "sources", "install.wim"),
-    "VEM Factory Fixture",
+    "Professional",
   ]);
   await writeFile(
     join(sourceTree, "sources", "boot.wim"),
@@ -359,7 +359,7 @@ async function fixture() {
     source: {
       windowsMedia: strip(definitions[0]),
       installImageIndex: 1,
-      installImageEdition: "VEM Factory Fixture",
+      installImageEdition: "Professional",
       installImageDigest,
       targetFirmware: "uefi",
     },

@@ -315,6 +315,12 @@ describe("Factory Manifest v1", () => {
       () => createFactoryManifest(firmware),
       /targetFirmware|bios|uefi/,
     );
+    const edition = validInput();
+    edition.source.installImageEdition = "Enterprise";
+    assert.throws(
+      () => createFactoryManifest(edition),
+      /installImageEdition|Professional/,
+    );
     const missingWimlib = validInput();
     delete missingWimlib.toolchain.wimlib;
     assert.throws(() => createFactoryManifest(missingWimlib), /wimlib/i);

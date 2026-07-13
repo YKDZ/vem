@@ -100,9 +100,14 @@ partition, Windows partition, and MBR recovery partition. The ISO remains
 BIOS+UEFI bootable in either case, but acceptance must boot it using the
 firmware mode declared by the manifest. Specialize registers an idempotent
 SYSTEM bootstrap and FirstLogon supplies a fallback.
-Adding `source.targetFirmware` is a hard v1 contract migration: manifest
-producers, Factory builders, acceptance inputs, and VM host adapters must move
-in lockstep, and no compatibility reader for the earlier shape is retained.
+Factory Manifest v1 accepts only the `Professional` install image and writes
+Microsoft's published Windows 10 Pro Generic Volume License Key into unattended
+setup for edition selection. This setup key is not an activation credential;
+deployment licensing and activation remain outside Factory media assembly.
+Adding `source.targetFirmware` and restricting `source.installImageEdition` to
+`Professional` are hard v1 contract migrations: manifest producers, Factory
+builders, acceptance inputs, and VM host adapters must move in lockstep, and no
+compatibility reader for the earlier shape is retained.
 The bootstrap records durable status, fails closed with reboot, and runs the
 baseline installer, `prepare-factory-runtime`, and `verify-factory-runtime`
 only after a host one-time personalization channel is available.
