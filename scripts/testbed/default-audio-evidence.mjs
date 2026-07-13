@@ -4,7 +4,9 @@ import { join } from "node:path";
 
 export const DEFAULT_AUDIO_THRESHOLD = Object.freeze({
   minimumPeakAbsoluteSample: 512,
-  minimumNonSilentFrames: 2,
+  minimumNonSilentFrames: 24_000,
+  minimumDurationMs: 500,
+  minimumDistinctNonSilentSampleMagnitudes: 2,
 });
 
 function malformed(message) {
@@ -79,6 +81,7 @@ export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
     return malformed("WAV PCM format fields or frames are invalid");
   let peakAbsoluteSample = 0;
   let nonSilentFrameCount = 0;
+  const nonSilentSampleMagnitudes = new Set();
   const frameCount = data.length / format.blockAlign;
   for (let frame = 0; frame < frameCount; frame += 1) {
     let framePeak = 0;
@@ -92,14 +95,20 @@ export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
         ),
       );
     peakAbsoluteSample = Math.max(peakAbsoluteSample, framePeak);
-    if (framePeak >= threshold.minimumPeakAbsoluteSample)
+    if (framePeak >= threshold.minimumPeakAbsoluteSample) {
       nonSilentFrameCount += 1;
+      nonSilentSampleMagnitudes.add(framePeak);
+    }
   }
+  const durationMs = (frameCount / format.sampleRateHz) * 1_000;
   return {
     ok: true,
     kind:
       nonSilentFrameCount >= threshold.minimumNonSilentFrames &&
-      peakAbsoluteSample >= threshold.minimumPeakAbsoluteSample
+      peakAbsoluteSample >= threshold.minimumPeakAbsoluteSample &&
+      durationMs >= threshold.minimumDurationMs &&
+      nonSilentSampleMagnitudes.size >=
+        threshold.minimumDistinctNonSilentSampleMagnitudes
         ? "passed"
         : "silent",
     format: "wav_pcm",
@@ -107,9 +116,11 @@ export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
     sampleRateHz: format.sampleRateHz,
     channels: format.channels,
     frameCount,
+    durationMs,
     threshold: { ...threshold },
     nonSilentFrameCount,
     peakAbsoluteSample,
+    distinctNonSilentSampleMagnitudes: nonSilentSampleMagnitudes.size,
   };
 }
 
@@ -142,8 +153,10 @@ export function inspectExportedDefaultAudioCapture({
     "sampleRateHz",
     "channels",
     "frameCount",
+    "durationMs",
     "nonSilentFrameCount",
     "peakAbsoluteSample",
+    "distinctNonSilentSampleMagnitudes",
   ]) {
     if (capture[key] !== inspected[key])
       throw new Error(

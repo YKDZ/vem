@@ -314,8 +314,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
 
     assert.doesNotMatch(restore, /windowsSshReadiness=failed/);
     assert.match(display, /if:\s+success\(\)/);
+    assert.match(display, /--tauri-route\s+"\$VEM_ACTIVE_KIOSK_TAURI_ROUTE"/);
     assert.match(audio, /if:\s+success\(\)/);
     assert.match(bindAudioSession, /win10-runtime-acceptance-report\.json/);
+    assert.match(bindAudioSession, /value\.runtimeAcceptanceReport/);
+    assert.doesNotMatch(
+      bindAudioSession,
+      /runtimeAcceptanceReport\s*\?\?\s*value/,
+    );
     assert.match(bindAudioSession, /kiosk\?\.sessionUser !== "VEMKiosk"/);
     assert.match(bindAudioSession, /VEM_ACTIVE_KIOSK_SESSION_ID/);
     assert.match(audio, /--active-kiosk-session-user/);

@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 function getRuntimeAcceptanceReport(value) {
-  return value?.runtimeAcceptanceReport ?? value;
+  return value?.runtimeAcceptanceReport ?? null;
 }
 
 function diagnostic(code) {
@@ -33,6 +33,11 @@ export function verifyWindowsNativeAudioEvidence({
       adapterReport?.request?.operationReference
   )
     diagnostics.push(diagnostic("audio_capture_semantic_binding_mismatch"));
+  if (
+    audio?.nativeCue?.challenge !==
+    adapterReport?.request?.audioCapture?.nativeCue?.challenge
+  )
+    diagnostics.push(diagnostic("audio_capture_challenge_mismatch"));
   if (
     !kiosk ||
     kiosk.sessionUser !== "VEMKiosk" ||
@@ -63,7 +68,10 @@ export function verifyWindowsNativeAudioEvidence({
     !capture ||
     capture.artifact !== adapterReport?.evidence?.[0]?.identity ||
     capture.nonSilentFrameCount < capture.threshold?.minimumNonSilentFrames ||
-    capture.peakAbsoluteSample < capture.threshold?.minimumPeakAbsoluteSample
+    capture.peakAbsoluteSample < capture.threshold?.minimumPeakAbsoluteSample ||
+    capture.durationMs < capture.threshold?.minimumDurationMs ||
+    capture.distinctNonSilentSampleMagnitudes <
+      capture.threshold?.minimumDistinctNonSilentSampleMagnitudes
   )
     diagnostics.push(diagnostic("default_audio_capture_silent_or_invalid"));
   const captureStartedAt = Date.parse(capture?.startedAt);

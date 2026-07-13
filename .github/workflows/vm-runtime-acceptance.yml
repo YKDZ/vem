@@ -56,6 +56,9 @@ jobs:
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
       VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
+      VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER }}
+      VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID }}
+      VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE }}
     steps:
       - name: Checkout Trusted Commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -176,6 +179,9 @@ jobs:
           test -n "${VEM_VM_HOST_APPROVED_BASE_ID:-}"
           test -n "${VEM_VM_HOST_FACTORY_ISO_ID:-}"
           test -n "${VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID:-}"
+          test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER:-}"
+          test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID:-}"
+          test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE:-}"
           node scripts/testbed/vm-host-adapter-conformance.mjs \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-conformance.json"
 
@@ -587,16 +593,20 @@ jobs:
           node - "$report" >> "$GITHUB_ENV" <<'NODE'
           const fs = require("node:fs");
           const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-          const runtime = value.runtimeAcceptanceReport ?? value;
+          const runtime = value.runtimeAcceptanceReport;
           const kiosk = runtime.kioskRuntime;
           if (
+            value.ok !== true ||
             runtime.result?.runtimeReady?.status !== "passed" ||
             kiosk?.sessionUser !== "VEMKiosk" ||
             !Number.isInteger(kiosk.sessionId) ||
-            kiosk.sessionId < 1
+            kiosk.sessionId < 1 ||
+            typeof kiosk.url !== "string" ||
+            !/^http:\/\/tauri\.localhost\/#\/.+/.test(kiosk.url)
           ) throw new Error("runtime acceptance did not observe an active VEMKiosk session");
           process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_USER=${kiosk.sessionUser}\n`);
           process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_ID=${kiosk.sessionId}\n`);
+          process.stdout.write(`VEM_ACTIVE_KIOSK_TAURI_ROUTE=${kiosk.url}\n`);
           NODE
 
       - name: Capture Windows Display Evidence Through Host Adapter
@@ -608,6 +618,9 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
+            --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
+            --tauri-route "$VEM_ACTIVE_KIOSK_TAURI_ROUTE" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-display-capture-report.json"
 
       - name: Capture Windows Default Audio Evidence Through Host Adapter

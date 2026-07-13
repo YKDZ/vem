@@ -222,14 +222,18 @@ describe("Factory Image Acceptance lifecycle", () => {
   it("materializes only the digest-verified display export without a host path", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-factory-image-display-"));
     const input = typedInput(root);
-    const exportDirectory = join(root, "runner-export");
+    const exportDirectory = join(root, "evidence", "adapter-export");
     const bytes = Buffer.from("display screenshot evidence\n");
     const hash = createHash("sha256").update(bytes).digest("hex");
     const fileName = `${hash}.png`;
-    const prior = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
-    mkdirSync(exportDirectory, { recursive: true });
-    writeFileSync(join(exportDirectory, fileName), bytes);
-    process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR = exportDirectory;
+    const operationReference = "vm-operation://op-0123456789abcdef";
+    const operationDirectory = join(
+      exportDirectory,
+      input.runId,
+      "op-0123456789abcdef",
+    );
+    mkdirSync(operationDirectory, { recursive: true });
+    writeFileSync(join(operationDirectory, fileName), bytes);
     try {
       assert.deepEqual(
         materializeFactoryDisplayEvidence(input, {
@@ -241,6 +245,7 @@ describe("Factory Image Acceptance lifecycle", () => {
               fileName,
             },
           ],
+          request: { runId: input.runId, operationReference },
         }),
         {
           status: "copied",
@@ -254,7 +259,7 @@ describe("Factory Image Acceptance lifecycle", () => {
         readFileSync(join(input.evidence.root, "screenshots", fileName)),
         bytes,
       );
-      writeFileSync(join(exportDirectory, fileName), "tampered");
+      writeFileSync(join(operationDirectory, fileName), "tampered");
       assert.throws(
         () =>
           materializeFactoryDisplayEvidence(input, {
@@ -266,13 +271,11 @@ describe("Factory Image Acceptance lifecycle", () => {
                 fileName,
               },
             ],
+            request: { runId: input.runId, operationReference },
           }),
         /does not match adapter digest/,
       );
     } finally {
-      if (prior === undefined)
-        delete process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
-      else process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR = prior;
       rmSync(root, { recursive: true, force: true });
     }
   });

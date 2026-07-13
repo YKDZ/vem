@@ -11,6 +11,7 @@ import {
   runVmHostAdapter,
   validateVmHostAdapterReport,
   validateVmHostAdapterRequest,
+  VM_HOST_ADAPTER_CONTRACT_VERSION,
   VmHostAdapterExecutionError,
 } from "./vm-host-adapter-contract.mjs";
 
@@ -71,7 +72,8 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
     cancel: ["cancellation", "cleanup"],
   }[operation];
   return {
-    schemaVersion: "vem-vm-host-adapter-request/v1",
+    contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
+    schemaVersion: "vem-vm-host-adapter-request/v2",
     kind: "vm-host-adapter-request",
     operation,
     runId: "RUN-12-CONTRACT",
@@ -82,6 +84,13 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
       operation === "cancel" ? "vm-operation://op-fedcba9876543210" : null,
     target: { identity: "vm-target://runtime-testbed" },
     factoryMedia: null,
+    displayCapture:
+      operation === "capture-display"
+        ? {
+            activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
+            tauriRoute: "http://tauri.localhost/#/idle",
+          }
+        : null,
     audioCapture:
       operation === "capture-default-audio"
         ? {
@@ -90,10 +99,13 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
             nativeCue: {
               source: "tauri_native_audio",
               command: "play_machine_audio",
+              challenge: "b".repeat(64),
             },
             threshold: {
               minimumPeakAbsoluteSample: 512,
-              minimumNonSilentFrames: 2,
+              minimumNonSilentFrames: 24_000,
+              minimumDurationMs: 500,
+              minimumDistinctNonSilentSampleMagnitudes: 2,
             },
           }
         : null,
@@ -161,13 +173,16 @@ function reportFor(request, overrides = {}) {
           ]
         : [];
   return {
-    schemaVersion: "vem-vm-host-adapter-report/v1",
+    contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
+    schemaVersion: "vem-vm-host-adapter-report/v2",
     kind: "vm-host-adapter-report",
     adapter: {
       identity: "vm-host-adapter://deterministic-fake@1.0.0",
       version: "1.0.0",
+      contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     },
     request: {
+      contractVersion: request.contractVersion,
       runId: request.runId,
       operation: request.operation,
       operationNonce: request.operationNonce,
@@ -176,6 +191,7 @@ function reportFor(request, overrides = {}) {
       cancelOperationReference: request.cancelOperationReference,
       targetIdentity: request.target.identity,
       factoryMedia: request.factoryMedia,
+      displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
     },
@@ -227,6 +243,26 @@ function reportFor(request, overrides = {}) {
       startedAt: "2026-07-11T00:00:00.000Z",
       completedAt: "2026-07-11T00:00:01.000Z",
     },
+    displayCapture:
+      request.operation === "capture-display"
+        ? {
+            schemaVersion: "vm-display-capture-result/v1",
+            runId: request.runId,
+            lifecycleReference: request.lifecycleReference,
+            captureOperationReference: request.operationReference,
+            activeKioskSession: request.displayCapture.activeKioskSession,
+            tauriRoute: request.displayCapture.tauriRoute,
+            capture: {
+              artifact: evidence[0].identity,
+              format: "png",
+              widthPx: 2,
+              heightPx: 2,
+              pixelCount: 4,
+              nonTransparentPixelCount: 4,
+              distinctPixelCount: 4,
+            },
+          }
+        : null,
     defaultAudioCapture:
       request.operation === "capture-default-audio"
         ? {
@@ -243,6 +279,7 @@ function reportFor(request, overrides = {}) {
               status: "emitted",
               source: "tauri_native_audio",
               command: "play_machine_audio",
+              challenge: request.audioCapture.nativeCue.challenge,
               emittedAt: "2026-07-11T00:00:00.500Z",
             },
             capture: {
@@ -251,10 +288,12 @@ function reportFor(request, overrides = {}) {
               encoding: "pcm_s16le",
               sampleRateHz: 48_000,
               channels: 2,
-              frameCount: 240,
+              frameCount: 24_000,
               threshold: request.audioCapture.threshold,
-              nonSilentFrameCount: 8,
-              peakAbsoluteSample: 1_024,
+              nonSilentFrameCount: 24_000,
+              peakAbsoluteSample: 2_048,
+              durationMs: 500,
+              distinctNonSilentSampleMagnitudes: 4,
               startedAt: "2026-07-11T00:00:00.000Z",
               completedAt: "2026-07-11T00:00:01.000Z",
             },
@@ -312,6 +351,32 @@ describe("VM Host Adapter contract", () => {
     assert.doesNotMatch(
       JSON.stringify(request),
       /\/mnt\/|retired-host:|qcow2|C:\\\\/i,
+    );
+  });
+
+  it("hard-rejects stale request, report, and adapter contract versions", () => {
+    const request = createVmHostAdapterRequest(requestFor());
+    assert.throws(
+      () =>
+        createVmHostAdapterRequest({
+          ...request,
+          contractVersion: "vem-vm-host-adapter-contract/v1",
+        }),
+      /contractVersion/,
+    );
+    assert.throws(
+      () =>
+        validateVmHostAdapterReport(
+          reportFor(request, {
+            contractVersion: "vem-vm-host-adapter-contract/v1",
+            adapter: {
+              ...reportFor(request).adapter,
+              contractVersion: "vem-vm-host-adapter-contract/v1",
+            },
+          }),
+          request,
+        ),
+      /contractVersion/,
     );
   });
 
@@ -885,6 +950,38 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("exports decoded display evidence under its run and operation scope", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-display-scope-"));
+    const request = createVmHostAdapterRequest(requestFor("capture-display"));
+    const report = await runVmHostAdapter({
+      request,
+      workDirectory: root,
+      evidenceDirectory: join(root, "uploaded-evidence"),
+      environment: { VEM_VM_HOST_ADAPTER: FAKE_ADAPTER },
+    });
+    const file = report.evidence[0].fileName;
+    assert.equal(
+      existsSync(
+        join(
+          root,
+          "uploaded-evidence",
+          request.runId,
+          request.operationNonce,
+          file,
+        ),
+      ),
+      true,
+    );
+    assert.deepEqual(report.displayCapture.activeKioskSession, {
+      sessionUser: "VEMKiosk",
+      sessionId: 3,
+    });
+    assert.equal(
+      report.displayCapture.tauriRoute,
+      "http://tauri.localhost/#/idle",
+    );
+  });
+
   it("accepts a successful operation only when every requested capability is negotiated", () => {
     const request = createVmHostAdapterRequest(requestFor());
     assert.throws(
@@ -1244,6 +1341,10 @@ describe("VM Host Adapter contract", () => {
           VEM_VM_HOST_FACTORY_ISO_ID: `factory-cas://sha256/${"d".repeat(64)}`,
           VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID: `factory-cas://sha256/${"e".repeat(64)}`,
           VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence-export"),
+          VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER: "VEMKiosk",
+          VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID: "3",
+          VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE:
+            "http://tauri.localhost/#/idle",
           VEM_VM_HOST_CLEAN_INSTALL_STATUS: "blocked-issue15",
           VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
         },

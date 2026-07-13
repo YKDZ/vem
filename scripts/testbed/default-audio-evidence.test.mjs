@@ -28,15 +28,24 @@ function wav(samples) {
 
 describe("default audio evidence PCM inspection", () => {
   it("requires both declared peak and non-silent-frame thresholds", () => {
-    const samples = Array.from({ length: 20 }, () => 1024);
+    const samples = Array.from({ length: 24_000 }, (_, index) =>
+      index % 2 === 0 ? 1024 : 2048,
+    );
     const result = inspectWavPcm(wav(samples));
     assert.equal(result.kind, "passed");
-    assert.equal(result.nonSilentFrameCount, 20);
+    assert.equal(result.nonSilentFrameCount, 24_000);
     assert.deepEqual(result.threshold, DEFAULT_AUDIO_THRESHOLD);
   });
 
   it("rejects a silent but structurally valid capture", () => {
     assert.equal(inspectWavPcm(wav([0, 0, 0])).kind, "silent");
+  });
+
+  it("rejects a constant 5 ms buffer even when its samples exceed the peak threshold", () => {
+    assert.equal(
+      inspectWavPcm(wav(Array.from({ length: 240 }, () => 1024))).kind,
+      "silent",
+    );
   });
 
   it("rejects malformed containers", () => {

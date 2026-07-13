@@ -2,12 +2,13 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
 import {
   createVmHostAdapterRequest,
   runVmHostAdapter,
+  VM_HOST_ADAPTER_CONTRACT_VERSION,
   VmHostAdapterExecutionError,
 } from "./vm-host-adapter-contract.mjs";
 
@@ -115,11 +116,33 @@ function audioCaptureForOperation(operation) {
     nativeCue: {
       source: "tauri_native_audio",
       command: "play_machine_audio",
+      challenge: randomBytes(32).toString("hex"),
     },
     threshold: {
       minimumPeakAbsoluteSample: 512,
-      minimumNonSilentFrames: 2,
+      minimumNonSilentFrames: 24_000,
+      minimumDurationMs: 500,
+      minimumDistinctNonSilentSampleMagnitudes: 2,
     },
+  };
+}
+
+function displayCaptureForOperation(operation) {
+  if (operation !== "capture-display") return null;
+  const sessionId = Number(readOption("--active-kiosk-session-id"));
+  if (!Number.isInteger(sessionId) || sessionId < 1)
+    throw new Error("--active-kiosk-session-id must be a positive integer");
+  const tauriRoute = readOption("--tauri-route");
+  if (!/^http:\/\/tauri\.localhost\/#\/.+/.test(tauriRoute))
+    throw new Error(
+      "--tauri-route must be a strict tauri.localhost hash route",
+    );
+  return {
+    activeKioskSession: {
+      sessionUser: readOption("--active-kiosk-session-user"),
+      sessionId,
+    },
+    tauriRoute,
   };
 }
 
@@ -181,10 +204,12 @@ async function main() {
     .digest("hex")
     .slice(0, 32);
   const factoryMedia = factoryMediaForOperation(operation);
+  const displayCapture = displayCaptureForOperation(operation);
   const audioCapture = audioCaptureForOperation(operation);
   const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
   const request = createVmHostAdapterRequest({
-    schemaVersion: "vem-vm-host-adapter-request/v1",
+    contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
+    schemaVersion: "vem-vm-host-adapter-request/v2",
     kind: "vm-host-adapter-request",
     operation,
     runId,
@@ -197,6 +222,7 @@ async function main() {
         : null,
     target: { identity: targetIdentity },
     factoryMedia,
+    displayCapture,
     audioCapture,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
@@ -207,6 +233,7 @@ async function main() {
       const report = await runVmHostAdapter({
         request,
         workDirectory: process.env.RUNNER_TEMP ?? ".vm-host-adapter-tmp",
+        evidenceDirectory: join(dirname(out), "evidence"),
         signal: cancellation.signal,
       });
       if (

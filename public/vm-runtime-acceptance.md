@@ -102,7 +102,7 @@ config contains private key material and must remain in operator-local scratch
 or secret storage.
 
 The VM host adapter prepares the Windows VM through strict
-`vem-vm-host-adapter-request/v1` and `vem-vm-host-adapter-report/v1` contracts.
+`vem-vm-host-adapter-request/v2` and `vem-vm-host-adapter-report/v2` contracts.
 The workflow sends only a logical target, content-addressed approved base, and
 requested capabilities to the runner-service adapter. The report's
 `observed.targetBinding` must use `host-target-mapping/v1` and repeat that

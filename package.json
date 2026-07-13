@@ -17,7 +17,7 @@
     "check:rust": "cargo check --workspace --all-targets",
     "check:script-inventory": "node --test scripts/check-repository-script-inventory.test.mjs && node scripts/check-repository-script-inventory.mjs",
     "check:vision-release-installer": "node --test scripts/windows/vision-release-install.test.mjs",
-    "check:vm-host-adapter": "node --test scripts/testbed/default-audio-evidence.test.mjs scripts/testbed/windows-native-audio-evidence.test.mjs scripts/testbed/vm-host-adapter-contract.test.mjs scripts/check-vm-runtime-acceptance-workflow.test.mjs",
+    "check:vm-host-adapter": "node --test scripts/testbed/default-audio-evidence.test.mjs scripts/testbed/display-evidence.test.mjs scripts/testbed/windows-native-audio-evidence.test.mjs scripts/testbed/vm-host-adapter-contract.test.mjs scripts/check-vm-runtime-acceptance-workflow.test.mjs",
     "check:windows-factory-maintenance": "node --test scripts/check-windows-factory-maintenance.test.mjs && node scripts/check-factory-runtime-prep.mjs",
     "fmt": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all",
     "fmt:check": "node tools/check-format.mjs",

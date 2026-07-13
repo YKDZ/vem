@@ -1,13 +1,15 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { inspectExportedDefaultAudioCapture } from "./default-audio-evidence.mjs";
+import { inspectExportedDisplayCapture } from "./display-evidence.mjs";
 
-const REQUEST_SCHEMA_VERSION = "vem-vm-host-adapter-request/v1";
-const REPORT_SCHEMA_VERSION = "vem-vm-host-adapter-report/v1";
-const DIAGNOSTIC_SCHEMA_VERSION = "vem-vm-host-adapter-diagnostic/v1";
+const CONTRACT_VERSION = "vem-vm-host-adapter-contract/v2";
+const REQUEST_SCHEMA_VERSION = "vem-vm-host-adapter-request/v2";
+const REPORT_SCHEMA_VERSION = "vem-vm-host-adapter-report/v2";
+const DIAGNOSTIC_SCHEMA_VERSION = "vem-vm-host-adapter-diagnostic/v2";
 const ASSET_IDENTITY = /^factory-cas:\/\/sha256\/([a-f0-9]{64})$/;
 const EVIDENCE_IDENTITY = /^factory-evidence:\/\/sha256\/([a-f0-9]{64})$/;
 const TARGET_IDENTITY = /^vm-target:\/\/[a-z0-9][a-z0-9.-]{0,127}$/;
@@ -27,6 +29,7 @@ const AUDIO_ENCODING = new Set([
 
 export const VM_HOST_ADAPTER_REQUEST_SCHEMA_VERSION = REQUEST_SCHEMA_VERSION;
 export const VM_HOST_ADAPTER_REPORT_SCHEMA_VERSION = REPORT_SCHEMA_VERSION;
+export const VM_HOST_ADAPTER_CONTRACT_VERSION = CONTRACT_VERSION;
 
 export const VM_HOST_ADAPTER_OPERATIONS = new Set([
   "clean-install",
@@ -247,6 +250,32 @@ function assertActiveKioskSession(value, path, issues) {
     );
 }
 
+function assertTauriRoute(value, path, issues) {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol === "http:" &&
+      url.host === "tauri.localhost" &&
+      url.hash.startsWith("#/")
+    )
+      return;
+  } catch {}
+  issue(issues, path, "must be a strict tauri.localhost hash route");
+}
+
+function assertDisplayCaptureRequest(value, path, issues) {
+  if (
+    !assertExactKeys(value, ["activeKioskSession", "tauriRoute"], path, issues)
+  )
+    return;
+  assertActiveKioskSession(
+    value.activeKioskSession,
+    `${path}.activeKioskSession`,
+    issues,
+  );
+  assertTauriRoute(value.tauriRoute, `${path}.tauriRoute`, issues);
+}
+
 function assertAudioCaptureRequest(value, path, issues) {
   if (
     !assertExactKeys(
@@ -271,7 +300,7 @@ function assertAudioCaptureRequest(value, path, issues) {
   if (
     assertExactKeys(
       value.nativeCue,
-      ["source", "command"],
+      ["source", "command", "challenge"],
       `${path}.nativeCue`,
       issues,
     )
@@ -288,16 +317,35 @@ function assertAudioCaptureRequest(value, path, issues) {
         `${path}.nativeCue.command`,
         "must use the existing native audio command",
       );
+    if (
+      typeof value.nativeCue.challenge !== "string" ||
+      !/^[a-f0-9]{32,128}$/.test(value.nativeCue.challenge)
+    )
+      issue(
+        issues,
+        `${path}.nativeCue.challenge`,
+        "must be a high-entropy cue challenge",
+      );
   }
   if (
     assertExactKeys(
       value.threshold,
-      ["minimumPeakAbsoluteSample", "minimumNonSilentFrames"],
+      [
+        "minimumPeakAbsoluteSample",
+        "minimumNonSilentFrames",
+        "minimumDurationMs",
+        "minimumDistinctNonSilentSampleMagnitudes",
+      ],
       `${path}.threshold`,
       issues,
     )
   ) {
-    for (const key of ["minimumPeakAbsoluteSample", "minimumNonSilentFrames"]) {
+    for (const key of [
+      "minimumPeakAbsoluteSample",
+      "minimumNonSilentFrames",
+      "minimumDurationMs",
+      "minimumDistinctNonSilentSampleMagnitudes",
+    ]) {
       if (!Number.isInteger(value.threshold[key]) || value.threshold[key] <= 0)
         issue(issues, `${path}.threshold.${key}`, "must be a positive integer");
     }
@@ -396,7 +444,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
   if (
     assertExactKeys(
       value.nativeCue,
-      ["status", "source", "command", "emittedAt"],
+      ["status", "source", "command", "challenge", "emittedAt"],
       `${path}.nativeCue`,
       issues,
     )
@@ -409,7 +457,8 @@ function assertAudioCaptureResult(value, request, report, issues) {
       );
     if (
       value.nativeCue.source !== request.audioCapture?.nativeCue?.source ||
-      value.nativeCue.command !== request.audioCapture?.nativeCue?.command
+      value.nativeCue.command !== request.audioCapture?.nativeCue?.command ||
+      value.nativeCue.challenge !== request.audioCapture?.nativeCue?.challenge
     )
       issue(
         issues,
@@ -432,9 +481,11 @@ function assertAudioCaptureResult(value, request, report, issues) {
         "sampleRateHz",
         "channels",
         "frameCount",
+        "durationMs",
         "threshold",
         "nonSilentFrameCount",
         "peakAbsoluteSample",
+        "distinctNonSilentSampleMagnitudes",
         "startedAt",
         "completedAt",
       ],
@@ -461,8 +512,10 @@ function assertAudioCaptureResult(value, request, report, issues) {
     "sampleRateHz",
     "channels",
     "frameCount",
+    "durationMs",
     "nonSilentFrameCount",
     "peakAbsoluteSample",
+    "distinctNonSilentSampleMagnitudes",
   ]) {
     const minimum = ["nonSilentFrameCount", "peakAbsoluteSample"].includes(key)
       ? 0
@@ -487,7 +540,10 @@ function assertAudioCaptureResult(value, request, report, issues) {
     value.capture.nonSilentFrameCount <
       value.capture.threshold?.minimumNonSilentFrames ||
     value.capture.peakAbsoluteSample <
-      value.capture.threshold?.minimumPeakAbsoluteSample
+      value.capture.threshold?.minimumPeakAbsoluteSample ||
+    value.capture.durationMs < value.capture.threshold?.minimumDurationMs ||
+    value.capture.distinctNonSilentSampleMagnitudes <
+      value.capture.threshold?.minimumDistinctNonSilentSampleMagnitudes
   )
     issue(
       issues,
@@ -514,6 +570,113 @@ function assertAudioCaptureResult(value, request, report, issues) {
       path,
       "must capture the Tauri cue within one synchronized PCM interval",
     );
+}
+
+function assertDisplayCaptureResult(value, request, report, issues) {
+  const path = "report.displayCapture";
+  if (request.operation !== "capture-display") {
+    if (value !== null)
+      issue(issues, path, "must be null outside capture-display");
+    return;
+  }
+  if (report.result !== "succeeded") {
+    if (value !== null)
+      issue(issues, path, "must be null when display capture did not succeed");
+    return;
+  }
+  if (
+    !assertExactKeys(
+      value,
+      [
+        "schemaVersion",
+        "runId",
+        "lifecycleReference",
+        "captureOperationReference",
+        "activeKioskSession",
+        "tauriRoute",
+        "capture",
+      ],
+      path,
+      issues,
+    )
+  )
+    return;
+  if (value.schemaVersion !== "vm-display-capture-result/v1")
+    issue(
+      issues,
+      `${path}.schemaVersion`,
+      "must be vm-display-capture-result/v1",
+    );
+  if (value.runId !== request.runId)
+    issue(issues, `${path}.runId`, "must bind the adapter run identity");
+  if (value.lifecycleReference !== request.lifecycleReference)
+    issue(
+      issues,
+      `${path}.lifecycleReference`,
+      "must bind the active overlay lifecycle",
+    );
+  if (value.captureOperationReference !== request.operationReference)
+    issue(
+      issues,
+      `${path}.captureOperationReference`,
+      "must bind the capture operation",
+    );
+  assertActiveKioskSession(
+    value.activeKioskSession,
+    `${path}.activeKioskSession`,
+    issues,
+  );
+  if (
+    JSON.stringify(value.activeKioskSession) !==
+    JSON.stringify(request.displayCapture?.activeKioskSession)
+  )
+    issue(
+      issues,
+      `${path}.activeKioskSession`,
+      "must match the requested active kiosk session",
+    );
+  assertTauriRoute(value.tauriRoute, `${path}.tauriRoute`, issues);
+  if (value.tauriRoute !== request.displayCapture?.tauriRoute)
+    issue(issues, `${path}.tauriRoute`, "must bind the requested kiosk route");
+  if (
+    !assertExactKeys(
+      value.capture,
+      [
+        "artifact",
+        "format",
+        "widthPx",
+        "heightPx",
+        "pixelCount",
+        "nonTransparentPixelCount",
+        "distinctPixelCount",
+      ],
+      `${path}.capture`,
+      issues,
+    )
+  )
+    return;
+  if (value.capture.artifact !== report.evidence?.[0]?.identity)
+    issue(
+      issues,
+      `${path}.capture.artifact`,
+      "must bind the exported display-capture evidence artifact",
+    );
+  if (value.capture.format !== "png")
+    issue(issues, `${path}.capture.format`, "must be png");
+  for (const key of [
+    "widthPx",
+    "heightPx",
+    "pixelCount",
+    "nonTransparentPixelCount",
+    "distinctPixelCount",
+  ]) {
+    if (!Number.isInteger(value.capture[key]) || value.capture[key] < 1)
+      issue(
+        issues,
+        `${path}.capture.${key}`,
+        "must be a positive decoded PNG measurement",
+      );
+  }
 }
 
 function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
@@ -611,6 +774,7 @@ function assertSanitizedDiagnostic(
 
 function requestEcho(request) {
   return {
+    contractVersion: request.contractVersion,
     runId: request.runId,
     operation: request.operation,
     operationNonce: request.operationNonce,
@@ -619,6 +783,7 @@ function requestEcho(request) {
     cancelOperationReference: request.cancelOperationReference,
     targetIdentity: request.target.identity,
     factoryMedia: request.factoryMedia,
+    displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     requestedCapabilities: [...request.requestedCapabilities],
   };
@@ -626,6 +791,7 @@ function requestEcho(request) {
 
 function reconstructRequest(request) {
   return {
+    contractVersion: request.contractVersion,
     schemaVersion: request.schemaVersion,
     kind: request.kind,
     operation: request.operation,
@@ -636,6 +802,7 @@ function reconstructRequest(request) {
     cancelOperationReference: request.cancelOperationReference,
     target: { identity: request.target?.identity },
     factoryMedia: request.factoryMedia,
+    displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     assets: request.assets?.map((asset) => ({
       role: asset?.role,
@@ -666,6 +833,7 @@ export function validateVmHostAdapterRequest(input) {
   assertExactKeys(
     request,
     [
+      "contractVersion",
       "schemaVersion",
       "kind",
       "operation",
@@ -676,6 +844,7 @@ export function validateVmHostAdapterRequest(input) {
       "cancelOperationReference",
       "target",
       "factoryMedia",
+      "displayCapture",
       "audioCapture",
       "assets",
       "requestedCapabilities",
@@ -683,6 +852,8 @@ export function validateVmHostAdapterRequest(input) {
     "request",
     issues,
   );
+  if (request.contractVersion !== CONTRACT_VERSION)
+    issue(issues, "request.contractVersion", `must be ${CONTRACT_VERSION}`);
   if (request.schemaVersion !== REQUEST_SCHEMA_VERSION)
     issue(issues, "request.schemaVersion", `must be ${REQUEST_SCHEMA_VERSION}`);
   if (request.kind !== "vm-host-adapter-request")
@@ -866,6 +1037,19 @@ export function validateVmHostAdapterRequest(input) {
       "must be null outside capture-default-audio",
     );
   }
+  if (request.operation === "capture-display") {
+    assertDisplayCaptureRequest(
+      request.displayCapture,
+      "request.displayCapture",
+      issues,
+    );
+  } else if (request.displayCapture !== null) {
+    issue(
+      issues,
+      "request.displayCapture",
+      "must be null outside capture-display",
+    );
+  }
   if (!Array.isArray(request.assets) || request.assets.length === 0)
     issue(issues, "request.assets", "must contain immutable operation assets");
   else {
@@ -956,6 +1140,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
   assertExactKeys(
     report,
     [
+      "contractVersion",
       "schemaVersion",
       "kind",
       "adapter",
@@ -970,11 +1155,14 @@ export function validateVmHostAdapterReport(input, requestInput) {
       "timestamps",
       "cleanup",
       "diagnostics",
+      "displayCapture",
       "defaultAudioCapture",
     ],
     "report",
     issues,
   );
+  if (report.contractVersion !== CONTRACT_VERSION)
+    issue(issues, "report.contractVersion", `must be ${CONTRACT_VERSION}`);
   if (report.schemaVersion !== REPORT_SCHEMA_VERSION)
     issue(issues, "report.schemaVersion", `must be ${REPORT_SCHEMA_VERSION}`);
   if (report.kind !== "vm-host-adapter-report")
@@ -982,7 +1170,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
   if (
     assertExactKeys(
       report.adapter,
-      ["identity", "version"],
+      ["identity", "version", "contractVersion"],
       "report.adapter",
       issues,
     )
@@ -1001,11 +1189,18 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "report.adapter.version",
         "must be a strict semantic version",
       );
+    if (report.adapter.contractVersion !== CONTRACT_VERSION)
+      issue(
+        issues,
+        "report.adapter.contractVersion",
+        `must be ${CONTRACT_VERSION}`,
+      );
   }
   if (
     assertExactKeys(
       report.request,
       [
+        "contractVersion",
         "runId",
         "operation",
         "operationNonce",
@@ -1014,6 +1209,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "cancelOperationReference",
         "targetIdentity",
         "factoryMedia",
+        "displayCapture",
         "audioCapture",
         "requestedCapabilities",
       ],
@@ -1309,8 +1505,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         entry.role === "default-audio-capture"
       ) {
         const expectedFileName = `${entry.digest?.slice(7)}.`;
-        const extension =
-          entry.role === "display-capture" ? "(?:png|jpg|jpeg|webp)" : "wav";
+        const extension = entry.role === "display-capture" ? "png" : "wav";
         if (
           typeof entry.fileName !== "string" ||
           !new RegExp(`^[a-f0-9]{64}\\.${extension}$`).test(entry.fileName) ||
@@ -1375,6 +1570,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
     )
       issue(issues, "report.timestamps", "must be ordered");
   }
+  assertDisplayCaptureResult(report.displayCapture, request, report, issues);
   assertAudioCaptureResult(report.defaultAudioCapture, request, report, issues);
   if (
     assertExactKeys(
@@ -1441,11 +1637,13 @@ export function validateVmHostAdapterReport(input, requestInput) {
     );
   if (issues.length > 0) throw new VmHostAdapterContractError(issues);
   return {
+    contractVersion: report.contractVersion,
     schemaVersion: report.schemaVersion,
     kind: report.kind,
     adapter: {
       identity: report.adapter.identity,
       version: report.adapter.version,
+      contractVersion: report.adapter.contractVersion,
     },
     request: requestEcho(request),
     result: report.result,
@@ -1493,6 +1691,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
       startedAt: report.timestamps.startedAt,
       completedAt: report.timestamps.completedAt,
     },
+    displayCapture: report.displayCapture,
     defaultAudioCapture: report.defaultAudioCapture,
     cleanup: {
       status: report.cleanup.status,
@@ -1579,15 +1778,38 @@ function adapterExecutable(environment) {
   return value;
 }
 
-function evidenceExportDirectory(environment) {
-  const value = String(
-    environment.VEM_VM_HOST_EVIDENCE_EXPORT_DIR ?? "",
-  ).trim();
-  if (!isAbsolute(value))
+function evidenceExportDirectory(value) {
+  const directory = String(value ?? "").trim();
+  if (!isAbsolute(directory))
     throw new Error(
       "VEM_VM_HOST_EVIDENCE_EXPORT_DIR must be an absolute runner-owned directory",
     );
-  return value;
+  return directory;
+}
+
+function scopedEvidenceExportDirectory({
+  request,
+  environment,
+  evidenceDirectory,
+}) {
+  const base = evidenceExportDirectory(
+    evidenceDirectory ?? environment.VEM_VM_HOST_EVIDENCE_EXPORT_DIR,
+  );
+  const scope = join(
+    resolve(base),
+    request.runId,
+    request.operationReference.slice("vm-operation://".length),
+  );
+  if (
+    !scope.startsWith(
+      `${resolve(base)}${process.platform === "win32" ? "\\" : "/"}`,
+    )
+  )
+    throw new Error(
+      "VM Host Adapter evidence export escaped its runner-owned scope",
+    );
+  mkdirSync(scope, { recursive: true, mode: 0o700 });
+  return scope;
 }
 
 function processGroupExists(child) {
@@ -1758,6 +1980,7 @@ function cleanupRequestFor(request) {
     operationReference: `vm-operation://${nonce}`,
     cancelOperationReference: null,
     factoryMedia: null,
+    displayCapture: null,
     audioCapture: null,
     requestedCapabilities: ["cleanup", "cancellation"],
   });
@@ -1772,6 +1995,7 @@ function cancelRequestFor(request) {
     operationReference: `vm-operation://${nonce}`,
     cancelOperationReference: request.operationReference,
     factoryMedia: null,
+    displayCapture: null,
     audioCapture: null,
     requestedCapabilities: ["cancellation", "cleanup"],
   });
@@ -1781,6 +2005,7 @@ export async function runVmHostAdapter({
   request: requestInput,
   workDirectory,
   environment = process.env,
+  evidenceDirectory,
   timeoutMs = Number(environment.VEM_VM_HOST_ADAPTER_TIMEOUT_MS ?? 600000),
   signal,
   onOperationStarted,
@@ -1792,19 +2017,36 @@ export async function runVmHostAdapter({
     );
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1)
     throw new Error("VM Host Adapter timeout must be a positive integer");
+  const scopedEvidenceDirectory =
+    request.operation === "capture-display" ||
+    request.operation === "capture-default-audio"
+      ? scopedEvidenceExportDirectory({
+          request,
+          workDirectory,
+          environment,
+          evidenceDirectory,
+        })
+      : null;
   if (
     request.operation === "capture-display" ||
     request.operation === "capture-default-audio"
   )
-    evidenceExportDirectory(environment);
+    mkdirSync(scopedEvidenceDirectory, { recursive: true, mode: 0o700 });
   mkdirSync(workDirectory, { recursive: true, mode: 0o700 });
+  const adapterEnvironment = {
+    ...environment,
+    VEM_VM_HOST_ADAPTER_CONTRACT_VERSION: CONTRACT_VERSION,
+    ...(scopedEvidenceDirectory
+      ? { VEM_VM_HOST_EVIDENCE_EXPORT_DIR: scopedEvidenceDirectory }
+      : {}),
+  };
   let cancellation;
   const cancelInFlightOperation = async () => {
     if (cancellation) return cancellation;
     cancellation = await invokeAdapter({
       request: cancelRequestFor(request),
       workDirectory,
-      environment,
+      environment: adapterEnvironment,
       timeoutMs: Math.min(timeoutMs, 30000),
       signal: undefined,
     });
@@ -1813,7 +2055,7 @@ export async function runVmHostAdapter({
   let outcome = await invokeAdapter({
     request,
     workDirectory,
-    environment,
+    environment: adapterEnvironment,
     timeoutMs,
     signal,
     onInterrupted: cancelInFlightOperation,
@@ -1821,15 +2063,22 @@ export async function runVmHostAdapter({
   });
   if (
     outcome.result === "succeeded" &&
-    request.operation === "capture-default-audio"
+    ["capture-display", "capture-default-audio"].includes(request.operation)
   ) {
     try {
       const evidence = outcome.report.evidence[0];
-      inspectExportedDefaultAudioCapture({
-        directory: evidenceExportDirectory(environment),
-        evidence,
-        capture: outcome.report.defaultAudioCapture.capture,
-      });
+      if (request.operation === "capture-display")
+        inspectExportedDisplayCapture({
+          directory: scopedEvidenceDirectory,
+          evidence,
+          capture: outcome.report.displayCapture.capture,
+        });
+      else
+        inspectExportedDefaultAudioCapture({
+          directory: scopedEvidenceDirectory,
+          evidence,
+          capture: outcome.report.defaultAudioCapture.capture,
+        });
     } catch {
       outcome = {
         ...outcome,
@@ -1864,7 +2113,7 @@ export async function runVmHostAdapter({
     recovery = await invokeAdapter({
       request: cleanupRequestFor(request),
       workDirectory,
-      environment,
+      environment: adapterEnvironment,
       timeoutMs: Math.min(timeoutMs, 30000),
       signal: undefined,
     });

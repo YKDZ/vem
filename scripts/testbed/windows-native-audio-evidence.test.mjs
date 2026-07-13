@@ -22,6 +22,7 @@ function fixture() {
         lifecycleReference: "vm-lifecycle://run-17-audio.runtime",
         audioCapture: {
           activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
+          nativeCue: { challenge: "b".repeat(64) },
         },
       },
       guest: { defaultAudioIdentity: "guest-audio://runtime" },
@@ -35,16 +36,21 @@ function fixture() {
           status: "emitted",
           source: "tauri_native_audio",
           command: "play_machine_audio",
+          challenge: "b".repeat(64),
           emittedAt: "2026-07-13T00:00:01.000Z",
         },
         capture: {
           artifact: `factory-evidence://sha256/${hash}`,
           threshold: {
             minimumPeakAbsoluteSample: 512,
-            minimumNonSilentFrames: 2,
+            minimumNonSilentFrames: 24_000,
+            minimumDurationMs: 500,
+            minimumDistinctNonSilentSampleMagnitudes: 2,
           },
-          nonSilentFrameCount: 2,
-          peakAbsoluteSample: 1024,
+          nonSilentFrameCount: 24_000,
+          peakAbsoluteSample: 2048,
+          durationMs: 500,
+          distinctNonSilentSampleMagnitudes: 4,
           startedAt: "2026-07-13T00:00:00.000Z",
           completedAt: "2026-07-13T00:00:02.000Z",
         },
@@ -67,6 +73,9 @@ describe("Windows native audio evidence", () => {
     input.adapterReport.request.audioCapture.activeKioskSession.sessionId = 7;
     input.adapterReport.defaultAudioCapture.endpoint.status = "missing";
     input.adapterReport.defaultAudioCapture.nativeCue.status = "failed";
+    input.adapterReport.defaultAudioCapture.nativeCue.challenge = "c".repeat(
+      64,
+    );
     input.adapterReport.defaultAudioCapture.capture.nonSilentFrameCount = 0;
     input.adapterReport.defaultAudioCapture.capture.completedAt =
       "2026-07-13T00:00:00.500Z";
@@ -76,6 +85,7 @@ describe("Windows native audio evidence", () => {
       result.diagnostics.map((entry) => entry.code),
       [
         "audio_capture_semantic_binding_mismatch",
+        "audio_capture_challenge_mismatch",
         "audio_capture_session_mismatch",
         "default_audio_endpoint_missing",
         "tauri_native_audio_cue_missing",
@@ -83,5 +93,17 @@ describe("Windows native audio evidence", () => {
         "default_audio_capture_not_synchronized",
       ],
     );
+  });
+
+  it("requires the inner runtime response instead of accepting a response-shaped wrapper", () => {
+    const input = fixture();
+    input.runtimeReport = input.runtimeReport.runtimeAcceptanceReport;
+    const result = verifyWindowsNativeAudioEvidence(input);
+    assert.equal(result.result, "failed");
+    assert.deepEqual(result.diagnostics, [
+      { code: "runtime_acceptance_not_ready" },
+      { code: "active_kiosk_session_missing" },
+      { code: "audio_capture_session_mismatch" },
+    ]);
   });
 });

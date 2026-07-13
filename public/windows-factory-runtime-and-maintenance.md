@@ -358,7 +358,10 @@ Repository workflows invoke the executable configured by the runner service as
 `VEM_VM_HOST_ADAPTER`. A dispatch input cannot choose the executable or pass
 host filesystem paths.
 
-The adapter accepts a strict `vem-vm-host-adapter-request/v1` JSON request with
+The adapter accepts a strict `vem-vm-host-adapter-request/v2` JSON request with
+`contractVersion: vem-vm-host-adapter-contract/v2`; its report and adapter
+declaration must repeat that exact contract version. This is a hard migration:
+v1 requests and reports are rejected rather than translated.
 only `runId`, `operation`, `operationNonce`, `operationReference`,
 `lifecycleReference`, an optional cancel-operation reference, logical target
 identity, content-addressed assets, and requested capabilities. Requests have
@@ -374,7 +377,7 @@ vocabulary covers:
 - two role-addressed virtual serial devices;
 - a virtual default audio output with host-side capture.
 
-The adapter returns a strict `vem-vm-host-adapter-report/v1` report with its
+The adapter returns a strict `vem-vm-host-adapter-report/v2` report with its
 identity and semantic version, echoed request binding, an `operationReference`,
 a `lifecycleReference`, observed VM/base/overlay identities, consumed asset
 hashes, guest maintenance endpoint identity, role-addressed device mappings,
