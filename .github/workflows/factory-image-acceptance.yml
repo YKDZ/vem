@@ -77,6 +77,7 @@ jobs:
             VEM_FACTORY_UDF_EXTRACTOR_HOST_PATH \
             VEM_FACTORY_UDF_WRITER_HOST_PATH \
             VEM_FACTORY_WIMLIB_HOST_PATH \
+            VEM_FACTORY_WORK_ROOT \
             VEM_VM_HOST_EVIDENCE_EXPORT_DIR \
             VEM_FACTORY_ACCEPTANCE_SSH_IDENTITY_PATH \
             VEM_FACTORY_ACCEPTANCE_SSH_CERTIFICATE_PATH \
@@ -90,6 +91,10 @@ jobs:
           }
           [[ "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR" = /* ]] || {
             echo "VEM_VM_HOST_EVIDENCE_EXPORT_DIR must be absolute" >&2
+            exit 1
+          }
+          [[ "$VEM_FACTORY_WORK_ROOT" = /* && "$VEM_FACTORY_WORK_ROOT" != / && -d "$VEM_FACTORY_WORK_ROOT" && -w "$VEM_FACTORY_WORK_ROOT" ]] || {
+            echo "VEM_FACTORY_WORK_ROOT must be a writable absolute non-root host directory" >&2
             exit 1
           }
           for path in \
@@ -259,6 +264,11 @@ jobs:
         run: |
           set -euo pipefail
           export VEM_FACTORY_PERSONALIZATION_RUNNER_NAME="$RUNNER_NAME"
+          admission_tmp="$VEM_FACTORY_WORK_ROOT/acceptance-tmp/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$admission_tmp"
+          mkdir -p "$admission_tmp"
+          chmod 700 "$admission_tmp"
+          export TMPDIR="$admission_tmp"
           mkdir -p "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"
           chmod 700 "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"
           node scripts/testbed/factory-image-acceptance.mjs
@@ -304,6 +314,13 @@ jobs:
             fi
           done
           rm -rf "$RUNNER_TEMP/vem-factory-mosquitto" "$RUNNER_TEMP/factory-image-acceptance-input.json" "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"
+          if [[ "$VEM_FACTORY_WORK_ROOT" = /* && "$VEM_FACTORY_WORK_ROOT" != / ]]; then
+            admission_tmp="$VEM_FACTORY_WORK_ROOT/acceptance-tmp/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            rm -rf "$admission_tmp"
+          else
+            echo "refusing to clean an invalid VEM_FACTORY_WORK_ROOT" >&2
+            failed=1
+          fi
           exit "$failed"
 
       - name: Upload Sanitized Factory Acceptance Evidence

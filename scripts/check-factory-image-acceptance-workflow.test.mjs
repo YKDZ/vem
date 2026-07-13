@@ -6,6 +6,10 @@ const workflow = readFileSync(
   ".github/workflows/factory-image-acceptance.yml",
   "utf8",
 );
+const factoryMedia = readFileSync(
+  "scripts/factory/build-factory-media.mjs",
+  "utf8",
+);
 
 describe("Factory Image Acceptance workflow", () => {
   it("requires the real platform-neutral Factory lifecycle orchestrator", () => {
@@ -20,6 +24,7 @@ describe("Factory Image Acceptance workflow", () => {
       "VEM_FACTORY_UDF_EXTRACTOR_HOST_PATH",
       "VEM_FACTORY_UDF_WRITER_HOST_PATH",
       "VEM_FACTORY_WIMLIB_HOST_PATH",
+      "VEM_FACTORY_WORK_ROOT",
     ])
       assert.match(workflow, new RegExp(input));
     assert.doesNotMatch(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
@@ -183,6 +188,24 @@ describe("Factory Image Acceptance workflow", () => {
       workflow,
       /udfExtractorPath: process\.env\.VEM_FACTORY_UDF_EXTRACTOR_CONTAINER_PATH/,
     );
+  });
+
+  it("keeps large admission extraction off system temporary storage", () => {
+    assert.match(
+      workflow,
+      /admission_tmp="\$VEM_FACTORY_WORK_ROOT\/acceptance-tmp\/\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}"/,
+    );
+    assert.match(workflow, /export TMPDIR="\$admission_tmp"/);
+    assert.match(
+      workflow,
+      /if \[\[ "\$VEM_FACTORY_WORK_ROOT" = \/\* && "\$VEM_FACTORY_WORK_ROOT" != \/ \]\]; then/,
+    );
+    assert.match(
+      workflow,
+      /admission_tmp="\$VEM_FACTORY_WORK_ROOT\/acceptance-tmp\/\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}"/,
+    );
+    assert.equal([...factoryMedia.matchAll(/TMPDIR: tmpdir\(\)/g)].length, 4);
+    assert.doesNotMatch(workflow, /export TMPDIR="\$RUNNER_TEMP/);
   });
 
   it("uploads only the dedicated sanitized evidence directory", () => {

@@ -370,7 +370,13 @@ export async function verifyPinnedFactoryTool({
     await writeFile(executable, bytes, { mode: 0o555 });
     const result = await run(executable, args, {
       cwd: directory,
-      env: { PATH: "/usr/bin:/bin", HOME: directory, LC_ALL: "C", TZ: "UTC" },
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: directory,
+        LC_ALL: "C",
+        TZ: "UTC",
+        TMPDIR: tmpdir(),
+      },
       maxBuffer: 1024 * 1024,
     });
     if (!versionPattern.test(`${result.stdout}\n${result.stderr}`)) {
@@ -700,7 +706,13 @@ function treeEntry(tree, path) {
 async function extractUdfView({ extractor, isoPath, tree, workDirectory }) {
   const listing = await run(extractor, ["l", "-slt", "-tUdf", isoPath], {
     cwd: workDirectory,
-    env: { PATH: "/usr/bin:/bin", HOME: workDirectory, LC_ALL: "C", TZ: "UTC" },
+    env: {
+      PATH: "/usr/bin:/bin",
+      HOME: workDirectory,
+      LC_ALL: "C",
+      TZ: "UTC",
+      TMPDIR: tmpdir(),
+    },
     maxBuffer: 4 * 1024 * 1024,
   });
   const archiveProperties = `${listing.stdout}\n${listing.stderr}`.split(
@@ -717,7 +729,13 @@ async function extractUdfView({ extractor, isoPath, tree, workDirectory }) {
   }
   await run(extractor, ["x", "-y", "-tUdf", `-o${tree}`, isoPath], {
     cwd: workDirectory,
-    env: { PATH: "/usr/bin:/bin", HOME: workDirectory, LC_ALL: "C", TZ: "UTC" },
+    env: {
+      PATH: "/usr/bin:/bin",
+      HOME: workDirectory,
+      LC_ALL: "C",
+      TZ: "UTC",
+      TMPDIR: tmpdir(),
+    },
     maxBuffer: 4 * 1024 * 1024,
   });
   return validateExtractedTree(tree, "UDF extractor output");
@@ -781,7 +799,12 @@ async function inspectSelectedWindowsImage({
     ["info", imagePath, String(expected.index), "--xml"],
     {
       cwd: workDirectory,
-      env: { PATH: "/usr/bin:/bin", HOME: workDirectory, LC_ALL: "C" },
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: workDirectory,
+        LC_ALL: "C",
+        TMPDIR: tmpdir(),
+      },
       encoding: "buffer",
       maxBuffer: 4 * 1024 * 1024,
     },
