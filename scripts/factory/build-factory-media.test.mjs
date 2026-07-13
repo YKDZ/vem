@@ -21,6 +21,7 @@ import {
   buildFactoryMedia,
   assertWimMagic,
   createWindowsFactoryFirstBootMedia,
+  factoryAutounattendXml,
   expectedFactoryEffectiveInputRoles,
   factoryPreparationSplat,
   inspectBootableIso,
@@ -1005,6 +1006,40 @@ async function writeVisibleElToritoCatalogFixture(
 }
 
 describe("real deterministic Factory ISO builder", () => {
+  it("emits schema-valid disk layouts for the selected BIOS or UEFI target", () => {
+    const uefi = factoryAutounattendXml("testbed", 4, "uefi");
+    assert.match(uefi, /<Type>EFI<\/Type><Size>260<\/Size>/);
+    assert.match(uefi, /<Type>MSR<\/Type><Size>16<\/Size>/);
+    assert.match(
+      uefi,
+      /<ModifyPartition[^>]*>.*<PartitionID>4<\/PartitionID>.*<TypeID>DE94BBA4-06D1-4D40-A16A-BFD50179D6AC<\/TypeID>.*<\/ModifyPartition>/,
+    );
+    assert.doesNotMatch(
+      uefi,
+      /<CreatePartition[^>]*>.*<TypeID>.*<\/CreatePartition>/,
+    );
+    assert.match(
+      uefi,
+      /<InstallTo><DiskID>0<\/DiskID><PartitionID>3<\/PartitionID>/,
+    );
+
+    const bios = factoryAutounattendXml("testbed", 4, "bios");
+    assert.match(bios, /<Active>true<\/Active>/);
+    assert.match(
+      bios,
+      /<ModifyPartition[^>]*>.*<PartitionID>3<\/PartitionID>.*<TypeID>0x27<\/TypeID>.*<\/ModifyPartition>/,
+    );
+    assert.doesNotMatch(
+      bios,
+      /<CreatePartition[^>]*>.*<TypeID>.*<\/CreatePartition>/,
+    );
+    assert.match(
+      bios,
+      /<InstallTo><DiskID>0<\/DiskID><PartitionID>2<\/PartitionID>/,
+    );
+    assert.doesNotMatch(bios, /<Type>EFI<\/Type>|<Type>MSR<\/Type>|DE94BBA4/);
+  });
+
   it("recognizes the exact eight-byte magic from a wimlib-produced WIM", async () => {
     const root = await mkdtemp(join(tmpdir(), "vem-wim-magic-"));
     try {

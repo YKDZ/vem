@@ -101,6 +101,7 @@ function cleanInstallRequest() {
   return requestFor("clean-install", {
     factoryMedia: {
       assemblyMode: "windows-serviced-iso",
+      targetFirmware: "bios",
       manifestIdentity: `sha256:${"f".repeat(64)}`,
       provenanceIdentity: `factory-evidence://sha256/${provenanceHash}`,
       provenanceDigest: `sha256:${provenanceHash}`,
@@ -177,6 +178,7 @@ function reportFor(request, overrides = {}) {
         request.operation === "capture-approved-base"
           ? request.factoryMedia.provenanceDigest
           : null,
+      firmwareMode: request.factoryMedia?.targetFirmware ?? "bios",
     },
     consumedAssets: request.assets,
     guest: {
@@ -273,6 +275,37 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("requires an exact Factory firmware target and matching host observation", () => {
+    const request = cleanInstallRequest();
+    const missingFirmware = structuredClone(request);
+    delete missingFirmware.factoryMedia.targetFirmware;
+    assert.throws(
+      () => createVmHostAdapterRequest(missingFirmware),
+      /targetFirmware/,
+    );
+
+    const unknownFirmware = structuredClone(request);
+    unknownFirmware.factoryMedia.targetFirmware = "auto";
+    assert.throws(
+      () => createVmHostAdapterRequest(unknownFirmware),
+      /targetFirmware/,
+    );
+
+    assert.throws(
+      () =>
+        validateVmHostAdapterReport(
+          reportFor(request, {
+            observed: {
+              ...reportFor(request).observed,
+              firmwareMode: "uefi",
+            },
+          }),
+          request,
+        ),
+      /firmwareMode/,
+    );
+  });
+
   it("binds a clean-install observation to its requested Factory ISO, never an approved base fallback", () => {
     const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
     const personalization = `factory-cas://sha256/${"e".repeat(64)}`;
@@ -292,6 +325,7 @@ describe("VM Host Adapter contract", () => {
         ],
         factoryMedia: {
           assemblyMode: "windows-serviced-iso",
+          targetFirmware: "bios",
           manifestIdentity: `sha256:${"f".repeat(64)}`,
           provenanceIdentity: `factory-evidence://sha256/${"c".repeat(64)}`,
           provenanceDigest: `sha256:${"c".repeat(64)}`,
@@ -342,6 +376,7 @@ describe("VM Host Adapter contract", () => {
     const request = requestFor("capture-approved-base", {
       factoryMedia: {
         assemblyMode: "windows-serviced-iso",
+        targetFirmware: "bios",
         manifestIdentity: `sha256:${"e".repeat(64)}`,
         provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
         provenanceDigest: `sha256:${"f".repeat(64)}`,
@@ -370,6 +405,7 @@ describe("VM Host Adapter contract", () => {
       requestFor("capture-approved-base", {
         factoryMedia: {
           assemblyMode: "windows-serviced-iso",
+          targetFirmware: "bios",
           manifestIdentity: `sha256:${"e".repeat(64)}`,
           provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
           provenanceDigest: `sha256:${"f".repeat(64)}`,
@@ -421,6 +457,7 @@ describe("VM Host Adapter contract", () => {
       requestFor("capture-approved-base", {
         factoryMedia: {
           assemblyMode: "windows-serviced-iso",
+          targetFirmware: "bios",
           manifestIdentity: `sha256:${"e".repeat(64)}`,
           provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
           provenanceDigest: `sha256:${"f".repeat(64)}`,
@@ -1020,6 +1057,8 @@ describe("VM Host Adapter contract", () => {
         `factory-cas://sha256/${"e".repeat(64)}`,
         "--factory-assembly-mode",
         "windows-serviced-iso",
+        "--factory-target-firmware",
+        "bios",
         "--factory-manifest",
         `sha256:${"f".repeat(64)}`,
         "--factory-provenance",
@@ -1043,6 +1082,7 @@ describe("VM Host Adapter contract", () => {
       report.consumedAssets.map((asset) => asset.role),
       ["factory-iso", "factory-personalization-media"],
     );
+    assert.equal(report.observed.firmwareMode, "bios");
   });
 
   it("does not let an adapter claim conformance while clean install is blocked by Issue15", () => {

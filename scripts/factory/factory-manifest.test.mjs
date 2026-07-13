@@ -306,10 +306,15 @@ describe("Factory Manifest v1", () => {
     );
   });
 
-  it("requires the current UEFI target, pinned WIM inspector, and complete nonsecret preparation descriptor", () => {
+  it("requires a supported firmware target, pinned WIM inspector, and complete nonsecret preparation descriptor", () => {
     const firmware = validInput();
     firmware.source.targetFirmware = "bios";
-    assert.throws(() => createFactoryManifest(firmware), /targetFirmware|uefi/);
+    assert.equal(createFactoryManifest(firmware).source.targetFirmware, "bios");
+    firmware.source.targetFirmware = "legacy";
+    assert.throws(
+      () => createFactoryManifest(firmware),
+      /targetFirmware|bios|uefi/,
+    );
     const missingWimlib = validInput();
     delete missingWimlib.toolchain.wimlib;
     assert.throws(() => createFactoryManifest(missingWimlib), /wimlib/i);

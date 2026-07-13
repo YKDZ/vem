@@ -37,7 +37,7 @@
         "installImageIndex": { "type": "integer", "minimum": 1, "maximum": 99 },
         "installImageEdition": { "type": "string", "minLength": 1 },
         "installImageDigest": { "$ref": "#/$defs/digest" },
-        "targetFirmware": { "const": "uefi" }
+        "targetFirmware": { "enum": ["bios", "uefi"] }
       }
     },
     "factoryPreparation": { "$ref": "#/$defs/factoryPreparation" },

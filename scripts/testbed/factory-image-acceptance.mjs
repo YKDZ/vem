@@ -153,6 +153,7 @@ export function validateFactoryImageAcceptanceInput(input) {
     input.factory,
     [
       "assemblyMode",
+      "targetFirmware",
       "isoIdentity",
       "manifestIdentity",
       "provenanceIdentity",
@@ -168,6 +169,9 @@ export function validateFactoryImageAcceptanceInput(input) {
   );
   if (input.factory.assemblyMode !== "windows-serviced-iso") {
     throw new Error("factory.assemblyMode must be windows-serviced-iso");
+  }
+  if (!new Set(["bios", "uefi"]).has(input.factory.targetFirmware)) {
+    throw new Error("factory.targetFirmware must be bios or uefi");
   }
   factoryCasIdentity(input.factory.isoIdentity, "factory.isoIdentity");
   sha256(input.factory.manifestIdentity, "factory.manifestIdentity");
@@ -322,6 +326,7 @@ function adapterRequest(input, operation, assets, factoryMedia = null) {
 function factoryMedia(input) {
   return {
     assemblyMode: input.factory.assemblyMode,
+    targetFirmware: input.factory.targetFirmware,
     manifestIdentity: input.factory.manifestIdentity,
     provenanceIdentity: input.factory.provenanceIdentity,
     provenanceDigest: input.factory.provenanceDigest,
