@@ -39,6 +39,14 @@ async function waitFor(assertion, message) {
 function requestFor(operation = "restore-approved-base", overrides = {}) {
   const nonce = "op-0123456789abcdef";
   const capabilities = {
+    "clean-install": [
+      "clean-install",
+      "disposable-overlay",
+      "serial:lower-controller",
+      "serial:scanner",
+      "cancellation",
+      "cleanup",
+    ],
     "restore-approved-base": [
       "approved-base-restore",
       "disposable-overlay",
@@ -84,6 +92,34 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
     requestedCapabilities: capabilities,
     ...overrides,
   };
+}
+
+function cleanInstallRequest() {
+  const isoHash = "d".repeat(64);
+  const personalizationHash = "e".repeat(64);
+  const provenanceHash = "c".repeat(64);
+  return requestFor("clean-install", {
+    factoryMedia: {
+      assemblyMode: "windows-serviced-iso",
+      manifestIdentity: `sha256:${"f".repeat(64)}`,
+      provenanceIdentity: `factory-evidence://sha256/${provenanceHash}`,
+      provenanceDigest: `sha256:${provenanceHash}`,
+      outputIdentity: `factory-cas://sha256/${isoHash}`,
+      outputDigest: `sha256:${isoHash}`,
+    },
+    assets: [
+      {
+        role: "factory-iso",
+        identity: `factory-cas://sha256/${isoHash}`,
+        digest: `sha256:${isoHash}`,
+      },
+      {
+        role: "factory-personalization-media",
+        identity: `factory-cas://sha256/${personalizationHash}`,
+        digest: `sha256:${personalizationHash}`,
+      },
+    ],
+  });
 }
 
 function reportFor(request, overrides = {}) {
@@ -558,6 +594,37 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("binds Factory ISO cancellation evidence to its lifecycle source", () => {
+    const cleanInstall = cleanInstallRequest();
+    const request = createVmHostAdapterRequest(
+      requestFor("cancel", {
+        assets: cleanInstall.assets,
+      }),
+    );
+    const report = reportFor(request);
+    report.observed.baseIdentity = `factory-cas://sha256/${"b".repeat(64)}`;
+    assert.throws(() => validateVmHostAdapterReport(report, request));
+  });
+
+  it("rejects ambiguous recovery lifecycle sources", () => {
+    const cleanInstall = cleanInstallRequest();
+    assert.throws(() =>
+      createVmHostAdapterRequest(
+        requestFor("cancel", {
+          assets: [
+            ...cleanInstall.assets,
+            {
+              role: "approved-runtime-base",
+              identity: `factory-cas://sha256/${HASH}`,
+              digest: `sha256:${HASH}`,
+            },
+          ],
+          cancelOperationReference: cleanInstall.operationReference,
+        }),
+      ),
+    );
+  });
+
   it("keeps overlay lifecycle active through restore and separates the completed operation from negotiated capabilities", () => {
     const restore = createVmHostAdapterRequest(requestFor());
     const report = reportFor(restore, {
@@ -868,6 +935,70 @@ describe("VM Host Adapter contract", () => {
         error.diagnostic.cleanup.observed.overlay === "removed",
     );
     assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+  });
+
+  it("runs validated recovery cleanup after a clean-install adapter failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-failure-"));
+    const cleanupFile = join(root, "cleanup.txt");
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request: createVmHostAdapterRequest(cleanInstallRequest()),
+          workDirectory: root,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
+            VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+          },
+        }),
+      (error) =>
+        error instanceof VmHostAdapterExecutionError &&
+        error.diagnostic.result === "failed" &&
+        error.diagnostic.cleanup.status === "completed",
+    );
+    assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+  });
+
+  it("cancels and cleans up a timed-out clean-install adapter", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-timeout-"));
+    const signalFile = join(root, "adapter.signal");
+    const cancelFile = join(root, "adapter.cancel");
+    const cleanupFile = join(root, "cleanup.txt");
+    const operationLog = join(root, "operations.log");
+    const pidFile = join(root, "adapter.pid");
+    const request = createVmHostAdapterRequest(cleanInstallRequest());
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request,
+          workDirectory: root,
+          timeoutMs: 80,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
+            VEM_VM_HOST_ADAPTER_SIGNAL_FILE: signalFile,
+            VEM_VM_HOST_ADAPTER_CANCEL_FILE: cancelFile,
+            VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+            VEM_VM_HOST_ADAPTER_OPERATION_LOG: operationLog,
+            VEM_VM_HOST_ADAPTER_PID_FILE: pidFile,
+          },
+        }),
+      (error) =>
+        error instanceof VmHostAdapterExecutionError &&
+        error.diagnostic.result === "timed_out" &&
+        error.diagnostic.cleanup.status === "completed",
+    );
+    assert.equal(readFileSync(signalFile, "utf8"), "SIGTERM\n");
+    assert.equal(
+      readFileSync(cancelFile, "utf8"),
+      `${request.operationReference}\n`,
+    );
+    assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+    assert.deepEqual(readFileSync(operationLog, "utf8").trim().split("\n"), [
+      "clean-install",
+      "cancel",
+      "cleanup",
+    ]);
   });
 
   it("builds a logical clean-install request from Factory ISO and personalization asset identities", () => {
