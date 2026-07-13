@@ -54,6 +54,8 @@ export function hasExpected7ZipBannerVersion(output, manifestVersion) {
 }
 
 const SECTOR_BYTES = 2048;
+// El Torito catalog load sizes use 512-byte virtual sectors, not ISO CD sectors.
+const EL_TORITO_VIRTUAL_SECTOR_BYTES = 512;
 const ISO_RANGE_CACHE_PAGES = 64;
 const UDF_VOLUME_SET_ID = "VEM_FACTORY_SET";
 const UDF_WRITER_LOCK = join(tmpdir(), "vem-factory-udf-writer.lock");
@@ -2167,7 +2169,18 @@ function decodeIsoFilesystemIdentifier(bytes, joliet) {
   } else {
     value = bytes.toString("ascii");
   }
-  return normalizedWindowsPath(value.replace(/;\d+$/, ""));
+  const withoutVersion = value.replace(/;\d+$/, "");
+  // ISO9660 writes a name with no extension as `README.;1`. The dot is the
+  // empty-extension separator, not part of the UDF filename. Joliet uses its
+  // own identifiers, so preserve a trailing dot there.
+  if (
+    !joliet &&
+    withoutVersion.length !== value.length &&
+    withoutVersion.endsWith(".")
+  )
+    value = withoutVersion.slice(0, -1);
+  else value = withoutVersion;
+  return normalizedWindowsPath(value);
 }
 
 function iso9660ViewDescriptor(media, joliet) {
@@ -2325,29 +2338,134 @@ export function inspectIsoFilesystemViews(media) {
   };
 }
 
+function withGeneratedBootCatalogHiddenPath(hiddenPaths, visiblePaths) {
+  const paths = new Map(
+    hiddenPaths.map((path) => [canonicalIsoFilesystemPath(path), path]),
+  );
+  if (!visiblePaths.includes("boot.catalog"))
+    paths.set("boot.catalog", "boot.catalog");
+  return [...paths.values()].sort((left, right) => left.localeCompare(right));
+}
+
+function assemblyHidePatterns({ assemblyTree, assemblyTreeManifest, paths }) {
+  return paths.map((path) => {
+    const entry = treeEntry(assemblyTreeManifest, path);
+    if (entry?.type === "file") return entry.absolute;
+    if (canonicalIsoFilesystemPath(path) === "boot.catalog")
+      return join(assemblyTree, "boot.catalog");
+    throw new Error(
+      `Factory Windows assembly lost hidden source file: ${path}`,
+    );
+  });
+}
+
+function verifySourceFilesystemVisibility({
+  sourceVisiblePaths,
+  outputVisiblePaths,
+  hiddenPaths,
+  expectedFileCount,
+  label,
+}) {
+  const output = new Set(outputVisiblePaths);
+  if (
+    expectedFileCount !== undefined &&
+    outputVisiblePaths.length !== expectedFileCount
+  ) {
+    throw new Error(
+      `serviced ISO ${label} visibility file count mismatch: expected ${expectedFileCount}, got ${outputVisiblePaths.length}`,
+    );
+  }
+  for (const path of sourceVisiblePaths) {
+    if (!output.has(path)) {
+      throw new Error(
+        `serviced ISO ${label} visibility lost source file: ${path}`,
+      );
+    }
+  }
+  for (const path of hiddenPaths) {
+    const canonicalPath = canonicalIsoFilesystemPath(path);
+    if (output.has(canonicalPath)) {
+      throw new Error(
+        `serviced ISO ${label} visibility exposed hidden source file: ${canonicalPath}`,
+      );
+    }
+  }
+}
+
+function sourceHiddenPathsForView({ sourceTree, visiblePaths, label }) {
+  const sourceFiles = new Set(
+    [...sourceTree.entries]
+      .filter(([, entry]) => entry.type === "file")
+      .map(([path]) => path),
+  );
+  const visible = new Set(visiblePaths);
+  for (const path of visible) {
+    if (!sourceFiles.has(path)) {
+      throw new Error(
+        `${label} visible source path cannot be matched exactly in the UDF tree: ${path}`,
+      );
+    }
+  }
+  return [...sourceTree.entries.values()]
+    .filter(
+      (entry) =>
+        entry.type === "file" &&
+        !visible.has(canonicalIsoFilesystemPath(entry.path)),
+    )
+    .map((entry) => entry.path)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function expectedIso9660VisibleFileCount({
+  sourceVisiblePaths,
+  sourceTree,
+  replacements,
+}) {
+  const additions = new Set(
+    replacements
+      .map(({ path }) => path)
+      .filter((path) => !sourceTree.entries.has(path)),
+  );
+  return sourceVisiblePaths.length + additions.size;
+}
+
 async function bindBootEntriesToExtractedTree({ isoBytes, treeManifest }) {
   const extents = iso9660FileExtents(isoBytes);
   const boot = inspectBootableIso(isoBytes);
+  const hiddenImagePaths = {
+    BIOS: "boot/etfsboot.com",
+    UEFI: "efi/microsoft/boot/efisys.bin",
+  };
   const entries = [];
   for (const entry of boot.bootEntries) {
     const mapped = [...extents.values()].find(
       ({ sector, bytes }) => sector === entry.imageSector && bytes > 0,
     );
-    if (!mapped) {
+    const canonicalImagePath = hiddenImagePaths[entry.platform];
+    if (!canonicalImagePath) {
       throw new Error(
-        `El Torito catalog image LBA ${entry.imageSector} is not an ISO9660 file extent`,
+        `El Torito catalog image LBA ${entry.imageSector} has unsupported platform ${entry.platform}`,
       );
     }
-    const treeFile = treeEntry(treeManifest, mapped.path);
+    if (
+      mapped &&
+      canonicalIsoFilesystemPath(mapped.path) !== canonicalImagePath
+    ) {
+      throw new Error(
+        `El Torito catalog image LBA ${entry.imageSector} maps to noncanonical ISO9660 file ${mapped.path}`,
+      );
+    }
+    const treeFile = treeEntry(treeManifest, canonicalImagePath);
     if (!treeFile || treeFile.type !== "file") {
       throw new Error(
-        `El Torito catalog image LBA ${entry.imageSector} is absent from the extracted tree`,
+        `El Torito catalog image LBA ${entry.imageSector} is absent from the extracted tree at canonical ${canonicalImagePath}`,
       );
     }
     const extracted = await readFile(treeFile.absolute);
     const imageOffset = entry.imageSector * SECTOR_BYTES;
     if (
-      mapped.bytes !== extracted.length ||
+      (mapped && mapped.bytes !== extracted.length) ||
+      entry.loadSize * EL_TORITO_VIRTUAL_SECTOR_BYTES > extracted.length ||
       imageOffset + extracted.length > isoBytes.length ||
       !isoBytes
         .subarray(imageOffset, imageOffset + extracted.length)
@@ -2875,18 +2993,27 @@ async function executeWindowsServicedIsoBuilder({
   await setFixedTimes(sourceTreeManifest);
   // 7z exposes the UDF tree, including entries intentionally omitted from the
   // ISO9660/Joliet view. Preserve that visibility boundary during replay.
-  const sourceHiddenPaths = (visiblePaths) =>
-    [...sourceTreeManifest.entries.values()]
-      .filter(
-        (entry) =>
-          entry.type === "file" &&
-          !visiblePaths.includes(canonicalIsoFilesystemPath(entry.path)),
-      )
-      .map((entry) => entry.path)
-      .sort((left, right) => left.localeCompare(right));
-  const sourceIsoHiddenPaths = sourceHiddenPaths(sourceFilesystemViews.iso9660);
+  const sourceIsoHiddenPaths = sourceHiddenPathsForView({
+    sourceTree: sourceTreeManifest,
+    visiblePaths: sourceFilesystemViews.iso9660,
+    label: "ISO9660",
+  });
   const sourceJolietHiddenPaths = sourceHasJoliet
-    ? sourceHiddenPaths(sourceFilesystemViews.joliet)
+    ? sourceHiddenPathsForView({
+        sourceTree: sourceTreeManifest,
+        visiblePaths: sourceFilesystemViews.joliet,
+        label: "Joliet",
+      })
+    : [];
+  const outputIsoHiddenPaths = withGeneratedBootCatalogHiddenPath(
+    sourceIsoHiddenPaths,
+    sourceFilesystemViews.iso9660,
+  );
+  const outputJolietHiddenPaths = sourceHasJoliet
+    ? withGeneratedBootCatalogHiddenPath(
+        sourceJolietHiddenPaths,
+        sourceFilesystemViews.joliet,
+      )
     : [];
   const overlayTreeManifest = await validateExtractedTree(
     overlayDirectory,
@@ -2894,6 +3021,11 @@ async function executeWindowsServicedIsoBuilder({
   );
   await setFixedTimes(overlayTreeManifest);
   const overlays = await overlayMappings(overlayTreeManifest, sourceTree);
+  const expectedOutputIso9660Files = expectedIso9660VisibleFileCount({
+    sourceVisiblePaths: sourceFilesystemViews.iso9660,
+    sourceTree: sourceTreeManifest,
+    replacements: overlays.replacements,
+  });
   const assemblyTree = join(workDirectory, "windows-assembly-udf");
   await cp(sourceTree, assemblyTree, {
     recursive: true,
@@ -2906,6 +3038,16 @@ async function executeWindowsServicedIsoBuilder({
     "Factory Windows assembly",
   );
   await setFixedTimes(assemblyTreeManifest);
+  const isoHidePatterns = assemblyHidePatterns({
+    assemblyTree,
+    assemblyTreeManifest,
+    paths: outputIsoHiddenPaths,
+  });
+  const jolietHidePatterns = assemblyHidePatterns({
+    assemblyTree,
+    assemblyTreeManifest,
+    paths: outputJolietHiddenPaths,
+  });
   const bios = sourceCatalog.bootCatalog.find(
     (entry) => entry.platform === "BIOS",
   );
@@ -2954,8 +3096,8 @@ async function executeWindowsServicedIsoBuilder({
         "VEM",
         "-sort",
         sortFile,
-        ...sourceIsoHiddenPaths.flatMap((path) => ["-hide", path]),
-        ...sourceJolietHiddenPaths.flatMap((path) => ["-hide-joliet", path]),
+        ...isoHidePatterns.flatMap((path) => ["-hide", path]),
+        ...jolietHidePatterns.flatMap((path) => ["-hide-joliet", path]),
         ...bootArgs,
         "-o",
         outputPath,
@@ -2973,11 +3115,24 @@ async function executeWindowsServicedIsoBuilder({
   let structure;
   let outputTreeManifest;
   try {
-    if (
-      sourceHasJoliet &&
-      inspectIsoFilesystemViews(outputMedia).joliet.length === 0
-    ) {
+    const outputFilesystemViews = inspectIsoFilesystemViews(outputMedia);
+    if (sourceHasJoliet && outputFilesystemViews.joliet.length === 0) {
       throw new Error("serviced ISO lost the required Joliet filesystem view");
+    }
+    verifySourceFilesystemVisibility({
+      sourceVisiblePaths: sourceFilesystemViews.iso9660,
+      outputVisiblePaths: outputFilesystemViews.iso9660,
+      hiddenPaths: outputIsoHiddenPaths,
+      expectedFileCount: expectedOutputIso9660Files,
+      label: "ISO9660",
+    });
+    if (sourceHasJoliet) {
+      verifySourceFilesystemVisibility({
+        sourceVisiblePaths: sourceFilesystemViews.joliet,
+        outputVisiblePaths: outputFilesystemViews.joliet,
+        hiddenPaths: outputJolietHiddenPaths,
+        label: "Joliet",
+      });
     }
     const outputTree = join(workDirectory, "serviced-windows-output-udf");
     await mkdir(outputTree, { recursive: true });
