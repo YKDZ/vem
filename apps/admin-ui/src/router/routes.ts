@@ -68,6 +68,13 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: "支付管理", requiredPermissions: ["payments.read"] },
       },
       {
+        path: "qweather",
+        name: "qweather",
+        component: async () =>
+          import("@/views/qweather/QweatherConfigView.vue"),
+        meta: { title: "和风天气", requiredPermissions: ["machines.read"] },
+      },
+      {
         path: "notifications",
         name: "notifications",
         component: async () =>
