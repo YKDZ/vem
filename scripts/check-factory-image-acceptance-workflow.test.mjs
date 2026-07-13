@@ -75,6 +75,22 @@ describe("Factory Image Acceptance workflow", () => {
     assert.doesNotMatch(workflow, /MAINTENANCE_CONTROL_PLANE_URL/);
   });
 
+  it("writes ephemeral platform evidence through an absolute workspace path", () => {
+    assert.match(
+      workflow,
+      /evidence_root="\$GITHUB_WORKSPACE\/artifacts\/factory-image-acceptance\/lifecycle\/\$RUN_ID"/,
+    );
+    assert.match(
+      workflow,
+      /--output "\$evidence_root\/ephemeral-platform\.json"/,
+    );
+    assert.match(
+      workflow,
+      /VEM_FACTORY_EPHEMERAL_PLATFORM_EVIDENCE=%s.*"\$evidence_root\/ephemeral-platform\.json"/,
+    );
+    assert.doesNotMatch(workflow, /"\$GITHUB_WORKSPACE\/\$evidence_root/);
+  });
+
   it("shares every required testbed maintenance setting with the Service API and preparer", () => {
     for (const [name, value] of [
       ["MACHINE_PROVISIONING_PROFILE", "testbed"],
@@ -162,6 +178,20 @@ describe("Factory Image Acceptance workflow", () => {
   it("uses adapter cleanup-only mode instead of legacy SSH staging cleanup", () => {
     assert.match(workflow, /--cleanup-only/);
     assert.doesNotMatch(workflow, /--cleanup-factory-staging/);
+  });
+
+  it("only finalizes an adapter lifecycle after typed input exists", () => {
+    const start = workflow.indexOf(
+      "- name: Independently Finalize Adapter Lifecycle",
+    );
+    const end = workflow.indexOf("\n      - name:", start + 1);
+    const finalizer = workflow.slice(start, end);
+
+    assert.match(
+      finalizer,
+      /if \[\[ -n "\$\{VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH:-\}" && -f "\$VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH" \]\]; then/,
+    );
+    assert.match(finalizer, /--cleanup-only/);
   });
 
   it("fails cleanup when the Service API process or ephemeral containers remain", () => {

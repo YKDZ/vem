@@ -168,7 +168,7 @@ jobs:
       - name: Prepare Same-Run Ephemeral Platform
         run: |
           set -euo pipefail
-          evidence_root="artifacts/factory-image-acceptance/lifecycle/$RUN_ID"
+          evidence_root="$GITHUB_WORKSPACE/artifacts/factory-image-acceptance/lifecycle/$RUN_ID"
           mkdir -p "$evidence_root"
           machine_prefix="VEM-TESTBED-FACTORY"
           pnpm --filter service-api testbed:prepare-ephemeral-platform -- \
@@ -184,7 +184,7 @@ jobs:
             --allow-mock-payment \
             --reset \
             --output "$evidence_root/ephemeral-platform.json"
-          printf 'VEM_FACTORY_EPHEMERAL_PLATFORM_EVIDENCE=%s\n' "$GITHUB_WORKSPACE/$evidence_root/ephemeral-platform.json" >> "$GITHUB_ENV"
+          printf 'VEM_FACTORY_EPHEMERAL_PLATFORM_EVIDENCE=%s\n' "$evidence_root/ephemeral-platform.json" >> "$GITHUB_ENV"
 
       - name: Generate Typed Factory Lifecycle Input
         run: |
@@ -261,7 +261,9 @@ jobs:
         run: |
           set -euo pipefail
           export VEM_FACTORY_PERSONALIZATION_RUNNER_NAME="$RUNNER_NAME"
-          node scripts/testbed/factory-image-acceptance.mjs --cleanup-only
+          if [[ -n "${VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH:-}" && -f "$VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH" ]]; then
+            node scripts/testbed/factory-image-acceptance.mjs --cleanup-only
+          fi
 
       - name: Cleanup Ephemeral Services
         if: ${{ always() }}
