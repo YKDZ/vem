@@ -3453,6 +3453,7 @@ async function executeWindowsServicedIsoBuilder({
         "-R",
         "-iso-level",
         "3",
+        "-allow-limited-size",
         "-V",
         "VEM_FACTORY",
         "-volset",
