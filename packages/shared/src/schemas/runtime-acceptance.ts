@@ -10,6 +10,10 @@ const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
 const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
 const sha256Schema = z.string().regex(/^[a-fA-F0-9]{64}$/);
 const sessionIdSchema = z.int().nonnegative().nullable();
+const runIdSchema = z.string().regex(/^[A-Z0-9][A-Z0-9-]{2,63}$/);
+const vmOperationReferenceSchema = z
+  .string()
+  .regex(/^vm-operation:\/\/op-[a-f0-9]{16,64}$/);
 
 const displayDimensionsEvidenceSchema = z.strictObject({
   status: z.enum(["passed", "failed", "observed", "missing"]),
@@ -26,6 +30,126 @@ const startupCommandEvidenceSchema = z.strictObject({
   arguments: z.string().nullable(),
   workingDirectory: z.string().nullable(),
 });
+
+const audioCaptureArtifactSchema = z.strictObject({
+  identity: z.string().regex(/^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/),
+  sha256: sha256Schema.transform((value) => value.toLowerCase()),
+});
+
+const pcmEncodingSchema = z.enum([
+  "pcm_u8",
+  "pcm_s16le",
+  "pcm_s24le",
+  "pcm_s32le",
+]);
+
+const pcmThresholdSchema = z.strictObject({
+  minimumPeakAbsoluteSample: z.int().positive(),
+  minimumNonSilentFrames: z.int().positive(),
+});
+
+const inspectedPcmCaptureSchema = z.strictObject({
+  artifact: audioCaptureArtifactSchema,
+  format: z.literal("wav_pcm"),
+  encoding: pcmEncodingSchema,
+  sampleRateHz: z.int().positive(),
+  channels: z.int().positive(),
+  frameCount: z.int().positive(),
+  threshold: pcmThresholdSchema,
+  nonSilentFrameCount: z.int().nonnegative(),
+  peakAbsoluteSample: z.int().nonnegative(),
+});
+
+export const logicalDefaultAudioEvidenceSchema = z
+  .strictObject({
+    schemaVersion: z.literal("logical-default-audio-evidence/v1"),
+    runId: runIdSchema,
+    captureOperationReference: vmOperationReferenceSchema,
+    adapter: z.strictObject({
+      identity: z.string().min(1),
+      version: z.string().min(1),
+    }),
+    endpoint: z.discriminatedUnion("status", [
+      z.strictObject({
+        status: z.literal("selected"),
+        identity: z.string().min(1),
+      }),
+      z.strictObject({ status: z.literal("missing"), identity: z.null() }),
+      z.strictObject({
+        status: z.literal("not_selected"),
+        identity: z.string().min(1),
+      }),
+    ]),
+    nativeCue: z.strictObject({
+      runId: runIdSchema,
+      status: z.enum(["emitted", "missing", "failed"]),
+      source: z.literal("tauri_native_audio"),
+      sessionUser: z.string().min(1),
+      sessionId: sessionIdSchema,
+    }),
+    capture: z.discriminatedUnion("status", [
+      inspectedPcmCaptureSchema.extend({ status: z.literal("passed") }),
+      inspectedPcmCaptureSchema.extend({ status: z.literal("silent") }),
+      z.strictObject({
+        status: z.literal("missing"),
+        artifact: z.null(),
+        reason: z.literal("capture_missing"),
+      }),
+      z.strictObject({
+        status: z.literal("malformed"),
+        artifact: audioCaptureArtifactSchema,
+        reason: z.string().min(1),
+      }),
+    ]),
+    physicalSpeakerAudibility: z.literal("not_asserted"),
+  })
+  .superRefine((evidence, ctx) => {
+    if (evidence.nativeCue.runId !== evidence.runId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["nativeCue", "runId"],
+        message: "Native audio cue evidence must bind the capture run.",
+      });
+    }
+    if (evidence.nativeCue.sessionId === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["nativeCue", "sessionId"],
+        message: "Native audio cue evidence must bind an interactive session.",
+      });
+    }
+    const artifact =
+      evidence.capture.status === "missing" ? null : evidence.capture.artifact;
+    if (
+      artifact &&
+      artifact.identity !== `factory-evidence://sha256/${artifact.sha256}`
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["capture", "artifact"],
+        message:
+          "Logical audio capture artifact identity must bind its SHA-256 digest.",
+      });
+    }
+    if (
+      evidence.capture.status === "passed" &&
+      (evidence.capture.nonSilentFrameCount <
+        evidence.capture.threshold.minimumNonSilentFrames ||
+        evidence.capture.peakAbsoluteSample <
+          evidence.capture.threshold.minimumPeakAbsoluteSample)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["capture"],
+        message:
+          "Passed PCM capture must exceed its declared non-silence threshold.",
+      });
+    }
+  });
+
+export type LogicalDefaultAudioEvidence = z.infer<
+  typeof logicalDefaultAudioEvidenceSchema
+>;
 
 export const runtimeAcceptanceFactsSchema = z.strictObject({
   mode: z.literal("fresh_bring_up"),
@@ -111,6 +235,7 @@ export const runtimeAcceptanceFactsSchema = z.strictObject({
     sessionUser: z.string().min(1),
     sessionId: sessionIdSchema,
   }),
+  defaultAudioEvidence: logicalDefaultAudioEvidenceSchema.optional(),
 });
 
 export const runtimeAcceptanceDiagnosticSchema = z.strictObject({
@@ -464,6 +589,49 @@ export function classifyRuntimeAcceptanceReport(
       "portrait_kiosk_acceptance_missing",
       "Portrait Kiosk Acceptance requires 1080x1920 evidence from the interactive kiosk session.",
     );
+  }
+  const audioEvidence = facts.defaultAudioEvidence;
+  if (audioEvidence) {
+    if (audioEvidence.endpoint.status !== "selected") {
+      addDiagnostic(
+        "default_audio_endpoint_missing",
+        "Logical default-audio evidence requires a selected Windows default output endpoint.",
+      );
+    }
+    if (audioEvidence.nativeCue.status !== "emitted") {
+      addDiagnostic(
+        "native_audio_cue_missing",
+        "Logical default-audio evidence requires a Tauri native audio cue from the kiosk session.",
+      );
+    }
+    if (audioEvidence.nativeCue.sessionUser !== EXPECTED_KIOSK_USER) {
+      addDiagnostic(
+        "default_audio_session_user_mismatch",
+        "Logical default-audio evidence must bind the VEMKiosk customer session.",
+      );
+    }
+    if (audioEvidence.nativeCue.sessionId !== facts.kioskRuntime.sessionId) {
+      addDiagnostic(
+        "default_audio_session_id_mismatch",
+        "Logical default-audio evidence must bind the Machine Runtime Console session.",
+      );
+    }
+    if (audioEvidence.capture.status === "missing") {
+      addDiagnostic(
+        "default_audio_capture_missing",
+        "Logical default-audio evidence requires a host-captured WAV/PCM artifact.",
+      );
+    } else if (audioEvidence.capture.status === "malformed") {
+      addDiagnostic(
+        "default_audio_capture_malformed",
+        "Logical default-audio evidence must contain a parseable WAV/PCM capture.",
+      );
+    } else if (audioEvidence.capture.status === "silent") {
+      addDiagnostic(
+        "default_audio_capture_silent",
+        "Logical default-audio evidence must exceed its declared PCM non-silence threshold.",
+      );
+    }
   }
 
   return {

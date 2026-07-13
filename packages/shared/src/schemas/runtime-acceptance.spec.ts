@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type LogicalDefaultAudioEvidence,
   type RuntimeAcceptanceFacts,
   classifyRuntimeAcceptanceReport,
+  logicalDefaultAudioEvidenceSchema,
   runtimeAcceptanceReportSchema,
 } from "./runtime-acceptance";
 
@@ -117,6 +119,55 @@ function runtimeReadyFacts(): RuntimeAcceptanceFacts {
 }
 
 describe("Runtime Acceptance Report contract", () => {
+  function defaultAudioEvidence(): LogicalDefaultAudioEvidence {
+    return {
+      schemaVersion: "logical-default-audio-evidence/v1" as const,
+      runId: "RUN-17-AUDIO",
+      captureOperationReference: "vm-operation://op-1234567890abcdef",
+      adapter: {
+        identity: "vm-host-adapter://testbed-audio@1.0.0",
+        version: "1.0.0",
+      },
+      endpoint: {
+        status: "selected" as const,
+        identity: "guest-audio://testbed-default-output",
+      },
+      nativeCue: {
+        runId: "RUN-17-AUDIO",
+        status: "emitted" as const,
+        source: "tauri_native_audio" as const,
+        sessionUser: "VEMKiosk",
+        sessionId: 3,
+      },
+      capture: {
+        status: "passed" as const,
+        artifact: {
+          identity: `factory-evidence://sha256/${"a".repeat(64)}`,
+          sha256: "a".repeat(64),
+        },
+        format: "wav_pcm" as const,
+        encoding: "pcm_s16le" as const,
+        sampleRateHz: 48_000,
+        channels: 2,
+        frameCount: 240,
+        threshold: {
+          minimumPeakAbsoluteSample: 512,
+          minimumNonSilentFrames: 2,
+        },
+        nonSilentFrameCount: 8,
+        peakAbsoluteSample: 1_024,
+      },
+      physicalSpeakerAudibility: "not_asserted" as const,
+    };
+  }
+
+  function passedCapture(evidence: LogicalDefaultAudioEvidence) {
+    if (evidence.capture.status !== "passed") {
+      throw new Error("test fixture must start with a passed PCM capture");
+    }
+    return evidence.capture;
+  }
+
   it("classifies a fresh bring-up as runtime-ready without asserting non-goal readiness", () => {
     const report = classifyRuntimeAcceptanceReport(runtimeReadyFacts());
 
@@ -159,6 +210,113 @@ describe("Runtime Acceptance Report contract", () => {
       code: "ready_file_missing",
       message: "Daemon ready file must exist before runtime-ready can pass.",
     });
+  });
+
+  it("accepts typed logical default-audio evidence without claiming physical audibility", () => {
+    const evidence = defaultAudioEvidence();
+    expect(logicalDefaultAudioEvidenceSchema.parse(evidence)).toEqual(evidence);
+
+    const report = classifyRuntimeAcceptanceReport({
+      ...runtimeReadyFacts(),
+      defaultAudioEvidence: evidence,
+    });
+
+    expect(report.result.runtimeReady).toEqual({
+      status: "passed",
+      asserted: true,
+    });
+    expect(report.defaultAudioEvidence?.physicalSpeakerAudibility).toBe(
+      "not_asserted",
+    );
+  });
+
+  it.each([
+    {
+      name: "default endpoint is missing",
+      mutate: (evidence: LogicalDefaultAudioEvidence) => {
+        evidence.endpoint = { status: "missing", identity: null };
+      },
+      code: "default_audio_endpoint_missing",
+    },
+    {
+      name: "WAV PCM capture is silent",
+      mutate: (evidence: LogicalDefaultAudioEvidence) => {
+        evidence.capture = { ...passedCapture(evidence), status: "silent" };
+      },
+      code: "default_audio_capture_silent",
+    },
+    {
+      name: "capture is malformed",
+      mutate: (evidence: LogicalDefaultAudioEvidence) => {
+        evidence.capture = {
+          status: "malformed",
+          artifact: passedCapture(evidence).artifact,
+          reason: "RIFF chunk size does not match capture length.",
+        };
+      },
+      code: "default_audio_capture_malformed",
+    },
+    {
+      name: "cue is bound to another kiosk session",
+      mutate: (evidence: LogicalDefaultAudioEvidence) => {
+        evidence.nativeCue.sessionId = 7;
+      },
+      code: "default_audio_session_id_mismatch",
+    },
+  ])("fails runtime-ready when $name", ({ mutate, code }) => {
+    const evidence = defaultAudioEvidence();
+    mutate(evidence);
+    const report = classifyRuntimeAcceptanceReport({
+      ...runtimeReadyFacts(),
+      defaultAudioEvidence: evidence,
+    });
+
+    expect(report.result.runtimeReady).toEqual({
+      status: "failed",
+      asserted: false,
+    });
+    expect(report.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+      code,
+    );
+  });
+
+  it("rejects malformed typed evidence and cue run mismatches before classification", () => {
+    const malformed = defaultAudioEvidence();
+    malformed.capture = {
+      ...passedCapture(malformed),
+      status: "passed",
+      nonSilentFrameCount: 0,
+      peakAbsoluteSample: 0,
+    };
+    expect(logicalDefaultAudioEvidenceSchema.safeParse(malformed).success).toBe(
+      false,
+    );
+
+    const wrongRun = defaultAudioEvidence();
+    wrongRun.nativeCue.runId = "RUN-OTHER";
+    expect(logicalDefaultAudioEvidenceSchema.safeParse(wrongRun).success).toBe(
+      false,
+    );
+
+    const mismatchedArtifact = defaultAudioEvidence();
+    mismatchedArtifact.capture = {
+      ...passedCapture(mismatchedArtifact),
+      artifact: {
+        ...passedCapture(mismatchedArtifact).artifact,
+        sha256: "b".repeat(64),
+      },
+    };
+    expect(
+      logicalDefaultAudioEvidenceSchema.safeParse(mismatchedArtifact).success,
+    ).toBe(false);
+
+    const physicalClaim = {
+      ...defaultAudioEvidence(),
+      physicalSpeakerAudibility: "passed",
+    };
+    expect(
+      logicalDefaultAudioEvidenceSchema.safeParse(physicalClaim).success,
+    ).toBe(false);
   });
 
   it.each([

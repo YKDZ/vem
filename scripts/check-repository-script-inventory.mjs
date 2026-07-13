@@ -309,6 +309,18 @@ const DEFAULT_INVENTORY = [
     ],
   },
   {
+    path: "scripts/testbed/default-audio-evidence.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/default-audio-evidence.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/win10-vem-e2e.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
