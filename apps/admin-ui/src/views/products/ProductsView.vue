@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ProductStatus } from "@vem/shared";
 
+import { PictureOutlined } from "@antdv-next/icons";
 import { onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
@@ -75,6 +76,8 @@ const productForm = ref<ProductForm>({
 });
 const productSaving = ref(false);
 const productImageUploading = ref(false);
+const productImageInput = ref<HTMLInputElement | null>(null);
+const productImageLoadFailed = ref(false);
 
 function openCreateProduct(): void {
   editingProduct.value = null;
@@ -86,12 +89,14 @@ function openCreateProduct(): void {
     status: "draft",
     sortOrder: 0,
   };
+  productImageLoadFailed.value = false;
   productDrawerOpen.value = true;
 }
 
 function openEditProduct(p: Product): void {
   editingProduct.value = p;
   productForm.value = mapProductResponseToForm(p);
+  productImageLoadFailed.value = false;
   productDrawerOpen.value = true;
 }
 
@@ -106,6 +111,7 @@ async function onProductDisplayImageSelected(event: Event): Promise<void> {
     const asset = await uploadProductDisplayImage(file);
     productForm.value.displayImageMediaAssetId = asset.id;
     productForm.value.displayImagePublicUrl = asset.publicUrl;
+    productImageLoadFailed.value = false;
   } finally {
     productImageUploading.value = false;
   }
@@ -154,6 +160,8 @@ const variantForm = ref<VariantForm>({
 });
 const variantSaving = ref(false);
 const tryOnSilhouetteUploading = ref(false);
+const tryOnSilhouetteInput = ref<HTMLInputElement | null>(null);
+const tryOnSilhouetteLoadFailed = ref(false);
 
 async function openVariants(p: Product): Promise<void> {
   currentProductId.value = p.id;
@@ -182,12 +190,14 @@ function openCreateVariant(): void {
     tryOnSilhouetteMediaAssetId: null,
     tryOnSilhouettePublicUrl: null,
   };
+  tryOnSilhouetteLoadFailed.value = false;
   variantFormOpen.value = true;
 }
 
 function openEditVariant(v: ProductVariant): void {
   editingVariant.value = v;
   variantForm.value = mapVariantResponseToForm(v);
+  tryOnSilhouetteLoadFailed.value = false;
   variantFormOpen.value = true;
 }
 
@@ -202,6 +212,7 @@ async function onTryOnSilhouetteSelected(event: Event): Promise<void> {
     const asset = await uploadTryOnSilhouette(file);
     variantForm.value.tryOnSilhouetteMediaAssetId = asset.id;
     variantForm.value.tryOnSilhouettePublicUrl = asset.publicUrl;
+    tryOnSilhouetteLoadFailed.value = false;
   } finally {
     tryOnSilhouetteUploading.value = false;
   }
@@ -339,6 +350,8 @@ watch(
       v-model:open="productDrawerOpen"
       :title="editingProduct ? '编辑商品' : '新增商品'"
       :destroy-on-hidden="true"
+      width="min(480px, 100vw)"
+      class="catalog-drawer"
       @close="productDrawerOpen = false"
     >
       <a-form layout="vertical" :preserve="false">
@@ -349,24 +362,36 @@ watch(
           <a-textarea v-model:value="productForm.description" :rows="3" />
         </a-form-item>
         <a-form-item label="展示图">
-          <div class="space-y-3">
+          <div class="min-w-0 space-y-3">
             <img
-              v-if="productForm.displayImagePublicUrl"
+              v-if="
+                productForm.displayImagePublicUrl && !productImageLoadFailed
+              "
               class="h-32 w-32 rounded border border-slate-200 object-cover"
               :src="productForm.displayImagePublicUrl"
               :alt="productForm.name || '商品展示图'"
+              @error="productImageLoadFailed = true"
             />
-            <div class="flex items-center gap-2">
-              <a-button :loading="productImageUploading">
-                <label class="cursor-pointer">
-                  上传图片
-                  <input
-                    class="hidden"
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    @change="onProductDisplayImageSelected"
-                  />
-                </label>
+            <div
+              v-else
+              class="flex h-32 w-32 flex-col items-center justify-center gap-2 rounded border border-dashed border-slate-300 bg-slate-50 text-slate-400"
+            >
+              <PictureOutlined class="text-xl" />
+              <span class="text-xs">暂无商品图</span>
+            </div>
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <input
+                ref="productImageInput"
+                class="hidden"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                @change="onProductDisplayImageSelected"
+              />
+              <a-button
+                :loading="productImageUploading"
+                @click="productImageInput?.click()"
+              >
+                上传图片
               </a-button>
               <a-button
                 v-if="productForm.displayImageMediaAssetId"
@@ -377,8 +402,7 @@ watch(
               </a-button>
             </div>
             <p class="text-xs leading-5 text-slate-500">
-              支持 PNG、JPEG、WebP，单个文件不超过 5
-              MB。请在系统外完成修图、裁剪、压缩和背景处理；后台不提供编辑、裁剪或去背工具。
+              支持 PNG、JPEG、WebP，单个文件不超过 5 MB。
             </p>
           </div>
         </a-form-item>
@@ -406,8 +430,9 @@ watch(
     <a-drawer
       v-model:open="variantDrawerOpen"
       title="SKU 列表"
-      width="700"
+      width="min(760px, 100vw)"
       :destroy-on-hidden="true"
+      class="catalog-drawer"
     >
       <div class="mb-3">
         <a-button v-if="canWrite" type="primary" @click="openCreateVariant">
@@ -420,6 +445,7 @@ watch(
         row-key="id"
         :loading="variantsLoading"
         :pagination="false"
+        :scroll="{ x: 680 }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'status'">
@@ -481,24 +507,37 @@ watch(
           </a-select>
         </a-form-item>
         <a-form-item label="试穿剪影">
-          <div class="space-y-3">
+          <div class="min-w-0 space-y-3">
             <img
-              v-if="variantForm.tryOnSilhouettePublicUrl"
+              v-if="
+                variantForm.tryOnSilhouettePublicUrl &&
+                !tryOnSilhouetteLoadFailed
+              "
               class="h-32 w-24 rounded border border-slate-200 object-contain"
               :src="variantForm.tryOnSilhouettePublicUrl"
               :alt="`${variantForm.sku || 'SKU'} 试穿剪影`"
+              @error="tryOnSilhouetteLoadFailed = true"
             />
-            <div class="flex items-center gap-2">
-              <a-button :loading="tryOnSilhouetteUploading">
-                <label class="cursor-pointer">
-                  上传剪影
-                  <input
-                    class="hidden"
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    @change="onTryOnSilhouetteSelected"
-                  />
-                </label>
+            <div
+              v-else
+              class="flex h-32 w-24 flex-col items-center justify-center gap-2 rounded border border-dashed border-slate-300 bg-slate-50 text-slate-400"
+            >
+              <PictureOutlined class="text-xl" />
+              <span class="text-xs">暂无剪影</span>
+            </div>
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <input
+                ref="tryOnSilhouetteInput"
+                class="hidden"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                @change="onTryOnSilhouetteSelected"
+              />
+              <a-button
+                :loading="tryOnSilhouetteUploading"
+                @click="tryOnSilhouetteInput?.click()"
+              >
+                上传剪影
               </a-button>
               <a-button
                 v-if="variantForm.tryOnSilhouetteMediaAssetId"
@@ -509,9 +548,7 @@ watch(
               </a-button>
             </div>
             <p class="text-xs leading-5 text-slate-500">
-              支持 PNG、JPEG、WebP，单个文件不超过 5
-              MB。请在系统外准备正面、居中、透明背景优先的剪影；后台不提供编辑、裁剪或去背工具。不同款式或颜色需要分别上传剪影，V1
-              不要求按尺码区分剪影。
+              支持 PNG、JPEG、WebP，单个文件不超过 5 MB。
             </p>
           </div>
         </a-form-item>
@@ -525,3 +562,10 @@ watch(
     </a-modal>
   </section>
 </template>
+
+<style scoped>
+:deep(.catalog-drawer .ant-drawer-body) {
+  min-width: 0;
+  overflow-x: hidden;
+}
+</style>

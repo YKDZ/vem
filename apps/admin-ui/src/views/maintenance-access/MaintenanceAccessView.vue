@@ -52,13 +52,13 @@ const sessionColumns = [
   { title: "原因", dataIndex: "reason", key: "reason" },
   { title: "到期时间", dataIndex: "expiresAt", key: "expiresAt" },
   { title: "状态", dataIndex: "status", key: "status" },
-  { title: "Relay", key: "relay" },
+  { title: "中继同步", key: "relay" },
   { title: "操作", key: "actions" },
 ];
 const peerHealthColumns = [
   { title: "角色", dataIndex: "role", key: "role" },
   { title: "隧道地址", dataIndex: "tunnelAddress", key: "tunnelAddress" },
-  { title: "Relay", dataIndex: "relayApplied", key: "relayApplied" },
+  { title: "中继状态", dataIndex: "relayApplied", key: "relayApplied" },
   { title: "最近握手", dataIndex: "lastHandshakeAt", key: "lastHandshakeAt" },
   { title: "健康", dataIndex: "health", key: "health" },
 ];
@@ -126,15 +126,46 @@ const relayObservationStatusLabel = computed(() => {
 const relayTransportModeLabel = computed(() => {
   const mode = overview.value?.observedState.transport.mode;
   if (mode === "https") return "HTTPS";
-  if (mode === "insecure-http") return "Insecure HTTP";
+  if (mode === "insecure-http") return "非加密 HTTP";
   return "未知";
 });
 const relayTransportHealthLabel = computed(() => {
   const health = overview.value?.observedState.transport.health;
-  if (health === "healthy") return "Healthy";
-  if (health === "degraded") return "Degraded";
-  return "Unreported";
+  if (health === "healthy") return "健康";
+  if (health === "degraded") return "降级";
+  return "未上报";
 });
+
+function localizeMaintenanceText(value: string | null | undefined): string {
+  if (!value) return "-";
+  if (
+    value.toLowerCase() ===
+    "relay could not apply the maintenance firewall policy."
+  ) {
+    return "中继服务无法应用维护防火墙策略。";
+  }
+  if (
+    value.toLowerCase() === "service api uses explicitly allowed insecure http"
+  ) {
+    return "服务接口使用已明确允许的非加密 HTTP";
+  }
+  if (value.toLowerCase() === "relay transport has not been reported") {
+    return "中继服务传输状态尚未上报";
+  }
+  if (value.toLowerCase() === "private test transport exception") {
+    return "专用测试传输例外";
+  }
+  return value
+    .replaceAll(/relay/gi, "中继服务")
+    .replaceAll(/peers?/gi, "节点")
+    .replaceAll(/transport/gi, "传输")
+    .replaceAll(/firewall policy/gi, "防火墙策略")
+    .replaceAll(/could not apply/gi, "无法应用")
+    .replaceAll(/maintenance/gi, "维护")
+    .replaceAll(/\bthe\b/gi, "")
+    .replaceAll(/has not been reported/gi, "尚未上报")
+    .replaceAll(/not reported/gi, "未上报");
+}
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -372,7 +403,7 @@ onMounted(() => {
       </a-table>
     </a-card>
 
-    <a-card title="Relay 状态投影">
+    <a-card title="中继服务状态">
       <a-row :gutter="24">
         <a-col :xs="24" :xl="12">
           <section data-testid="desired-state-projection">
@@ -388,7 +419,7 @@ onMounted(() => {
                     : "-"
                 }}
               </dd>
-              <dt>Peer 数量</dt>
+              <dt>节点数量</dt>
               <dd>{{ desiredPeers.length }}</dd>
               <dt>授权数量</dt>
               <dd>{{ desiredAuthorizations.length }}</dd>
@@ -407,7 +438,7 @@ onMounted(() => {
               :pagination="false"
               size="small"
             />
-            <h3>Peer 健康</h3>
+            <h3>节点健康</h3>
             <a-table
               :columns="peerHealthColumns"
               :data-source="peerHealth"
@@ -451,7 +482,7 @@ onMounted(() => {
               <dd data-testid="relay-stale">
                 {{ overview?.relayHealth.stale ? "是" : "否" }}
               </dd>
-              <dt>已应用 Peer</dt>
+              <dt>已应用节点</dt>
               <dd>{{ overview?.observedState.appliedPeerIds.length ?? 0 }}</dd>
               <dt>已应用授权</dt>
               <dd>
@@ -464,10 +495,16 @@ onMounted(() => {
               <dt>传输健康</dt>
               <dd>{{ relayTransportHealthLabel }}</dd>
               <dt>传输原因</dt>
-              <dd>{{ overview?.observedState.transport.reason ?? "-" }}</dd>
+              <dd>
+                {{
+                  localizeMaintenanceText(
+                    overview?.observedState.transport.reason,
+                  )
+                }}
+              </dd>
               <dt>失败信息</dt>
               <dd data-testid="relay-failure">
-                {{ overview?.relayFailure?.summary ?? "-" }}
+                {{ localizeMaintenanceText(overview?.relayFailure?.summary) }}
               </dd>
             </dl>
           </section>

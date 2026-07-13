@@ -89,8 +89,9 @@ test.describe("Access Management insufficient permission", () => {
     });
     await login(page, limitedUsername, limitedPassword);
 
-    await page.goto("/admin-users");
-    await expect(page).toHaveURL(/\/admin-users/);
+    await page.goto("/system-settings");
+    await expect(page).toHaveURL(/\/system-settings/);
+    await expect(page.getByRole("tab", { name: "用户管理" })).toBeVisible();
     await expect(page.getByRole("button", { name: /新增用户/ })).toHaveCount(0);
 
     const writeAttempt = await page.evaluate(

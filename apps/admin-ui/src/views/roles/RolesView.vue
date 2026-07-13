@@ -98,7 +98,7 @@ async function saveRole(): Promise<void> {
 }
 
 const columns = [
-  { title: "Code", dataIndex: "code", key: "code" },
+  { title: "编码", dataIndex: "code", key: "code" },
   { title: "名称", dataIndex: "name", key: "name" },
   { title: "描述", dataIndex: "description", key: "description" },
   { title: "内置", dataIndex: "isBuiltin", key: "isBuiltin" },
@@ -153,7 +153,7 @@ onMounted(() => {
       :destroy-on-hidden="true"
     >
       <a-form layout="vertical" :preserve="false">
-        <a-form-item label="Code">
+        <a-form-item label="编码">
           <a-input
             v-model:value="roleForm.code"
             :disabled="editingRole?.isBuiltin"

@@ -233,10 +233,8 @@ test("Admin filters, creates, and revokes a sanitized maintainer session in the 
   expect(failedRequests).toEqual([]);
   await expect(page.locator("body")).toContainText("来源维护者");
   await expect(page.getByText("10.91.2.10").first()).toBeVisible();
-  await expect(page.getByText("Insecure HTTP")).toBeVisible();
-  await expect(
-    page.getByText("Private test transport exception"),
-  ).toBeVisible();
+  await expect(page.getByText("非加密 HTTP")).toBeVisible();
+  await expect(page.getByText("专用测试传输例外")).toBeVisible();
 
   await page.locator("textarea").fill("Investigate Windows runtime failure");
   await page.getByRole("button", { name: "创建会话" }).click();
