@@ -2407,6 +2407,7 @@ function sourceHiddenPathsForView({ sourceTree, visiblePaths, label }) {
   const visible = new Set(visiblePaths);
   for (const path of visible) {
     if (!sourceFiles.has(path)) {
+      if (WINDOWS_REPLAY_GENERATED_PATHS.has(path)) continue;
       throw new Error(
         `${label} visible source path cannot be matched exactly in the UDF tree: ${path}`,
       );
@@ -3225,24 +3226,30 @@ async function verifyWindowsSetupTreeReplay({
       throw new Error(`serviced ISO overlay was not written exactly: ${path}`);
     }
   }
+}
+
+function assertOptionalGeneratedReplayPaths(tree, label) {
   for (const path of WINDOWS_REPLAY_GENERATED_PATHS) {
-    if (!source.has(path) || !output.has(path)) {
-      throw new Error(`serviced ISO lost generated replay path: ${path}`);
+    const entry = treeEntry(tree, path);
+    if (entry && entry.type !== "file") {
+      throw new Error(
+        `${label} generated replay path must be a regular file: ${entry.path}`,
+      );
     }
   }
 }
 
 async function verifyGeneratedBootCatalogBinding(tree, isoBytes) {
   const catalog = treeEntry(tree, "boot.catalog");
-  if (!catalog || catalog.type !== "file") {
-    throw new Error("serviced ISO is missing its generated boot.catalog file");
+  if (catalog && catalog.type !== "file") {
+    throw new Error(
+      "serviced ISO generated boot.catalog path must be a regular file",
+    );
   }
   const structure = inspectBootableIso(isoBytes);
   return {
-    // genisoimage exposes an empty placeholder file for `-c`; the authoritative
-    // generated content is the El Torito sector, which inspectBootableIso and
-    // bindBootEntriesToExtractedTree validate against the boot image digests.
-    digest: await hashFile(catalog.absolute),
+    // The UDF placeholder is optional. The authoritative generated content is
+    // the El Torito sector, validated against the boot image digests below.
     bootEntries: structure.bootEntries,
   };
 }
@@ -3357,6 +3364,7 @@ async function executeWindowsServicedIsoBuilder({
     sourceIsoPath,
     views: sourceFilesystemExtentViews,
   });
+  assertOptionalGeneratedReplayPaths(sourceTreeManifest, "source ISO");
   await setFixedTimes(sourceTreeManifest);
   // 7z exposes the UDF tree, including entries intentionally omitted from the
   // ISO9660/Joliet view. Preserve that visibility boundary during replay.
@@ -3510,6 +3518,7 @@ async function executeWindowsServicedIsoBuilder({
       tree: outputTree,
       workDirectory,
     });
+    assertOptionalGeneratedReplayPaths(outputTreeManifest, "serviced ISO");
     outputCatalog = await inspectWindowsSetupTree({
       wimlibExecutable,
       isoBytes: outputMedia,
