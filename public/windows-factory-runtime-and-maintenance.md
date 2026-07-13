@@ -283,6 +283,13 @@ be installed through the runner host's standard loader and filesystem contract
 from the same pinned builder image or an equivalent verified package source;
 workflow-wide dynamic-library path injection is not allowed.
 
+Factory admission snapshots and extracts the multi-gigabyte ISO before VM
+creation. Its `TMPDIR` must therefore be a run-scoped directory below the
+protected, writable `VEM_FACTORY_WORK_ROOT`, backed by normal host storage with
+the declared capacity. It must not use a RAM-backed system `/tmp`, a fixed-size
+container filesystem, or the repository workspace. The workflow removes this
+directory in its always-run cleanup after adapter finalization.
+
 The builder and admission code open each executable with no-follow semantics,
 hash the opened bytes, check the manifest digest and reported version, and
 record or verify the exact tool identities. Factory admission repeats the
