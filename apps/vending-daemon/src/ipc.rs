@@ -51,6 +51,14 @@ struct ClearWholeMachineMaintenanceLockRequest {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ClaimMachineRequest {
+    claim_code: String,
+    #[serde(default)]
+    rotate_maintenance_identity: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LocalEnvironmentControlRequest {
     air_conditioner_on: Option<bool>,
     target_temperature_celsius: Option<i8>,
@@ -185,6 +193,7 @@ pub struct IpcContext {
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
+    pub background_shutdown: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -202,6 +211,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/config", get(get_config).put(put_config))
         .route("/v1/config/summary", get(get_config_summary))
         .route("/v1/provisioning/claim", post(claim_machine))
+        .route("/v1/maintenance/status", get(maintenance_status))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
         .route("/v1/sale-readiness", get(sale_readiness))
@@ -265,7 +275,7 @@ pub fn assert_loopback(addr: SocketAddr) -> Result<(), String> {
 
 pub async fn run_server(
     bind: SocketAddr,
-    state: IpcContext,
+    mut state: IpcContext,
 ) -> Result<(IpcServerHandle, tokio::task::JoinHandle<Result<(), String>>), String> {
     assert_loopback(bind)?;
 
@@ -278,6 +288,7 @@ pub async fn run_server(
 
     let shutdown = CancellationToken::new();
     let graceful = shutdown.clone();
+    state.background_shutdown = shutdown.clone();
     let router = build_router(state);
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -405,12 +416,6 @@ struct SubmitPayment {
     order_no: String,
     auth_code: String,
     source: String,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaimMachineRequest {
-    claim_code: String,
 }
 
 #[derive(serde::Serialize)]
@@ -1212,6 +1217,38 @@ async fn claim_machine(
     }
 
     let claim_code = payload.claim_code.trim().to_ascii_uppercase();
+    let maintenance_public_key = match if payload.rotate_maintenance_identity {
+        ctx.config_store
+            .ensure_reclaim_maintenance_public_key(&claim_code)
+            .await
+    } else {
+        ctx.config_store.ensure_maintenance_public_key().await
+    } {
+        Ok(public_key) => public_key,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "maintenance_identity_generation_failed",
+                    message: "machine maintenance identity could not be generated".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let provisioning_profile = match ctx.config_store.provisioning_profile_name().await {
+        Ok(profile) => profile,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "provisioning_profile_invalid",
+                    message: "machine provisioning profile is invalid".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
     let public = match ctx.config_store.load_effective_public_config().await {
         Ok(public) => public,
         Err(error) => {
@@ -1226,15 +1263,66 @@ async fn claim_machine(
         }
     };
     let client = BackendClient::new(public.api_base_url);
-    let profile = match client.claim_machine(&claim_code).await {
+    let profile = match client
+        .claim_machine(
+            &claim_code,
+            &maintenance_public_key,
+            &provisioning_profile,
+            payload.rotate_maintenance_identity,
+        )
+        .await
+    {
         Ok(profile) => profile,
         Err(error) => {
             return machine_claim_error_response(&error).into_response();
         }
     };
+    if profile.provisioning_profile != provisioning_profile {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "provisioning_profile_mismatch",
+                message: "machine provisioning profile does not match the factory profile"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
     let machine_code = profile.machine.code.clone();
+    let maintenance_identity = profile.maintenance.clone();
     match ctx.config_store.apply_provisioning_profile(profile).await {
         Ok(config) => {
+            if ctx
+                .config_store
+                .apply_maintenance_profile(
+                    &maintenance_identity,
+                    payload.rotate_maintenance_identity,
+                )
+                .await
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage {
+                        code: "maintenance_tunnel_apply_failed",
+                        message: "machine maintenance tunnel configuration failed".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            if payload.rotate_maintenance_identity {
+                let reconcile_context = ctx.clone();
+                let background_shutdown = ctx.background_shutdown.clone();
+                tokio::spawn(async move {
+                    reconcile_maintenance_until_terminal(
+                        &reconcile_context,
+                        &background_shutdown,
+                        120,
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await;
+                });
+            }
             let _ = ctx.events.send(DaemonEvent::RuntimeReconfigureRequested {
                 event_id: uuid::Uuid::new_v4().simple().to_string(),
                 updated_at: crate::state::store::now_iso(),
@@ -1268,6 +1356,104 @@ async fn claim_machine(
             }),
         )
             .into_response(),
+    }
+}
+
+async fn maintenance_status(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let status = reconcile_maintenance_status(&ctx).await;
+    (StatusCode::OK, Json(status)).into_response()
+}
+
+async fn reconcile_maintenance_status(
+    ctx: &IpcContext,
+) -> crate::maintenance::MaintenanceEnrollmentStatus {
+    let mut status = ctx.config_store.maintenance_status().await;
+    if status.handshake_verified {
+        if let Some(pending_public_key) = status.pending_public_key.clone() {
+            let platform_status = async {
+                let public = ctx.config_store.load_effective_public_config().await?;
+                let machine_code = public
+                    .machine_code
+                    .ok_or_else(|| "machine code is unavailable".to_string())?;
+                let machine_secret = ctx
+                    .config_store
+                    .runtime_secrets()
+                    .await?
+                    .machine_secret
+                    .ok_or_else(|| "machine credential is unavailable".to_string())?;
+                let client = BackendClient::new(public.api_base_url);
+                client.authenticate(&machine_code, &machine_secret).await?;
+                client.get_maintenance_identity_status(&machine_code).await
+            }
+            .await;
+            match platform_status {
+                Ok(platform) => {
+                    if platform.identities.iter().any(|identity| {
+                        identity.public_key == pending_public_key && identity.status == "active"
+                    }) {
+                        match ctx
+                            .config_store
+                            .promote_maintenance_reclaim(&pending_public_key)
+                            .await
+                        {
+                            Ok(promoted) => status = promoted,
+                            Err(error) => status.last_error = Some(error),
+                        }
+                    } else if let Some(failed) = platform.identities.iter().find(|identity| {
+                        identity.public_key == pending_public_key
+                            && identity.status == "reclaim_failed"
+                    }) {
+                        match ctx
+                            .config_store
+                            .reject_maintenance_reclaim(
+                                &pending_public_key,
+                                failed
+                                    .reclaim_failure_reason
+                                    .as_deref()
+                                    .unwrap_or("platform rejected pending maintenance identity"),
+                            )
+                            .await
+                        {
+                            Ok(recovered) => status = recovered,
+                            Err(error) => status.last_error = Some(error),
+                        }
+                    }
+                }
+                Err(error) => {
+                    status.last_error = Some(format!(
+                        "platform maintenance promotion status unavailable: {error}"
+                    ));
+                }
+            }
+        }
+    }
+    status
+}
+
+async fn reconcile_maintenance_until_terminal(
+    ctx: &IpcContext,
+    shutdown: &CancellationToken,
+    max_attempts: usize,
+    retry_delay: std::time::Duration,
+) {
+    for _ in 0..max_attempts {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        let status = reconcile_maintenance_status(ctx).await;
+        if status.pending_public_key.is_none() {
+            break;
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
     }
 }
 
@@ -3729,7 +3915,9 @@ async fn events_ws_inner(mut socket: WebSocket, events: broadcast::Sender<Daemon
 mod tests {
     use super::*;
     use crate::{
-        config::default_public_config, secret::InMemorySecretStore, state::store::OutboxInput,
+        config::default_public_config,
+        secret::{InMemorySecretStore, SecretStore},
+        state::store::OutboxInput,
         transaction::TransactionStateMachine,
     };
     use axum::{
@@ -3872,7 +4060,15 @@ mod tests {
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
             .await
             .expect("state");
-        let secrets: Arc<dyn crate::secret::SecretStore> = Arc::new(InMemorySecretStore::default());
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(
+                crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            )
+            .await
+            .expect("seed machine WireGuard key");
+        let secrets: Arc<dyn crate::secret::SecretStore> = secrets;
         let config_store = Arc::new(crate::config::ConfigStore::new(
             data_dir.clone(),
             state.clone(),
@@ -3933,6 +4129,7 @@ mod tests {
                 transaction,
                 status_cache,
             },
+            background_shutdown: CancellationToken::new(),
         }
     }
 
@@ -4442,6 +4639,10 @@ mod tests {
     }
 
     fn valid_provisioning_profile() -> serde_json::Value {
+        let public_key = crate::maintenance::public_key_from_private_key(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        )
+        .expect("fixture public key");
         json!({
             "machine": {
                 "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -4483,6 +4684,23 @@ mod tests {
                 "qrCodeEnabled": true,
                 "paymentCodeEnabled": true,
                 "serverTime": "2026-06-08T16:30:00.000Z"
+            },
+            "provisioningProfile": "production",
+            "maintenance": {
+                "publicKey": public_key,
+                "tunnelAddress": "10.91.16.10",
+                "address": "10.91.16.10/32",
+                "endpoint": "relay.example:51820",
+                "relay": {
+                    "publicKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+                    "tunnelAddress": "10.91.0.1",
+                    "address": "10.91.0.1/32"
+                },
+                "roleRoutes": {
+                    "relay": "10.91.0.1/32",
+                    "runner": "10.91.1.0/24",
+                    "maintainer": "10.91.3.0/24"
+                }
             },
             "metadata": {
                 "profileVersion": 1,
@@ -4601,7 +4819,11 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .and(body_partial_json(json!({
-                "claimCode": "ABCD-2345"
+                "claimCode": "ABCD-2345",
+                "maintenancePublicKey": crate::maintenance::public_key_from_private_key(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+                ).expect("fixture public key"),
+                "provisioningProfile": "production"
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
             .mount(&server)
@@ -4857,6 +5079,7 @@ mod tests {
         assert_eq!(sale_view["items"].as_array().unwrap().len(), 0);
 
         let readiness = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
@@ -4879,6 +5102,17 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "ACTIVE_PLANOGRAM_MISSING"));
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|code| !code
+                .as_str()
+                .unwrap_or_default()
+                .contains("MAINTENANCE_HANDSHAKE")));
+
+        let maintenance = get_ipc_json(&app, "/v1/maintenance/status", Some("token-1")).await;
+        assert_eq!(maintenance["state"], "handshake_pending");
 
         let requests = server.received_requests().await.expect("requests");
         assert_eq!(
@@ -5345,6 +5579,37 @@ mod tests {
         assert_eq!(event["type"], "runtime_reconfigure_requested");
         assert_eq!(event["reason"], "machine_provisioned");
         assert_eq!(event["machineCode"], "M001");
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_a_response_for_a_different_factory_profile() {
+        let server = MockServer::start().await;
+        let mut profile = valid_provisioning_profile();
+        profile["provisioningProfile"] = json!("testbed");
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(profile))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(payload["code"], "provisioning_profile_mismatch");
     }
 
     #[tokio::test]

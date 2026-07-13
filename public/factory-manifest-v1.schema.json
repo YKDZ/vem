@@ -1,0 +1,485 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vem.example.invalid/schemas/factory-manifest/v1",
+  "title": "VEM Factory Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "manifestId",
+    "profile",
+    "source",
+    "factoryPreparation",
+    "assets",
+    "toolchain",
+    "outputPolicy"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "vem-factory-manifest/v1" },
+    "kind": { "const": "factory-manifest" },
+    "manifestId": { "$ref": "#/$defs/digest" },
+    "profile": { "enum": ["production", "testbed"] },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "windowsMedia",
+        "installImageIndex",
+        "installImageEdition",
+        "installImageDigest",
+        "targetFirmware"
+      ],
+      "properties": {
+        "windowsMedia": {
+          "$ref": "#/$defs/windowsMediaReference"
+        },
+        "installImageIndex": { "type": "integer", "minimum": 1, "maximum": 99 },
+        "installImageEdition": { "type": "string", "minLength": 1 },
+        "installImageDigest": { "$ref": "#/$defs/digest" },
+        "targetFirmware": { "const": "uefi" }
+      }
+    },
+    "factoryPreparation": { "$ref": "#/$defs/factoryPreparation" },
+    "assets": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/runtimeAssetReference" },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "role": { "const": "openssh-installer" } },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "role": { "const": "maintenance-ssh-ca-public-key" }
+            },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "role": { "const": "wireguard-installer" } },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "role": { "const": "vem-daemon" } },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "role": { "const": "vem-machine-ui" } },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "role": { "const": "webview2-loader" } },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "role": { "const": "vision-release" } },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "role": { "const": "vision-configuration" } },
+            "required": ["role"]
+          }
+        }
+      ]
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["builderImage", "udfExtractor", "udfWriter", "wimlib"],
+      "properties": {
+        "builderImage": { "$ref": "#/$defs/toolIdentity" },
+        "udfExtractor": { "$ref": "#/$defs/toolIdentity" },
+        "udfWriter": { "$ref": "#/$defs/toolIdentity" },
+        "wimlib": { "$ref": "#/$defs/toolIdentity" },
+        "authenticodeVerifier": { "$ref": "#/$defs/toolIdentity" }
+      }
+    },
+    "outputPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "isoFileName",
+        "reproducible",
+        "includeProvenance",
+        "assemblyMode"
+      ],
+      "properties": {
+        "isoFileName": { "const": "vem-factory-{manifestId}.iso" },
+        "reproducible": { "const": true },
+        "includeProvenance": { "const": true },
+        "assemblyMode": {
+          "const": "windows-serviced-iso"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "object",
+                "properties": {
+                  "windowsMedia": {
+                    "type": "object",
+                    "properties": {
+                      "signature": {
+                        "type": "object",
+                        "properties": { "scheme": { "const": "authenticode" } },
+                        "required": ["scheme"]
+                      }
+                    },
+                    "required": ["signature"]
+                  }
+                },
+                "required": ["windowsMedia"]
+              }
+            },
+            "required": ["source"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "assets": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "signature": {
+                      "type": "object",
+                      "properties": { "scheme": { "const": "authenticode" } },
+                      "required": ["scheme"]
+                    }
+                  },
+                  "required": ["signature"]
+                }
+              }
+            },
+            "required": ["assets"]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "toolchain": {
+            "type": "object",
+            "properties": {
+              "authenticodeVerifier": { "$ref": "#/$defs/toolIdentity" }
+            },
+            "required": ["authenticodeVerifier"]
+          }
+        },
+        "required": ["toolchain"]
+      }
+    }
+  ],
+  "$comment": "The repository validator additionally binds identity to digest, enforces unique roles and profile boundaries, and rejects secrets, private keys, mutable references, and host paths.",
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "assetIdentity": {
+      "type": "string",
+      "pattern": "^factory-cas://sha256/[a-f0-9]{64}$"
+    },
+    "evidenceIdentity": {
+      "type": "string",
+      "pattern": "^factory-evidence://sha256/[a-f0-9]{64}$"
+    },
+    "assetReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "identity",
+        "digest",
+        "version",
+        "signature",
+        "provenance",
+        "mediaFileName"
+      ],
+      "properties": {
+        "role": { "type": "string" },
+        "identity": { "$ref": "#/$defs/assetIdentity" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme",
+            "signerIdentity",
+            "evidenceIdentity",
+            "evidenceDigest"
+          ],
+          "properties": {
+            "scheme": { "enum": ["detached-ed25519", "authenticode"] },
+            "signerIdentity": {
+              "type": "string",
+              "pattern": "^(?:spki|x509)-sha256:[a-f0-9]{64}$"
+            },
+            "evidenceIdentity": {
+              "oneOf": [
+                { "$ref": "#/$defs/evidenceIdentity" },
+                { "$ref": "#/$defs/assetIdentity" }
+              ]
+            },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "predicateType",
+            "sourceIdentity",
+            "builderIdentity",
+            "buildId",
+            "signerIdentity",
+            "evidenceIdentity",
+            "evidenceDigest"
+          ],
+          "properties": {
+            "predicateType": { "const": "https://slsa.dev/provenance/v1" },
+            "sourceIdentity": { "type": "string", "minLength": 1 },
+            "builderIdentity": { "type": "string", "minLength": 1 },
+            "buildId": { "type": "string", "minLength": 1 },
+            "signerIdentity": {
+              "type": "string",
+              "pattern": "^spki-sha256:[a-f0-9]{64}$"
+            },
+            "evidenceIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "mediaFileName": {
+          "type": "string",
+          "pattern": "^(?!(?i:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.[A-Za-z0-9._-]+)?$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "release": {
+          "$ref": "#/$defs/visionReleaseSelection"
+        }
+      }
+    },
+    "windowsMediaReference": {
+      "allOf": [
+        { "$ref": "#/$defs/assetReference" },
+        {
+          "type": "object",
+          "properties": { "role": { "const": "windows-source-iso" } }
+        }
+      ]
+    },
+    "runtimeAssetReference": {
+      "allOf": [
+        { "$ref": "#/$defs/assetReference" },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "enum": [
+                "openssh-installer",
+                "wireguard-installer",
+                "vem-daemon",
+                "vem-machine-ui",
+                "webview2-loader",
+                "vision-release",
+                "vision-configuration",
+                "maintenance-ssh-ca-public-key"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": { "role": { "const": "vision-release" } },
+            "required": ["role"]
+          },
+          "then": {
+            "type": "object",
+            "properties": { "release": {} },
+            "required": ["release"]
+          }
+        }
+      ]
+    },
+    "visionReleaseSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptorIdentity",
+        "descriptorDigest",
+        "attestationIdentity",
+        "attestationDigest",
+        "approvalIdentity",
+        "approvalDigest",
+        "conformanceEvidenceIdentity",
+        "conformanceEvidenceDigest"
+      ],
+      "properties": {
+        "descriptorIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+        "descriptorDigest": { "$ref": "#/$defs/digest" },
+        "attestationIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+        "attestationDigest": { "$ref": "#/$defs/digest" },
+        "approvalIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+        "approvalDigest": { "$ref": "#/$defs/digest" },
+        "conformanceEvidenceIdentity": { "$ref": "#/$defs/evidenceIdentity" },
+        "conformanceEvidenceDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "toolIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "digest", "version"],
+      "properties": {
+        "identity": {
+          "type": "string",
+          "pattern": "^(?:oci|tool)://[A-Za-z0-9._/:+-]+@sha256:[a-f0-9]{64}$"
+        },
+        "digest": { "$ref": "#/$defs/digest" },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        }
+      }
+    },
+    "factoryPreparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "environmentName",
+        "provisioningEndpoint",
+        "mqttUrl",
+        "hardware",
+        "display",
+        "accounts",
+        "expectedKioskShell",
+        "targetLayoutVersion",
+        "maintenance"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "vem-factory-preparation/v1" },
+        "kind": { "const": "factory-preparation" },
+        "environmentName": { "type": "string", "minLength": 1 },
+        "provisioningEndpoint": { "type": "string", "minLength": 1 },
+        "mqttUrl": { "type": "string", "minLength": 1 },
+        "hardware": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "model", "topologyIdentity", "topologyVersion"],
+          "properties": {
+            "mode": { "enum": ["production", "simulated"] },
+            "model": { "type": "string", "minLength": 1 },
+            "topologyIdentity": { "type": "string", "minLength": 1 },
+            "topologyVersion": { "type": "string", "minLength": 1 }
+          }
+        },
+        "display": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height", "orientation"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 },
+            "orientation": { "enum": ["portrait", "landscape"] }
+          }
+        },
+        "accounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kioskUser", "maintenanceUser", "autoLogonUser"],
+          "properties": {
+            "kioskUser": { "type": "string", "minLength": 1 },
+            "maintenanceUser": { "type": "string", "minLength": 1 },
+            "autoLogonUser": { "type": "string", "minLength": 1 }
+          }
+        },
+        "expectedKioskShell": { "type": "string", "minLength": 1 },
+        "targetLayoutVersion": { "type": "string", "minLength": 1 },
+        "maintenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "wireGuardInterfaceAlias",
+            "wireGuardListenAddress",
+            "runnerSourceAllowlist",
+            "maintainerSourceAllowlist",
+            "openSsh",
+            "wireGuard"
+          ],
+          "properties": {
+            "wireGuardInterfaceAlias": { "type": "string", "minLength": 1 },
+            "wireGuardListenAddress": { "type": "string", "minLength": 1 },
+            "runnerSourceAllowlist": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "maintainerSourceAllowlist": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "openSsh": { "$ref": "#/$defs/packageTrust" },
+            "wireGuard": { "$ref": "#/$defs/packageTrust" }
+          }
+        }
+      }
+    },
+    "packageTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "approvedSignerThumbprint",
+        "approvedRootThumbprint"
+      ],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "approvedSignerThumbprint": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{40}$"
+        },
+        "approvedRootThumbprint": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{40}$"
+        }
+      }
+    }
+  }
+}

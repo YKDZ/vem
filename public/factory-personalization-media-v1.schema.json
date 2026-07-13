@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vem.example/public/factory-personalization-media-v1.schema.json",
+  "title": "Factory Personalization Media v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "mediaId",
+    "profile",
+    "protection",
+    "credentials"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "vem-factory-personalization-media/v1" },
+    "kind": { "const": "factory-personalization-media" },
+    "mediaId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{15,127}$" },
+    "profile": { "enum": ["production", "testbed"] },
+    "protection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encryptedAtRest", "access", "cache", "retention"],
+      "properties": {
+        "encryptedAtRest": { "const": true },
+        "access": { "const": "trusted-protected-gate" },
+        "cache": { "const": "forbidden" },
+        "retention": { "const": "installation-lifecycle-only" }
+      }
+    },
+    "credentials": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "profile": { "const": "production" } } },
+      "then": {
+        "allOf": [
+          {
+            "properties": {
+              "mediaId": {
+                "not": { "$ref": "#/$defs/productionForbiddenMaterial" }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "credentials": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["administrator", "kiosk"],
+            "properties": {
+              "administrator": { "$ref": "#/$defs/adminCredential" },
+              "kiosk": { "$ref": "#/$defs/productionKioskCredential" }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "credentials": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["bootstrap", "kiosk"],
+            "properties": {
+              "bootstrap": { "$ref": "#/$defs/bootstrapCredential" },
+              "kiosk": { "$ref": "#/$defs/kioskCredential" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "adminCredential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user", "password"],
+      "properties": {
+        "user": { "const": "Admin" },
+        "password": {
+          "type": "string",
+          "minLength": 16,
+          "allOf": [
+            { "not": { "$ref": "#/$defs/sharedPasswordMarker" } },
+            { "not": { "$ref": "#/$defs/forbiddenPrivateNetworkMaterial" } },
+            { "not": { "$ref": "#/$defs/productionForbiddenMaterial" } }
+          ]
+        }
+      }
+    },
+    "bootstrapCredential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user", "password"],
+      "properties": {
+        "user": { "const": "YKDZ" },
+        "password": {
+          "type": "string",
+          "minLength": 16,
+          "allOf": [
+            { "not": { "$ref": "#/$defs/sharedPasswordMarker" } },
+            { "not": { "$ref": "#/$defs/forbiddenPrivateNetworkMaterial" } }
+          ]
+        }
+      }
+    },
+    "kioskCredential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user", "password"],
+      "properties": {
+        "user": { "const": "VEMKiosk" },
+        "password": {
+          "type": "string",
+          "minLength": 16,
+          "allOf": [
+            { "not": { "$ref": "#/$defs/sharedPasswordMarker" } },
+            { "not": { "$ref": "#/$defs/forbiddenPrivateNetworkMaterial" } }
+          ]
+        }
+      }
+    },
+    "productionKioskCredential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user", "password"],
+      "properties": {
+        "user": { "const": "VEMKiosk" },
+        "password": {
+          "type": "string",
+          "minLength": 16,
+          "allOf": [
+            { "not": { "$ref": "#/$defs/sharedPasswordMarker" } },
+            { "not": { "$ref": "#/$defs/forbiddenPrivateNetworkMaterial" } },
+            { "not": { "$ref": "#/$defs/productionForbiddenMaterial" } }
+          ]
+        }
+      }
+    },
+    "sharedPasswordMarker": {
+      "type": "string",
+      "pattern": "[sS][hH][aA][rR][eE][dD]-[pP][aA][sS][sS][wW][oO][rR][dD]"
+    },
+    "forbiddenPrivateNetworkMaterial": {
+      "type": "string",
+      "pattern": "[pP][rR][iI][vV][aA][tT][eE].?[kK][eE][yY]|[wW][iI][rR][eE][gG][uU][aA][rR][dD]|[wW][gG]|[pP][eE][eE][rR]|[cC][eE][rR][tT][iI][fF][iI][cC][aA][tT][eE]|[tT][oO][kK][eE][nN]|[sS][eE][cC][rR][eE][tT]"
+    },
+    "productionForbiddenMaterial": {
+      "type": "string",
+      "pattern": "[yY][kK][dD][zZ]|[tT][eE][sS][tT][bB][eE][dD]|[tT][eE][sS][tT]-[cC][aA]|[tT][eE][sS][tT]-[pP][eE][eE][rR]|[sS][iI][mM][uU][lL][aA][tT][oO][rR]|[sS][hH][aA][rR][eE][dD]-[pP][aA][sS][sS][wW][oO][rR][dD]"
+    },
+    "redaction": {
+      "oneOf": [
+        { "$ref": "#/$defs/consumedRedaction" },
+        { "$ref": "#/$defs/previewRedaction" }
+      ]
+    },
+    "consumedRedaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "profile",
+        "protection",
+        "credentials",
+        "wireGuardPrivateKey",
+        "mediaConsumed",
+        "stagingRetained"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "vem-factory-personalization-media-redaction/v1"
+        },
+        "kind": { "const": "factory-personalization-media-redaction" },
+        "profile": { "enum": ["production", "testbed"] },
+        "protection": { "$ref": "#/$defs/protection" },
+        "credentials": { "type": "object" },
+        "wireGuardPrivateKey": { "const": "not-supplied; generated-locally" },
+        "mediaConsumed": { "const": true },
+        "stagingRetained": { "const": false }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "profile": { "const": "production" } } },
+          "then": {
+            "properties": {
+              "credentials": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["administrator", "kiosk"],
+                "properties": {
+                  "administrator": { "const": "configured" },
+                  "kiosk": { "const": "configured" }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "credentials": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["bootstrap", "kiosk"],
+                "properties": {
+                  "bootstrap": { "const": "configured" },
+                  "kiosk": { "const": "configured" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "previewRedaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "profile",
+        "protection",
+        "credentials",
+        "wireGuardPrivateKey",
+        "mediaConsumed",
+        "stagingRetained"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "vem-factory-personalization-media-preview/v1"
+        },
+        "kind": { "const": "factory-personalization-media-preview" },
+        "profile": { "enum": ["production", "testbed"] },
+        "protection": { "$ref": "#/$defs/protection" },
+        "credentials": { "type": "object" },
+        "wireGuardPrivateKey": { "const": "not-supplied; generated-locally" },
+        "mediaConsumed": { "const": false },
+        "stagingRetained": { "const": false }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "profile": { "const": "production" } } },
+          "then": {
+            "properties": {
+              "credentials": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["administrator", "kiosk"],
+                "properties": {
+                  "administrator": { "const": "not-configured" },
+                  "kiosk": { "const": "not-configured" }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "credentials": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["bootstrap", "kiosk"],
+                "properties": {
+                  "bootstrap": { "const": "not-configured" },
+                  "kiosk": { "const": "not-configured" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "protection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encryptedAtRest", "access", "cache", "retention"],
+      "properties": {
+        "encryptedAtRest": { "const": true },
+        "access": { "const": "trusted-protected-gate" },
+        "cache": { "const": "forbidden" },
+        "retention": { "const": "installation-lifecycle-only" }
+      }
+    }
+  }
+}

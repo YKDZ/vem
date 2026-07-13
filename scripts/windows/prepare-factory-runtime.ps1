@@ -25,18 +25,30 @@ param(
   [Parameter(Mandatory = $false)][string]$ExpectedAutoLogonUser,
   [Parameter(Mandatory = $false)][string]$ExpectedKioskShell,
   [Parameter(Mandatory = $false)][string]$TargetLayoutVersion,
-  [Parameter(Mandatory = $false)][string]$KioskPassword,
-  [Parameter(Mandatory = $false)][string]$MaintenancePassword,
-  [Parameter(Mandatory = $false)][string]$AutoLogonPassword,
-  [Parameter(Mandatory = $false)][string]$MaintenanceRelayWireGuardInstallerPath,
-  [Parameter(Mandatory = $false)][string]$MaintenanceRelayWireGuardInstallerSha256,
-  [Parameter(Mandatory = $false)][string]$MaintenanceRelayWireGuardConfigPath,
-  [Parameter(Mandatory = $false)][string]$MaintenanceRelayWireGuardConfigSha256,
-  [Parameter(Mandatory = $false)][string]$MaintenanceRelayTunnelName = "vem-maint",
-  [Parameter(Mandatory = $false)][string[]]$MaintenanceRelaySourceAllowlist,
+  [Parameter(Mandatory = $false)][ValidateSet("production", "testbed")][string]$FactoryProfile,
+  [Parameter(Mandatory = $false)][string]$PersonalizationMediaPath,
+  [Parameter(Mandatory = $false)][string]$FactoryMediaRoot,
+  [Parameter(Mandatory = $false)][string]$VisionConfigurationSourcePath,
+  [Parameter(Mandatory = $false)][string]$OpenSshPackagePath,
+  [Parameter(Mandatory = $false)][string]$OpenSshPackageSource,
+  [Parameter(Mandatory = $false)][string]$OpenSshPackageVersion,
+  [Parameter(Mandatory = $false)][string]$OpenSshPackageSha256,
+  [Parameter(Mandatory = $false)][string]$OpenSshApprovedSignerThumbprint,
+  [Parameter(Mandatory = $false)][string]$OpenSshApprovedRootThumbprint,
+  [Parameter(Mandatory = $false)][string]$WireGuardPackagePath,
+  [Parameter(Mandatory = $false)][string]$WireGuardPackageSource,
+  [Parameter(Mandatory = $false)][string]$WireGuardPackageVersion,
+  [Parameter(Mandatory = $false)][string]$WireGuardPackageSha256,
+  [Parameter(Mandatory = $false)][string]$WireGuardApprovedSignerThumbprint,
+  [Parameter(Mandatory = $false)][string]$WireGuardApprovedRootThumbprint,
+  [Parameter(Mandatory = $false)][string]$MaintenanceSshCaPublicKeyPath,
+  [Parameter(Mandatory = $false)][string]$MaintenanceSshCaPublicKeySha256,
+  [Parameter(Mandatory = $false)][string[]]$MaintenanceRunnerSourceAllowlist,
+  [Parameter(Mandatory = $false)][string[]]$MaintenanceMaintainerSourceAllowlist,
+  [Parameter(Mandatory = $false)][string]$MaintenanceWireGuardInterfaceAlias = "VEM-Maintenance",
+  [Parameter(Mandatory = $false)][string]$MaintenanceWireGuardListenAddress,
 
   [switch]$ResetExistingVemState,
-  [switch]$UseSecureCredentialEnvironment,
   [switch]$DryRun
 )
 
@@ -65,7 +77,24 @@ function Assert-RequiredInputs {
       "ExpectedMaintenanceUser",
       "ExpectedAutoLogonUser",
       "ExpectedKioskShell",
-      "TargetLayoutVersion"
+      "TargetLayoutVersion",
+      "FactoryProfile",
+      "OpenSshPackagePath",
+      "OpenSshPackageSource",
+      "OpenSshPackageVersion",
+      "OpenSshPackageSha256",
+      "OpenSshApprovedSignerThumbprint",
+      "OpenSshApprovedRootThumbprint",
+      "WireGuardPackagePath",
+      "WireGuardPackageSource",
+      "WireGuardPackageVersion",
+      "WireGuardPackageSha256",
+      "WireGuardApprovedSignerThumbprint",
+      "WireGuardApprovedRootThumbprint",
+      "MaintenanceSshCaPublicKeyPath",
+      "MaintenanceSshCaPublicKeySha256",
+      "MaintenanceWireGuardInterfaceAlias",
+      "MaintenanceWireGuardListenAddress"
     )) {
     $value = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
     if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value) -or [string]$value -eq "0") {
@@ -77,128 +106,463 @@ function Assert-RequiredInputs {
     throw ("missing required input: {0}" -f ($missing -join ", "))
   }
 
+  if ($FactoryProfile -eq "production") {
+    $visionMissing = @("FactoryMediaRoot", "VisionConfigurationSourcePath") | Where-Object {
+      [string]::IsNullOrWhiteSpace([string](Get-Variable -Name $_ -ValueOnly))
+    }
+    if ($visionMissing.Count -gt 0) {
+      throw ("production Factory Vision installation requires: {0}" -f ($visionMissing -join ", "))
+    }
+  }
+
   Normalize-Sha256 -Value $DaemonSha256 | Out-Null
   Normalize-Sha256 -Value $MachineUiSha256 | Out-Null
 }
 
-function Resolve-CredentialInput {
-  param(
-    [string]$Name,
-    [string]$ExplicitValue,
-    [string]$EnvironmentName
-  )
+function Get-FactoryMaintenanceProfilePolicy {
+  param([string]$Profile)
 
-  if (-not [string]::IsNullOrEmpty($ExplicitValue)) {
-    return [ordered]@{
-      name = $Name
-      value = $ExplicitValue
-      source = "explicit_parameter"
+  $policies = @{
+    production = [ordered]@{
+      maintenanceUser = "Admin"
+      caProfile = "production"
+      rejectedUsers = @("YKDZ")
+      rejectedTokens = @("testbed", "simulator", "shared-password", "test-ca", "test-peer")
+    }
+    testbed = [ordered]@{
+      maintenanceUser = "YKDZ"
+      caProfile = "testbed"
+      rejectedUsers = @("Admin@real")
+      rejectedTokens = @("production-ca", "production-peer", "shared-password")
     }
   }
-
-  if (-not $UseSecureCredentialEnvironment) {
-    throw "missing required credential input: $Name. Pass -$Name explicitly or add explicit -UseSecureCredentialEnvironment acknowledgement"
+  if (-not $policies.ContainsKey($Profile)) {
+    throw "FactoryProfile must be production or testbed"
   }
+  return $policies[$Profile]
+}
 
-  $environmentValue = [Environment]::GetEnvironmentVariable($EnvironmentName)
-  if ([string]::IsNullOrEmpty($environmentValue)) {
-    throw "missing required credential input: $Name from secure environment variable $EnvironmentName"
+function Assert-ProductionHostIsolation {
+  param(
+    [string]$DaemonConfigPath = "C:\ProgramData\VEM\vending-daemon\machine-config.json",
+    [string]$WireGuardConfigPath = "C:\ProgramData\VEM\maintenance\VEM-Maintenance.conf",
+    [string]$MaintenanceCaPath = "C:\ProgramData\VEM\factory\maintenance-ca.pub"
+  )
+
+  $findings = [System.Collections.Generic.List[string]]::new()
+  if ($null -ne (Get-Command "Get-LocalUser" -ErrorAction SilentlyContinue)) {
+    $testbedUser = Get-LocalUser -Name "YKDZ" -ErrorAction SilentlyContinue
+    if ($null -ne $testbedUser) { $findings.Add("live YKDZ testbed account") | Out-Null }
   }
+  if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable("VEM_MAINTENANCE_PASSWORD"))) {
+    $findings.Add("shared maintenance password environment input") | Out-Null
+  }
+  foreach ($candidate in @(
+      [pscustomobject]@{ path = $DaemonConfigPath; pattern = '(?i)"hardwareAdapter"\s*:\s*"mock"|"serialPortPath"\s*:\s*"tcp://|"machineCode"\s*:\s*"[^"]*(testbed|test|sim)' ; label = "daemon simulator/testbed hardware configuration" },
+      [pscustomobject]@{ path = $WireGuardConfigPath; pattern = "(?i)testbed|test-peer|simulator|shared-password"; label = "test peer WireGuard configuration" },
+      [pscustomobject]@{ path = $MaintenanceCaPath; pattern = "(?i)vem-maintenance-ca:testbed|test-ca"; label = "test Maintenance SSH CA" }
+    )) {
+    if (Test-Path -LiteralPath $candidate.path -PathType Leaf) {
+      $content = [System.IO.File]::ReadAllText($candidate.path, [System.Text.Encoding]::UTF8)
+      if ($content -match $candidate.pattern) { $findings.Add([string]$candidate.label) | Out-Null }
+    }
+  }
+  if ($null -ne (Get-Command "Get-Process" -ErrorAction SilentlyContinue)) {
+    $simulatorProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { [string]$_.ProcessName -match "(?i)lower-controller-sim|simulator" })
+    if ($simulatorProcesses.Count -gt 0) { $findings.Add("running hardware simulator process") | Out-Null }
+  }
+  if ($findings.Count -gt 0) {
+    throw "production host contamination detected: $($findings -join ', ')"
+  }
+  return [ordered]@{
+    checked = $true
+    testbedAccountAbsent = $true
+    sharedMaintenanceCredentialAbsent = $true
+    testCaPeerAndSimulatorStateAbsent = $true
+  }
+}
 
+function Assert-FactoryMaintenanceProfile {
+  $policy = Get-FactoryMaintenanceProfilePolicy -Profile $FactoryProfile
+  if ($ExpectedMaintenanceUser -cne [string]$policy.maintenanceUser) {
+    throw "FactoryProfile $FactoryProfile requires maintenance account $($policy.maintenanceUser)"
+  }
+  if ($FactoryProfile -eq "production" -and $HardwareMode -ne "production") {
+    throw "production FactoryProfile cannot use simulated hardware"
+  }
+  if ($FactoryProfile -eq "testbed" -and $HardwareMode -ne "simulated") {
+    throw "testbed FactoryProfile requires simulated hardware"
+  }
+  if ($FactoryProfile -eq "production") {
+    $policy.productionHostIsolation = Assert-ProductionHostIsolation
+  }
+  foreach ($token in @($policy.rejectedTokens)) {
+    foreach ($value in @($EnvironmentName, $HardwareModel, $TopologyIdentity, $MaintenanceSshCaPublicKeyPath)) {
+      if ([string]$value -match [regex]::Escape([string]$token)) {
+        throw "FactoryProfile $FactoryProfile rejects contaminated input token $token"
+      }
+    }
+  }
+  return $policy
+}
+
+function Assert-PinnedLocalPackage {
+  param(
+    [string]$Name,
+    [string]$Path,
+    [string]$Source,
+    [string]$Version,
+    [string]$ExpectedSha256,
+    [string]$ApprovedSignerThumbprint,
+    [string]$ApprovedRootThumbprint
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Source) -or $Source -notmatch "^(local-pinned|factory-cas://sha256/[0-9a-f]{64})$") {
+    throw "$Name package source must be a declared local-pinned or factory-cas identity"
+  }
+  if ($Source -match "(?i)(https?|winget|choco|capability|online|latest|floating)" ) {
+    throw "$Name package source must not be online, floating, or Windows Capability based"
+  }
+  if ([string]::IsNullOrWhiteSpace($Version) -or $Version -match "(?i)latest|floating") {
+    throw "$Name package version must be fixed"
+  }
+  $hash = Assert-Sha256 -Path $Path -ExpectedSha256 $ExpectedSha256
+  if ($Source -match "^factory-cas://sha256/([0-9a-f]{64})$") {
+    $sourceHash = [string]$matches[1]
+    if ($sourceHash -cne $hash) {
+      throw "$Name content-addressed source does not match measured artifact hash"
+    }
+  }
+  $signature = Get-AuthenticodePackageEvidence -Name $Name -Path $Path -ApprovedSignerThumbprint $ApprovedSignerThumbprint -ApprovedRootThumbprint $ApprovedRootThumbprint
+  $signature["artifactSha256"] = $hash
   return [ordered]@{
     name = $Name
-    value = $environmentValue
-    source = "secure_environment"
+    source = $Source
+    version = $Version
+    sha256 = $hash
+    signatureEvidence = $signature
+    localInstallPath = $Path
+    installedExecutablePaths = if ($Name -eq "OpenSSH") {
+      @("C:\Program Files\OpenSSH\sshd.exe", "C:\Windows\System32\OpenSSH\sshd.exe")
+    } elseif ($Name -eq "WireGuard") {
+      @("C:\Program Files\WireGuard\wireguard.exe", "C:\Program Files (x86)\WireGuard\wireguard.exe")
+    } else {
+      @()
+    }
+  }
+}
+
+function Normalize-CertificateThumbprint {
+  param([string]$Value)
+  $normalized = ([string]$Value -replace "[^0-9A-Fa-f]", "").ToUpperInvariant()
+  if ($normalized -notmatch "^[0-9A-F]{40}$") {
+    throw "approved certificate thumbprint must be 40 hexadecimal characters"
+  }
+  return $normalized
+}
+
+function Get-CertificateChainEvidence {
+  param($Certificate)
+
+  $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+  $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+  $valid = $chain.Build($Certificate)
+  $elements = @($chain.ChainElements | ForEach-Object { $_.Certificate })
+  return [ordered]@{
+    valid = $valid
+    statuses = @($chain.ChainStatus | ForEach-Object { [string]$_.Status })
+    thumbprints = @($elements | ForEach-Object { ([string]$_.Thumbprint).ToUpperInvariant() })
+    rootThumbprint = if ($elements.Count -gt 0) { ([string]$elements[-1].Thumbprint).ToUpperInvariant() } else { $null }
+  }
+}
+
+function Get-AuthenticodePackageEvidence {
+  param(
+    [string]$Name,
+    [string]$Path,
+    [string]$ApprovedSignerThumbprint,
+    [string]$ApprovedRootThumbprint
+  )
+
+  $expectedSigner = Normalize-CertificateThumbprint -Value $ApprovedSignerThumbprint
+  $expectedRoot = Normalize-CertificateThumbprint -Value $ApprovedRootThumbprint
+  $signature = Get-AuthenticodeSignature -FilePath $Path
+  if ($null -eq $signature -or [string]$signature.Status -cne "Valid" -or $null -eq $signature.SignerCertificate) {
+    throw "$Name Authenticode signature is not valid: $([string]$signature.StatusMessage)"
+  }
+  $signerThumbprint = Normalize-CertificateThumbprint -Value ([string]$signature.SignerCertificate.Thumbprint)
+  if ($signerThumbprint -cne $expectedSigner) {
+    throw "$Name Authenticode signer thumbprint is not approved"
+  }
+  $chain = Get-CertificateChainEvidence -Certificate $signature.SignerCertificate
+  if (-not [bool]$chain.valid) {
+    throw "$Name Authenticode certificate chain is not valid: $(@($chain.statuses) -join ', ')"
+  }
+  if ([string]$chain.rootThumbprint -cne $expectedRoot) {
+    throw "$Name Authenticode root certificate thumbprint is not approved"
+  }
+  return [ordered]@{
+    verificationMethod = "authenticode"
+    status = [string]$signature.Status
+    statusMessage = [string]$signature.StatusMessage
+    signerSubject = [string]$signature.SignerCertificate.Subject
+    signerIssuer = [string]$signature.SignerCertificate.Issuer
+    signerThumbprint = $signerThumbprint
+    chainThumbprints = @($chain.thumbprints)
+    rootThumbprint = [string]$chain.rootThumbprint
+  }
+}
+
+function Read-JsonFile {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "JSON file not found: $Path"
+  }
+  return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+}
+
+function Assert-MaintenanceCaInput {
+  $hash = Assert-Sha256 -Path $MaintenanceSshCaPublicKeyPath -ExpectedSha256 $MaintenanceSshCaPublicKeySha256
+  $keyLines = @([System.IO.File]::ReadAllLines($MaintenanceSshCaPublicKeyPath, [System.Text.Encoding]::UTF8) | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 -and -not $_.StartsWith("#") })
+  if ($keyLines.Count -ne 1) {
+    throw "Maintenance SSH CA file must contain exactly one public key"
+  }
+  $parts = $keyLines[0] -split "\s+", 3
+  if ($parts.Count -ne 3 -or $parts[0] -cne "ssh-ed25519") {
+    throw "Maintenance SSH CA file must contain exactly one Ed25519 OpenSSH public key with a profile comment"
+  }
+  try { [Convert]::FromBase64String($parts[1]) | Out-Null } catch { throw "Maintenance SSH CA public key encoding is invalid" }
+  if ($parts[2] -notmatch "^vem-maintenance-ca:(production|testbed)$") {
+    throw "Maintenance SSH CA public key comment must declare vem-maintenance-ca:<profile>"
+  }
+  $derivedProfile = $matches[1]
+  if ($derivedProfile -cne $FactoryProfile) {
+    throw "Maintenance SSH CA profile $derivedProfile does not match FactoryProfile $FactoryProfile"
+  }
+  $keygen = Get-Command "ssh-keygen.exe" -ErrorAction SilentlyContinue
+  if ($null -eq $keygen) { $keygen = Get-Command "ssh-keygen" -ErrorAction SilentlyContinue }
+  if ($null -eq $keygen) { throw "ssh-keygen is required to derive the Maintenance SSH CA fingerprint" }
+  $fingerprintOutput = ((& $keygen.Source -lf $MaintenanceSshCaPublicKeyPath -E sha256 2>&1) | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or $fingerprintOutput -notmatch "(SHA256:[A-Za-z0-9+/]+)") {
+    throw "ssh-keygen could not derive the Maintenance SSH CA fingerprint: $fingerprintOutput"
+  }
+  return [ordered]@{
+    profile = $derivedProfile
+    sha256 = $hash
+    fingerprint = $matches[1]
+    keyType = $parts[0]
+    keyCount = 1
+    publicKeyOnly = $true
+  }
+}
+
+function Assert-RolePools {
+  $all = @($MaintenanceRunnerSourceAllowlist) + @($MaintenanceMaintainerSourceAllowlist)
+  if ($all.Count -eq 0) {
+    throw "Controlled Maintenance Ingress requires runner and maintainer role pools"
+  }
+  foreach ($source in $all) {
+    if ([string]::IsNullOrWhiteSpace([string]$source) -or [string]$source -match "^(Any|Internet|LocalSubnet|0\.0\.0\.0/0|::/0)$") {
+      throw "maintenance role pools must contain only explicit WireGuard addresses or CIDRs"
+    }
+  }
+  return @($all | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+}
+
+function Invoke-NamedPowerShellScript {
+  param(
+    [Parameter(Mandatory = $true)][string]$ScriptPath,
+    [Parameter(Mandatory = $true)][hashtable]$Arguments
+  )
+
+  & $ScriptPath @Arguments
+}
+
+function Get-WireGuardTunnelServiceName {
+  return 'WireGuardTunnel$VEM-Maintenance'
+}
+
+function Assert-ExactObjectProperties {
+  param(
+    $Value,
+    [string[]]$ExpectedNames,
+    [string]$Label
+  )
+
+  if ($null -eq $Value -or $Value -is [string] -or $Value -is [array]) {
+    throw "$Label must be an object"
+  }
+  $actualNames = @($Value.PSObject.Properties.Name)
+  $unknown = @($actualNames | Where-Object { $_ -notin $ExpectedNames })
+  $missing = @($ExpectedNames | Where-Object { $_ -notin $actualNames })
+  if ($unknown.Count -gt 0 -or $missing.Count -gt 0 -or $actualNames.Count -ne $ExpectedNames.Count) {
+    throw "$Label has an invalid property shape"
+  }
+}
+
+function Get-RequiredOwnProperty {
+  param(
+    $Value,
+    [string]$Name,
+    [string]$Label
+  )
+
+  $property = @($Value.PSObject.Properties | Where-Object { $_.Name -ceq $Name })
+  if ($property.Count -ne 1) {
+    throw "$Label is missing required own property $Name"
+  }
+  return $property[0].Value
+}
+
+function Assert-FactoryPersonalizationMedia {
+  if ([string]::IsNullOrWhiteSpace($PersonalizationMediaPath)) { return $null }
+  if (-not (Test-Path -LiteralPath $PersonalizationMediaPath -PathType Leaf)) {
+    throw "Factory Personalization Media is missing"
+  }
+  $media = Read-JsonFile -Path $PersonalizationMediaPath
+  Assert-ExactObjectProperties -Value $media -ExpectedNames @("schemaVersion", "kind", "mediaId", "profile", "protection", "credentials") -Label "Factory Personalization Media"
+  $schemaVersion = Get-RequiredOwnProperty -Value $media -Name "schemaVersion" -Label "Factory Personalization Media"
+  $kind = Get-RequiredOwnProperty -Value $media -Name "kind" -Label "Factory Personalization Media"
+  $mediaProfile = Get-RequiredOwnProperty -Value $media -Name "profile" -Label "Factory Personalization Media"
+  $mediaId = Get-RequiredOwnProperty -Value $media -Name "mediaId" -Label "Factory Personalization Media"
+  $protection = Get-RequiredOwnProperty -Value $media -Name "protection" -Label "Factory Personalization Media"
+  $credentialObject = Get-RequiredOwnProperty -Value $media -Name "credentials" -Label "Factory Personalization Media"
+  if ([string]$schemaVersion -cne "vem-factory-personalization-media/v1" -or [string]$kind -cne "factory-personalization-media") {
+    throw "Factory Personalization Media schema is invalid"
+  }
+  if ([string]$mediaProfile -cne $FactoryProfile) { throw "Factory Personalization Media profile does not match FactoryProfile" }
+  if ([string]$mediaId -notmatch "^[a-z0-9][a-z0-9-]{15,127}$") { throw "Factory Personalization Media id is invalid" }
+  Assert-ExactObjectProperties -Value $protection -ExpectedNames @("encryptedAtRest", "access", "cache", "retention") -Label "Factory Personalization Media protection"
+  $encryptedAtRest = Get-RequiredOwnProperty -Value $protection -Name "encryptedAtRest" -Label "Factory Personalization Media protection"
+  if ($encryptedAtRest -isnot [bool] -or $encryptedAtRest -ne $true -or [string](Get-RequiredOwnProperty -Value $protection -Name "access" -Label "Factory Personalization Media protection") -cne "trusted-protected-gate" -or [string](Get-RequiredOwnProperty -Value $protection -Name "cache" -Label "Factory Personalization Media protection") -cne "forbidden" -or [string](Get-RequiredOwnProperty -Value $protection -Name "retention" -Label "Factory Personalization Media protection") -cne "installation-lifecycle-only") {
+    throw "Factory Personalization Media protection policy is invalid"
+  }
+  $credentialNames = if ($FactoryProfile -eq "production") { @("administrator", "kiosk") } else { @("bootstrap", "kiosk") }
+  Assert-ExactObjectProperties -Value $credentialObject -ExpectedNames $credentialNames -Label "Factory Personalization Media credentials"
+  $maintenanceCredentialName = if ($FactoryProfile -eq "production") { "administrator" } else { "bootstrap" }
+  $expectedMaintenanceUser = if ($FactoryProfile -eq "production") { "Admin" } else { "YKDZ" }
+  $maintenance = Get-RequiredOwnProperty -Value $credentialObject -Name $maintenanceCredentialName -Label "Factory Personalization Media credentials"
+  $kiosk = Get-RequiredOwnProperty -Value $credentialObject -Name "kiosk" -Label "Factory Personalization Media credentials"
+  Assert-ExactObjectProperties -Value $maintenance -ExpectedNames @("user", "password") -Label "Factory Personalization Media maintenance credential"
+  Assert-ExactObjectProperties -Value $kiosk -ExpectedNames @("user", "password") -Label "Factory Personalization Media kiosk credential"
+  $maintenanceUser = Get-RequiredOwnProperty -Value $maintenance -Name "user" -Label "Factory Personalization Media maintenance credential"
+  $kioskUser = Get-RequiredOwnProperty -Value $kiosk -Name "user" -Label "Factory Personalization Media kiosk credential"
+  $maintenancePassword = Get-RequiredOwnProperty -Value $maintenance -Name "password" -Label "Factory Personalization Media maintenance credential"
+  $kioskPassword = Get-RequiredOwnProperty -Value $kiosk -Name "password" -Label "Factory Personalization Media kiosk credential"
+  if ([string]$maintenanceUser -cne $expectedMaintenanceUser -or [string]$kioskUser -cne $ExpectedKioskUser) {
+    throw "Factory Personalization Media account profile is invalid"
+  }
+  foreach ($password in @($maintenancePassword, $kioskPassword)) {
+    if ($password -isnot [string] -or $password.Length -lt 16 -or $password -match "(?i)shared-password") {
+      throw "Factory Personalization Media contains an invalid or shared password"
+    }
+  }
+  if ([string]$maintenancePassword -ceq [string]$kioskPassword) { throw "Factory Personalization Media credentials must be unique" }
+  $serialized = $media | ConvertTo-Json -Depth 20 -Compress
+  if ($serialized -match "(?i)private.?key|wireguard|wg|peer|certificate|token|secret") {
+    throw "Factory Personalization Media must not supply WireGuard key or peer material"
+  }
+  if ($FactoryProfile -eq "production" -and $serialized -match "(?i)YKDZ|testbed|test-ca|simulator|shared-password") {
+    throw "production Factory Personalization Media contains testbed material"
+  }
+  return [pscustomobject]@{
+    KioskPassword = [string]$kioskPassword
+    AutoLogonPassword = [string]$kioskPassword
+    MaintenancePassword = [string]$maintenancePassword
+    MediaId = [string]$mediaId
+    Sources = [ordered]@{ personalizationMedia = "trusted-protected-gate" }
+    Redaction = [ordered]@{
+      schemaVersion = "vem-factory-personalization-media-redaction/v1"
+      kind = "factory-personalization-media-redaction"
+      profile = $FactoryProfile
+      protection = [ordered]@{
+        encryptedAtRest = $true
+        access = "trusted-protected-gate"
+        cache = "forbidden"
+        retention = "installation-lifecycle-only"
+      }
+      credentials = [ordered]@{
+        ($maintenanceCredentialName) = "configured"
+        kiosk = "configured"
+      }
+      wireGuardPrivateKey = "not-supplied; generated-locally"
+      mediaConsumed = $true
+      stagingRetained = $false
+    }
+  }
+}
+
+function Assert-FactoryPersonalizationNotReused {
+  param($Preflight)
+
+  $markerPath = Join-Path $ProgramDataRoot "factory\personalization-consumed.json"
+  if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return }
+  $marker = Read-JsonFile -Path $markerPath
+  if ([string]$marker.mediaId -ceq [string]$Preflight.MediaId) {
+    throw "Factory Personalization Media has already been consumed for this installation"
+  }
+}
+
+function Mark-FactoryPersonalizationConsumed {
+  param($Preflight)
+
+  $markerPath = Join-Path $ProgramDataRoot "factory\personalization-consumed.json"
+  Write-JsonFile -Path $markerPath -Value ([ordered]@{
+      schemaVersion = "vem-factory-personalization-consumption/v1"
+      profile = [string]$Preflight.FactoryProfile
+      mediaId = [string]$Preflight.MediaId
+    })
+  icacls.exe $markerPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Factory Personalization Media consumption marker ACL setup failed"
   }
 }
 
 function Assert-CredentialInputs {
-  $kiosk = Resolve-CredentialInput -Name "KioskPassword" -ExplicitValue $KioskPassword -EnvironmentName "VEM_KIOSK_PASSWORD"
-  $maintenance = Resolve-CredentialInput -Name "MaintenancePassword" -ExplicitValue $MaintenancePassword -EnvironmentName "VEM_MAINTENANCE_PASSWORD"
-  $autoLogon = Resolve-CredentialInput -Name "AutoLogonPassword" -ExplicitValue $AutoLogonPassword -EnvironmentName "VEM_AUTOLOGON_PASSWORD"
-
-  return [pscustomobject]@{
-    KioskPassword = [string]$kiosk.value
-    MaintenancePassword = [string]$maintenance.value
-    AutoLogonPassword = [string]$autoLogon.value
-    Sources = [ordered]@{
-      kioskPassword = [string]$kiosk.source
-      maintenancePassword = [string]$maintenance.source
-      autoLogonPassword = [string]$autoLogon.source
+  if ($DryRun) {
+    if (-not [string]::IsNullOrWhiteSpace($PersonalizationMediaPath)) {
+      throw "Factory Personalization Media must not be mounted for a dry run"
+    }
+    $dryRunCredentialRedaction = [ordered]@{
+      kiosk = "not-configured"
+    }
+    if ($FactoryProfile -eq "production") {
+      $dryRunCredentialRedaction = [ordered]@{
+        administrator = "not-configured"
+        kiosk = "not-configured"
+      }
+    } else {
+      $dryRunCredentialRedaction = [ordered]@{
+        bootstrap = "not-configured"
+        kiosk = "not-configured"
+      }
+    }
+    return [pscustomobject]@{
+      KioskPassword = $null
+      AutoLogonPassword = $null
+      MaintenancePassword = $null
+      MediaId = $null
+      Sources = [ordered]@{ personalizationMedia = "not-mounted-dry-run" }
+      Redaction = [ordered]@{
+        schemaVersion = "vem-factory-personalization-media-preview/v1"
+        kind = "factory-personalization-media-preview"
+        profile = $FactoryProfile
+        protection = [ordered]@{
+          encryptedAtRest = $true
+          access = "trusted-protected-gate"
+          cache = "forbidden"
+          retention = "installation-lifecycle-only"
+        }
+        credentials = $dryRunCredentialRedaction
+        wireGuardPrivateKey = "not-supplied; generated-locally"
+        mediaConsumed = $false
+        stagingRetained = $false
+      }
     }
   }
-}
-
-function Test-MaintenanceRelayRequested {
-  return (
-    -not [string]::IsNullOrWhiteSpace($MaintenanceRelayWireGuardInstallerPath) -or
-    -not [string]::IsNullOrWhiteSpace($MaintenanceRelayWireGuardInstallerSha256) -or
-    -not [string]::IsNullOrWhiteSpace($MaintenanceRelayWireGuardConfigPath) -or
-    -not [string]::IsNullOrWhiteSpace($MaintenanceRelayWireGuardConfigSha256) -or
-    @($MaintenanceRelaySourceAllowlist).Count -gt 0
-  )
-}
-
-function Assert-MaintenanceRelayInputs {
-  if (-not (Test-MaintenanceRelayRequested)) {
-    return [ordered]@{
-      enabled = $false
-      status = "not_configured"
-    }
-  }
-
-  $missing = @()
-  foreach ($name in @(
-      "MaintenanceRelayWireGuardInstallerPath",
-      "MaintenanceRelayWireGuardInstallerSha256",
-      "MaintenanceRelayWireGuardConfigPath",
-      "MaintenanceRelayWireGuardConfigSha256"
-    )) {
-    $value = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
-    if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
-      $missing += $name
-    }
-  }
-  if (@($MaintenanceRelaySourceAllowlist).Count -eq 0) {
-    $missing += "MaintenanceRelaySourceAllowlist"
-  }
-  if ($missing.Count -gt 0) {
-    throw ("missing maintenance relay input: {0}" -f ($missing -join ", "))
-  }
-
-  if ($MaintenanceRelayTunnelName -notmatch "^[A-Za-z0-9_=+.-]{1,32}$") {
-    throw "MaintenanceRelayTunnelName must be 1-32 WireGuard tunnel-safe characters"
-  }
-  foreach ($source in @($MaintenanceRelaySourceAllowlist)) {
-    $trimmed = [string]$source
-    if ([string]::IsNullOrWhiteSpace($trimmed)) {
-      throw "MaintenanceRelaySourceAllowlist must not contain empty values"
-    }
-    if ($trimmed -match "^(0\.0\.0\.0/0|::/0|Any)$") {
-      throw "MaintenanceRelaySourceAllowlist must not contain broad sources: $trimmed"
-    }
-  }
-
-  $installerHash = Assert-Sha256 -Path $MaintenanceRelayWireGuardInstallerPath -ExpectedSha256 $MaintenanceRelayWireGuardInstallerSha256
-  $configHash = Assert-Sha256 -Path $MaintenanceRelayWireGuardConfigPath -ExpectedSha256 $MaintenanceRelayWireGuardConfigSha256
-  $configText = [System.IO.File]::ReadAllText($MaintenanceRelayWireGuardConfigPath, [System.Text.Encoding]::UTF8)
-  if (-not ($configText -match "(?im)^\s*\[Interface\]\s*$") -or -not ($configText -match "(?im)^\s*PrivateKey\s*=")) {
-    throw "maintenance relay WireGuard config must contain an Interface PrivateKey"
-  }
-  if ($configText -match "(?im)^\s*AllowedIPs\s*=\s*(0\.0\.0\.0/0|::/0)") {
-    throw "maintenance relay WireGuard config must not route broad AllowedIPs"
-  }
-
-  return [ordered]@{
-    enabled = $true
-    status = "preflight_passed"
-    tunnelName = $MaintenanceRelayTunnelName
-    installerPath = $MaintenanceRelayWireGuardInstallerPath
-    installerSha256 = $installerHash
-    configPath = $MaintenanceRelayWireGuardConfigPath
-    configSha256 = $configHash
-    sourceAllowlist = @($MaintenanceRelaySourceAllowlist | ForEach-Object { [string]$_ })
-  }
+  $media = Assert-FactoryPersonalizationMedia
+  if ($null -ne $media) { return $media }
+  throw "Factory Personalization Media is required; direct credential parameters and environment variables are not accepted for factory preparation"
 }
 
 function Normalize-Sha256 {
@@ -385,13 +749,19 @@ function Assert-FactoryRuntimePreflight {
   }
   $machineUiSidecarHash = (Get-FileHash -LiteralPath $machineUiSidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $credentials = Assert-CredentialInputs
-  $maintenanceRelay = Assert-MaintenanceRelayInputs
+  $profilePolicy = Assert-FactoryMaintenanceProfile
+  $openSshPackage = Assert-PinnedLocalPackage -Name "OpenSSH" -Path $OpenSshPackagePath -Source $OpenSshPackageSource -Version $OpenSshPackageVersion -ExpectedSha256 $OpenSshPackageSha256 -ApprovedSignerThumbprint $OpenSshApprovedSignerThumbprint -ApprovedRootThumbprint $OpenSshApprovedRootThumbprint
+  $wireGuardPackage = Assert-PinnedLocalPackage -Name "WireGuard" -Path $WireGuardPackagePath -Source $WireGuardPackageSource -Version $WireGuardPackageVersion -ExpectedSha256 $WireGuardPackageSha256 -ApprovedSignerThumbprint $WireGuardApprovedSignerThumbprint -ApprovedRootThumbprint $WireGuardApprovedRootThumbprint
+  $maintenanceCa = Assert-MaintenanceCaInput
+  $rolePools = Assert-RolePools
   $supportScripts = @(
     "setup-scheduled-tasks.ps1",
     "verify-factory-runtime.ps1",
     "verify-kiosk-lockdown.ps1",
     "verify-vem-runtime.ps1",
-    "apply-managed-update.ps1"
+    "apply-managed-update.ps1",
+    "provision-vision-factory-release.ps1",
+    "install-vision-release.ps1"
   ) | ForEach-Object { Assert-SupportScriptPresent -Name $_ }
 
   return [pscustomobject]@{
@@ -399,10 +769,20 @@ function Assert-FactoryRuntimePreflight {
     MachineUiSha256 = $machineUiHash
     MachineUiSidecarSha256 = $machineUiSidecarHash
     KioskPassword = $credentials.KioskPassword
-    MaintenancePassword = $credentials.MaintenancePassword
     AutoLogonPassword = $credentials.AutoLogonPassword
+    MaintenancePassword = $credentials.MaintenancePassword
+    PersonalizationRedaction = $credentials.Redaction
     CredentialSources = $credentials.Sources
-    MaintenanceRelay = $maintenanceRelay
+    FactoryProfile = $FactoryProfile
+    ProfilePolicy = $profilePolicy
+    OpenSshPackage = $openSshPackage
+    WireGuardPackage = $wireGuardPackage
+    MaintenanceCa = $maintenanceCa
+    RolePools = $rolePools
+    RunnerSourceAllowlist = @($MaintenanceRunnerSourceAllowlist)
+    MaintainerSourceAllowlist = @($MaintenanceMaintainerSourceAllowlist)
+    WireGuardInterfaceAlias = $MaintenanceWireGuardInterfaceAlias
+    WireGuardListenAddress = $MaintenanceWireGuardListenAddress
     SupportScripts = @($supportScripts)
   }
 }
@@ -434,6 +814,11 @@ function New-FactoryRuntimePlan {
       hardwareModel = $HardwareModel
       topologyIdentity = $TopologyIdentity
       topologyVersion = $TopologyVersion
+      factoryProfile = $Preflight.FactoryProfile
+      factoryMediaRoot = $FactoryMediaRoot
+      visionConfigurationSourcePath = $VisionConfigurationSourcePath
+      wireGuardInterfaceAlias = $Preflight.WireGuardInterfaceAlias
+      wireGuardListenAddress = $Preflight.WireGuardListenAddress
       display = [ordered]@{
         width = $ExpectedDisplayWidth
         height = $ExpectedDisplayHeight
@@ -468,7 +853,27 @@ function New-FactoryRuntimePlan {
           targetPath = Join-Path $RuntimeRoot "WebView2Loader.dll"
         }
       )
-      maintenanceRelay = $Preflight.MaintenanceRelay
+      packages = [ordered]@{
+        openSsh = [ordered]@{
+          name = $Preflight.OpenSshPackage.name
+          source = $Preflight.OpenSshPackage.source
+          version = $Preflight.OpenSshPackage.version
+          sha256 = $Preflight.OpenSshPackage.sha256
+          signatureEvidence = $Preflight.OpenSshPackage.signatureEvidence
+        }
+        wireGuard = [ordered]@{
+          name = $Preflight.WireGuardPackage.name
+          source = $Preflight.WireGuardPackage.source
+          version = $Preflight.WireGuardPackage.version
+          sha256 = $Preflight.WireGuardPackage.sha256
+          signatureEvidence = $Preflight.WireGuardPackage.signatureEvidence
+        }
+      }
+      maintenanceCa = $Preflight.MaintenanceCa
+      rolePools = [ordered]@{
+        runner = @($Preflight.RunnerSourceAllowlist)
+        maintainer = @($Preflight.MaintainerSourceAllowlist)
+      }
     }
     layout = [ordered]@{
       runtimeRoot = $RuntimeRoot
@@ -483,7 +888,11 @@ function New-FactoryRuntimePlan {
       provisioningRoot = $provisioningRoot
       secretsRoot = $secretsRoot
       evidenceRoot = $evidenceRoot
-      maintenanceRelayRoot = Join-Path $ProgramDataRoot "maintenance-relay"
+      visionInstallEvidencePath = Join-Path $evidenceRoot "vision-release-install.json"
+      visionConfigurationPath = "C:\ProgramData\VEM\vision\config\factory-vision-config.json"
+      maintenanceCaPath = Join-Path $factoryRoot "maintenance-ca.pub"
+      wireGuardRoot = Join-Path $ProgramDataRoot "maintenance"
+      wireGuardConfigPath = Join-Path (Join-Path $ProgramDataRoot "maintenance") "VEM-Maintenance.conf"
       verifierEvidencePath = Join-Path $evidenceRoot "factory-runtime-verification.json"
       overridesRoot = $overridesRoot
     }
@@ -496,7 +905,8 @@ function New-FactoryRuntimePlan {
       "C:\ProgramData\VEM\provisioning",
       "C:\ProgramData\VEM\secrets",
       "C:\ProgramData\VEM\evidence",
-      (Join-Path $ProgramDataRoot "maintenance-relay"),
+      "C:\ProgramData\VEM\vision\config",
+      (Join-Path $ProgramDataRoot "maintenance"),
       "C:\ProgramData\VEM\overrides"
     )
     registrations = [ordered]@{
@@ -506,7 +916,7 @@ function New-FactoryRuntimePlan {
       visionTaskName = "VEM\StartVisionServer"
       setupScript = Join-Path $scriptsRoot "setup-scheduled-tasks.ps1"
       verifierScript = Join-Path $scriptsRoot "verify-factory-runtime.ps1"
-      maintenanceRelayTunnelServiceName = if ([bool]$Preflight.MaintenanceRelay.enabled) { "WireGuardTunnel${MaintenanceRelayTunnelName}" } else { $null }
+      wireGuardTunnelServiceName = Get-WireGuardTunnelServiceName
     }
     resetEvidence = New-EmptyResetEvidence
   }
@@ -517,9 +927,7 @@ function Get-WireGuardExePath {
       "C:\Program Files\WireGuard\wireguard.exe",
       "C:\Program Files (x86)\WireGuard\wireguard.exe"
     )) {
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-      return $path
-    }
+    if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
   }
   return $null
 }
@@ -529,72 +937,130 @@ function Get-WgExePath {
       "C:\Program Files\WireGuard\wg.exe",
       "C:\Program Files (x86)\WireGuard\wg.exe"
     )) {
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-      return $path
-    }
+    if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
   }
   return $null
 }
 
-function Install-MaintenanceRelayWireGuard {
-  param($MaintenanceRelay)
+function Install-PinnedWindowsPackage {
+  param($Package)
 
-  if (-not [bool]$MaintenanceRelay.enabled) {
-    return [ordered]@{
-      enabled = $false
-      status = "not_configured"
+  foreach ($installedPath in @($Package.installedExecutablePaths)) {
+    if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) { continue }
+    $installed = Get-Item -LiteralPath $installedPath -ErrorAction SilentlyContinue
+    if ($null -ne $installed -and (Test-PinnedVersionEquivalent -Actual ([string]$installed.VersionInfo.FileVersion) -Expected ([string]$Package.version))) {
+      return [ordered]@{
+        skipped = $true
+        reason = "matching_pinned_version_installed"
+        installedPath = [string]$installedPath
+        installedVersion = [string]$installed.VersionInfo.FileVersion
+      }
     }
   }
 
-  Assert-Sha256 -Path $MaintenanceRelay.installerPath -ExpectedSha256 $MaintenanceRelay.installerSha256 | Out-Null
-  Assert-Sha256 -Path $MaintenanceRelay.configPath -ExpectedSha256 $MaintenanceRelay.configSha256 | Out-Null
+  $extension = [System.IO.Path]::GetExtension([string]$Package.localInstallPath).ToLowerInvariant()
+  if ($extension -eq ".msi") {
+    $msiPath = [string]$Package.localInstallPath
+    if ($msiPath.Contains('"')) { throw "$($Package.name) MSI path contains an invalid quote" }
+    $process = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", ('"{0}"' -f $msiPath), "/qn", "/norestart") -PassThru -Wait
+  } elseif ($extension -eq ".exe") {
+    $process = Start-Process -FilePath ([string]$Package.localInstallPath) -ArgumentList @("/quiet", "/norestart") -PassThru -Wait
+  } else {
+    throw "$($Package.name) package must be a local MSI or EXE installer"
+  }
+  if ([int]$process.ExitCode -notin @(0, 3010)) {
+    throw "$($Package.name) pinned installer failed with exit code $($process.ExitCode)"
+  }
+  return [ordered]@{
+    skipped = $false
+    reason = "pinned_installer_executed"
+    exitCode = [int]$process.ExitCode
+  }
+}
+
+function Test-PinnedVersionEquivalent {
+  param(
+    [string]$Actual,
+    [string]$Expected
+  )
+
+  if ($Actual.Trim() -ceq $Expected.Trim()) { return $true }
+  $actualMatch = [regex]::Match($Actual, "\d+(?:\.\d+)+")
+  $expectedMatch = [regex]::Match($Expected, "\d+(?:\.\d+)+")
+  if (-not $actualMatch.Success -or -not $expectedMatch.Success) { return $false }
+  $actualParts = [System.Collections.Generic.List[int]]@($actualMatch.Value.Split(".") | ForEach-Object { [int]$_ })
+  $expectedParts = [System.Collections.Generic.List[int]]@($expectedMatch.Value.Split(".") | ForEach-Object { [int]$_ })
+  while ($actualParts.Count -gt 1 -and $actualParts[-1] -eq 0) { $actualParts.RemoveAt($actualParts.Count - 1) }
+  while ($expectedParts.Count -gt 1 -and $expectedParts[-1] -eq 0) { $expectedParts.RemoveAt($expectedParts.Count - 1) }
+  return ($actualParts -join ".") -ceq ($expectedParts -join ".")
+}
+
+function Ensure-LocalWireGuardTunnelService {
+  param($Plan)
 
   $wireGuardExe = Get-WireGuardExePath
-  if ($null -eq $wireGuardExe) {
-    $extension = [System.IO.Path]::GetExtension([string]$MaintenanceRelay.installerPath).ToLowerInvariant()
-    if ($extension -eq ".msi") {
-      $process = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", [string]$MaintenanceRelay.installerPath, "/qn", "/norestart") -PassThru -Wait
-    } else {
-      $process = Start-Process -FilePath ([string]$MaintenanceRelay.installerPath) -ArgumentList @("/install", "/quiet", "/norestart") -PassThru -Wait
+  $wgExe = Get-WgExePath
+  if ($null -eq $wireGuardExe -or $null -eq $wgExe) {
+    throw "WireGuard executables are unavailable after pinned local installation"
+  }
+  Ensure-Directory -Path ([string]$Plan.layout.wireGuardRoot)
+  $configPath = [string]$Plan.layout.wireGuardConfigPath
+  if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+    $privateKey = (& $wgExe genkey | Out-String).Trim()
+    if ($privateKey -notmatch "^[A-Za-z0-9+/]{42,45}={0,2}$") {
+      throw "WireGuard did not generate a valid local private key"
     }
-    if ($process.ExitCode -ne 0) {
-      throw "WireGuard installer failed with exit code $($process.ExitCode)"
+    $listenAddress = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse([string]$Plan.inputs.wireGuardListenAddress, [ref]$listenAddress)) {
+      throw "WireGuard tunnel ListenAddress is invalid: $($Plan.inputs.wireGuardListenAddress)"
     }
-    $wireGuardExe = Get-WireGuardExePath
+    $prefixLength = if ($listenAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+    $config = @(
+      "[Interface]",
+      "PrivateKey = $privateKey",
+      "Address = $($listenAddress.IPAddressToString)/$prefixLength",
+      "# VEM daemon replaces peer/address state after Machine Claim"
+    )
+    Set-Content -LiteralPath $configPath -Value $config -Encoding ASCII
+    icacls.exe $configPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
   }
-  if ($null -eq $wireGuardExe) {
-    throw "WireGuard executable not found after installer completed"
+  $serviceName = Get-WireGuardTunnelServiceName
+  if ($null -eq (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
+    & $wireGuardExe /installtunnelservice $configPath | Out-Null
   }
-
-  $relayRoot = "C:\ProgramData\VEM\maintenance-relay"
-  Ensure-Directory -Path $relayRoot
-  $targetConfig = Join-Path $relayRoot ("{0}.conf" -f $MaintenanceRelay.tunnelName)
-  Copy-Item -LiteralPath ([string]$MaintenanceRelay.configPath) -Destination $targetConfig -Force
-  icacls.exe $targetConfig /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
-
-  $serviceName = "WireGuardTunnel{0}" -f $MaintenanceRelay.tunnelName
-  $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-  if ($null -ne $existingService) {
-    Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-    & $wireGuardExe /uninstalltunnelservice ([string]$MaintenanceRelay.tunnelName) | Out-Null
-  }
-  & $wireGuardExe /installtunnelservice $targetConfig | Out-Null
   Set-Service -Name $serviceName -StartupType Automatic
-  Start-Service -Name $serviceName
-
-  return [ordered]@{
-    enabled = $true
-    status = "configured"
-    tunnelName = [string]$MaintenanceRelay.tunnelName
-    serviceName = $serviceName
-    serviceStartupType = "Automatic"
-    configPath = $targetConfig
-    configSha256 = [string]$MaintenanceRelay.configSha256
-    installerSha256 = [string]$MaintenanceRelay.installerSha256
-    wireGuardExe = $wireGuardExe
-    wgExe = Get-WgExePath
-    sourceAllowlist = @($MaintenanceRelay.sourceAllowlist)
+  Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+  $service = Get-Service -Name $serviceName -ErrorAction Stop
+  $serviceConfig = Get-CimInstance Win32_Service -Filter ("Name = '{0}'" -f $serviceName) -ErrorAction Stop
+  $automatic = [string]$serviceConfig.StartMode -eq "Auto"
+  $localSystemOwned = [string]$serviceConfig.StartName -match "(?i)^(LocalSystem|NT AUTHORITY\\SYSTEM)$"
+  if ([string]$service.Status -ne "Running" -or -not $automatic -or -not $localSystemOwned) {
+    throw "WireGuard maintenance tunnel service must be running, automatic, and LocalSystem-owned"
   }
+  return [ordered]@{
+    serviceName = $serviceName
+    status = [string]$service.Status
+    startupType = if ($automatic) { "Automatic" } else { [string]$serviceConfig.StartMode }
+    startIndependentOfKiosk = $automatic
+    owner = [string]$serviceConfig.StartName
+    ownerMatches = $localSystemOwned
+    interfaceAlias = [string]$Plan.inputs.wireGuardInterfaceAlias
+    configPath = $configPath
+    privateKey = "local_only_not_emitted"
+  }
+}
+
+function Set-FactoryMaintenanceAccountPassword {
+  param(
+    [string]$User,
+    [string]$Password
+  )
+
+  if ([string]::IsNullOrEmpty($Password)) { return }
+  $account = Get-LocalUser -Name $User -ErrorAction SilentlyContinue
+  if ($null -eq $account) { throw "Factory Personalization Media requires the existing maintenance account $User" }
+  $securePassword = ConvertTo-SecureString $Password -AsPlainText -Force
+  Set-LocalUser -Name $User -Password $securePassword
 }
 
 function New-EvidenceItem {
@@ -611,23 +1077,30 @@ function New-EvidenceItem {
   }
 }
 
+function Get-FactoryMaintenanceResetTargets {
+  return [ordered]@{
+    serviceNames = @(
+      (Get-WireGuardTunnelServiceName),
+      "WireGuardTunnelVEM-Maintenance"
+    )
+    paths = @(
+      "C:\ProgramData\VEM\maintenance\VEM-Maintenance.conf",
+      "C:\ProgramData\VEM\factory\maintenance-ca.pub",
+      "C:\ProgramData\VEM\factory\factory-runtime-manifest.json",
+      "C:\ProgramData\ssh\sshd_config"
+    )
+    firewallDisplayNames = @("VEM Controlled Maintenance SSH")
+  }
+}
+
 function New-EmptyResetEvidence {
   $preserved = @(
     (New-EvidenceItem `
-        -Category "factory_manifest" `
-        -Path "C:\ProgramData\VEM\factory" `
-        -Reason "factory manifest directory is not local machine state")
-  )
-  $skipped = @(
-    (New-EvidenceItem `
         -Category "platform_business_data" `
-        -Path "C:\ProgramData\VEM" `
-        -Reason "platform machines, orders, inventory, payments, planograms, and audit records are outside local runtime reset"),
-    (New-EvidenceItem `
-        -Category "keyring_secret_material" `
-        -Path "keyring://VEM" `
-        -Reason "keyring-backed secret status is unknown and is not cleared by local filesystem reset")
+        -Path "platform://VEM" `
+        -Reason "platform machines, orders, inventory, payments, planograms, and audit records are outside local factory reset")
   )
+  $skipped = @()
 
   return [ordered]@{
     status = "clean"
@@ -653,6 +1126,7 @@ function Add-FoundState {
 
 function Get-ExistingVemState {
   $found = [System.Collections.Generic.List[object]]::new()
+  $maintenanceTargets = Get-FactoryMaintenanceResetTargets
   $paths = @(
     "C:\VEM\bringup",
     "C:\ProgramData\VEM\bringup",
@@ -678,10 +1152,27 @@ function Get-ExistingVemState {
     }
     Add-FoundState -Found $found -Category $category -Path $path -Reason "old local VEM runtime state exists"
   }
+  foreach ($path in @($maintenanceTargets.paths)) {
+    if (Test-Path -LiteralPath $path) {
+      Add-FoundState -Found $found -Category "maintenance_capability_state" -Path $path -Reason "stale factory maintenance configuration exists"
+    }
+  }
 
   $service = Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
   if ($null -ne $service) {
     Add-FoundState -Found $found -Category "daemon_service" -Path "service://VemVendingDaemon" -Reason "old VEM daemon service exists"
+  }
+  foreach ($serviceName in @($maintenanceTargets.serviceNames)) {
+    $maintenanceService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($null -ne $maintenanceService) {
+      Add-FoundState -Found $found -Category "maintenance_tunnel_service" -Path "service://$serviceName" -Reason "stale WireGuard maintenance tunnel service exists"
+    }
+  }
+  foreach ($displayName in @($maintenanceTargets.firewallDisplayNames)) {
+    $firewallRule = Get-NetFirewallRule -DisplayName $displayName -ErrorAction SilentlyContinue
+    if ($null -ne $firewallRule) {
+      Add-FoundState -Found $found -Category "maintenance_firewall" -Path "firewall://$displayName" -Reason "stale Controlled Maintenance SSH firewall rule exists"
+    }
   }
   $machineUiTask = Get-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue
   if ($null -ne $machineUiTask) {
@@ -721,6 +1212,21 @@ function Remove-ExistingVemState {
     return
   }
 
+  $maintenanceTargets = Get-FactoryMaintenanceResetTargets
+  $wireGuardExe = Get-WireGuardExePath
+  if ($null -ne $wireGuardExe) {
+    & $wireGuardExe /uninstalltunnelservice "VEM-Maintenance" | Out-Null
+  }
+  foreach ($serviceName in @($maintenanceTargets.serviceNames)) {
+    Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+    if ($null -ne (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
+      sc.exe delete $serviceName | Out-Null
+    }
+  }
+  foreach ($displayName in @($maintenanceTargets.firewallDisplayNames)) {
+    Get-NetFirewallRule -DisplayName $displayName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+  }
+
   Stop-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName "VEMMachineUI" -Confirm:$false -ErrorAction SilentlyContinue
   Stop-ScheduledTask -TaskName "VEMMaintenanceUI" -ErrorAction SilentlyContinue
@@ -745,6 +1251,62 @@ function Remove-ExistingVemState {
   return $State
 }
 
+function Assert-FactoryVisionInputFile {
+  param([string]$Path, [string]$Label)
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or $Path -match '[\x00-\x1f]' -or $Path -match '^(\\\\|//)' -or $Path -notmatch '^[A-Za-z]:\\') {
+    throw "$Label must be an absolute local Windows path"
+  }
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    throw "$Label must be a regular non-reparse file"
+  }
+  return $item.FullName
+}
+
+function Invoke-FactoryVisionRelease {
+  param($Plan)
+
+  $provisioningManifest = Assert-FactoryVisionInputFile -Path (Join-Path $FactoryMediaRoot "VEM\VISION-FACTORY-PROVISIONING.JSON") -Label "Factory Vision provisioning manifest"
+  $factoryMediaRoot = Split-Path -Parent $provisioningManifest
+  $configurationSource = Assert-FactoryVisionInputFile -Path $VisionConfigurationSourcePath -Label "Vision configuration source"
+  $provisioner = Join-Path $PSScriptRoot "provision-vision-factory-release.ps1"
+  if (-not (Test-Path -LiteralPath $provisioner -PathType Leaf)) { throw "Factory Vision provisioner is missing" }
+  & $provisioner -FactoryMediaRoot $factoryMediaRoot
+
+  $configurationPath = [string]$Plan.layout.visionConfigurationPath
+  New-Item -ItemType Directory -Path (Split-Path -Parent $configurationPath) -Force | Out-Null
+  Copy-Item -LiteralPath $configurationSource -Destination $configurationPath -Force
+  $configurationDigest = (Get-FileHash -LiteralPath $configurationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $installer = "C:\VEM\bringup\install-vision-release.ps1"
+  if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Factory Vision installer was not provisioned" }
+  & $installer -ConfigurationPath $configurationPath -EvidencePath ([string]$Plan.layout.visionInstallEvidencePath) -TaskUser $ExpectedAutoLogonUser
+
+  $evidence = Read-JsonFile -Path ([string]$Plan.layout.visionInstallEvidencePath)
+  if (
+    [string]$evidence.schemaVersion -cne "vem-vision-install-evidence/v3" -or
+    [string]$evidence.kind -cne "vision-release-install-evidence" -or
+    $evidence.redacted -ne $true -or
+    $evidence.healthOk -ne $true -or
+    $evidence.webSocketOk -ne $true -or
+    [string]::IsNullOrWhiteSpace([string]$evidence.installedDigest) -or
+    [string]$evidence.installedDigest -cne [string]$evidence.bundleDigest -or
+    -not [string]::IsNullOrWhiteSpace([string]$evidence.failure)
+  ) {
+    throw "Factory Vision installation evidence is incomplete or failed"
+  }
+  return [ordered]@{
+    installedDigest = [string]$evidence.installedDigest
+    descriptorDigest = [string]$evidence.descriptorDigest
+    approvalDigest = [string]$evidence.approvalDigest
+    configurationSha256 = $configurationDigest
+    evidencePath = [string]$Plan.layout.visionInstallEvidencePath
+    healthOk = $true
+    webSocketOk = $true
+    redacted = $true
+  }
+}
+
 function Write-FactoryRuntimeFiles {
   param(
     $Plan,
@@ -761,12 +1323,19 @@ function Write-FactoryRuntimeFiles {
   foreach ($directory in @($Plan.directories)) {
     Ensure-Directory -Path $directory
   }
+  Mark-FactoryPersonalizationConsumed -Preflight $Preflight
 
   $baselineApplication = Apply-FactoryWindowsBaseline -Policy $Plan.factoryWindowsBaselinePolicy
+
+  $openSshInstallation = Install-PinnedWindowsPackage -Package $Preflight.OpenSshPackage
+  $wireGuardInstallation = Install-PinnedWindowsPackage -Package $Preflight.WireGuardPackage
+  Set-FactoryMaintenanceAccountPassword -User $ExpectedMaintenanceUser -Password $Preflight.MaintenancePassword
 
   Copy-Item -LiteralPath $DaemonArtifactPath -Destination (Join-Path $RuntimeRoot "vending-daemon.exe") -Force
   Copy-Item -LiteralPath $MachineUiArtifactPath -Destination (Join-Path $RuntimeRoot "machine.exe") -Force
   Copy-Item -LiteralPath $machineUiSidecarPath -Destination (Join-Path $RuntimeRoot "WebView2Loader.dll") -Force
+  Copy-Item -LiteralPath $MaintenanceSshCaPublicKeyPath -Destination ([string]$Plan.layout.maintenanceCaPath) -Force
+  icacls.exe ([string]$Plan.layout.maintenanceCaPath) /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
 
   $scriptsRoot = [string]$Plan.layout.scriptsRoot
   Copy-ScriptIfPresent -Name "setup-scheduled-tasks.ps1" -TargetDirectory $scriptsRoot
@@ -774,6 +1343,8 @@ function Write-FactoryRuntimeFiles {
   Copy-ScriptIfPresent -Name "verify-kiosk-lockdown.ps1" -TargetDirectory $scriptsRoot
   Copy-ScriptIfPresent -Name "verify-vem-runtime.ps1" -TargetDirectory $scriptsRoot
   Copy-ScriptIfPresent -Name "apply-managed-update.ps1" -TargetDirectory $scriptsRoot
+  Copy-ScriptIfPresent -Name "provision-vision-factory-release.ps1" -TargetDirectory $scriptsRoot
+  Copy-ScriptIfPresent -Name "install-vision-release.ps1" -TargetDirectory $scriptsRoot
 
   $machineUiStartupMode = if (Test-ShellLauncherAvailable) { "shell_launcher" } else { "scheduled_task" }
   $manifest = [ordered]@{
@@ -782,6 +1353,36 @@ function Write-FactoryRuntimeFiles {
     layoutVersion = $TargetLayoutVersion
     environmentName = $EnvironmentName
     provisioningEndpoint = $ProvisioningEndpoint
+    factoryProfile = $Preflight.FactoryProfile
+    personalization = $Preflight.PersonalizationRedaction
+    packages = $Plan.inputs.packages
+    packageInstallation = [ordered]@{
+      openSsh = $openSshInstallation
+      wireGuard = $wireGuardInstallation
+    }
+    signatureEvidence = [ordered]@{
+      openSsh = $Preflight.OpenSshPackage.signatureEvidence
+      wireGuard = $Preflight.WireGuardPackage.signatureEvidence
+    }
+    maintenanceSsh = [ordered]@{
+      caProfile = [string]$Preflight.MaintenanceCa.profile
+      caSha256 = [string]$Preflight.MaintenanceCa.sha256
+      caFingerprint = [string]$Preflight.MaintenanceCa.fingerprint
+      caPath = [string]$Plan.layout.maintenanceCaPath
+      maintenanceUser = $ExpectedMaintenanceUser
+      kioskUser = $ExpectedKioskUser
+      runnerSourceAllowlist = @($Preflight.RunnerSourceAllowlist)
+      maintainerSourceAllowlist = @($Preflight.MaintainerSourceAllowlist)
+      wireGuardInterfaceAlias = [string]$Preflight.WireGuardInterfaceAlias
+      wireGuardListenAddress = [string]$Preflight.WireGuardListenAddress
+    }
+    wireGuard = [ordered]@{
+      serviceName = Get-WireGuardTunnelServiceName
+      configPath = [string]$Plan.layout.wireGuardConfigPath
+      owner = "LocalSystem"
+      startupType = "Automatic"
+      privateKeySource = "generated_locally"
+    }
     factoryWindowsBaselinePolicy = $Plan.factoryWindowsBaselinePolicy
     factoryWindowsBaselineApplication = $baselineApplication
     hardware = [ordered]@{
@@ -820,33 +1421,10 @@ function Write-FactoryRuntimeFiles {
         launcherPath = (Join-Path $RuntimeRoot "launch-machine-ui-debug.vbs")
         setupScript = (Join-Path $scriptsRoot "setup-scheduled-tasks.ps1")
       }
-      maintenanceRelay = if ([bool]$Preflight.MaintenanceRelay.enabled) {
-        [ordered]@{
-          kind = "wireguard-maintenance-relay"
-          bootstrapMode = "preconfigured-base-image"
-          tunnelName = [string]$Preflight.MaintenanceRelay.tunnelName
-          tunnelServiceName = "WireGuardTunnel${MaintenanceRelayTunnelName}"
-          configPath = Join-Path ([string]$Plan.layout.maintenanceRelayRoot) ("{0}.conf" -f $Preflight.MaintenanceRelay.tunnelName)
-          configSha256 = [string]$Preflight.MaintenanceRelay.configSha256
-          installerSha256 = [string]$Preflight.MaintenanceRelay.installerSha256
-          controlledMaintenanceIngress = [ordered]@{
-            transport = "ssh"
-            port = 22
-            sourceAllowlist = @($Preflight.MaintenanceRelay.sourceAllowlist)
-          }
-        }
-      } else {
-        [ordered]@{
-          kind = "none"
-          bootstrapMode = "not_configured"
-        }
-      }
     }
     components = $Plan.inputs.components
     paths = $Plan.layout
   }
-  Write-JsonFile -Path ([string]$Plan.layout.manifestPath) -Value ([pscustomobject]$manifest)
-
   $daemonManifest = [ordered]@{
     layoutVersion = 1
     environment = $EnvironmentName
@@ -898,70 +1476,83 @@ function Write-FactoryRuntimeFiles {
   }
   Write-JsonFile -Path ([string]$Plan.layout.daemonConfigPath) -Value ([pscustomobject]$daemonConfig)
 
-  $maintenanceRelayApplication = Install-MaintenanceRelayWireGuard -MaintenanceRelay $Preflight.MaintenanceRelay
+  $wireGuardApplication = Ensure-LocalWireGuardTunnelService -Plan $Plan
 
-  $setupArguments = @(
-    "-ConfigureKioskAccounts",
-    "-ConfigureAutoLogon",
-    "-KioskPassword",
-    $Preflight.KioskPassword,
-    "-MaintenancePassword",
-    $Preflight.MaintenancePassword,
-    "-AutoLogonPassword",
-    $Preflight.AutoLogonPassword,
-    "-KioskUser",
-    $ExpectedKioskUser,
-    "-MaintenanceUser",
-    $ExpectedMaintenanceUser,
-    "-ConfigureLocalMaintenanceAccess",
-    "-RunAsUser",
-    $ExpectedAutoLogonUser,
-    "-MachineUiExe",
-    (Join-Path $RuntimeRoot "machine.exe"),
-    "-DaemonExe",
-    (Join-Path $RuntimeRoot "vending-daemon.exe"),
-    "-ConfigureKioskShell",
-    "-UseKioskAccount"
-  )
-  if ([bool]$Preflight.MaintenanceRelay.enabled) {
-    $setupArguments += @(
-      "-ConfigureControlledMaintenanceIngress",
-      "-MaintenanceIngressSourceAllowlist"
-    )
-    $setupArguments += @($Preflight.MaintenanceRelay.sourceAllowlist)
+  $setupArguments = @{
+    ConfigureKioskAccounts = $true
+    ConfigureAutoLogon = $true
+    KioskPassword = $Preflight.KioskPassword
+    AutoLogonPassword = $Preflight.AutoLogonPassword
+    KioskUser = $ExpectedKioskUser
+    MaintenanceUser = $ExpectedMaintenanceUser
+    ConfigureControlledMaintenanceIngress = $true
+    MaintenanceSshCaPublicKeyPath = [string]$Plan.layout.maintenanceCaPath
+    FactoryProfile = [string]$Preflight.FactoryProfile
+    MaintenanceRunnerSourceAllowlist = @($Preflight.RunnerSourceAllowlist)
+    MaintenanceMaintainerSourceAllowlist = @($Preflight.MaintainerSourceAllowlist)
+    MaintenanceWireGuardInterfaceAlias = [string]$Preflight.WireGuardInterfaceAlias
+    MaintenanceWireGuardListenAddress = [string]$Preflight.WireGuardListenAddress
+    RunAsUser = $ExpectedAutoLogonUser
+    MachineUiExe = Join-Path $RuntimeRoot "machine.exe"
+    DaemonExe = Join-Path $RuntimeRoot "vending-daemon.exe"
+    ConfigureKioskShell = $true
+    UseKioskAccount = $true
   }
-
   New-Service -Name "VemVendingDaemon" -BinaryPathName (Join-Path $RuntimeRoot "vending-daemon.exe") -StartupType Automatic -DisplayName "VEM Vending Daemon" -ErrorAction SilentlyContinue | Out-Null
-  & (Join-Path $scriptsRoot "setup-scheduled-tasks.ps1") @setupArguments
+  Invoke-NamedPowerShellScript -ScriptPath (Join-Path $scriptsRoot "setup-scheduled-tasks.ps1") -Arguments $setupArguments
+  $visionInstallation = if ($FactoryProfile -eq "production") {
+    Invoke-FactoryVisionRelease -Plan $Plan
+  } else {
+    [ordered]@{ status = "not-applicable-testbed"; redacted = $true }
+  }
+  $manifest["visionRelease"] = $visionInstallation
+  Write-JsonFile -Path ([string]$Plan.layout.manifestPath) -Value ([pscustomobject]$manifest)
 
   return [ordered]@{
-    maintenanceRelayApplication = $maintenanceRelayApplication
+    wireGuardApplication = $wireGuardApplication
+    packageInstallation = [ordered]@{ openSsh = $openSshInstallation; wireGuard = $wireGuardInstallation }
+    visionInstallation = $visionInstallation
   }
 }
 
-Assert-RequiredInputs
-$preflight = Assert-FactoryRuntimePreflight
-$plan = New-FactoryRuntimePlan -Preflight $preflight
+try {
+  Assert-RequiredInputs
+  $preflight = Assert-FactoryRuntimePreflight
+  if (-not $DryRun) {
+    Assert-FactoryPersonalizationNotReused -Preflight $preflight
+  }
+  $plan = New-FactoryRuntimePlan -Preflight $preflight
 
-if ($DryRun) {
-  $plan | ConvertTo-Json -Depth 30
-  exit 0
-}
+  if ($DryRun) {
+    $plan | ConvertTo-Json -Depth 30
+    exit 0
+  }
 
-$existingState = Assert-CleanHostOrReset
-$resetEvidence = Remove-ExistingVemState -State $existingState
-if ($null -eq $resetEvidence) {
-  $resetEvidence = $existingState
-}
-$writeResult = Write-FactoryRuntimeFiles -Plan $plan -Preflight $preflight
+  $existingState = Assert-CleanHostOrReset
+  $resetEvidence = Remove-ExistingVemState -State $existingState
+  if ($null -eq $resetEvidence) {
+    $resetEvidence = $existingState
+  }
+  $writeResult = Write-FactoryRuntimeFiles -Plan $plan -Preflight $preflight
 
-$result = [ordered]@{
-  ok = $true
-  preparedAt = (Get-Date).ToUniversalTime().ToString("o")
-  manifestPath = $plan.layout.manifestPath
-  bringupSettingsPath = $plan.layout.bringupSettingsPath
-  resetExistingVemState = [bool]$ResetExistingVemState
-  resetEvidence = $resetEvidence
-  maintenanceRelay = $writeResult.maintenanceRelayApplication
+  $result = [ordered]@{
+    ok = $true
+    preparedAt = (Get-Date).ToUniversalTime().ToString("o")
+    manifestPath = $plan.layout.manifestPath
+    bringupSettingsPath = $plan.layout.bringupSettingsPath
+    resetExistingVemState = [bool]$ResetExistingVemState
+    resetEvidence = $resetEvidence
+    personalization = $preflight.PersonalizationRedaction
+    wireGuard = $writeResult.wireGuardApplication
+    packageInstallation = $writeResult.packageInstallation
+    visionInstallation = $writeResult.visionInstallation
+  }
+  $result | ConvertTo-Json -Depth 30
+} finally {
+  if (-not $DryRun -and -not [string]::IsNullOrWhiteSpace($PersonalizationMediaPath)) {
+    Remove-Item -LiteralPath $PersonalizationMediaPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $PersonalizationMediaPath) {
+      throw "Factory Personalization Media staging cleanup failed"
+    }
+  }
 }
-$result | ConvertTo-Json -Depth 30

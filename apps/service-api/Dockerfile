@@ -6,6 +6,11 @@ ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
 WORKDIR /app
 
+FROM node:24-slim AS openssh-runtime
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssh-client \
+  && rm -rf /var/lib/apt/lists/*
+
 FROM base AS pruner
 COPY package.json ./
 RUN TURBO_VERSION="$(node -p 'require("./package.json").devDependencies.turbo')" \
@@ -26,7 +31,13 @@ RUN pnpm --filter @vem/shared build \
   && pnpm --filter service-api build \
   && pnpm --filter service-api deploy --legacy --prod /prod/service-api
 
-FROM node:24-slim AS runner
+FROM openssh-runtime AS maintenance-ssh-ca-test
+WORKDIR /app
+COPY --from=builder /app ./
+USER node
+ENTRYPOINT ["node", "node_modules/tsx/dist/cli.mjs", "apps/service-api/scripts/maintenance-ssh-ca-container-entry.ts"]
+
+FROM openssh-runtime AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=builder /prod/service-api ./

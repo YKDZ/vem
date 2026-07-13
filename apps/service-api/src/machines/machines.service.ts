@@ -12,12 +12,14 @@ import {
 } from "@nestjs/common";
 import {
   and,
+  auditLogs,
   count,
   desc,
   eq,
   gt,
   inArray,
   inventories,
+  isNotNull,
   isNull,
   lte,
   or,
@@ -32,6 +34,8 @@ import {
   machineHeartbeats,
   mediaAssets,
   machines,
+  maintenancePeers,
+  maintenanceSessions,
   productCategories,
   productVariants,
   products,
@@ -44,6 +48,9 @@ import {
   createMachineSlotSchema,
   environmentControlResultPayloadSchema,
   machineHeartbeatStatusPayloadSchema,
+  machineClaimRequestSchema,
+  mqttSignedEnvelopeSchema,
+  machineProvisioningProfileSchema,
   pageQuerySchema,
   machineEnvironmentControlRequestSchema,
   publishMachinePlanogramVersionSchema,
@@ -67,6 +74,8 @@ import { getOffset, toPageResult } from "../common/pagination.util";
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
+import { MaintenanceAccessService } from "../maintenance-access/maintenance-access.service";
+import { allocateTunnelAddress } from "../maintenance-access/maintenance-address-pools";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -194,6 +203,7 @@ type MachineClaimCandidate = {
   consumedAt: Date | null;
   revokedAt: Date | null;
   lockedAt: Date | null;
+  claimResponseEncryptedJson: unknown;
   machineCode: string;
   machineName: string;
   machineLocationLabel: string | null;
@@ -207,6 +217,20 @@ const MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE =
   "machine_claim_codes_machine_open_unique";
 const WEATHER_NOW_CACHE_TTL_MS = 10 * 60 * 1000;
 const SUN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const secureDecommissionResultSchema = z.strictObject({
+  commandNo: z.string().min(1).max(64),
+  success: z.boolean(),
+  reportedAt: z.iso.datetime(),
+  error: z.string().max(500).nullable(),
+});
+const secureDecommissionCommandPayloadSchema = z.strictObject({
+  commandNo: z.string().min(1).max(64),
+  operation: z.literal("secure-decommission"),
+  requestedAt: z.iso.datetime(),
+});
+
+const SECURE_DECOMMISSION_ACK_TOPIC_SUFFIX =
+  "/commands/secure-decommission-ack";
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
@@ -639,6 +663,7 @@ function localDateYmd(checkedAt: Date, timezone: string): string {
 export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(MachinesService.name);
   private timeoutInterval?: NodeJS.Timeout;
+  private decommissionDeliveryInterval?: NodeJS.Timeout;
   private readonly externalNaturalEnvironmentCache = new Map<
     string,
     CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentWeather>
@@ -652,6 +677,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     @Inject(MachineCredentialService)
     private readonly machineCredentialService: MachineCredentialService,
+    @Inject(MaintenanceAccessService)
+    private readonly maintenanceAccessService: MaintenanceAccessService,
     @Inject(PaymentProviderConfigService)
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
     @Inject(AuditService)
@@ -689,12 +716,29 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         );
       });
     }, 60_000);
+    this.timeoutInterval.unref();
+    this.decommissionDeliveryInterval = setInterval(() => {
+      void this.deliverDueSecureDecommissionCommands().catch(
+        (error: unknown) => {
+          this.logger.warn(
+            `deliverDueSecureDecommissionCommands failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        },
+      );
+    }, 10_000);
+    this.decommissionDeliveryInterval.unref();
   }
 
   onApplicationShutdown(): void {
     if (this.timeoutInterval) {
       clearInterval(this.timeoutInterval);
       this.timeoutInterval = undefined;
+    }
+    if (this.decommissionDeliveryInterval) {
+      clearInterval(this.decommissionDeliveryInterval);
+      this.decommissionDeliveryInterval = undefined;
     }
   }
 
@@ -1369,6 +1413,18 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       await this.handleEnvironmentControlResult(resultMatch[1], topic, payload);
       return;
     }
+
+    const decommissionResultMatch =
+      /^vem\/machines\/([^/]+)\/events\/secure-decommission-result$/.exec(
+        topic,
+      );
+    if (decommissionResultMatch) {
+      await this.handleSecureDecommissionResult(
+        decommissionResultMatch[1],
+        topic,
+        payload,
+      );
+    }
   }
 
   async markTimedOutMachineCommands(
@@ -1981,8 +2037,21 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     input: MachineClaimRequest,
     now = new Date(),
   ): Promise<MachineProvisioningProfile> {
+    const parsed = machineClaimRequestSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new BadRequestException("Invalid machine claim request");
+    }
+    const claimRequest = parsed.data;
+    if (
+      claimRequest.provisioningProfile !==
+      this.config.machineProvisioningProfile
+    ) {
+      throw new ConflictException(
+        "Machine provisioning profile does not match service profile",
+      );
+    }
     const lookupDigest = digestMachineClaimCodeLookup(
-      input.claimCode,
+      claimRequest.claimCode,
       this.config.machineClaimLookupHmacKey,
     );
     const [claimCode] = await this.db
@@ -1998,6 +2067,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         consumedAt: machineClaimCodes.consumedAt,
         revokedAt: machineClaimCodes.revokedAt,
         lockedAt: machineClaimCodes.lockedAt,
+        claimResponseEncryptedJson:
+          machineClaimCodes.claimResponseEncryptedJson,
         machineCode: machines.code,
         machineName: machines.name,
         machineLocationLabel: machines.locationLabel,
@@ -2020,9 +2091,34 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       // same public error without leaking whether any claim exists.
       throw this.invalidMachineClaimCode();
     }
-    if (!verifyMachineClaimCode(input.claimCode, claimCode.verifierHash)) {
+    if (
+      !verifyMachineClaimCode(claimRequest.claimCode, claimCode.verifierHash)
+    ) {
       await this.recordFailedMachineClaim(claimCode, now);
       throw this.invalidMachineClaimCode();
+    }
+    const requestsMaintenanceRotation =
+      claimRequest.maintenanceRotation === "rotate";
+    if ((claimCode.purpose === "reclaim") !== requestsMaintenanceRotation) {
+      throw new ConflictException(
+        claimCode.purpose === "reclaim"
+          ? "Machine reclaim requires maintenance identity rotation"
+          : "Initial machine claim cannot rotate a maintenance identity",
+      );
+    }
+    if (
+      claimCode.state === "consumed" &&
+      claimCode.claimResponseEncryptedJson &&
+      claimCode.expiresAt.getTime() > now.getTime()
+    ) {
+      const replayProfile = this.parseMachineClaimReplay(
+        claimCode.claimResponseEncryptedJson,
+        claimRequest,
+      );
+      if (replayProfile) {
+        await this.recordMachineClaimReplay(claimCode, now);
+        return replayProfile;
+      }
     }
     if (
       claimCode.state !== "pending" ||
@@ -2035,73 +2131,16 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const bundle = this.machineCredentialService.createBundle();
     const mqttClientId =
       claimCode.machineMqttClientId ?? `vem-machine-${claimCode.machineCode}`;
-
-    const { consumed, rotated } = await this.db.transaction(async (tx) => {
-      const [consumedClaimCode] = await tx
-        .update(machineClaimCodes)
-        .set({
-          state: "consumed",
-          consumedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(machineClaimCodes.id, claimCode.id),
-            eq(machineClaimCodes.state, "pending"),
-            gt(machineClaimCodes.expiresAt, now),
-          ),
-        )
-        .returning({ id: machineClaimCodes.id });
-      if (!consumedClaimCode) {
-        throw this.invalidMachineClaimCode();
-      }
-
-      const [rotatedMachine] = await tx
-        .update(machines)
-        .set({
-          secretHash: bundle.secretHash,
-          secretVersion: sql`${machines.secretVersion} + 1`,
-          secretRotatedAt: now,
-          credentialRevokedAt: null,
-          mqttClientId,
-          mqttSigningSecretEncryptedJson:
-            bundle.mqttSigningSecretEncryptedJson as Record<string, unknown>,
-          updatedAt: now,
-        })
-        .where(
-          and(eq(machines.id, claimCode.machineId), isNull(machines.deletedAt)),
-        )
-        .returning({
-          id: machines.id,
-          secretVersion: machines.secretVersion,
-        });
-      if (!rotatedMachine) {
-        throw this.invalidMachineClaimCode();
-      }
-      return { consumed: consumedClaimCode, rotated: rotatedMachine };
-    });
-
-    await this.auditService.record({
-      adminUserId: null,
-      action:
-        claimCode.purpose === "reclaim"
-          ? "machines.claimCode.reclaim.consume"
-          : "machines.claimCode.consume",
-      resourceType: "machine",
-      resourceId: claimCode.machineId,
-      afterJson: {
-        claimCodeId: consumed.id,
-        machineCode: claimCode.machineCode,
-        ...(claimCode.purpose === "reclaim"
-          ? { purpose: claimCode.purpose }
-          : {}),
-        state: "consumed",
-        secretVersion: rotated.secretVersion,
-        claimedAt: toIso(now),
+    const buildProfile = (
+      claimCodeId: string,
+      secretVersion: number,
+      maintenance: {
+        peer: { publicKey: string; tunnelAddress: string };
+        relay: { publicKey: string; tunnelAddress: string };
+        endpoint: string;
+        reclaimExpiresAt: Date | null;
       },
-    });
-
-    return {
+    ): MachineProvisioningProfile => ({
       machine: {
         id: claimCode.machineId,
         code: claimCode.machineCode,
@@ -2111,7 +2150,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       },
       credentials: {
         machineSecret: bundle.machineSecret,
-        machineSecretVersion: rotated.secretVersion,
+        machineSecretVersion: secretVersion,
         mqttSigningSecret: bundle.mqttSigningSecret,
         mqttConnection: {
           url: this.config.mqttUrl,
@@ -2156,13 +2195,305 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         paymentCodeEnabled: true,
         serverTime: toIso(now),
       },
+      provisioningProfile: claimRequest.provisioningProfile,
+      maintenance: {
+        publicKey: maintenance.peer.publicKey,
+        tunnelAddress: maintenance.peer.tunnelAddress,
+        address: `${maintenance.peer.tunnelAddress}/32`,
+        endpoint: maintenance.endpoint,
+        relay: {
+          publicKey: maintenance.relay.publicKey,
+          tunnelAddress: maintenance.relay.tunnelAddress,
+          address: `${maintenance.relay.tunnelAddress}/32`,
+        },
+        roleRoutes: {
+          relay: `${maintenance.relay.tunnelAddress}/32`,
+          runner: this.config.maintenanceAddressPools.runner.cidr,
+          maintainer: this.config.maintenanceAddressPools.maintainer.cidr,
+        },
+        ...(claimCode.purpose === "reclaim" && maintenance.reclaimExpiresAt
+          ? { reclaimExpiresAt: maintenance.reclaimExpiresAt.toISOString() }
+          : {}),
+      },
       metadata: {
         profileVersion: 1,
-        claimCodeId: consumed.id,
+        claimCodeId,
         claimedAt: toIso(now),
         serverTime: toIso(now),
       },
+    });
+
+    const claimResult = await this.db.transaction(async (tx) => {
+      const [consumedClaimCode] = await tx
+        .update(machineClaimCodes)
+        .set({
+          state: "consumed",
+          consumedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(machineClaimCodes.id, claimCode.id),
+            eq(machineClaimCodes.state, "pending"),
+            gt(machineClaimCodes.expiresAt, now),
+          ),
+        )
+        .returning({ id: machineClaimCodes.id });
+      if (!consumedClaimCode) {
+        const [winner] = await tx
+          .select({
+            state: machineClaimCodes.state,
+            expiresAt: machineClaimCodes.expiresAt,
+            claimResponseEncryptedJson:
+              machineClaimCodes.claimResponseEncryptedJson,
+          })
+          .from(machineClaimCodes)
+          .where(
+            and(
+              eq(machineClaimCodes.id, claimCode.id),
+              eq(machineClaimCodes.state, "consumed"),
+              gt(machineClaimCodes.expiresAt, now),
+            ),
+          );
+        const replayProfile = winner?.claimResponseEncryptedJson
+          ? this.parseMachineClaimReplay(
+              winner.claimResponseEncryptedJson,
+              claimRequest,
+            )
+          : undefined;
+        if (replayProfile) {
+          await this.recordMachineClaimReplay(claimCode, now, tx);
+          return { kind: "replayed" as const, profile: replayProfile };
+        }
+        throw this.invalidMachineClaimCode();
+      }
+
+      const [rotatedMachine] = await tx
+        .update(machines)
+        .set({
+          secretHash: bundle.secretHash,
+          secretVersion: sql`${machines.secretVersion} + 1`,
+          secretRotatedAt: now,
+          credentialRevokedAt: null,
+          mqttClientId,
+          mqttSigningSecretEncryptedJson:
+            bundle.mqttSigningSecretEncryptedJson as Record<string, unknown>,
+          updatedAt: now,
+        })
+        .where(
+          and(eq(machines.id, claimCode.machineId), isNull(machines.deletedAt)),
+        )
+        .returning({
+          id: machines.id,
+          secretVersion: machines.secretVersion,
+        });
+      if (!rotatedMachine) {
+        throw this.invalidMachineClaimCode();
+      }
+      const [relay] = await tx
+        .select({
+          publicKey: maintenancePeers.publicKey,
+          tunnelAddress: maintenancePeers.tunnelAddress,
+        })
+        .from(maintenancePeers)
+        .where(
+          and(
+            eq(maintenancePeers.id, this.config.maintenanceRelayPeerId),
+            eq(maintenancePeers.role, "relay"),
+            eq(maintenancePeers.status, "active"),
+            isNull(maintenancePeers.revokedAt),
+          ),
+        );
+      if (!relay) {
+        throw new ConflictException("Maintenance relay peer is not configured");
+      }
+      if (relay.publicKey !== this.config.maintenanceRelayPublicKey) {
+        throw new ConflictException(
+          "Maintenance relay peer does not match service profile",
+        );
+      }
+      if (relay.tunnelAddress !== this.config.maintenanceRelayTunnelAddress) {
+        throw new ConflictException(
+          "Maintenance relay peer does not match service profile",
+        );
+      }
+      const endpoint = this.config.maintenanceRelayEndpoint;
+
+      const [duplicatePublicKey] = await tx
+        .select({ id: maintenancePeers.id })
+        .from(maintenancePeers)
+        .where(
+          eq(maintenancePeers.publicKey, claimRequest.maintenancePublicKey),
+        )
+        .limit(1);
+      if (duplicatePublicKey) {
+        throw new ConflictException(
+          "Maintenance peer public key already exists",
+        );
+      }
+
+      const usedRows = await tx
+        .select({ tunnelAddress: maintenancePeers.tunnelAddress })
+        .from(maintenancePeers);
+      const usedAddresses = new Set(usedRows.map((row) => row.tunnelAddress));
+      const pool = this.config.maintenanceAddressPools.machine;
+      const usableAddressCount = pool.lastHost - pool.firstHost + 1;
+      let peer: { publicKey: string; tunnelAddress: string } | undefined;
+      const reclaimExpiresAt =
+        claimCode.purpose === "reclaim"
+          ? new Date(
+              now.getTime() +
+                (this.config.machineReclaimHandshakeTimeoutSeconds ?? 300) *
+                  1_000,
+            )
+          : null;
+      // oxlint-disable no-await-in-loop -- allocation retries are serialized inside the claim transaction
+      for (let attempt = 0; attempt < usableAddressCount; attempt += 1) {
+        const tunnelAddress = allocateTunnelAddress(pool, usedAddresses);
+        let created: { publicKey: string; tunnelAddress: string } | undefined;
+        try {
+          [created] = await tx
+            .insert(maintenancePeers)
+            .values({
+              role: "machine",
+              publicKey: claimRequest.maintenancePublicKey,
+              tunnelAddress,
+              machineId: claimCode.machineId,
+              status:
+                claimCode.purpose === "reclaim" ? "pending_reclaim" : "active",
+              reclaimExpiresAt,
+            })
+            .onConflictDoNothing({ target: maintenancePeers.tunnelAddress })
+            .returning({
+              publicKey: maintenancePeers.publicKey,
+              tunnelAddress: maintenancePeers.tunnelAddress,
+            });
+        } catch (error) {
+          const constraint =
+            error && typeof error === "object" && "constraint" in error
+              ? (error as { constraint?: unknown }).constraint
+              : undefined;
+          if (constraint === "maintenance_peers_pending_machine_unique") {
+            throw new ConflictException(
+              "Machine reclaim handshake is already pending",
+            );
+          }
+          throw error;
+        }
+        if (created) {
+          peer = created;
+          break;
+        }
+        usedAddresses.add(tunnelAddress);
+      }
+      // oxlint-enable no-await-in-loop
+      if (!peer) {
+        throw new ConflictException(
+          "Machine maintenance address pool is exhausted",
+        );
+      }
+      await this.maintenanceAccessService.projectDesiredStateAfterPeerMutation(
+        tx,
+        now,
+      );
+      const maintenance = { peer, relay, endpoint, reclaimExpiresAt };
+      const profile = buildProfile(
+        consumedClaimCode.id,
+        rotatedMachine.secretVersion,
+        maintenance,
+      );
+      await tx
+        .update(machineClaimCodes)
+        .set({
+          claimResponseEncryptedJson:
+            this.machineCredentialService.encryptClaimResponse(profile),
+          updatedAt: now,
+        })
+        .where(eq(machineClaimCodes.id, consumedClaimCode.id));
+      await this.auditService.record(
+        {
+          adminUserId: null,
+          action:
+            claimCode.purpose === "reclaim"
+              ? "machines.claimCode.reclaim.consume"
+              : "machines.claimCode.consume",
+          resourceType: "machine",
+          resourceId: claimCode.machineId,
+          afterJson: {
+            claimCodeId: consumedClaimCode.id,
+            machineCode: claimCode.machineCode,
+            ...(claimCode.purpose === "reclaim"
+              ? { purpose: claimCode.purpose }
+              : {}),
+            state: "consumed",
+            secretVersion: rotatedMachine.secretVersion,
+            claimedAt: toIso(now),
+            ...(claimCode.purpose === "reclaim"
+              ? {
+                  maintenancePeerState: "pending_reclaim",
+                  reclaimExpiresAt: reclaimExpiresAt?.toISOString(),
+                }
+              : {}),
+          },
+        },
+        tx,
+      );
+      return {
+        kind: "consumed" as const,
+        profile,
+      };
+    });
+    return claimResult.profile;
+  }
+
+  private parseMachineClaimReplay(
+    encrypted: unknown,
+    request: MachineClaimRequest,
+  ): MachineProvisioningProfile | undefined {
+    try {
+      const replay =
+        this.machineCredentialService.decryptClaimResponse(encrypted);
+      const profile = machineProvisioningProfileSchema.parse(replay);
+      return profile.provisioningProfile === request.provisioningProfile &&
+        profile.maintenance.publicKey === request.maintenancePublicKey
+        ? profile
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async recordMachineClaimReplay(
+    claimCode: Pick<
+      MachineClaimCandidate,
+      "id" | "machineId" | "machineCode" | "purpose"
+    >,
+    now: Date,
+    executor?: Pick<DrizzleClient, "insert">,
+  ): Promise<void> {
+    const input = {
+      adminUserId: null,
+      action:
+        claimCode.purpose === "reclaim"
+          ? "machines.claimCode.reclaim.replay"
+          : "machines.claimCode.replay",
+      resourceType: "machine",
+      resourceId: claimCode.machineId,
+      afterJson: {
+        claimCodeId: claimCode.id,
+        machineCode: claimCode.machineCode,
+        ...(claimCode.purpose === "reclaim"
+          ? { purpose: claimCode.purpose }
+          : {}),
+        state: "consumed",
+        replayedAt: toIso(now),
+      },
     };
+    if (executor) {
+      await this.auditService.record(input, executor);
+    } else {
+      await this.auditService.record(input);
+    }
   }
 
   private async recordFailedMachineClaim(
@@ -2187,6 +2518,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         failedAttemptCount: sql`${machineClaimCodes.failedAttemptCount} + 1`,
         state,
         lockedAt,
+        ...(expired ? { claimResponseEncryptedJson: null } : {}),
         updatedAt: now,
       })
       .where(eq(machineClaimCodes.id, claimCode.id));
@@ -2384,6 +2716,640 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       secretVersion: updated.secretVersion,
       machineSecret: bundle.machineSecret,
       mqttSigningSecret: bundle.mqttSigningSecret,
+    };
+  }
+
+  async secureDecommissionMachine(id: string, adminUserId: string) {
+    const now = new Date();
+    const result = await this.db.transaction(async (tx) => {
+      const [machine] = await tx
+        .select({
+          id: machines.id,
+          code: machines.code,
+          status: machines.status,
+          secretHash: machines.secretHash,
+          credentialRevokedAt: machines.credentialRevokedAt,
+          mqttSigningSecretEncryptedJson:
+            machines.mqttSigningSecretEncryptedJson,
+        })
+        .from(machines)
+        .where(and(eq(machines.id, id), isNull(machines.deletedAt)))
+        .for("update");
+      if (!machine) throw new NotFoundException("Machine not found");
+      if (machine.status === "disabled" && machine.credentialRevokedAt) {
+        const [existingCommand] = await tx
+          .select()
+          .from(machineCommands)
+          .where(
+            and(
+              eq(machineCommands.machineId, machine.id),
+              eq(machineCommands.type, "secure-decommission"),
+            ),
+          )
+          .orderBy(desc(machineCommands.createdAt))
+          .limit(1);
+        return { machine, command: existingCommand, alreadyRevoked: true };
+      }
+
+      const commandNo = createBusinessNo("DCOM");
+      const commandPayload = {
+        commandNo,
+        operation: "secure-decommission" as const,
+        requestedAt: now.toISOString(),
+      };
+      const deliveryPayload =
+        machine.status === "online" && machine.mqttSigningSecretEncryptedJson
+          ? this.mqttSignatureService.signSecureDecommissionCommandWithEncryptedCredential(
+              machine.code,
+              commandPayload,
+              machine.mqttSigningSecretEncryptedJson,
+            )
+          : null;
+      const deliveryExpiresAt = deliveryPayload
+        ? new Date(
+            Date.parse(deliveryPayload.issuedAt) +
+              this.config.mqttSignatureToleranceSeconds * 1_000,
+          )
+        : null;
+      const [command] = await tx
+        .insert(machineCommands)
+        .values({
+          commandNo,
+          machineId: machine.id,
+          type: "secure-decommission",
+          status: deliveryPayload ? "pending" : "succeeded",
+          payloadJson: commandPayload,
+          resultJson: deliveryPayload
+            ? null
+            : {
+                success: true,
+                state: "denied_on_reconnect",
+                reportedAt: now.toISOString(),
+              },
+          resultAt: deliveryPayload ? null : now,
+          requestedByAdminUserId: adminUserId,
+          deliveryTopic: deliveryPayload
+            ? `vem/machines/${machine.code}/commands/secure-decommission`
+            : null,
+          deliveryPayloadJson: deliveryPayload,
+          nextDeliveryAttemptAt: deliveryPayload ? now : null,
+          deliveryExpiresAt,
+        })
+        .returning();
+
+      const peers = await tx
+        .select({ id: maintenancePeers.id })
+        .from(maintenancePeers)
+        .where(
+          and(
+            eq(maintenancePeers.machineId, machine.id),
+            inArray(maintenancePeers.status, [
+              "active",
+              "pending_reclaim",
+              "reclaim_failed",
+            ]),
+            isNull(maintenancePeers.revokedAt),
+          ),
+        )
+        .for("update");
+      const peerIds = peers.map((peer) => peer.id);
+      const revokedSessions = await tx
+        .update(maintenanceSessions)
+        .set({ revokedAt: now })
+        .where(
+          and(
+            or(
+              eq(maintenanceSessions.targetMachineId, machine.id),
+              peerIds.length > 0
+                ? inArray(maintenanceSessions.sourcePeerId, peerIds)
+                : undefined,
+            ),
+            isNull(maintenanceSessions.revokedAt),
+          ),
+        )
+        .returning({ id: maintenanceSessions.id });
+      if (peerIds.length > 0) {
+        await tx
+          .update(maintenancePeers)
+          .set({
+            status: "revoked",
+            revokedAt: now,
+            reclaimExpiresAt: null,
+            reclaimFailedAt: null,
+            reclaimFailureReason: null,
+            updatedAt: now,
+          })
+          .where(inArray(maintenancePeers.id, peerIds));
+      }
+      await tx
+        .update(machineClaimCodes)
+        .set({ state: "revoked", revokedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(machineClaimCodes.machineId, machine.id),
+            inArray(machineClaimCodes.state, ["pending", "locked"]),
+          ),
+        );
+      const [updated] = await tx
+        .update(machines)
+        .set({
+          status: "disabled",
+          secretHash: null,
+          credentialRevokedAt: now,
+          mqttClientId: null,
+          mqttSigningSecretEncryptedJson:
+            deliveryPayload === null
+              ? null
+              : machine.mqttSigningSecretEncryptedJson,
+          updatedAt: now,
+        })
+        .where(eq(machines.id, machine.id))
+        .returning({
+          id: machines.id,
+          code: machines.code,
+          credentialRevokedAt: machines.credentialRevokedAt,
+        });
+
+      await this.maintenanceAccessService.projectDesiredStateAfterPeerMutation(
+        tx,
+        now,
+      );
+      await tx.insert(auditLogs).values([
+        {
+          adminUserId: adminUserId,
+          action: "machines.secureDecommission",
+          resourceType: "machine",
+          resourceId: machine.id,
+          beforeJson: {
+            status: machine.status,
+            credentialRevokedAt: machine.credentialRevokedAt,
+            hadBusinessCredentials: Boolean(machine.secretHash),
+            peerIds,
+          },
+          afterJson: {
+            status: "disabled",
+            credentialRevokedAt: now.toISOString(),
+            revokedPeerIds: peerIds,
+            revokedSessionIds: revokedSessions.map((session) => session.id),
+            reconnectDenied: true,
+            decommissionCommandId: command.id,
+            localCleanupState: deliveryPayload
+              ? "delivery_pending"
+              : "denied_on_reconnect",
+          },
+        },
+        ...peerIds.map((peerId) => ({
+          adminUserId,
+          action: "maintenanceAccess.peer.revoke",
+          resourceType: "maintenance_peer",
+          resourceId: peerId,
+          afterJson: {
+            reason: "secure_decommission",
+            revokedAt: now.toISOString(),
+          },
+        })),
+        ...revokedSessions.map((session) => ({
+          adminUserId,
+          action: "maintenanceAccess.session.revoke",
+          resourceType: "maintenance_session",
+          resourceId: session.id,
+          afterJson: {
+            reason: "secure_decommission",
+            revokedAt: now.toISOString(),
+          },
+        })),
+      ]);
+
+      return {
+        machine: { ...machine, ...updated },
+        command,
+        alreadyRevoked: false,
+      };
+    });
+
+    let command = result.command;
+    if (
+      command?.deliveryPayloadJson &&
+      (command.status !== "succeeded" || command.nextDeliveryAttemptAt)
+    ) {
+      command = await this.deliverSecureDecommissionCommand(command.id, now);
+    }
+    return {
+      machineId: result.machine.id,
+      machineCode: result.machine.code,
+      decommissionedAt: toIso(result.machine.credentialRevokedAt ?? now),
+      decommissionCommandId: command?.id ?? null,
+      decommissionCommandStatus: command?.status ?? "succeeded",
+      deliveryAttemptCount: command?.deliveryAttemptCount ?? 0,
+      localTunnelRemoval:
+        command?.status === "succeeded"
+          ? command.deliveryPayloadJson
+            ? "acknowledged"
+            : "denied-on-reconnect"
+          : "delivery-pending",
+    };
+  }
+
+  async deliverDueSecureDecommissionCommands(
+    now = new Date(),
+  ): Promise<number> {
+    const due = await this.db
+      .select({ id: machineCommands.id })
+      .from(machineCommands)
+      .where(
+        and(
+          eq(machineCommands.type, "secure-decommission"),
+          inArray(machineCommands.status, [
+            "pending",
+            "sent",
+            "failed",
+            "timeout",
+            "succeeded",
+          ]),
+          isNotNull(machineCommands.deliveryPayloadJson),
+          lte(machineCommands.nextDeliveryAttemptAt, now),
+        ),
+      );
+    await Promise.all(
+      due.map(async (command) => {
+        await this.deliverSecureDecommissionCommand(command.id, now);
+      }),
+    );
+    return due.length;
+  }
+
+  private async deliverSecureDecommissionCommand(
+    commandId: string,
+    now = new Date(),
+  ) {
+    const [command] = await this.db
+      .select()
+      .from(machineCommands)
+      .where(
+        and(
+          eq(machineCommands.id, commandId),
+          eq(machineCommands.type, "secure-decommission"),
+        ),
+      )
+      .limit(1);
+    if (!command) return command;
+    if (!command.deliveryTopic || !command.deliveryPayloadJson) {
+      return command;
+    }
+    const isCleanupAcknowledgement =
+      command.status === "succeeded" &&
+      command.deliveryTopic.endsWith(SECURE_DECOMMISSION_ACK_TOPIC_SUFFIX);
+    if (isCleanupAcknowledgement) {
+      try {
+        await this.mqttService.publish(
+          command.deliveryTopic,
+          command.deliveryPayloadJson,
+        );
+        const [delivered] = await this.db
+          .update(machineCommands)
+          .set({
+            deliveryAttemptCount: sql`${machineCommands.deliveryAttemptCount} + 1`,
+            nextDeliveryAttemptAt: null,
+            lastError: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(machineCommands.id, commandId),
+              eq(machineCommands.status, "succeeded"),
+              eq(machineCommands.deliveryTopic, command.deliveryTopic),
+            ),
+          )
+          .returning();
+        return delivered ?? command;
+      } catch (error) {
+        const [pending] = await this.db
+          .update(machineCommands)
+          .set({
+            deliveryAttemptCount: sql`${machineCommands.deliveryAttemptCount} + 1`,
+            nextDeliveryAttemptAt: new Date(now.getTime() + 10_000),
+            lastError: error instanceof Error ? error.message : String(error),
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(machineCommands.id, commandId),
+              eq(machineCommands.status, "succeeded"),
+              eq(machineCommands.deliveryTopic, command.deliveryTopic),
+            ),
+          )
+          .returning();
+        return pending ?? command;
+      }
+    }
+    if (command.status === "succeeded") return command;
+    let deliveryPayload = mqttSignedEnvelopeSchema.parse(
+      command.deliveryPayloadJson,
+    );
+    let deliveryExpiresAt = command.deliveryExpiresAt;
+    if (!deliveryExpiresAt || deliveryExpiresAt <= now) {
+      const [machine] = await this.db
+        .select({
+          code: machines.code,
+          encryptedCredential: machines.mqttSigningSecretEncryptedJson,
+        })
+        .from(machines)
+        .where(eq(machines.id, command.machineId))
+        .limit(1);
+      if (!machine?.encryptedCredential) {
+        const [expired] = await this.db
+          .update(machineCommands)
+          .set({
+            status: "timeout",
+            resultAt: now,
+            nextDeliveryAttemptAt: null,
+            lastError: "secure decommission delivery credential is unavailable",
+            updatedAt: now,
+          })
+          .where(eq(machineCommands.id, commandId))
+          .returning();
+        return expired;
+      }
+      deliveryPayload =
+        this.mqttSignatureService.signSecureDecommissionCommandWithEncryptedCredential(
+          machine.code,
+          secureDecommissionCommandPayloadSchema.parse(command.payloadJson),
+          machine.encryptedCredential,
+        );
+      deliveryExpiresAt = new Date(
+        Date.parse(deliveryPayload.issuedAt) +
+          this.config.mqttSignatureToleranceSeconds * 1_000,
+      );
+      await this.db
+        .update(machineCommands)
+        .set({
+          deliveryPayloadJson: deliveryPayload,
+          deliveryExpiresAt,
+          status: "pending",
+          resultAt: null,
+          lastError: null,
+          updatedAt: now,
+        })
+        .where(eq(machineCommands.id, commandId));
+    }
+    try {
+      await this.mqttService.publish(command.deliveryTopic, deliveryPayload);
+      const [sent] = await this.db
+        .update(machineCommands)
+        .set({
+          status: "sent",
+          sentAt: command.sentAt ?? now,
+          deliveryAttemptCount: sql`${machineCommands.deliveryAttemptCount} + 1`,
+          nextDeliveryAttemptAt: new Date(now.getTime() + 10_000),
+          lastError: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(machineCommands.id, commandId),
+            inArray(machineCommands.status, [
+              "pending",
+              "sent",
+              "failed",
+              "timeout",
+            ]),
+          ),
+        )
+        .returning();
+      if (sent) return sent;
+      return await this.getSecureDecommissionCommand(commandId);
+    } catch (error) {
+      const [pending] = await this.db
+        .update(machineCommands)
+        .set({
+          status: "pending",
+          deliveryAttemptCount: sql`${machineCommands.deliveryAttemptCount} + 1`,
+          nextDeliveryAttemptAt: new Date(now.getTime() + 10_000),
+          lastError: error instanceof Error ? error.message : String(error),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(machineCommands.id, commandId),
+            inArray(machineCommands.status, [
+              "pending",
+              "sent",
+              "failed",
+              "timeout",
+            ]),
+          ),
+        )
+        .returning();
+      if (pending) return pending;
+      return await this.getSecureDecommissionCommand(commandId);
+    }
+  }
+
+  private async getSecureDecommissionCommand(commandId: string) {
+    const [command] = await this.db
+      .select()
+      .from(machineCommands)
+      .where(
+        and(
+          eq(machineCommands.id, commandId),
+          eq(machineCommands.type, "secure-decommission"),
+        ),
+      )
+      .limit(1);
+    return command;
+  }
+
+  private async handleSecureDecommissionResult(
+    machineCode: string,
+    topic: string,
+    payloadText: string,
+  ): Promise<void> {
+    const rawPayload = this.parsePayload(payloadText);
+    const unverifiedEnvelope = mqttSignedEnvelopeSchema.parse(rawPayload);
+    const unverifiedResult = secureDecommissionResultSchema.parse(
+      unverifiedEnvelope.payload,
+    );
+    const [record] = await this.db
+      .select({
+        commandId: machineCommands.id,
+        commandNo: machineCommands.commandNo,
+        commandStatus: machineCommands.status,
+        deliveryTopic: machineCommands.deliveryTopic,
+        deliveryPayloadJson: machineCommands.deliveryPayloadJson,
+        nextDeliveryAttemptAt: machineCommands.nextDeliveryAttemptAt,
+        machineId: machines.id,
+        encryptedCredential: machines.mqttSigningSecretEncryptedJson,
+      })
+      .from(machineCommands)
+      .innerJoin(machines, eq(machines.id, machineCommands.machineId))
+      .where(
+        and(
+          eq(machines.code, machineCode),
+          eq(machineCommands.commandNo, unverifiedResult.commandNo),
+          eq(machineCommands.type, "secure-decommission"),
+        ),
+      )
+      .limit(1);
+    if (!record) return;
+    if (record.commandStatus === "succeeded" && !record.encryptedCredential) {
+      if (record.deliveryTopic && record.deliveryPayloadJson) {
+        await this.db
+          .update(machineCommands)
+          .set({ nextDeliveryAttemptAt: new Date(), updatedAt: new Date() })
+          .where(eq(machineCommands.id, record.commandId));
+        await this.deliverSecureDecommissionCommand(record.commandId);
+      }
+      return;
+    }
+    const verified =
+      this.mqttSignatureService.verifySecureDecommissionResultWithEncryptedCredential(
+        {
+          topicMachineCode: machineCode,
+          rawPayload,
+          payloadSchema: secureDecommissionResultSchema,
+          encryptedCredential: record.encryptedCredential,
+        },
+      );
+    if (
+      verified.messageId !==
+      `secure-decommission-result:${verified.payload.commandNo}`
+    ) {
+      throw new UnauthorizedException(
+        "Secure decommission result message identity is invalid",
+      );
+    }
+
+    const cleanupAcknowledgement =
+      this.mqttSignatureService.signSecureDecommissionAcknowledgementWithEncryptedCredential(
+        machineCode,
+        {
+          commandNo: verified.payload.commandNo,
+          operation: "secure-decommission-ack",
+          acknowledgedAt: new Date().toISOString(),
+        },
+        record.encryptedCredential,
+      );
+
+    let accepted = false;
+    await this.db.transaction(async (tx) => {
+      const [event] = await tx
+        .insert(machineEvents)
+        .values({
+          machineId: record.machineId,
+          eventType: "secure_decommission_result",
+          payloadJson: verified.payload,
+          mqttTopic: topic,
+          messageId: verified.messageId,
+        })
+        .onConflictDoNothing()
+        .returning({ id: machineEvents.id });
+      if (!event) {
+        const [existingEvent] = await tx
+          .select({ payloadJson: machineEvents.payloadJson })
+          .from(machineEvents)
+          .where(
+            and(
+              eq(machineEvents.machineId, record.machineId),
+              eq(machineEvents.messageId, verified.messageId),
+            ),
+          )
+          .limit(1);
+        const existingResult = secureDecommissionResultSchema.safeParse(
+          existingEvent?.payloadJson,
+        );
+        if (
+          !existingResult.success ||
+          existingResult.data.success ||
+          !verified.payload.success
+        ) {
+          return;
+        }
+      }
+      accepted = true;
+      const reportedAt = new Date(verified.payload.reportedAt);
+      await tx
+        .update(machineCommands)
+        .set({
+          status: verified.payload.success ? "succeeded" : "failed",
+          resultJson: verified.payload,
+          resultAt: reportedAt,
+          nextDeliveryAttemptAt: verified.payload.success ? null : new Date(),
+          ...(verified.payload.success
+            ? {
+                deliveryTopic: `vem/machines/${machineCode}/commands/secure-decommission-ack`,
+                deliveryPayloadJson: cleanupAcknowledgement,
+                nextDeliveryAttemptAt: new Date(),
+                deliveryExpiresAt: null,
+              }
+            : {}),
+          lastError: verified.payload.success
+            ? null
+            : (verified.payload.error ?? "local cleanup failed"),
+          updatedAt: new Date(),
+        })
+        .where(eq(machineCommands.id, record.commandId));
+      if (verified.payload.success) {
+        await tx
+          .update(machines)
+          .set({
+            mqttClientId: null,
+            mqttSigningSecretEncryptedJson: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(machines.id, record.machineId));
+      }
+      await tx.insert(auditLogs).values({
+        adminUserId: null,
+        action: verified.payload.success
+          ? "machines.secureDecommission.localCleanupAcknowledged"
+          : "machines.secureDecommission.localCleanupFailed",
+        resourceType: "machine",
+        resourceId: record.machineId,
+        afterJson: {
+          commandNo: verified.payload.commandNo,
+          success: verified.payload.success,
+          reportedAt: verified.payload.reportedAt,
+          error: verified.payload.error,
+        },
+      });
+    });
+    if (accepted && verified.payload.success) {
+      await this.deliverSecureDecommissionCommand(record.commandId);
+    }
+  }
+
+  async getOwnMaintenanceIdentity(machineId: string) {
+    await this.maintenanceAccessService.sweepPendingReclaims();
+    const identities = await this.db
+      .select({
+        publicKey: maintenancePeers.publicKey,
+        status: maintenancePeers.status,
+        reclaimExpiresAt: maintenancePeers.reclaimExpiresAt,
+        handshakeVerifiedAt: maintenancePeers.handshakeVerifiedAt,
+        reclaimFailedAt: maintenancePeers.reclaimFailedAt,
+        reclaimFailureReason: maintenancePeers.reclaimFailureReason,
+      })
+      .from(maintenancePeers)
+      .where(
+        and(
+          eq(maintenancePeers.machineId, machineId),
+          inArray(maintenancePeers.status, [
+            "active",
+            "pending_reclaim",
+            "reclaim_failed",
+          ]),
+          isNull(maintenancePeers.revokedAt),
+        ),
+      );
+    return {
+      machineId,
+      identities: identities.map((identity) => ({
+        ...identity,
+        reclaimExpiresAt: identity.reclaimExpiresAt?.toISOString() ?? null,
+        handshakeVerifiedAt:
+          identity.handshakeVerifiedAt?.toISOString() ?? null,
+        reclaimFailedAt: identity.reclaimFailedAt?.toISOString() ?? null,
+      })),
     };
   }
 }

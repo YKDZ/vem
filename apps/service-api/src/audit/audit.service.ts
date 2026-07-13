@@ -75,15 +75,18 @@ export class AuditService {
     return toPageResult(items.map(mapAuditLog), query, Number(totalRow.total));
   }
 
-  async record(input: {
-    adminUserId: string | null;
-    action: string;
-    resourceType: string;
-    resourceId?: string;
-    beforeJson?: Record<string, unknown>;
-    afterJson?: Record<string, unknown>;
-  }): Promise<void> {
-    await this.db.insert(auditLogs).values({
+  async record(
+    input: {
+      adminUserId: string | null;
+      action: string;
+      resourceType: string;
+      resourceId?: string;
+      beforeJson?: Record<string, unknown>;
+      afterJson?: Record<string, unknown>;
+    },
+    executor: Pick<DrizzleClient, "insert"> = this.db,
+  ): Promise<void> {
+    await executor.insert(auditLogs).values({
       adminUserId: input.adminUserId,
       action: input.action,
       resourceType: input.resourceType,

@@ -1,5 +1,12 @@
 # VM Runtime Acceptance Entrypoint
 
+> Migration notice: the fixed Unraid paths, repository-owned libvirt adapter,
+> static relay plan, and password SSH steps in this document describe the
+> current legacy testbed. The accepted replacement is
+> [Windows Factory Runtime And Controlled Maintenance](./windows-factory-runtime-and-maintenance.md).
+> None of those legacy mechanisms may satisfy the new Factory Image Acceptance
+> or VM Runtime Acceptance gates, and they must be removed during migration.
+
 `scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance` is the future CI/manual runtime gate for the Win10 Machine Runtime Testbed. It is non-interactive and emits a structured report plus logs under `artifacts/vm-runtime-acceptance/<run-id>/`.
 
 ## Dry Run
@@ -92,60 +99,38 @@ and enables the exact Controlled Maintenance Ingress allowlist. The VM peer
 config contains private key material and must remain in operator-local scratch
 or secret storage.
 
-The VM host adapter contract only prepares a reachable Windows VM. It takes a run id, a base image identity, and a target VM identity; it stops the VM, restores or rebuilds the disk, starts the VM, waits for Windows SSH, and emits restore evidence including the Windows SSH endpoint, observed host identity, base image hash, and evidence path. It must not build VEM artifacts, start the ephemeral platform, provision the machine, run runtime acceptance, run simulated sale-flow, or interpret VEM business results.
+The VM host adapter prepares the Windows VM through strict
+`vem-vm-host-adapter-request/v1` and `vem-vm-host-adapter-report/v1` contracts.
+The workflow sends only a logical target, content-addressed approved base, and
+requested capabilities to the runner-service adapter. The report's
+`observed.targetBinding` must use `host-target-mapping/v1` and repeat that
+logical target, so a host-specific VM identity cannot be substituted silently.
+No host filesystem paths, VM names, disk paths, credentials, or host platform
+options are present in workflow inputs or uploaded reports.
 
-The adapter must emit a `vm-host-restore-report/v1` JSON report, and runtime acceptance should consume that report instead of inferring VM state from host-specific paths. The first report shape is:
+The lifecycle is explicit: `restore-approved-base` creates or restores a
+disposable overlay and reports it `active`; runtime acceptance runs against
+that overlay; display and default-audio capture are individual operations after
+acceptance; `cleanup` runs with `always()` and must remove the overlay. A
+successful adapter report must negotiate every requested capability and provide
+every requested serial mapping. Timeout and cancellation send `SIGTERM` to the
+adapter process group, escalate to `SIGKILL` when needed, wait for termination,
+and invoke the same explicit cleanup operation before the client exits. Failed,
+timed-out, and cancelled attempts write validated sanitized adapter diagnostics
+for artifact upload, rather than being reported as Windows SSH readiness
+failures.
 
-```json
-{
-  "schemaVersion": "vm-host-restore-report/v1",
-  "adapter": "libvirt-qcow2",
-  "runId": "RUN-EXAMPLE",
-  "targetVm": {
-    "name": "win10-vem-solidified-acceptance"
-  },
-  "baseImage": {
-    "path": "/mnt/user/isos/vem-factory-runtime-image-RUN-191-20260705.qcow2",
-    "sha256": "lowercase-sha256"
-  },
-  "restoredDisk": {
-    "path": "/mnt/user/domains/win10-vem-solidified-acceptance/vdisk1.qcow2",
-    "backingFile": "/mnt/user/isos/vem-factory-runtime-image-RUN-191-20260705.qcow2"
-  },
-  "windowsSsh": {
-    "host": "10.91.2.10",
-    "user": "maintenance-user"
-  },
-  "controlledMaintenanceIngress": {
-    "kind": "wireguard-maintenance-relay",
-    "bootstrapMode": "preconfigured-base-image",
-    "windowsSshHost": "10.91.2.10",
-    "allowedSourcePeerIp": "10.91.1.10",
-    "interface": "wg-vem-maint",
-    "preconfiguredVmRelayContract": {
-      "vmWireGuardPeer": "preconfigured-and-running",
-      "windowsControlledMaintenanceIngress": "preconfigured-source-allowlist",
-      "repositoryConfiguresVmRelay": false
-    },
-    "preflight": {
-      "status": "passed",
-      "assertion": "ssh_reachable_over_preconfigured_vm_wireguard_ip",
-      "failureCodeIfUnreachable": "vm_relay_preconfiguration_missing_or_windows_ingress_blocked"
-    }
-  },
-  "result": "passed"
-}
-```
-
-The repository adapter entrypoint should live at `scripts/testbed/vm-host-adapter.mjs` because it runs on the VM host or self-hosted runner, not inside the Windows VM. The first mode is `--mode restore --adapter libvirt-qcow2`, taking the run id, target VM identity, base image, overlay disk, Windows SSH user, and output report path. It must validate all destructive inputs against an allowlist before stopping a VM or replacing a disk.
-
-The `libvirt-qcow2` allowlist should live in repository configuration at `scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json`. It may contain non-secret infrastructure identities such as allowed VM names, overlay disk paths, base image paths, the Windows maintenance SSH user, and the required preconfigured VM relay contract. Secrets and credentials must remain in GitHub secrets or runner-local environment.
+The retained legacy `scripts/testbed/vm-host-adapter.mjs` and its
+`scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json` allowlist remain
+documented deployment operations until Issue13 proves the host replacement.
+They are not selected by this workflow and are not an input to the adapter
+request/report contract.
 
 The first version should restore the runtime acceptance VM by rebuilding the `win10-vem-solidified-acceptance` qcow2 overlay from the approved factory runtime base image before each run. It should not rerun clean-base factory preparation for every runtime acceptance attempt. Clean-base factory acceptance remains the upstream evidence gate for producing or approving the factory runtime base image.
 
 The first self-hosted workflow is manually triggered with `workflow_dispatch` only. It must run as a single-flight infrastructure job and must not attach to pull-request or push events until VM restore, cleanup, locking, and failure recovery are proven stable.
 
-The first workflow should be a dedicated `.github/workflows/vm-runtime-acceptance.yml` rather than part of the regular CI or Windows bring-up bundle workflows. It should consume the shared Windows runtime artifact workflow, call the VM host adapter to produce `vm-host-restore-report.json`, prepare the ephemeral platform, run `scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance`, and upload the run-scoped acceptance artifacts.
+The first workflow should be a dedicated `.github/workflows/vm-runtime-acceptance.yml` rather than part of the regular CI or Windows bring-up bundle workflows. It should consume the shared Windows runtime artifact workflow, call the VM host adapter for restore, post-acceptance capture, and always-run cleanup reports, prepare the ephemeral platform, run `scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance`, and upload the run-scoped acceptance artifacts.
 
 Windows runtime artifacts are the current-run `vending-daemon.exe`, `machine.exe`, and `WebView2Loader.dll` built by the shared GitHub workflow. Dependency and compiler intermediates may use GitHub cache, but the final runtime artifacts are passed as same-run artifacts rather than reused across commits.
 
@@ -176,7 +161,6 @@ If dirty-host display proof, platform setup, runtime acceptance, or sale-flow fa
 
 Future CI or a self-hosted runner must provide:
 
-- `SSHPASS`, when using `--sshpass` or `--factory-credentials-from-sshpass`
 - remote `VEM_KIOSK_PASSWORD`
 - remote `VEM_MAINTENANCE_PASSWORD`
 - remote `VEM_AUTOLOGON_PASSWORD`
@@ -186,10 +170,10 @@ Future CI or a self-hosted runner must provide:
   `VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH`
 
 The self-hosted VM runner host must also provide `node`, `docker`, `virsh`,
-`qemu-img`, `ssh`, `sshpass`, `wg`, and `wg-quick`. The `sshpass` binary is
-required when the workflow uses the repository secret
-`VEM_TESTBED_WINDOWS_PASSWORD` for Windows SSH readiness and acceptance commands
-instead of a runner-local SSH key. The workflow uploads
+`qemu-img`, `ssh`, `ssh-keygen`, `wg`, and `wg-quick`. Windows SSH readiness and
+acceptance require the run-scoped private key and short-lived certificate passed
+through `--identity` and `--certificate`; password SSH and password secrets are
+not accepted. The workflow uploads
 `maintenance-relay-diagnostics.txt` with only non-secret relay diagnostics:
 interface name, runner peer IP, Windows SSH host, preconfigured VM relay
 contract, `wg show` summaries, and WireGuard config existence, permissions, and

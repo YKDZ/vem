@@ -17,6 +17,10 @@ function Add-Failure {
   $Failures.Add($Message) | Out-Null
 }
 
+function Get-WireGuardTunnelServiceName {
+  return 'WireGuardTunnel$VEM-Maintenance'
+}
+
 function Ensure-Directory {
   param([string]$Path)
 
@@ -453,16 +457,18 @@ function Get-SecurityPostureEvidence {
   $missingExclusions = @($requiredExclusions | Where-Object { $actualExclusions -notcontains $_ })
   $firewallEnabled = @($firewallProfiles | Where-Object { -not [bool]$_.Enabled }).Count -eq 0 -and @($firewallProfiles).Count -gt 0
   $enabledVemInboundRules = @($vemRules | Where-Object { [string]$_.Enabled -eq "True" } | ForEach-Object { [string]$_.DisplayName })
+  $disallowedEnabledVemInboundRules = @($enabledVemInboundRules | Where-Object { $_ -ne "VEM Controlled Maintenance SSH" })
   $defenderEnabled = if ($null -ne $defenderStatus) { [bool]$defenderStatus.AntispywareEnabled } else { $true }
 
   return [ordered]@{
-    status = if ($defenderEnabled -and $firewallEnabled -and $enabledVemInboundRules.Count -eq 0 -and $missingExclusions.Count -eq 0 -and $fileSharingRulesEnabled.Count -eq 0) { "passed" } else { "failed" }
+    status = if ($defenderEnabled -and $firewallEnabled -and $disallowedEnabledVemInboundRules.Count -eq 0 -and $missingExclusions.Count -eq 0 -and $fileSharingRulesEnabled.Count -eq 0) { "passed" } else { "failed" }
     defender = if ($defenderEnabled) { "enabled" } else { "disabled" }
     firewall = if ($firewallEnabled) { "enabled" } else { "disabled_or_unavailable" }
     defenderExclusions = $actualExclusions
     missingDefenderExclusions = $missingExclusions
     inboundFirewallRules = @($vemRules | ForEach-Object { [string]$_.DisplayName })
     enabledVemInboundRules = @($enabledVemInboundRules)
+    disallowedEnabledVemInboundRules = @($disallowedEnabledVemInboundRules)
     fileAndPrinterSharing = if ($fileSharingRulesEnabled.Count -eq 0) { "not_enabled" } else { "enabled" }
     fileAndPrinterSharingEnabledRules = $fileSharingRulesEnabled
   }
@@ -474,14 +480,57 @@ function Test-LocalUserInGroup {
     [string]$Group
   )
 
-  $members = @(Get-LocalGroupMember -Group $Group -ErrorAction SilentlyContinue)
-  foreach ($member in $members) {
-    $name = [string]$member.Name
-    if ($name -eq $User -or $name -eq ".\$User" -or $name -eq "$env:COMPUTERNAME\$User" -or $name.EndsWith("\$User", [StringComparison]::OrdinalIgnoreCase)) {
-      return $true
+  $pending = [System.Collections.Generic.Queue[string]]::new()
+  $visited = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $pending.Enqueue($Group)
+  while ($pending.Count -gt 0) {
+    $currentGroup = $pending.Dequeue()
+    if (-not $visited.Add($currentGroup)) { continue }
+    $members = @(Get-LocalGroupMember -Group $currentGroup -ErrorAction SilentlyContinue)
+    foreach ($member in $members) {
+      $name = [string]$member.Name
+      $leafName = ($name -split "\\")[-1]
+      if ($leafName.Equals($User, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+      if ([string]$member.ObjectClass -eq "Group" -and -not [string]::IsNullOrWhiteSpace($leafName)) {
+        $pending.Enqueue($leafName)
+      }
     }
   }
   return $false
+}
+
+function Measure-AdministratorToSystemCompatibility {
+  param(
+    [string]$MaintenanceUser,
+    [bool]$MaintenanceAdministrator
+  )
+
+  $taskName = "VEM-System-Elevation-Probe-$([guid]::NewGuid().ToString('N'))"
+  $registered = $false
+  $principal = $null
+  $errorMessage = $null
+  try {
+    if (-not $MaintenanceAdministrator) { throw "maintenance user is not an administrator" }
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument "/d /c exit 0"
+    $systemPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName $taskName -Action $action -Principal $systemPrincipal -Settings $settings -Force | Out-Null
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    $principal = [string]$task.Principal.UserId
+    $registered = $principal -match "(?i)^(NT AUTHORITY\\)?SYSTEM$"
+  } catch {
+    $errorMessage = [string]$_
+  } finally {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+  }
+  return [ordered]@{
+    maintenanceUser = $MaintenanceUser
+    maintenanceAdministratorMeasured = $MaintenanceAdministrator
+    probeTaskName = $taskName
+    systemPrincipal = $principal
+    registrationSucceeded = $registered
+    error = $errorMessage
+  }
 }
 
 function Test-SshdConfigDeniesUser {
@@ -516,7 +565,8 @@ function Test-SshdConfigDeniesUser {
 function Get-FactoryRemoteMaintenanceCapabilityEvidence {
   param(
     [string]$KioskUser,
-    [string]$MaintenanceUser
+    [string]$MaintenanceUser,
+    $Manifest
   )
 
   $sshd = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
@@ -528,9 +578,47 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
   $maintenanceInOpenSshUsers = Test-LocalUserInGroup -User $MaintenanceUser -Group "OpenSSH Users"
   $kioskInOpenSshUsers = Test-LocalUserInGroup -User $KioskUser -Group "OpenSSH Users"
   $kioskInRemoteDesktopUsers = Test-LocalUserInGroup -User $KioskUser -Group "Remote Desktop Users"
-  $kioskRemoteAccessDenied = $sshdConfigDeniesKioskUser -and -not $kioskInOpenSshUsers -and -not $kioskInRemoteDesktopUsers
+  $kioskInRemoteManagementUsers = Test-LocalUserInGroup -User $KioskUser -Group "Remote Management Users"
+  $kioskAdministrator = Test-LocalUserInGroup -User $KioskUser -Group "Administrators"
+  $maintenanceAdministrator = Test-LocalUserInGroup -User $MaintenanceUser -Group "Administrators"
+  $kioskRemoteAccessDenied = $sshdConfigDeniesKioskUser -and -not $kioskInOpenSshUsers -and -not $kioskInRemoteDesktopUsers -and -not $kioskInRemoteManagementUsers -and -not $kioskAdministrator
   $sshdReady = $null -ne $sshd -and [string]$sshd.Status -eq "Running" -and [string]$sshd.StartType -eq "Automatic"
   $tailscaleAbsent = $null -eq $tailscale -and $null -eq $tailscaleCli
+  $sshdEffectiveConfig = Get-SshdEffectiveConfigEvidence -ConfigPath $sshdConfigPath -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -CaPath ([string]$Manifest.maintenanceSsh.caPath) -Manifest $Manifest
+  $packageVersions = Get-FactoryPackageEvidence -Manifest $Manifest
+  $caEvidence = Get-MaintenanceCaEvidence -Manifest $Manifest
+  $firewallScope = Get-MaintenanceFirewallEvidence -Manifest $Manifest
+  $wireGuardService = Get-WireGuardServiceEvidence -Manifest $Manifest
+  $accountPolicy = [ordered]@{
+    profile = [string]$Manifest.factoryProfile
+    maintenanceUser = $MaintenanceUser
+    expectedMaintenanceUser = if ([string]$Manifest.factoryProfile -eq "production") { "Admin" } else { "YKDZ" }
+    kioskUser = $KioskUser
+    maintenanceAdministrator = $maintenanceAdministrator
+    kioskAdministrator = $kioskAdministrator
+    maintenanceInOpenSshUsers = $maintenanceInOpenSshUsers
+    kioskInOpenSshUsers = $kioskInOpenSshUsers
+    kioskInRemoteDesktopUsers = $kioskInRemoteDesktopUsers
+    kioskInRemoteManagementUsers = $kioskInRemoteManagementUsers
+    sshDenied = $sshdConfigDeniesKioskUser -and -not $kioskInOpenSshUsers
+    remoteInteractiveDenied = -not $kioskAdministrator -and -not $kioskInRemoteDesktopUsers
+    winRmDenied = -not $kioskAdministrator -and -not $kioskInRemoteManagementUsers
+    effectiveKioskRemoteAdministrationDenied = $kioskRemoteAccessDenied
+  }
+  $passwordFallback = -not ($sshdEffectiveConfig.passwordAuthentication -and $sshdEffectiveConfig.keyboardInteractiveAuthentication -and $sshdEffectiveConfig.authenticationMethods -and $sshdEffectiveConfig.authorizedKeysFile)
+  $passwordAuthentication = [ordered]@{
+    sshdPasswordAuthentication = $sshdEffectiveConfig.passwordAuthentication
+    sshdKeyboardInteractiveAuthentication = $sshdEffectiveConfig.keyboardInteractiveAuthentication
+    effectiveMode = if ($passwordFallback) { "fallback_present" } else { "certificate_publickey_only" }
+    passwordFallback = $passwordFallback
+  }
+  $elevationProbe = Measure-AdministratorToSystemCompatibility -MaintenanceUser $MaintenanceUser -MaintenanceAdministrator $maintenanceAdministrator
+  $elevationCompatibility = [ordered]@{
+    systemSshEntrypoint = if ($sshdEffectiveConfig.systemEntrypoint) { "not_configured" } else { "configured" }
+    administratorToSystem = if ($elevationProbe.registrationSucceeded) { "measured_supported" } else { "measured_failed" }
+    probe = $elevationProbe
+    wireGuardOwner = [string]$wireGuardService.owner
+  }
 
   return [ordered]@{
     status = if ($sshdReady -and $tailscaleAbsent -and $maintenanceInOpenSshUsers -and $kioskRemoteAccessDenied) { "passed" } else { "failed" }
@@ -549,116 +637,19 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
     maintenanceInOpenSshUsers = $maintenanceInOpenSshUsers
     kioskInOpenSshUsers = $kioskInOpenSshUsers
     kioskInRemoteDesktopUsers = $kioskInRemoteDesktopUsers
-  }
-}
-
-function Get-MaintenanceRelayExpectation {
-  param($Manifest)
-
-  if ($null -eq $Manifest.expectations -or $null -eq $Manifest.expectations.maintenanceRelay) {
-    return $null
-  }
-  if ([string]$Manifest.expectations.maintenanceRelay.kind -ne "wireguard-maintenance-relay") {
-    return $null
-  }
-  return $Manifest.expectations.maintenanceRelay
-}
-
-function Get-ControlledMaintenanceIngressRuleEvidence {
-  param($ExpectedSourceAllowlist)
-
-  $ruleName = "VEM Controlled Maintenance SSH"
-  $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-  if ($null -eq $rule) {
-    return [ordered]@{
-      exists = $false
-      enabled = $false
-      protocol = $null
-      localPort = $null
-      sourceAllowlist = @()
-      sourceAllowlistMatches = $false
+    kioskInRemoteManagementUsers = $kioskInRemoteManagementUsers
+    packageVersions = $packageVersions
+    signatureEvidence = [ordered]@{
+      openSsh = $Manifest.signatureEvidence.openSsh
+      wireGuard = $Manifest.signatureEvidence.wireGuard
     }
-  }
-
-  $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue | Select-Object -First 1
-  $addressFilter = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue | Select-Object -First 1
-  $actualSources = @($addressFilter.RemoteAddress | ForEach-Object { [string]$_ } | Sort-Object)
-  $expectedSources = @($ExpectedSourceAllowlist | ForEach-Object { [string]$_ } | Sort-Object)
-  $sourceMatches = ($actualSources.Count -eq $expectedSources.Count)
-  if ($sourceMatches) {
-    for ($index = 0; $index -lt $actualSources.Count; $index += 1) {
-      if ($actualSources[$index] -ne $expectedSources[$index]) {
-        $sourceMatches = $false
-        break
-      }
-    }
-  }
-
-  return [ordered]@{
-    exists = $true
-    enabled = [string]$rule.Enabled -eq "True"
-    protocol = if ($null -ne $portFilter) { [string]$portFilter.Protocol } else { $null }
-    localPort = if ($null -ne $portFilter) { [string]$portFilter.LocalPort } else { $null }
-    sourceAllowlist = @($actualSources)
-    expectedSourceAllowlist = @($expectedSources)
-    sourceAllowlistMatches = $sourceMatches
-  }
-}
-
-function Get-MaintenanceRelayEvidence {
-  param($Expectation)
-
-  if ($null -eq $Expectation) {
-    return [ordered]@{
-      enabled = $false
-      status = "not_configured"
-    }
-  }
-
-  $tunnelName = [string]$Expectation.tunnelName
-  $serviceName = if ([string]::IsNullOrWhiteSpace($Expectation.tunnelServiceName)) {
-    "WireGuardTunnel{0}" -f $tunnelName
-  } else {
-    [string]$Expectation.tunnelServiceName
-  }
-  $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-  $wireGuardExe = @(
-    "C:\Program Files\WireGuard\wireguard.exe",
-    "C:\Program Files (x86)\WireGuard\wireguard.exe"
-  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-  $wgExe = @(
-    "C:\Program Files\WireGuard\wg.exe",
-    "C:\Program Files (x86)\WireGuard\wg.exe"
-  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-  $configPath = [string]$Expectation.configPath
-  $configExists = -not [string]::IsNullOrWhiteSpace($configPath) -and (Test-Path -LiteralPath $configPath -PathType Leaf)
-  $configHash = if ($configExists) { (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
-  $configHashMatches = $configExists -and $configHash -eq (Normalize-Sha256 -Value ([string]$Expectation.configSha256))
-  $ingress = Get-ControlledMaintenanceIngressRuleEvidence -ExpectedSourceAllowlist @($Expectation.controlledMaintenanceIngress.sourceAllowlist)
-  $ok = $null -ne $service -and
-    [string]$service.Status -eq "Running" -and
-    [string]$service.StartType -eq "Automatic" -and
-    $null -ne $wireGuardExe -and
-    $null -ne $wgExe -and
-    $configHashMatches -and
-    [bool]$ingress.enabled -and
-    [string]$ingress.protocol -eq "TCP" -and
-    [string]$ingress.localPort -eq "22" -and
-    [bool]$ingress.sourceAllowlistMatches
-
-  return [ordered]@{
-    enabled = $true
-    status = if ($ok) { "passed" } else { "failed" }
-    tunnelName = $tunnelName
-    serviceName = $serviceName
-    serviceStatus = if ($null -ne $service) { [string]$service.Status } else { $null }
-    serviceStartupType = if ($null -ne $service) { [string]$service.StartType } else { $null }
-    wireGuardExe = if ($null -ne $wireGuardExe) { [string]$wireGuardExe } else { $null }
-    wgExe = if ($null -ne $wgExe) { [string]$wgExe } else { $null }
-    configPath = $configPath
-    configExists = $configExists
-    configSha256Matches = $configHashMatches
-    controlledMaintenanceIngress = $ingress
+    caFingerprint = $caEvidence
+    sshdEffectiveConfig = $sshdEffectiveConfig
+    firewallScope = $firewallScope
+    accountPolicy = $accountPolicy
+    passwordAuthentication = $passwordAuthentication
+    wireGuardService = $wireGuardService
+    elevationCompatibility = $elevationCompatibility
   }
 }
 
@@ -710,6 +701,367 @@ function Read-TextIfExists {
   return Get-Content -LiteralPath $Path -Raw
 }
 
+function Get-SshdEffectiveConfigEvidence {
+  param(
+    [string]$ConfigPath,
+    [string]$MaintenanceUser,
+    [string]$KioskUser,
+    [string]$CaPath,
+    $Manifest
+  )
+  $sshdExePath = @(
+    "C:\Program Files\OpenSSH\sshd.exe",
+    "C:\Windows\System32\OpenSSH\sshd.exe"
+  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  if ([string]::IsNullOrWhiteSpace([string]$sshdExePath)) {
+    $sshdCommand = Get-Command "sshd.exe" -ErrorAction SilentlyContinue
+    if ($null -eq $sshdCommand) { $sshdCommand = Get-Command "sshd" -ErrorAction SilentlyContinue }
+    if ($null -ne $sshdCommand) { $sshdExePath = [string]$sshdCommand.Source }
+  }
+  $syntaxValid = $false
+  $syntaxError = $null
+  $values = @{}
+  if (-not [string]::IsNullOrWhiteSpace([string]$sshdExePath) -and (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+    $syntaxOutput = @(& $sshdExePath -t -f $ConfigPath 2>&1)
+    $syntaxValid = $LASTEXITCODE -eq 0
+    if (-not $syntaxValid) { $syntaxError = $syntaxOutput -join "; " }
+    if ($syntaxValid) {
+      $sourceAddress = ([string]$Manifest.maintenanceSsh.runnerSourceAllowlist[0] -split "/", 2)[0]
+      $effectiveOutput = @(& $sshdExePath -T -f $ConfigPath -C "user=$($MaintenanceUser.ToLowerInvariant()),host=localhost,addr=$sourceAddress" 2>&1)
+      if ($LASTEXITCODE -ne 0) {
+        $syntaxValid = $false
+        $syntaxError = $effectiveOutput -join "; "
+      } else {
+        foreach ($line in $effectiveOutput) {
+          $parts = ([string]$line).Trim() -split "\s+", 2
+          if ($parts.Count -eq 2 -and -not $values.ContainsKey($parts[0])) { $values[$parts[0]] = $parts[1] }
+        }
+      }
+    }
+  }
+  $expectedListen = [string]$Manifest.maintenanceSsh.wireGuardListenAddress
+  $actualListen = [string]$values.listenaddress
+  $allowUsers = [string]$values.allowusers
+  $denyUsers = [string]$values.denyusers
+  return [ordered]@{
+    path = $ConfigPath
+    executablePath = $sshdExePath
+    syntaxValid = $syntaxValid
+    syntaxError = $syntaxError
+    listenAddress = $actualListen
+    listenAddressMatches = $actualListen -ceq "$expectedListen`:22"
+    trustedUserCaKeysValue = [string]$values.trustedusercakeys
+    trustedUserCaKeys = [string]$values.trustedusercakeys -ceq $CaPath
+    pubkeyAuthentication = [string]$values.pubkeyauthentication -ceq "yes"
+    passwordAuthentication = [string]$values.passwordauthentication -ceq "no"
+    keyboardInteractiveAuthentication = [string]$values.kbdinteractiveauthentication -ceq "no"
+    authenticationMethods = [string]$values.authenticationmethods -ceq "publickey"
+    authorizedKeysFileValue = [string]$values.authorizedkeysfile
+    authorizedKeysFile = [string]$values.authorizedkeysfile -ceq "none"
+    allowUsersValue = $allowUsers
+    allowUsers = $allowUsers -ceq $MaintenanceUser.ToLowerInvariant()
+    denyUsersValue = $denyUsers
+    denyUsers = @($denyUsers -split "\s+" | Where-Object { $_ -ceq $KioskUser.ToLowerInvariant() }).Count -gt 0
+    systemEntrypoint = $allowUsers -notmatch "(?i)(^|\s)SYSTEM($|\s)"
+    effectivePolicy = if ($syntaxValid) { "measured" } else { "invalid" }
+  }
+}
+
+function Get-FactoryPackageEvidence {
+  param($Manifest)
+  $result = [ordered]@{}
+  foreach ($package in @(
+      [pscustomobject]@{ name = "openSsh"; expected = $Manifest.packages.openSsh; executable = "C:\Program Files\OpenSSH\sshd.exe" },
+      [pscustomobject]@{ name = "wireGuard"; expected = $Manifest.packages.wireGuard; executable = "C:\Program Files\WireGuard\wireguard.exe" }
+    )) {
+    $file = Get-Item -LiteralPath $package.executable -ErrorAction SilentlyContinue
+    $signature = $package.expected.signatureEvidence
+    $installedSignature = $null
+    if ($null -ne $file) {
+      $authenticode = Get-AuthenticodeSignature -FilePath ([string]$file.FullName)
+      $chainValid = $false
+      $chainThumbprints = @()
+      $rootThumbprint = $null
+      if ($null -ne $authenticode.SignerCertificate) {
+        $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        $chainValid = $chain.Build($authenticode.SignerCertificate)
+        $chainThumbprints = @($chain.ChainElements | ForEach-Object { ([string]$_.Certificate.Thumbprint).ToUpperInvariant() })
+        if ($chainThumbprints.Count -gt 0) { $rootThumbprint = $chainThumbprints[-1] }
+      }
+      $installedSignerThumbprint = if ($null -ne $authenticode.SignerCertificate) { ([string]$authenticode.SignerCertificate.Thumbprint).ToUpperInvariant() } else { $null }
+      $installedSignature = [ordered]@{
+        status = [string]$authenticode.Status
+        statusMessage = [string]$authenticode.StatusMessage
+        signerSubject = if ($null -ne $authenticode.SignerCertificate) { [string]$authenticode.SignerCertificate.Subject } else { $null }
+        signerThumbprint = $installedSignerThumbprint
+        rootThumbprint = $rootThumbprint
+        chainThumbprints = $chainThumbprints
+        chainValid = $chainValid
+        signerMatchesApproved = $installedSignerThumbprint -ceq [string]$signature.signerThumbprint
+        rootMatchesApproved = $rootThumbprint -ceq [string]$signature.rootThumbprint
+      }
+    }
+    $result[$package.name] = [ordered]@{
+      source = [string]$package.expected.source
+      version = [string]$package.expected.version
+      sha256 = [string]$package.expected.sha256
+      signatureEvidence = $signature
+      executablePath = if ($null -ne $file) { [string]$file.FullName } else { $package.executable }
+      installed = $null -ne $file
+      fileVersion = if ($null -ne $file) { [string]$file.VersionInfo.FileVersion } else { $null }
+      versionMatches = $null -ne $file -and (Test-PinnedVersionEquivalent -Actual ([string]$file.VersionInfo.FileVersion) -Expected ([string]$package.expected.version))
+      installedSignature = $installedSignature
+    }
+  }
+  return $result
+}
+
+function Test-PinnedVersionEquivalent {
+  param(
+    [string]$Actual,
+    [string]$Expected
+  )
+
+  if ($Actual.Trim() -ceq $Expected.Trim()) { return $true }
+  $actualMatch = [regex]::Match($Actual, "\d+(?:\.\d+)+")
+  $expectedMatch = [regex]::Match($Expected, "\d+(?:\.\d+)+")
+  if (-not $actualMatch.Success -or -not $expectedMatch.Success) { return $false }
+  $actualParts = [System.Collections.Generic.List[int]]@($actualMatch.Value.Split(".") | ForEach-Object { [int]$_ })
+  $expectedParts = [System.Collections.Generic.List[int]]@($expectedMatch.Value.Split(".") | ForEach-Object { [int]$_ })
+  while ($actualParts.Count -gt 1 -and $actualParts[-1] -eq 0) { $actualParts.RemoveAt($actualParts.Count - 1) }
+  while ($expectedParts.Count -gt 1 -and $expectedParts[-1] -eq 0) { $expectedParts.RemoveAt($expectedParts.Count - 1) }
+  return ($actualParts -join ".") -ceq ($expectedParts -join ".")
+}
+
+function Get-MaintenanceCaEvidence {
+  param($Manifest)
+  $ca = $Manifest.maintenanceSsh
+  $exists = Test-Path -LiteralPath ([string]$ca.caPath) -PathType Leaf
+  $hash = if ($exists) { (Get-FileHash -LiteralPath ([string]$ca.caPath) -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+  $keyLines = if ($exists) { @([System.IO.File]::ReadAllLines([string]$ca.caPath, [System.Text.Encoding]::UTF8) | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 -and -not $_.StartsWith("#") }) } else { @() }
+  $keyType = $null
+  $profile = $null
+  if ($keyLines.Count -eq 1) {
+    $parts = $keyLines[0] -split "\s+", 3
+    if ($parts.Count -eq 3) {
+      $keyType = $parts[0]
+      if ($parts[2] -match "^vem-maintenance-ca:(production|testbed)$") { $profile = $matches[1] }
+    }
+  }
+  $keygen = Get-Command "ssh-keygen.exe" -ErrorAction SilentlyContinue
+  if ($null -eq $keygen) { $keygen = Get-Command "ssh-keygen" -ErrorAction SilentlyContinue }
+  $fingerprint = $null
+  if ($exists -and $null -ne $keygen) {
+    $fingerprint = ((& $keygen.Source -lf ([string]$ca.caPath) -E sha256 2>$null) | Out-String).Trim()
+    if ($fingerprint -match "(SHA256:[A-Za-z0-9+/=]+)") { $fingerprint = $matches[1] }
+  }
+  return [ordered]@{
+    path = [string]$ca.caPath
+    exists = $exists
+    sha256 = $hash
+    sha256Matches = $exists -and $hash -eq ([string]$ca.caSha256).ToLowerInvariant()
+    profile = $profile
+    expectedProfile = [string]$Manifest.factoryProfile
+    profileMatches = $profile -ceq [string]$Manifest.factoryProfile
+    keyType = $keyType
+    keyCount = $keyLines.Count
+    expectedFingerprint = [string]$ca.caFingerprint
+    fingerprint = $fingerprint
+    fingerprintMatches = $exists -and $null -ne $fingerprint -and $fingerprint -eq [string]$ca.caFingerprint
+    publicKeyOnly = $exists -and $keyLines.Count -eq 1 -and $keyType -ceq "ssh-ed25519"
+  }
+}
+
+function Get-MaintenanceFirewallEvidence {
+  param($Manifest)
+  $policy = $Manifest.maintenanceSsh
+  $allRules = @(Get-NetFirewallRule -ErrorAction SilentlyContinue)
+  $sshRules = [System.Collections.Generic.List[object]]::new()
+  foreach ($candidate in $allRules) {
+    if ([string]$candidate.Direction -ne "Inbound" -or [string]$candidate.Enabled -ne "True" -or [string]$candidate.Action -ne "Allow") { continue }
+    foreach ($candidatePort in @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $candidate -ErrorAction SilentlyContinue)) {
+      $protocol = [string]$candidatePort.Protocol
+      $includesSsh = $false
+      foreach ($entry in @($candidatePort.LocalPort)) {
+        foreach ($part in ([string]$entry -split ",")) {
+          $value = $part.Trim()
+          if ($value -match "^(?i:Any|\*)$" -or $value -eq "22" -or ($value -match "^(\d+)-(\d+)$" -and [int]$matches[1] -le 22 -and [int]$matches[2] -ge 22)) {
+            $includesSsh = $true
+          }
+        }
+      }
+      if (($protocol -eq "TCP" -or $protocol -eq "6" -or $protocol -eq "Any") -and $includesSsh) {
+        $addressFilter = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+        $interfaceFilter = Get-NetFirewallInterfaceFilter -AssociatedNetFirewallRule $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+        $sshRules.Add([pscustomobject]@{
+            name = [string]$candidate.Name
+            displayName = [string]$candidate.DisplayName
+            protocol = $protocol
+            localPort = [string]$candidatePort.LocalPort
+            remoteAddress = @($addressFilter.RemoteAddress | ForEach-Object { [string]$_ })
+            interfaceAlias = [string]$interfaceFilter.InterfaceAlias
+          }) | Out-Null
+        break
+      }
+    }
+  }
+  $managedRules = @($sshRules | Where-Object { $_.displayName -ceq "VEM Controlled Maintenance SSH" })
+  $rule = if ($managedRules.Count -eq 1) { $managedRules[0] } else { $null }
+  $actual = if ($null -ne $rule) { @($rule.remoteAddress | Sort-Object -Unique) } else { @() }
+  $expected = @(@($policy.runnerSourceAllowlist) + @($policy.maintainerSourceAllowlist) | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+  $listeners = @(Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+      [pscustomobject]@{ localAddress = [string]$_.LocalAddress; localPort = [int]$_.LocalPort; owningProcess = [int]$_.OwningProcess }
+    })
+  $expectedListenAddress = [string]$policy.wireGuardListenAddress
+  $unexpectedRules = @($sshRules | Where-Object { $_.displayName -cne "VEM Controlled Maintenance SSH" })
+  $unexpectedListeners = @($listeners | Where-Object { $_.localAddress -cne $expectedListenAddress })
+  return [ordered]@{
+    exists = $null -ne $rule
+    enabled = $null -ne $rule
+    protocol = if ($null -ne $rule) { [string]$rule.protocol } else { $null }
+    localPort = if ($null -ne $rule) { [string]$rule.localPort } else { $null }
+    interfaceAlias = if ($null -ne $rule) { [string]$rule.interfaceAlias } else { $null }
+    expectedInterfaceAlias = [string]$policy.wireGuardInterfaceAlias
+    sourceRolePools = $actual
+    expectedSourceRolePools = $expected
+    sourceRolePoolsMatch = ($actual -join ",") -eq ($expected -join ",")
+    expectedListenAddress = $expectedListenAddress
+    enabledInboundTcp22Rules = @($sshRules)
+    unexpectedEnabledInboundTcp22Rules = $unexpectedRules
+    listeners = $listeners
+    unexpectedListeners = $unexpectedListeners
+  }
+}
+
+function Get-WireGuardServiceEvidence {
+  param($Manifest)
+  $expected = $Manifest.wireGuard
+  $serviceName = Get-WireGuardTunnelServiceName
+  $manifestServiceName = [string]$expected.serviceName
+  $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+  $serviceConfig = Get-CimInstance Win32_Service -Filter ("Name = '{0}'" -f $serviceName) -ErrorAction SilentlyContinue
+  $configExists = Test-Path -LiteralPath ([string]$expected.configPath) -PathType Leaf
+  $configText = if ($configExists) { Get-Content -LiteralPath ([string]$expected.configPath) -Raw } else { "" }
+  $dependencyNames = if ($null -ne $service) { @($service.ServicesDependedOn | ForEach-Object { [string]$_.Name }) } else { @() }
+  $automatic = $null -ne $serviceConfig -and [string]$serviceConfig.StartMode -eq "Auto"
+  $localSystemOwned = $null -ne $serviceConfig -and [string]$serviceConfig.StartName -match "(?i)^(LocalSystem|NT AUTHORITY\\SYSTEM)$"
+  return [ordered]@{
+    serviceName = $serviceName
+    manifestServiceName = $manifestServiceName
+    serviceNameMatches = $manifestServiceName -ceq $serviceName
+    exists = $null -ne $service
+    status = if ($null -ne $service) { [string]$service.Status } else { $null }
+    startupType = if ($automatic) { "Automatic" } elseif ($null -ne $serviceConfig) { [string]$serviceConfig.StartMode } else { $null }
+    automatic = $automatic
+    owner = if ($null -ne $serviceConfig) { [string]$serviceConfig.StartName } else { $null }
+    expectedOwner = [string]$expected.owner
+    ownerMatches = $localSystemOwned
+    configPath = [string]$expected.configPath
+    configExists = $configExists
+    privateKeyPresentLocally = $configText -match "(?im)^\s*PrivateKey\s*="
+    profileContamination = $configText -match "(?i)testbed|YKDZ|test-peer|simulator|shared-password"
+    serviceDependencies = $dependencyNames
+    independentOfKiosk = $automatic -and @($dependencyNames | Where-Object { $_ -match "(?i)VEMMachineUI|machine|kiosk" }).Count -eq 0
+  }
+}
+
+function Assert-ExactPersonalizationProperties {
+  param($Value, [string[]]$ExpectedNames, [string]$Label)
+
+  if ($null -eq $Value -or $Value -is [string] -or $Value -is [array]) {
+    throw "$Label must be an object"
+  }
+  $actualNames = @($Value.PSObject.Properties.Name)
+  $unknown = @($actualNames | Where-Object { $_ -notin $ExpectedNames })
+  $missing = @($ExpectedNames | Where-Object { $_ -notin $actualNames })
+  if ($unknown.Count -gt 0 -or $missing.Count -gt 0 -or $actualNames.Count -ne $ExpectedNames.Count) {
+    throw "$Label has an invalid property shape"
+  }
+}
+
+function Get-RequiredPersonalizationProperty {
+  param($Value, [string]$Name, [string]$Label)
+
+  $property = @($Value.PSObject.Properties | Where-Object { $_.Name -ceq $Name })
+  if ($property.Count -ne 1) {
+    throw "$Label is missing required own property $Name"
+  }
+  return $property[0].Value
+}
+
+function Get-FactoryPersonalizationRedaction {
+  param($Manifest)
+
+  $redaction = $Manifest.personalization
+  Assert-ExactPersonalizationProperties -Value $redaction -ExpectedNames @("schemaVersion", "kind", "profile", "protection", "credentials", "wireGuardPrivateKey", "mediaConsumed", "stagingRetained") -Label "Factory Personalization redaction"
+  $profile = Get-RequiredPersonalizationProperty -Value $redaction -Name "profile" -Label "Factory Personalization redaction"
+  if ([string]$redaction.schemaVersion -cne "vem-factory-personalization-media-redaction/v1" -or
+      [string]$redaction.kind -cne "factory-personalization-media-redaction" -or
+      [string]$profile -cne [string]$Manifest.factoryProfile -or
+      [string]$redaction.wireGuardPrivateKey -cne "not-supplied; generated-locally" -or
+      $redaction.mediaConsumed -isnot [bool] -or $redaction.mediaConsumed -ne $true -or
+      $redaction.stagingRetained -isnot [bool] -or $redaction.stagingRetained -ne $false) {
+    throw "Factory Personalization Media redaction contract is invalid"
+  }
+  $protection = Get-RequiredPersonalizationProperty -Value $redaction -Name "protection" -Label "Factory Personalization redaction"
+  Assert-ExactPersonalizationProperties -Value $protection -ExpectedNames @("encryptedAtRest", "access", "cache", "retention") -Label "Factory Personalization redaction protection"
+  if ($protection.encryptedAtRest -isnot [bool] -or $protection.encryptedAtRest -ne $true -or
+      [string]$protection.access -cne "trusted-protected-gate" -or
+      [string]$protection.cache -cne "forbidden" -or
+      [string]$protection.retention -cne "installation-lifecycle-only") {
+    throw "Factory Personalization Media redaction protection contract is invalid"
+  }
+  $credentialNames = if ([string]$profile -ceq "production") { @("administrator", "kiosk") } else { @("bootstrap", "kiosk") }
+  $credentials = Get-RequiredPersonalizationProperty -Value $redaction -Name "credentials" -Label "Factory Personalization redaction"
+  Assert-ExactPersonalizationProperties -Value $credentials -ExpectedNames $credentialNames -Label "Factory Personalization redaction credentials"
+  foreach ($name in $credentialNames) {
+    if ([string](Get-RequiredPersonalizationProperty -Value $credentials -Name $name -Label "Factory Personalization redaction credentials") -cne "configured") {
+      throw "Factory Personalization Media redaction credential contract is invalid"
+    }
+  }
+  $credentialEvidence = [ordered]@{}
+  foreach ($name in $credentialNames) {
+    $credentialEvidence[$name] = "configured"
+  }
+  # Reconstruct only the allowlisted facts; never carry manifest input through.
+  return [ordered]@{
+    schemaVersion = "vem-factory-personalization-media-redaction/v1"
+    kind = "factory-personalization-media-redaction"
+    profile = [string]$profile
+    protection = [ordered]@{
+      encryptedAtRest = $true
+      access = "trusted-protected-gate"
+      cache = "forbidden"
+      retention = "installation-lifecycle-only"
+    }
+    credentials = $credentialEvidence
+    wireGuardPrivateKey = "not-supplied; generated-locally"
+    mediaConsumed = $true
+    stagingRetained = $false
+  }
+}
+
+function Get-FactoryPersonalizationEvidence {
+  param($Manifest)
+
+  $markerPath = "C:\ProgramData\VEM\factory\personalization-consumed.json"
+  $markerExists = Test-Path -LiteralPath $markerPath -PathType Leaf
+  $marker = if ($markerExists) { Read-JsonFile -Path $markerPath } else { $null }
+  $retainedMedia = @(
+    Get-ChildItem -LiteralPath "C:\ProgramData\VEM\factory" -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match "(?i)personalization.*media|personalization\.json" }
+  )
+  $redaction = Get-FactoryPersonalizationRedaction -Manifest $Manifest
+  return [ordered]@{
+    profile = [string]$Manifest.factoryProfile
+    consumed = $markerExists
+    profileMatches = $markerExists -and [string]$marker.profile -ceq [string]$Manifest.factoryProfile
+    retainedMediaPresent = $retainedMedia.Count -gt 0
+    credentials = $redaction.credentials
+  }
+}
+
 $failures = [System.Collections.Generic.List[string]]::new()
 $checks = [ordered]@{}
 $manifest = $null
@@ -720,6 +1072,7 @@ try {
     path = $ManifestPath
     schemaVersion = $manifest.schemaVersion
     layoutVersion = $manifest.layoutVersion
+    factoryProfile = $manifest.factoryProfile
     hardwareMode = $manifest.hardware.mode
     hardwareModel = $manifest.hardware.model
     topologyIdentity = $manifest.topology.identity
@@ -729,11 +1082,45 @@ try {
   if ([string]$manifest.schemaVersion -ne "vem-factory-runtime-manifest/v1") {
     Add-Failure $failures "unexpected factory manifest schema: $($manifest.schemaVersion)"
   }
+  if ([string]$manifest.factoryProfile -notin @("production", "testbed")) {
+    Add-Failure $failures "factory manifest must declare production or testbed profile"
+  }
+  if ($null -eq $manifest.packages.openSsh -or $null -eq $manifest.packages.wireGuard) {
+    Add-Failure $failures "factory manifest must declare pinned OpenSSH and WireGuard packages"
+  }
+  if ($null -eq $manifest.maintenanceSsh -or $null -eq $manifest.wireGuard) {
+    Add-Failure $failures "factory manifest must declare Maintenance SSH CA and WireGuard ownership"
+  }
+  $checks.visionRelease = $manifest.visionRelease
+  if ([string]$manifest.factoryProfile -eq "production") {
+    $vision = $manifest.visionRelease
+    if (
+      $null -eq $vision -or
+      [string]$vision.installedDigest -notmatch '^sha256:[a-f0-9]{64}$' -or
+      [string]$vision.descriptorDigest -notmatch '^sha256:[a-f0-9]{64}$' -or
+      [string]$vision.approvalDigest -notmatch '^sha256:[a-f0-9]{64}$' -or
+      [string]$vision.configurationSha256 -notmatch '^[a-f0-9]{64}$' -or
+      $vision.healthOk -ne $true -or
+      $vision.webSocketOk -ne $true -or
+      $vision.redacted -ne $true -or
+      -not (Test-Path -LiteralPath ([string]$vision.evidencePath) -PathType Leaf)
+    ) {
+      Add-Failure $failures "production Factory Vision installation evidence is missing or invalid"
+    }
+  }
+  $checks.personalization = Get-FactoryPersonalizationRedaction -Manifest $manifest
+  $checks.personalizationLifecycle = Get-FactoryPersonalizationEvidence -Manifest $manifest
+  if (-not [bool]$checks.personalizationLifecycle.consumed -or
+      -not [bool]$checks.personalizationLifecycle.profileMatches -or
+      [bool]$checks.personalizationLifecycle.retainedMediaPresent) {
+    Add-Failure $failures "Factory Personalization Media lifecycle marker or staging cleanup is invalid"
+  }
 } catch {
   Add-Failure $failures $_.Exception.Message
 }
 
 if ($null -ne $manifest) {
+  # FactoryProfile is a strict production/testbed boundary, not a display label.
   $expectedPaths = [ordered]@{
     runtimeRoot = "C:\VEM\bringup"
     daemonExecutable = "C:\VEM\bringup\vending-daemon.exe"
@@ -968,8 +1355,6 @@ if ($null -ne $manifest) {
     Add-Failure $failures "Windows testsigning must be off"
   }
 
-  $maintenanceRelayExpectation = Get-MaintenanceRelayExpectation -Manifest $manifest
-
   $checks.securityPosture = Get-SecurityPostureEvidence
   if ([string]$checks.securityPosture.defender -ne "enabled") {
     Add-Failure $failures "Defender must remain enabled with VEM runtime exclusions"
@@ -981,11 +1366,7 @@ if ($null -ne $manifest) {
     Add-Failure $failures "Defender VEM runtime exclusions missing: $($checks.securityPosture.missingDefenderExclusions -join ', ')"
   }
   $enabledVemInboundRules = @($checks.securityPosture.enabledVemInboundRules)
-  $disallowedVemInboundRules = if ($null -ne $maintenanceRelayExpectation) {
-    @($enabledVemInboundRules | Where-Object { [string]$_ -ne "VEM Controlled Maintenance SSH" })
-  } else {
-    $enabledVemInboundRules
-  }
+  $disallowedVemInboundRules = @($enabledVemInboundRules | Where-Object { [string]$_ -ne "VEM Controlled Maintenance SSH" })
   if (@($disallowedVemInboundRules).Count -gt 0) {
     Add-Failure $failures "default Factory Runtime Image must not enable product-managed inbound remote access rules: $($disallowedVemInboundRules -join ', ')"
   }
@@ -993,7 +1374,7 @@ if ($null -ne $manifest) {
     Add-Failure $failures "File and Printer Sharing firewall rules must not be enabled as a maintenance entry"
   }
 
-  $checks.factoryRemoteMaintenanceCapability = Get-FactoryRemoteMaintenanceCapabilityEvidence -KioskUser ([string]$manifest.expectations.kioskUser) -MaintenanceUser ([string]$manifest.expectations.maintenanceUser)
+  $checks.factoryRemoteMaintenanceCapability = Get-FactoryRemoteMaintenanceCapabilityEvidence -KioskUser ([string]$manifest.expectations.kioskUser) -MaintenanceUser ([string]$manifest.expectations.maintenanceUser) -Manifest $manifest
   if ([string]$checks.factoryRemoteMaintenanceCapability.opensshServer -ne "available") {
     Add-Failure $failures "Factory Remote Maintenance Capability requires OpenSSH Server"
   }
@@ -1012,10 +1393,98 @@ if ($null -ne $manifest) {
   if ([string]$checks.factoryRemoteMaintenanceCapability.kioskRemoteAccess -ne "denied") {
     Add-Failure $failures "kiosk account must not have remote maintenance access"
   }
-
-  $checks.maintenanceRelay = Get-MaintenanceRelayEvidence -Expectation $maintenanceRelayExpectation
-  if ($null -ne $maintenanceRelayExpectation -and [string]$checks.maintenanceRelay.status -ne "passed") {
-    Add-Failure $failures "preconfigured Maintenance Relay must have running WireGuard tunnel service and exact Controlled Maintenance Ingress allowlist"
+  if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.expectations.maintenanceUser -cne "Admin") {
+    Add-Failure $failures "production verifier requires the Admin maintenance administrator"
+  }
+  $personalizationJson = $checks.personalization | ConvertTo-Json -Depth 12 -Compress
+  if ([string]$manifest.factoryProfile -eq "production" -and $personalizationJson -match "(?i)YKDZ|testbed|test-ca|test-peer|simulator|shared-password") {
+    Add-Failure $failures "production verifier rejects testbed Factory Personalization Media contamination"
+  }
+  if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.expectations.maintenanceUser -eq "YKDZ") {
+    Add-Failure $failures "production verifier rejects the testbed YKDZ maintenance administrator"
+  }
+  if ([string]$manifest.factoryProfile -eq "testbed" -and [string]$manifest.expectations.maintenanceUser -cne "YKDZ") {
+    Add-Failure $failures "testbed verifier requires the existing YKDZ maintenance administrator"
+  }
+  if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.hardware.mode -ne "production") {
+    Add-Failure $failures "production verifier rejects simulated hardware mode"
+  }
+  if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.hardware.model -match "(?i)simulator|mock|tcp") {
+    Add-Failure $failures "production verifier rejects simulator and TCP hardware identities"
+  }
+  if ([string]$manifest.factoryProfile -eq "production" -and $null -ne (Get-LocalUser -Name "YKDZ" -ErrorAction SilentlyContinue)) {
+    Add-Failure $failures "production verifier rejects a live YKDZ testbed account"
+  }
+  if ([string]$manifest.factoryProfile -eq "production") {
+    $daemonConfigPath = [string]$manifest.paths.daemonConfigPath
+    if (Test-Path -LiteralPath $daemonConfigPath -PathType Leaf) {
+      $daemonConfigText = Get-Content -LiteralPath $daemonConfigPath -Raw
+      if ($daemonConfigText -match '(?i)"hardwareAdapter"\s*:\s*"mock"|"serialPortPath"\s*:\s*"tcp://|"machineCode"\s*:\s*"[^"]*(testbed|test|sim)') {
+        Add-Failure $failures "production verifier rejects live daemon simulator/testbed hardware configuration"
+      }
+    }
+  }
+  if (-not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.trustedUserCaKeys -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.syntaxValid -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.listenAddressMatches -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.passwordAuthentication -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.keyboardInteractiveAuthentication -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authenticationMethods -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authorizedKeysFile -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.allowUsers -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.denyUsers -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.systemEntrypoint) {
+    Add-Failure $failures "effective sshd configuration must require the selected CA and public-key-only authentication without SYSTEM entrypoint"
+  }
+  if (-not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.exists -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.enabled -or
+      [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.protocol -ne "TCP" -or
+      [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.localPort -ne "22" -or
+      [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.interfaceAlias -ne [string]$manifest.maintenanceSsh.wireGuardInterfaceAlias -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.sourceRolePoolsMatch -or
+      @($checks.factoryRemoteMaintenanceCapability.firewallScope.unexpectedEnabledInboundTcp22Rules).Count -gt 0 -or
+      @($checks.factoryRemoteMaintenanceCapability.firewallScope.listeners).Count -eq 0 -or
+      @($checks.factoryRemoteMaintenanceCapability.firewallScope.unexpectedListeners).Count -gt 0) {
+    Add-Failure $failures "Controlled Maintenance SSH firewall must be TCP 22 on WireGuard and exact runner/maintainer role pools"
+  }
+  if ([string]$checks.factoryRemoteMaintenanceCapability.wireGuardService.startupType -ne "Automatic" -or
+      [string]$checks.factoryRemoteMaintenanceCapability.wireGuardService.status -ne "Running" -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.serviceNameMatches -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.ownerMatches -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.independentOfKiosk -or
+      ([string]$manifest.factoryProfile -eq "production" -and [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.profileContamination)) {
+    Add-Failure $failures "WireGuard machine maintenance service must be automatic and LocalSystem-owned"
+  }
+  foreach ($packageName in @("openSsh", "wireGuard")) {
+    $package = $checks.factoryRemoteMaintenanceCapability.packageVersions.$packageName
+    if (-not [bool]$package.installed -or -not [bool]$package.versionMatches -or [string]$package.source -notmatch "^(local-pinned|factory-cas://sha256/)" -or
+        [string]$package.installedSignature.status -ne "Valid" -or -not [bool]$package.installedSignature.chainValid -or
+        -not [bool]$package.installedSignature.signerMatchesApproved -or -not [bool]$package.installedSignature.rootMatchesApproved) {
+      Add-Failure $failures "pinned $packageName package is not installed at the declared version/source"
+    }
+  }
+  if (-not [bool]$checks.factoryRemoteMaintenanceCapability.caFingerprint.sha256Matches -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.caFingerprint.fingerprintMatches -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.caFingerprint.publicKeyOnly -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.caFingerprint.profileMatches -or
+      [int]$checks.factoryRemoteMaintenanceCapability.caFingerprint.keyCount -ne 1) {
+    Add-Failure $failures "Maintenance SSH CA fingerprint/hash does not match the selected profile"
+  }
+  $accountPolicy = $checks.factoryRemoteMaintenanceCapability.accountPolicy
+  if (-not [bool]$accountPolicy.maintenanceAdministrator -or [bool]$accountPolicy.kioskAdministrator -or
+      [string]$accountPolicy.maintenanceUser -cne [string]$accountPolicy.expectedMaintenanceUser -or
+      [bool]$accountPolicy.kioskInOpenSshUsers -or [bool]$accountPolicy.kioskInRemoteDesktopUsers -or
+      [bool]$accountPolicy.kioskInRemoteManagementUsers -or -not [bool]$accountPolicy.sshDenied -or
+      -not [bool]$accountPolicy.remoteInteractiveDenied -or -not [bool]$accountPolicy.winRmDenied -or
+      -not [bool]$accountPolicy.effectiveKioskRemoteAdministrationDenied) {
+    Add-Failure $failures "maintenance administrator or kiosk effective remote-administration flags are incorrect"
+  }
+  if ([bool]$checks.factoryRemoteMaintenanceCapability.passwordAuthentication.passwordFallback) {
+    Add-Failure $failures "OpenSSH password or raw authorized-key fallback remains enabled"
+  }
+  if ([string]$checks.factoryRemoteMaintenanceCapability.elevationCompatibility.systemSshEntrypoint -ne "not_configured" -or
+      [string]$checks.factoryRemoteMaintenanceCapability.elevationCompatibility.administratorToSystem -ne "measured_supported") {
+    Add-Failure $failures "explicit administrator-to-SYSTEM compatibility probe failed or SYSTEM SSH was configured"
   }
 
   $checks.consumerExperienceInterference = Get-ConsumerExperienceInterferenceEvidence
@@ -1028,7 +1497,7 @@ if ($null -ne $manifest) {
 }
 
 $result = [ordered]@{
-  schemaVersion = "vem-factory-runtime-verification/v1"
+  schemaVersion = "vem-factory-runtime-verification/v2"
   checkedAt = (Get-Date).ToUniversalTime().ToString("o")
   ok = $failures.Count -eq 0
   manifestPath = $ManifestPath

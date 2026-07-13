@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
   existsSync,
   mkdirSync,
@@ -32,8 +33,12 @@ import {
   buildVmRuntimeAcceptancePlan,
   buildCleanBaseFactoryAcceptancePlan,
   buildFactoryImageDeliveryUnitReport,
+  assertTrustedProtectedFactoryPersonalizationGate,
   buildCleanBaseRemoteIdentityProbeCommand,
   buildCleanBaseRemotePreflightAbsenceProbeCommand,
+  cleanupFactoryAcceptanceStaging,
+  createFactoryAcceptanceCancellationController,
+  installFactoryAcceptanceSignalHandlers,
   validateCleanBaseFactoryAcceptanceEvidence,
   writeVmRuntimeAcceptanceEvidenceIndexes,
   buildScpCommand,
@@ -43,6 +48,130 @@ import {
   getRuntimeAcceptanceExitStatus,
   isStrictTauriHashRouteUrl,
 } from "./win10-vem-e2e.mjs";
+
+describe("factory acceptance cancellation cleanup", () => {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    it(`fails closed after ${signal} when remote staging cleanup cannot be verified`, () => {
+      const signalSource = new EventEmitter();
+      const cleanupCalls = [];
+      const controller = createFactoryAcceptanceCancellationController({
+        cleanupRemoteFactoryStaging: () => {
+          cleanupCalls.push("remote");
+          return false;
+        },
+        cleanupLocalFactoryStaging: () => {
+          cleanupCalls.push("local-staging");
+          return true;
+        },
+        removeLocalTempDirectory: () => {
+          cleanupCalls.push("local-temp");
+          return true;
+        },
+      });
+      const removeSignalHandlers = installFactoryAcceptanceSignalHandlers(
+        controller,
+        signalSource,
+      );
+      signalSource.emit(signal);
+      removeSignalHandlers();
+
+      assert.throws(
+        () => controller.throwIfCancellationRequested(),
+        new RegExp(`cancelled by ${signal}`),
+      );
+      assert.throws(
+        () => controller.finalize(),
+        new RegExp(
+          `cleanup verification failed after ${signal}: remote factory staging cleanup verification failed`,
+        ),
+      );
+      assert.deepEqual(cleanupCalls, ["local-staging", "remote", "local-temp"]);
+      assert.deepEqual(controller.state, {
+        cancellationSignal: signal,
+        cleanupFailure: "remote factory staging cleanup verification failed",
+      });
+    });
+  }
+
+  it("independently deletes and verifies deterministic local and remote staging", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-factory-cleanup-"));
+    try {
+      mkdirSync(join(root, "factory-personalization"));
+      const cleanup = cleanupFactoryAcceptanceStaging(
+        {
+          mode: "dirty-host-factory-acceptance",
+          remote: "YKDZ@testbed.invalid",
+          identity: "/tmp/maintenance-key",
+          certificate: "/tmp/maintenance-cert.pub",
+        },
+        {
+          localTempDirectory: root,
+          spawn(command, args) {
+            assert.equal(command, "ssh");
+            assert.match(args.at(-1), /vem-factory-acceptance-staging/);
+            assert.doesNotMatch(args.at(-1), /password|mediaId|private key/i);
+            return { status: 0 };
+          },
+        },
+      );
+      assert.deepEqual(cleanup, { localCleaned: true, remoteCleaned: true });
+      assert.equal(existsSync(root), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes the local snapshot even when remote cleanup cannot start", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-factory-cleanup-failure-"));
+    try {
+      mkdirSync(join(root, "factory-personalization"));
+      assert.throws(
+        () =>
+          cleanupFactoryAcceptanceStaging(
+            {
+              mode: "dirty-host-factory-acceptance",
+              remote: "YKDZ@testbed.invalid",
+              identity: "/tmp/maintenance-key",
+            },
+            { localTempDirectory: root },
+          ),
+        /certificate-only SSH requires --identity and --certificate/,
+      );
+      assert.equal(existsSync(root), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+const CERTIFICATE_SSH_OPTIONS = {
+  identity: "/tmp/maintenance-key",
+  certificate: "/tmp/maintenance-key-cert.pub",
+};
+const CERTIFICATE_SSH_ARGS = [
+  "-o",
+  "IdentityFile=/tmp/maintenance-key",
+  "-o",
+  "CertificateFile=/tmp/maintenance-key-cert.pub",
+  "-o",
+  "IdentitiesOnly=yes",
+  "-o",
+  "IdentityAgent=none",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "PasswordAuthentication=no",
+  "-o",
+  "KbdInteractiveAuthentication=no",
+  "-o",
+  "PreferredAuthentications=publickey",
+  "-o",
+  "ClearAllForwardings=yes",
+  "-o",
+  "ForwardAgent=no",
+  "-o",
+  "ConnectTimeout=30",
+];
 
 function runtimeAcceptanceFacts(overrides = {}) {
   return {
@@ -232,6 +361,7 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
     result: "passed",
     ok: true,
     dryRun: false,
+    factoryProfile: "testbed",
     source: {
       kind: "clean-windows-base",
       uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
@@ -352,7 +482,11 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
       daemonService: { status: "passed", name: "VemVendingDaemon" },
       uiLauncherTask: { status: "passed", name: "VEMMachineUI" },
       runtimeResetGateClean: { status: "passed" },
-      simulatedHardwareMode: { status: "passed", mode: "simulated" },
+      hardwareProfileMode: {
+        status: "passed",
+        profile: "testbed",
+        mode: "simulated",
+      },
       startupReachesBringUpOrSalesEligible: {
         status: "passed",
         state: "bring_up",
@@ -364,6 +498,7 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
       preflightNoPreviousVemEvidence: { status: "passed" },
     },
     evidence: {
+      factoryProfile: "testbed",
       preparationOutput,
       verificationAction,
       verifierEvidence,
@@ -375,6 +510,7 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
         checks: {
           manifest: {
             schemaVersion: "vem-factory-runtime-manifest/v1",
+            factoryProfile: "testbed",
             hardwareMode: "simulated",
             hardwareModel: "win10-clean-base",
             topologyIdentity: "clean-base-factory-runtime",
@@ -405,6 +541,113 @@ function commandArg(command, flag) {
 }
 
 describe("win10-vem-e2e reset planning", () => {
+  it("requires the exact protected GitHub gate and runner identity before secret media can be opened", () => {
+    const trusted = {
+      GITHUB_ACTIONS: "true",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_REPOSITORY: "vem/vem",
+      GITHUB_REPOSITORY_OWNER: "vem",
+      GITHUB_ACTOR: "vem",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_WORKFLOW_REF:
+        "vem/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+      VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: "approved",
+      VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME: "vem-factory-01",
+      VEM_FACTORY_PERSONALIZATION_RUNNER_NAME: "vem-factory-01",
+      VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: JSON.stringify([
+        "self-hosted",
+        "Linux",
+        "X64",
+        "vem-factory",
+      ]),
+    };
+    assert.equal(
+      assertTrustedProtectedFactoryPersonalizationGate(trusted).runnerName,
+      "vem-factory-01",
+    );
+    const workflow = readFileSync(
+      ".github/workflows/factory-image-acceptance.yml",
+      "utf8",
+    );
+    assert.match(workflow, /environment: vem-factory-production/);
+    assert.match(workflow, /VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME/);
+    assert.match(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
+    for (const environment of [
+      { ...trusted, VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: "" },
+      { ...trusted, VEM_FACTORY_PERSONALIZATION_RUNNER_NAME: "other-runner" },
+      {
+        ...trusted,
+        GITHUB_WORKFLOW_REF: "vem/vem/.github/workflows/ci.yml@refs/heads/main",
+      },
+      { ...trusted, VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: "[]" },
+    ]) {
+      assert.throws(
+        () => assertTrustedProtectedFactoryPersonalizationGate(environment),
+        /protected GitHub gate|protected factory runner/i,
+      );
+    }
+  });
+
+  it("rejects profile promotion when clean-base or verifier evidence does not bind the same profile", () => {
+    for (const evidence of [
+      cleanBaseFactoryAcceptanceEvidence({ factoryProfile: "production" }),
+      cleanBaseFactoryAcceptanceEvidence({
+        evidence: {
+          ...cleanBaseFactoryAcceptanceEvidence().evidence,
+          factoryProfile: "production",
+        },
+      }),
+      cleanBaseFactoryAcceptanceEvidence({
+        evidence: {
+          ...cleanBaseFactoryAcceptanceEvidence().evidence,
+          factoryRuntimeVerification: {
+            ...cleanBaseFactoryAcceptanceEvidence().evidence
+              .factoryRuntimeVerification,
+            checks: {
+              manifest: {
+                ...cleanBaseFactoryAcceptanceEvidence().evidence
+                  .factoryRuntimeVerification.checks.manifest,
+                factoryProfile: "production",
+              },
+            },
+          },
+        },
+      }),
+    ]) {
+      assert.throws(
+        () =>
+          buildFactoryImageDeliveryUnitReport({
+            cleanBaseAcceptance: evidence,
+          }),
+        /factoryProfile|completed prep run evidence/i,
+      );
+    }
+  });
+
+  it("keeps remote personalization staging deterministic, ACL-verified, and cleanup-scannable", () => {
+    const source = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
+    assert.match(source, /vem-factory-acceptance-staging/);
+    assert.match(source, /vem-factory-acceptance-staging"\)/);
+    assert.match(
+      source,
+      /factory stale staging cleanup verification failed before retry/,
+    );
+    assert.match(
+      source,
+      /installFactoryAcceptanceSignalHandlers\(cancellation\)/,
+    );
+    assert.match(source, /cancellation\.finalize\(\)/);
+    assert.doesNotMatch(source, /process\.exit\(128\)/);
+    assert.match(source, /icacls\.exe .*\/inheritance:r .*\/grant:r/s);
+    assert.match(
+      source,
+      /\$LASTEXITCODE -ne 0.*icacls failed to protect factory personalization/s,
+    );
+    assert.match(
+      source,
+      /Factory Personalization Media ACL verification failed before Windows reads it/,
+    );
+  });
   it("rejects dirty-host acceptance against an SSH config alias unless the testbed alias is explicitly allowed", () => {
     const result = spawnSync(
       process.execPath,
@@ -476,6 +719,10 @@ describe("win10-vem-e2e reset planning", () => {
           daemonArtifact,
           "--machine-ui-artifact",
           machineUiArtifact,
+          "--identity",
+          CERTIFICATE_SSH_OPTIONS.identity,
+          "--certificate",
+          CERTIFICATE_SSH_OPTIONS.certificate,
           "--dry-run",
         ],
         { cwd: process.cwd(), encoding: "utf8" },
@@ -1820,7 +2067,13 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /script-bundle/);
     assert.match(script, /prepare-factory-runtime.ps1/);
     assert.match(script, /ResetExistingVemState = \$true/);
-    assert.match(script, /UseSecureCredentialEnvironment = \$true/);
+    assert.match(script, /PersonalizationMediaPath = ''/);
+    assert.match(
+      script,
+      /Factory Personalization Media staging path is missing/,
+    );
+    assert.match(script, /credentials = "not_logged"/);
+    assert.doesNotMatch(script, /Import-DirtyHostFactoryCredentialFile/);
     assert.match(script, /MqttUrl = 'mqtt:\/\/118\.25\.104\.160:1883'/);
     assert.match(script, /factory-runtime-preparation.json/);
     assert.match(script, /-WriteStructuredJsonOutput \$true/);
@@ -1971,7 +2224,7 @@ describe("win10-vem-e2e reset planning", () => {
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(plan.readinessLevels.sellReady, "not_asserted");
-      assert.equal(plan.ci.requiredSecrets.includes("SSHPASS"), true);
+      assert.equal(plan.ci.requiredSecrets.includes("SSHPASS"), false);
       assert.match(plan.artifacts.daemonSha256, /^[a-f0-9]{64}$/);
       assert.match(plan.artifacts.machineUiSha256, /^[a-f0-9]{64}$/);
       assert.doesNotMatch(result.stdout, /pass@127\.0\.0\.1/);
@@ -2018,7 +2271,7 @@ describe("win10-vem-e2e reset planning", () => {
       daemonService: "VemVendingDaemon",
       uiLauncherTask: "VEMMachineUI",
       runtimeResetGateClean: "required",
-      simulatedHardwareMode: "required",
+      hardwareProfileMode: "required",
       startupReachesBringUpOrSalesEligible: "required",
     });
     assert.ok(
@@ -2635,6 +2888,7 @@ describe("win10-vem-e2e reset planning", () => {
           },
         ],
         evidence: {
+          factoryProfile: "testbed",
           preparationOutput:
             "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\RUN-186\\factory-runtime-preparation.json",
           verificationAction:
@@ -2649,6 +2903,7 @@ describe("win10-vem-e2e reset planning", () => {
             checks: {
               manifest: {
                 schemaVersion: "vem-factory-runtime-manifest/v1",
+                factoryProfile: "testbed",
                 hardwareMode: "simulated",
                 hardwareModel: "win10-clean-base",
                 topologyIdentity: "clean-base-factory-runtime",
@@ -3066,6 +3321,30 @@ describe("win10-vem-e2e reset planning", () => {
       report.finalReadiness.dirtyHostResetAcceptance.status,
       "passed",
     );
+  });
+
+  it("propagates a non-default SSH port to every VM acceptance child command", () => {
+    const plan = buildVmRuntimeAcceptancePlan({
+      runId: "RUN-183",
+      platformTarget: "ephemeral-run-183",
+      ephemeralDatabaseUrl:
+        "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_183",
+      ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+      ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+      remote: "maintainer@relay-vm.example",
+      sshPort: 22022,
+    });
+    for (const step of plan.steps.filter((step) =>
+      [
+        "dirty-host factory reset acceptance",
+        "runtime acceptance",
+        "simulated hardware sale flow",
+      ].includes(step.name),
+    )) {
+      assert.equal(commandArg(step.command, "--ssh-port"), "22022");
+    }
   });
 
   it("does not assert clean-base acceptance from invalid or dry-run evidence", () => {
@@ -3657,23 +3936,26 @@ describe("win10-vem-e2e reset planning", () => {
   });
 
   it("builds Controlled Maintenance Ingress SSH commands without requiring the real VM in tests", () => {
-    assert.deepEqual(buildSshCommand(), [
+    assert.throws(
+      () => buildSshCommand(),
+      /certificate-only SSH requires --identity and --certificate/,
+    );
+    assert.deepEqual(buildSshCommand(CERTIFICATE_SSH_OPTIONS), [
       "ssh",
-      "-o",
-      "ConnectTimeout=30",
+      ...CERTIFICATE_SSH_ARGS,
       "-o",
       "ProxyCommand=none",
       "YKDZ@controlled-maintenance-ingress.local",
     ]);
     assert.deepEqual(
       buildSshCommand({
+        ...CERTIFICATE_SSH_OPTIONS,
         remote: "maintainer@relay-vm.example",
         proxyCommand: "ssh -W %h:%p maintenance-relay.example",
       }),
       [
         "ssh",
-        "-o",
-        "ConnectTimeout=30",
+        ...CERTIFICATE_SSH_ARGS,
         "-o",
         "ProxyCommand=ssh -W %h:%p maintenance-relay.example",
         "maintainer@relay-vm.example",
@@ -3681,35 +3963,40 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
-  it("can wrap SSH and SCP with sshpass using SSHPASS from the environment", () => {
-    assert.deepEqual(buildSshCommand({ sshpass: true }), [
-      "sshpass",
-      "-e",
-      "ssh",
-      "-o",
-      "ConnectTimeout=30",
-      "-o",
-      "ProxyCommand=none",
-      "YKDZ@controlled-maintenance-ingress.local",
-    ]);
-
+  it("applies the certificate-only SSH options to SCP", () => {
     assert.deepEqual(
       buildScpCommand(
         "/tmp/run.ps1",
         "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
-        { sshpass: true },
+        CERTIFICATE_SSH_OPTIONS,
       ),
       [
-        "sshpass",
-        "-e",
         "scp",
-        "-o",
-        "ConnectTimeout=30",
+        ...CERTIFICATE_SSH_ARGS,
         "-o",
         "ProxyCommand=none",
         "/tmp/run.ps1",
         "YKDZ@controlled-maintenance-ingress.local:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
+    );
+  });
+
+  it("uses uppercase SCP port forwarding while SSH children use lowercase -p", () => {
+    const options = { ...CERTIFICATE_SSH_OPTIONS, sshPort: 22022 };
+    assert.deepEqual(buildSshCommand(options).slice(-5, -1), [
+      "-p",
+      "22022",
+      "-o",
+      "ProxyCommand=none",
+    ]);
+    const scpCommand = buildScpCommand(
+      "/tmp/run.ps1",
+      "C:\\Temp\\run.ps1",
+      options,
+    );
+    assert.deepEqual(
+      scpCommand.slice(scpCommand.indexOf("-P"), scpCommand.indexOf("-P") + 2),
+      ["-P", "22022"],
     );
   });
 
@@ -3730,41 +4017,16 @@ describe("win10-vem-e2e reset planning", () => {
       buildScpCommand(
         "/tmp/run.ps1",
         "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+        CERTIFICATE_SSH_OPTIONS,
       ),
       [
         "scp",
-        "-o",
-        "ConnectTimeout=30",
+        ...CERTIFICATE_SSH_ARGS,
         "-o",
         "ProxyCommand=none",
         "/tmp/run.ps1",
         "YKDZ@controlled-maintenance-ingress.local:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
     );
-  });
-
-  it("can inject factory credential environment from local SSHPASS for testbed-only reset acceptance", () => {
-    const originalSshpass = process.env.SSHPASS;
-    process.env.SSHPASS = "1256987";
-    const command = buildRemotePowerShellCommand(
-      "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
-      {
-        factoryCredentialsFromSshpass: true,
-        remoteFactoryCredentialPath:
-          "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\factory-credentials.json",
-      },
-    );
-    if (originalSshpass === undefined) {
-      delete process.env.SSHPASS;
-    } else {
-      process.env.SSHPASS = originalSshpass;
-    }
-
-    assert.match(command, /VEM_FACTORY_CREDENTIAL_FILE/);
-    assert.doesNotMatch(command, /VEM_KIOSK_PASSWORD\s*=/);
-    assert.doesNotMatch(command, /VEM_MAINTENANCE_PASSWORD\s*=/);
-    assert.doesNotMatch(command, /VEM_AUTOLOGON_PASSWORD\s*=/);
-    assert.match(command, /vem-win10-e2e-test\.ps1/);
-    assert.doesNotMatch(command, /1256987/);
   });
 });

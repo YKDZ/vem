@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vem.example.invalid/schemas/vision-conformance/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "bundleDigest",
+    "descriptorDigest",
+    "protocolVersion"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "vem-vision-conformance/v1" },
+    "kind": { "const": "vision-release-conformance" },
+    "bundleDigest": { "$ref": "#/$defs/digest" },
+    "descriptorDigest": { "$ref": "#/$defs/digest" },
+    "protocolVersion": { "const": "vem.vision.v1" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

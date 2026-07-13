@@ -23,7 +23,7 @@ permissions:
 jobs:
   changes:
     name: Detect Changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.filter.outputs.code }}
       vending_daemon_rust: ${{ steps.filter.outputs.vending_daemon_rust }}
@@ -40,6 +40,12 @@ jobs:
               - 'apps/vending-daemon/**'
               - 'crates/**'
               - 'tools/**'
+              - 'scripts/factory/**'
+              - 'scripts/windows/**'
+              - 'scripts/check-factory-manifest.test.mjs'
+              - 'public/factory-manifest-v1.schema.json'
+              - '.github/workflows/build-factory-iso.yml'
+              - '.github/workflows/build-windows-runtime-artifacts.yml'
               - 'turbo.json'
               - 'pnpm-workspace.yaml'
               - 'Cargo.toml'
@@ -57,7 +63,7 @@ jobs:
 
   static:
     name: Static Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     steps:
       - name: Checkout
@@ -92,6 +98,26 @@ jobs:
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install Factory Media Fixture Tools
+        run: |
+          sudo apt-get update
+          apt-cache policy genisoimage=9:1.1.11-3.5 7zip xorriso
+          apt-cache show genisoimage=9:1.1.11-3.5 >/dev/null
+          apt-cache show 7zip=23.01+dfsg-11 >/dev/null
+          apt-cache show xorriso=1:1.5.6-1.1ubuntu3 >/dev/null
+          sudo apt-get install -y --no-install-recommends \
+            genisoimage=9:1.1.11-3.5 \
+            7zip=23.01+dfsg-11 \
+            xorriso=1:1.5.6-1.1ubuntu3 \
+            osslsigncode \
+            gcc-mingw-w64-x86-64 \
+            wimtools=1.14.4-1.1build2
+
+      - name: Run Factory Media Contract Tests
+        env:
+          VEM_FACTORY_TEST_UDF_WRITER_DIGEST: sha256:9bacc5951ca0767701cfd8e6b47537f199977e51a6e943f4edfdcf9d639d99d2
+        run: pnpm check:factory-manifest
 
       - name: Restore Turbo cache
         uses: actions/cache@v4
@@ -153,6 +179,22 @@ jobs:
       - name: Run Unit Tests
         run: node tools/check-ci.mjs --job unit
 
+  maintenance-relay-privileged:
+    name: Maintenance Relay Privileged Kernel Test
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Run required WireGuard and nftables test
+        run: pnpm --filter maintenance-relay test:privileged
+
   windows-dpapi-tests:
     name: Windows DPAPI Secret Store
     needs: changes
@@ -183,6 +225,42 @@ jobs:
 
       - name: Run protected secret store DPAPI round-trip
         run: cargo test -p vending-daemon secret::tests::protected_local_secret_store_round_trips_status_and_clear_without_exposing_values -- --exact
+
+  windows-vision-release-installer:
+    name: Windows Vision Release Installer
+    needs: [changes, static]
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    # This compatibility harness uses Windows certificate-store cmdlets. Keep it
+    # on the known-good image instead of the moving windows-latest label.
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Run Vision installer behavioral checks
+        run: pnpm check:vision-release-installer
+
+      - name: Run Vision installer harness behavior checks
+        timeout-minutes: 3
+        run: ./scripts/windows/vision-release-install-harness.behavior.ps1
+
+      - name: Run signed Vision installer harness
+        run: >-
+          ./scripts/windows/vision-release-install.windows-harness.ps1
+          -InstallerPath ./scripts/windows/install-vision-release.ps1
+          -CorePowerShellPaths pwsh,powershell.exe
 
   machine-e2e-tests:
     name: Machine UI Daemon E2E

@@ -1,4 +1,13 @@
+import {
+  maintenanceWireGuardEndpointSchema,
+  maintenanceWireGuardPublicKeySchema,
+} from "@vem/shared";
 import { z } from "zod";
+
+import {
+  maintenanceAddressPoolContains,
+  parseMaintenanceAddressPools,
+} from "../maintenance-access/maintenance-address-pools";
 
 const baseEnvSchema = z.object({
   NODE_ENV: z
@@ -45,6 +54,49 @@ const baseEnvSchema = z.object({
     .min(60)
     .max(3600)
     .default(600),
+  MACHINE_RECLAIM_HANDSHAKE_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(86400)
+    .default(300),
+  MACHINE_PROVISIONING_PROFILE: z.enum(["production", "testbed"]),
+  MAINTENANCE_RELAY_ADDRESS_POOL: z.string().default("10.91.0.0/24"),
+  MAINTENANCE_RUNNER_ADDRESS_POOL: z.string().default("10.91.1.0/24"),
+  MAINTENANCE_MAINTAINER_ADDRESS_POOL: z.string().default("10.91.3.0/24"),
+  MAINTENANCE_MACHINE_ADDRESS_POOL: z.string().default("10.91.16.0/20"),
+  MAINTENANCE_RELAY_PEER_ID: z.uuid(),
+  MAINTENANCE_RELAY_ENDPOINT: maintenanceWireGuardEndpointSchema,
+  MAINTENANCE_RELAY_PUBLIC_KEY: maintenanceWireGuardPublicKeySchema,
+  MAINTENANCE_RELAY_TUNNEL_ADDRESS: z.ipv4(),
+  MAINTENANCE_RELAY_CREDENTIAL: z
+    .string()
+    .min(32)
+    .default("dev-maintenance-relay-credential-change-me"),
+  MAINTENANCE_RELAY_JWT_SECRET: z
+    .string()
+    .min(32)
+    .default("dev-maintenance-relay-jwt-secret-change-me"),
+  MAINTENANCE_RELAY_TOKEN_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(3600)
+    .default(300),
+  MAINTENANCE_GITHUB_OIDC_TRUST_POLICY: z.string().min(1).optional(),
+  MAINTENANCE_GITHUB_OIDC_TRUST_POLICY_PATH: z.string().min(1).optional(),
+  MAINTENANCE_GITHUB_OIDC_JWKS_JSON: z.string().min(1).optional(),
+  MAINTENANCE_GITHUB_OIDC_JWKS_PATH: z.string().min(1).optional(),
+  MAINTENANCE_GITHUB_OIDC_JWKS_URL: z.url().optional(),
+  MAINTENANCE_AUTOMATION_JWT_SECRET: z.string().min(32).optional(),
+  MAINTENANCE_AUTOMATION_JWT_SECRET_PATH: z.string().min(1).optional(),
+  MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: z.string().min(1).optional(),
+  MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT: z
+    .string()
+    .regex(/^SHA256:[A-Za-z0-9+/]+={0,2}$/)
+    .optional(),
+  MAINTENANCE_SSH_PROFILE: z.enum(["testbed", "production"]).optional(),
+  MAINTENANCE_SSH_TARGET_POLICY_PATH: z.string().min(1).optional(),
   PAYMENT_MOCK_ENABLED: z
     .preprocess((value) => {
       if (typeof value === "string") {
@@ -123,11 +175,114 @@ const DEFAULT_PAYMENT_CONFIG_ENCRYPTION_KEY =
   "dev-payment-config-encryption-key-change-me";
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  for (const key of [
+    "MAINTENANCE_GITHUB_OIDC_TRUST_POLICY",
+    "MAINTENANCE_GITHUB_OIDC_JWKS_JSON",
+    "MAINTENANCE_GITHUB_OIDC_JWKS_URL",
+    "MAINTENANCE_AUTOMATION_JWT_SECRET",
+  ] as const) {
+    if (env[key]) {
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `${key} is not supported; mount deployment-owned read-only configuration instead`,
+      });
+    }
+  }
+  const maintenanceSshCaConfigured = [
+    env.MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH,
+    env.MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT,
+    env.MAINTENANCE_SSH_PROFILE,
+    env.MAINTENANCE_SSH_TARGET_POLICY_PATH,
+  ].filter(Boolean).length;
+  if (maintenanceSshCaConfigured > 0 && maintenanceSshCaConfigured < 4) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH"],
+      message:
+        "Maintenance SSH CA requires private key path, expected public fingerprint, and profile",
+    });
+  }
+  if (env.NODE_ENV === "production" && maintenanceSshCaConfigured !== 4) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH"],
+      message: "Maintenance SSH CA must be configured in production",
+    });
+  }
+  try {
+    const pools = parseMaintenanceAddressPools({
+      relay: env.MAINTENANCE_RELAY_ADDRESS_POOL,
+      runner: env.MAINTENANCE_RUNNER_ADDRESS_POOL,
+      maintainer: env.MAINTENANCE_MAINTAINER_ADDRESS_POOL,
+      machine: env.MAINTENANCE_MACHINE_ADDRESS_POOL,
+    });
+    if (
+      !maintenanceAddressPoolContains(
+        pools.relay,
+        env.MAINTENANCE_RELAY_TUNNEL_ADDRESS,
+      )
+    ) {
+      throw new Error(
+        "Maintenance relay tunnel address must belong to its address pool",
+      );
+    }
+  } catch (error) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_RELAY_ADDRESS_POOL"],
+      message:
+        error instanceof Error
+          ? error.message
+          : "Maintenance address pools are invalid",
+    });
+  }
   if (env.NODE_ENV === "production" && env.PAYMENT_MOCK_ENABLED) {
     ctx.addIssue({
       code: "custom",
       path: ["PAYMENT_MOCK_ENABLED"],
       message: "PAYMENT_MOCK_ENABLED must be false in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    env.MAINTENANCE_RELAY_CREDENTIAL ===
+      "dev-maintenance-relay-credential-change-me"
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_RELAY_CREDENTIAL"],
+      message:
+        "MAINTENANCE_RELAY_CREDENTIAL must be set explicitly in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    env.MAINTENANCE_RELAY_JWT_SECRET ===
+      "dev-maintenance-relay-jwt-secret-change-me"
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_RELAY_JWT_SECRET"],
+      message:
+        "MAINTENANCE_RELAY_JWT_SECRET must be set explicitly in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    [
+      env.JWT_SECRET,
+      env.JWT_REFRESH_SECRET,
+      env.MACHINE_JWT_SECRET,
+      env.MACHINE_CLAIM_LOOKUP_HMAC_KEY,
+      env.MAINTENANCE_RELAY_JWT_SECRET,
+    ].includes(env.MAINTENANCE_RELAY_CREDENTIAL)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_RELAY_CREDENTIAL"],
+      message:
+        "MAINTENANCE_RELAY_CREDENTIAL must differ from signing and HMAC secrets in production",
     });
   }
   if (

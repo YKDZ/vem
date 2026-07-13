@@ -13,6 +13,13 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
+import {
+  createFactoryPersonalizationStagingCopy,
+  readFactoryPersonalizationMediaSnapshot,
+  redactFactoryPersonalizationMedia,
+} from "../factory/factory-personalization-media.mjs";
+
 const VEM_RESET_ROOTS = [
   "C:\\VEM\\bringup",
   "C:\\VEM\\updates",
@@ -118,7 +125,7 @@ const REQUIRED_CLEAN_BASE_ASSERTIONS = [
   "daemonService",
   "uiLauncherTask",
   "runtimeResetGateClean",
-  "simulatedHardwareMode",
+  "hardwareProfileMode",
   "startupReachesBringUpOrSalesEligible",
   "preflightNoMachineIdentity",
   "preflightNoProvisioningProfile",
@@ -156,8 +163,14 @@ const CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES = [
       "C:\\ProgramData\\VEM\\factory",
       "C:\\ProgramData\\VEM\\bringup",
       "C:\\ProgramData\\VEM\\vending-daemon",
+      "C:\\ProgramData\\VEM\\maintenance",
+      "C:\\ProgramData\\ssh\\sshd_config",
     ],
-    services: ["VemVendingDaemon"],
+    services: [
+      "VemVendingDaemon",
+      "WireGuardTunnel$VEM-Maintenance",
+      "WireGuardTunnelVEM-Maintenance",
+    ],
     tasks: ["VEMMachineUI", "VEM\\StartVisionServer"],
   },
   {
@@ -191,6 +204,8 @@ const FACTORY_SUPPORT_SCRIPT_NAMES = [
   "verify-kiosk-lockdown.ps1",
   "verify-vem-runtime.ps1",
   "apply-managed-update.ps1",
+  "provision-vision-factory-release.ps1",
+  "install-vision-release.ps1",
 ];
 
 const PLATFORM_TARGETS = {
@@ -706,6 +721,63 @@ export function isStrictTauriHashRouteUrl(value) {
 
 function isSha256(value) {
   return /^[a-fA-F0-9]{64}$/.test(String(value ?? ""));
+}
+
+async function admitFactoryMediaBeforeAcceptance(options) {
+  const supplied = [
+    options.factoryIso,
+    options.factoryAssemblyMode,
+    options.factoryManifest,
+    options.factoryProvenance,
+    options.factoryProvenanceDigest,
+    options.factoryManifestPath,
+    options.factoryProvenancePath,
+    options.factoryIsoPath,
+    options.factoryUdfExtractorPath,
+    options.factoryUdfWriterPath,
+    options.factoryWimlibPath,
+  ];
+  if (supplied.every((value) => value === undefined)) return null;
+  if (supplied.some((value) => typeof value !== "string" || value.length === 0))
+    throw new Error(
+      "Factory acceptance requires complete host-owned Factory media provenance inputs",
+    );
+  if (options.factoryAssemblyMode !== "windows-serviced-iso")
+    throw new Error(
+      "Factory acceptance requires windows-serviced-iso assembly",
+    );
+  const digest = /^sha256:[a-f0-9]{64}$/;
+  if (
+    !/^factory-cas:\/\/sha256\/[a-f0-9]{64}$/.test(options.factoryIso) ||
+    !digest.test(options.factoryManifest) ||
+    !/^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/.test(
+      options.factoryProvenance,
+    ) ||
+    !digest.test(options.factoryProvenanceDigest)
+  )
+    throw new Error(
+      "Factory acceptance requires immutable Factory media identities",
+    );
+  if (
+    options.factoryProvenance !==
+    `factory-evidence://${options.factoryProvenanceDigest.replace(":", "/")}`
+  )
+    throw new Error(
+      "Factory acceptance provenance identity does not bind its digest",
+    );
+  const outputDigest = `sha256:${options.factoryIso.slice("factory-cas://sha256/".length)}`;
+  return admitFactoryAcceptance({
+    manifestPath: options.factoryManifestPath,
+    provenancePath: options.factoryProvenancePath,
+    outputIsoPath: options.factoryIsoPath,
+    manifestIdentity: options.factoryManifest,
+    provenanceDigest: options.factoryProvenanceDigest,
+    outputIdentity: options.factoryIso,
+    outputDigest,
+    udfExtractorPath: options.factoryUdfExtractorPath,
+    udfWriterPath: options.factoryUdfWriterPath,
+    wimlibPath: options.factoryWimlibPath,
+  });
 }
 
 function addDiagnostic(diagnostics, code, message) {
@@ -1508,78 +1580,220 @@ function resolveMachineUiSidecarArtifactPath(machineUiArtifactPath) {
   return sidecarPath;
 }
 
-function resolveCleanBaseMaintenanceRelayInputs(options = {}) {
-  if (options.mode !== "clean-base-factory-acceptance") {
-    return null;
-  }
-  const requested =
-    options.maintenanceRelayWireGuardInstaller ||
-    options.maintenanceRelayWireGuardConfig ||
-    options.maintenanceRelayWireGuardInstallerSha256 ||
-    options.maintenanceRelayWireGuardConfigSha256 ||
-    options.maintenanceRelaySourceAllowlist;
-  if (!requested) {
-    return null;
-  }
-  if (
-    !options.maintenanceRelayWireGuardInstaller ||
-    !options.maintenanceRelayWireGuardConfig
-  ) {
-    throw new Error(
-      "clean-base maintenance relay requires --maintenance-relay-wireguard-installer and --maintenance-relay-wireguard-config",
+export function assertTrustedProtectedFactoryPersonalizationGate(
+  environment = process.env,
+) {
+  const requiredLabels = ["self-hosted", "Linux", "X64", "vem-factory"];
+  let labels;
+  try {
+    labels = JSON.parse(
+      environment.VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS ?? "",
     );
-  }
-  if (!existsSync(options.maintenanceRelayWireGuardInstaller)) {
+  } catch {
     throw new Error(
-      `maintenance relay WireGuard installer not found: ${options.maintenanceRelayWireGuardInstaller}`,
-    );
-  }
-  if (!existsSync(options.maintenanceRelayWireGuardConfig)) {
-    throw new Error(
-      `maintenance relay WireGuard config not found: ${options.maintenanceRelayWireGuardConfig}`,
-    );
-  }
-  const sourceAllowlist = splitCsvOption(
-    options.maintenanceRelaySourceAllowlist,
-  );
-  if (sourceAllowlist.length === 0) {
-    throw new Error(
-      "clean-base maintenance relay requires --maintenance-relay-source-allowlist",
-    );
-  }
-  const installerSha256 = sha256File(
-    options.maintenanceRelayWireGuardInstaller,
-  );
-  const configSha256 = sha256File(options.maintenanceRelayWireGuardConfig);
-  if (
-    options.maintenanceRelayWireGuardInstallerSha256 &&
-    installerSha256 !==
-      assertSha256Hash(
-        options.maintenanceRelayWireGuardInstallerSha256,
-        "maintenance relay WireGuard installer",
-      )
-  ) {
-    throw new Error(
-      `maintenance relay WireGuard installer hash mismatch: expected ${options.maintenanceRelayWireGuardInstallerSha256}, got ${installerSha256}`,
+      "Factory Personalization Media requires the protected runner label assertion",
     );
   }
   if (
-    options.maintenanceRelayWireGuardConfigSha256 &&
-    configSha256 !==
-      assertSha256Hash(
-        options.maintenanceRelayWireGuardConfigSha256,
-        "maintenance relay WireGuard config",
-      )
+    !Array.isArray(labels) ||
+    !requiredLabels.every((label) => labels.includes(label))
   ) {
     throw new Error(
-      `maintenance relay WireGuard config hash mismatch: expected ${options.maintenanceRelayWireGuardConfigSha256}, got ${configSha256}`,
+      "Factory Personalization Media requires exact protected factory runner labels",
+    );
+  }
+  const repository = String(environment.GITHUB_REPOSITORY ?? "");
+  const ref = String(environment.GITHUB_REF ?? "");
+  const expectedWorkflow = `${repository}/.github/workflows/factory-image-acceptance.yml@${ref}`;
+  if (
+    environment.GITHUB_ACTIONS !== "true" ||
+    environment.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
+    (ref !== "refs/heads/main" && !/^refs\/tags\/factory-v/.test(ref)) ||
+    environment.GITHUB_WORKFLOW_REF !== expectedWorkflow ||
+    environment.GITHUB_ACTOR !== environment.GITHUB_REPOSITORY_OWNER ||
+    environment.VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE !== "approved" ||
+    !environment.VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME ||
+    environment.VEM_FACTORY_PERSONALIZATION_RUNNER_NAME !==
+      environment.VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME
+  ) {
+    throw new Error(
+      "Factory Personalization Media requires the approved protected GitHub gate and exact runner identity",
     );
   }
   return {
-    installerSha256,
-    configSha256,
-    sourceAllowlist,
-    tunnelName: options.maintenanceRelayTunnelName ?? "vem-maint",
+    workflowRef: expectedWorkflow,
+    runnerName: environment.VEM_FACTORY_PERSONALIZATION_RUNNER_NAME,
+  };
+}
+
+async function resolveHostOwnedFactoryPersonalizationMedia(options = {}) {
+  if (
+    options.mode !== "clean-base-factory-acceptance" &&
+    options.mode !== "dirty-host-factory-acceptance"
+  ) {
+    return null;
+  }
+  assertTrustedProtectedFactoryPersonalizationGate();
+  const mediaPath = process.env.VEM_FACTORY_PERSONALIZATION_MEDIA_PATH;
+  if (!mediaPath) {
+    throw new Error(
+      "clean-base factory acceptance requires host-owned VEM_FACTORY_PERSONALIZATION_MEDIA_PATH after the trusted protected gate",
+    );
+  }
+  const snapshot = await readFactoryPersonalizationMediaSnapshot(mediaPath);
+  const media = snapshot.media;
+  const expectedProfile = options.factoryProfile ?? "testbed";
+  if (media.profile !== expectedProfile) {
+    throw new Error(
+      "Factory Personalization Media profile does not match --factory-profile",
+    );
+  }
+  return {
+    snapshot,
+    redacted: redactFactoryPersonalizationMedia(media, {
+      mediaConsumed: true,
+      stagingRetained: false,
+    }),
+  };
+}
+
+export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
+  if (options.mode !== "clean-base-factory-acceptance") {
+    return null;
+  }
+  const factoryProfile = String(options.factoryProfile ?? "").trim();
+  if (!new Set(["production", "testbed"]).has(factoryProfile)) {
+    throw new Error(
+      "clean-base factory capability requires explicit --factory-profile production|testbed",
+    );
+  }
+  const required = [
+    ["openssh-package", "openSshPackage"],
+    ["wireguard-package", "wireGuardPackage"],
+    ["maintenance-ca-public-key", "maintenanceCaPublicKey"],
+    ["openssh-package-version", "openSshPackageVersion", false],
+    [
+      "openssh-approved-signer-thumbprint",
+      "openSshApprovedSignerThumbprint",
+      false,
+    ],
+    [
+      "openssh-approved-root-thumbprint",
+      "openSshApprovedRootThumbprint",
+      false,
+    ],
+    ["wireguard-package-version", "wireGuardPackageVersion", false],
+    [
+      "wireguard-approved-signer-thumbprint",
+      "wireGuardApprovedSignerThumbprint",
+      false,
+    ],
+    [
+      "wireguard-approved-root-thumbprint",
+      "wireGuardApprovedRootThumbprint",
+      false,
+    ],
+    [
+      "maintenance-wireguard-listen-address",
+      "maintenanceWireGuardListenAddress",
+      false,
+    ],
+    ["factory-hardware-model", "factoryHardwareModel", false],
+    ["factory-topology-identity", "factoryTopologyIdentity", false],
+    ["factory-topology-version", "factoryTopologyVersion", false],
+  ];
+  for (const [label, key, isFile = true] of required) {
+    if (!options[key] || (isFile && !existsSync(options[key]))) {
+      throw new Error(`clean-base factory capability requires --${label}`);
+    }
+  }
+  for (const [label, value] of [
+    ["OpenSSH approved signer", options.openSshApprovedSignerThumbprint],
+    ["OpenSSH approved root", options.openSshApprovedRootThumbprint],
+    ["WireGuard approved signer", options.wireGuardApprovedSignerThumbprint],
+    ["WireGuard approved root", options.wireGuardApprovedRootThumbprint],
+  ]) {
+    if (!/^[0-9a-fA-F]{40}$/.test(String(value))) {
+      throw new Error(`${label} thumbprint must be 40 hexadecimal characters`);
+    }
+  }
+  const caLines = readFileSync(options.maintenanceCaPublicKey, "utf8")
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  if (
+    caLines.length !== 1 ||
+    !caLines[0].endsWith(` vem-maintenance-ca:${factoryProfile}`)
+  ) {
+    throw new Error(
+      `Maintenance SSH CA must contain exactly one key for profile ${factoryProfile}`,
+    );
+  }
+  if (factoryProfile === "production") {
+    if (!options.platformApiBaseUrl || !options.platformMqttUrl) {
+      throw new Error(
+        "production factory capability requires explicit production platform API and MQTT endpoints",
+      );
+    }
+    const productionInputs = [
+      options.remote,
+      options.factoryHardwareModel,
+      options.factoryTopologyIdentity,
+      options.maintenanceCaPublicKey,
+      options.platformApiBaseUrl,
+      options.platformMqttUrl,
+    ].join(" ");
+    if (
+      /YKDZ|testbed|simulator|shared-password|test-ca|test-peer|118\.25\.104\.160/iu.test(
+        productionInputs,
+      )
+    ) {
+      throw new Error(
+        "production factory capability rejects testbed or simulator inputs",
+      );
+    }
+  }
+  const runnerSources = splitCsvOption(
+    options.maintenanceRunnerSourceAllowlist,
+  );
+  const maintainerSources = splitCsvOption(
+    options.maintenanceMaintainerSourceAllowlist,
+  );
+  if (runnerSources.length === 0 || maintainerSources.length === 0) {
+    throw new Error(
+      "clean-base factory capability requires runner and maintainer role pools",
+    );
+  }
+  const packageInputs = [
+    ["openSshPackage", "openSshPackageSha256", "OpenSSH package"],
+    ["wireGuardPackage", "wireGuardPackageSha256", "WireGuard package"],
+    [
+      "maintenanceCaPublicKey",
+      "maintenanceCaPublicKeySha256",
+      "Maintenance SSH CA public key",
+    ],
+  ].map(([pathKey, hashKey, label]) => {
+    const actual = sha256File(options[pathKey]);
+    if (
+      options[hashKey] &&
+      actual !== assertSha256Hash(options[hashKey], label)
+    ) {
+      throw new Error(
+        `${label} hash mismatch: expected ${options[hashKey]}, got ${actual}`,
+      );
+    }
+    return { pathKey, hash: actual };
+  });
+  return {
+    factoryProfile,
+    maintenanceUser: factoryProfile === "production" ? "Admin" : "YKDZ",
+    hardwareMode: factoryProfile === "production" ? "production" : "simulated",
+    openSshPackageSha256: packageInputs[0].hash,
+    wireGuardPackageSha256: packageInputs[1].hash,
+    maintenanceCaPublicKeySha256: packageInputs[2].hash,
+    wireGuardListenAddress: String(options.maintenanceWireGuardListenAddress),
+    runnerSources,
+    maintainerSources,
   };
 }
 
@@ -1870,6 +2084,12 @@ export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
       source,
     );
   }
+  const factoryProfile = evidence.factoryProfile;
+  if (!new Set(["production", "testbed"]).has(factoryProfile)) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence requires an explicit production or testbed factoryProfile",
+    );
+  }
   const factoryWindowsBaselinePolicy = evidence.factoryWindowsBaselinePolicy;
   if (
     !factoryWindowsBaselinePolicy ||
@@ -1990,10 +2210,17 @@ export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
       "clean-base display assertion must be 1080x1920 portrait",
     );
   }
-  const simulatedHardwareMode = assertions.simulatedHardwareMode;
-  if (simulatedHardwareMode.mode !== "simulated") {
+  const hardwareProfileMode = assertions.hardwareProfileMode;
+  if (hardwareProfileMode.profile !== factoryProfile) {
     return cleanBaseValidationFailure(
-      "clean-base evidence must assert simulated hardware mode",
+      "clean-base evidence factoryProfile must match the hardware profile assertion",
+    );
+  }
+  const expectedHardwareMode =
+    hardwareProfileMode.profile === "production" ? "production" : "simulated";
+  if (hardwareProfileMode.mode !== expectedHardwareMode) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence hardware mode must match its factory profile",
     );
   }
   const windowsUpdatePolicy = assertions.windowsUpdatePolicy;
@@ -2071,6 +2298,7 @@ export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
     status: "passed",
     asserted: true,
     source,
+    factoryProfile,
     readiness,
     factoryWindowsBaselinePolicy,
     requiredAssertions: [...REQUIRED_CLEAN_BASE_ASSERTIONS],
@@ -2121,7 +2349,7 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
         daemonService: "VemVendingDaemon",
         uiLauncherTask: "VEMMachineUI",
         runtimeResetGateClean: "required",
-        simulatedHardwareMode: "required",
+        hardwareProfileMode: "required",
         startupReachesBringUpOrSalesEligible: "required",
       },
     },
@@ -2203,14 +2431,11 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   if (options.remote) {
     command.push("--remote", options.remote);
   }
+  if (options.sshPort) {
+    command.push("--ssh-port", String(options.sshPort));
+  }
   if (options.sshConfig === true) {
     command.push("--ssh-config");
-  }
-  if (options.sshpass === true) {
-    command.push("--sshpass");
-  }
-  if (options.factoryCredentialsFromSshpass === true) {
-    command.push("--factory-credentials-from-sshpass");
   }
   if (options.maintenanceIngressSourceAllowlist) {
     command.push(
@@ -2241,6 +2466,9 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   }
   if (options.identity) {
     command.push("--identity", options.identity);
+  }
+  if (options.certificate) {
+    command.push("--certificate", options.certificate);
   }
   return command;
 }
@@ -2381,7 +2609,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       entrypoint:
         "node scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance",
       requiredSecrets: [
-        "SSHPASS",
         "VEM_KIOSK_PASSWORD",
         "VEM_MAINTENANCE_PASSWORD",
         "VEM_AUTOLOGON_PASSWORD",
@@ -2769,6 +2996,9 @@ function validateFactoryImageDeliveryUnitCleanBaseEvidence(
   if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
     missingEvidence.push("evidence");
   } else {
+    if (evidence.factoryProfile !== cleanBaseAcceptance.factoryProfile) {
+      missingEvidence.push("evidence.factoryProfile");
+    }
     if (!isNonEmptyString(evidence.preparationOutput)) {
       missingEvidence.push("evidence.preparationOutput");
     }
@@ -2806,6 +3036,7 @@ function validateFactoryImageDeliveryUnitCleanBaseEvidence(
       } else {
         for (const field of [
           "schemaVersion",
+          "factoryProfile",
           "hardwareMode",
           "hardwareModel",
           "topologyIdentity",
@@ -2816,6 +3047,11 @@ function validateFactoryImageDeliveryUnitCleanBaseEvidence(
               `evidence.factoryRuntimeVerification.checks.manifest.${field}`,
             );
           }
+        }
+        if (manifest.factoryProfile !== cleanBaseAcceptance.factoryProfile) {
+          missingEvidence.push(
+            "evidence.factoryRuntimeVerification.checks.manifest.factoryProfile mismatch",
+          );
         }
       }
     }
@@ -2880,6 +3116,7 @@ export function buildFactoryImageDeliveryUnitReport({
     ok: cleanBaseAcceptance.ok === true,
     reportPath,
     imageSource: cleanBaseAcceptance.source,
+    factoryProfile: cleanBaseAcceptance.factoryProfile,
     declaredBuildInputs: {
       source: cleanBaseAcceptance.source,
       artifacts: {
@@ -2890,6 +3127,7 @@ export function buildFactoryImageDeliveryUnitReport({
       factoryManifest: {
         path: manifestPath,
         schemaVersion: manifest?.schemaVersion ?? null,
+        factoryProfile: manifest?.factoryProfile ?? null,
         hardwareMode: manifest?.hardwareMode ?? null,
         hardwareModel: manifest?.hardwareModel ?? null,
         topologyIdentity: manifest?.topologyIdentity ?? null,
@@ -2906,6 +3144,7 @@ export function buildFactoryImageDeliveryUnitReport({
     },
     factoryManifest: {
       path: manifestPath,
+      factoryProfile: manifest?.factoryProfile ?? null,
       summary: manifest,
     },
     preparationLogs: cleanBasePreparationLogs(cleanBaseAcceptance),
@@ -3186,6 +3425,11 @@ function runVmRuntimeAcceptance(options) {
   }
 
   const report = buildVmRuntimeAcceptanceReport({ plan, steps });
+  if (options.factoryMediaAdmission) {
+    report.factoryMediaAdmission = structuredClone(
+      options.factoryMediaAdmission,
+    );
+  }
   writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
   writeFileSync(plan.artifacts.report, `${JSON.stringify(report, null, 2)}\n`);
   return report;
@@ -3246,7 +3490,9 @@ export function buildRemotePowerShellScript(options = {}) {
   if (!supportedModes.includes(mode)) {
     throw new Error(`unsupported mode: ${mode}`);
   }
-  assertTestbedMachineCode(machineCode);
+  if (mode !== "clean-base-factory-acceptance") {
+    assertTestbedMachineCode(machineCode);
+  }
   const runId =
     mode === "dirty-host-factory-acceptance" ||
     mode === "clean-base-factory-acceptance" ||
@@ -3306,6 +3552,11 @@ export function buildRemotePowerShellScript(options = {}) {
   const expectedDaemonArtifactSha256 = options.daemonArtifactSha256 ?? "";
   const expectedMachineUiArtifactSha256 = options.machineUiArtifactSha256 ?? "";
   const cleanBaseSource = cleanBasePlan?.cleanBase.source ?? "";
+  const cleanBaseFactoryProfile = String(options.factoryProfile ?? "");
+  const cleanBaseMaintenanceUser =
+    cleanBaseFactoryProfile === "production" ? "Admin" : "YKDZ";
+  const cleanBaseHardwareMode =
+    cleanBaseFactoryProfile === "production" ? "production" : "simulated";
   const cleanBaseSnapshot = cleanBasePlan?.cleanBase.snapshot ?? "";
   const factoryWindowsBaselinePolicyJson = JSON.stringify(
     FACTORY_WINDOWS_BASELINE_POLICY,
@@ -3425,26 +3676,6 @@ function Test-LocalAdmin {
 function Assert-RequiredSecretEnvironment([string]$Name) {
   if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($Name, "Process"))) {
     throw "required secret environment variable is missing: $Name"
-  }
-}
-
-function Import-DirtyHostFactoryCredentialFile([string]$Path) {
-  if ([string]::IsNullOrWhiteSpace($Path)) {
-    return $null
-  }
-  $credentials = Read-JsonFile $Path
-  $requiredNames = @("VEM_KIOSK_PASSWORD", "VEM_MAINTENANCE_PASSWORD", "VEM_AUTOLOGON_PASSWORD")
-  foreach ($name in $requiredNames) {
-    $value = [string]$credentials.$name
-    if ([string]::IsNullOrEmpty($value)) {
-      throw "staged factory credential file is missing $name"
-    }
-    [Environment]::SetEnvironmentVariable($name, $value, "Process")
-  }
-  return [ordered]@{
-    source = "staged_remote_credential_file"
-    path = $Path
-    names = $requiredNames
   }
 }
 
@@ -4798,7 +5029,7 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
   $verifierEvidencePath = Join-Path $runRoot "factory-runtime-verification.json"
   $staged = $null
   $identityGuard = $null
-  $credentialEvidence = $null
+  $personalizationEvidence = $null
 
   try {
     $identityGuard = Get-DirtyHostFactoryTestbedIdentity
@@ -4829,21 +5060,25 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
   }
 
   try {
-    $credentialEvidence = Import-DirtyHostFactoryCredentialFile ${psString(options.remoteFactoryCredentialPath ?? "")}
-    if ($null -ne $credentialEvidence) {
-      $FactoryActions.Add([pscustomobject]@{
-        name = "load dirty-host factory credentials"
-        status = "succeeded"
-        message = $null
-        credentialEvidence = $credentialEvidence
-      }) | Out-Null
+    if ([string]::IsNullOrWhiteSpace(${psString(options.remotePersonalizationMediaPath ?? "")})) { throw "Factory Personalization Media staging path is missing" }
+    $personalizationEvidence = [ordered]@{
+      profile = ${psString(options.factoryProfile ?? "testbed")}
+      source = "trusted_protected_gate"
+      credentials = "not_logged"
+      wireGuardPrivateKey = "not-supplied; generated-locally"
     }
+    $FactoryActions.Add([pscustomobject]@{
+      name = "mount dirty-host Factory Personalization Media"
+      status = "succeeded"
+      message = $null
+      personalizationEvidence = $personalizationEvidence
+    }) | Out-Null
   } catch {
     $FactoryActions.Add([pscustomobject]@{
-      name = "load dirty-host factory credentials"
+      name = "mount dirty-host Factory Personalization Media"
       status = "failed"
       message = [string]$_
-      credentialEvidence = $credentialEvidence
+      personalizationEvidence = $personalizationEvidence
     }) | Out-Null
     return [ordered]@{
       runId = $runId
@@ -4854,7 +5089,7 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
       verifierEvidencePath = $verifierEvidencePath
       staged = $null
       identityGuard = $identityGuard
-      credentialEvidence = $credentialEvidence
+      personalizationEvidence = $personalizationEvidence
     }
   }
 
@@ -4879,7 +5114,7 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
   }
 
   if ($null -ne $staged) {
-    Invoke-FactoryChildPowerShell $FactoryActions "run scripted factory runtime preparation" ([string]$staged.prepareScript) @{
+    Invoke-FactoryChildPowerShell -Actions $FactoryActions -Name "run scripted factory runtime preparation" -ScriptPath ([string]$staged.prepareScript) -Arguments @{
       DaemonArtifactPath = [string]$staged.daemonArtifactPath
       DaemonSha256 = [string]$staged.daemonSha256
       MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
@@ -4899,14 +5134,32 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
       ExpectedAutoLogonUser = "VEMKiosk"
       ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
       TargetLayoutVersion = "win10-runtime-layout/v1"
+      FactoryProfile = ${psString(options.factoryProfile ?? "testbed")}
+      PersonalizationMediaPath = ${psString(options.remotePersonalizationMediaPath ?? "")}
       ResetExistingVemState = $true
-      UseSecureCredentialEnvironment = $true
-    } $preparationOutputPath -WriteStructuredJsonOutput $true
+      OpenSshPackagePath = ${psString(options.remoteOpenSshPackagePath ?? "")}
+      OpenSshPackageSource = "local-pinned"
+      OpenSshPackageVersion = ${psString(options.openSshPackageVersion ?? "")}
+      OpenSshPackageSha256 = ${psString(options.openSshPackageSha256 ?? "")}
+      OpenSshApprovedSignerThumbprint = ${psString(options.openSshApprovedSignerThumbprint ?? "")}
+      OpenSshApprovedRootThumbprint = ${psString(options.openSshApprovedRootThumbprint ?? "")}
+      WireGuardPackagePath = ${psString(options.remoteWireGuardPackagePath ?? "")}
+      WireGuardPackageSource = "local-pinned"
+      WireGuardPackageVersion = ${psString(options.wireGuardPackageVersion ?? "")}
+      WireGuardPackageSha256 = ${psString(options.wireGuardPackageSha256 ?? "")}
+      WireGuardApprovedSignerThumbprint = ${psString(options.wireGuardApprovedSignerThumbprint ?? "")}
+      WireGuardApprovedRootThumbprint = ${psString(options.wireGuardApprovedRootThumbprint ?? "")}
+      MaintenanceSshCaPublicKeyPath = ${psString(options.remoteMaintenanceCaPublicKeyPath ?? "")}
+      MaintenanceSshCaPublicKeySha256 = ${psString(options.maintenanceCaPublicKeySha256 ?? "")}
+      MaintenanceRunnerSourceAllowlist = ${psArray(splitCsvOption(options.maintenanceRunnerSourceAllowlist))}
+      MaintenanceMaintainerSourceAllowlist = ${psArray(splitCsvOption(options.maintenanceMaintainerSourceAllowlist))}
+      MaintenanceWireGuardListenAddress = ${psString(options.maintenanceWireGuardListenAddress ?? "")}
+    } -OutputPath $preparationOutputPath -WriteStructuredJsonOutput $true
 
-    Invoke-FactoryChildPowerShell $FactoryActions "run scripted factory runtime verifier" ([string]$staged.verifierScript) @{
+    Invoke-FactoryChildPowerShell -Actions $FactoryActions -Name "run scripted factory runtime verifier" -ScriptPath ([string]$staged.verifierScript) -Arguments @{
       ManifestPath = "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json"
       EvidencePath = $verifierEvidencePath
-    } $verificationOutputPath
+    } -OutputPath $verificationOutputPath
   }
 
   return [ordered]@{
@@ -4918,7 +5171,7 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
     verifierEvidencePath = $verifierEvidencePath
     staged = $staged
     identityGuard = $identityGuard
-    credentialEvidence = $credentialEvidence
+    personalizationEvidence = $personalizationEvidence
   }
 }
 
@@ -5087,10 +5340,9 @@ function Convert-CleanBaseFactoryAssertions($VerifierEvidence, $PreflightAbsence
     bootPolicy = $checks.bootPolicy
     securityPosture = $checks.securityPosture
     factoryRemoteMaintenanceCapability = $checks.factoryRemoteMaintenanceCapability
-    maintenanceRelay = if ($null -ne $checks.maintenanceRelay -and [bool]$checks.maintenanceRelay.enabled) {
-      [ordered]@{ status = if ([string]$checks.maintenanceRelay.status -eq "passed") { "passed" } else { "failed" }; evidence = $checks.maintenanceRelay }
-    } else {
-      [ordered]@{ status = "passed"; evidence = $checks.maintenanceRelay }
+    maintenanceCapability = [ordered]@{
+      status = if ([string]$checks.factoryRemoteMaintenanceCapability.status -eq "passed") { "passed" } else { "failed" }
+      evidence = $checks.factoryRemoteMaintenanceCapability
     }
     consumerExperienceInterference = $checks.consumerExperienceInterference
     sleepDisabled = [ordered]@{ status = if ([string]$checks.powerPolicy.sleep -eq "disabled") { "passed" } else { "failed" } }
@@ -5100,7 +5352,11 @@ function Convert-CleanBaseFactoryAssertions($VerifierEvidence, $PreflightAbsence
     daemonService = [ordered]@{ status = if ([bool]$checks.daemonService.exists -and [string]$checks.daemonService.startType -eq "Automatic") { "passed" } else { "failed" }; service = $checks.daemonService }
     uiLauncherTask = [ordered]@{ status = if ($machineUiStartupMode -eq "shell_launcher" -or [bool]$machineUiTask.exists) { "passed" } else { "failed" }; task = $machineUiTask }
     runtimeResetGateClean = [ordered]@{ status = "passed"; preflightAbsence = @($PreflightAbsence) }
-    simulatedHardwareMode = [ordered]@{ status = if ([string]$checks.manifest.hardwareMode -eq "simulated") { "passed" } else { "failed" }; mode = [string]$checks.manifest.hardwareMode }
+    hardwareProfileMode = [ordered]@{
+      status = if (([string]$checks.manifest.factoryProfile -eq "production" -and [string]$checks.manifest.hardwareMode -eq "production") -or ([string]$checks.manifest.factoryProfile -eq "testbed" -and [string]$checks.manifest.hardwareMode -eq "simulated")) { "passed" } else { "failed" }
+      profile = [string]$checks.manifest.factoryProfile
+      mode = [string]$checks.manifest.hardwareMode
+    }
     startupReachesBringUpOrSalesEligible = [ordered]@{ status = if ([bool]$checks.daemonService.exists -and ($machineUiStartupMode -eq "shell_launcher" -or $machineUiStartupMode -eq "scheduled_task")) { "passed" } else { "failed" }; state = "bring_up" }
     preflightNoMachineIdentity = [ordered]@{ status = [string]$preflightByCode["preflightNoMachineIdentity"].status }
     preflightNoProvisioningProfile = [ordered]@{ status = [string]$preflightByCode["preflightNoProvisioningProfile"].status }
@@ -5120,7 +5376,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
   $verifierEvidencePath = Join-Path $runRoot "factory-runtime-verification.json"
   $diagnostics = [System.Collections.Generic.List[object]]::new()
   $identity = $null
-  $credentialEvidence = $null
+  $personalizationEvidence = $null
   $preflightAbsence = @()
   $staged = $null
 
@@ -5145,22 +5401,29 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
 
   if ($diagnostics.Count -eq 0) {
     try {
-      $credentialEvidence = Import-DirtyHostFactoryCredentialFile ${psString(options.remoteFactoryCredentialPath ?? "")}
-      if ($null -ne $credentialEvidence) {
+      $personalizationEvidence = [ordered]@{
+        profile = ${psString(cleanBaseFactoryProfile)}
+        source = "trusted_protected_gate"
+        credentials = "not_logged"
+        wireGuardPrivateKey = "not-supplied; generated-locally"
+      }
+      if (-not [string]::IsNullOrWhiteSpace(${psString(options.remotePersonalizationMediaPath ?? "")})) {
         $FactoryActions.Add([pscustomobject]@{
-          name = "load clean-base factory credentials"
+          name = "mount clean-base Factory Personalization Media"
           status = "succeeded"
           message = $null
-          credentialEvidence = $credentialEvidence
+          personalizationEvidence = $personalizationEvidence
         }) | Out-Null
+      } else {
+        throw "Factory Personalization Media staging path is missing"
       }
     } catch {
-      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_credentials_failed" ([string]$_) $credentialEvidence
+      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_personalization_failed" ([string]$_) $personalizationEvidence
       $FactoryActions.Add([pscustomobject]@{
-        name = "load clean-base factory credentials"
+        name = "mount clean-base Factory Personalization Media"
         status = "failed"
         message = [string]$_
-        credentialEvidence = $credentialEvidence
+        personalizationEvidence = $personalizationEvidence
       }) | Out-Null
     }
   }
@@ -5209,35 +5472,47 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
   }
 
   if ($diagnostics.Count -eq 0 -and $null -ne $staged) {
-    Invoke-FactoryChildPowerShell $FactoryActions "run scripted clean-base factory runtime preparation" ([string]$staged.prepareScript) @{
+    Invoke-FactoryChildPowerShell -Actions $FactoryActions -Name "run scripted clean-base factory runtime preparation" -ScriptPath ([string]$staged.prepareScript) -Arguments @{
       DaemonArtifactPath = [string]$staged.daemonArtifactPath
       DaemonSha256 = [string]$staged.daemonSha256
       MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
       MachineUiSha256 = [string]$staged.machineUiSha256
-      EnvironmentName = "clean-base-factory"
+      EnvironmentName = ${psString(`factory-${cleanBaseFactoryProfile}`)}
       ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
       MqttUrl = ${psString(platform.mqttUrl)}
-      HardwareMode = "simulated"
-      HardwareModel = "win10-clean-base"
-      TopologyIdentity = "clean-base-factory-runtime"
-      TopologyVersion = "clean-base-v1"
+      HardwareMode = ${psString(cleanBaseHardwareMode)}
+      HardwareModel = ${psString(options.factoryHardwareModel ?? "")}
+      TopologyIdentity = ${psString(options.factoryTopologyIdentity ?? "")}
+      TopologyVersion = ${psString(options.factoryTopologyVersion ?? "")}
       ExpectedDisplayWidth = "1080"
       ExpectedDisplayHeight = "1920"
       ExpectedDisplayOrientation = "portrait"
       ExpectedKioskUser = "VEMKiosk"
-      ExpectedMaintenanceUser = "YKDZ"
+      ExpectedMaintenanceUser = ${psString(cleanBaseMaintenanceUser)}
       ExpectedAutoLogonUser = "VEMKiosk"
       ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
       TargetLayoutVersion = "win10-runtime-layout/v1"
+      FactoryProfile = ${psString(cleanBaseFactoryProfile)}
+      PersonalizationMediaPath = ${psString(options.remotePersonalizationMediaPath ?? "")}
       ResetExistingVemState = $false
-      UseSecureCredentialEnvironment = $true
-      MaintenanceRelayWireGuardInstallerPath = ${psString(options.remoteMaintenanceRelayWireGuardInstallerPath ?? "")}
-      MaintenanceRelayWireGuardInstallerSha256 = ${psString(options.maintenanceRelayWireGuardInstallerSha256 ?? "")}
-      MaintenanceRelayWireGuardConfigPath = ${psString(options.remoteMaintenanceRelayWireGuardConfigPath ?? "")}
-      MaintenanceRelayWireGuardConfigSha256 = ${psString(options.maintenanceRelayWireGuardConfigSha256 ?? "")}
-      MaintenanceRelayTunnelName = ${psString(options.maintenanceRelayTunnelName ?? "vem-maint")}
-      MaintenanceRelaySourceAllowlist = ${psArray(splitCsvOption(options.maintenanceRelaySourceAllowlist))}
-    } $preparationOutputPath -WriteStructuredJsonOutput $true
+      OpenSshPackagePath = ${psString(options.remoteOpenSshPackagePath ?? "")}
+      OpenSshPackageSource = "local-pinned"
+      OpenSshPackageVersion = ${psString(options.openSshPackageVersion ?? "")}
+      OpenSshPackageSha256 = ${psString(options.openSshPackageSha256 ?? "")}
+      OpenSshApprovedSignerThumbprint = ${psString(options.openSshApprovedSignerThumbprint ?? "")}
+      OpenSshApprovedRootThumbprint = ${psString(options.openSshApprovedRootThumbprint ?? "")}
+      WireGuardPackagePath = ${psString(options.remoteWireGuardPackagePath ?? "")}
+      WireGuardPackageSource = "local-pinned"
+      WireGuardPackageVersion = ${psString(options.wireGuardPackageVersion ?? "")}
+      WireGuardPackageSha256 = ${psString(options.wireGuardPackageSha256 ?? "")}
+      WireGuardApprovedSignerThumbprint = ${psString(options.wireGuardApprovedSignerThumbprint ?? "")}
+      WireGuardApprovedRootThumbprint = ${psString(options.wireGuardApprovedRootThumbprint ?? "")}
+      MaintenanceSshCaPublicKeyPath = ${psString(options.remoteMaintenanceCaPublicKeyPath ?? "")}
+      MaintenanceSshCaPublicKeySha256 = ${psString(options.maintenanceCaPublicKeySha256 ?? "")}
+      MaintenanceRunnerSourceAllowlist = ${psArray(splitCsvOption(options.maintenanceRunnerSourceAllowlist))}
+      MaintenanceMaintainerSourceAllowlist = ${psArray(splitCsvOption(options.maintenanceMaintainerSourceAllowlist))}
+      MaintenanceWireGuardListenAddress = ${psString(options.maintenanceWireGuardListenAddress ?? "")}
+    } -OutputPath $preparationOutputPath -WriteStructuredJsonOutput $true
     $preparationAction = @($FactoryActions | Where-Object { [string]$_.name -eq "run scripted clean-base factory runtime preparation" } | Select-Object -Last 1)
     if ($preparationAction.Count -eq 0 -or [string]$preparationAction[0].status -ne "succeeded") {
       Add-FactoryAcceptanceDiagnostic $diagnostics "factory_preparation_failed" "Factory runtime preparation failed." $preparationAction[0]
@@ -5245,10 +5520,10 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
   }
 
   if ($diagnostics.Count -eq 0 -and $null -ne $staged) {
-    Invoke-FactoryChildPowerShell $FactoryActions "run scripted clean-base factory runtime verifier" ([string]$staged.verifierScript) @{
+    Invoke-FactoryChildPowerShell -Actions $FactoryActions -Name "run scripted clean-base factory runtime verifier" -ScriptPath ([string]$staged.verifierScript) -Arguments @{
       ManifestPath = "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json"
       EvidencePath = $verifierEvidencePath
-    } $verificationOutputPath -WriteStructuredJsonOutput $true
+    } -OutputPath $verificationOutputPath -WriteStructuredJsonOutput $true
     $verifierAction = @($FactoryActions | Where-Object { [string]$_.name -eq "run scripted clean-base factory runtime verifier" } | Select-Object -Last 1)
     if ($verifierAction.Count -eq 0 -or [string]$verifierAction[0].status -ne "succeeded") {
       Add-FactoryAcceptanceDiagnostic $diagnostics "factory_verifier_failed" "Factory runtime verifier failed." $verifierAction[0]
@@ -5284,6 +5559,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
     result = if ($passed) { "passed" } else { "failed" }
     ok = $passed
     dryRun = $false
+    factoryProfile = ${psString(cleanBaseFactoryProfile)}
     source = [ordered]@{
       kind = "clean-windows-base"
       uri = ${psString(cleanBaseSource)}
@@ -5307,6 +5583,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
     assertions = $assertions
     diagnostics = @($diagnostics)
     evidence = [ordered]@{
+      factoryProfile = ${psString(cleanBaseFactoryProfile)}
       preparationOutput = $preparationOutputPath
       verificationAction = $verificationOutputPath
       verifierEvidence = $verifierEvidencePath
@@ -5325,7 +5602,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
     verifierEvidencePath = $verifierEvidencePath
     staged = $staged
     identity = $identity
-    credentialEvidence = $credentialEvidence
+    personalizationEvidence = $personalizationEvidence
     preflightAbsence = @($preflightAbsence)
     report = $report
   }
@@ -6499,15 +6776,177 @@ if ($mode -eq "dirty-host-factory-acceptance" -and $null -ne $factoryAcceptanceP
 
 export function buildSshCommand(options = {}) {
   return [
-    ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "ssh",
     ...buildSshOptionArgs(options),
     options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
   ];
 }
 
-function buildSshOptionArgs(options = {}) {
-  const sshArgs = ["-o", "ConnectTimeout=30"];
+function factoryAcceptanceRemoteStagingPaths(options = {}) {
+  const remoteTempRoot =
+    options.mode === "clean-base-factory-acceptance"
+      ? "C:\\Windows\\Temp"
+      : "C:\\Users\\YKDZ\\AppData\\Local\\Temp";
+  const remoteSupportScriptRoot = `${remoteTempRoot}\\vem-factory-acceptance-staging`;
+  return {
+    remoteTempRoot,
+    remoteSupportScriptRoot,
+    remoteScriptPath: `${remoteTempRoot}\\vem-factory-acceptance-run.ps1`,
+  };
+}
+
+export function createFactoryAcceptanceCancellationController({
+  cleanupRemoteFactoryStaging,
+  cleanupLocalFactoryStaging,
+  removeLocalTempDirectory,
+}) {
+  let cancellationSignal = null;
+  let cleanupFailure = null;
+
+  const cleanupStep = (name, action) => {
+    try {
+      if (action() !== true) {
+        cleanupFailure ??= `${name} cleanup verification failed`;
+      }
+    } catch (error) {
+      cleanupFailure ??=
+        error instanceof Error
+          ? `${name} cleanup failed: ${error.message}`
+          : `${name} cleanup failed`;
+    }
+  };
+
+  return {
+    requestCancellation(signal) {
+      cancellationSignal ??= signal;
+    },
+    throwIfCancellationRequested() {
+      if (cancellationSignal) {
+        throw new Error(
+          `factory acceptance cancelled by ${cancellationSignal}`,
+        );
+      }
+    },
+    finalize() {
+      cleanupStep("local factory staging", cleanupLocalFactoryStaging);
+      cleanupStep("remote factory staging", cleanupRemoteFactoryStaging);
+      cleanupStep(
+        "local factory temporary directory",
+        removeLocalTempDirectory,
+      );
+      if (cleanupFailure) {
+        const cancellation = cancellationSignal
+          ? ` after ${cancellationSignal}`
+          : "";
+        throw new Error(
+          `factory staging cleanup verification failed${cancellation}: ${cleanupFailure}`,
+        );
+      }
+      this.throwIfCancellationRequested();
+    },
+    get state() {
+      return { cancellationSignal, cleanupFailure };
+    },
+  };
+}
+
+export function installFactoryAcceptanceSignalHandlers(
+  controller,
+  signalSource = process,
+) {
+  const handlers = new Map(
+    ["SIGINT", "SIGTERM"].map((signal) => [
+      signal,
+      () => controller.requestCancellation(signal),
+    ]),
+  );
+  for (const [signal, handler] of handlers) {
+    signalSource.once(signal, handler);
+  }
+  return () => {
+    for (const [signal, handler] of handlers) {
+      signalSource.removeListener(signal, handler);
+    }
+  };
+}
+
+export function cleanupFactoryAcceptanceStaging(
+  options = {},
+  {
+    spawn = spawnSync,
+    localTempDirectory = join(tmpdir(), "vem-factory-acceptance-staging"),
+    cleanupLocal = true,
+  } = {},
+) {
+  if (
+    options.mode !== "dirty-host-factory-acceptance" &&
+    options.mode !== "clean-base-factory-acceptance"
+  ) {
+    throw new Error(
+      "factory staging cleanup requires a factory acceptance mode",
+    );
+  }
+  const { remoteSupportScriptRoot, remoteScriptPath } =
+    factoryAcceptanceRemoteStagingPaths(options);
+  const sshOptions = { ...options };
+  if (options.mode === "clean-base-factory-acceptance") {
+    mkdirSync(localTempDirectory, { recursive: true, mode: 0o700 });
+    sshOptions.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
+  }
+  let remoteCleaned = false;
+  try {
+    const sshCommand = buildSshCommand(sshOptions);
+    const cleanup = spawn(
+      sshCommand[0],
+      [
+        ...sshCommand.slice(1),
+        `powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)}) { throw 'factory staging cleanup retained protected media' }"`,
+      ],
+      { encoding: "utf8", stdio: "ignore" },
+    );
+    remoteCleaned = cleanup.status === 0;
+  } finally {
+    if (cleanupLocal) {
+      rmSync(localTempDirectory, { recursive: true, force: true });
+    }
+  }
+  const localCleaned = cleanupLocal ? !existsSync(localTempDirectory) : true;
+  return { localCleaned, remoteCleaned };
+}
+
+function buildSshOptionArgs(options = {}, { portFlag = "-p" } = {}) {
+  const identity = String(options.identity ?? "").trim();
+  const certificate = String(options.certificate ?? "").trim();
+  if (!identity || !certificate) {
+    throw new Error(
+      "certificate-only SSH requires --identity and --certificate",
+    );
+  }
+  const sshArgs = [
+    "-o",
+    `IdentityFile=${identity}`,
+    "-o",
+    `CertificateFile=${certificate}`,
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "IdentityAgent=none",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "PasswordAuthentication=no",
+    "-o",
+    "KbdInteractiveAuthentication=no",
+    "-o",
+    "PreferredAuthentications=publickey",
+    "-o",
+    "ClearAllForwardings=yes",
+    "-o",
+    "ForwardAgent=no",
+    "-o",
+    "ConnectTimeout=30",
+  ];
+  if (options.sshPort) sshArgs.push(portFlag, String(options.sshPort));
   if (options.sshKnownHostsPath) {
     sshArgs.push(
       "-o",
@@ -6520,9 +6959,6 @@ function buildSshOptionArgs(options = {}) {
     sshArgs.push("-o", `ProxyCommand=${options.proxyCommand}`);
   } else if (options.sshConfig !== true) {
     sshArgs.push("-o", "ProxyCommand=none");
-  }
-  if (options.identity) {
-    sshArgs.push("-i", options.identity);
   }
   return sshArgs;
 }
@@ -6537,22 +6973,14 @@ function quotePowerShellSingleQuoted(value) {
 
 export function buildRemotePowerShellCommand(remoteScriptPath, options = {}) {
   const scriptInvocation = `& ${quotePowerShellSingleQuoted(remoteScriptPath)}`;
-  if (options.factoryCredentialsFromSshpass !== true) {
-    return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${scriptInvocation}"`;
-  }
-  const credentialPath = quotePowerShellSingleQuoted(
-    options.remoteFactoryCredentialPath ?? "",
-  );
-  const credentialPrefix = `$env:VEM_FACTORY_CREDENTIAL_FILE=${credentialPath}`;
-  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${credentialPrefix}; ${scriptInvocation}"`;
+  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${scriptInvocation}"`;
 }
 
 export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
   const remote = options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE;
   return [
-    ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "scp",
-    ...buildSshOptionArgs(options),
+    ...buildSshOptionArgs(options, { portFlag: "-P" }),
     sourcePath,
     `${remote}:${remotePathForScp(remoteScriptPath)}`,
   ];
@@ -6785,7 +7213,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--maintenance-relay-wireguard-installer PATH] [--maintenance-relay-wireguard-config PATH] [--maintenance-relay-source-allowlist CSV] [--maintenance-relay-tunnel-name NAME] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--sshpass] [--factory-credentials-from-sshpass] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -6801,11 +7229,10 @@ Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\s
 
 Dirty-host factory acceptance mode stages specified local artifacts and factory scripts under C:\\ProgramData\\VEM\\evidence\\<run-id>, runs scripted factory preparation with explicit local reset, runs the verifier, and writes dirty-host-factory-acceptance.json. It requires --run-id, --daemon-artifact, --machine-ui-artifact, and remote VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD.
 --use-existing-remote-artifacts is a test-only escape hatch for intentionally accepting C:\\VEM\\bringup\\*.exe instead of uploaded artifacts.
-For the documented disposable Win10 testbed only, --factory-credentials-from-sshpass stages a temporary remote credential file from local SSHPASS without embedding the secret in command strings.
 SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
-Optional --maintenance-relay-wireguard-installer, --maintenance-relay-wireguard-config, and --maintenance-relay-source-allowlist preinstall a WireGuard Maintenance Relay peer into the prepared base image. The local config is uploaded as a sensitive run artifact, verified by hash on the remote host, installed as a WireGuard tunnel service, and validated through Controlled Maintenance Ingress evidence.
+Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, Unraid, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
 
 Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
 
@@ -6826,8 +7253,17 @@ function parseArgs(argv) {
     } else if (arg === "--remote") {
       options.remote = next;
       index += 1;
+    } else if (arg === "--ssh-port") {
+      const port = Number(next);
+      if (!Number.isInteger(port) || port < 1 || port > 65535)
+        throw new Error("--ssh-port must be a valid TCP port");
+      options.sshPort = port;
+      index += 1;
     } else if (arg === "--identity") {
       options.identity = next;
+      index += 1;
+    } else if (arg === "--certificate") {
+      options.certificate = next;
       index += 1;
     } else if (arg === "--proxy-command") {
       options.proxyCommand = next;
@@ -6894,30 +7330,98 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--ssh-config") {
       options.sshConfig = true;
-    } else if (arg === "--sshpass") {
-      options.sshpass = true;
-    } else if (arg === "--factory-credentials-from-sshpass") {
-      options.factoryCredentialsFromSshpass = true;
     } else if (arg === "--maintenance-ingress-source-allowlist") {
       options.maintenanceIngressSourceAllowlist = next;
       index += 1;
-    } else if (arg === "--maintenance-relay-wireguard-installer") {
-      options.maintenanceRelayWireGuardInstaller = next;
+    } else if (arg === "--factory-profile") {
+      options.factoryProfile = next;
       index += 1;
-    } else if (arg === "--maintenance-relay-wireguard-installer-sha256") {
-      options.maintenanceRelayWireGuardInstallerSha256 = next;
+    } else if (arg === "--factory-iso") {
+      options.factoryIso = next;
       index += 1;
-    } else if (arg === "--maintenance-relay-wireguard-config") {
-      options.maintenanceRelayWireGuardConfig = next;
+    } else if (arg === "--factory-assembly-mode") {
+      options.factoryAssemblyMode = next;
       index += 1;
-    } else if (arg === "--maintenance-relay-wireguard-config-sha256") {
-      options.maintenanceRelayWireGuardConfigSha256 = next;
+    } else if (arg === "--factory-manifest") {
+      options.factoryManifest = next;
       index += 1;
-    } else if (arg === "--maintenance-relay-source-allowlist") {
-      options.maintenanceRelaySourceAllowlist = next;
+    } else if (arg === "--factory-provenance") {
+      options.factoryProvenance = next;
       index += 1;
-    } else if (arg === "--maintenance-relay-tunnel-name") {
-      options.maintenanceRelayTunnelName = next;
+    } else if (arg === "--factory-provenance-digest") {
+      options.factoryProvenanceDigest = next;
+      index += 1;
+    } else if (arg === "--factory-manifest-path") {
+      options.factoryManifestPath = next;
+      index += 1;
+    } else if (arg === "--factory-provenance-path") {
+      options.factoryProvenancePath = next;
+      index += 1;
+    } else if (arg === "--factory-iso-path") {
+      options.factoryIsoPath = next;
+      index += 1;
+    } else if (arg === "--factory-udf-extractor") {
+      options.factoryUdfExtractorPath = next;
+      index += 1;
+    } else if (arg === "--factory-udf-writer") {
+      options.factoryUdfWriterPath = next;
+      index += 1;
+    } else if (arg === "--factory-wimlib") {
+      options.factoryWimlibPath = next;
+      index += 1;
+    } else if (arg === "--openssh-package") {
+      options.openSshPackage = next;
+      index += 1;
+    } else if (arg === "--openssh-package-sha256") {
+      options.openSshPackageSha256 = next;
+      index += 1;
+    } else if (arg === "--openssh-package-version") {
+      options.openSshPackageVersion = next;
+      index += 1;
+    } else if (arg === "--openssh-approved-signer-thumbprint") {
+      options.openSshApprovedSignerThumbprint = next;
+      index += 1;
+    } else if (arg === "--openssh-approved-root-thumbprint") {
+      options.openSshApprovedRootThumbprint = next;
+      index += 1;
+    } else if (arg === "--wireguard-package") {
+      options.wireGuardPackage = next;
+      index += 1;
+    } else if (arg === "--wireguard-package-sha256") {
+      options.wireGuardPackageSha256 = next;
+      index += 1;
+    } else if (arg === "--wireguard-package-version") {
+      options.wireGuardPackageVersion = next;
+      index += 1;
+    } else if (arg === "--wireguard-approved-signer-thumbprint") {
+      options.wireGuardApprovedSignerThumbprint = next;
+      index += 1;
+    } else if (arg === "--wireguard-approved-root-thumbprint") {
+      options.wireGuardApprovedRootThumbprint = next;
+      index += 1;
+    } else if (arg === "--maintenance-ca-public-key") {
+      options.maintenanceCaPublicKey = next;
+      index += 1;
+    } else if (arg === "--maintenance-ca-sha256") {
+      options.maintenanceCaPublicKeySha256 = next;
+      index += 1;
+    } else if (arg === "--maintenance-wireguard-listen-address") {
+      options.maintenanceWireGuardListenAddress = next;
+      index += 1;
+    } else if (arg === "--factory-hardware-model") {
+      options.factoryHardwareModel = next;
+      index += 1;
+    } else if (arg === "--factory-topology-identity") {
+      options.factoryTopologyIdentity = next;
+      index += 1;
+    } else if (arg === "--factory-topology-version") {
+      options.factoryTopologyVersion = next;
+      index += 1;
+    } else if (arg === "--maintenance-runner-source-allowlist") {
+      options.maintenanceRunnerSourceAllowlist = next;
+      index += 1;
+    } else if (arg === "--maintenance-maintainer-source-allowlist") {
+      options.maintenanceMaintainerSourceAllowlist = next;
       index += 1;
     } else if (arg === "--use-existing-remote-artifacts") {
       options.useExistingRemoteArtifacts = true;
@@ -6936,6 +7440,8 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--dry-run") {
       options.dryRun = true;
+    } else if (arg === "--cleanup-factory-staging") {
+      options.cleanupFactoryStaging = true;
     } else if (arg === "-h" || arg === "--help") {
       options.help = true;
     } else {
@@ -6946,381 +7452,446 @@ function parseArgs(argv) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  try {
-    const options = parseArgs(process.argv.slice(2));
-    if (options.help) {
-      usage();
-      process.exit(0);
-    }
-    if (options.mode === "vm-runtime-acceptance") {
-      const plan = buildVmRuntimeAcceptancePlan(options);
-      if (options.dryRun) {
-        const sanitizedPlan = sanitizeVmRuntimeAcceptancePlan(plan);
-        if (options.out) {
-          writeJsonOutput(options.out, sanitizedPlan);
-        }
-        console.log(JSON.stringify(sanitizedPlan, null, 2));
+  void (async () => {
+    try {
+      const options = parseArgs(process.argv.slice(2));
+      if (options.help) {
+        usage();
         process.exit(0);
       }
-      const report = runVmRuntimeAcceptance(options);
-      if (options.out) {
-        writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
-        console.error(`wrote report: ${options.out}`);
-      } else {
-        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-      }
-      process.exit(report.ok ? 0 : 1);
-    }
-    if (options.mode === "clean-base-factory-acceptance") {
-      if (
-        options.dryRun !== true &&
-        options.useExistingRemoteArtifacts === true
-      ) {
-        throw new Error(
-          "clean-base factory acceptance live mode rejects --use-existing-remote-artifacts; provide local daemon and machine UI artifacts",
-        );
-      }
-      const plan = buildCleanBaseFactoryAcceptancePlan(options);
-      if (options.dryRun) {
-        if (options.out) {
-          writeJsonOutput(options.out, plan);
+      if (options.cleanupFactoryStaging === true) {
+        const cleanup = cleanupFactoryAcceptanceStaging(options);
+        if (!cleanup.localCleaned || !cleanup.remoteCleaned) {
+          throw new Error("factory staging cleanup verification failed");
         }
-        console.log(JSON.stringify(plan, null, 2));
-        process.exit(0);
+        process.exitCode = 0;
+        return;
       }
-      if (options.allowCleanBasePrepare !== true) {
-        throw new Error(
-          "clean-base factory acceptance live mode requires --allow-clean-base-prepare",
-        );
+      options.factoryMediaAdmission =
+        await admitFactoryMediaBeforeAcceptance(options);
+      if (options.mode === "vm-runtime-acceptance") {
+        const plan = buildVmRuntimeAcceptancePlan(options);
+        if (options.dryRun) {
+          const sanitizedPlan = sanitizeVmRuntimeAcceptancePlan(plan);
+          if (options.out) {
+            writeJsonOutput(options.out, sanitizedPlan);
+          }
+          console.log(JSON.stringify(sanitizedPlan, null, 2));
+          process.exit(0);
+        }
+        const report = runVmRuntimeAcceptance(options);
+        if (options.out) {
+          writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
+          console.error(`wrote report: ${options.out}`);
+        } else {
+          process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+        }
+        process.exit(report.ok ? 0 : 1);
       }
-    }
-    if (options.mode === "validate-clean-base-evidence") {
-      if (!options.cleanBaseEvidence) {
-        throw new Error(
-          "validate-clean-base-evidence requires --clean-base-evidence",
-        );
-      }
-      const validation = validateCleanBaseFactoryAcceptanceEvidenceFile(
-        options.cleanBaseEvidence,
-      );
-      process.stdout.write(`${JSON.stringify(validation, null, 2)}\n`);
-      process.exit(validation.status === "passed" ? 0 : 1);
-    }
-    if (options.mode === "factory-image-delivery-unit") {
-      const report = runFactoryImageDeliveryUnit(options);
-      console.error(`wrote report: ${report.reportPath}`);
-      if (!options.out) {
-        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-      }
-      process.exit(report.ok ? 0 : 1);
-    }
-    assertDirtyHostFactoryRemoteSafety(options);
-    assertCleanBaseRemoteSafety(options);
-    const dirtyHostArtifacts = resolveDirtyHostArtifactInputs(options);
-    const cleanBaseArtifacts = resolveCleanBaseArtifactInputs(options);
-    const cleanBaseMaintenanceRelay =
-      resolveCleanBaseMaintenanceRelayInputs(options);
-    if (dirtyHostArtifacts) {
-      options.useExistingRemoteArtifacts =
-        dirtyHostArtifacts.useExistingRemoteArtifacts;
-      options.daemonArtifactSha256 = dirtyHostArtifacts.daemonSha256;
-      options.machineUiArtifactSha256 = dirtyHostArtifacts.machineUiSha256;
-    }
-    if (cleanBaseArtifacts) {
-      options.daemonArtifactSha256 = cleanBaseArtifacts.daemonSha256;
-      options.machineUiArtifactSha256 = cleanBaseArtifacts.machineUiSha256;
-    }
-    if (cleanBaseMaintenanceRelay) {
-      options.maintenanceRelayWireGuardInstallerSha256 =
-        cleanBaseMaintenanceRelay.installerSha256;
-      options.maintenanceRelayWireGuardConfigSha256 =
-        cleanBaseMaintenanceRelay.configSha256;
-      options.maintenanceRelayTunnelName = cleanBaseMaintenanceRelay.tunnelName;
-      options.maintenanceRelaySourceAllowlist =
-        cleanBaseMaintenanceRelay.sourceAllowlist.join(",");
-    }
-    const remoteSupportScriptRoot = `C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-support-${process.pid}-${Date.now()}`;
-    const remoteUploadedArtifactRoot = `${remoteSupportScriptRoot}\\input-artifacts`;
-    if (
-      options.mode === "dirty-host-factory-acceptance" ||
-      options.mode === "clean-base-factory-acceptance"
-    ) {
-      options.remoteSupportScriptRoot = remoteSupportScriptRoot;
-      options.remoteUploadedArtifactRoot = remoteUploadedArtifactRoot;
-      if (cleanBaseMaintenanceRelay) {
-        options.remoteMaintenanceRelayWireGuardInstallerPath = `${remoteUploadedArtifactRoot}\\${basename(options.maintenanceRelayWireGuardInstaller)}`;
-        options.remoteMaintenanceRelayWireGuardConfigPath = `${remoteUploadedArtifactRoot}\\maintenance-relay.conf`;
-      }
-      if (options.factoryCredentialsFromSshpass === true) {
-        options.remoteFactoryCredentialPath = `${remoteSupportScriptRoot}\\factory-credentials.json`;
-      }
-    }
-    const localTempDirectory = mkdtempSync(join(tmpdir(), "vem-win10-e2e-"));
-    if (options.mode === "clean-base-factory-acceptance") {
-      options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
-    }
-    const script = buildRemotePowerShellScript(options);
-    const sshCommand = buildSshCommand(options);
-    assertCleanBaseRemoteIdentityProbe(options, sshCommand);
-    assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand);
-    const localScriptPath = join(localTempDirectory, "run.ps1");
-    const remoteScriptPath = `C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-${process.pid}-${Date.now()}.ps1`;
-    const scpCommand = buildScpCommand(
-      localScriptPath,
-      remoteScriptPath,
-      options,
-    );
-    const remoteCommand = buildRemotePowerShellCommand(
-      remoteScriptPath,
-      options,
-    );
-
-    if (options.dryRun) {
-      console.log(
-        JSON.stringify(
-          {
-            sshCommand,
-            scpCommand,
-            remoteCommand,
-            transport: "scp-temp-ps1",
-            resetPlan: assertResetPlanPreservesTestbed(buildResetPlan()),
-            bringUpPlan: buildBringUpPlan(options),
-            runId:
-              options.mode === "dirty-host-factory-acceptance" ||
-              options.mode === "simulated-hardware-sale-flow"
-                ? sanitizeRunId(options.runId)
-                : null,
-            artifacts: dirtyHostArtifacts
-              ? {
-                  source:
-                    dirtyHostArtifacts.useExistingRemoteArtifacts === true
-                      ? "existing_remote_bringup"
-                      : "uploaded_local_artifacts",
-                  daemonSha256: dirtyHostArtifacts.daemonSha256,
-                  machineUiSha256: dirtyHostArtifacts.machineUiSha256,
-                }
-              : null,
-            cleanBaseMaintenanceRelay: cleanBaseMaintenanceRelay
-              ? {
-                  installerSha256: cleanBaseMaintenanceRelay.installerSha256,
-                  configSha256: cleanBaseMaintenanceRelay.configSha256,
-                  tunnelName: cleanBaseMaintenanceRelay.tunnelName,
-                  sourceAllowlist: cleanBaseMaintenanceRelay.sourceAllowlist,
-                  remoteInstallerPath:
-                    options.remoteMaintenanceRelayWireGuardInstallerPath,
-                  remoteConfigPath:
-                    options.remoteMaintenanceRelayWireGuardConfigPath,
-                }
-              : null,
-          },
-          null,
-          2,
-        ),
-      );
-      process.exit(0);
-    }
-
-    writeFileSync(localScriptPath, script, "utf8");
-    const upload = spawnSync(scpCommand[0], scpCommand.slice(1), {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    if (upload.stdout) {
-      process.stdout.write(upload.stdout);
-    }
-    if (upload.stderr) {
-      process.stderr.write(upload.stderr);
-    }
-    if (upload.status !== 0) {
-      rmSync(localTempDirectory, { recursive: true, force: true });
-      process.exit(upload.status ?? 1);
-    }
-
-    if (
-      options.mode === "dirty-host-factory-acceptance" ||
-      options.mode === "clean-base-factory-acceptance"
-    ) {
-      const createSupportRootCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteUploadedArtifactRoot)} -Force | Out-Null"`;
-      const createSupportRoot = spawnSync(
-        sshCommand[0],
-        [...sshCommand.slice(1), createSupportRootCommand],
-        {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
-      if (createSupportRoot.stdout) {
-        process.stdout.write(createSupportRoot.stdout);
-      }
-      if (createSupportRoot.stderr) {
-        process.stderr.write(createSupportRoot.stderr);
-      }
-      if (createSupportRoot.status !== 0) {
-        rmSync(localTempDirectory, { recursive: true, force: true });
-        process.exit(createSupportRoot.status ?? 1);
-      }
-
-      if (options.factoryCredentialsFromSshpass === true) {
-        if (!process.env.SSHPASS) {
+      if (options.mode === "clean-base-factory-acceptance") {
+        if (
+          options.dryRun !== true &&
+          options.useExistingRemoteArtifacts === true
+        ) {
           throw new Error(
-            "--factory-credentials-from-sshpass requires local SSHPASS",
+            "clean-base factory acceptance live mode rejects --use-existing-remote-artifacts; provide local daemon and machine UI artifacts",
           );
         }
-        const localCredentialPath = join(
+        const plan = buildCleanBaseFactoryAcceptancePlan(options);
+        if (options.dryRun) {
+          if (options.out) {
+            writeJsonOutput(options.out, plan);
+          }
+          console.log(JSON.stringify(plan, null, 2));
+          process.exit(0);
+        }
+        if (options.allowCleanBasePrepare !== true) {
+          throw new Error(
+            "clean-base factory acceptance live mode requires --allow-clean-base-prepare",
+          );
+        }
+      }
+      if (options.mode === "validate-clean-base-evidence") {
+        if (!options.cleanBaseEvidence) {
+          throw new Error(
+            "validate-clean-base-evidence requires --clean-base-evidence",
+          );
+        }
+        const validation = validateCleanBaseFactoryAcceptanceEvidenceFile(
+          options.cleanBaseEvidence,
+        );
+        process.stdout.write(`${JSON.stringify(validation, null, 2)}\n`);
+        process.exit(validation.status === "passed" ? 0 : 1);
+      }
+      if (options.mode === "factory-image-delivery-unit") {
+        const report = runFactoryImageDeliveryUnit(options);
+        console.error(`wrote report: ${report.reportPath}`);
+        if (!options.out) {
+          process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+        }
+        process.exit(report.ok ? 0 : 1);
+      }
+      assertDirtyHostFactoryRemoteSafety(options);
+      assertCleanBaseRemoteSafety(options);
+      const dirtyHostArtifacts = resolveDirtyHostArtifactInputs(options);
+      const cleanBaseArtifacts = resolveCleanBaseArtifactInputs(options);
+      const cleanBaseFactoryCapability =
+        resolveCleanBaseFactoryCapabilityInputs(options);
+      if (dirtyHostArtifacts) {
+        options.useExistingRemoteArtifacts =
+          dirtyHostArtifacts.useExistingRemoteArtifacts;
+        options.daemonArtifactSha256 = dirtyHostArtifacts.daemonSha256;
+        options.machineUiArtifactSha256 = dirtyHostArtifacts.machineUiSha256;
+      }
+      if (cleanBaseArtifacts) {
+        options.daemonArtifactSha256 = cleanBaseArtifacts.daemonSha256;
+        options.machineUiArtifactSha256 = cleanBaseArtifacts.machineUiSha256;
+      }
+      if (cleanBaseFactoryCapability) {
+        options.openSshPackageSha256 =
+          cleanBaseFactoryCapability.openSshPackageSha256;
+        options.wireGuardPackageSha256 =
+          cleanBaseFactoryCapability.wireGuardPackageSha256;
+        options.maintenanceCaPublicKeySha256 =
+          cleanBaseFactoryCapability.maintenanceCaPublicKeySha256;
+        options.maintenanceRunnerSourceAllowlist =
+          cleanBaseFactoryCapability.runnerSources.join(",");
+        options.maintenanceMaintainerSourceAllowlist =
+          cleanBaseFactoryCapability.maintainerSources.join(",");
+      }
+      const { remoteTempRoot, remoteSupportScriptRoot, remoteScriptPath } =
+        factoryAcceptanceRemoteStagingPaths(options);
+      const remoteUploadedArtifactRoot = `${remoteSupportScriptRoot}\\input-artifacts`;
+      if (
+        options.mode === "dirty-host-factory-acceptance" ||
+        options.mode === "clean-base-factory-acceptance"
+      ) {
+        options.remoteSupportScriptRoot = remoteSupportScriptRoot;
+        options.remoteUploadedArtifactRoot = remoteUploadedArtifactRoot;
+        options.remotePersonalizationMediaPath = `${remoteSupportScriptRoot}\\personalization\\factory-personalization-media.json`;
+        if (cleanBaseFactoryCapability) {
+          options.remoteOpenSshPackagePath = `${remoteUploadedArtifactRoot}\\${basename(options.openSshPackage)}`;
+          options.remoteWireGuardPackagePath = `${remoteUploadedArtifactRoot}\\${basename(options.wireGuardPackage)}`;
+          options.remoteMaintenanceCaPublicKeyPath = `${remoteUploadedArtifactRoot}\\maintenance-ca.pub`;
+        }
+      }
+      const factoryAcceptanceMode =
+        options.mode === "dirty-host-factory-acceptance" ||
+        options.mode === "clean-base-factory-acceptance";
+      const localTempDirectory = factoryAcceptanceMode
+        ? join(tmpdir(), "vem-factory-acceptance-staging")
+        : mkdtempSync(join(tmpdir(), "vem-win10-e2e-"));
+      if (factoryAcceptanceMode) {
+        // A deterministic local root makes retained secret staging visible and
+        // removable before retry after a prior uncatchable interruption.
+        rmSync(localTempDirectory, { recursive: true, force: true });
+        mkdirSync(localTempDirectory, { recursive: true, mode: 0o700 });
+      }
+      if (options.mode === "clean-base-factory-acceptance") {
+        options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
+      }
+      const script = buildRemotePowerShellScript(options);
+      const sshCommand = buildSshCommand(options);
+      assertCleanBaseRemoteIdentityProbe(options, sshCommand);
+      assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand);
+      // The host-owned secret file is opened only after the remote identity and
+      // retained-state gates have accepted this clean-base target.
+      const personalizationMedia =
+        options.dryRun === true
+          ? null
+          : await resolveHostOwnedFactoryPersonalizationMedia(options);
+      const localPersonalizationStaging = personalizationMedia
+        ? await createFactoryPersonalizationStagingCopy({
+            snapshot: personalizationMedia.snapshot,
+            stagingRoot: join(localTempDirectory, "factory-personalization"),
+          })
+        : null;
+      const localScriptPath = join(localTempDirectory, "run.ps1");
+      const scpCommand = buildScpCommand(
+        localScriptPath,
+        remoteScriptPath,
+        options,
+      );
+      const remoteCommand = buildRemotePowerShellCommand(
+        remoteScriptPath,
+        options,
+      );
+
+      if (options.dryRun) {
+        console.log(
+          JSON.stringify(
+            {
+              sshCommand,
+              scpCommand,
+              remoteCommand,
+              transport: "scp-temp-ps1",
+              resetPlan: assertResetPlanPreservesTestbed(buildResetPlan()),
+              bringUpPlan: buildBringUpPlan(options),
+              runId:
+                options.mode === "dirty-host-factory-acceptance" ||
+                options.mode === "simulated-hardware-sale-flow"
+                  ? sanitizeRunId(options.runId)
+                  : null,
+              artifacts: dirtyHostArtifacts
+                ? {
+                    source:
+                      dirtyHostArtifacts.useExistingRemoteArtifacts === true
+                        ? "existing_remote_bringup"
+                        : "uploaded_local_artifacts",
+                    daemonSha256: dirtyHostArtifacts.daemonSha256,
+                    machineUiSha256: dirtyHostArtifacts.machineUiSha256,
+                  }
+                : null,
+              cleanBaseFactoryCapability: cleanBaseFactoryCapability
+                ? {
+                    openSshPackageSha256:
+                      cleanBaseFactoryCapability.openSshPackageSha256,
+                    wireGuardPackageSha256:
+                      cleanBaseFactoryCapability.wireGuardPackageSha256,
+                    maintenanceCaPublicKeySha256:
+                      cleanBaseFactoryCapability.maintenanceCaPublicKeySha256,
+                    runnerSources: cleanBaseFactoryCapability.runnerSources,
+                    maintainerSources:
+                      cleanBaseFactoryCapability.maintainerSources,
+                  }
+                : null,
+            },
+            null,
+            2,
+          ),
+        );
+        rmSync(localTempDirectory, { recursive: true, force: true });
+        process.exitCode = 0;
+        return;
+      }
+
+      const cleanupRemoteFactoryStaging = () =>
+        cleanupFactoryAcceptanceStaging(options, {
           localTempDirectory,
-          "factory-credentials.json",
-        );
-        writeFileSync(
-          localCredentialPath,
-          JSON.stringify({
-            VEM_KIOSK_PASSWORD: process.env.SSHPASS,
-            VEM_MAINTENANCE_PASSWORD: process.env.SSHPASS,
-            VEM_AUTOLOGON_PASSWORD: process.env.SSHPASS,
-          }),
-          "utf8",
-        );
-        const credentialUpload = buildScpCommand(
-          localCredentialPath,
-          options.remoteFactoryCredentialPath,
-          options,
-        );
-        const uploadCredentials = spawnSync(
-          credentialUpload[0],
-          credentialUpload.slice(1),
+          cleanupLocal: false,
+        }).remoteCleaned;
+      const cleanupLocalFactoryStaging = () => {
+        if (!localPersonalizationStaging) {
+          return true;
+        }
+        rmSync(join(localTempDirectory, "factory-personalization"), {
+          recursive: true,
+          force: true,
+        });
+        return !existsSync(join(localTempDirectory, "factory-personalization"));
+      };
+      const cancellation = createFactoryAcceptanceCancellationController({
+        cleanupRemoteFactoryStaging,
+        cleanupLocalFactoryStaging,
+        removeLocalTempDirectory: () => {
+          rmSync(localTempDirectory, { recursive: true, force: true });
+          return !existsSync(localTempDirectory);
+        },
+      });
+      const removeSignalHandlers =
+        installFactoryAcceptanceSignalHandlers(cancellation);
+
+      try {
+        // Clear a deterministic retained root before every retry. This also covers
+        // an earlier catchable cancellation; uncatchable loss is cleaned here on
+        // the next invocation.
+        cancellation.throwIfCancellationRequested();
+        if (!cleanupRemoteFactoryStaging()) {
+          throw new Error(
+            "factory stale staging cleanup verification failed before retry",
+          );
+        }
+        writeFileSync(localScriptPath, script, "utf8");
+        const upload = spawnSync(scpCommand[0], scpCommand.slice(1), {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        cancellation.throwIfCancellationRequested();
+        if (upload.stdout) {
+          process.stdout.write(upload.stdout);
+        }
+        if (upload.stderr) {
+          process.stderr.write(upload.stderr);
+        }
+        if (upload.status !== 0) {
+          throw new Error(
+            `Factory acceptance script upload failed with status ${upload.status ?? 1}`,
+          );
+        }
+
+        if (
+          options.mode === "dirty-host-factory-acceptance" ||
+          options.mode === "clean-base-factory-acceptance"
+        ) {
+          const personalizationDirectory = `${remoteSupportScriptRoot}\\personalization`;
+          const createSupportRootCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; function Assert-VemFactoryPersonalizationAcl([string]\$Path, [bool]\$Directory) { \$acl = Get-Acl -LiteralPath \$Path -ErrorAction Stop; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$owner = (New-Object System.Security.Principal.NTAccount(\$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$owner -ne \$admin.Value -or -not \$acl.AreAccessRulesProtected) { throw 'factory personalization ACL owner or inheritance is unsafe' }; \$rules = @(@(\$acl.Access) | Where-Object { -not \$_.IsInherited }); if (\$rules.Count -ne 2 -or @('\$system', '\$admin').Count -ne 2) { throw 'factory personalization ACL rule count is unsafe' }; foreach (\$rule in \$rules) { \$sid = \$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$sid -notin @('S-1-5-18', 'S-1-5-32-544') -or \$rule.AccessControlType -ne 'Allow' -or (\$rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'factory personalization ACL grants an unsafe principal or right' } } }; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteUploadedArtifactRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(personalizationDirectory)} -Force | Out-Null; \$acl = Get-Acl -LiteralPath ${quotePowerShellSingleQuoted(personalizationDirectory)}; \$acl.SetAccessRuleProtection(\$true, \$false); foreach (\$rule in @(\$acl.Access)) { [void]\$acl.RemoveAccessRuleAll(\$rule) }; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$acl.SetOwner(\$admin); foreach (\$sid in @(\$system, \$admin)) { \$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(\$sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }; Set-Acl -LiteralPath ${quotePowerShellSingleQuoted(personalizationDirectory)} -AclObject \$acl; & icacls.exe ${quotePowerShellSingleQuoted(personalizationDirectory)} /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null; if (\$LASTEXITCODE -ne 0) { throw 'icacls failed to protect factory personalization staging' }; Assert-VemFactoryPersonalizationAcl -Path ${quotePowerShellSingleQuoted(personalizationDirectory)} -Directory \$true"`;
+          const createSupportRoot = spawnSync(
+            sshCommand[0],
+            [...sshCommand.slice(1), createSupportRootCommand],
+            {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "pipe"],
+            },
+          );
+          if (createSupportRoot.stdout) {
+            process.stdout.write(createSupportRoot.stdout);
+          }
+          if (createSupportRoot.stderr) {
+            process.stderr.write(createSupportRoot.stderr);
+          }
+          if (createSupportRoot.status !== 0) {
+            throw new Error(
+              `Factory personalization staging ACL setup failed with status ${createSupportRoot.status ?? 1}`,
+            );
+          }
+
+          for (const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES) {
+            const supportUpload = buildScpCommand(
+              `scripts/windows/${scriptName}`,
+              `${remoteSupportScriptRoot}\\${scriptName}`,
+              options,
+            );
+            const uploadSupportScript = spawnSync(
+              supportUpload[0],
+              supportUpload.slice(1),
+              {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+              },
+            );
+            if (uploadSupportScript.stdout) {
+              process.stdout.write(uploadSupportScript.stdout);
+            }
+            if (uploadSupportScript.stderr) {
+              process.stderr.write(uploadSupportScript.stderr);
+            }
+            if (uploadSupportScript.status !== 0) {
+              throw new Error(
+                `Factory support script upload failed with status ${uploadSupportScript.status ?? 1}`,
+              );
+            }
+          }
+
+          const artifactUploads = [
+            ["daemonArtifact", "vending-daemon.exe"],
+            ["machineUiArtifact", "machine.exe"],
+            [
+              "machineUiSidecarArtifact",
+              "WebView2Loader.dll",
+              options.machineUiArtifact
+                ? resolveMachineUiSidecarArtifactPath(options.machineUiArtifact)
+                : null,
+            ],
+          ];
+          if (cleanBaseFactoryCapability) {
+            artifactUploads.push(
+              ["openSshPackage", basename(options.openSshPackage)],
+              ["wireGuardPackage", basename(options.wireGuardPackage)],
+              ["maintenanceCaPublicKey", "maintenance-ca.pub"],
+            );
+          }
+          for (const [
+            optionName,
+            remoteFileName,
+            explicitLocalPath,
+          ] of artifactUploads) {
+            const localPath = explicitLocalPath ?? options[optionName];
+            if (!localPath) {
+              continue;
+            }
+            const artifactUpload = buildScpCommand(
+              localPath,
+              `${remoteUploadedArtifactRoot}\\${remoteFileName}`,
+              options,
+            );
+            const uploadArtifact = spawnSync(
+              artifactUpload[0],
+              artifactUpload.slice(1),
+              {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+              },
+            );
+            if (uploadArtifact.stdout) {
+              process.stdout.write(uploadArtifact.stdout);
+            }
+            if (uploadArtifact.stderr) {
+              process.stderr.write(uploadArtifact.stderr);
+            }
+            if (uploadArtifact.status !== 0) {
+              throw new Error(
+                `Factory artifact upload failed with status ${uploadArtifact.status ?? 1}`,
+              );
+            }
+          }
+          if (localPersonalizationStaging) {
+            const mediaUpload = buildScpCommand(
+              localPersonalizationStaging.stagedPath,
+              options.remotePersonalizationMediaPath,
+              options,
+            );
+            const uploadedMedia = spawnSync(
+              mediaUpload[0],
+              mediaUpload.slice(1),
+              {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+              },
+            );
+            if (uploadedMedia.status !== 0) {
+              throw new Error("Factory Personalization Media upload failed");
+            }
+            const verifyMediaAclCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; \$path = ${quotePowerShellSingleQuoted(options.remotePersonalizationMediaPath)}; if (-not (Test-Path -LiteralPath \$path -PathType Leaf)) { throw 'factory personalization media is missing' }; \$acl = Get-Acl -LiteralPath \$path -ErrorAction Stop; \$acl.SetAccessRuleProtection(\$true, \$false); foreach (\$rule in @(\$acl.Access)) { [void]\$acl.RemoveAccessRuleAll(\$rule) }; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$acl.SetOwner(\$admin); foreach (\$sid in @(\$system, \$admin)) { \$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(\$sid, 'FullControl', 'None', 'None', 'Allow'))) }; Set-Acl -LiteralPath \$path -AclObject \$acl; & icacls.exe \$path /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null; if (\$LASTEXITCODE -ne 0) { throw 'icacls failed to protect factory personalization media' }; \$acl = Get-Acl -LiteralPath \$path -ErrorAction Stop; \$owner = (New-Object System.Security.Principal.NTAccount(\$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value; \$rules = @(@(\$acl.Access) | Where-Object { -not \$_.IsInherited }); if (\$owner -ne \$admin.Value -or -not \$acl.AreAccessRulesProtected -or \$rules.Count -ne 2) { throw 'factory personalization media ACL is unsafe' }; foreach (\$rule in \$rules) { \$sid = \$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$sid -notin @('S-1-5-18', 'S-1-5-32-544') -or \$rule.AccessControlType -ne 'Allow' -or (\$rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'factory personalization media ACL grants an unsafe principal or right' } }"`;
+            const verifiedMediaAcl = spawnSync(
+              sshCommand[0],
+              [...sshCommand.slice(1), verifyMediaAclCommand],
+              { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+            );
+            if (verifiedMediaAcl.status !== 0) {
+              throw new Error(
+                "Factory Personalization Media ACL verification failed before Windows reads it",
+              );
+            }
+          }
+        }
+
+        const result = spawnSync(
+          sshCommand[0],
+          [...sshCommand.slice(1), remoteCommand],
           {
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"],
           },
         );
-        if (uploadCredentials.stdout) {
-          process.stdout.write(uploadCredentials.stdout);
+        cancellation.throwIfCancellationRequested();
+        if (result.stdout && options.out) {
+          writeFileSync(options.out, result.stdout, "utf8");
+          console.error(`wrote report: ${options.out}`);
+        } else if (result.stdout) {
+          process.stdout.write(result.stdout);
         }
-        if (uploadCredentials.stderr) {
-          process.stderr.write(uploadCredentials.stderr);
+        if (result.stderr) {
+          process.stderr.write(result.stderr);
         }
-        if (uploadCredentials.status !== 0) {
-          rmSync(localTempDirectory, { recursive: true, force: true });
-          process.exit(uploadCredentials.status ?? 1);
-        }
-      }
-
-      for (const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES) {
-        const supportUpload = buildScpCommand(
-          `scripts/windows/${scriptName}`,
-          `${remoteSupportScriptRoot}\\${scriptName}`,
-          options,
-        );
-        const uploadSupportScript = spawnSync(
-          supportUpload[0],
-          supportUpload.slice(1),
-          {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-        if (uploadSupportScript.stdout) {
-          process.stdout.write(uploadSupportScript.stdout);
-        }
-        if (uploadSupportScript.stderr) {
-          process.stderr.write(uploadSupportScript.stderr);
-        }
-        if (uploadSupportScript.status !== 0) {
-          rmSync(localTempDirectory, { recursive: true, force: true });
-          process.exit(uploadSupportScript.status ?? 1);
+        process.exitCode = getRuntimeAcceptanceExitStatus({
+          mode: options.mode,
+          sshStatus: result.status,
+          stdout: result.stdout,
+        });
+      } finally {
+        try {
+          cancellation.finalize();
+        } finally {
+          removeSignalHandlers();
         }
       }
-
-      const artifactUploads = [
-        ["daemonArtifact", "vending-daemon.exe"],
-        ["machineUiArtifact", "machine.exe"],
-        [
-          "machineUiSidecarArtifact",
-          "WebView2Loader.dll",
-          options.machineUiArtifact
-            ? resolveMachineUiSidecarArtifactPath(options.machineUiArtifact)
-            : null,
-        ],
-      ];
-      if (cleanBaseMaintenanceRelay) {
-        artifactUploads.push(
-          [
-            "maintenanceRelayWireGuardInstaller",
-            basename(options.maintenanceRelayWireGuardInstaller),
-          ],
-          ["maintenanceRelayWireGuardConfig", "maintenance-relay.conf"],
-        );
-      }
-      for (const [
-        optionName,
-        remoteFileName,
-        explicitLocalPath,
-      ] of artifactUploads) {
-        const localPath = explicitLocalPath ?? options[optionName];
-        if (!localPath) {
-          continue;
-        }
-        const artifactUpload = buildScpCommand(
-          localPath,
-          `${remoteUploadedArtifactRoot}\\${remoteFileName}`,
-          options,
-        );
-        const uploadArtifact = spawnSync(
-          artifactUpload[0],
-          artifactUpload.slice(1),
-          {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-        if (uploadArtifact.stdout) {
-          process.stdout.write(uploadArtifact.stdout);
-        }
-        if (uploadArtifact.stderr) {
-          process.stderr.write(uploadArtifact.stderr);
-        }
-        if (uploadArtifact.status !== 0) {
-          rmSync(localTempDirectory, { recursive: true, force: true });
-          process.exit(uploadArtifact.status ?? 1);
-        }
-      }
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      usage();
+      process.exitCode =
+        error instanceof Error && /cancelled by SIG/.test(error.message)
+          ? 128
+          : 2;
     }
-
-    const result = spawnSync(
-      sshCommand[0],
-      [...sshCommand.slice(1), remoteCommand],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    spawnSync(
-      sshCommand[0],
-      [
-        ...sshCommand.slice(1),
-        `powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Recurse -Force -ErrorAction SilentlyContinue"`,
-      ],
-      { encoding: "utf8", stdio: "ignore" },
-    );
-    rmSync(localTempDirectory, { recursive: true, force: true });
-    if (result.stdout && options.out) {
-      writeFileSync(options.out, result.stdout, "utf8");
-      console.error(`wrote report: ${options.out}`);
-    } else if (result.stdout) {
-      process.stdout.write(result.stdout);
-    }
-    if (result.stderr) {
-      process.stderr.write(result.stderr);
-    }
-    process.exit(
-      getRuntimeAcceptanceExitStatus({
-        mode: options.mode,
-        sshStatus: result.status,
-        stdout: result.stdout,
-      }),
-    );
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    usage();
-    process.exit(2);
-  }
+  })();
 }

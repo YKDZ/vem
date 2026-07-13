@@ -175,6 +175,17 @@ export class MachinesController {
   }
 
   @RequirePermissions("machines.manage-credentials")
+  @Post(":id/decommission")
+  async secureDecommission(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
+    _body: AdminMachineContractNoBodyInput,
+  ) {
+    return await this.machinesService.secureDecommissionMachine(id, admin.id);
+  }
+
+  @RequirePermissions("machines.manage-credentials")
   @Post(":id/claim-codes")
   async generateClaimCode(
     @CurrentAdmin() admin: AuthenticatedAdmin,
@@ -218,6 +229,21 @@ export class MachinesController {
       claimCodeId,
       admin.id,
     );
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Get(":code/maintenance-identity")
+  async getOwnMaintenanceIdentity(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("code") code: string,
+  ) {
+    if (code !== machine.code) {
+      throw new ForbiddenException(
+        "Machine can only read its own maintenance identity",
+      );
+    }
+    return await this.machinesService.getOwnMaintenanceIdentity(machine.id);
   }
 
   @Public()

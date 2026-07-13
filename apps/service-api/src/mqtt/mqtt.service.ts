@@ -40,6 +40,10 @@ export class MqttService implements OnModuleInit, OnApplicationShutdown {
         "vem/machines/+/events/environment-control-result",
         { qos: 1 },
       );
+      this.client?.subscribe(
+        "vem/machines/+/events/secure-decommission-result",
+        { qos: 1 },
+      );
       this.client?.subscribe("vem/machines/+/events/heartbeat", { qos: 1 });
     });
     this.client.on("message", (topic, payload) => {

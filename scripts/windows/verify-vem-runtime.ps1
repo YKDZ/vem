@@ -6,12 +6,16 @@ param(
   [switch]$RequireScannerOnline,
   [switch]$RequireHardwareOnline,
   [switch]$RequireVisionOnline,
+  [switch]$VisionOnly,
   [switch]$RequireBackendOnline,
   [switch]$RequireMqttConnected,
   [switch]$RequireCanSell,
   [string]$VisionTaskName = "VEM\StartVisionServer",
   [string]$VisionDirectory = "C:\VEM\vision",
   [string]$VisionLauncher = "C:\VEM\bringup\start_vision.bat",
+  [string]$VisionActiveProcessFile = "C:\ProgramData\VEM\vision\process-state\active-process.json",
+  [string]$VisionSelectionFile = "C:\ProgramData\VEM\vision\current.json",
+  [string]$VisionStateRoot = "C:\ProgramData\VEM\vision",
   [string]$StartupBringupEvidenceFile = "C:\ProgramData\VEM\vending-daemon\startup-bringup-evidence.json",
   [switch]$RequireProductionBringup,
   [string]$ExpectedAutoLogonUser = "VEMKiosk",
@@ -59,6 +63,47 @@ function Invoke-IpcJson([string]$Method, [string]$Uri, $Headers) {
     return Invoke-RestMethod -Method Post -Uri $Uri -Headers $Headers -TimeoutSec 10
   }
   return Invoke-RestMethod -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 10
+}
+
+function Add-VisionFailure($Failures, [string]$Message) {
+  Add-Failure $Failures $Message
+}
+
+function Test-VisionRuntimeBinding {
+  param([System.Collections.Generic.List[string]]$Failures)
+  $result = [ordered]@{ selectionValid=$false; metadataValid=$false; processValid=$false; healthValid=$false; protocolValid=$false }
+  try {
+    $selection = Read-JsonFile $VisionSelectionFile
+    $selectionKeys = @($selection.PSObject.Properties.Name | Sort-Object)
+    $expectedSelectionKeys = @("approvalDigest","arguments","bundleDigest","configurationArgument","configurationPath","descriptorDigest","entrypoint","installDirectory","metadataPath","revision","schemaVersion" | Sort-Object)
+    if (($selectionKeys -join "|") -cne ($expectedSelectionKeys -join "|") -or $selection.schemaVersion -cne "vem-vision-selection/v1" -or $selection.bundleDigest -notmatch '^sha256:[a-f0-9]{64}$' -or $selection.descriptorDigest -notmatch '^sha256:[a-f0-9]{64}$' -or $selection.approvalDigest -notmatch '^sha256:[a-f0-9]{64}$' -or [string]::IsNullOrWhiteSpace([string]$selection.revision)) { throw "current selection schema is invalid" }
+    $metadataRoot = Join-Path $VisionStateRoot "release-metadata"
+    $metadataPath = [IO.Path]::GetFullPath([string]$selection.metadataPath)
+    if (-not $metadataPath.StartsWith(([IO.Path]::GetFullPath($metadataRoot) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) { throw "current selection metadata path escapes state root" }
+    $metadata = Read-JsonFile $metadataPath
+    $metadataKeys = @($metadata.PSObject.Properties.Name | Sort-Object)
+    $expectedMetadataKeys = @("approval","approvalDigest","attestation","bundleDigest","descriptor","descriptorDigest","documents","entrypoint","entrypointDigest","files","installDirectory","schemaVersion" | Sort-Object)
+    if (($metadataKeys -join "|") -cne ($expectedMetadataKeys -join "|") -or $metadata.schemaVersion -cne "vem-vision-release-record/v2" -or $metadata.bundleDigest -cne $selection.bundleDigest -or $metadata.descriptorDigest -cne $selection.descriptorDigest -or $metadata.approvalDigest -cne $selection.approvalDigest -or $metadata.installDirectory -cne $selection.installDirectory -or $metadata.entrypoint -cne $selection.entrypoint) { throw "approved release metadata does not bind current selection" }
+    $entrypoint = Join-Path $selection.installDirectory $selection.entrypoint
+    if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf) -or ("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $metadata.entrypointDigest) { throw "selected entrypoint digest mismatch" }
+    $actualFiles = @(Get-ChildItem -LiteralPath $selection.installDirectory -File -Recurse -Force | Sort-Object FullName | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($selection.installDirectory.Length).TrimStart('\\').Replace('\\','/'); bytes=[Int64]$_.Length; digest=("sha256:" + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()) } })
+    if (($actualFiles | ConvertTo-Json -Depth 8 -Compress) -cne (@($metadata.files) | ConvertTo-Json -Depth 8 -Compress)) { throw "selected extracted file manifest mismatch" }
+    $result.selectionValid=$true; $result.metadataValid=$true
+    $active = Read-JsonFile $VisionActiveProcessFile
+    $activeKeys = @($active.PSObject.Properties.Name | Sort-Object)
+    $expectedActiveKeys = @("bundleDigest","creationTimeUtcTicks","executableDigest","executablePath","processId","selectionRevision" | Sort-Object)
+    if (($activeKeys -join "|") -cne ($expectedActiveKeys -join "|") -or $active.bundleDigest -cne $selection.bundleDigest -or $active.selectionRevision -cne $selection.revision -or $active.executablePath -cne $entrypoint -or $active.executableDigest -cne $metadata.entrypointDigest) { throw "active Vision process record does not bind selection" }
+    $process = Get-Process -Id ([int]$active.processId) -ErrorAction Stop
+    if ($active.creationTimeUtcTicks -isnot [Int64] -or $process.StartTime.ToUniversalTime().Ticks -ne $active.creationTimeUtcTicks -or $process.Path -cne $entrypoint -or ("sha256:" + (Get-FileHash -LiteralPath $process.Path -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $metadata.entrypointDigest) { throw "active Vision PID, creation time, path, or hash mismatch" }
+    $result.processValid=$true
+    $descriptor=$metadata.descriptor
+    $health = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}{1}" -f $descriptor.health.port,$descriptor.health.path) -TimeoutSec ([Math]::Max(1,[int]($descriptor.health.timeoutMs / 1000)))
+    if ($health.pid -ne $process.Id -or $health.bundleDigest -cne $selection.bundleDigest -or $health.executableDigest -cne $metadata.entrypointDigest -or $health.protocolVersion -cne "vem.vision.v1" -or $health.schemaVersion -cne "vem-machine-vision-health/v1") { throw "Vision health does not bind current selected process" }
+    $result.healthValid=$true
+    $socket=[Net.WebSockets.ClientWebSocket]::new(); $cancel=[Threading.CancellationTokenSource]::new([TimeSpan]::FromMilliseconds([int]$descriptor.health.timeoutMs))
+    try { $socket.ConnectAsync([Uri]("ws://127.0.0.1:{0}{1}" -f $descriptor.health.port,$descriptor.protocol.webSocketPath),$cancel.Token).GetAwaiter().GetResult(); $hello=[ordered]@{protocol="vem.vision.v1";type="vision.hello";messageId="runtime-verifier";timestamp=[DateTime]::UtcNow.ToString("o");payload=[ordered]@{clientRole="machine";machineCode=$null;protocolVersion=1;capabilities=@("profile_push","presence_status","person_departed","ambient_light")}}; $bytes=[Text.Encoding]::UTF8.GetBytes(($hello|ConvertTo-Json -Compress -Depth 8)); $socket.SendAsync([ArraySegment[byte]]::new($bytes),[Net.WebSockets.WebSocketMessageType]::Text,$true,$cancel.Token).GetAwaiter().GetResult(); $buffer=[byte[]]::new(8192); $message=$socket.ReceiveAsync([ArraySegment[byte]]::new($buffer),$cancel.Token).GetAwaiter().GetResult(); $ready=[Text.Encoding]::UTF8.GetString($buffer,0,$message.Count)|ConvertFrom-Json -Depth 16; if($ready.protocol -cne "vem.vision.v1" -or $ready.type -cne "vision.ready" -or [string]::IsNullOrWhiteSpace([string]$ready.messageId) -or [string]::IsNullOrWhiteSpace([string]$ready.timestamp) -or [string]::IsNullOrWhiteSpace([string]$ready.payload.serverName) -or [string]::IsNullOrWhiteSpace([string]$ready.payload.serverVersion) -or $ready.payload.cameraReady -isnot [bool] -or $ready.payload.modelReady -isnot [bool] -or $ready.payload.capabilities -isnot [array]) { throw "Vision WebSocket does not satisfy vem.vision.v1 ready contract" }; $result.protocolValid=$true } finally { $socket.Dispose(); $cancel.Dispose() }
+  } catch { Add-VisionFailure $Failures $_.Exception.Message }
+  return [pscustomobject]$result
 }
 
 function Get-WinlogonAutoLogonEvidence {
@@ -114,9 +159,9 @@ function Get-ScheduledTaskStartupEvidence {
 $failures = [System.Collections.Generic.List[string]]::new()
 $checks = [ordered]@{}
 
-$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$service = if ($VisionOnly) { $null } else { Get-Service -Name $ServiceName -ErrorAction SilentlyContinue }
 if ($null -eq $service) {
-  Add-Failure $failures "service not found: $ServiceName"
+  if (-not $VisionOnly) { Add-Failure $failures "service not found: $ServiceName" }
 } else {
   $checks.service = [pscustomobject]@{
     name = $service.Name
@@ -129,7 +174,7 @@ if ($null -eq $service) {
 }
 
 $config = $null
-if (Test-Path $DaemonConfig) {
+if (-not $VisionOnly -and (Test-Path $DaemonConfig)) {
   $config = Read-JsonFile $DaemonConfig
   $checks.config = [pscustomobject]@{
     machineCode = $config.machineCode
@@ -140,7 +185,7 @@ if (Test-Path $DaemonConfig) {
     apiBaseUrl = $config.apiBaseUrl
     mqttUrl = $config.mqttUrl
   }
-} else {
+} elseif (-not $VisionOnly) {
   Add-Failure $failures "daemon config not found: $DaemonConfig"
 }
 
@@ -161,9 +206,17 @@ if ($ExpectSimulator) {
 $visionTask = Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
 $visionLauncherExists = Test-Path -LiteralPath $VisionLauncher
 $visionDirectoryExists = Test-Path -LiteralPath $VisionDirectory
-$visionProcess = Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe' or name = 'cmd.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.CommandLine -like "*$VisionDirectory*" } |
-  Select-Object -First 1
+$visionSelectionExists = Test-Path -LiteralPath $VisionSelectionFile
+$visionActiveProcess = if (Test-Path -LiteralPath $VisionActiveProcessFile) {
+  Read-JsonFile $VisionActiveProcessFile
+} else {
+  $null
+}
+$visionProcess = if ($null -ne $visionActiveProcess -and $null -ne $visionActiveProcess.processId) {
+  Get-Process -Id ([int]$visionActiveProcess.processId) -ErrorAction SilentlyContinue
+} else {
+  $null
+}
 $checks.vision = [pscustomobject]@{
   taskName = $VisionTaskName
   taskReady = $null -ne $visionTask -and [string]$visionTask.State -ne "Disabled"
@@ -172,8 +225,12 @@ $checks.vision = [pscustomobject]@{
   launcherExists = $visionLauncherExists
   directory = $VisionDirectory
   directoryExists = $visionDirectoryExists
+  selectionExists = $visionSelectionExists
+  activeProcessRecordExists = $null -ne $visionActiveProcess
+  activeProcessDigest = if ($null -ne $visionActiveProcess) { [string]$visionActiveProcess.bundleDigest } else { $null }
   processRunning = $null -ne $visionProcess
   processId = if ($null -ne $visionProcess) { $visionProcess.ProcessId } else { $null }
+  binding = $null
 }
 if ($RequireVisionOnline) {
   if ($null -eq $visionTask -or [string]$visionTask.State -eq "Disabled") {
@@ -185,9 +242,13 @@ if ($RequireVisionOnline) {
   if (-not $visionDirectoryExists) {
     Add-Failure $failures "vision directory not found: $VisionDirectory"
   }
+  if (-not $visionSelectionExists) {
+    Add-Failure $failures "vision current selection not found: $VisionSelectionFile"
+  }
   if ($null -eq $visionProcess) {
     Add-Failure $failures "vision process is not running from $VisionDirectory"
   }
+  $checks.vision.binding = @(Test-VisionRuntimeBinding $failures)[-1]
 }
 
 $startupEvidenceExists = Test-Path -LiteralPath $StartupBringupEvidenceFile
@@ -296,7 +357,7 @@ if ($RequireProductionBringup) {
   }
 }
 
-if (Test-Path $ReadyFile) {
+if (-not $VisionOnly -and (Test-Path $ReadyFile)) {
   $ready = Read-JsonFile $ReadyFile
   $base = Get-IpcBaseUrl $ready
   $headers = @{ Authorization = ("Bearer " + $ready.ipcToken) }
@@ -339,7 +400,7 @@ if (Test-Path $ReadyFile) {
     $blocking = @($readyz.blockingCodes) -join ","
     Add-Failure $failures "machine cannot sell: mode=$($readyz.mode) route=$($readyz.suggestedRoute) blockers=$blocking"
   }
-} else {
+} elseif (-not $VisionOnly) {
   Add-Failure $failures "daemon ready file not found: $ReadyFile"
 }
 

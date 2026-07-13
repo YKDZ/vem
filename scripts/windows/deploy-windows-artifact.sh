@@ -4,17 +4,16 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  deploy-windows-artifact.sh --artifact PATH --remote USER@HOST --kind daemon|ui|vision [--identity KEY] [--ssh-config]
+  deploy-windows-artifact.sh --artifact PATH --remote USER@HOST --kind daemon|ui [--identity KEY] [--ssh-config]
 
 Builds a zip, uploads it to the Win10 machine in chunks, verifies hashes on the
 remote host, then installs the artifact:
   daemon -> C:\VEM\bringup\vending-daemon.exe and restarts VemVendingDaemon
   ui     -> C:\VEM\bringup\machine.exe and restarts VEMMachineUI
-  vision -> C:\VEM\vision directory and restarts VEM\StartVisionServer
 
-For --kind vision, PATH may be a directory or a .zip file. The extracted
-artifact must contain start_vision.bat at its root; the deployed launcher at
-C:\VEM\bringup\start_vision.bat delegates to it.
+Vision is intentionally not supported here. This uploader creates a new zip,
+which would change the immutable vendor release boundary. Use
+install-vision-release.ps1 with the approved original bundle and release metadata.
 EOF
 }
 
@@ -69,15 +68,15 @@ if [[ -z "$artifact" || -z "$remote" || -z "$kind" ]]; then
   usage >&2
   exit 2
 fi
-if [[ "$kind" != "daemon" && "$kind" != "ui" && "$kind" != "vision" ]]; then
-  echo "--kind must be daemon, ui, or vision" >&2
+if [[ "$kind" != "daemon" && "$kind" != "ui" ]]; then
+  echo "--kind must be daemon or ui; install Vision through install-vision-release.ps1" >&2
   exit 2
 fi
 if [[ ! -e "$artifact" ]]; then
   echo "artifact not found: $artifact" >&2
   exit 1
 fi
-if [[ "$kind" != "vision" && ! -f "$artifact" ]]; then
+if [[ ! -f "$artifact" ]]; then
   echo "$kind artifact must be a file: $artifact" >&2
   exit 1
 fi
@@ -124,26 +123,8 @@ remote_extract="$remote_root\\${kind}-${hash8}-extract"
 rm -rf "$work_dir"
 mkdir -p "$chunk_dir"
 
-if [[ "$kind" == "vision" ]]; then
-  if [[ -d "$artifact" ]]; then
-    if [[ ! -f "$artifact/start_vision.bat" ]]; then
-      echo "vision directory artifact must contain start_vision.bat at its root" >&2
-      exit 1
-    fi
-    (cd "$artifact" && zip -9 -r "$OLDPWD/$zip_path" . >/dev/null)
-  else
-    case "$artifact" in
-      *.zip) cp "$artifact" "$zip_path" ;;
-      *)
-        echo "vision file artifact must be a .zip file: $artifact" >&2
-        exit 1
-        ;;
-    esac
-  fi
-else
-  name="$(basename "$artifact")"
-  zip -9 -j "$zip_path" "$artifact" >/dev/null
-fi
+name="$(basename "$artifact")"
+zip -9 -j "$zip_path" "$artifact" >/dev/null
 
 zip_hash="$(sha256sum "$zip_path" | awk '{print $1}')"
 split -b "$chunk_size" -d -a 3 "$zip_path" "$chunk_dir/part-"
@@ -234,41 +215,6 @@ Get-FileHash \$dst -Algorithm SHA256 | Format-List
 Start-ScheduledTask -TaskName VEMMachineUI
 Start-Sleep -Seconds 5
 Get-Process machine -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path | Format-Table -AutoSize
-"
-else
-  remote_ps "\$ErrorActionPreference='Stop'
-\$src = '$remote_extract'
-\$dst = 'C:\VEM\vision'
-\$launcher = 'C:\VEM\bringup\start_vision.bat'
-\$artifactLauncher = Join-Path \$src 'start_vision.bat'
-if (-not (Test-Path -LiteralPath \$artifactLauncher)) {
-  throw 'vision artifact must contain start_vision.bat at its root'
-}
-Stop-ScheduledTask -TaskName 'VEM\StartVisionServer' -ErrorAction SilentlyContinue
-Get-CimInstance Win32_Process -Filter \"name = 'python.exe' or name = 'pythonw.exe' or name = 'cmd.exe'\" |
-  Where-Object { \$_.CommandLine -like '*C:\VEM\vision*' } |
-  ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 2
-if (Test-Path -LiteralPath \$dst) {
-  \$backup = \$dst + '.bak-' + (Get-Date -Format 'yyyyMMddHHmmss')
-  Move-Item -LiteralPath \$dst -Destination \$backup -Force
-}
-New-Item -ItemType Directory -Path \$dst -Force | Out-Null
-Copy-Item -Path (Join-Path \$src '*') -Destination \$dst -Recurse -Force
-Set-Content -LiteralPath \$launcher -Encoding ASCII -Value @(
-  '@echo off',
-  'cd /d C:\VEM\vision',
-  'call C:\VEM\vision\start_vision.bat'
-)
-Get-FileHash (Join-Path \$dst 'start_vision.bat') -Algorithm SHA256 | Format-List
-schtasks /Query /TN 'VEM\StartVisionServer' *> \$null
-if (\$LASTEXITCODE -eq 0) {
-  Start-ScheduledTask -TaskName 'VEM\StartVisionServer'
-  Start-Sleep -Seconds 5
-  schtasks /Query /TN 'VEM\StartVisionServer' /FO LIST
-} else {
-  Write-Warning 'VEM\StartVisionServer task is missing; run scripts\windows\setup-scheduled-tasks.ps1 to register it.'
-}
 "
 fi
 

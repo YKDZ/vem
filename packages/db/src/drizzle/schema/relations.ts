@@ -11,6 +11,9 @@ import {
   machineClaimCodes,
   machineCommands,
   machineHeartbeats,
+  maintenancePeers,
+  maintenanceSshCertificates,
+  maintenanceSessions,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machines,
@@ -55,6 +58,9 @@ export const relations = defineRelations(
     machineClaimCodes,
     machineCommands,
     machineHeartbeats,
+    maintenancePeers,
+    maintenanceSshCertificates,
+    maintenanceSessions,
     machinePlanogramSlots,
     machinePlanogramVersions,
     machines,
@@ -91,6 +97,7 @@ export const relations = defineRelations(
       roles: r.many.adminUserRoles(),
       refreshTokens: r.many.refreshTokens(),
       auditLogs: r.many.auditLogs(),
+      maintenanceSessions: r.many.maintenanceSessions(),
     },
     refreshTokens: {
       adminUser: r.one.adminUsers({
@@ -163,6 +170,47 @@ export const relations = defineRelations(
       claimCodes: r.many.machineClaimCodes(),
       heartbeats: r.many.machineHeartbeats(),
       planogramVersions: r.many.machinePlanogramVersions(),
+      maintenancePeers: r.many.maintenancePeers(),
+      maintenanceSessions: r.many.maintenanceSessions(),
+    },
+    maintenancePeers: {
+      machine: r.one.machines({
+        from: r.maintenancePeers.machineId,
+        to: r.machines.id,
+      }),
+      sourceSessions: r.many.maintenanceSessions({
+        alias: "maintenance_session_source_peer",
+      }),
+      targetSessions: r.many.maintenanceSessions({
+        alias: "maintenance_session_target_peer",
+      }),
+    },
+    maintenanceSessions: {
+      sshCertificates: r.many.maintenanceSshCertificates(),
+      sourcePeer: r.one.maintenancePeers({
+        from: r.maintenanceSessions.sourcePeerId,
+        to: r.maintenancePeers.id,
+        alias: "maintenance_session_source_peer",
+      }),
+      targetPeer: r.one.maintenancePeers({
+        from: r.maintenanceSessions.targetPeerId,
+        to: r.maintenancePeers.id,
+        alias: "maintenance_session_target_peer",
+      }),
+      targetMachine: r.one.machines({
+        from: r.maintenanceSessions.targetMachineId,
+        to: r.machines.id,
+      }),
+      actor: r.one.adminUsers({
+        from: r.maintenanceSessions.issuedByAdminUserId,
+        to: r.adminUsers.id,
+      }),
+    },
+    maintenanceSshCertificates: {
+      session: r.one.maintenanceSessions({
+        from: r.maintenanceSshCertificates.sessionId,
+        to: r.maintenanceSessions.id,
+      }),
     },
     machineClaimCodes: {
       machine: r.one.machines({

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "vem-factory-runtime-verification/v2",
+  "ok": true,
+  "checks": {
+    "factoryProfile": "testbed",
+    "packageVersions": {
+      "openSsh": {
+        "version": "9.8.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "wireGuard": {
+        "version": "0.5.3",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "accountPolicy": {
+      "maintenanceUser": "YKDZ",
+      "maintenanceAdministrator": true,
+      "kioskUser": "VEMKiosk",
+      "kioskAdministrator": false,
+      "kioskInOpenSshUsers": false,
+      "kioskInRemoteDesktopUsers": false,
+      "kioskInRemoteManagementUsers": false,
+      "sshDenied": true,
+      "remoteInteractiveDenied": true,
+      "winRmDenied": true
+    },
+    "passwordAuthentication": {
+      "effectiveMode": "certificate_publickey_only",
+      "passwordFallback": false
+    },
+    "elevationCompatibility": {
+      "systemSshEntrypoint": "not_configured",
+      "administratorToSystem": "measured_supported",
+      "probe": {
+        "maintenanceAdministratorMeasured": true,
+        "systemPrincipal": "SYSTEM",
+        "registrationSucceeded": true
+      }
+    }
+  }
+}

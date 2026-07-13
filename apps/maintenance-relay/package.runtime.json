@@ -1,0 +1,5 @@
+{
+  "name": "maintenance-relay-runtime",
+  "private": true,
+  "type": "module"
+}

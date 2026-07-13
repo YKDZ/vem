@@ -1,0 +1,44 @@
+services:
+  maintenance-relay:
+    image: ghcr.io/example/vem-maintenance-relay:replace-with-release
+    restart: unless-stopped
+    environment:
+      SERVICE_API_BASE_URL: https://service-api.example/api/
+      MAINTENANCE_RELAY_INTERFACE: wg0
+      MAINTENANCE_RELAY_TUNNEL_ADDRESS: 10.91.0.1
+      MAINTENANCE_RELAY_POLL_INTERVAL_MS: "5000"
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=1001,gid=1001,mode=1770
+      - /run/vem/maintenance-relay:rw,noexec,nosuid,nodev,size=4m,uid=1001,gid=1001,mode=0700
+    ports:
+      - "51820:51820/udp"
+    secrets:
+      - source: maintenance_relay_credential
+        target: maintenance_relay_credential
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
+      - source: maintenance_relay_private_key
+        target: maintenance_relay_private_key
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
+    networks:
+      - maintenance_relay
+
+networks:
+  maintenance_relay:
+    driver: bridge
+
+secrets:
+  maintenance_relay_credential:
+    file: ./secrets/maintenance-relay-credential
+  maintenance_relay_private_key:
+    file: ./secrets/maintenance-relay-private-key

@@ -3,6 +3,7 @@ import { Module } from "@nestjs/common";
 import { AuditModule } from "../audit/audit.module";
 import { ConfigModule } from "../config/config.module";
 import { MachineAuthModule } from "../machine-auth/machine-auth.module";
+import { MaintenanceAccessModule } from "../maintenance-access/maintenance-access.module";
 import { MqttModule } from "../mqtt/mqtt.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { PaymentProvidersModule } from "../payments/payment-providers.module";
@@ -18,6 +19,7 @@ import { QWeatherExternalNaturalEnvironmentProvider } from "./qweather-external-
     MqttModule,
     ConfigModule,
     PaymentProvidersModule,
+    MaintenanceAccessModule,
     NotificationsModule,
   ],
   controllers: [MachinesController],

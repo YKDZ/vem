@@ -128,7 +128,8 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
 
     const succeedResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
     expect(succeedResponse.status).toBe(201);
 
     const commandPayloadText = await commandPayloadPromise;

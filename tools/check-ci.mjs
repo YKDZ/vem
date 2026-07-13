@@ -24,6 +24,11 @@ const serviceApiEnv = {
   JWT_REFRESH_SECRET: "ci-jwt-refresh-secret-minimum-32-chars!!",
   MACHINE_JWT_SECRET: "ci-machine-jwt-secret-min-32-chars-long!",
   MACHINE_CREDENTIAL_ENCRYPTION_KEY: "ci-machine-cred-enc-key-32-chars!!",
+  MACHINE_PROVISIONING_PROFILE: "testbed",
+  MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
+  MAINTENANCE_RELAY_ENDPOINT: "127.0.0.1:51820",
+  MAINTENANCE_RELAY_PUBLIC_KEY: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+  MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.0.1",
   MQTT_URL: "mqtt://localhost:1883",
   PAYMENT_MOCK_ENABLED: "true",
   PAYMENT_WEBHOOK_BASE_URL: "http://localhost:3000",
@@ -436,6 +441,8 @@ async function runStaticJob() {
   printStep("Static checks");
   await run("pnpm", ["check:boundaries"]);
   await run("pnpm", ["check:script-inventory"]);
+  await run("pnpm", ["check:vision-release-installer"]);
+  await run("pnpm", ["check:vm-host-adapter"]);
   await run("pnpm", ["check:admin-api-contracts"]);
   await ensureCargoTypify();
   await run("pnpm", ["check:daemon-ipc-contracts"]);

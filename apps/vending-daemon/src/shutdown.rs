@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::path::PathBuf;
@@ -57,6 +58,39 @@ pub async fn run_console_with_token(
     config: ConsoleRunConfig,
     external_shutdown: CancellationToken,
 ) -> Result<(), String> {
+    supervise_runtime_cycles(&external_shutdown, || {
+        run_console_cycle(config.clone(), external_shutdown.clone())
+    })
+    .await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsoleCycleExit {
+    Stop,
+    Reconfigure,
+}
+
+async fn supervise_runtime_cycles<F, Fut>(
+    external_shutdown: &CancellationToken,
+    mut run_cycle: F,
+) -> Result<(), String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<ConsoleCycleExit, String>>,
+{
+    loop {
+        match run_cycle().await? {
+            ConsoleCycleExit::Stop => return Ok(()),
+            ConsoleCycleExit::Reconfigure if external_shutdown.is_cancelled() => return Ok(()),
+            ConsoleCycleExit::Reconfigure => {}
+        }
+    }
+}
+
+async fn run_console_cycle(
+    config: ConsoleRunConfig,
+    external_shutdown: CancellationToken,
+) -> Result<ConsoleCycleExit, String> {
     let data_dir = config::resolve_data_dir(config.data_dir)?;
     tokio::fs::create_dir_all(&data_dir)
         .await
@@ -71,6 +105,10 @@ pub async fn run_console_with_token(
         state.clone(),
         secret_store,
     ));
+    config_store
+        .recover_maintenance_from_cache()
+        .await
+        .map_err(|error| format!("secure decommission startup recovery failed: {error}"))?;
 
     let runtime = DaemonRuntime::start(RuntimeStartInput {
         state: state.clone(),
@@ -138,6 +176,7 @@ pub async fn run_console_with_token(
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,
+        background_shutdown: CancellationToken::new(),
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
         .await
@@ -249,10 +288,19 @@ pub async fn run_console_with_token(
         tasks.push(runtime_mqtt);
     }
 
-    tokio::select! {
-        signal = wait_for_local_signal() => signal?,
-        _ = external_shutdown.cancelled() => {}
-        _ = stop_token.cancelled() => {}
+    let cycle_exit = tokio::select! {
+        signal = wait_for_local_signal() => {
+            signal?;
+            ConsoleCycleExit::Stop
+        },
+        _ = external_shutdown.cancelled() => ConsoleCycleExit::Stop,
+        _ = stop_token.cancelled() => {
+            if external_shutdown.is_cancelled() {
+                ConsoleCycleExit::Stop
+            } else {
+                ConsoleCycleExit::Reconfigure
+            }
+        },
     };
 
     runtime
@@ -264,7 +312,7 @@ pub async fn run_console_with_token(
         let _ = task.await;
     }
     ipc_handle.shutdown();
-    Ok(())
+    Ok(cycle_exit)
 }
 
 fn maybe_spawn_mqtt_task(
@@ -661,7 +709,10 @@ mod tests {
     use super::*;
     use crate::config::default_public_config;
     use async_trait::async_trait;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     #[derive(Debug)]
     struct FaultySelfCheckAdapter;
@@ -762,6 +813,31 @@ mod tests {
 
         task.abort();
         let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn runtime_supervisor_restarts_an_internal_reconfigure_without_stopping_process() {
+        let external_shutdown = CancellationToken::new();
+        let cycles = Arc::new(AtomicUsize::new(0));
+        let cycles_for_run = cycles.clone();
+        let external_for_run = external_shutdown.clone();
+
+        supervise_runtime_cycles(&external_shutdown, move || {
+            let cycle = cycles_for_run.fetch_add(1, Ordering::SeqCst);
+            let external_for_cycle = external_for_run.clone();
+            async move {
+                if cycle == 0 {
+                    Ok(ConsoleCycleExit::Reconfigure)
+                } else {
+                    external_for_cycle.cancel();
+                    Ok(ConsoleCycleExit::Stop)
+                }
+            }
+        })
+        .await
+        .expect("supervise runtime");
+
+        assert_eq!(cycles.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

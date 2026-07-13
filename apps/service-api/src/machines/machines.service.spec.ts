@@ -22,6 +22,7 @@ import {
   hmacSha256Base64Url,
   type EncryptedCredentialJson,
 } from "../machine-auth/machine-credentials.util";
+import { MaintenanceAccessService } from "../maintenance-access/maintenance-access.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -29,6 +30,13 @@ import { PaymentProviderConfigService } from "../payments/payment-provider-confi
 import { EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER } from "./external-natural-environment.provider";
 import { hashMachineClaimCodeVerifier } from "./machine-claim-code.util";
 import { MachinesService } from "./machines.service";
+
+const maintenancePublicKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+const claimRequest = (claimCode: string) => ({
+  claimCode,
+  maintenancePublicKey,
+  provisioningProfile: "production" as const,
+});
 
 describe("MachinesService", () => {
   let service: MachinesService;
@@ -73,6 +81,10 @@ describe("MachinesService", () => {
         { provide: DRIZZLE_CLIENT, useValue: mockDb },
         { provide: MachineCredentialService, useValue: {} },
         {
+          provide: MaintenanceAccessService,
+          useValue: { projectDesiredStateAfterPeerMutation: vi.fn() },
+        },
+        {
           provide: PaymentProviderConfigService,
           useValue: {
             listMachinePaymentOptionsForMachine,
@@ -98,6 +110,26 @@ describe("MachinesService", () => {
           useValue: {
             machineCommandTimeoutSeconds: 5,
             machineHeartbeatTimeoutSeconds: 120,
+            machineProvisioningProfile: "production",
+            maintenanceRelayPeerId: "550e8400-e29b-41d4-a716-446655440010",
+            maintenanceRelayEndpoint: "http://127.0.0.1:51820",
+            maintenanceRelayPublicKey:
+              "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+            maintenanceRelayTunnelAddress: "10.91.0.1",
+            maintenanceAddressPools: {
+              relay: { cidr: "10.91.0.0/24", firstHost: 1, lastHost: 254 },
+              runner: { cidr: "10.91.1.0/24", firstHost: 1, lastHost: 254 },
+              maintainer: {
+                cidr: "10.91.3.0/24",
+                firstHost: 1,
+                lastHost: 254,
+              },
+              machine: {
+                cidr: "10.91.16.0/20",
+                firstHost: 1,
+                lastHost: 4094,
+              },
+            },
           },
         },
       ],
@@ -2589,6 +2621,10 @@ describe("MachinesService planogram lifecycle", () => {
         { provide: DRIZZLE_CLIENT, useValue: mockDb },
         { provide: MachineCredentialService, useValue: { createBundle } },
         {
+          provide: MaintenanceAccessService,
+          useValue: { projectDesiredStateAfterPeerMutation: vi.fn() },
+        },
+        {
           provide: PaymentProviderConfigService,
           useValue: { listMachinePaymentOptionsForMachine },
         },
@@ -3171,6 +3207,7 @@ describe("MachinesService planogram lifecycle", () => {
 });
 
 describe("MachinesService claim code lifecycle", () => {
+  const maintenancePeerInsertValues = vi.fn();
   let service: MachinesService;
   const claimCodeNow = new Date("2026-06-08T16:30:00.000Z");
 
@@ -3182,17 +3219,39 @@ describe("MachinesService claim code lifecycle", () => {
   };
   const auditRecord = vi.fn();
   const createBundle = vi.fn();
+  const encryptClaimResponse = vi.fn();
+  const decryptClaimResponse = vi.fn();
   const listMachinePaymentOptionsForMachine = vi.fn();
 
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(claimCodeNow);
+    mockDb.update.mockReturnValue({
+      set: () => ({ where: async () => [] }),
+    });
     const module = await Test.createTestingModule({
       providers: [
         MachinesService,
         { provide: DRIZZLE_CLIENT, useValue: mockDb },
-        { provide: MachineCredentialService, useValue: { createBundle } },
+        {
+          provide: MachineCredentialService,
+          useValue: {
+            createBundle,
+            encryptClaimResponse: encryptClaimResponse.mockReturnValue({
+              v: 1,
+              alg: "aes-256-gcm",
+              iv: "iv",
+              tag: "tag",
+              ciphertext: "ciphertext",
+            }),
+            decryptClaimResponse,
+          },
+        },
+        {
+          provide: MaintenanceAccessService,
+          useValue: { projectDesiredStateAfterPeerMutation: vi.fn() },
+        },
         {
           provide: PaymentProviderConfigService,
           useValue: { listMachinePaymentOptionsForMachine },
@@ -3215,6 +3274,26 @@ describe("MachinesService claim code lifecycle", () => {
             mqttUsername: "machine-client",
             mqttPassword: "mqtt-password",
             machineApiBaseUrl: "https://platform.example.com/api",
+            machineProvisioningProfile: "production",
+            maintenanceRelayPeerId: "550e8400-e29b-41d4-a716-446655440010",
+            maintenanceRelayEndpoint: "127.0.0.1:51820",
+            maintenanceRelayPublicKey:
+              "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+            maintenanceRelayTunnelAddress: "10.91.0.1",
+            maintenanceAddressPools: {
+              relay: { cidr: "10.91.0.0/24", firstHost: 1, lastHost: 254 },
+              runner: { cidr: "10.91.1.0/24", firstHost: 1, lastHost: 254 },
+              maintainer: {
+                cidr: "10.91.3.0/24",
+                firstHost: 1,
+                lastHost: 254,
+              },
+              machine: {
+                cidr: "10.91.16.0/20",
+                firstHost: 1,
+                lastHost: 4094,
+              },
+            },
           },
         },
         {
@@ -3230,10 +3309,32 @@ describe("MachinesService claim code lifecycle", () => {
     vi.useRealTimers();
   });
 
+  it("rejects malformed maintenance keys before claim lookup", async () => {
+    await expect(
+      service.claimMachine({
+        claimCode: "ABCD-2345",
+        maintenancePublicKey: "not-a-wireguard-key",
+        provisioningProfile: "production",
+      } as never),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects a production/testbed profile mismatch before claim lookup", async () => {
+    await expect(
+      service.claimMachine({
+        ...claimRequest("ABCD-2345"),
+        provisioningProfile: "testbed",
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
   function claimCandidate(
     overrides: Partial<{
       id: string;
       verifierHash: string;
+      purpose: "first_claim" | "reclaim";
       state: "pending" | "consumed" | "expired" | "revoked" | "locked";
       failedAttemptCount: number;
       maxFailedAttempts: number;
@@ -3241,12 +3342,14 @@ describe("MachinesService claim code lifecycle", () => {
       consumedAt: Date | null;
       revokedAt: Date | null;
       lockedAt: Date | null;
+      claimResponseEncryptedJson: unknown;
     }> = {},
   ) {
     return {
       id: "550e8400-e29b-41d4-a716-446655440111",
       machineId: "550e8400-e29b-41d4-a716-446655440000",
       verifierHash: hashMachineClaimCodeVerifier("ABCD-2345"),
+      purpose: "first_claim" as const,
       state: "pending" as const,
       failedAttemptCount: 0,
       maxFailedAttempts: 5,
@@ -3254,6 +3357,7 @@ describe("MachinesService claim code lifecycle", () => {
       consumedAt: null,
       revokedAt: null,
       lockedAt: null,
+      claimResponseEncryptedJson: null,
       machineCode: "M001",
       machineName: "Lobby",
       machineLocationLabel: "1F",
@@ -3263,6 +3367,210 @@ describe("MachinesService claim code lifecycle", () => {
       ...overrides,
     };
   }
+
+  it("requires explicit rotation intent for reclaim but rejects it for first claim", async () => {
+    const selectCandidate = (purpose: "first_claim" | "reclaim") => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => [claimCandidate({ purpose })],
+          }),
+        }),
+      }),
+    });
+    mockDb.select
+      .mockReturnValueOnce(selectCandidate("reclaim"))
+      .mockReturnValueOnce(selectCandidate("first_claim"));
+
+    await expect(
+      service.claimMachine(claimRequest("ABCD-2345")),
+    ).rejects.toThrow("Machine reclaim requires maintenance identity rotation");
+    await expect(
+      service.claimMachine({
+        ...claimRequest("ABCD-2345"),
+        maintenanceRotation: "rotate",
+      }),
+    ).rejects.toThrow(
+      "Initial machine claim cannot rotate a maintenance identity",
+    );
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  function addMaintenanceMutationMocks(tx: Record<string, unknown>) {
+    const select = vi.fn();
+    const selectResult = (rows: unknown[]) => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => rows,
+        }),
+      }),
+    });
+    select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: async () => [
+            {
+              publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+              tunnelAddress: "10.91.0.1",
+            },
+          ],
+        }),
+      })
+      .mockReturnValueOnce(selectResult([]))
+      .mockReturnValueOnce({ from: () => Promise.resolve([]) });
+    tx.select = select;
+    tx.insert = vi.fn().mockReturnValue({
+      values: (values: unknown) => {
+        maintenancePeerInsertValues(values);
+        return {
+          onConflictDoNothing: () => ({
+            returning: async () => [
+              { publicKey: maintenancePublicKey, tunnelAddress: "10.91.16.1" },
+            ],
+          }),
+        };
+      },
+    });
+    (tx.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      set: () => ({ where: async () => [] }),
+    });
+  }
+
+  function replayProfile() {
+    return {
+      machine: {
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        code: "M001",
+        name: "Lobby",
+        status: "offline" as const,
+        locationLabel: "1F",
+      },
+      credentials: {
+        machineSecret: "m".repeat(32),
+        machineSecretVersion: 2,
+        mqttSigningSecret: "s".repeat(32),
+        mqttConnection: {
+          url: "mqtt://localhost:1883",
+          clientId: "vem-machine-M001",
+        },
+      },
+      apiBaseUrl: "https://platform.example.com/api",
+      runtimeEndpoints: {
+        apiBasePath: "/api" as const,
+        machineAuthTokenPath: "/api/machine-auth/token" as const,
+        machineApiBasePath: "/api/machines/M001",
+        mqttTopicPrefix: "vem/machines/M001",
+      },
+      hardwareProfile: {
+        profile: "production" as const,
+        controller: {
+          required: true as const,
+          protocol: "vem-vending-controller" as const,
+        },
+        paymentScanner: { required: true as const, supportsPaymentCode: true },
+        vision: { required: false, supportsRecommendations: true },
+      },
+      hardwareSlotTopology: {
+        identity: "vem-prod-24",
+        version: "2026-06-adr0026",
+      },
+      paymentCapability: {
+        profile: "production" as const,
+        qrCodeEnabled: true,
+        paymentCodeEnabled: true,
+        serverTime: claimCodeNow.toISOString(),
+      },
+      provisioningProfile: "production" as const,
+      maintenance: {
+        publicKey: maintenancePublicKey,
+        tunnelAddress: "10.91.16.1",
+        address: "10.91.16.1/32",
+        endpoint: "relay.example:51820",
+        relay: {
+          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          tunnelAddress: "10.91.0.1",
+          address: "10.91.0.1/32",
+        },
+        roleRoutes: {
+          relay: "10.91.0.1/32",
+          runner: "10.91.1.0/24",
+          maintainer: "10.91.3.0/24",
+        },
+      },
+      metadata: {
+        profileVersion: 1 as const,
+        claimCodeId: "550e8400-e29b-41d4-a716-446655440111",
+        claimedAt: claimCodeNow.toISOString(),
+        serverTime: claimCodeNow.toISOString(),
+      },
+    };
+  }
+
+  it("replays the atomically persisted response after an interrupted claim without allocating another identity", async () => {
+    const encrypted = { v: 1, ciphertext: "encrypted-claim-response" };
+    const profile = replayProfile();
+    decryptClaimResponse.mockReturnValueOnce(profile);
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                ...claimCandidate({ state: "consumed" }),
+                claimResponseEncryptedJson: encrypted,
+              },
+            ],
+          }),
+        }),
+      }),
+    });
+
+    await expect(
+      service.claimMachine(claimRequest("ABCD-2345")),
+    ).resolves.toEqual(profile);
+
+    expect(decryptClaimResponse).toHaveBeenCalledWith(encrypted);
+    expect(createBundle).not.toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: null,
+      action: "machines.claimCode.replay",
+      resourceType: "machine",
+      resourceId: profile.machine.id,
+      afterJson: {
+        claimCodeId: profile.metadata.claimCodeId,
+        machineCode: profile.machine.code,
+        state: "consumed",
+        replayedAt: claimCodeNow.toISOString(),
+      },
+    });
+  });
+
+  it("does not replay encrypted credentials after the claim expires", async () => {
+    const encrypted = { v: 1, ciphertext: "expired-claim-response" };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => [
+              claimCandidate({
+                state: "consumed",
+                expiresAt: new Date("2026-06-08T16:29:59.000Z"),
+                claimResponseEncryptedJson: encrypted,
+              }),
+            ],
+          }),
+        }),
+      }),
+    });
+
+    await expect(
+      service.claimMachine(claimRequest("ABCD-2345")),
+    ).rejects.toThrow("Invalid or expired machine claim code");
+
+    expect(decryptClaimResponse).not.toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
 
   it("consumes a valid pending claim code once and returns a provisioning profile with rotated credentials", async () => {
     const machine = {
@@ -3326,6 +3634,7 @@ describe("MachinesService claim code lifecycle", () => {
         .mockReturnValueOnce({ set: consumeSet })
         .mockReturnValueOnce({ set: rotateSet }),
     };
+    addMaintenanceMutationMocks(tx);
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
@@ -3339,7 +3648,7 @@ describe("MachinesService claim code lifecycle", () => {
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
     );
 
-    const result = await service.claimMachine({ claimCode: "ABCD-2345" });
+    const result = await service.claimMachine(claimRequest("ABCD-2345"));
 
     expect(result).toEqual(
       expect.objectContaining({
@@ -3398,20 +3707,26 @@ describe("MachinesService claim code lifecycle", () => {
     expect(rotateSet.mock.calls[0]?.[0].secretVersion).not.toBe(
       pending.machineSecretVersion + 1,
     );
+    expect(tx.update).toHaveBeenCalledTimes(3);
+    expect(encryptClaimResponse).toHaveBeenCalledWith(result);
+    expect(mockDb.update).not.toHaveBeenCalled();
     expect(mockDb.insert).not.toHaveBeenCalled();
-    expect(auditRecord).toHaveBeenCalledWith({
-      adminUserId: null,
-      action: "machines.claimCode.consume",
-      resourceType: "machine",
-      resourceId: machine.id,
-      afterJson: {
-        claimCodeId: pending.id,
-        machineCode: "M001",
-        state: "consumed",
-        secretVersion: rotatedSecretVersion,
-        claimedAt: "2026-06-08T16:30:00.000Z",
+    expect(auditRecord).toHaveBeenCalledWith(
+      {
+        adminUserId: null,
+        action: "machines.claimCode.consume",
+        resourceType: "machine",
+        resourceId: machine.id,
+        afterJson: {
+          claimCodeId: pending.id,
+          machineCode: "M001",
+          state: "consumed",
+          secretVersion: rotatedSecretVersion,
+          claimedAt: "2026-06-08T16:30:00.000Z",
+        },
       },
-    });
+      tx,
+    );
     const serializedProfile = JSON.stringify(result);
     expect(serializedProfile).not.toContain("planogram");
     expect(serializedProfile).not.toContain("catalog");
@@ -3466,6 +3781,7 @@ describe("MachinesService claim code lifecycle", () => {
         .mockReturnValueOnce({ set: consumeSet })
         .mockReturnValueOnce({ set: rotateSet }),
     };
+    addMaintenanceMutationMocks(tx);
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
@@ -3479,7 +3795,10 @@ describe("MachinesService claim code lifecycle", () => {
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
     );
 
-    const result = await service.claimMachine({ claimCode: "ABCD-2345" });
+    const result = await service.claimMachine({
+      ...claimRequest("ABCD-2345"),
+      maintenanceRotation: "rotate",
+    });
 
     expect(result.credentials).toEqual(
       expect.objectContaining({
@@ -3491,6 +3810,9 @@ describe("MachinesService claim code lifecycle", () => {
       identity: "vem-prod-24",
       version: "2026-06-adr0026",
     });
+    expect(result.maintenance.reclaimExpiresAt).toBe(
+      "2026-06-08T16:35:00.000Z",
+    );
     expect(rotateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         secretHash: "scrypt:reclaim-machine-secret-hash",
@@ -3498,20 +3820,31 @@ describe("MachinesService claim code lifecycle", () => {
         credentialRevokedAt: null,
       }),
     );
-    expect(auditRecord).toHaveBeenCalledWith({
-      adminUserId: null,
-      action: "machines.claimCode.reclaim.consume",
-      resourceType: "machine",
-      resourceId: pending.machineId,
-      afterJson: {
-        claimCodeId: pending.id,
-        machineCode: "M001",
-        purpose: "reclaim",
-        state: "consumed",
-        secretVersion: rotatedSecretVersion,
-        claimedAt: "2026-06-08T16:30:00.000Z",
+    expect(maintenancePeerInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "pending_reclaim",
+        reclaimExpiresAt: new Date("2026-06-08T16:35:00.000Z"),
+      }),
+    );
+    expect(auditRecord).toHaveBeenCalledWith(
+      {
+        adminUserId: null,
+        action: "machines.claimCode.reclaim.consume",
+        resourceType: "machine",
+        resourceId: pending.machineId,
+        afterJson: {
+          claimCodeId: pending.id,
+          machineCode: "M001",
+          purpose: "reclaim",
+          state: "consumed",
+          secretVersion: rotatedSecretVersion,
+          claimedAt: "2026-06-08T16:30:00.000Z",
+          maintenancePeerState: "pending_reclaim",
+          reclaimExpiresAt: "2026-06-08T16:35:00.000Z",
+        },
       },
-    });
+      tx,
+    );
     const serializedProfile = JSON.stringify(result);
     expect(serializedProfile).not.toContain("stock");
     expect(serializedProfile).not.toContain("inventory");
@@ -3616,6 +3949,7 @@ describe("MachinesService claim code lifecycle", () => {
         .mockReturnValueOnce({ set: consumeSet })
         .mockReturnValueOnce({ set: rotateSet }),
     };
+    addMaintenanceMutationMocks(tx);
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
@@ -3629,7 +3963,10 @@ describe("MachinesService claim code lifecycle", () => {
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
     );
 
-    const profile = await service.claimMachine({ claimCode: "ABCD-2345" });
+    const profile = await service.claimMachine({
+      ...claimRequest("ABCD-2345"),
+      maintenanceRotation: "rotate",
+    });
 
     expect(profile.credentials.machineSecret).toBe(newMachineSecret);
     expect(profile.credentials.mqttSigningSecret).toBe(newMqttSigningSecret);
@@ -3685,7 +4022,7 @@ describe("MachinesService claim code lifecycle", () => {
 
     let error: unknown;
     try {
-      await service.claimMachine({ claimCode: "WXYZ-2345" });
+      await service.claimMachine(claimRequest("WXYZ-2345"));
     } catch (caught) {
       error = caught;
     }
@@ -3718,7 +4055,7 @@ describe("MachinesService claim code lifecycle", () => {
     mockDb.transaction.mockRejectedValueOnce(new Error("stop after lookup"));
 
     await expect(
-      service.claimMachine({ claimCode: "ABCD-2345" }),
+      service.claimMachine(claimRequest("ABCD-2345")),
     ).rejects.toThrow("stop after lookup");
 
     expect(where).toHaveBeenCalledTimes(1);
@@ -3772,7 +4109,7 @@ describe("MachinesService claim code lifecycle", () => {
       mockDb.update.mockReturnValueOnce({ set: updateSet });
 
       await expect(
-        service.claimMachine({ claimCode: "ABCD-2345" }),
+        service.claimMachine(claimRequest("ABCD-2345")),
       ).rejects.toMatchObject({
         message: "Invalid or expired machine claim code",
       });
@@ -3809,7 +4146,7 @@ describe("MachinesService claim code lifecycle", () => {
     mockDb.update.mockReturnValueOnce({ set: updateSet });
 
     await expect(
-      service.claimMachine({ claimCode: "ABCD-2345" }),
+      service.claimMachine(claimRequest("ABCD-2345")),
     ).rejects.toMatchObject({
       message: "Invalid or expired machine claim code",
     });
@@ -3837,13 +4174,27 @@ describe("MachinesService claim code lifecycle", () => {
     expect(auditRecord).not.toHaveBeenCalled();
   });
 
-  it("does not return a profile when the claim code was consumed by a concurrent request", async () => {
+  it("rereads and replays the winner when an identical concurrent claim consumes first", async () => {
     const pending = claimCandidate();
+    const encrypted = { v: 1, ciphertext: "winner-claim-response" };
+    const profile = replayProfile();
+    decryptClaimResponse.mockReturnValueOnce(profile);
     const consumeSet = vi.fn().mockReturnValue({
       where: () => ({ returning: async () => [] }),
     });
     const tx = {
       update: vi.fn().mockReturnValueOnce({ set: consumeSet }),
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          where: async () => [
+            {
+              state: "consumed",
+              expiresAt: pending.expiresAt,
+              claimResponseEncryptedJson: encrypted,
+            },
+          ],
+        }),
+      }),
     };
     mockDb.select.mockReturnValueOnce({
       from: () => ({
@@ -3865,12 +4216,25 @@ describe("MachinesService claim code lifecycle", () => {
     );
 
     await expect(
-      service.claimMachine({ claimCode: "ABCD-2345" }),
-    ).rejects.toMatchObject({
-      message: "Invalid or expired machine claim code",
-    });
+      service.claimMachine(claimRequest("ABCD-2345")),
+    ).resolves.toEqual(profile);
+    expect(decryptClaimResponse).toHaveBeenCalledWith(encrypted);
     expect(listMachinePaymentOptionsForMachine).not.toHaveBeenCalled();
-    expect(auditRecord).not.toHaveBeenCalled();
+    expect(auditRecord).toHaveBeenCalledWith(
+      {
+        adminUserId: null,
+        action: "machines.claimCode.replay",
+        resourceType: "machine",
+        resourceId: pending.machineId,
+        afterJson: {
+          claimCodeId: pending.id,
+          machineCode: pending.machineCode,
+          state: "consumed",
+          replayedAt: claimCodeNow.toISOString(),
+        },
+      },
+      tx,
+    );
   });
 
   it("uses the database-returned secret version when rotating machine credentials", async () => {

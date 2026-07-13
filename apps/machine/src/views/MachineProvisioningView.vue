@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 import type {
   BringUpSnapshot,
@@ -16,6 +16,7 @@ import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useMachineStore } from "@/stores/machine";
 
 const machineStore = useMachineStore();
+const route = useRoute();
 const router = useRouter();
 const { handleMaintenanceTap } = useMaintenanceEntry();
 
@@ -38,6 +39,8 @@ const exportingEvidence = ref(false);
 const statusMessage = ref<string | null>(null);
 const statusKind = ref<"idle" | "pending" | "success" | "failure">("idle");
 const networkResult = ref<NetworkSettingsResponse | null>(null);
+const protectedMaintenanceEnabled = ref(false);
+const reclaimMode = ref(false);
 type BringUpReason = BringUpSnapshot["blockingReasons"][number];
 type DisplayReason = {
   title: string;
@@ -78,6 +81,7 @@ const protectedActionRows = computed(() => [
 ]);
 const claimAllowed = computed(
   () =>
+    reclaimMode.value ||
     bringUp.value?.allowedActions.claimMachine === true ||
     bringUp.value?.allowedActions.retryClaim === true,
 );
@@ -378,10 +382,15 @@ async function submitClaim(): Promise<void> {
   statusKind.value = "pending";
   statusMessage.value = "正在提交机器领取码";
   try {
-    const result = await daemonClient.claimMachine(claimCode);
+    const result = reclaimMode.value
+      ? await daemonClient.claimMachine(claimCode, {
+          rotateMaintenanceIdentity: true,
+        })
+      : await daemonClient.claimMachine(claimCode);
     machineStore.configSummary = result.config;
     machineStore.configLoaded = true;
     claimForm.claimCode = "";
+    reclaimMode.value = false;
     statusMessage.value = "正在等待本机服务应用新配置";
     await waitForProvisionedConfig();
     await refreshBringUp();
@@ -394,6 +403,19 @@ async function submitClaim(): Promise<void> {
   } finally {
     submittingClaim.value = false;
   }
+}
+
+async function startReclaim(): Promise<void> {
+  if (!protectedMaintenanceEnabled.value || submittingClaim.value) return;
+  const maintenance = await daemonClient.getMaintenanceStatus();
+  if (!maintenance.activeIdentityRetained) {
+    statusKind.value = "failure";
+    statusMessage.value = "本机没有可保留的维护身份，不能执行重新领取";
+    return;
+  }
+  reclaimMode.value = true;
+  statusKind.value = "idle";
+  statusMessage.value = "请输入管理员生成的重新领取码";
 }
 
 async function submitNetworkSettings(): Promise<void> {
@@ -445,7 +467,15 @@ async function exportEvidence(): Promise<void> {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    const connection = await daemonClient.initialize();
+    protectedMaintenanceEnabled.value =
+      route.query.source === "protected-maintenance" &&
+      connection.runtimeFlags?.advancedMaintenanceConfig === true;
+  } catch {
+    protectedMaintenanceEnabled.value = false;
+  }
   void refreshBringUp();
 });
 </script>
@@ -589,7 +619,7 @@ onMounted(() => {
           >
             <div class="panel-heading">
               <p class="bring-up-eyebrow">机器领取</p>
-              <h3>提交领取码</h3>
+              <h3>{{ reclaimMode ? "提交重新领取码" : "提交领取码" }}</h3>
             </div>
             <label>
               <span>领取码</span>
@@ -608,7 +638,13 @@ onMounted(() => {
               "
               type="submit"
             >
-              {{ submittingClaim ? "正在领取" : "提交领取码" }}
+              {{
+                submittingClaim
+                  ? "正在领取"
+                  : reclaimMode
+                    ? "提交重新领取码"
+                    : "提交领取码"
+              }}
             </button>
           </form>
         </section>
@@ -638,16 +674,19 @@ onMounted(() => {
               <h3>回收与重置入口</h3>
             </div>
             <p class="empty-copy">
-              生产运行后的重新领取、本机重置和验收重跑需要受保护维护凭据；当前版本暂不开放这些入口。
+              生产运行后的重新领取、本机重置和验收重跑需要受保护维护凭据。
             </p>
             <div class="protected-actions">
               <button
                 v-for="action in protectedActionRows"
                 :key="action.key"
                 class="kiosk-touch-target secondary-action"
-                disabled
+                :disabled="
+                  action.key !== 'reclaim' || !protectedMaintenanceEnabled
+                "
                 type="button"
                 :title="action.description"
+                @click="action.key === 'reclaim' && startReclaim()"
               >
                 {{ action.label }}
               </button>

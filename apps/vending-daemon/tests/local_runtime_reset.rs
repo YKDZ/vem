@@ -169,6 +169,62 @@ async fn explicit_reset_clears_local_runtime_state_and_keeps_factory_manifest() 
 }
 
 #[tokio::test]
+async fn explicit_reset_preserves_the_dpapi_machine_maintenance_identity_blob() {
+    let temp = tempfile::tempdir().expect("temp");
+    let runtime_root = temp.path().join("VEM");
+    let data_dir = runtime_root.join("vending-daemon");
+    let secret_store = vending_daemon::secret::ProtectedLocalSecretStore::new(data_dir.clone());
+    let private_key = "maintenance-private-key";
+    vending_daemon::secret::SecretStore::write_secret(
+        &secret_store,
+        vending_daemon::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+        private_key,
+    )
+    .await
+    .expect("protected maintenance key");
+    let key_path = runtime_root
+        .join("secrets")
+        .join("machine_wireguard_private_key.dpapi");
+    tokio::fs::create_dir_all(&data_dir)
+        .await
+        .expect("data directory");
+    tokio::fs::write(data_dir.join("machine-config.json"), b"business state")
+        .await
+        .expect("business state");
+
+    prepare_factory_runtime(&data_dir, FactoryPreparationMode::ResetLocalRuntime)
+        .await
+        .expect("reset evidence");
+
+    assert_eq!(
+        vending_daemon::secret::SecretStore::read_secret(
+            &secret_store,
+            vending_daemon::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+        )
+        .await
+        .expect("preserved key")
+        .as_deref(),
+        Some(private_key),
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            tokio::fs::metadata(&key_path)
+                .await
+                .expect("key metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+        );
+    }
+    assert!(!tokio::fs::try_exists(data_dir.join("machine-config.json"))
+        .await
+        .expect("state existence"));
+}
+
+#[tokio::test]
 async fn reset_does_not_touch_platform_business_data() {
     let temp = tempfile::tempdir().expect("temp");
     let runtime_root = temp.path().join("VEM");

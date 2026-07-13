@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::fs;
 use vending_core::serial::SerialPortUsbIdentity;
@@ -146,6 +147,8 @@ pub struct MachineProvisioningProfile {
     pub hardware_profile: ProductionMachineHardwareProfile,
     pub hardware_slot_topology: HardwareSlotTopologyIdentity,
     pub payment_capability: ProductionMachinePaymentCapability,
+    pub provisioning_profile: String,
+    pub maintenance: ProvisioningMaintenanceIdentity,
     pub metadata: ProvisioningMetadata,
 }
 
@@ -188,6 +191,38 @@ pub struct ProvisioningRuntimeEndpoints {
     pub machine_auth_token_path: String,
     pub machine_api_base_path: String,
     pub mqtt_topic_prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningMaintenancePeer {
+    pub public_key: String,
+    pub tunnel_address: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceRoleRoutes {
+    pub relay: String,
+    pub runner: String,
+    pub maintainer: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningMaintenanceIdentity {
+    pub public_key: String,
+    pub tunnel_address: String,
+    pub address: String,
+    pub endpoint: String,
+    pub relay: ProvisioningMaintenancePeer,
+    pub role_routes: MaintenanceRoleRoutes,
+    #[serde(default)]
+    pub reclaim_expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -368,6 +403,10 @@ pub struct ProvisioningProfileCacheSummary {
     pub hardware_slot_topology: Option<HardwareSlotTopologyIdentity>,
     pub payment_capability: ProductionMachinePaymentCapability,
     pub provisioning_metadata: ProvisioningMetadata,
+    #[serde(default)]
+    pub provisioning_profile: Option<String>,
+    #[serde(default)]
+    pub maintenance: Option<ProvisioningMaintenanceIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -825,6 +864,120 @@ fn validate_machine_status(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_maintenance_identity(identity: &ProvisioningMaintenanceIdentity) -> Result<(), String> {
+    for (label, key) in [
+        ("maintenance public key", &identity.public_key),
+        ("maintenance relay public key", &identity.relay.public_key),
+    ] {
+        let decoded = STANDARD
+            .decode(key)
+            .map_err(|_| format!("{label} invalid"))?;
+        if decoded.len() != 32 {
+            return Err(format!("{label} invalid"));
+        }
+    }
+    let machine_address = identity
+        .tunnel_address
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| "maintenance address invalid".to_string())?;
+    let relay_address = identity
+        .relay
+        .tunnel_address
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| "maintenance address invalid".to_string())?;
+    if identity.address != format!("{machine_address}/32")
+        || identity.relay.address != format!("{relay_address}/32")
+        || identity.role_routes.relay != identity.relay.address
+    {
+        return Err("maintenance address invalid".to_string());
+    }
+    if !valid_wireguard_endpoint(&identity.endpoint) {
+        return Err("maintenance endpoint invalid".to_string());
+    }
+    let machine_route = parse_canonical_ipv4_cidr(&identity.address, 32)
+        .ok_or_else(|| "maintenance role routes invalid".to_string())?;
+    let relay_route = parse_canonical_ipv4_cidr(&identity.relay.address, 32)
+        .ok_or_else(|| "maintenance role routes invalid".to_string())?;
+    let runner_route = parse_canonical_ipv4_cidr(&identity.role_routes.runner, 24)
+        .ok_or_else(|| "maintenance role routes invalid".to_string())?;
+    let maintainer_route = parse_canonical_ipv4_cidr(&identity.role_routes.maintainer, 24)
+        .ok_or_else(|| "maintenance role routes invalid".to_string())?;
+    if ipv4_cidrs_overlap(runner_route, maintainer_route)
+        || ipv4_cidrs_overlap(runner_route, machine_route)
+        || ipv4_cidrs_overlap(maintainer_route, machine_route)
+        || ipv4_cidrs_overlap(runner_route, relay_route)
+        || ipv4_cidrs_overlap(maintainer_route, relay_route)
+    {
+        return Err("maintenance role routes invalid".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct ParsedIpv4Cidr {
+    network: u32,
+    broadcast: u32,
+}
+
+fn parse_canonical_ipv4_cidr(value: &str, minimum_prefix: u32) -> Option<ParsedIpv4Cidr> {
+    let (address, prefix) = value.split_once('/')?;
+    let address = address.parse::<std::net::Ipv4Addr>().ok()?;
+    let prefix = prefix.parse::<u32>().ok()?;
+    if prefix < minimum_prefix || prefix > 32 {
+        return None;
+    }
+    let address_number = u32::from(address);
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let network = address_number & mask;
+    if network != address_number || value != format!("{address}/{prefix}") {
+        return None;
+    }
+    Some(ParsedIpv4Cidr {
+        network,
+        broadcast: network | !mask,
+    })
+}
+
+fn ipv4_cidrs_overlap(a: ParsedIpv4Cidr, b: ParsedIpv4Cidr) -> bool {
+    a.network <= b.broadcast && b.network <= a.broadcast
+}
+
+fn valid_wireguard_endpoint(value: &str) -> bool {
+    let (host, port) = if let Some(rest) = value.strip_prefix('[') {
+        let Some((host, port)) = rest.split_once("]:") else {
+            return false;
+        };
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        (host, port)
+    } else {
+        let Some((host, port)) = value.rsplit_once(':') else {
+            return false;
+        };
+        if host.contains(':')
+            || (host.parse::<std::net::Ipv4Addr>().is_err()
+                && !host.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && label
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                }))
+        {
+            return false;
+        }
+        (host, port)
+    };
+    !host.is_empty() && port.parse::<u16>().is_ok_and(|port| port > 0)
+}
+
 pub fn normalize_public_config(
     mut config: MachinePublicConfig,
 ) -> Result<MachinePublicConfig, String> {
@@ -1058,6 +1211,7 @@ pub struct ConfigStore {
     data_dir: PathBuf,
     state: LocalStateStore,
     secrets: Arc<dyn SecretStore>,
+    maintenance: Arc<crate::maintenance::MaintenanceEnrollment>,
 }
 
 impl ConfigStore {
@@ -1187,6 +1341,13 @@ impl ConfigStore {
         if profile.payment_capability.profile != "production" {
             return Err("payment capability invalid".to_string());
         }
+        if !matches!(
+            profile.provisioning_profile.as_str(),
+            "production" | "testbed"
+        ) {
+            return Err("provisioning profile invalid".to_string());
+        }
+        validate_maintenance_identity(&profile.maintenance)?;
         Self::validate_iso_datetime(
             &profile.payment_capability.server_time,
             "payment capability invalid",
@@ -1229,10 +1390,29 @@ impl ConfigStore {
     }
 
     pub fn new(data_dir: PathBuf, state: LocalStateStore, secrets: Arc<dyn SecretStore>) -> Self {
+        Self::new_with_tunnel(
+            data_dir,
+            state,
+            secrets,
+            Arc::new(crate::maintenance::WindowsWireGuardTunnel::default()),
+        )
+    }
+
+    pub fn new_with_tunnel(
+        data_dir: PathBuf,
+        state: LocalStateStore,
+        secrets: Arc<dyn SecretStore>,
+        tunnel: Arc<dyn crate::maintenance::WindowsTunnelBackend>,
+    ) -> Self {
+        let maintenance = Arc::new(crate::maintenance::MaintenanceEnrollment::new(
+            secrets.clone(),
+            tunnel,
+        ));
         Self {
             data_dir,
             state,
             secrets,
+            maintenance,
         }
     }
 
@@ -1258,6 +1438,196 @@ impl ConfigStore {
 
     pub fn provisioning_profile_cache_summary_path(&self) -> PathBuf {
         provisioning_profile_cache_summary_path(&self.data_dir)
+    }
+
+    pub async fn ensure_maintenance_public_key(&self) -> Result<String, String> {
+        self.maintenance.ensure_public_key().await
+    }
+
+    pub async fn ensure_reclaim_maintenance_public_key(
+        &self,
+        claim_code: &str,
+    ) -> Result<String, String> {
+        let active_identity = self
+            .load_provisioning_profile_cache_summary()
+            .await?
+            .and_then(|summary| summary.maintenance);
+        self.maintenance
+            .ensure_reclaim_public_key(claim_code, active_identity.as_ref())
+            .await
+    }
+
+    pub async fn provisioning_profile_name(&self) -> Result<String, String> {
+        let factory = self.load_factory_manifest().await?;
+        let local = self.load_local_bring_up_settings().await?;
+        let value = local
+            .and_then(|settings| settings.environment)
+            .or_else(|| factory.map(|manifest| manifest.environment))
+            .unwrap_or_else(|| "production".to_string())
+            .trim()
+            .to_ascii_lowercase();
+        if matches!(value.as_str(), "production" | "testbed") {
+            Ok(value)
+        } else {
+            Err("unsupported machine provisioning profile".to_string())
+        }
+    }
+
+    pub async fn apply_maintenance_profile(
+        &self,
+        identity: &ProvisioningMaintenanceIdentity,
+        reclaim: bool,
+    ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
+        if reclaim {
+            self.maintenance.apply_reclaim_profile(identity).await
+        } else {
+            self.maintenance.apply_profile(identity).await
+        }
+    }
+
+    pub async fn recover_maintenance_from_cache(
+        &self,
+    ) -> Result<Option<crate::maintenance::MaintenanceEnrollmentStatus>, String> {
+        let pending_finalize = self
+            .state
+            .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                "secure_decommission_pending_finalize",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Some(pending_finalize) = pending_finalize {
+            let acknowledged = self
+                .state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_platform_acknowledged_command_no",
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            match acknowledged {
+                Some(marker) if marker == pending_finalize => {
+                    self.finalize_secure_decommission(&pending_finalize).await?;
+                }
+                Some(_) => {
+                    return Err(
+                        "secure decommission acknowledgement does not match the active command generation"
+                            .to_string(),
+                    );
+                }
+                None => {
+                    return Err(
+                        "secure decommission is pending platform acknowledgement; daemon startup is refused until finalization can be proven"
+                            .to_string(),
+                    );
+                }
+            }
+            return Ok(None);
+        }
+        let identity = self
+            .load_provisioning_profile_cache_summary()
+            .await?
+            .and_then(|summary| summary.maintenance);
+        if let Some(identity) = identity.as_ref() {
+            validate_maintenance_identity(identity)?;
+        }
+        self.maintenance.recover(identity.as_ref()).await
+    }
+
+    pub async fn maintenance_status(&self) -> crate::maintenance::MaintenanceEnrollmentStatus {
+        self.maintenance.status().await
+    }
+
+    pub async fn promote_maintenance_reclaim(
+        &self,
+        public_key: &str,
+    ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
+        self.maintenance.promote_reclaim(public_key).await
+    }
+
+    pub async fn reject_maintenance_reclaim(
+        &self,
+        public_key: &str,
+        reason: &str,
+    ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
+        self.maintenance.reject_reclaim(public_key, reason).await
+    }
+
+    pub async fn secure_decommission(
+        &self,
+        marker: &crate::state::store::SecureDecommissionFinalizeMarker,
+    ) -> Result<(), String> {
+        self.state
+            .put_metadata("secure_decommission_pending_finalize", marker)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.maintenance.decommission().await?;
+        self.secrets
+            .write_secret(crate::secret::MACHINE_SECRET_ACCOUNT, "")
+            .await
+            .map_err(|error| format!("clear decommissioned machine credential failed: {error}"))
+    }
+
+    pub async fn pending_secure_decommission_marker(
+        &self,
+    ) -> Result<Option<crate::state::store::SecureDecommissionFinalizeMarker>, String> {
+        self.state
+            .get_metadata("secure_decommission_pending_finalize")
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn finalize_secure_decommission(
+        &self,
+        marker: &crate::state::store::SecureDecommissionFinalizeMarker,
+    ) -> Result<(), String> {
+        let pending = self
+            .pending_secure_decommission_marker()
+            .await?
+            .ok_or_else(|| {
+                "secure decommission finalization has no active command marker".to_string()
+            })?;
+        if pending != *marker {
+            return Err("secure decommission finalization marker does not match the active command generation".to_string());
+        }
+        self.secrets
+            .clear_all()
+            .await
+            .map_err(|error| format!("clear decommissioned machine secrets failed: {error}"))?;
+        match fs::remove_file(self.provisioning_profile_cache_summary_path()).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("remove provisioning profile failed: {error}")),
+        }
+        self.save_public_config(default_public_config()).await?;
+        self.state
+            .clear_secure_decommission_finalization_markers_tx(marker)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn acknowledge_secure_decommission(&self, command_no: &str) -> Result<(), String> {
+        let marker = self
+            .state
+            .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                "secure_decommission_pending_finalize",
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "secure decommission acknowledgement has no active command marker".to_string()
+            })?;
+        if marker.command_no != command_no {
+            return Err(
+                "secure decommission acknowledgement does not match the active command".to_string(),
+            );
+        }
+        self.state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &marker,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        self.finalize_secure_decommission(&marker).await
     }
 
     async fn read_optional_json<T>(path: PathBuf, label: &str) -> Result<Option<T>, String>
@@ -1618,10 +1988,31 @@ impl ConfigStore {
             apply_local_bring_up_settings_to_public(&mut public, settings);
         }
 
+        let mut retained_maintenance_secrets = Vec::new();
+        for account in [
+            crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+            crate::secret::MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
+            crate::secret::MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+        ] {
+            if let Some(value) = self
+                .secrets
+                .read_secret(account)
+                .await
+                .map_err(Self::provisioning_persistence_error)?
+            {
+                retained_maintenance_secrets.push((account, value));
+            }
+        }
         self.secrets
             .clear_all()
             .await
             .map_err(Self::provisioning_persistence_error)?;
+        for (account, value) in retained_maintenance_secrets {
+            self.secrets
+                .write_secret(account, &value)
+                .await
+                .map_err(Self::provisioning_persistence_error)?;
+        }
 
         public.machine_id = Some(profile.machine.id.clone());
         public.machine_code = Some(profile.machine.code.clone());
@@ -1658,6 +2049,8 @@ impl ConfigStore {
             hardware_slot_topology: Some(profile.hardware_slot_topology.clone()),
             payment_capability: profile.payment_capability.clone(),
             provisioning_metadata: profile.metadata.clone(),
+            provisioning_profile: Some(profile.provisioning_profile.clone()),
+            maintenance: Some(profile.maintenance.clone()),
         };
         self.write_provisioning_profile_cache_summary(&profile_cache)
             .await
@@ -1848,14 +2241,76 @@ mod tests {
     use super::*;
     use crate::secret::{
         InMemorySecretStore, ProtectedLocalSecretStore, SecretStore, SecretStoreStatus,
-        MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+        MACHINE_SECRET_ACCOUNT, MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT, MQTT_PASSWORD_ACCOUNT,
+        MQTT_SIGNING_SECRET_ACCOUNT,
     };
     use async_trait::async_trait;
-    use std::sync::OnceLock;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    };
     use tempfile::TempDir;
     use tokio::sync::Mutex;
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    #[derive(Default)]
+    struct RecoveryTunnel {
+        applies: AtomicUsize,
+    }
+
+    #[derive(Default)]
+    struct RemovalFailingTunnel;
+
+    #[async_trait]
+    impl crate::maintenance::WindowsTunnelBackend for RecoveryTunnel {
+        async fn apply(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+            _config: crate::maintenance::WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            self.applies.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn observe_handshake(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+            _relay_public_key: &str,
+        ) -> Result<crate::maintenance::HandshakeObservation, String> {
+            Ok(crate::maintenance::HandshakeObservation {
+                verified: false,
+                last_handshake_at: None,
+                message: "first WireGuard handshake has not been observed".to_string(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl crate::maintenance::WindowsTunnelBackend for RemovalFailingTunnel {
+        async fn apply(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+            _config: crate::maintenance::WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn observe_handshake(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+            _relay_public_key: &str,
+        ) -> Result<crate::maintenance::HandshakeObservation, String> {
+            unreachable!("handshake is not observed during decommission")
+        }
+
+        async fn remove(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+        ) -> Result<(), String> {
+            Err("injected tunnel removal failure".to_string())
+        }
+    }
 
     #[derive(Debug, Default)]
     struct ClearFailingSecretStore {
@@ -1931,6 +2386,17 @@ mod tests {
         ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await
     }
 
+    fn decommission_marker(
+        command_no: &str,
+    ) -> crate::state::store::SecureDecommissionFinalizeMarker {
+        let message_id = format!("secure-decommission:{command_no}");
+        crate::state::store::SecureDecommissionFinalizeMarker {
+            generation: message_id.clone(),
+            message_id,
+            command_no: command_no.to_string(),
+        }
+    }
+
     fn valid_provisioning_profile_for_test() -> MachineProvisioningProfile {
         MachineProvisioningProfile {
             machine: ProvisioningMachine {
@@ -1985,6 +2451,24 @@ mod tests {
                 options: Vec::new(),
                 default_option_key: None,
                 default_provider_code: None,
+            },
+            provisioning_profile: "production".to_string(),
+            maintenance: ProvisioningMaintenanceIdentity {
+                public_key: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".to_string(),
+                tunnel_address: "10.91.16.10".to_string(),
+                address: "10.91.16.10/32".to_string(),
+                endpoint: "relay.example:51820".to_string(),
+                relay: ProvisioningMaintenancePeer {
+                    public_key: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=".to_string(),
+                    tunnel_address: "10.91.0.1".to_string(),
+                    address: "10.91.0.1/32".to_string(),
+                },
+                role_routes: MaintenanceRoleRoutes {
+                    relay: "10.91.0.1/32".to_string(),
+                    runner: "10.91.1.0/24".to_string(),
+                    maintainer: "10.91.3.0/24".to_string(),
+                },
+                reclaim_expires_at: None,
             },
             metadata: ProvisioningMetadata {
                 profile_version: 1,
@@ -2043,6 +2527,8 @@ mod tests {
             hardware_slot_topology: Some(profile.hardware_slot_topology.clone()),
             payment_capability: profile.payment_capability.clone(),
             provisioning_metadata: profile.metadata.clone(),
+            provisioning_profile: Some(profile.provisioning_profile.clone()),
+            maintenance: Some(profile.maintenance.clone()),
         }
     }
 
@@ -3111,6 +3597,8 @@ mod tests {
                 hardware_slot_topology: Some(old_profile.hardware_slot_topology.clone()),
                 payment_capability: old_profile.payment_capability.clone(),
                 provisioning_metadata: old_profile.metadata.clone(),
+                provisioning_profile: Some(old_profile.provisioning_profile.clone()),
+                maintenance: Some(old_profile.maintenance.clone()),
             })
             .await
             .expect("seed old profile cache");
@@ -3554,6 +4042,23 @@ mod tests {
                 "paymentCodeEnabled": true,
                 "serverTime": "2026-07-05T02:06:21.966Z"
             },
+            "provisioningProfile": "testbed",
+            "maintenance": {
+                "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+                "tunnelAddress": "10.91.16.10",
+                "address": "10.91.16.10/32",
+                "endpoint": "relay.example:51820",
+                "relay": {
+                    "publicKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+                    "tunnelAddress": "10.91.0.1",
+                    "address": "10.91.0.1/32"
+                },
+                "roleRoutes": {
+                    "relay": "10.91.0.1/32",
+                    "runner": "10.91.1.0/24",
+                    "maintainer": "10.91.3.0/24"
+                }
+            },
             "metadata": {
                 "profileVersion": 1,
                 "claimCodeId": "79713f63-db82-4bcd-b530-b8b85180f2a0",
@@ -3566,5 +4071,415 @@ mod tests {
         ConfigStore::validate_provisioning_profile(&profile).expect("valid profile");
         assert!(profile.payment_capability.options.is_empty());
         assert_eq!(profile.payment_capability.default_option_key, None);
+    }
+
+    #[test]
+    fn provisioning_profile_rejects_mismatched_or_unsafe_maintenance_routes() {
+        let mut mismatched_machine = valid_provisioning_profile_for_test();
+        mismatched_machine.maintenance.address = "10.91.16.11/32".to_string();
+
+        let mut mismatched_relay = valid_provisioning_profile_for_test();
+        mismatched_relay.maintenance.relay.address = "10.91.0.2/32".to_string();
+
+        let mut default_route = valid_provisioning_profile_for_test();
+        default_route.maintenance.role_routes.runner = "0.0.0.0/0".to_string();
+
+        let mut broad_route = valid_provisioning_profile_for_test();
+        broad_route.maintenance.role_routes.maintainer = "10.0.0.0/8".to_string();
+
+        let mut host_bits = valid_provisioning_profile_for_test();
+        host_bits.maintenance.role_routes.runner = "10.91.1.7/24".to_string();
+
+        let mut overlapping_roles = valid_provisioning_profile_for_test();
+        overlapping_roles.maintenance.role_routes.maintainer = "10.91.1.0/24".to_string();
+
+        let mut machine_overlap = valid_provisioning_profile_for_test();
+        machine_overlap.maintenance.role_routes.runner = "10.91.16.0/24".to_string();
+
+        let mut wrong_relay_route = valid_provisioning_profile_for_test();
+        wrong_relay_route.maintenance.role_routes.relay = "10.91.0.2/32".to_string();
+
+        for profile in [
+            mismatched_machine,
+            mismatched_relay,
+            default_route,
+            broad_route,
+            host_bits,
+            overlapping_roles,
+            machine_overlap,
+            wrong_relay_route,
+        ] {
+            assert!(ConfigStore::validate_provisioning_profile(&profile).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_recovers_maintenance_status_from_cached_profile_and_persistent_key() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().to_path_buf();
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let private_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        secrets
+            .write_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT, private_key)
+            .await
+            .expect("seed maintenance key");
+        let public_key = crate::maintenance::public_key_from_private_key(private_key)
+            .expect("derive public key");
+        let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets.clone());
+        let mut profile = valid_provisioning_profile_for_test();
+        profile.maintenance.public_key = public_key.clone();
+        store
+            .apply_provisioning_profile(profile)
+            .await
+            .expect("persist provisioning profile");
+
+        let tunnel = Arc::new(RecoveryTunnel::default());
+        let restarted = ConfigStore::new_with_tunnel(data_dir, state, secrets, tunnel.clone());
+        assert_eq!(restarted.maintenance_status().await.state, "not_enrolled");
+
+        let recovered = restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect("recover maintenance")
+            .expect("cached maintenance identity");
+
+        assert_eq!(recovered.state, "handshake_pending");
+        assert_eq!(recovered.public_key.as_deref(), Some(public_key.as_str()));
+        assert_eq!(tunnel.applies.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_marks_pending_before_destructive_cleanup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().to_path_buf();
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(
+                MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+                "maintenance-key-present",
+            )
+            .await
+            .expect("seed maintenance key");
+        let store = ConfigStore::new_with_tunnel(
+            data_dir,
+            state.clone(),
+            secrets.clone(),
+            Arc::new(RemovalFailingTunnel),
+        );
+
+        let error = store
+            .secure_decommission(&decommission_marker("DCOM-PENDING"))
+            .await
+            .expect_err("injected cleanup failure");
+
+        assert!(error.contains("injected tunnel removal failure"));
+        assert_eq!(
+            state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_pending_finalize",
+                )
+                .await
+                .expect("pending marker"),
+            Some(decommission_marker("DCOM-PENDING"))
+        );
+        assert!(secrets
+            .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+            .await
+            .expect("retained key")
+            .is_some());
+        let restarted = ConfigStore::new_with_tunnel(
+            temp.path().to_path_buf(),
+            state,
+            secrets,
+            Arc::new(RemovalFailingTunnel),
+        );
+        let restart_error = restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect_err("a failed pre-ack tunnel cleanup must not start the daemon");
+        assert!(restart_error.contains("pending platform acknowledgement"));
+    }
+
+    #[tokio::test]
+    async fn restart_finishes_decommission_after_persisted_platform_ack() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(MQTT_SIGNING_SECRET_ACCOUNT, "cleanup-signing-secret")
+            .await
+            .expect("seed signing secret");
+        let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets.clone());
+        let mut public = default_public_config();
+        public.machine_code = Some("M1".to_string());
+        store
+            .save_public_config(public)
+            .await
+            .expect("save public config");
+        let message_id = "secure-decommission:DCOM-RECOVER";
+        let marker = decommission_marker("DCOM-RECOVER");
+        store
+            .secure_decommission(&marker)
+            .await
+            .expect("local cleanup");
+        let payload = serde_json::json!({
+            "commandNo": "DCOM-RECOVER",
+            "operation": "secure-decommission"
+        });
+        state
+            .record_destructive_command_received(
+                message_id,
+                "secure-decommission",
+                &payload,
+                "2026-07-11T00:00:00.000Z",
+            )
+            .await
+            .expect("record command");
+        let result = crate::state::store::OutboxInput::secure_decommission_result(
+            "M1",
+            "DCOM-RECOVER",
+            serde_json::json!({"commandNo":"DCOM-RECOVER","success":true}),
+        );
+        state
+            .record_destructive_command_result_tx(message_id, true, None, &result)
+            .await
+            .expect("persist result");
+        state
+            .acknowledge_secure_decommission_result_tx(message_id, &result.id, &marker)
+            .await
+            .expect("persist atomic platform acknowledgement");
+
+        let restarted = ConfigStore::new(data_dir, state.clone(), secrets.clone());
+        assert!(restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect("recover finalization")
+            .is_none());
+
+        assert!(secrets
+            .read_secret(MQTT_SIGNING_SECRET_ACCOUNT)
+            .await
+            .expect("signing secret")
+            .is_none());
+        assert!(restarted
+            .load_public_config()
+            .await
+            .expect("public config")
+            .machine_code
+            .is_none());
+        assert_eq!(
+            state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_pending_finalize",
+                )
+                .await
+                .expect("pending marker"),
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_decommission_generation_cannot_finalize_from_the_first_ack_marker_after_restart(
+    ) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets.clone());
+        let first = decommission_marker("DCOM-FIRST");
+        store
+            .secure_decommission(&first)
+            .await
+            .expect("first cleanup");
+        state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &first,
+            )
+            .await
+            .expect("first ack marker");
+        store
+            .finalize_secure_decommission(&first)
+            .await
+            .expect("first finalization");
+        assert_eq!(
+            state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_platform_acknowledged_command_no",
+                )
+                .await
+                .expect("ack marker"),
+            None,
+        );
+
+        let mut public = default_public_config();
+        public.machine_code = Some("M1".to_string());
+        store
+            .save_public_config(public)
+            .await
+            .expect("reprovision config");
+        let second = decommission_marker("DCOM-SECOND");
+        store
+            .secure_decommission(&second)
+            .await
+            .expect("second cleanup");
+
+        // Simulate a crash between accepting the second result and receiving
+        // its platform acknowledgement. A stale first-generation marker must
+        // neither finalize nor clear the active second-generation state.
+        let restarted = ConfigStore::new(data_dir, state.clone(), secrets);
+        let error = restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect_err("startup refuses an unacknowledged decommission generation");
+        assert!(error.contains("pending platform acknowledgement"));
+        assert_eq!(
+            state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_pending_finalize",
+                )
+                .await
+                .expect("pending marker"),
+            Some(second.clone()),
+        );
+
+        state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &second,
+            )
+            .await
+            .expect("second ack marker");
+        assert!(restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect("second finalization")
+            .is_none());
+        assert_eq!(
+            state
+                .get_metadata::<crate::state::store::SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_pending_finalize",
+                )
+                .await
+                .expect("pending marker"),
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_fails_closed_when_finalization_cannot_clear_secrets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(ClearFailingSecretStore::default());
+        secrets.seed_old_secrets().await;
+        let store = ConfigStore::new(data_dir, state.clone(), secrets.clone());
+        let marker = decommission_marker("DCOM-CLEAR-FAIL");
+        state
+            .put_metadata("secure_decommission_pending_finalize", &marker)
+            .await
+            .expect("pending marker");
+        state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &marker,
+            )
+            .await
+            .expect("ack marker");
+
+        let error = store
+            .recover_maintenance_from_cache()
+            .await
+            .expect_err("startup must fail closed");
+        assert!(error.contains("injected clear failure"));
+        assert_eq!(
+            store
+                .runtime_secrets()
+                .await
+                .expect("secrets remain unread by failed startup")
+                .machine_secret
+                .as_deref(),
+            Some("old-machine-secret"),
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_fails_closed_when_profile_or_default_config_cleanup_fails() {
+        for failure in ["profile", "default-config"] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let data_dir = temp.path().join("vending-daemon");
+            let state = LocalStateStore::open(&data_dir.join("state.db"))
+                .await
+                .expect("state");
+            let secrets = Arc::new(InMemorySecretStore::default());
+            secrets
+                .write_secret(MACHINE_SECRET_ACCOUNT, "old-machine-secret")
+                .await
+                .expect("seed machine secret");
+            let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets.clone());
+            let mut old = default_public_config();
+            old.machine_code = Some("OLD-MACHINE".to_string());
+            store.save_public_config(old).await.expect("old config");
+            let marker = decommission_marker(&format!("DCOM-{failure}"));
+            state
+                .put_metadata("secure_decommission_pending_finalize", &marker)
+                .await
+                .expect("pending marker");
+            state
+                .put_metadata(
+                    "secure_decommission_platform_acknowledged_command_no",
+                    &marker,
+                )
+                .await
+                .expect("ack marker");
+            match failure {
+                "profile" => {
+                    fs::create_dir_all(store.provisioning_profile_cache_summary_path())
+                        .await
+                        .expect("block profile deletion");
+                }
+                "default-config" => {
+                    fs::remove_file(daemon_config_path(&data_dir))
+                        .await
+                        .expect("remove old config");
+                    fs::create_dir(daemon_config_path(&data_dir))
+                        .await
+                        .expect("block config rewrite");
+                }
+                _ => unreachable!(),
+            }
+
+            let error = store
+                .recover_maintenance_from_cache()
+                .await
+                .expect_err("startup must fail closed");
+            assert!(
+                error.contains(if failure == "profile" {
+                    "remove provisioning profile"
+                } else {
+                    "write daemon config"
+                }),
+                "{failure}: {error}",
+            );
+            assert!(store
+                .runtime_secrets()
+                .await
+                .expect("secrets")
+                .machine_secret
+                .is_none());
+        }
     }
 }

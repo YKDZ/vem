@@ -75,9 +75,27 @@ const requiredPrepareParams = [
   "ExpectedAutoLogonUser",
   "ExpectedKioskShell",
   "TargetLayoutVersion",
-  "KioskPassword",
-  "MaintenancePassword",
-  "AutoLogonPassword",
+  "FactoryProfile",
+  "PersonalizationMediaPath",
+  "FactoryMediaRoot",
+  "VisionConfigurationSourcePath",
+  "OpenSshPackagePath",
+  "OpenSshPackageSource",
+  "OpenSshPackageVersion",
+  "OpenSshPackageSha256",
+  "OpenSshApprovedSignerThumbprint",
+  "OpenSshApprovedRootThumbprint",
+  "WireGuardPackagePath",
+  "WireGuardPackageSource",
+  "WireGuardPackageVersion",
+  "WireGuardPackageSha256",
+  "WireGuardApprovedSignerThumbprint",
+  "WireGuardApprovedRootThumbprint",
+  "MaintenanceSshCaPublicKeyPath",
+  "MaintenanceSshCaPublicKeySha256",
+  "MaintenanceRunnerSourceAllowlist",
+  "MaintenanceMaintainerSourceAllowlist",
+  "MaintenanceWireGuardListenAddress",
 ];
 
 const requiredLayoutPaths = [
@@ -133,10 +151,26 @@ addCheck(
   requiredPrepareParams.every((name) => hasParam(prepare, name)) &&
     prepare.includes("Assert-RequiredInputs") &&
     prepare.includes("missing required input") &&
-    prepare.includes("[switch]$UseSecureCredentialEnvironment") &&
     prepare.includes("Assert-CredentialInputs") &&
-    prepare.includes("explicit -UseSecureCredentialEnvironment"),
-  `${preparePath} should require explicit artifacts, hashes, environment, provisioning endpoint, hardware/topology, display, kiosk/autologon, and layout inputs`,
+    prepare.includes("Factory Personalization Media is required") &&
+    prepare.includes("Assert-FactoryPersonalizationMedia") &&
+    prepare.includes("must not be mounted for a dry run") &&
+    !prepare.includes("UseSecureCredentialEnvironment"),
+  `${preparePath} should require explicit artifacts, hashes, environment, profile-bound Factory Personalization Media, hardware/topology, display, and layout inputs`,
+);
+
+addCheck(
+  "factory-personalization-is-profile-bound-redacted-and-single-use",
+  prepare.includes("vem-factory-personalization-media/v1") &&
+    prepare.includes("Assert-FactoryPersonalizationNotReused") &&
+    prepare.includes("Mark-FactoryPersonalizationConsumed") &&
+    prepare.includes("WireGuard key or peer material") &&
+    verifier.includes("vem-factory-personalization-media-redaction/v1") &&
+    verifier.includes("Get-FactoryPersonalizationEvidence") &&
+    verifier.includes("retainedMediaPresent") &&
+    testbedRunner.includes("VEM_FACTORY_PERSONALIZATION_MEDIA_PATH") &&
+    testbedRunner.includes("factory staging cleanup retained protected media"),
+  "Factory Personalization Media must be profile-bound, single-use, redacted, and removed from runner staging",
 );
 
 addCheck(
@@ -162,8 +196,45 @@ addCheck(
     prepare.includes("local-bringup-settings.json") &&
     prepare.includes("machine-config.json") &&
     prepare.includes("setup-scheduled-tasks.ps1") &&
+    prepare.includes("provision-vision-factory-release.ps1") &&
+    prepare.includes("install-vision-release.ps1") &&
     prepare.includes("verify-factory-runtime.ps1"),
   `${preparePath} should plan the ADR-0038 fixed Windows runtime layout and copied support scripts`,
+);
+
+addCheck(
+  "production-preparation-provisions-and-installs-approved-vision-before-writing-success-manifest",
+  prepare.includes("Invoke-FactoryVisionRelease") &&
+    prepare.includes("production Factory Vision installation requires") &&
+    prepare.includes(
+      "Factory Vision installation evidence is incomplete or failed",
+    ) &&
+    prepare.indexOf("Invoke-FactoryVisionRelease -Plan $Plan") <
+      prepare.lastIndexOf(
+        "Write-JsonFile -Path ([string]$Plan.layout.manifestPath)",
+      ) &&
+    verifier.includes(
+      "production Factory Vision installation evidence is missing or invalid",
+    ),
+  "production factory preparation must provision immutable Vision media, run the production installer, and require successful redacted evidence before recording completion",
+);
+
+const factoryVisionRelease = functionBlock(
+  prepare,
+  "Invoke-FactoryVisionRelease",
+);
+addCheck(
+  "production-preparation-passes-the-vem-media-root-to-the-vision-provisioner",
+  factoryVisionRelease.includes(
+    "$factoryMediaRoot = Split-Path -Parent $provisioningManifest",
+  ) &&
+    factoryVisionRelease.includes(
+      "& $provisioner -FactoryMediaRoot $factoryMediaRoot",
+    ) &&
+    !factoryVisionRelease.includes(
+      "Split-Path -Parent (Split-Path -Parent $provisioningManifest)",
+    ),
+  "production factory preparation must pass the VEM directory containing VISION-FACTORY-PROVISIONING.JSON, not the outer Factory Media parent, to the Vision provisioner",
 );
 
 addCheck(
@@ -196,13 +267,13 @@ addCheck(
 
 addCheck(
   "prepare-reset-evidence-covers-found-cleared-preserved-and-skipped-state",
-  prepare.includes("found = @(") &&
+  prepare.includes("found = @()") &&
     prepare.includes("cleared = @()") &&
-    prepare.includes("preserved = @(") &&
-    prepare.includes("skipped = @(") &&
+    prepare.includes("$preserved = @(") &&
+    prepare.includes("$skipped = @()") &&
     existingStateBlock.includes("VEMMaintenanceUI") &&
     existingStateBlock.includes("VEM\\StartVisionServer") &&
-    prepare.includes("factory_manifest") &&
+    prepare.includes("maintenance_capability_state") &&
     prepare.includes("platform_business_data") &&
     removeStateBlock.includes("$State.cleared = @($State.found)") &&
     removeStateBlock.includes(
@@ -228,13 +299,12 @@ addCheck(
     prepare.includes("local-bringup-settings/v1") &&
     prepare.includes("New-Service") &&
     prepare.includes("setup-scheduled-tasks.ps1") &&
-    prepare.includes("$setupArguments = @(") &&
-    prepare.includes("-ConfigureAutoLogon") &&
-    prepare.includes("-ConfigureKioskAccounts") &&
+    prepare.includes("$setupArguments = @{") &&
+    prepare.includes("ConfigureAutoLogon = $true") &&
+    prepare.includes("ConfigureKioskAccounts = $true") &&
     prepare.includes("$Preflight.KioskPassword") &&
-    prepare.includes("$Preflight.MaintenancePassword") &&
     prepare.includes("$Preflight.AutoLogonPassword") &&
-    prepare.includes("@setupArguments"),
+    prepare.includes("-Arguments $setupArguments"),
   `${preparePath} should install executables/scripts, manifest, local bring-up settings, service, task/account setup, and directories`,
 );
 
@@ -266,79 +336,87 @@ addCheck(
     !prepare.includes(
       'New-NetFirewallRule -DisplayName "VEM OpenSSH Maintenance"',
     ) &&
-    prepare.includes("-ConfigureLocalMaintenanceAccess") &&
+    prepare.includes("ConfigureControlledMaintenanceIngress = $true") &&
     !prepare.includes("-ConfigureRemoteMaintenanceAccess `") &&
     setupTasks.includes("Ensure-OpenSshServer") &&
-    setupTasks.includes(
-      'Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0"',
-    ) &&
+    !setupTasks.includes("Add-WindowsCapability -Online") &&
+    !setupTasks.includes("Get-WindowsCapability -Online") &&
+    setupTasks.includes("TrustedUserCAKeys") &&
+    setupTasks.includes("PasswordAuthentication no") &&
+    setupTasks.includes("KbdInteractiveAuthentication no") &&
+    setupTasks.includes("AuthenticationMethods publickey") &&
+    setupTasks.includes("InterfaceAlias") &&
     setupTasks.includes("Ensure-SshdConfigDenyKioskUser") &&
     setupTasks.includes('"DenyUsers $($KioskUser.ToLowerInvariant())"') &&
-    setupTasks.includes("Ensure-LocalMaintenanceAccess") &&
-    setupTasks.includes("Disable-DefaultOpenSshInboundFirewall"),
+    setupTasks.includes("Get-EnabledInboundSshFirewallRules") &&
+    setupTasks.includes("Assert-ProfileMaintenanceCa"),
   `${preparePath} should configure local OpenSSH maintenance account isolation by default, avoid Tailscale, and never enable SMB/File Sharing`,
 );
 
 addCheck(
-  "prepare-supports-optional-wireguard-maintenance-relay-base-image-bootstrap",
+  "prepare-requires-pinned-openssh-and-wireguard-capabilities",
   [
-    "MaintenanceRelayWireGuardInstallerPath",
-    "MaintenanceRelayWireGuardInstallerSha256",
-    "MaintenanceRelayWireGuardConfigPath",
-    "MaintenanceRelayWireGuardConfigSha256",
-    "MaintenanceRelayTunnelName",
-    "MaintenanceRelaySourceAllowlist",
-    "Assert-MaintenanceRelayInputs",
-    "Install-MaintenanceRelayWireGuard",
+    "OpenSshPackagePath",
+    "OpenSshPackageSource",
+    "OpenSshPackageVersion",
+    "OpenSshPackageSha256",
+    "OpenSshApprovedSignerThumbprint",
+    "OpenSshApprovedRootThumbprint",
+    "WireGuardPackagePath",
+    "WireGuardPackageSource",
+    "WireGuardPackageVersion",
+    "WireGuardPackageSha256",
+    "WireGuardApprovedSignerThumbprint",
+    "WireGuardApprovedRootThumbprint",
+    "Assert-PinnedLocalPackage",
+    "Install-PinnedWindowsPackage",
+    "Ensure-LocalWireGuardTunnelService",
     "WireGuardTunnel",
     "/installtunnelservice",
-    "C:\\ProgramData\\VEM\\maintenance-relay",
-    "-ConfigureControlledMaintenanceIngress",
-    "-MaintenanceIngressSourceAllowlist",
-    "maintenance relay WireGuard config must not route broad AllowedIPs",
-    "wireguard-maintenance-relay",
-    "preconfigured-base-image",
+    "wireGuardRoot",
+    "ConfigureControlledMaintenanceIngress = $true",
+    "MaintenanceRunnerSourceAllowlist",
+    "MaintenanceMaintainerSourceAllowlist",
+    "MaintenanceWireGuardListenAddress",
+    "factoryProfile",
+    'privateKeySource = "generated_locally"',
   ].every((needle) => prepare.includes(needle)) &&
-    prepare.indexOf("Assert-MaintenanceRelayInputs") <
+    prepare.indexOf("Assert-PinnedLocalPackage") <
       prepare.indexOf("Assert-CleanHostOrReset") &&
-    prepare.includes("icacls.exe $targetConfig /inheritance:r") &&
     prepare.includes(
-      "MaintenanceRelaySourceAllowlist must not contain broad sources",
+      "package source must be a declared local-pinned or factory-cas identity",
     ),
-  `${preparePath} should optionally install a hash-verified WireGuard Maintenance Relay tunnel service and enable Controlled Maintenance Ingress only when explicit relay inputs are supplied`,
+  `${preparePath} should require fixed local OpenSSH and WireGuard packages, profile CA material, and role pools before any host mutation`,
 );
 
 addCheck(
-  "verifier-checks-optional-wireguard-maintenance-relay-contract",
-  verifier.includes("Get-MaintenanceRelayExpectation") &&
-    verifier.includes("Get-MaintenanceRelayEvidence") &&
-    verifier.includes("Get-ControlledMaintenanceIngressRuleEvidence") &&
-    verifier.includes("WireGuardTunnel{0}") &&
+  "verifier-checks-mandatory-wireguard-and-maintenance-contract",
+  verifier.includes("Get-MaintenanceFirewallEvidence") &&
+    verifier.includes("Get-WireGuardServiceEvidence") &&
+    verifier.includes("Get-FactoryPackageEvidence") &&
+    verifier.includes("WireGuardTunnel$VEM-Maintenance") &&
     verifier.includes("VEM Controlled Maintenance SSH") &&
-    verifier.includes("configSha256Matches") &&
-    verifier.includes(
-      "preconfigured Maintenance Relay must have running WireGuard tunnel service and exact Controlled Maintenance Ingress allowlist",
-    ) &&
-    verifier.includes(
-      'Where-Object { [string]$_ -ne "VEM Controlled Maintenance SSH" }',
-    ),
-  `${verifierPath} should accept the single expected Controlled Maintenance Ingress rule for relay-enabled images and verify the WireGuard tunnel service, config hash, and exact SSH source allowlist`,
+    verifier.includes("sourceRolePoolsMatch") &&
+    verifier.includes("interfaceAlias") &&
+    verifier.includes('schemaVersion = "vem-factory-runtime-verification/v2"'),
+  `${verifierPath} should verify mandatory WireGuard service state, pinned package evidence, and exact role-pool/interface SSH scope`,
 );
 
 addCheck(
-  "testbed-runner-can-stage-clean-base-maintenance-relay-artifacts",
-  testbedRunner.includes("resolveCleanBaseMaintenanceRelayInputs") &&
-    testbedRunner.includes("--maintenance-relay-wireguard-installer") &&
-    testbedRunner.includes("--maintenance-relay-wireguard-config") &&
-    testbedRunner.includes("--maintenance-relay-source-allowlist") &&
-    testbedRunner.includes("remoteMaintenanceRelayWireGuardInstallerPath") &&
-    testbedRunner.includes("remoteMaintenanceRelayWireGuardConfigPath") &&
-    testbedRunner.includes("maintenanceRelayWireGuardInstallerSha256") &&
-    testbedRunner.includes("maintenanceRelayWireGuardConfigSha256") &&
-    testbedRunner.includes("MaintenanceRelaySourceAllowlist =") &&
-    testbedRunner.includes("$entry.Value -is [array]") &&
-    testbedRunner.includes("maintenance-relay.conf"),
-  `${testbedRunnerPath} should upload hash-checked WireGuard installer/config artifacts and pass relay inputs through clean-base factory preparation without printing secret config contents`,
+  "testbed-runner-can-stage-clean-base-factory-capability-assets",
+  testbedRunner.includes("resolveCleanBaseFactoryCapabilityInputs") &&
+    testbedRunner.includes("--openssh-package") &&
+    testbedRunner.includes("--wireguard-package") &&
+    testbedRunner.includes("--maintenance-ca-public-key") &&
+    testbedRunner.includes("remoteOpenSshPackagePath") &&
+    testbedRunner.includes("remoteWireGuardPackagePath") &&
+    testbedRunner.includes("remoteMaintenanceCaPublicKeyPath") &&
+    testbedRunner.includes("OpenSshPackagePath =") &&
+    testbedRunner.includes("WireGuardPackagePath =") &&
+    testbedRunner.includes("MaintenanceRunnerSourceAllowlist =") &&
+    testbedRunner.includes("MaintenanceMaintainerSourceAllowlist =") &&
+    !testbedRunner.includes("maintenance-relay.conf"),
+  `${testbedRunnerPath} should upload hash-checked fixed OpenSSH/WireGuard/CA assets and pass profile role-pool inputs through clean-base factory preparation`,
 );
 
 addCheck(
@@ -384,7 +462,7 @@ addCheck(
     verifier.includes("topologyIdentity = $manifest.topology.identity") &&
     verifier.includes("topologyVersion = $manifest.topology.version") &&
     verifier.includes("Write-Evidence") &&
-    verifier.includes('schemaVersion = "vem-factory-runtime-verification/v1"'),
+    verifier.includes('schemaVersion = "vem-factory-runtime-verification/v2"'),
   `${verifierPath} should verify fixed paths, hashes, daemon service, UI task, accounts, kiosk/autologon, CDP exclusion, recovery path, display expectations, and evidence`,
 );
 
@@ -579,7 +657,7 @@ const dirtyHostFixture = {
 };
 
 const shellLauncherVerificationFixture = {
-  schemaVersion: "vem-factory-runtime-verification/v1",
+  schemaVersion: "vem-factory-runtime-verification/v2",
   ok: true,
   checks: {
     machineUiStartup: {

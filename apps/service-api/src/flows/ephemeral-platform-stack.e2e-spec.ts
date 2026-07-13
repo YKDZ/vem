@@ -1,14 +1,22 @@
 import type { INestApplication } from "@nestjs/common";
 
 import { Test } from "@nestjs/testing";
-import { DrizzleDB } from "@vem/db";
+import {
+  and,
+  auditLogs,
+  DrizzleDB,
+  eq,
+  inArray,
+  maintenancePeers,
+  maintenanceSessions,
+} from "@vem/db";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { ApiResponse } from "./flow-test-helpers";
 
-import { AppModule } from "../app.module";
 import { AppConfigService } from "../config/app-config.service";
+import { MaintenanceAccessService } from "../maintenance-access/maintenance-access.service";
 import {
   DrizzleEphemeralPlatformStackRepository,
   prepareEphemeralPlatformStack,
@@ -22,8 +30,26 @@ describe(
     let appConfig: AppConfigService;
     let db: DrizzleDB;
     let api: ReturnType<typeof request>;
+    let maintenanceAccess: MaintenanceAccessService;
+    const selectedRelay = {
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+      tunnelAddress: "10.91.0.1",
+    };
+    const claimEnvironment = {
+      MACHINE_PROVISIONING_PROFILE: "testbed",
+      MAINTENANCE_RELAY_PEER_ID: selectedRelay.id,
+      MAINTENANCE_RELAY_ENDPOINT: "127.0.0.1:51820",
+      MAINTENANCE_RELAY_PUBLIC_KEY: selectedRelay.publicKey,
+      MAINTENANCE_RELAY_TUNNEL_ADDRESS: selectedRelay.tunnelAddress,
+    } as const;
+    const previousEnvironment = Object.fromEntries(
+      Object.keys(claimEnvironment).map((key) => [key, process.env[key]]),
+    );
 
     beforeAll(async () => {
+      Object.assign(process.env, claimEnvironment);
+      const { AppModule } = await import("../app.module");
       const moduleRef = await Test.createTestingModule({
         imports: [AppModule],
       }).compile();
@@ -35,6 +61,21 @@ describe(
       appConfig = app.get(AppConfigService);
       db = new DrizzleDB(appConfig.databaseUrl);
       await db.connect();
+      maintenanceAccess = app.get(MaintenanceAccessService);
+      await db.client
+        .insert(maintenancePeers)
+        .values({ ...selectedRelay, role: "relay", status: "active" })
+        .onConflictDoNothing({ target: maintenancePeers.id });
+      await db.client
+        .insert(maintenancePeers)
+        .values({
+          id: "550e8400-e29b-41d4-a716-446655440011",
+          role: "relay",
+          publicKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+          tunnelAddress: "10.91.0.2",
+          status: "active",
+        })
+        .onConflictDoNothing({ target: maintenancePeers.id });
       const httpServer = app.getHttpServer() as Parameters<typeof request>[0];
       api = request(httpServer);
     }, 120_000);
@@ -46,6 +87,87 @@ describe(
       if (app) {
         await app.close();
       }
+      for (const [key, value] of Object.entries(previousEnvironment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }, 120_000);
+
+    it("concurrent identical claims replay the PostgreSQL winner without duplicating identity", async () => {
+      const repository = new DrizzleEphemeralPlatformStackRepository(
+        db.client,
+        {
+          machineClaimLookupHmacKey: appConfig.machineClaimLookupHmacKey,
+          claimCodeTtlSeconds: appConfig.machineClaimCodeTtlSeconds,
+        },
+      );
+      const prepared = await prepareEphemeralPlatformStack(repository, {
+        runId: "issue-07-concurrent-claim",
+        machineCodePrefix: "VEM-TESTBED-CLAIM",
+        databaseUrl: appConfig.databaseUrl,
+        apiBaseUrl: "http://127.0.0.1:3000/api",
+        mqttUrl: appConfig.mqttUrl,
+        allowMockPayment: true,
+        runtimePaymentMockEnabled: appConfig.paymentMockEnabled,
+        reset: true,
+        now: new Date(),
+      });
+      const maintenancePublicKey =
+        "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=";
+      const claimPayload = {
+        claimCode: prepared.testbedMachine.claim.claimCode,
+        maintenancePublicKey,
+        provisioningProfile: "testbed",
+      };
+
+      const responses = await Promise.all([
+        api.post("/api/machines/claim").send(claimPayload),
+        api.post("/api/machines/claim").send(claimPayload),
+      ]);
+
+      expect(responses.map((response) => response.status)).toEqual([201, 201]);
+      const first = responses[0].body as ApiResponse<{
+        machine: { id: string; code: string };
+        credentials: { machineSecret: string };
+      }>;
+      expect(responses[1].body.data).toEqual(first.data);
+      expect(
+        await db.client
+          .select({ publicKey: maintenancePeers.publicKey })
+          .from(maintenancePeers)
+          .where(eq(maintenancePeers.machineId, first.data.machine.id)),
+      ).toEqual([{ publicKey: maintenancePublicKey }]);
+      expect(
+        await db.client
+          .select({ id: maintenanceSessions.id })
+          .from(maintenanceSessions)
+          .where(
+            eq(maintenanceSessions.targetMachineId, first.data.machine.id),
+          ),
+      ).toEqual([]);
+
+      const claimAudits = await db.client
+        .select({ action: auditLogs.action, afterJson: auditLogs.afterJson })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.resourceId, first.data.machine.id),
+            inArray(auditLogs.action, [
+              "machines.claimCode.consume",
+              "machines.claimCode.replay",
+            ]),
+          ),
+        );
+      expect(
+        claimAudits
+          .filter(
+            ({ afterJson }) =>
+              afterJson?.claimCodeId ===
+              prepared.testbedMachine.claim.claimCodeId,
+          )
+          .map(({ action }) => action)
+          .sort(),
+      ).toEqual(["machines.claimCode.consume", "machines.claimCode.replay"]);
     });
 
     it("resets run data and exercises provisioning, planogram, stock, and payment paths", async () => {
@@ -102,6 +224,8 @@ describe(
 
       const claimResponse = await api.post("/api/machines/claim").send({
         claimCode: second.testbedMachine.claim.claimCode,
+        maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        provisioningProfile: "testbed",
       });
       expect(claimResponse.status).toBe(201);
       const claimed = claimResponse.body as ApiResponse<{
@@ -121,6 +245,58 @@ describe(
       expect(claimed.data.credentials.mqttConnection.url).toBe(
         appConfig.mqttUrl,
       );
+      const machinePeers = await db.client
+        .select({
+          publicKey: maintenancePeers.publicKey,
+          tunnelAddress: maintenancePeers.tunnelAddress,
+        })
+        .from(maintenancePeers)
+        .where(eq(maintenancePeers.machineId, claimed.data.machine.id));
+      expect(machinePeers).toEqual([
+        {
+          publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+          tunnelAddress: expect.any(String),
+        },
+      ]);
+      expect(
+        await db.client
+          .select({ id: maintenanceSessions.id })
+          .from(maintenanceSessions)
+          .where(
+            eq(maintenanceSessions.targetMachineId, claimed.data.machine.id),
+          ),
+      ).toEqual([]);
+      const relayDesiredState = await maintenanceAccess.getRelayDesiredState();
+      expect(relayDesiredState.peers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "machine",
+            publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+          }),
+        ]),
+      );
+      expect(relayDesiredState.authorizations).toEqual([]);
+      const claimAudits = await db.client
+        .select({ action: auditLogs.action, afterJson: auditLogs.afterJson })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.resourceId, claimed.data.machine.id),
+            inArray(auditLogs.action, [
+              "machines.claimCode.consume",
+              "machines.claimCode.replay",
+            ]),
+          ),
+        );
+      expect(
+        claimAudits
+          .filter(
+            ({ afterJson }) =>
+              afterJson?.claimCodeId ===
+              second.testbedMachine.claim.claimCodeId,
+          )
+          .map(({ action }) => action),
+      ).toEqual(["machines.claimCode.consume"]);
 
       const tokenResponse = await api.post("/api/machine-auth/token").send({
         machineCode: second.testbedMachine.code,

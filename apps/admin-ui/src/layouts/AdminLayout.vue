@@ -34,6 +34,7 @@ const ROUTE_ICON_MAP: Record<string, Component> = {
   "admin-users": TeamOutlined,
   roles: SafetyOutlined,
   "audit-logs": AuditOutlined,
+  "maintenance-access": SafetyOutlined,
 };
 
 type MenuItem = {

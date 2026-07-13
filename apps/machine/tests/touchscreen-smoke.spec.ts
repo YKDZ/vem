@@ -409,7 +409,7 @@ test("touchscreen customer can complete a successful purchase journey", async ({
   await expect(page.getByText("请稍候，商品正在送往取货口")).toBeVisible();
   await expect(page.getByText("请取走您的商品")).toHaveCount(0);
   await expect(page.getByText("剩余取货时间")).toHaveCount(0);
-  await expect(page.getByText(/60 秒|01:00/)).toHaveCount(0);
+  await expect(page.locator(".pickup-time")).toHaveCount(0);
   await expect(page.getByText("出货完成后请取货")).toBeVisible();
 
   await page.evaluate(() => {
@@ -493,7 +493,7 @@ test("runtime matrix can directly load dispensing state", async ({ page }) => {
   await expect(page.getByText("请稍候，商品正在送往取货口")).toBeVisible();
   await expect(page.getByText("请取走您的商品")).toHaveCount(0);
   await expect(page.getByText("剩余取货时间")).toHaveCount(0);
-  await expect(page.getByText(/60 秒|01:00/)).toHaveCount(0);
+  await expect(page.locator(".pickup-time")).toHaveCount(0);
   await expect(page.getByText("取货状态已失效")).toHaveCount(0);
 });
 
@@ -546,7 +546,6 @@ for (const expectation of dispensingStateExpectations) {
     );
     await expect(page.getByText("剩余取货时间")).toHaveCount(0);
     await expect(page.locator(".pickup-time")).toHaveCount(0);
-    await expect(page.getByText(/60 秒|01:00/)).toHaveCount(0);
     await expect(page.locator(".pickup-illustration")).toBeVisible();
     await expect(page.locator(".pickup-notice")).toContainText(
       expectation.noticeTitle,

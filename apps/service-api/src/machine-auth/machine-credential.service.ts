@@ -6,6 +6,7 @@ import {
   encryptCredentialSecret,
   generateMachineSecret,
   hashMachineSecret,
+  isEncryptedCredentialJson,
   type EncryptedCredentialJson,
   verifyMachineSecret,
 } from "./machine-credentials.util";
@@ -45,6 +46,25 @@ export class MachineCredentialService {
     return decryptCredentialSecret(
       encrypted,
       this.config.machineCredentialEncryptionKey,
+    );
+  }
+
+  encryptClaimResponse(value: unknown): EncryptedCredentialJson {
+    return encryptCredentialSecret(
+      JSON.stringify(value),
+      this.config.machineCredentialEncryptionKey,
+    );
+  }
+
+  decryptClaimResponse(value: unknown): unknown {
+    if (!isEncryptedCredentialJson(value)) {
+      throw new Error("Invalid encrypted claim response");
+    }
+    return JSON.parse(
+      decryptCredentialSecret(
+        value,
+        this.config.machineCredentialEncryptionKey,
+      ),
     );
   }
 }

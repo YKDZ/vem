@@ -5,7 +5,7 @@ use std::{
 
 use chrono::{SecondsFormat, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool, Transaction};
+use sqlx::{sqlite::SqlitePoolOptions, Row, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -14,8 +14,8 @@ use vending_core::domain::{
 };
 
 use super::schema::{
-    MIGRATION_V1, MIGRATION_V10, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
-    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4,
+    MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -164,6 +164,31 @@ pub struct CommandLogRecord {
     pub dispensing_started_at: Option<String>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DestructiveCommandRecord {
+    pub message_id: String,
+    pub command_type: String,
+    pub payload_json: serde_json::Value,
+    pub issued_at: String,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub updated_at: String,
+    pub expires_at: String,
+}
+
+/// Binds the local finalization marker to one accepted destructive command.
+/// A command message id is the command generation for the MQTT control plane:
+/// retries reuse it, while a new secure-decommission command must not inherit
+/// acknowledgement from an earlier generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureDecommissionFinalizeMarker {
+    pub message_id: String,
+    pub command_no: String,
+    pub generation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -431,6 +456,25 @@ impl OutboxInput {
         }
     }
 
+    pub fn secure_decommission_result(
+        machine_code: &str,
+        command_no: &str,
+        payload_json: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: format!("{machine_code}:secure-decommission-result:{command_no}"),
+            kind: OutboxKind::RemoteOpResult,
+            transport: OutboxTransport::Mqtt,
+            topic: Some(format!(
+                "vem/machines/{machine_code}/events/secure-decommission-result"
+            )),
+            target_url: None,
+            method: None,
+            payload_json,
+            priority: 200,
+        }
+    }
+
     pub fn heartbeat(machine_code: &str, payload: serde_json::Value) -> Self {
         Self {
             id: format!("{machine_code}:heartbeat:{}", Uuid::new_v4()),
@@ -494,6 +538,12 @@ pub struct LocalStateStore {
 }
 
 impl LocalStateStore {
+    async fn begin_immediate_write_transaction(
+        &self,
+    ) -> Result<Transaction<'static, Sqlite>, StoreError> {
+        Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
+    }
+
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -599,6 +649,12 @@ impl LocalStateStore {
         }
         if current_version < 10 {
             sqlx::query(MIGRATION_V10)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 11 {
+            sqlx::query(MIGRATION_V11)
                 .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -833,6 +889,90 @@ impl LocalStateStore {
         .await?;
 
         row.map(to_command_record).transpose()
+    }
+
+    pub async fn record_destructive_command_received(
+        &self,
+        message_id: &str,
+        command_type: &str,
+        payload_json: &serde_json::Value,
+        issued_at: &str,
+    ) -> Result<DestructiveCommandRecord, StoreError> {
+        let payload_text = serde_json::to_string(payload_json)?;
+        sqlx::query(
+            "INSERT INTO destructive_command_log(message_id,command_type,payload_json,issued_at,status,updated_at,expires_at)
+             VALUES (?1,?2,?3,?4,'received',?5,?6)
+             ON CONFLICT(message_id) DO NOTHING",
+        )
+        .bind(message_id)
+        .bind(command_type)
+        .bind(&payload_text)
+        .bind(issued_at)
+        .bind(now_iso())
+        .bind(now_iso_days(COMMAND_LOG_TTL_DAYS))
+        .execute(&self.pool)
+        .await?;
+        let record = self
+            .destructive_command(message_id)
+            .await?
+            .ok_or_else(|| StoreError::Sqlx(sqlx::Error::RowNotFound))?;
+        if record.command_type != command_type || record.payload_json != *payload_json {
+            return Err(StoreError::IntegrityCheckFailed(
+                "destructive command message id was reused with different payload".to_string(),
+            ));
+        }
+        Ok(record)
+    }
+
+    pub async fn destructive_command(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<DestructiveCommandRecord>, StoreError> {
+        let row: Option<(String, String, String, String, String, Option<String>, String, String)> =
+            sqlx::query_as(
+                "SELECT message_id,command_type,payload_json,issued_at,status,error_message,updated_at,expires_at
+                 FROM destructive_command_log WHERE message_id=?1",
+            )
+            .bind(message_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| {
+            Ok(DestructiveCommandRecord {
+                message_id: row.0,
+                command_type: row.1,
+                payload_json: serde_json::from_str(&row.2)?,
+                issued_at: row.3,
+                status: row.4,
+                error_message: row.5,
+                updated_at: row.6,
+                expires_at: row.7,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn record_destructive_command_result_tx(
+        &self,
+        message_id: &str,
+        success: bool,
+        error_message: Option<&str>,
+        result_event: &OutboxInput,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        insert_outbox_in_tx(&mut tx, result_event).await?;
+        sqlx::query(
+            "UPDATE destructive_command_log
+             SET status=?2,error_message=?3,updated_at=?4
+             WHERE message_id=?1",
+        )
+        .bind(message_id)
+        .bind(if success { "succeeded" } else { "failed" })
+        .bind(error_message)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn list_active_unfinished_commands(
@@ -1090,7 +1230,7 @@ impl LocalStateStore {
     }
 
     pub async fn enqueue_outbox(&self, input: &OutboxInput) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_immediate_write_transaction().await?;
 
         let existing: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM outbox_events WHERE id = ?1")
             .bind(&input.id)
@@ -1106,6 +1246,7 @@ impl LocalStateStore {
             let worst: Option<(String, i64)> = sqlx::query_as(
                 "SELECT id, priority FROM outbox_events
                      WHERE kind != 'stock_movement_upload'
+                       AND (topic IS NULL OR topic NOT LIKE '%/events/secure-decommission-result')
                      ORDER BY priority DESC, created_at ASC LIMIT 1",
             )
             .fetch_optional(tx.as_mut())
@@ -1126,6 +1267,17 @@ impl LocalStateStore {
             }
         }
 
+        insert_outbox_in_tx(&mut tx, input).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn replace_outbox_event(&self, input: &OutboxInput) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM outbox_events WHERE id=?1")
+            .bind(&input.id)
+            .execute(tx.as_mut())
+            .await?;
         insert_outbox_in_tx(&mut tx, input).await?;
         tx.commit().await?;
         Ok(())
@@ -1153,6 +1305,104 @@ impl LocalStateStore {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// Persist the platform acknowledgement before touching external secrets
+    /// or configuration. The result outbox deletion and recovery marker share
+    /// one SQLite commit, so a crash can only leave the result retryable or
+    /// leave a marker that startup recovery can finalize.
+    pub async fn acknowledge_secure_decommission_result_tx(
+        &self,
+        message_id: &str,
+        result_outbox_id: &str,
+        marker: &SecureDecommissionFinalizeMarker,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        let command: Option<(String, String)> = sqlx::query_as(
+            "SELECT command_type,status FROM destructive_command_log WHERE message_id=?1",
+        )
+        .bind(message_id)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        match command {
+            Some((command_type, status))
+                if command_type == "secure-decommission" && status == "succeeded" => {}
+            _ => {
+                return Err(StoreError::IntegrityCheckFailed(
+                    "secure decommission command is not ready for acknowledgement".to_string(),
+                ));
+            }
+        }
+        if marker.message_id != message_id || marker.generation != message_id {
+            return Err(StoreError::IntegrityCheckFailed(
+                "secure decommission acknowledgement marker does not bind the active command generation".to_string(),
+            ));
+        }
+        let existing: Option<(String,)> =
+            sqlx::query_as("SELECT value_json FROM runtime_metadata WHERE key=?1")
+                .bind("secure_decommission_platform_acknowledged_command_no")
+                .fetch_optional(tx.as_mut())
+                .await?;
+        if let Some((value_json,)) = existing {
+            let recorded: SecureDecommissionFinalizeMarker = serde_json::from_str(&value_json)?;
+            if recorded != *marker {
+                return Err(StoreError::IntegrityCheckFailed(
+                    "secure decommission acknowledgement conflicts with durable marker".to_string(),
+                ));
+            }
+            tx.commit().await?;
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM outbox_events WHERE id=?1")
+            .bind(result_outbox_id)
+            .execute(tx.as_mut())
+            .await?;
+        sqlx::query("INSERT INTO runtime_metadata(key,value_json,updated_at) VALUES (?1,?2,?3)")
+            .bind("secure_decommission_platform_acknowledged_command_no")
+            .bind(serde_json::to_string(marker)?)
+            .bind(now_iso())
+            .execute(tx.as_mut())
+            .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Remove the matched finalization generation as one SQLite commit. External
+    /// secret/profile cleanup happens before this point; a crash can therefore
+    /// only leave both markers for idempotent recovery or neither marker.
+    pub async fn clear_secure_decommission_finalization_markers_tx(
+        &self,
+        marker: &SecureDecommissionFinalizeMarker,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        for key in [
+            "secure_decommission_pending_finalize",
+            "secure_decommission_platform_acknowledged_command_no",
+        ] {
+            let value: Option<(String,)> =
+                sqlx::query_as("SELECT value_json FROM runtime_metadata WHERE key=?1")
+                    .bind(key)
+                    .fetch_optional(tx.as_mut())
+                    .await?;
+            let Some((value_json,)) = value else {
+                return Err(StoreError::IntegrityCheckFailed(format!(
+                    "secure decommission finalization marker is missing: {key}"
+                )));
+            };
+            let recorded: SecureDecommissionFinalizeMarker = serde_json::from_str(&value_json)?;
+            if recorded != *marker {
+                return Err(StoreError::IntegrityCheckFailed(format!(
+                    "secure decommission finalization marker does not match active generation: {key}"
+                )));
+            }
+        }
+        sqlx::query(
+            "DELETE FROM runtime_metadata WHERE key IN ('secure_decommission_pending_finalize','secure_decommission_platform_acknowledged_command_no')",
+        )
+        .execute(tx.as_mut())
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1997,7 +2247,7 @@ impl LocalStateStore {
             ));
         }
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_immediate_write_transaction().await?;
         let planogram: Option<(i64,)> = sqlx::query_as(
             "SELECT active FROM machine_planogram_versions WHERE planogram_version = ?1",
         )
@@ -2904,7 +3154,10 @@ impl LocalStateStore {
 
     pub async fn prune_outbox(&self) -> Result<(u64, u64), StoreError> {
         let deleted_expired = sqlx::query(
-            "DELETE FROM outbox_events WHERE expires_at < ?1 AND kind != 'stock_movement_upload'",
+            "DELETE FROM outbox_events
+             WHERE expires_at < ?1
+               AND kind != 'stock_movement_upload'
+               AND (topic IS NULL OR topic NOT LIKE '%/events/secure-decommission-result')",
         )
         .bind(now_iso())
         .execute(&self.pool)
@@ -2916,6 +3169,7 @@ impl LocalStateStore {
              WHERE id IN (
                SELECT id FROM outbox_events
                WHERE kind != 'stock_movement_upload'
+                 AND (topic IS NULL OR topic NOT LIKE '%/events/secure-decommission-result')
                ORDER BY priority ASC, created_at DESC
                LIMIT -1 OFFSET ?1
              )",
@@ -4314,8 +4568,11 @@ fn now_iso_days(days: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, time::Duration};
+
     use serde_json::json;
     use tempfile::TempDir;
+    use tokio::sync::Barrier;
 
     use super::*;
 
@@ -4351,6 +4608,59 @@ mod tests {
             })
             .await
             .expect("planogram");
+    }
+
+    #[tokio::test]
+    async fn physical_stock_attestation_waits_for_conflicting_writer_before_reading_snapshot() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .put_metadata("write-race", &"before")
+            .await
+            .expect("seed metadata");
+
+        let mut blocker = store
+            .pool()
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("hold write lock");
+        sqlx::query("UPDATE runtime_metadata SET value_json = ?2, updated_at = ?3 WHERE key = ?1")
+            .bind("write-race")
+            .bind("\"after\"")
+            .bind(now_iso())
+            .execute(&mut *blocker)
+            .await
+            .expect("change metadata while lock is held");
+
+        let contender = store.record_physical_stock_attestation(PhysicalStockAttestationInput {
+            attestation_id: "ATT-WRITE-RACE".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            operator_id: "operator-1".to_string(),
+            slots: vec![PhysicalStockAttestationSlotInput {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                sku: "WATER-001".to_string(),
+                quantity: 3,
+                enabled: true,
+            }],
+        });
+        tokio::pin!(contender);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), contender.as_mut())
+                .await
+                .is_err(),
+            "the contender must wait instead of reading a stale snapshot"
+        );
+
+        blocker.commit().await.expect("release write lock");
+        let sale_view = tokio::time::timeout(Duration::from_secs(1), contender)
+            .await
+            .expect("contender should acquire lock after release")
+            .expect("record physical stock attestation");
+        assert_eq!(sale_view.items[0].physical_stock, 3);
     }
 
     fn dispense_command_for_slot(command_no: &str) -> DispenseCommandPayload {
@@ -6302,6 +6612,175 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn outbox_cleanup_does_not_delete_unacknowledged_secure_decommission_result() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let event = OutboxInput::secure_decommission_result(
+            "MACHINE-1",
+            "DCOM-DURABLE",
+            json!({"commandNo":"DCOM-DURABLE","success":true}),
+        );
+        store.enqueue_outbox(&event).await.expect("seed result");
+        sqlx::query(
+            "UPDATE outbox_events SET expires_at = '2026-05-01T00:00:00.000Z' WHERE id = ?1",
+        )
+        .bind(&event.id)
+        .execute(store.pool())
+        .await
+        .expect("expire outbox");
+
+        let (deleted_expired, _) = store.prune_outbox().await.expect("prune outbox");
+
+        assert_eq!(deleted_expired, 0);
+        assert!(store
+            .outbox_record(&event.id)
+            .await
+            .expect("outbox")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_ack_marker_and_result_removal_are_atomic_across_restart() {
+        let temp = TempDir::new().expect("temp");
+        let path = temp.path().join("state.db");
+        let store = LocalStateStore::open(&path).await.expect("open");
+        let message_id = "secure-decommission:DCOM-ATOMIC";
+        let command_payload = json!({
+            "commandNo": "DCOM-ATOMIC",
+            "operation": "secure-decommission"
+        });
+        store
+            .record_destructive_command_received(
+                message_id,
+                "secure-decommission",
+                &command_payload,
+                "2026-07-11T00:00:00.000Z",
+            )
+            .await
+            .expect("record command");
+        let event = OutboxInput::secure_decommission_result(
+            "MACHINE-1",
+            "DCOM-ATOMIC",
+            json!({"commandNo":"DCOM-ATOMIC","success":true}),
+        );
+        let marker = SecureDecommissionFinalizeMarker {
+            message_id: message_id.to_string(),
+            command_no: "DCOM-ATOMIC".to_string(),
+            generation: message_id.to_string(),
+        };
+        store
+            .record_destructive_command_result_tx(message_id, true, None, &event)
+            .await
+            .expect("record successful result");
+
+        let trigger = "fail_secure_decommission_ack_marker";
+        sqlx::query(&format!(
+            "CREATE TRIGGER {trigger} BEFORE INSERT ON runtime_metadata
+             WHEN NEW.key = 'secure_decommission_platform_acknowledged_command_no'
+             BEGIN SELECT RAISE(ABORT, 'injected durable marker failure'); END;"
+        ))
+        .execute(store.pool())
+        .await
+        .expect("install fault injection");
+        assert!(store
+            .acknowledge_secure_decommission_result_tx(message_id, &event.id, &marker)
+            .await
+            .is_err());
+        assert!(store
+            .outbox_record(&event.id)
+            .await
+            .expect("outbox")
+            .is_some());
+        assert_eq!(
+            store
+                .get_metadata::<SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_platform_acknowledged_command_no",
+                )
+                .await
+                .expect("marker"),
+            None
+        );
+        sqlx::query(&format!("DROP TRIGGER {trigger}"))
+            .execute(store.pool())
+            .await
+            .expect("remove fault injection");
+        assert!(store
+            .acknowledge_secure_decommission_result_tx(message_id, &event.id, &marker)
+            .await
+            .expect("atomic acknowledgement"));
+        drop(store);
+
+        let reopened = LocalStateStore::open(&path).await.expect("restart state");
+        assert!(reopened
+            .outbox_record(&event.id)
+            .await
+            .expect("outbox")
+            .is_none());
+        assert_eq!(
+            reopened
+                .get_metadata::<SecureDecommissionFinalizeMarker>(
+                    "secure_decommission_platform_acknowledged_command_no",
+                )
+                .await
+                .expect("marker"),
+            Some(marker)
+        );
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_finalization_marker_deletion_is_atomic() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let marker = SecureDecommissionFinalizeMarker {
+            message_id: "secure-decommission:DCOM-FINALIZE-ATOMIC".to_string(),
+            command_no: "DCOM-FINALIZE-ATOMIC".to_string(),
+            generation: "secure-decommission:DCOM-FINALIZE-ATOMIC".to_string(),
+        };
+        for key in [
+            "secure_decommission_pending_finalize",
+            "secure_decommission_platform_acknowledged_command_no",
+        ] {
+            store.put_metadata(key, &marker).await.expect("seed marker");
+        }
+        sqlx::query(
+            "CREATE TRIGGER fail_secure_decommission_finalization_delete BEFORE DELETE ON runtime_metadata
+             WHEN OLD.key = 'secure_decommission_platform_acknowledged_command_no'
+             BEGIN SELECT RAISE(ABORT, 'injected finalization delete failure'); END;",
+        )
+        .execute(store.pool())
+        .await
+        .expect("install fault injection");
+        assert!(store
+            .clear_secure_decommission_finalization_markers_tx(&marker)
+            .await
+            .is_err());
+        for key in [
+            "secure_decommission_pending_finalize",
+            "secure_decommission_platform_acknowledged_command_no",
+        ] {
+            assert_eq!(
+                store
+                    .get_metadata::<SecureDecommissionFinalizeMarker>(key)
+                    .await
+                    .expect("marker"),
+                Some(marker.clone()),
+            );
+        }
+        sqlx::query("DROP TRIGGER fail_secure_decommission_finalization_delete")
+            .execute(store.pool())
+            .await
+            .expect("remove fault injection");
+        store
+            .clear_secure_decommission_finalization_markers_tx(&marker)
+            .await
+            .expect("atomic marker deletion");
+    }
+
+    #[tokio::test]
     async fn outbox_capacity_does_not_evict_stock_movement_uploads() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
@@ -6372,6 +6851,92 @@ mod tests {
             .expect("exists");
         assert_eq!(after.attempt_count, 1);
         assert!(after.last_error.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outbox_enqueue_waits_for_immediate_writer_then_dedupes_and_enforces_capacity() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let duplicate = OutboxInput::stock_movement_upload(
+            "MOVE-CONTENTION-DUPLICATE",
+            "https://platform.example/api/machine-stock-movements".to_string(),
+            json!({"movementId":"MOVE-CONTENTION-DUPLICATE"}),
+        );
+        store
+            .enqueue_outbox(&duplicate)
+            .await
+            .expect("seed duplicate");
+        for index in 1..OUTBOX_MAX_EVENTS {
+            let event = OutboxInput::stock_movement_upload(
+                &format!("MOVE-CONTENTION-{index}"),
+                "https://platform.example/api/machine-stock-movements".to_string(),
+                json!({"movementId": format!("MOVE-CONTENTION-{index}")}),
+            );
+            store.enqueue_outbox(&event).await.expect("fill outbox");
+        }
+        assert_eq!(
+            store.outbox_size().await.expect("full outbox size"),
+            OUTBOX_MAX_EVENTS as u64
+        );
+
+        let blocker = store
+            .pool()
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("hold immediate write lock");
+        let barrier = Arc::new(Barrier::new(3));
+
+        let duplicate_store = store.clone();
+        let duplicate_input = duplicate.clone();
+        let duplicate_barrier = Arc::clone(&barrier);
+        let duplicate_contender = tokio::spawn(async move {
+            duplicate_barrier.wait().await;
+            duplicate_store.enqueue_outbox(&duplicate_input).await
+        });
+
+        let capacity_store = store.clone();
+        let capacity_barrier = Arc::clone(&barrier);
+        let capacity_contender = tokio::spawn(async move {
+            capacity_barrier.wait().await;
+            capacity_store
+                .enqueue_outbox(&OutboxInput::heartbeat(
+                    "MACHINE-1",
+                    json!({"status":"contended"}),
+                ))
+                .await
+        });
+
+        barrier.wait().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !duplicate_contender.is_finished() && !capacity_contender.is_finished(),
+            "concurrent enqueue contenders must wait for the immediate writer"
+        );
+
+        blocker
+            .commit()
+            .await
+            .expect("release immediate write lock");
+        duplicate_contender
+            .await
+            .expect("join duplicate contender")
+            .expect("duplicate enqueue");
+        assert!(matches!(
+            capacity_contender.await.expect("join capacity contender"),
+            Err(StoreError::OutboxCapacity)
+        ));
+
+        assert_eq!(
+            store.outbox_size().await.expect("outbox size"),
+            OUTBOX_MAX_EVENTS as u64
+        );
+        assert!(store
+            .outbox_record(&duplicate.id)
+            .await
+            .expect("duplicate record")
+            .is_some());
     }
 
     #[tokio::test]

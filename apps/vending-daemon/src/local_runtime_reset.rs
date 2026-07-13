@@ -2,6 +2,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::secret::{
+    ProtectedLocalSecretStore, SecretStore, MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+    MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT, MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+};
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FactoryPreparationMode {
@@ -154,6 +159,16 @@ async fn inspect_local_runtime(
             "factory_manifest",
             &layout.factory_dir,
             "factory manifest directory is not local machine state",
+        ),
+        item(
+            "machine_maintenance_identity",
+            &layout.runtime_secrets_dir.join("machine_wireguard_private_key.dpapi"),
+            "the DPAPI-protected Machine Maintenance Identity key is preserved across local runtime reset",
+        ),
+        text_item(
+            "machine_maintenance_tunnel",
+            r"C:/Program Files/WireGuard/Data/Configurations/VEM-Maintenance.conf.dpapi",
+            "the stable VEM-Maintenance tunnel configuration is outside local runtime reset",
         )],
         skipped: vec![
             item(
@@ -266,6 +281,8 @@ async fn path_exists(path: &Path) -> Result<bool, FactoryPreparationError> {
 }
 
 async fn clear_local_runtime(layout: &RuntimeLayout) -> Result<(), FactoryPreparationError> {
+    let protected_secrets = ProtectedLocalSecretStore::new(layout.data_dir.clone());
+    let preserved_secrets = read_maintenance_secrets(&protected_secrets).await?;
     for path in [
         &layout.data_dir,
         &layout.provisioning_dir,
@@ -275,7 +292,37 @@ async fn clear_local_runtime(layout: &RuntimeLayout) -> Result<(), FactoryPrepar
     ] {
         remove_path_if_exists(path).await?;
     }
+    for (account, value) in preserved_secrets {
+        protected_secrets
+            .write_secret(account, &value)
+            .await
+            .map_err(|error| {
+                FactoryPreparationError::Io(format!(
+                    "restore preserved maintenance identity failed: {error}"
+                ))
+            })?;
+    }
     Ok(())
+}
+
+async fn read_maintenance_secrets(
+    secrets: &ProtectedLocalSecretStore,
+) -> Result<Vec<(&'static str, String)>, FactoryPreparationError> {
+    let mut preserved = Vec::new();
+    for account in [
+        MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+        MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
+        MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+    ] {
+        if let Some(value) = secrets.read_secret(account).await.map_err(|error| {
+            FactoryPreparationError::Io(format!(
+                "read preserved maintenance identity failed: {error}"
+            ))
+        })? {
+            preserved.push((account, value));
+        }
+    }
+    Ok(preserved)
 }
 
 async fn remove_path_if_exists(path: &Path) -> Result<(), FactoryPreparationError> {

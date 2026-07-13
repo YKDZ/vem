@@ -46,7 +46,6 @@ param(
   [string]$RunAsUser = "Admin",
   [string]$AutoLogonDomain = $env:COMPUTERNAME,
   [string]$KioskPassword = $env:VEM_KIOSK_PASSWORD,
-  [string]$MaintenancePassword = $env:VEM_MAINTENANCE_PASSWORD,
 
   [string]$BringupDir = "C:\VEM\bringup",
   [string]$DaemonExe = "C:\VEM\bringup\vending-daemon.exe",
@@ -66,6 +65,12 @@ param(
   [switch]$ConfigureRemoteMaintenanceAccess,
   [switch]$ConfigureControlledMaintenanceIngress,
   [string[]]$MaintenanceIngressSourceAllowlist,
+  [string[]]$MaintenanceRunnerSourceAllowlist,
+  [string[]]$MaintenanceMaintainerSourceAllowlist,
+  [string]$MaintenanceWireGuardInterfaceAlias = "VEM-Maintenance",
+  [string]$MaintenanceWireGuardListenAddress,
+  [ValidateSet("production", "testbed")][string]$FactoryProfile = "production",
+  [string]$MaintenanceSshCaPublicKeyPath = "C:\ProgramData\VEM\factory\maintenance-ca.pub",
   [switch]$EnableMaintenanceDebugTask,
   [string]$SshdConfigPath = "C:\ProgramData\ssh\sshd_config",
   [switch]$UseKioskAccount,
@@ -179,12 +184,11 @@ function Ensure-MachineUiDebugLauncher {
   Set-Content -LiteralPath $LauncherPath -Value $content -Encoding ASCII
 }
 
-function Ensure-LocalAccount {
+function Ensure-KioskAccount {
   param(
     [string]$User,
     [string]$Password,
-    [string]$Description,
-    [bool]$Administrator
+    [string]$Description
   )
 
   $existing = Get-LocalUser -Name $User -ErrorAction SilentlyContinue
@@ -203,14 +207,10 @@ function Ensure-LocalAccount {
     }
   }
 
-  if ($Administrator) {
-    Add-LocalGroupMember -Group "Administrators" -Member $User -ErrorAction SilentlyContinue
-    Remove-LocalGroupMember -Group "Users" -Member $User -ErrorAction SilentlyContinue
-  } else {
-    Add-LocalGroupMember -Group "Users" -Member $User -ErrorAction SilentlyContinue
-    Remove-LocalGroupMember -Group "Administrators" -Member $User -ErrorAction SilentlyContinue
-    Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $User -ErrorAction SilentlyContinue
-  }
+  Add-LocalGroupMember -Group "Users" -Member $User -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group "Administrators" -Member $User -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $User -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group "Remote Management Users" -Member $User -ErrorAction SilentlyContinue
 }
 
 function Ensure-LocalGroupExists {
@@ -227,13 +227,53 @@ function Test-LocalUserInGroup {
     [string]$Group
   )
 
-  try {
-    $members = Get-LocalGroupMember -Group $Group -ErrorAction Stop
-    return $null -ne ($members | Where-Object {
-        $_.Name -eq "$env:COMPUTERNAME\$User" -or $_.Name -eq $User
-      } | Select-Object -First 1)
-  } catch {
-    return $false
+  $pending = [System.Collections.Generic.Queue[string]]::new()
+  $visited = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $pending.Enqueue($Group)
+  while ($pending.Count -gt 0) {
+    $currentGroup = $pending.Dequeue()
+    if (-not $visited.Add($currentGroup)) { continue }
+    try {
+      $members = @(Get-LocalGroupMember -Group $currentGroup -ErrorAction Stop)
+    } catch {
+      continue
+    }
+    foreach ($member in $members) {
+      $name = [string]$member.Name
+      $leafName = ($name -split "\\")[-1]
+      if ($leafName.Equals($User, [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+      }
+      if ([string]$member.ObjectClass -eq "Group" -and -not [string]::IsNullOrWhiteSpace($leafName)) {
+        $pending.Enqueue($leafName)
+      }
+    }
+  }
+  return $false
+}
+
+function Assert-ExistingMaintenanceAdministrator {
+  param([string]$User)
+
+  $account = Get-LocalUser -Name $User -ErrorAction SilentlyContinue
+  if ($null -eq $account) {
+    throw "profile maintenance administrator must already exist; factory setup will not create it: $User"
+  }
+  if ($account.PSObject.Properties.Name -contains "Enabled" -and -not [bool]$account.Enabled) {
+    throw "profile maintenance administrator must be enabled: $User"
+  }
+  if (-not (Test-LocalUserInGroup -User $User -Group "Administrators")) {
+    throw "profile maintenance account must already be an administrator: $User"
+  }
+}
+
+function Assert-KioskRemoteAdministrationDenied {
+  param([string]$User)
+
+  $boundaries = @("Administrators", "OpenSSH Users", "Remote Desktop Users", "Remote Management Users")
+  $granted = @($boundaries | Where-Object { Test-LocalUserInGroup -User $User -Group $_ })
+  if ($granted.Count -gt 0) {
+    throw "kiosk account has effective nested remote-administration membership: $($granted -join ', ')"
   }
 }
 
@@ -252,26 +292,102 @@ function Assert-RemoteMaintenanceAccountSeparation {
 }
 
 function Ensure-OpenSshServer {
-  $serverCapability = Get-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" -ErrorAction SilentlyContinue
-  if ($null -ne $serverCapability -and $serverCapability.State -ne "Installed") {
-    Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" | Out-Null
-  }
-
   $sshd = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
   if ($null -eq $sshd) {
-    throw "OpenSSH Server service sshd is not available after installation attempt"
+    throw "OpenSSH Server service sshd is not available after pinned local installation"
   }
 
   Set-Service -Name "sshd" -StartupType Automatic
-  if ($sshd.Status -ne "Running") {
-    Start-Service -Name "sshd"
+  if ($sshd.Status -eq "Running") {
+    Stop-Service -Name "sshd" -Force
+  }
+}
+
+function Get-OpenSshServerExePath {
+  foreach ($path in @(
+      "C:\Program Files\OpenSSH\sshd.exe",
+      "C:\Windows\System32\OpenSSH\sshd.exe"
+    )) {
+    if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
+  }
+  $command = Get-Command "sshd" -ErrorAction SilentlyContinue
+  if ($null -ne $command) { return [string]$command.Source }
+  return $null
+}
+
+function Test-SshdConfiguration {
+  param(
+    [Parameter(Mandatory = $true)][string]$SshdExePath,
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$MaintenanceUser,
+    [Parameter(Mandatory = $true)][string]$SourceAddress
+  )
+
+  $syntaxOutput = @(& $SshdExePath -t -f $ConfigPath 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    throw "sshd -t rejected managed configuration: $($syntaxOutput -join '; ')"
+  }
+  $effectiveOutput = @(& $SshdExePath -T -f $ConfigPath -C "user=$($MaintenanceUser.ToLowerInvariant()),host=localhost,addr=$SourceAddress" 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    throw "sshd -T rejected managed configuration: $($effectiveOutput -join '; ')"
+  }
+  $values = @{}
+  foreach ($line in $effectiveOutput) {
+    $parts = ([string]$line).Trim() -split "\s+", 2
+    if ($parts.Count -eq 2 -and -not $values.ContainsKey($parts[0])) {
+      $values[$parts[0]] = $parts[1]
+    }
+  }
+  return [ordered]@{
+    syntaxValid = $true
+    listenAddress = [string]$values.listenaddress
+    trustedUserCaKeys = [string]$values.trustedusercakeys
+    authorizedKeysFile = [string]$values.authorizedkeysfile
+    passwordAuthentication = [string]$values.passwordauthentication
+    kbdInteractiveAuthentication = [string]$values.kbdinteractiveauthentication
+    authenticationMethods = [string]$values.authenticationmethods
+    allowUsers = [string]$values.allowusers
+    denyUsers = [string]$values.denyusers
+  }
+}
+
+function Assert-WireGuardListenAddress {
+  param(
+    [string]$InterfaceAlias,
+    [string]$ListenAddress
+  )
+
+  $address = Get-NetIPAddress -InterfaceAlias $InterfaceAlias -IPAddress $ListenAddress -ErrorAction SilentlyContinue
+  if ($null -eq $address) {
+    throw "WireGuard interface $InterfaceAlias does not own required SSH ListenAddress $ListenAddress"
+  }
+}
+
+function Assert-ProfileMaintenanceCa {
+  param(
+    [string]$Path,
+    [string]$Profile
+  )
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "selected profile CA public key is missing: $Path"
+  }
+  $keyLines = @([System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8) | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 -and -not $_.StartsWith("#") })
+  if ($keyLines.Count -ne 1 -or $keyLines[0] -notmatch "^ssh-ed25519\s+[A-Za-z0-9+/=]+\s+vem-maintenance-ca:(production|testbed)$") {
+    throw "Maintenance SSH CA must contain exactly one profile-bound Ed25519 public key"
+  }
+  if ($matches[1] -cne $Profile) {
+    throw "Maintenance SSH CA profile does not match FactoryProfile $Profile"
   }
 }
 
 function Ensure-SshdConfigDenyKioskUser {
   param(
     [string]$ConfigPath,
-    [string]$KioskUser
+    [string]$KioskUser,
+    [string]$MaintenanceUser,
+    [string]$CaPath,
+    [string]$ListenAddress
   )
 
   Ensure-Directory -Path (Split-Path -Parent $ConfigPath)
@@ -283,14 +399,46 @@ function Ensure-SshdConfigDenyKioskUser {
 
   $startMarker = "# BEGIN VEM controlled remote maintenance access"
   $endMarker = "# END VEM controlled remote maintenance access"
+  if ([string]::IsNullOrWhiteSpace($ListenAddress)) {
+    throw "WireGuard tunnel ListenAddress is required"
+  }
+  $parsedAddress = [System.Net.IPAddress]::None
+  if (-not [System.Net.IPAddress]::TryParse($ListenAddress, [ref]$parsedAddress)) {
+    throw "WireGuard tunnel ListenAddress must be an IP address: $ListenAddress"
+  }
+
   $managedBlock = @(
     $startMarker,
+    "ListenAddress $($parsedAddress.IPAddressToString)",
+    "TrustedUserCAKeys $CaPath",
+    "PubkeyAuthentication yes",
+    "PasswordAuthentication no",
+    "KbdInteractiveAuthentication no",
+    "AuthenticationMethods publickey",
+    "AuthorizedKeysFile none",
+    "AllowUsers $($MaintenanceUser.ToLowerInvariant())",
     "DenyUsers $($KioskUser.ToLowerInvariant())",
+    "PermitEmptyPasswords no",
+    "# profile CA: $FactoryProfile",
+    "# SYSTEM SSH entrypoint: not configured; elevate explicitly from the administrator session",
     $endMarker
   )
 
   $filtered = [System.Collections.Generic.List[string]]::new()
   $insideManagedBlock = $false
+  $insideMatchBlock = $false
+  $controlledDirectives = @(
+    "listenaddress",
+    "trustedusercakeys",
+    "pubkeyauthentication",
+    "passwordauthentication",
+    "kbdinteractiveauthentication",
+    "challengeresponseauthentication",
+    "authenticationmethods",
+    "allowusers",
+    "denyusers",
+    "permitemptypasswords"
+  )
   foreach ($line in $existing) {
     if ($line -eq $startMarker) {
       $insideManagedBlock = $true
@@ -300,30 +448,70 @@ function Ensure-SshdConfigDenyKioskUser {
       $insideManagedBlock = $false
       continue
     }
-    if (-not $insideManagedBlock) {
-      $filtered.Add($line) | Out-Null
+    if ($insideManagedBlock) {
+      continue
     }
-  }
-
-  if ($filtered.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($filtered[$filtered.Count - 1])) {
-    $filtered.Add("") | Out-Null
-  }
-  foreach ($line in $managedBlock) {
+    $trimmed = $line.Trim()
+    if ($trimmed -match "(?i)^Match(?:\s|$)") {
+      $insideMatchBlock = $true
+      continue
+    }
+    if ($insideMatchBlock) {
+      continue
+    }
+    if ($trimmed.Length -gt 0 -and -not $trimmed.StartsWith("#")) {
+      $directive = ($trimmed -split "\s+", 2)[0].ToLowerInvariant()
+      if ($controlledDirectives -contains $directive) {
+        throw "conflicting earlier sshd directive must be removed before VEM policy is applied: $trimmed"
+      }
+      if ($directive -eq "authorizedkeysfile") {
+        continue
+      }
+    }
     $filtered.Add($line) | Out-Null
   }
 
-  Set-Content -LiteralPath $ConfigPath -Value $filtered -Encoding ASCII
+  $canonical = [System.Collections.Generic.List[string]]::new()
+  foreach ($line in $managedBlock) {
+    $canonical.Add($line) | Out-Null
+  }
+  if ($filtered.Count -gt 0) {
+    $canonical.Add("") | Out-Null
+    foreach ($line in $filtered) {
+      $canonical.Add($line) | Out-Null
+    }
+  }
+
+  Set-Content -LiteralPath $ConfigPath -Value $canonical -Encoding ASCII
 }
 
-function Disable-DefaultOpenSshInboundFirewall {
-  $openSshInboundRules = Get-NetFirewallRule -ErrorAction SilentlyContinue |
-    Where-Object {
-      $_.Direction -eq "Inbound" -and
-      $_.DisplayName -like "OpenSSH*" -and
-      $_.DisplayName -ne "VEM Controlled Maintenance SSH"
+function Test-FirewallLocalPortIncludesSsh {
+  param($LocalPort)
+
+  foreach ($entry in @($LocalPort)) {
+    foreach ($candidate in ([string]$entry -split ",")) {
+      $value = $candidate.Trim()
+      if ($value -match "^(?i:Any|\*)$" -or $value -eq "22") { return $true }
+      if ($value -match "^(\d+)-(\d+)$" -and [int]$matches[1] -le 22 -and [int]$matches[2] -ge 22) { return $true }
     }
-  if ($null -ne $openSshInboundRules) {
-    $openSshInboundRules | Disable-NetFirewallRule
+  }
+  return $false
+}
+
+function Get-EnabledInboundSshFirewallRules {
+  $rules = @(Get-NetFirewallRule -ErrorAction SilentlyContinue)
+  foreach ($rule in $rules) {
+    if ([string]$rule.Direction -ne "Inbound" -or [string]$rule.Enabled -ne "True" -or [string]$rule.Action -ne "Allow") {
+      continue
+    }
+    $filters = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue)
+    foreach ($filter in $filters) {
+      $protocol = [string]$filter.Protocol
+      if (($protocol -eq "TCP" -or $protocol -eq "6" -or $protocol -eq "Any") -and (Test-FirewallLocalPortIncludesSsh -LocalPort $filter.LocalPort)) {
+        $rule
+        break
+      }
+    }
   }
 }
 
@@ -382,14 +570,14 @@ function Assert-ControlledMaintenanceIngressSourceAllowlist {
       if ($ip.Equals([System.Net.IPAddress]::Any) -or $ip.Equals([System.Net.IPAddress]::IPv6Any)) {
         throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
       }
-      $requiredPrefix = if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+      $maximumPrefix = if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
       if ($null -ne $prefixLength) {
-        if ($prefixLength -ne $requiredPrefix) {
+        if ($prefixLength -le 0 -or $prefixLength -gt $maximumPrefix) {
           throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
         }
       }
 
-      $normalized = [string]$ip.IPAddressToString
+      $normalized = if ($null -ne $prefixLength) { "$($ip.IPAddressToString)/$prefixLength" } else { [string]$ip.IPAddressToString }
       if (-not $validated.Contains($normalized)) {
         $validated.Add($normalized) | Out-Null
       }
@@ -404,22 +592,15 @@ function Assert-ControlledMaintenanceIngressSourceAllowlist {
 }
 
 function Ensure-ControlledMaintenanceIngressFirewall {
-  param([string[]]$SourceAllowlist)
+  param(
+    [string[]]$SourceAllowlist,
+    [string]$InterfaceAlias
+  )
 
   $ruleName = "VEM Controlled Maintenance SSH"
   $validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $SourceAllowlist
 
-  Disable-DefaultOpenSshInboundFirewall
-
-  Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
-    Remove-NetFirewallRule
-  Get-NetFirewallRule -ErrorAction SilentlyContinue |
-    Where-Object {
-      $_.Direction -eq "Inbound" -and
-      $_.DisplayName -like "VEM * SSH" -and
-      $_.DisplayName -ne $ruleName
-    } |
-    Remove-NetFirewallRule
+  Get-EnabledInboundSshFirewallRules | Remove-NetFirewallRule
 
   New-NetFirewallRule `
     -DisplayName $ruleName `
@@ -428,39 +609,13 @@ function Ensure-ControlledMaintenanceIngressFirewall {
     -Protocol TCP `
     -LocalPort 22 `
     -RemoteAddress $validatedSources `
+    -InterfaceAlias $InterfaceAlias `
     -Profile Any `
-    -Description "VEM-managed SSH ingress scoped to explicit Controlled Maintenance Ingress sources." | Out-Null
+    -Description "VEM-managed SSH ingress scoped to WireGuard runner and maintainer role pools." | Out-Null
 }
 
 function Reject-ControlledMaintenanceIngressMigration {
   throw "ConfigureRemoteMaintenanceAccess has been removed. Use -ConfigureControlledMaintenanceIngress with -MaintenanceIngressSourceAllowlist for transport-neutral Controlled Maintenance Ingress."
-}
-
-function Ensure-LocalMaintenanceAccess {
-  param(
-    [string]$MaintenanceUser,
-    [string]$KioskUser,
-    [string]$SshdConfigPath
-  )
-
-  if (-not (Get-LocalUser -Name $MaintenanceUser -ErrorAction SilentlyContinue)) {
-    throw "maintenance account not found: $MaintenanceUser. Configure it before enabling local maintenance access."
-  }
-  if (-not (Get-LocalUser -Name $KioskUser -ErrorAction SilentlyContinue)) {
-    throw "kiosk account not found: $KioskUser. Configure it before enabling local maintenance access."
-  }
-  Assert-RemoteMaintenanceAccountSeparation -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser
-
-  Ensure-OpenSshServer
-  Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser
-  Disable-DefaultOpenSshInboundFirewall
-  Ensure-LocalGroupExists -Group "OpenSSH Users"
-  Add-LocalGroupMember -Group "OpenSSH Users" -Member $MaintenanceUser -ErrorAction SilentlyContinue
-  Remove-LocalGroupMember -Group "OpenSSH Users" -Member $KioskUser -ErrorAction SilentlyContinue
-  Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $KioskUser -ErrorAction SilentlyContinue
-  Restart-Service -Name "sshd" -Force
-
-  Write-Host "Configured local OpenSSH maintenance account isolation for $MaintenanceUser; $KioskUser is excluded. No remote transport client or VEM inbound SSH rule was configured."
 }
 
 function Ensure-ControlledMaintenanceIngress {
@@ -468,10 +623,28 @@ function Ensure-ControlledMaintenanceIngress {
     [string]$MaintenanceUser,
     [string]$KioskUser,
     [string]$SshdConfigPath,
-    [string[]]$SourceAllowlist
+    [string[]]$SourceAllowlist,
+    [string[]]$RunnerSourceAllowlist,
+    [string[]]$MaintainerSourceAllowlist,
+    [string]$InterfaceAlias,
+    [string]$CaPath,
+    [string]$ListenAddress
   )
 
-  $validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $SourceAllowlist
+  if (@($RunnerSourceAllowlist).Count -eq 0 -or @($MaintainerSourceAllowlist).Count -eq 0) {
+    throw "Controlled Maintenance Ingress requires explicit runner and maintainer role pools"
+  }
+  if ($FactoryProfile -eq "production" -and $MaintenanceUser -cne "Admin") {
+    throw "production profile permits only the Admin maintenance administrator"
+  }
+  if ($FactoryProfile -eq "production" -and $null -ne (Get-LocalUser -Name "YKDZ" -ErrorAction SilentlyContinue)) {
+    throw "production profile rejects a live YKDZ testbed account"
+  }
+  if ($FactoryProfile -eq "testbed" -and $MaintenanceUser -cne "YKDZ") {
+    throw "testbed profile permits only the YKDZ maintenance administrator"
+  }
+  $roleSources = @($RunnerSourceAllowlist) + @($MaintainerSourceAllowlist)
+  $validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $roleSources
 
   if (-not (Get-LocalUser -Name $MaintenanceUser -ErrorAction SilentlyContinue)) {
     throw "maintenance account not found: $MaintenanceUser. Configure it before enabling Controlled Maintenance Ingress."
@@ -480,18 +653,28 @@ function Ensure-ControlledMaintenanceIngress {
     throw "kiosk account not found: $KioskUser. Configure it before enabling Controlled Maintenance Ingress."
   }
   Assert-RemoteMaintenanceAccountSeparation -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser
+  Assert-WireGuardListenAddress -InterfaceAlias $InterfaceAlias -ListenAddress $ListenAddress
 
+  Assert-ProfileMaintenanceCa -Path $CaPath -Profile $FactoryProfile
   Ensure-OpenSshServer
-  Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser
-  Ensure-ControlledMaintenanceIngressFirewall -SourceAllowlist $validatedSources
+  Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser -MaintenanceUser $MaintenanceUser -CaPath $CaPath -ListenAddress $ListenAddress
+  $sshdExePath = Get-OpenSshServerExePath
+  if ([string]::IsNullOrWhiteSpace($sshdExePath)) {
+    throw "OpenSSH sshd executable is unavailable after pinned local installation"
+  }
+  $sshdProbeSource = ([string]$validatedSources[0] -split "/", 2)[0]
+  Test-SshdConfiguration -SshdExePath $sshdExePath -ConfigPath $SshdConfigPath -MaintenanceUser $MaintenanceUser -SourceAddress $sshdProbeSource | Out-Null
+  Ensure-ControlledMaintenanceIngressFirewall -SourceAllowlist $validatedSources -InterfaceAlias $InterfaceAlias
   Ensure-LocalGroupExists -Group "OpenSSH Users"
   Add-LocalGroupMember -Group "OpenSSH Users" -Member $MaintenanceUser -ErrorAction SilentlyContinue
   Remove-LocalGroupMember -Group "OpenSSH Users" -Member $KioskUser -ErrorAction SilentlyContinue
   Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $KioskUser -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group "Remote Management Users" -Member $KioskUser -ErrorAction SilentlyContinue
+  Assert-KioskRemoteAdministrationDenied -User $KioskUser
 
-  Restart-Service -Name "sshd" -Force
+  Start-Service -Name "sshd"
 
-  Write-Host "Configured Controlled Maintenance Ingress SSH access for $MaintenanceUser; $KioskUser is excluded."
+  Write-Host "Configured Controlled Maintenance Ingress SSH access for $MaintenanceUser on $InterfaceAlias; $KioskUser is excluded."
 }
 
 function Get-LocalAccountSid {
@@ -1033,16 +1216,16 @@ $ShellLauncherOwnsStartup = [bool]$ConfigureKioskShell -and (Test-ShellLauncherA
 
 Write-Host "[1/9] Validate kiosk and maintenance accounts" -ForegroundColor Yellow
 if ($ConfigureKioskAccounts) {
-  Ensure-LocalAccount -User $KioskUser -Password $KioskPassword -Description "VEM restricted customer kiosk account" -Administrator $false
-  Ensure-LocalAccount -User $MaintenanceUser -Password $MaintenancePassword -Description "VEM host maintenance recovery account" -Administrator $true
+  Ensure-KioskAccount -User $KioskUser -Password $KioskPassword -Description "VEM restricted customer kiosk account"
 } else {
   if (-not (Get-LocalUser -Name $KioskUser -ErrorAction SilentlyContinue)) {
     Write-Warning "kiosk account not found: $KioskUser. Re-run with -ConfigureKioskAccounts and VEM_KIOSK_PASSWORD to create it."
   }
   if (-not (Get-LocalUser -Name $MaintenanceUser -ErrorAction SilentlyContinue)) {
-    Write-Warning "maintenance account not found: $MaintenanceUser. Re-run with -ConfigureKioskAccounts and VEM_MAINTENANCE_PASSWORD to create it."
+    Write-Warning "maintenance account not found: $MaintenanceUser. Factory setup requires the profile administrator to exist before setup."
   }
 }
+Assert-ExistingMaintenanceAdministrator -User $MaintenanceUser
 if (($UseKioskAccount -or $ConfigureKioskShell) -and -not (Get-LocalUser -Name $KioskUser -ErrorAction SilentlyContinue)) {
   throw "Kiosk account mode requested for $KioskUser, but the account does not exist. Re-run with -ConfigureKioskAccounts and VEM_KIOSK_PASSWORD first."
 }
@@ -1052,11 +1235,11 @@ Write-Host "[2/9] Configure controlled remote maintenance access" -ForegroundCol
 if ($ConfigureRemoteMaintenanceAccess) {
   Reject-ControlledMaintenanceIngressMigration
 } elseif ($ConfigureControlledMaintenanceIngress) {
-  Ensure-ControlledMaintenanceIngress -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -SshdConfigPath $SshdConfigPath -SourceAllowlist $MaintenanceIngressSourceAllowlist
+  Ensure-ControlledMaintenanceIngress -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -SshdConfigPath $SshdConfigPath -SourceAllowlist $MaintenanceIngressSourceAllowlist -RunnerSourceAllowlist $MaintenanceRunnerSourceAllowlist -MaintainerSourceAllowlist $MaintenanceMaintainerSourceAllowlist -InterfaceAlias $MaintenanceWireGuardInterfaceAlias -CaPath $MaintenanceSshCaPublicKeyPath -ListenAddress $MaintenanceWireGuardListenAddress
 } elseif ($ConfigureLocalMaintenanceAccess) {
-  Ensure-LocalMaintenanceAccess -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -SshdConfigPath $SshdConfigPath
+  throw "ConfigureLocalMaintenanceAccess has been removed; use the profile CA and WireGuard role-pool Controlled Maintenance Ingress"
 } else {
-  Write-Host "Controlled maintenance ingress not changed. Re-run with -ConfigureLocalMaintenanceAccess or -ConfigureControlledMaintenanceIngress after validating maintenance credentials."
+  Write-Host "Controlled maintenance ingress not changed. Re-run with -ConfigureControlledMaintenanceIngress and explicit role pools."
 }
 
 Write-Host "[3/9] Write machine UI launchers" -ForegroundColor Yellow
