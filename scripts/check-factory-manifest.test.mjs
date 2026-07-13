@@ -44,11 +44,16 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.doesNotMatch(workflow, /inputs\.manifest_identity/);
     const firstBuildStep = parsed.jobs.build.steps[0];
     assert.match(firstBuildStep.name, /Guard Protected Factory Runner/);
+    assert.equal(
+      firstBuildStep.env.RUNNER_LABELS_JSON,
+      '["self-hosted","Linux","X64","vem-factory"]',
+    );
     assert.doesNotMatch(
       JSON.stringify(parsed.jobs.build.env ?? {}),
       /VEM_FACTORY_.*STORE/,
     );
     assert.doesNotMatch(workflow, /\$\{\{\s*vars\.VEM_FACTORY_/);
+    assert.doesNotMatch(workflow, /runner\.labels/);
     assert.doesNotMatch(workflow, /runs-on:\s*ubuntu-latest/);
     for (const name of [
       "VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT",
