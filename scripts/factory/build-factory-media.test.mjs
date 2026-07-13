@@ -32,6 +32,8 @@ import {
   normalizeDescriptorTimestampsFile,
   parse7ZipBannerVersion,
   rangeBackedIsoMedia,
+  replaySourceVisibleFilesAbsentFromUdf,
+  writeSourceReplayBytes,
 } from "./build-factory-media.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { admitFactoryAcceptance } from "./factory-acceptance-admission.mjs";
@@ -434,6 +436,8 @@ async function fixture({
   sourceIsoHiddenPaths = [],
   sourceBootCatalogHidden = false,
   sourceIso9660Collision = false,
+  sourceIsoVisibleReadme = false,
+  sourceOverlayReplacement = false,
   uefiBootBytes = 2048,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "vem-factory-media-"));
@@ -506,6 +510,18 @@ async function fixture({
     join(sourceTree, "UDF-ONLY-MARKER.TXT"),
     "UDF-only factory source marker\n",
   );
+  if (sourceIsoVisibleReadme) {
+    await writeFile(
+      join(sourceTree, "README.TXT"),
+      "ISO-visible README replay fixture\n",
+    );
+  }
+  if (sourceOverlayReplacement) {
+    await writeFile(
+      join(sourceTree, "Autounattend.xml"),
+      "source unattended replacement fixture\n",
+    );
+  }
   const wimInput = join(root, "wim-input");
   await mkdir(wimInput, { recursive: true });
   await writeFile(join(wimInput, "fixture.txt"), "factory wim fixture\n");
@@ -1501,6 +1517,428 @@ describe("real deterministic Factory ISO builder", () => {
     }
   });
 
+  it("replays an ISO9660 and Joliet README missing from the UDF extraction without duplicating an overlay replacement", async () => {
+    const data = await fixture({
+      sourceIsoVisibleReadme: true,
+      sourceOverlayReplacement: true,
+    });
+    const extractor = join(data.root, "extractor-without-source-readme");
+    const sourceDigest = data.manifest.source.windowsMedia.digest.slice(7);
+    try {
+      await writeFile(
+        extractor,
+        `#!${process.execPath}
+const { createHash } = require("node:crypto");
+const { readFileSync, rmSync } = require("node:fs");
+const { join } = require("node:path");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const result = spawnSync(${JSON.stringify(UDF_EXTRACTOR_PATH)}, args, { stdio: "inherit" });
+if (result.error) throw result.error;
+if (result.status) process.exit(result.status);
+if (args[0] === "x") {
+  const output = args.find((arg) => arg.startsWith("-o"))?.slice(2);
+  const input = args.at(-1);
+  const digest = createHash("sha256").update(readFileSync(input)).digest("hex");
+  if (digest === ${JSON.stringify(sourceDigest)}) rmSync(join(output, "README.TXT"), { force: true });
+}
+`,
+        { mode: 0o755 },
+      );
+      const extractorBytes = await readFile(extractor);
+      const manifest = createFactoryManifest({
+        ...data.manifest,
+        toolchain: {
+          ...data.manifest.toolchain,
+          udfExtractor: {
+            identity: `tool://fixture@${sha256(extractorBytes)}`,
+            digest: sha256(extractorBytes),
+            version: data.manifest.toolchain.udfExtractor.version,
+          },
+        },
+      });
+      const sourcePath =
+        data.sourcePaths[manifest.source.windowsMedia.identity];
+      const sourceViews = inspectIsoFilesystemViews(await readFile(sourcePath));
+      assert.equal(sourceViews.iso9660.includes("readme.txt"), true);
+      assert.equal(sourceViews.joliet.includes("readme.txt"), true);
+
+      const sourceUdf = join(data.root, "source-udf-without-readme");
+      execFileSync(extractor, [
+        "x",
+        "-y",
+        "-tUdf",
+        `-o${sourceUdf}`,
+        sourcePath,
+      ]);
+      await assert.rejects(stat(join(sourceUdf, "README.TXT")), /ENOENT/);
+
+      const result = await buildFactoryMedia({
+        manifest,
+        store: new ContentAddressedAssetStore(join(data.root, "cas")),
+        sourcePaths: data.sourcePaths,
+        evidenceStoreRoot: data.evidenceStoreRoot,
+        approvalPolicy: data.approvalPolicy,
+        visionReleaseDeliveryUnit: data.visionReleaseDeliveryUnit,
+        repositoryVisionTrustedRoots: data.repositoryVisionTrustedRoots,
+        factoryVisionTrustedRoots: data.factoryVisionTrustedRoots,
+        visionEvidenceVerifierPath: data.visionEvidenceVerifierPath,
+        udfExtractorPath: extractor,
+        udfWriterPath: UDF_WRITER_PATH,
+        wimlibPath: WIMLIB_PATH,
+        executedBuilderImage: data.builderImage.identity,
+        outputDirectory: join(data.root, "output"),
+        reproducibility: false,
+      });
+      const outputViews = inspectIsoFilesystemViews(
+        await readFile(result.output.path),
+      );
+      assert.equal(outputViews.iso9660.includes("readme.txt"), true);
+      assert.equal(outputViews.joliet.includes("readme.txt"), true);
+      assert.equal(
+        outputViews.iso9660.filter((path) => path === "readme.txt").length,
+        1,
+      );
+      assert.equal(
+        outputViews.iso9660.filter((path) => path === "autounattend.xml")
+          .length,
+        1,
+      );
+
+      const outputUdf = join(data.root, "output-udf");
+      execFileSync(UDF_EXTRACTOR_PATH, [
+        "x",
+        "-y",
+        "-tUdf",
+        `-o${outputUdf}`,
+        result.output.path,
+      ]);
+      assert.equal(
+        await readFile(join(outputUdf, "README.TXT"), "utf8"),
+        "ISO-visible README replay fixture\n",
+      );
+      assert.match(
+        await readFile(join(outputUdf, "Autounattend.xml"), "utf8"),
+        /<unattend xmlns="urn:schemas-microsoft-com:unattend">/,
+      );
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects conflicting ISO9660 and Joliet content for one missing canonical UDF path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-factory-visible-conflict-"));
+    try {
+      const sourceIsoPath = join(root, "source.iso");
+      const sourceTreeRoot = join(root, "udf");
+      await writeFile(
+        sourceIsoPath,
+        Buffer.concat([
+          Buffer.from("iso"),
+          Buffer.alloc(2045),
+          Buffer.from("udf"),
+        ]),
+      );
+      await mkdir(sourceTreeRoot);
+      await assert.rejects(
+        replaySourceVisibleFilesAbsentFromUdf({
+          sourceTree: { root: sourceTreeRoot, entries: new Map() },
+          sourceIsoPath,
+          views: [
+            {
+              label: "ISO9660",
+              extents: new Map([
+                [
+                  "readme.txt",
+                  {
+                    path: "README.TXT",
+                    bytes: 3,
+                    sector: 0,
+                    segments: [{ sector: 0, bytes: 3 }],
+                  },
+                ],
+              ]),
+            },
+            {
+              label: "Joliet",
+              extents: new Map([
+                [
+                  "readme.txt",
+                  {
+                    path: "README.TXT",
+                    bytes: 3,
+                    sector: 1,
+                    segments: [{ sector: 1, bytes: 3 }],
+                  },
+                ],
+              ]),
+            },
+          ],
+        }),
+        /ISO9660 and Joliet visible source content conflicts at canonical path readme\.txt/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes every source extent byte when the destination accepts partial writes", async () => {
+    const hash = createHash("sha256");
+    const writes = [];
+    const bytes = Buffer.from("partial-write-source-extent");
+    const output = {
+      async write(buffer, offset, length, position) {
+        const bytesWritten = Math.min(3, length);
+        writes.push({
+          bytes: Buffer.from(buffer.subarray(offset, offset + bytesWritten)),
+          position,
+        });
+        return { bytesWritten };
+      },
+    };
+    assert.equal(
+      await writeSourceReplayBytes({ output, bytes, position: 17, hash }),
+      bytes.length,
+    );
+    assert.deepEqual(
+      writes.map(({ bytes: chunk, position }) => ({
+        bytes: chunk.toString("utf8"),
+        position,
+      })),
+      [
+        { bytes: "par", position: 17 },
+        { bytes: "tia", position: 20 },
+        { bytes: "l-w", position: 23 },
+        { bytes: "rit", position: 26 },
+        { bytes: "e-s", position: 29 },
+        { bytes: "our", position: 32 },
+        { bytes: "ce-", position: 35 },
+        { bytes: "ext", position: 38 },
+        { bytes: "ent", position: 41 },
+      ],
+    );
+    assert.equal(`sha256:${hash.digest("hex")}`, sha256(bytes));
+  });
+
+  it("rejects a missing ISO9660 file whose canonical path is a UDF directory", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "vem-factory-visible-directory-"),
+    );
+    try {
+      const sourceTreeRoot = join(root, "udf");
+      await mkdir(join(sourceTreeRoot, "README.TXT"), { recursive: true });
+      await assert.rejects(
+        replaySourceVisibleFilesAbsentFromUdf({
+          sourceTree: {
+            root: sourceTreeRoot,
+            entries: new Map([
+              [
+                "readme.txt",
+                {
+                  path: "README.TXT",
+                  type: "directory",
+                },
+              ],
+            ]),
+          },
+          sourceIsoPath: join(root, "unused.iso"),
+          views: [
+            {
+              label: "ISO9660",
+              extents: new Map([
+                [
+                  "readme.txt",
+                  {
+                    path: "README.TXT",
+                    bytes: 1,
+                    sector: 0,
+                    segments: [{ sector: 0, bytes: 1 }],
+                  },
+                ],
+              ]),
+            },
+          ],
+        }),
+        /ISO9660 visible source file conflicts with UDF directory: README\.TXT/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a visible ISO9660 extent that differs from its existing UDF file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-factory-visible-drift-"));
+    try {
+      const sourceIsoPath = join(root, "source.iso");
+      const sourceTreeRoot = join(root, "udf");
+      const readme = join(sourceTreeRoot, "README.TXT");
+      await mkdir(sourceTreeRoot);
+      await writeFile(sourceIsoPath, Buffer.from("source\0"));
+      await writeFile(readme, "udf\0\0\0");
+      await assert.rejects(
+        replaySourceVisibleFilesAbsentFromUdf({
+          sourceTree: {
+            root: sourceTreeRoot,
+            entries: new Map([
+              [
+                "readme.txt",
+                { path: "README.TXT", absolute: readme, type: "file" },
+              ],
+            ]),
+          },
+          sourceIsoPath,
+          views: [
+            {
+              label: "ISO9660",
+              extents: new Map([
+                [
+                  "readme.txt",
+                  {
+                    path: "README.TXT",
+                    bytes: 6,
+                    sector: 0,
+                    segments: [{ sector: 0, bytes: 6 }],
+                  },
+                ],
+              ]),
+            },
+          ],
+        }),
+        /ISO9660 visible source file does not match UDF file: README\.TXT/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects source-only ISO9660 replay before writing beyond file, byte, or depth limits", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-factory-replay-limits-"));
+    try {
+      const sourceTree = { root, entries: new Map() };
+      const entry = (path, bytes = 0) => ({
+        path,
+        bytes,
+        sector: 0,
+        segments: [{ sector: 0, bytes }],
+      });
+      const cases = [
+        [
+          "file",
+          new Map(
+            Array.from({ length: 4097 }, (_, index) => [
+              `file-${index}.txt`,
+              entry(`file-${index}.txt`),
+            ]),
+          ),
+          /source-only ISO9660 replay exceeds file limit/,
+        ],
+        [
+          "bytes",
+          new Map([["large.bin", entry("large.bin", 16 * 1024 ** 3 + 1)]]),
+          /source-only ISO9660 replay exceeds byte limit/,
+        ],
+        [
+          "depth",
+          new Map([
+            ["deep.txt", entry(`${Array(65).fill("deep").join("/")}/file.txt`)],
+          ]),
+          /source-only ISO9660 replay exceeds path depth limit/,
+        ],
+      ];
+      for (const [, extents, expected] of cases) {
+        await assert.rejects(
+          replaySourceVisibleFilesAbsentFromUdf({
+            sourceTree,
+            sourceIsoPath: join(root, "unused.iso"),
+            views: [{ label: "ISO9660", extents }],
+          }),
+          expected,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses existing UDF directory casing for nested ISO9660-only replay", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-factory-replay-casing-"));
+    try {
+      const sourceTreeRoot = join(root, "udf");
+      const sourceIsoPath = join(root, "source.iso");
+      await mkdir(join(sourceTreeRoot, "Sources", "Nested"), {
+        recursive: true,
+      });
+      await writeFile(sourceIsoPath, "README");
+      const replayed = await replaySourceVisibleFilesAbsentFromUdf({
+        sourceTree: { root: sourceTreeRoot, entries: new Map() },
+        sourceIsoPath,
+        views: [
+          {
+            label: "ISO9660",
+            extents: new Map([
+              [
+                "sources/nested/readme.txt",
+                {
+                  path: "SOURCES/NESTED/README.TXT",
+                  bytes: 6,
+                  sector: 0,
+                  segments: [{ sector: 0, bytes: 6 }],
+                },
+              ],
+            ]),
+          },
+        ],
+      });
+      assert.ok(replayed.entries.has("sources/nested/readme.txt"));
+      assert.equal(
+        await readFile(
+          join(sourceTreeRoot, "Sources", "Nested", "README.TXT"),
+          "utf8",
+        ),
+        "README",
+      );
+      await assert.rejects(stat(join(sourceTreeRoot, "SOURCES")), /ENOENT/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an ISO9660-only path when an existing UDF segment is a file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-factory-replay-file-"));
+    try {
+      const sourceTreeRoot = join(root, "udf");
+      const sourceIsoPath = join(root, "source.iso");
+      await mkdir(sourceTreeRoot);
+      await writeFile(join(sourceTreeRoot, "Sources"), "not a directory");
+      await writeFile(sourceIsoPath, "README");
+      await assert.rejects(
+        replaySourceVisibleFilesAbsentFromUdf({
+          sourceTree: { root: sourceTreeRoot, entries: new Map() },
+          sourceIsoPath,
+          views: [
+            {
+              label: "ISO9660",
+              extents: new Map([
+                [
+                  "sources/readme.txt",
+                  {
+                    path: "SOURCES/README.TXT",
+                    bytes: 6,
+                    sector: 0,
+                    segments: [{ sector: 0, bytes: 6 }],
+                  },
+                ],
+              ]),
+            },
+          ],
+        }),
+        /ISO9660 visible source path conflicts with UDF file: SOURCES\/README\.TXT/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("replays a source marker through canonical ISO9660, Joliet, and explicit UDF views", async () => {
     const data = await fixture();
     try {
@@ -2125,7 +2563,7 @@ process.exit(result.status ?? 1);
       const growth = process.memoryUsage().rss - before;
       assert.equal(structure.iso9660, true);
       assert.equal(structure.udf, true);
-      assert.deepEqual(filesystemViews.iso9660, ["readme"]);
+      assert.deepEqual(filesystemViews.iso9660, ["readme.txt"]);
       assert.deepEqual(filesystemViews.joliet, []);
       assert.ok(
         growth < 96 * 1024 * 1024,

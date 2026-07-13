@@ -54,6 +54,10 @@ export function hasExpected7ZipBannerVersion(output, manifestVersion) {
 }
 
 const SECTOR_BYTES = 2048;
+const ISO_EXTENT_COPY_CHUNK_BYTES = 1024 * 1024;
+const MAX_SOURCE_ONLY_REPLAY_FILES = 4096;
+const MAX_SOURCE_ONLY_REPLAY_BYTES = 16 * 1024 ** 3;
+const MAX_SOURCE_ONLY_REPLAY_PATH_DEPTH = 64;
 // El Torito catalog load sizes use 512-byte virtual sectors, not ISO CD sectors.
 const EL_TORITO_VIRTUAL_SECTOR_BYTES = 512;
 const ISO_RANGE_CACHE_PAGES = 64;
@@ -2328,14 +2332,16 @@ export function inspectIsoFilesystemExtents(media, { joliet = false } = {}) {
 export function inspectIsoFilesystemViews(media) {
   const iso9660 = iso9660FileExtents(media);
   const joliet = iso9660FileExtents(media, { joliet: true });
-  const canonicalPaths = (entries) =>
-    [...entries.values()]
-      .map(({ path }) => canonicalIsoFilesystemPath(path))
-      .sort((left, right) => left.localeCompare(right));
   return {
-    iso9660: canonicalPaths(iso9660),
-    joliet: canonicalPaths(joliet),
+    iso9660: canonicalIsoFilesystemPaths(iso9660),
+    joliet: canonicalIsoFilesystemPaths(joliet),
   };
+}
+
+function canonicalIsoFilesystemPaths(entries) {
+  return [...entries.values()]
+    .map(({ path }) => canonicalIsoFilesystemPath(path))
+    .sort((left, right) => left.localeCompare(right));
 }
 
 function withGeneratedBootCatalogHiddenPath(hiddenPaths, visiblePaths) {
@@ -2414,6 +2420,348 @@ function sourceHiddenPathsForView({ sourceTree, visiblePaths, label }) {
     )
     .map((entry) => entry.path)
     .sort((left, right) => left.localeCompare(right));
+}
+
+function sourceReplayPathSegments(path) {
+  const segments = path.split("/");
+  if (
+    path !== normalizedWindowsPath(path) ||
+    segments.length === 0 ||
+    segments.some(
+      (segment) =>
+        !segment ||
+        [".", ".."].includes(segment) ||
+        segment.includes("\\") ||
+        segment.includes("\0"),
+    )
+  ) {
+    throw new Error(`ISO9660 visible source path is unsafe to replay: ${path}`);
+  }
+  return segments;
+}
+
+async function sourceReplayDestination(root, path) {
+  const segments = sourceReplayPathSegments(path);
+  const resolved = [];
+  let directory = root;
+  for (const [index, segment] of segments.entries()) {
+    const canonicalSegment =
+      normalizedWindowsPath(segment).toLocaleLowerCase("en-US");
+    const existing = (await readdir(directory, { withFileTypes: true })).find(
+      (entry) =>
+        normalizedWindowsPath(entry.name).toLocaleLowerCase("en-US") ===
+        canonicalSegment,
+    );
+    const isFinalSegment = index === segments.length - 1;
+    if (existing) {
+      const absolute = join(directory, existing.name);
+      const stat = await lstat(absolute);
+      if (!isFinalSegment && (stat.isSymbolicLink() || !stat.isDirectory())) {
+        throw new Error(
+          `ISO9660 visible source path conflicts with UDF file: ${path}`,
+        );
+      }
+      resolved.push(existing.name);
+      directory = absolute;
+      continue;
+    }
+    resolved.push(segment);
+    directory = join(directory, segment);
+    if (!isFinalSegment) await mkdir(directory);
+  }
+  return join(root, ...resolved);
+}
+
+function assertSourceOnlyReplayLimits(missing) {
+  if (missing.size > MAX_SOURCE_ONLY_REPLAY_FILES) {
+    throw new Error("source-only ISO9660 replay exceeds file limit");
+  }
+  let bytes = 0;
+  for (const candidates of missing.values()) {
+    let largest = 0;
+    for (const { entry } of candidates) {
+      if (!Number.isSafeInteger(entry.bytes) || entry.bytes < 0) {
+        throw new Error(
+          `ISO9660 has invalid source-only replay size: ${entry.path}`,
+        );
+      }
+      if (
+        sourceReplayPathSegments(entry.path).length >
+        MAX_SOURCE_ONLY_REPLAY_PATH_DEPTH
+      ) {
+        throw new Error("source-only ISO9660 replay exceeds path depth limit");
+      }
+      largest = Math.max(largest, entry.bytes);
+    }
+    bytes += largest;
+    if (bytes > MAX_SOURCE_ONLY_REPLAY_BYTES) {
+      throw new Error("source-only ISO9660 replay exceeds byte limit");
+    }
+  }
+}
+
+async function existingUdfFileDigest(entry) {
+  const stat = await lstat(entry.absolute);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`validated UDF source file changed: ${entry.path}`);
+  }
+  return { bytes: stat.size, digest: await hashFile(entry.absolute) };
+}
+
+function assertSourceReplayExtents(entry, sourceBytes, label) {
+  if (
+    !Number.isSafeInteger(entry.bytes) ||
+    entry.bytes < 0 ||
+    !Array.isArray(entry.segments) ||
+    entry.segments.length === 0
+  ) {
+    throw new Error(`${label} has invalid ISO9660 file extents: ${entry.path}`);
+  }
+  let bytes = 0;
+  for (const segment of entry.segments) {
+    if (
+      !Number.isSafeInteger(segment.sector) ||
+      !Number.isSafeInteger(segment.bytes) ||
+      segment.sector < 0 ||
+      segment.bytes < 0 ||
+      segment.sector * SECTOR_BYTES + segment.bytes > sourceBytes
+    ) {
+      throw new Error(
+        `${label} has invalid ISO9660 file extents: ${entry.path}`,
+      );
+    }
+    bytes += segment.bytes;
+  }
+  if (bytes !== entry.bytes) {
+    throw new Error(
+      `${label} has inconsistent ISO9660 file extents: ${entry.path}`,
+    );
+  }
+}
+
+async function hashSourceReplayExtents({ source, entry, sourceBytes, label }) {
+  assertSourceReplayExtents(entry, sourceBytes, label);
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(ISO_EXTENT_COPY_CHUNK_BYTES);
+  for (const segment of entry.segments) {
+    let position = segment.sector * SECTOR_BYTES;
+    let remaining = segment.bytes;
+    while (remaining > 0) {
+      const { bytesRead } = await source.read(
+        buffer,
+        0,
+        Math.min(buffer.length, remaining),
+        position,
+      );
+      if (bytesRead === 0) {
+        throw new Error(
+          `${label} ISO9660 extent ended unexpectedly: ${entry.path}`,
+        );
+      }
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+      remaining -= bytesRead;
+    }
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+export async function writeSourceReplayBytes({
+  output,
+  bytes,
+  position,
+  hash,
+}) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesWritten } = await output.write(
+      bytes,
+      offset,
+      bytes.length - offset,
+      position + offset,
+    );
+    if (
+      !Number.isSafeInteger(bytesWritten) ||
+      bytesWritten <= 0 ||
+      bytesWritten > bytes.length - offset
+    ) {
+      throw new Error("ISO9660 extent destination write was incomplete");
+    }
+    hash.update(bytes.subarray(offset, offset + bytesWritten));
+    offset += bytesWritten;
+  }
+  return offset;
+}
+
+async function replaySourceVisibleFile({
+  source,
+  sourceBytes,
+  destination,
+  entry,
+  label,
+}) {
+  assertSourceReplayExtents(entry, sourceBytes, label);
+  await mkdir(dirname(destination), { recursive: true });
+  const output = await open(
+    destination,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_EXCL |
+      constants.O_NOFOLLOW,
+    0o600,
+  );
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(ISO_EXTENT_COPY_CHUNK_BYTES);
+  let written = 0;
+  try {
+    for (const segment of entry.segments) {
+      let position = segment.sector * SECTOR_BYTES;
+      let remaining = segment.bytes;
+      while (remaining > 0) {
+        const { bytesRead } = await source.read(
+          buffer,
+          0,
+          Math.min(buffer.length, remaining),
+          position,
+        );
+        if (bytesRead === 0) {
+          throw new Error(
+            `${label} ISO9660 extent ended unexpectedly: ${entry.path}`,
+          );
+        }
+        const bytes = buffer.subarray(0, bytesRead);
+        await writeSourceReplayBytes({
+          output,
+          bytes,
+          position: written,
+          hash,
+        });
+        position += bytesRead;
+        remaining -= bytesRead;
+        written += bytesRead;
+      }
+    }
+    await output.sync();
+  } finally {
+    await output.close();
+  }
+  if (written !== entry.bytes) {
+    throw new Error(
+      `${label} ISO9660 extent replay size mismatch: ${entry.path}`,
+    );
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+export async function replaySourceVisibleFilesAbsentFromUdf({
+  sourceTree,
+  sourceIsoPath,
+  views,
+}) {
+  const visible = new Map();
+  for (const { label, extents } of views) {
+    for (const entry of extents.values()) {
+      const canonicalPath = canonicalIsoFilesystemPath(entry.path);
+      if (WINDOWS_REPLAY_GENERATED_PATHS.has(canonicalPath)) continue;
+      const existing = sourceTree.entries.get(canonicalPath);
+      if (existing) {
+        if (existing.type !== "file") {
+          throw new Error(
+            `${label} visible source file conflicts with UDF directory: ${entry.path}`,
+          );
+        }
+      }
+      const grouped = visible.get(canonicalPath) ?? {
+        existing,
+        candidates: [],
+      };
+      grouped.candidates.push({ label, entry });
+      visible.set(canonicalPath, grouped);
+    }
+  }
+  if (visible.size === 0) return sourceTree;
+  const missing = new Map(
+    [...visible]
+      .filter(([, { existing }]) => !existing)
+      .map(([path, { candidates }]) => [path, candidates]),
+  );
+  assertSourceOnlyReplayLimits(missing);
+
+  const source = await open(
+    sourceIsoPath,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const before = await source.stat();
+    if (!before.isFile()) {
+      throw new Error("verified Windows source ISO is not a regular file");
+    }
+    for (const [canonicalPath, { existing, candidates }] of [...visible].sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
+      if (existing) {
+        const udf = await existingUdfFileDigest(existing);
+        for (const candidate of candidates) {
+          const sourceDigest = await hashSourceReplayExtents({
+            source,
+            sourceBytes: before.size,
+            entry: candidate.entry,
+            label: candidate.label,
+          });
+          if (
+            candidate.entry.bytes !== udf.bytes ||
+            sourceDigest !== udf.digest
+          ) {
+            throw new Error(
+              `${candidate.label} visible source file does not match UDF file: ${candidate.entry.path}`,
+            );
+          }
+        }
+        continue;
+      }
+      const [{ label, entry }, ...otherCandidates] = candidates;
+      const destination = await sourceReplayDestination(
+        sourceTree.root,
+        entry.path,
+      );
+      const digest = await replaySourceVisibleFile({
+        source,
+        sourceBytes: before.size,
+        destination,
+        entry,
+        label,
+      });
+      for (const candidate of otherCandidates) {
+        const candidateDigest = await hashSourceReplayExtents({
+          source,
+          sourceBytes: before.size,
+          entry: candidate.entry,
+          label: candidate.label,
+        });
+        if (candidateDigest !== digest) {
+          throw new Error(
+            `ISO9660 and Joliet visible source content conflicts at canonical path ${canonicalPath}`,
+          );
+        }
+      }
+    }
+    const after = await source.stat();
+    if (
+      after.size !== before.size ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino
+    ) {
+      throw new Error(
+        "verified Windows source ISO changed during extent replay",
+      );
+    }
+  } finally {
+    await source.close();
+  }
+  return validateExtractedTree(
+    sourceTree.root,
+    "UDF extractor output after ISO9660/Joliet replay",
+  );
 }
 
 function expectedIso9660VisibleFileCount({
@@ -2961,7 +3309,7 @@ async function executeWindowsServicedIsoBuilder({
 
   const sourceTree = join(workDirectory, "windows-source-udf");
   await mkdir(sourceTree, { recursive: true });
-  const sourceTreeManifest = await extractUdfView({
+  let sourceTreeManifest = await extractUdfView({
     extractor,
     isoPath: sourceIsoPath,
     tree: sourceTree,
@@ -2970,6 +3318,7 @@ async function executeWindowsServicedIsoBuilder({
   const { media: sourceIsoMedia, close: closeSourceIsoMedia } =
     rangeBackedIsoMedia(sourceIsoPath);
   let sourceFilesystemViews;
+  let sourceFilesystemExtentViews;
   let sourceCatalog;
   const expectedInstallImage = {
     index: manifestSource.installImageIndex,
@@ -2977,7 +3326,20 @@ async function executeWindowsServicedIsoBuilder({
     digest: manifestSource.installImageDigest,
   };
   try {
-    sourceFilesystemViews = inspectIsoFilesystemViews(sourceIsoMedia);
+    const sourceIso9660Extents = iso9660FileExtents(sourceIsoMedia);
+    const sourceJolietExtents = iso9660FileExtents(sourceIsoMedia, {
+      joliet: true,
+    });
+    sourceFilesystemViews = {
+      iso9660: canonicalIsoFilesystemPaths(sourceIso9660Extents),
+      joliet: canonicalIsoFilesystemPaths(sourceJolietExtents),
+    };
+    sourceFilesystemExtentViews = [
+      { label: "ISO9660", extents: sourceIso9660Extents },
+      ...(sourceJolietExtents.size > 0
+        ? [{ label: "Joliet", extents: sourceJolietExtents }]
+        : []),
+    ];
     sourceCatalog = await inspectWindowsSetupTree({
       wimlibExecutable,
       isoBytes: sourceIsoMedia,
@@ -2990,6 +3352,11 @@ async function executeWindowsServicedIsoBuilder({
     closeSourceIsoMedia();
   }
   const sourceHasJoliet = sourceFilesystemViews.joliet.length > 0;
+  sourceTreeManifest = await replaySourceVisibleFilesAbsentFromUdf({
+    sourceTree: sourceTreeManifest,
+    sourceIsoPath,
+    views: sourceFilesystemExtentViews,
+  });
   await setFixedTimes(sourceTreeManifest);
   // 7z exposes the UDF tree, including entries intentionally omitted from the
   // ISO9660/Joliet view. Preserve that visibility boundary during replay.
