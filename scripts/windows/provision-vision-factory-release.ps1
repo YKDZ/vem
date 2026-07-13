@@ -63,7 +63,7 @@ Assert-SafeWindowsPath $FactoryMediaRoot "Factory media root"
 Assert-NonReparsePath $FactoryMediaRoot "Factory media root"
 $manifestPath = Join-Path $FactoryMediaRoot "VISION-FACTORY-PROVISIONING.JSON"
 Assert-NonReparsePath $manifestPath "Factory Vision provisioning manifest"
-$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 32
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if (
   $manifest.schemaVersion -cne "vem-vision-factory-provisioning/v1" -or
   $manifest.kind -cne "vision-factory-provisioning" -or

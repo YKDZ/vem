@@ -1924,9 +1924,12 @@ Write-Json (Join-Path $context.trust "vision-release-trust-anchor.json") @{schem
   $bundleDigest = (Get-Content -LiteralPath (Join-Path $root "release-context.json") -Raw | ConvertFrom-Json).bundleDigest
   $harnessContext.bundleDigest = $bundleDigest
   Write-Json $harnessContextPath $harnessContext
-  $provisionDiagnosticPath = Join-Path $root "provision-error.txt"
-  try {
-    Invoke-BoundedPowerShell -Stage "fixture.provision" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $assetPowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
+  foreach ($corePowerShellPath in $corePowerShellPaths) {
+    $corePowerShellName = [IO.Path]::GetFileNameWithoutExtension($corePowerShellPath).ToLowerInvariant()
+    $provisionDiagnosticPath = Join-Path $root "provision-error.txt"
+    Remove-Item -LiteralPath $provisionDiagnosticPath -Force -ErrorAction SilentlyContinue
+    try {
+      Invoke-BoundedPowerShell -Stage "fixture.provision.$corePowerShellName" -TimeoutSeconds 45 -CleanupReserveSeconds $CleanupReserveSeconds -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $corePowerShellPath -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody @'
 try {
 Copy-Item -LiteralPath $context.installerPath -Destination (Join-Path $context.installerMedia "install-vision-release.ps1")
 Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $context.installerPath) "provision-vision-factory-release.ps1") -Destination (Join-Path $context.installerMedia "provision-vision-factory-release.ps1")
@@ -1947,14 +1950,12 @@ Write-Utf8 (Join-Path $context.stateRoot "config\fixture.json") "{}"
   throw
 }
 '@ | Out-Null
-  } catch {
-    if (Test-Path -LiteralPath $provisionDiagnosticPath -PathType Leaf) {
-      throw "fixture provisioning failed: $(Get-Content -LiteralPath $provisionDiagnosticPath -Raw)"
+    } catch {
+      if (Test-Path -LiteralPath $provisionDiagnosticPath -PathType Leaf) {
+        throw "fixture provisioning failed under ${corePowerShellName}: $(Get-Content -LiteralPath $provisionDiagnosticPath -Raw)"
+      }
+      throw
     }
-    throw
-  }
-  foreach ($corePowerShellPath in $corePowerShellPaths) {
-    $corePowerShellName = [IO.Path]::GetFileNameWithoutExtension($corePowerShellPath).ToLowerInvariant()
     $signedInstallDiagnosticPath = Join-Path $root "signed-install-error.txt"
     Remove-Item -LiteralPath $signedInstallDiagnosticPath -Force -ErrorAction SilentlyContinue
     try {

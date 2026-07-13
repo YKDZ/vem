@@ -125,6 +125,23 @@ describe("Vision release installer fixtures", () => {
     assert.doesNotMatch(source, /\.Replace\("\\\\","\/"\)/);
   });
 
+  boundedIt(
+    "keeps Factory provisioning compatible with Windows PowerShell 5.1",
+    () => {
+      const provisioner = readFileSync(
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "utf8",
+      );
+      const harness = readFileSync(windowsHarness, "utf8");
+
+      assert.doesNotMatch(provisioner, /ConvertFrom-Json\s+-Depth\b/);
+      assert.match(
+        harness,
+        /foreach \(\$corePowerShellPath in \$corePowerShellPaths\) \{[\s\S]*?Invoke-BoundedPowerShell -Stage "fixture\.provision\.\$corePowerShellName"[\s\S]*?-ChildPowerShellPath \$corePowerShellPath/,
+      );
+    },
+  );
+
   boundedIt("uses file-safe ACL inheritance in the Factory provisioner", () => {
     for (const path of [
       "scripts/windows/provision-vision-factory-release.ps1",
