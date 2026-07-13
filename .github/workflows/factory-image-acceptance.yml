@@ -40,7 +40,6 @@ jobs:
       VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: ${{ needs.trust-gate.outputs.approved }}
       VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: '["self-hosted","Linux","X64","vem-factory"]'
       RUN_ID: RUN-${{ github.run_id }}-${{ github.run_attempt }}
-      VEM_VM_HOST_EVIDENCE_EXPORT_DIR: ${{ runner.temp }}/vem-factory-host-evidence/${{ github.run_id }}-${{ github.run_attempt }}
       DATABASE_URL: postgresql://vem:vem_password@127.0.0.1:55433/vem_factory_acceptance
       EPHEMERAL_API_READY_URL: http://127.0.0.1:26850/api
       EPHEMERAL_MQTT_LOCAL_URL: mqtt://127.0.0.1:18884
@@ -56,6 +55,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export VEM_VM_HOST_EVIDENCE_EXPORT_DIR="$RUNNER_TEMP/vem-factory-host-evidence/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'VEM_VM_HOST_EVIDENCE_EXPORT_DIR=%s\n' "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR" >> "$GITHUB_ENV"
           export VEM_FACTORY_PERSONALIZATION_RUNNER_NAME="$RUNNER_NAME"
           test -n "${VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME:-}"
           test "$VEM_FACTORY_PERSONALIZATION_RUNNER_NAME" = "$VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME"

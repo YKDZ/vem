@@ -26,7 +26,15 @@ describe("Factory Image Acceptance workflow", () => {
   });
 
   it("provides a runner-owned evidence export directory before lifecycle capture", () => {
-    assert.match(workflow, /VEM_VM_HOST_EVIDENCE_EXPORT_DIR:/);
+    assert.doesNotMatch(
+      workflow,
+      /VEM_VM_HOST_EVIDENCE_EXPORT_DIR: \$\{\{ runner\.temp \}\}/,
+    );
+    assert.match(
+      workflow,
+      /VEM_VM_HOST_EVIDENCE_EXPORT_DIR="\$RUNNER_TEMP\/vem-factory-host-evidence/,
+    );
+    assert.match(workflow, /VEM_VM_HOST_EVIDENCE_EXPORT_DIR=%s.*GITHUB_ENV/);
     const lifecycleStart = workflow.indexOf(
       "- name: Run Typed Factory Lifecycle",
     );
