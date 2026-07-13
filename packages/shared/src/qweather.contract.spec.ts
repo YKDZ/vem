@@ -32,7 +32,7 @@ describe("和风天气后台契约", () => {
         sunPath: "/v7/astronomy/sun",
         timeoutMs: 3000,
       }),
-    ).toThrow("必须填写账户专属 API Host");
+    ).toThrow("必须填写 API Host");
   });
 
   it("响应不包含私钥正文", () => {

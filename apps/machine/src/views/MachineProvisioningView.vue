@@ -5,6 +5,7 @@ import { useRoute, useRouter } from "vue-router";
 import type {
   BringUpSnapshot,
   NetworkSettingsResponse,
+  WifiNetwork,
 } from "@/daemon/schemas";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
@@ -39,6 +40,10 @@ const exportingEvidence = ref(false);
 const statusMessage = ref<string | null>(null);
 const statusKind = ref<"idle" | "pending" | "success" | "failure">("idle");
 const networkResult = ref<NetworkSettingsResponse | null>(null);
+const wifiNetworks = ref<WifiNetwork[]>([]);
+const scanningWifi = ref(false);
+const wifiScanMessage = ref<string | null>(null);
+const manualNetworkEntry = ref(false);
 const protectedMaintenanceEnabled = ref(false);
 const reclaimMode = ref(false);
 type BringUpReason = BringUpSnapshot["blockingReasons"][number];
@@ -295,6 +300,47 @@ function networkStatusLabel(status: NetworkSettingsResponse["status"]): string {
   return labels[status];
 }
 
+function wifiSecurityLabel(security: WifiNetwork["security"]): string {
+  const labels: Record<WifiNetwork["security"], string> = {
+    open: "开放网络",
+    wpa_personal: "WPA 密码",
+    wpa2_personal: "WPA2 密码",
+    wpa3_personal: "WPA3 密码",
+    enterprise: "企业认证",
+    unknown: "未知认证",
+  };
+  return labels[security];
+}
+
+function selectWifiNetwork(network: WifiNetwork): void {
+  if (network.security === "enterprise" || network.security === "unknown") {
+    wifiScanMessage.value = "该网络需要企业或未知认证，请联系现场网络管理员。";
+    return;
+  }
+  networkForm.ssid = network.ssid;
+  networkForm.hidden = false;
+  manualNetworkEntry.value = false;
+  wifiScanMessage.value = network.connected
+    ? "已选择当前连接的网络。"
+    : `已选择 ${network.ssid}，请输入网络密码。`;
+}
+
+async function scanWifiNetworks(): Promise<void> {
+  if (scanningWifi.value || !networkAllowed.value) return;
+  scanningWifi.value = true;
+  wifiScanMessage.value = "正在扫描附近无线网络";
+  try {
+    const response = await daemonClient.scanWifiNetworks();
+    wifiNetworks.value = response.networks;
+    wifiScanMessage.value = response.operatorGuidance;
+  } catch {
+    wifiNetworks.value = [];
+    wifiScanMessage.value = "无法读取附近无线网络，可刷新或手动输入。";
+  } finally {
+    scanningWifi.value = false;
+  }
+}
+
 function provisioningFailureMessage(error: unknown): string {
   const responseCode =
     typeof error === "object" && error !== null && "responseCode" in error
@@ -476,7 +522,8 @@ onMounted(async () => {
   } catch {
     protectedMaintenanceEnabled.value = false;
   }
-  void refreshBringUp();
+  await refreshBringUp();
+  if (networkAllowed.value) void scanWifiNetworks();
 });
 </script>
 
@@ -580,13 +627,64 @@ onMounted(async () => {
           >
             <div class="panel-heading">
               <p class="bring-up-eyebrow">现场网络</p>
-              <h3>写入连接设置</h3>
+              <h3>选择并连接无线网络</h3>
             </div>
-            <label>
+            <div v-if="!manualNetworkEntry" class="wifi-picker">
+              <div class="wifi-picker-actions">
+                <button
+                  class="kiosk-touch-target secondary-action"
+                  :disabled="scanningWifi || !networkAllowed"
+                  type="button"
+                  @click="scanWifiNetworks"
+                >
+                  {{ scanningWifi ? "正在扫描" : "刷新网络" }}
+                </button>
+                <button
+                  class="kiosk-touch-target secondary-action"
+                  type="button"
+                  @click="manualNetworkEntry = true"
+                >
+                  手动输入隐藏网络
+                </button>
+              </div>
+              <ul v-if="wifiNetworks.length" class="wifi-network-list">
+                <li v-for="network in wifiNetworks" :key="network.ssid">
+                  <button
+                    class="kiosk-touch-target wifi-network-option"
+                    :class="{ selected: networkForm.ssid === network.ssid }"
+                    :disabled="
+                      network.security === 'open' ||
+                      network.security === 'enterprise' ||
+                      network.security === 'unknown'
+                    "
+                    type="button"
+                    @click="selectWifiNetwork(network)"
+                  >
+                    <strong>{{ network.ssid }}</strong>
+                    <span>{{ wifiSecurityLabel(network.security) }}</span>
+                    <span>信号 {{ network.signalQuality }}%</span>
+                    <small v-if="network.connected">当前网络</small>
+                    <small
+                      v-else-if="
+                        network.security === 'open' ||
+                        network.security === 'enterprise' ||
+                        network.security === 'unknown'
+                      "
+                    >
+                      当前不支持
+                    </small>
+                  </button>
+                </li>
+              </ul>
+              <p v-if="wifiScanMessage" class="inline-result">
+                {{ wifiScanMessage }}
+              </p>
+            </div>
+            <label v-if="manualNetworkEntry">
               <span>无线网络名称</span>
               <input v-model="networkForm.ssid" class="kiosk-touch-target" />
             </label>
-            <label>
+            <label v-if="networkForm.ssid">
               <span>无线网络密码</span>
               <input
                 v-model="networkForm.password"
@@ -594,7 +692,7 @@ onMounted(async () => {
                 type="password"
               />
             </label>
-            <label class="checkbox-row">
+            <label v-if="manualNetworkEntry" class="checkbox-row">
               <input v-model="networkForm.hidden" type="checkbox" />
               <span>隐藏网络</span>
             </label>
@@ -981,6 +1079,56 @@ onMounted(async () => {
 .claim-code-input {
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+.wifi-picker {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.wifi-picker-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.62rem;
+}
+
+.wifi-network-list {
+  display: grid;
+  max-height: 19rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  gap: 0.52rem;
+}
+
+.wifi-network-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  padding: 0.72rem 0.82rem;
+  border: 2px solid rgba(126, 112, 82, 0.2);
+  border-radius: 0.52rem;
+  background: rgba(255, 255, 255, 0.78);
+  color: #2f2a23;
+  text-align: left;
+  gap: 0.2rem 0.62rem;
+}
+
+.wifi-network-option.selected {
+  border-color: #bb7448;
+  background: #fff4e8;
+}
+
+.wifi-network-option strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wifi-network-option span,
+.wifi-network-option small {
+  color: #756b5b;
 }
 
 .checkbox-row {

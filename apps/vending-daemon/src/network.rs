@@ -39,8 +39,55 @@ pub struct NetworkSettingsResponse {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiNetwork {
+    pub ssid: String,
+    pub signal_quality: u32,
+    pub security: WifiSecurity,
+    pub connected: bool,
+    pub profile_saved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WifiSecurity {
+    Open,
+    WpaPersonal,
+    Wpa2Personal,
+    Wpa3Personal,
+    Enterprise,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WifiScanStatus {
+    Available,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiScanResponse {
+    pub status: WifiScanStatus,
+    pub networks: Vec<WifiNetwork>,
+    pub operator_guidance: String,
+    pub updated_at: String,
+}
+
 #[async_trait]
 pub trait NetworkAdapter: Send + Sync {
+    async fn scan_wifi_networks(&self) -> WifiScanResponse {
+        WifiScanResponse {
+            status: WifiScanStatus::Unsupported,
+            networks: Vec::new(),
+            operator_guidance: "当前运行环境不支持扫描无线网络，可手动输入隐藏网络。".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        }
+    }
+
     async fn apply_wifi_settings(&self, request: NetworkSettingsRequest)
         -> NetworkSettingsResponse;
 }
@@ -78,6 +125,7 @@ impl FakeNetworkAdapter {
         }
     }
 
+    #[cfg(not(windows))]
     fn unsupported(code: &str, message: &str) -> Self {
         Self {
             outcome: format!("unsupported:{code}:{message}"),
@@ -87,6 +135,30 @@ impl FakeNetworkAdapter {
 
 #[async_trait]
 impl NetworkAdapter for FakeNetworkAdapter {
+    async fn scan_wifi_networks(&self) -> WifiScanResponse {
+        WifiScanResponse {
+            status: WifiScanStatus::Available,
+            networks: vec![
+                WifiNetwork {
+                    ssid: "VEM-Lab".to_string(),
+                    signal_quality: 86,
+                    security: WifiSecurity::Wpa2Personal,
+                    connected: false,
+                    profile_saved: true,
+                },
+                WifiNetwork {
+                    ssid: "Venue-Guest".to_string(),
+                    signal_quality: 61,
+                    security: WifiSecurity::Open,
+                    connected: true,
+                    profile_saved: true,
+                },
+            ],
+            operator_guidance: "请选择现场无线网络。".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        }
+    }
+
     async fn apply_wifi_settings(
         &self,
         request: NetworkSettingsRequest,
@@ -298,6 +370,12 @@ pub struct WindowsWlanAdapter;
 #[cfg(windows)]
 #[async_trait]
 impl NetworkAdapter for WindowsWlanAdapter {
+    async fn scan_wifi_networks(&self) -> WifiScanResponse {
+        tokio::task::spawn_blocking(scan_windows_wifi_networks)
+            .await
+            .unwrap_or_else(|error| failed_scan_response(format!("Wi-Fi 扫描任务失败：{error}")))
+    }
+
     async fn apply_wifi_settings(
         &self,
         request: NetworkSettingsRequest,
@@ -332,6 +410,191 @@ impl NetworkAdapter for WindowsWlanAdapter {
 }
 
 #[cfg(windows)]
+fn scan_windows_wifi_networks() -> WifiScanResponse {
+    use std::{collections::BTreeMap, ptr, slice, thread, time::Duration};
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        NetworkManagement::WiFi::{
+            WlanCloseHandle, WlanEnumInterfaces, WlanFreeMemory, WlanGetAvailableNetworkList,
+            WlanOpenHandle, WlanScan, WLAN_AVAILABLE_NETWORK_LIST, WLAN_INTERFACE_INFO,
+            WLAN_INTERFACE_INFO_LIST,
+        },
+    };
+
+    const ERROR_SUCCESS: u32 = 0;
+    const ERROR_ACCESS_DENIED: u32 = 5;
+
+    unsafe {
+        let mut negotiated_version = 0;
+        let mut handle: HANDLE = ptr::null_mut();
+        let open_result = WlanOpenHandle(2, ptr::null(), &mut negotiated_version, &mut handle);
+        if open_result != ERROR_SUCCESS {
+            return failed_scan_response(wlan_scan_error_guidance(open_result));
+        }
+
+        let mut interface_list: *mut WLAN_INTERFACE_INFO_LIST = ptr::null_mut();
+        let enum_result = WlanEnumInterfaces(handle, ptr::null(), &mut interface_list);
+        if enum_result != ERROR_SUCCESS || interface_list.is_null() {
+            WlanCloseHandle(handle, ptr::null());
+            return failed_scan_response(wlan_scan_error_guidance(enum_result));
+        }
+
+        let interfaces: Vec<WLAN_INTERFACE_INFO> = slice::from_raw_parts(
+            (*interface_list).InterfaceInfo.as_ptr(),
+            (*interface_list).dwNumberOfItems as usize,
+        )
+        .to_vec();
+        WlanFreeMemory(interface_list.cast());
+
+        for interface in &interfaces {
+            let result = WlanScan(
+                handle,
+                &interface.InterfaceGuid,
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+            );
+            if result == ERROR_ACCESS_DENIED {
+                WlanCloseHandle(handle, ptr::null());
+                return failed_scan_response(wlan_scan_error_guidance(result));
+            }
+        }
+        thread::sleep(Duration::from_millis(1200));
+
+        let mut by_ssid = BTreeMap::<String, WifiNetwork>::new();
+        let mut last_error = ERROR_SUCCESS;
+        for interface in &interfaces {
+            let mut list: *mut WLAN_AVAILABLE_NETWORK_LIST = ptr::null_mut();
+            let result = WlanGetAvailableNetworkList(
+                handle,
+                &interface.InterfaceGuid,
+                0,
+                ptr::null(),
+                &mut list,
+            );
+            if result != ERROR_SUCCESS || list.is_null() {
+                last_error = result;
+                continue;
+            }
+            let entries =
+                slice::from_raw_parts((*list).Network.as_ptr(), (*list).dwNumberOfItems as usize);
+            for entry in entries {
+                if let Some(network) = wifi_network_from_native(entry) {
+                    by_ssid
+                        .entry(network.ssid.clone())
+                        .and_modify(|existing| merge_wifi_network(existing, &network))
+                        .or_insert(network);
+                }
+            }
+            WlanFreeMemory(list.cast());
+        }
+        WlanCloseHandle(handle, ptr::null());
+
+        if interfaces.is_empty() {
+            return failed_scan_response(
+                "未找到已启用的无线网卡，请检查无线网卡和 WLAN AutoConfig 服务。".to_string(),
+            );
+        }
+        if by_ssid.is_empty() && last_error != ERROR_SUCCESS {
+            return failed_scan_response(wlan_scan_error_guidance(last_error));
+        }
+
+        let mut networks: Vec<_> = by_ssid.into_values().collect();
+        networks.sort_by_key(|network| {
+            (
+                !network.connected,
+                std::cmp::Reverse(network.signal_quality),
+            )
+        });
+        WifiScanResponse {
+            status: WifiScanStatus::Available,
+            networks,
+            operator_guidance: "请选择现场无线网络；隐藏网络可继续手动输入。".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wifi_network_from_native(
+    entry: &windows_sys::Win32::NetworkManagement::WiFi::WLAN_AVAILABLE_NETWORK,
+) -> Option<WifiNetwork> {
+    use windows_sys::Win32::NetworkManagement::WiFi::{
+        DOT11_AUTH_ALGO_80211_OPEN, DOT11_AUTH_ALGO_RSNA, DOT11_AUTH_ALGO_RSNA_PSK,
+        DOT11_AUTH_ALGO_WPA, DOT11_AUTH_ALGO_WPA3, DOT11_AUTH_ALGO_WPA3_ENT,
+        DOT11_AUTH_ALGO_WPA3_SAE, DOT11_AUTH_ALGO_WPA_PSK, WLAN_AVAILABLE_NETWORK_CONNECTED,
+        WLAN_AVAILABLE_NETWORK_HAS_PROFILE,
+    };
+    let length = usize::try_from(entry.dot11Ssid.uSSIDLength).ok()?.min(32);
+    let ssid = std::str::from_utf8(&entry.dot11Ssid.ucSSID[..length])
+        .ok()?
+        .trim();
+    if ssid.is_empty() {
+        return None;
+    }
+    let auth = entry.dot11DefaultAuthAlgorithm;
+    let security = if entry.bSecurityEnabled == 0 || auth == DOT11_AUTH_ALGO_80211_OPEN {
+        WifiSecurity::Open
+    } else if auth == DOT11_AUTH_ALGO_WPA_PSK {
+        WifiSecurity::WpaPersonal
+    } else if auth == DOT11_AUTH_ALGO_RSNA_PSK {
+        WifiSecurity::Wpa2Personal
+    } else if auth == DOT11_AUTH_ALGO_WPA3_SAE {
+        WifiSecurity::Wpa3Personal
+    } else if [
+        DOT11_AUTH_ALGO_WPA,
+        DOT11_AUTH_ALGO_RSNA,
+        DOT11_AUTH_ALGO_WPA3,
+        DOT11_AUTH_ALGO_WPA3_ENT,
+    ]
+    .contains(&auth)
+    {
+        WifiSecurity::Enterprise
+    } else {
+        WifiSecurity::Unknown
+    };
+    Some(WifiNetwork {
+        ssid: ssid.to_string(),
+        signal_quality: entry.wlanSignalQuality.min(100),
+        security,
+        connected: entry.dwFlags & WLAN_AVAILABLE_NETWORK_CONNECTED != 0,
+        profile_saved: entry.dwFlags & WLAN_AVAILABLE_NETWORK_HAS_PROFILE != 0,
+    })
+}
+
+#[cfg(any(windows, test))]
+fn merge_wifi_network(existing: &mut WifiNetwork, candidate: &WifiNetwork) {
+    existing.signal_quality = existing.signal_quality.max(candidate.signal_quality);
+    existing.connected |= candidate.connected;
+    existing.profile_saved |= candidate.profile_saved;
+    if existing.security == WifiSecurity::Unknown {
+        existing.security = candidate.security.clone();
+    }
+}
+
+#[cfg(windows)]
+fn failed_scan_response(guidance: String) -> WifiScanResponse {
+    WifiScanResponse {
+        status: WifiScanStatus::Failed,
+        networks: Vec::new(),
+        operator_guidance: guidance,
+        updated_at: crate::state::store::now_iso(),
+    }
+}
+
+#[cfg(windows)]
+fn wlan_scan_error_guidance(code: u32) -> String {
+    match code {
+        5 => "Windows 拒绝读取附近 Wi-Fi，请在系统设置中允许位置访问后重试。".to_string(),
+        1168 => "未找到已启用的无线网卡，请检查无线网卡和 WLAN AutoConfig 服务。".to_string(),
+        0x8034_2002 => "无线功能已关闭，请开启无线网卡后重试。".to_string(),
+        _ => format!(
+            "Windows Wi-Fi 扫描失败（错误码 {code}），请检查无线网卡和 WLAN AutoConfig 服务。"
+        ),
+    }
+}
+
+#[cfg(windows)]
 async fn apply_windows_wlan_profile(request: &NetworkSettingsRequest) -> Result<(), String> {
     let runner = NetshWlanCommandRunner;
     apply_windows_wlan_profile_with_runner(&runner, request, &std::env::temp_dir()).await
@@ -345,6 +608,7 @@ struct WlanCommandOutput {
 }
 
 #[cfg(any(windows, test))]
+#[cfg(test)]
 impl WlanCommandOutput {
     fn success() -> Self {
         Self {
@@ -703,5 +967,29 @@ mod tests {
             .diagnostics
             .iter()
             .any(|item| item.code == "PROVISIONING_ENDPOINT_REACHABLE"));
+    }
+
+    #[test]
+    fn duplicate_wifi_networks_merge_signal_and_connection_state() {
+        let mut existing = WifiNetwork {
+            ssid: "VEM-Lab".to_string(),
+            signal_quality: 42,
+            security: WifiSecurity::Wpa2Personal,
+            connected: false,
+            profile_saved: false,
+        };
+        let candidate = WifiNetwork {
+            ssid: "VEM-Lab".to_string(),
+            signal_quality: 88,
+            security: WifiSecurity::Wpa2Personal,
+            connected: true,
+            profile_saved: true,
+        };
+
+        merge_wifi_network(&mut existing, &candidate);
+
+        assert_eq!(existing.signal_quality, 88);
+        assert!(existing.connected);
+        assert!(existing.profile_saved);
     }
 }

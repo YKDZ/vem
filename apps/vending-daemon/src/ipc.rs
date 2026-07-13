@@ -28,6 +28,7 @@ use crate::{
     natural_context::MachineNaturalContextSnapshot,
     network::{
         NetworkAdapter, NetworkSettingsRequest, NetworkSettingsResponse, NetworkSetupStatus,
+        WifiScanResponse,
     },
     state::{
         store::{
@@ -208,6 +209,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/readyz", get(readyz))
         .route("/v1/bring-up", get(bring_up_snapshot))
         .route("/v1/network/settings", post(apply_network_settings))
+        .route("/v1/network/available", get(available_wifi_networks))
         .route("/v1/config", get(get_config).put(put_config))
         .route("/v1/config/summary", get(get_config_summary))
         .route("/v1/provisioning/claim", post(claim_machine))
@@ -1022,6 +1024,17 @@ async fn apply_network_settings(
     }
     *ctx.ui.status_cache.network.write().await = Some(response.clone());
     (status, Json(response)).into_response()
+}
+
+async fn available_wifi_networks(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let response: WifiScanResponse = ctx.network_adapter.scan_wifi_networks().await;
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 fn validate_network_settings_payload(
