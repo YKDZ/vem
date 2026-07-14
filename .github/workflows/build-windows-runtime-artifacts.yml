@@ -118,7 +118,7 @@ jobs:
           if (-not (Test-Path $llvmReadobj)) { throw "llvm-readobj.exe not found in pinned Rust llvm-tools-preview: $llvmReadobj" }
 
           $coffImports = & $llvmReadobj --coff-imports $daemonExe 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) { throw "llvm-readobj.exe failed to inspect $daemonExe: $coffImports" }
+          if ($LASTEXITCODE -ne 0) { throw "llvm-readobj.exe failed to inspect ${daemonExe}: $coffImports" }
           if ($coffImports -match '(?i)\b(?:VCRUNTIME140[^\s"]*\.dll|api-ms-win-crt-[^\s"]*\.dll)\b') {
             throw "vending-daemon.exe imports a dynamic MSVC CRT: $Matches[0]"
           }

@@ -1420,6 +1420,11 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.match(importGateStep.run, /rustc --print sysroot/);
     assert.match(importGateStep.run, /llvm-readobj\.exe/);
     assert.match(importGateStep.run, /--coff-imports/);
+    assert.match(
+      importGateStep.run,
+      /throw "llvm-readobj\.exe failed to inspect \$\{daemonExe\}: \$coffImports"/,
+    );
+    assert.doesNotMatch(importGateStep.run, /\$daemonExe:/);
     assert.match(importGateStep.run, /VCRUNTIME140/);
     assert.match(importGateStep.run, /api-ms-win-crt-/);
     const stageStep = workflowStep(parsed, "Stage Runtime Artifacts");
