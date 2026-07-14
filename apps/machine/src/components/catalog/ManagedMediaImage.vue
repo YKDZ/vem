@@ -5,13 +5,14 @@ import { resolveManagedMediaReference } from "@/catalog/managed-media";
 
 const props = defineProps<{
   reference: string | null | undefined;
+  diagnosticKey: string;
   apiBaseUrl: string;
   fallback: string;
   alt: string;
 }>();
 
 const emit = defineEmits<{
-  diagnostic: [message: string];
+  diagnostic: [event: { diagnosticKey: string; message: string }];
 }>();
 
 const resolution = computed(() =>
@@ -23,7 +24,12 @@ watch(
   resolution,
   (next) => {
     source.value = next.url ?? props.fallback;
-    if (next.diagnostic) emit("diagnostic", next.diagnostic);
+    if (next.diagnostic) {
+      emit("diagnostic", {
+        diagnosticKey: props.diagnosticKey,
+        message: next.diagnostic,
+      });
+    }
   },
   { immediate: true },
 );
@@ -31,7 +37,10 @@ watch(
 function usePlaceholder(): void {
   if (source.value === props.fallback) return;
   source.value = props.fallback;
-  emit("diagnostic", "managed media failed to load");
+  emit("diagnostic", {
+    diagnosticKey: props.diagnosticKey,
+    message: "managed media failed to load",
+  });
 }
 </script>
 

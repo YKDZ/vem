@@ -669,6 +669,7 @@ onUnmounted(() => {
                 <div class="product-image-panel">
                   <ManagedMediaImage
                     :reference="product.item.coverImageUrl"
+                    :diagnostic-key="`media:${product.item.slotId}:coverImageUrl`"
                     :api-base-url="machineStore.config.apiBaseUrl"
                     :fallback="fallbackImageForCategory(product.categoryKey)"
                     :alt="product.name"
@@ -678,7 +679,8 @@ onUnmounted(() => {
                     @diagnostic="
                       catalogStore.recordMediaDiagnostic(
                         product.item.coverImageUrl,
-                        $event,
+                        $event.message,
+                        $event.diagnosticKey,
                       )
                     "
                   />

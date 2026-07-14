@@ -61,11 +61,15 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
   const mediaDiagnostics: Array<
     NonNullable<SaleViewSnapshot["mediaDiagnostics"]>[number]
   > = [];
-  const items = payload.items.map((item) => {
+  const items = payload.items.map((item, index) => {
     if (!isRecord(item)) {
       return item;
     }
     const normalized = { ...item };
+    const itemIdentity =
+      typeof normalized.slotId === "string"
+        ? normalized.slotId
+        : `index-${index}`;
     for (const field of ["coverImageUrl", "tryOnSilhouetteUrl"] as const) {
       const reference = normalized[field];
       if (typeof reference === "string" && isManagedMediaReference(reference)) {
@@ -73,6 +77,7 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
       }
       mediaDiagnostics.push({
         reference: typeof reference === "string" ? reference : null,
+        diagnosticKey: `media:${itemIdentity}:${field}`,
         message:
           reference === null || reference === undefined
             ? `daemon sale view contained no ${field} managed media reference`

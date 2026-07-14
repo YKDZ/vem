@@ -84,22 +84,26 @@ test.describe("catalog recovery visual behavior matrix", () => {
   test("keeps a partially sold-out catalog purchasable without an error card", async ({
     page,
   }) => {
-    const readyItems = getUiDebugScenario("ready").saleView.items.map(
-      (item, index) =>
-        index === 0
-          ? {
-              ...item,
-              physicalStock: 0,
-              saleableStock: 0,
-              slotSalesState: "frozen",
-            }
-          : item,
+    const readyItems = getUiDebugScenario("ready").saleView.items.map((item) =>
+      item.categoryName?.includes("袜")
+        ? {
+            ...item,
+            physicalStock: 0,
+            saleableStock: 0,
+            slotSalesState: "sold_out",
+          }
+        : item,
     );
     await seedSaleViewOverride(page, readyItems);
     await loadMachineRuntimeScenario(page, readyCatalogScenario);
     await expectThreeFixedCategoryCards(page);
     await expect(page.getByRole("status")).toHaveCount(0);
-    await expect(page.locator(".home-category-card:disabled")).toHaveCount(0);
+    const socks = page.getByRole("button", { name: /袜子/ });
+    await expect(socks).toBeVisible();
+    await expect(socks).toBeDisabled();
+    await expect(page.getByRole("button", { name: /内裤/ })).toBeEnabled();
+    await expect(page.getByRole("button", { name: /T恤/ })).toBeEnabled();
+    await expect(page.locator(".home-category-card:disabled")).toHaveCount(1);
   });
 
   test("keeps unknown-category products purchasable through an explicit Other products entry", async ({
@@ -127,6 +131,12 @@ test.describe("catalog recovery visual behavior matrix", () => {
     await expect(
       page.getByRole("button", { name: /季节限定保暖披肩/ }),
     ).toBeVisible();
+    await page.getByRole("button", { name: /季节限定保暖披肩/ }).click();
+    await expect(page).toHaveURL(/#\/products\/product:/);
+    const buy = page.getByRole("button", { name: /立即购买/ });
+    await expect(buy).toBeEnabled();
+    await buy.click();
+    await expect(page).toHaveURL(/#\/checkout$/);
     await expect(page.getByRole("status")).toHaveCount(0);
   });
 

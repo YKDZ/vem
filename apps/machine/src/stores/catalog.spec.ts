@@ -301,11 +301,19 @@ describe("catalog store sale view", () => {
     expect(store.items).toHaveLength(1);
   });
 
-  it("keeps one bounded operator diagnostic per media failure", () => {
+  it("keeps one bounded operator diagnostic per media identity despite different pipeline messages", () => {
     const store = useCatalogStore();
 
     store.recordMediaDiagnostic(
       "/api/media-assets/bad/content",
+      "daemon sale view contained an invalid coverImageUrl managed media reference",
+    );
+    store.recordMediaDiagnostic(
+      "/api/media-assets/bad/content",
+      "managed media failed to load",
+    );
+    store.recordMediaDiagnostic(
+      "/api/media-assets/another-bad/content",
       "managed media failed to load",
     );
     store.recordMediaDiagnostic(
@@ -322,13 +330,19 @@ describe("catalog store sale view", () => {
       expect.objectContaining({
         kind: "media",
         reference: "/api/media-assets/bad/content",
+        diagnosticKey: "media:/api/media-assets/bad/content",
+      }),
+      expect.objectContaining({
+        kind: "media",
+        reference: "/api/media-assets/another-bad/content",
+        diagnosticKey: "media:/api/media-assets/another-bad/content",
       }),
       expect.objectContaining({
         kind: "category",
         reference: "product:unknown",
       }),
     ]);
-    expect(store.mediaDiagnostics).toHaveLength(1);
+    expect(store.mediaDiagnostics).toHaveLength(2);
 
     for (let index = 0; index < 25; index += 1) {
       store.recordMediaDiagnostic(
@@ -342,5 +356,41 @@ describe("catalog store sale view", () => {
     );
     expect(store.operatorDiagnostics).toHaveLength(20);
     expect(store.mediaDiagnostics).toHaveLength(20);
+  });
+
+  it("preserves the daemon media key through a placeholder load failure", async () => {
+    const diagnosticKey =
+      "media:550e8400-e29b-41d4-a716-446655440001:coverImageUrl";
+    getSaleViewMock.mockResolvedValue({
+      items: [saleViewItem({ coverImageUrl: null })],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+      mediaDiagnostics: [
+        {
+          reference: "https://forged.example/asset.png",
+          diagnosticKey,
+          message:
+            "daemon sale view contained an invalid coverImageUrl managed media reference",
+        },
+      ],
+    });
+    const store = useCatalogStore();
+
+    await store.load();
+    store.recordMediaDiagnostic(
+      null,
+      "managed media failed to load",
+      diagnosticKey,
+    );
+
+    expect(store.operatorDiagnostics).toEqual([
+      expect.objectContaining({
+        kind: "media",
+        diagnosticKey,
+        reference: "https://forged.example/asset.png",
+      }),
+    ]);
+    expect(store.mediaDiagnostics).toHaveLength(1);
   });
 });

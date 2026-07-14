@@ -2722,10 +2722,10 @@ describe("MachinesService planogram lifecycle", () => {
               {
                 productId: slot.productId,
                 variantId: slot.variantId,
-                displayImagePublicUrl:
-                  "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
-                tryOnSilhouettePublicUrl:
-                  "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+                displayImageMediaAssetId:
+                  "550e8400-e29b-41d4-a716-446655440124",
+                tryOnSilhouetteMediaAssetId:
+                  "550e8400-e29b-41d4-a716-446655440125",
               },
             ],
           }),
@@ -2808,10 +2808,8 @@ describe("MachinesService planogram lifecycle", () => {
       productId: slot.productId,
       productName: slot.productName,
       productDescription: slot.productDescription,
-      coverImageUrl:
-        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
-      tryOnSilhouetteUrl:
-        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      coverImageMediaAssetId: "550e8400-e29b-41d4-a716-446655440124",
+      tryOnSilhouetteMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
       categoryId: slot.categoryId,
       categoryName: slot.categoryName,
       sku: slot.sku,
@@ -2832,11 +2830,55 @@ describe("MachinesService planogram lifecycle", () => {
     mockDb.select.mockReturnValueOnce(query);
 
     await expect(service.getCatalogByMachineCode("M001")).resolves.toEqual([
-      {
-        ...catalogRow,
+      expect.objectContaining({
         coverImageUrl: managedCoverImageReference,
         tryOnSilhouetteUrl: managedTryOnSilhouetteReference,
-      },
+      }),
+    ]);
+  });
+
+  it("derives environment-neutral media paths from the selected managed asset identity", async () => {
+    const coverAssetId = "550e8400-e29b-41d4-a716-446655440124";
+    const silhouetteAssetId = "550e8400-e29b-41d4-a716-446655440125";
+    const catalogRow = {
+      machineCode: "M001",
+      slotId: slot.slotId,
+      slotCode: slot.slotCode,
+      layerNo: slot.layerNo,
+      cellNo: slot.cellNo,
+      inventoryId: slot.inventoryId,
+      variantId: slot.variantId,
+      productId: slot.productId,
+      productName: slot.productName,
+      productDescription: slot.productDescription,
+      coverImageUrl: `https://media.example/api/media-assets/${coverAssetId}/content`,
+      coverImageMediaAssetId: coverAssetId,
+      tryOnSilhouetteUrl: `https://media.example/api/media-assets/${silhouetteAssetId}/content`,
+      tryOnSilhouetteMediaAssetId: silhouetteAssetId,
+      categoryId: slot.categoryId,
+      categoryName: slot.categoryName,
+      sku: slot.sku,
+      size: slot.size,
+      color: slot.color,
+      priceCents: slot.priceCents,
+      availableQty: 1,
+      productSortOrder: slot.productSortOrder,
+      targetGender: slot.targetGender,
+    };
+    const query = {
+      from: vi.fn(() => query),
+      innerJoin: vi.fn(() => query),
+      leftJoin: vi.fn(() => query),
+      where: vi.fn(() => query),
+      orderBy: vi.fn(async () => [catalogRow]),
+    };
+    mockDb.select.mockReturnValueOnce(query);
+
+    await expect(service.getCatalogByMachineCode("M001")).resolves.toEqual([
+      expect.objectContaining({
+        coverImageUrl: `/api/media-assets/${coverAssetId}/content`,
+        tryOnSilhouetteUrl: `/api/media-assets/${silhouetteAssetId}/content`,
+      }),
     ]);
   });
 
@@ -2854,8 +2896,10 @@ describe("MachinesService planogram lifecycle", () => {
       productDescription: slot.productDescription,
       coverImageUrl:
         "https://untrusted.example/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+      coverImageMediaAssetId: null,
       tryOnSilhouetteUrl:
         "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content?download=1",
+      tryOnSilhouetteMediaAssetId: null,
       categoryId: slot.categoryId,
       categoryName: slot.categoryName,
       sku: slot.sku,
@@ -2913,7 +2957,10 @@ describe("MachinesService planogram lifecycle", () => {
       productName: `商品 ${index + 1}`,
       productDescription: null,
       coverImageUrl,
+      coverImageMediaAssetId:
+        index === 0 ? "550e8400-e29b-41d4-a716-446655440124" : null,
       tryOnSilhouetteUrl: canonicalReference,
+      tryOnSilhouetteMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
       categoryId: null,
       categoryName: "T恤",
       sku: `SKU-${index + 1}`,
@@ -2944,7 +2991,9 @@ describe("MachinesService planogram lifecycle", () => {
       null,
     ]);
     expect(
-      result.every((row) => row.tryOnSilhouetteUrl === canonicalReference),
+      result.every(
+        (row) => row.tryOnSilhouetteUrl === managedTryOnSilhouetteReference,
+      ),
     ).toBe(true);
   });
 

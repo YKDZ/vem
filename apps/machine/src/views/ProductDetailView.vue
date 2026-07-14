@@ -306,6 +306,7 @@ async function enterTryOn(): Promise<void> {
           <div class="detail-image-inner">
             <ManagedMediaImage
               :reference="productImageReference"
+              :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
               :api-base-url="machineStore.config.apiBaseUrl"
               :fallback="fallbackImage"
               :alt="item.productName"
@@ -313,7 +314,8 @@ async function enterTryOn(): Promise<void> {
               @diagnostic="
                 catalogStore.recordMediaDiagnostic(
                   productImageReference,
-                  $event,
+                  $event.message,
+                  $event.diagnosticKey,
                 )
               "
             />

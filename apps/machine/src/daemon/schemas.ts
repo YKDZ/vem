@@ -717,6 +717,7 @@ export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
 export type SaleViewMediaDiagnostic = {
   reference: string | null;
+  diagnosticKey: string;
   message: string;
 };
 

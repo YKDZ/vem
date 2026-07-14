@@ -61,6 +61,32 @@ describe("MediaAssetsService", () => {
     );
   });
 
+  it("persists its configured absolute public URL while catalog consumers use the asset identity", async () => {
+    const values = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([]),
+    });
+    db.insert.mockReturnValue({ values });
+    const service = new MediaAssetsService(db as never, {
+      mediaAssetStorageRoot: storageRoot,
+      mediaAssetPublicBaseUrl: "https://media.example/api",
+    });
+
+    await service.storeProductDisplayImage({
+      originalname: "shirt.jpg",
+      mimetype: "image/jpeg",
+      size: 4,
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publicUrl: expect.stringMatching(
+          /^https:\/\/media\.example\/api\/media-assets\/[0-9a-f-]+\/content$/,
+        ),
+      }),
+    );
+  });
+
   it("stores a try-on silhouette as a managed local media asset with the silhouette purpose", async () => {
     const values = vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue([

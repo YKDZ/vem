@@ -151,12 +151,17 @@ async function submitOrder(): Promise<void> {
             <div class="product-image">
               <ManagedMediaImage
                 :reference="item.coverImageUrl"
+                :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
                 :api-base-url="machineStore.config.apiBaseUrl"
                 :fallback="fallbackImage"
                 :alt="item.productName"
                 :class="{ 'product-image-fallback': !item.coverImageUrl }"
                 @diagnostic="
-                  catalogStore.recordMediaDiagnostic(item.coverImageUrl, $event)
+                  catalogStore.recordMediaDiagnostic(
+                    item.coverImageUrl,
+                    $event.message,
+                    $event.diagnosticKey,
+                  )
                 "
               />
             </div>

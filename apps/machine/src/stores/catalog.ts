@@ -16,6 +16,7 @@ type KnownSize = (typeof SIZE_ORDER)[number];
 
 export type CatalogMediaDiagnostic = {
   reference: string | null;
+  diagnosticKey: string;
   message: string;
   recordedAt: string;
 };
@@ -30,6 +31,10 @@ let autoRefreshConsumers = 0;
 
 function catalogKeyFor(item: Pick<MachineSaleViewItem, "productId">): string {
   return `product:${item.productId}`;
+}
+
+function mediaDiagnosticKey(reference: string | null | undefined): string {
+  return `media:${reference ?? "missing"}`;
 }
 
 function slotCandidateFor(
@@ -302,18 +307,21 @@ export const useCatalogStore = defineStore("catalog", {
       this.lastUpdatedAt = snapshot.lastUpdatedAt;
       this.error = snapshot.lastError ?? null;
       for (const diagnostic of snapshot.mediaDiagnostics ?? []) {
-        this.recordMediaDiagnostic(diagnostic.reference, diagnostic.message);
+        this.recordMediaDiagnostic(
+          diagnostic.reference,
+          diagnostic.message,
+          diagnostic.diagnosticKey,
+        );
       }
     },
     recordMediaDiagnostic(
       reference: string | null | undefined,
       message: string,
+      diagnosticKey = mediaDiagnosticKey(reference),
     ): void {
       if (
         this.mediaDiagnostics.some(
-          (diagnostic) =>
-            diagnostic.reference === (reference ?? null) &&
-            diagnostic.message === message,
+          (diagnostic) => diagnostic.diagnosticKey === diagnosticKey,
         )
       ) {
         return;
@@ -322,24 +330,23 @@ export const useCatalogStore = defineStore("catalog", {
         ...this.mediaDiagnostics.slice(-19),
         {
           reference: reference ?? null,
+          diagnosticKey,
           message,
           recordedAt: new Date().toISOString(),
         },
       ];
-      this.recordCatalogDiagnostic("media", reference, message);
+      this.recordCatalogDiagnostic("media", reference, message, diagnosticKey);
     },
     recordCatalogDiagnostic(
       kind: CatalogOperatorDiagnostic["kind"],
       reference: string | null | undefined,
       message: string,
+      diagnosticKey = `${kind}:${reference ?? "missing"}`,
     ): void {
       const normalizedReference = reference ?? null;
       if (
         this.operatorDiagnostics.some(
-          (diagnostic) =>
-            diagnostic.kind === kind &&
-            diagnostic.reference === normalizedReference &&
-            diagnostic.message === message,
+          (diagnostic) => diagnostic.diagnosticKey === diagnosticKey,
         )
       ) {
         return;
@@ -349,6 +356,7 @@ export const useCatalogStore = defineStore("catalog", {
         {
           kind,
           reference: normalizedReference,
+          diagnosticKey,
           message,
           recordedAt: new Date().toISOString(),
         },
