@@ -50,7 +50,7 @@ describe("repository script inventory guard", () => {
     );
   });
 
-  it("fails when a declared delivery-unit entrypoint does not import every classified closure member", () => {
+  it("rejects a closure that has no structured verifier evidence, regardless of source text", () => {
     withFixture(
       {
         "scripts/windows/test-vision-candidate.ps1":
@@ -93,13 +93,13 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /test-vision-candidate\.ps1 delivery closure is not imported from its sibling path: scripts\/windows\/vision-diagnostic-redaction\.psm1/,
+          /test-vision-candidate\.ps1 delivery closure must declare a classified verifier and exact members/,
         );
       },
     );
   });
 
-  it("rejects a commented sibling Join-Path when the entrypoint does not import its closure member", () => {
+  it("does not let a commented PowerShell import satisfy structured closure evidence", () => {
     withFixture(
       {
         "scripts/windows/test-vision-candidate.ps1":
@@ -133,13 +133,13 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /test-vision-candidate\.ps1 delivery closure is not imported from its sibling path: scripts\/windows\/vision-release-materialization\.psm1/,
+          /test-vision-candidate\.ps1 delivery closure must declare a classified verifier and exact members/,
         );
       },
     );
   });
 
-  it("fails when a delivery producer omits a classified assembly member", () => {
+  it("rejects a JavaScript source-shaped producer without machine-readable evidence", () => {
     withFixture(
       {
         "scripts/factory/finalize.mjs":
@@ -191,13 +191,13 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /finalize\.mjs delivery assembly does not stage classified member: scripts\/windows\/vision-diagnostic-redaction\.psm1/,
+          /finalize\.mjs delivery assembly must declare a classified verifier and VEM evidence artifact/,
         );
       },
     );
   });
 
-  it("rejects an experimental finalizer file list when its members are not staged", () => {
+  it("does not let a dead JavaScript file list satisfy assembly evidence", () => {
     withFixture(
       {
         "scripts/factory/experimental-vision-candidate.mjs": [
@@ -242,13 +242,13 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /experimental-vision-candidate\.mjs delivery assembly does not stage classified member: scripts\/windows\/install-vision-release\.ps1/,
+          /experimental-vision-candidate\.mjs delivery assembly must declare a classified verifier and VEM evidence artifact/,
         );
       },
     );
   });
 
-  it("rejects win10 dirty and clean factory support names when they are not uploaded", () => {
+  it("does not let a commented upload loop satisfy assembly evidence", () => {
     withFixture(
       {
         "scripts/testbed/win10-vem-e2e.mjs": [
@@ -293,13 +293,13 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /win10-vem-e2e\.mjs delivery assembly does not upload classified member: scripts\/windows\/install-vision-release\.ps1/,
+          /win10-vem-e2e\.mjs delivery assembly must declare a classified verifier and VEM evidence artifact/,
         );
       },
     );
   });
 
-  it("rejects Windows harness filenames that are not copied into its delivery media", () => {
+  it("does not let a PowerShell literal satisfy assembly evidence", () => {
     withFixture(
       {
         "scripts/windows/vision-release-install.windows-harness.ps1": [
@@ -344,7 +344,65 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /vision-release-install\.windows-harness\.ps1 delivery assembly does not copy classified member: scripts\/windows\/install-vision-release\.ps1/,
+          /vision-release-install\.windows-harness\.ps1 delivery assembly must declare a classified verifier and VEM evidence artifact/,
+        );
+      },
+    );
+  });
+
+  it("fails when structured assembly evidence omits a classified materializer", () => {
+    withFixture(
+      {
+        "scripts/factory/finalize.mjs": "dead source text is intentionally irrelevant",
+        "scripts/factory/finalize.test.mjs": "test evidence",
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1": "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/factory/finalize.mjs",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "javascript-stage",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+              deliveryAssemblyEvidence: {
+                artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+                verifier: "scripts/factory/finalize.test.mjs",
+                members: ["scripts/windows/install-vision-release.ps1"],
+              },
+            },
+            {
+              path: "scripts/factory/finalize.test.mjs",
+              owner: "field-operations",
+              category: "verifier-test guard",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /finalize\.mjs delivery assembly evidence omits classified member: scripts\/windows\/vision-release-materialization\.psm1/,
         );
       },
     );

@@ -5,7 +5,7 @@ param(
   [Parameter(Mandatory = $true)][string]$DescriptorPath,
   [Parameter(Mandatory = $true)][string]$ConformanceEvidencePath,
   [Parameter(Mandatory = $true)][string]$ReportPath,
-  [string]$PreapprovalManifestPath,
+  [Parameter(Mandatory = $true)][string]$PreapprovalManifestPath,
   [string]$WorkRoot = "C:\ProgramData\VEM\testbed\vision-candidate"
 )
 
@@ -161,7 +161,6 @@ function ConvertTo-CanonicalVisionJson([object]$Value) {
 }
 
 function Assert-PreapprovalDeliveryManifest([string]$Path, [string]$Expected, [string]$Bundle, [string]$Descriptor, [string]$EntryScriptPath = $PSCommandPath, [string]$MaterializerPath = (Join-Path $PSScriptRoot "vision-release-materialization.psm1"), [string]$RedactorPath = (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1")) {
-  if ([string]::IsNullOrWhiteSpace($Path)) { return }
   $read = Read-StrictJson $Path "Vision preapproval delivery manifest"
   $manifest = $read.value
   $expectedKeys = @("schemaVersion", "kind", "expectedDigest", "descriptorDigest", "files", "identity")
@@ -221,6 +220,7 @@ $report = [ordered]@{
 }
 
 try {
+  Assert-CandidateNonReparsePath $WorkRoot "Vision Candidate work root" | Out-Null
   $descriptorRead = Read-StrictJson $DescriptorPath "Vision Candidate descriptor"
   $descriptor = $descriptorRead.value
   if ($ExpectedDigest -notmatch '^sha256:[a-f0-9]{64}$' -or $ExpectedDigest -cne [string]$descriptor.bundle.digest) {
@@ -366,7 +366,11 @@ try {
     } catch { $cleanupOk = $false }
     $candidateProcess.Dispose()
   }
-  try { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop } catch { $cleanupOk = $false }
+  try {
+    if (Test-Path -LiteralPath $staging) {
+      Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop
+    }
+  } catch { $cleanupOk = $false }
   if (($previousRuntimeStopped -or $previousTaskWasRunning) -and $null -ne $previousRuntime) {
     try {
       $report.previousRuntimeRestored = Restore-VerifiedPreviousVisionRuntime $previousRuntime $selectionPathForPrevious $processPathForPrevious

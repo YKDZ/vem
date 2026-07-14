@@ -181,6 +181,37 @@ describe("Vision release installer fixtures", () => {
   );
 
   boundedIt(
+    "requires and byte-pins the self-contained preapproval delivery unit",
+    () => {
+      const candidate = readFileSync(
+        "scripts/windows/test-vision-candidate.ps1",
+        "utf8",
+      );
+      const harness = readFileSync(candidateWindowsHarness, "utf8");
+      assert.match(
+        candidate,
+        /\[Parameter\(Mandatory = \$true\)\]\[string\]\$PreapprovalManifestPath/,
+      );
+      assert.doesNotMatch(
+        candidate,
+        /if \(\[string\]::IsNullOrWhiteSpace\(\$Path\)\) \{ return \}/,
+      );
+      for (const name of [
+        "bundle.bin",
+        "vision-release-descriptor.json",
+        "test-vision-candidate.ps1",
+        "vision-release-materialization.psm1",
+        "vision-diagnostic-redaction.psm1",
+      ]) {
+        assert.match(candidate, new RegExp(`"${name}"`));
+        assert.match(harness, new RegExp(`"${name}"`));
+      }
+      assert.match(harness, /-PreapprovalManifestPath \$delivery\.manifest/);
+      assert.match(harness, /Get-HarnessSha256Bytes/);
+    },
+  );
+
+  boundedIt(
     "keeps Factory installer media and runtime support closure complete for redacted diagnostics",
     () => {
       const builder = readFileSync(

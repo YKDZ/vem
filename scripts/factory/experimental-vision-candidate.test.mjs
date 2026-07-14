@@ -1,29 +1,73 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { createPreapprovalDeliveryManifest } from "./experimental-vision-candidate.mjs";
+import {
+  createPreapprovalDeliveryManifest,
+  FACTORY_VISION_INSTALLER_FILES,
+  stageFactoryVisionInstaller,
+  stagePreapprovalDeliveryUnit,
+} from "./experimental-vision-candidate.mjs";
 import { canonicalJson } from "./factory-manifest.mjs";
 
 const digest = (bytes) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 describe("experimental Vision preapproval delivery", () => {
-  it("includes the diagnostic redactor in finalized Factory installer media and hash evidence", () => {
-    const source = readFileSync(
-      "scripts/factory/experimental-vision-candidate.mjs",
-      "utf8",
-    );
+  it("stages every finalizer script through the actual Factory producer", () => {
+    const staged = new Map();
+    stageFactoryVisionInstaller((relative, bytes) => staged.set(relative, bytes));
+    assert.deepEqual(FACTORY_VISION_INSTALLER_FILES, [
+      "install-vision-release.ps1",
+      "provision-vision-factory-release.ps1",
+      "vision-release-materialization.psm1",
+      "vision-diagnostic-redaction.psm1",
+    ]);
+    assert.deepEqual([...staged.keys()].sort(), [
+      "VISION-INSTALLER/install-vision-release.ps1",
+      "VISION-INSTALLER/provision-vision-factory-release.ps1",
+      "VISION-INSTALLER/vision-diagnostic-redaction.psm1",
+      "VISION-INSTALLER/vision-release-materialization.psm1",
+    ]);
+    for (const [relative, bytes] of staged) {
+      assert.equal(
+        digest(bytes),
+        digest(readFileSync(`scripts/windows/${relative.split("/").at(-1)}`)),
+      );
+    }
+  });
 
-    assert.match(
-      source,
-      /for \(const script of \[[\s\S]*?"vision-diagnostic-redaction\.psm1"[\s\S]*?\]\)/,
-    );
-    assert.match(
-      source,
-      /stage\(\s*`VISION-INSTALLER\/\$\{script\}`,\s*readFileSync\(/,
-    );
+  it("writes a self-contained, byte-pinned preapproval producer output", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-preapproval-"));
+    try {
+      const bundle = Buffer.from("candidate bundle");
+      const descriptor = Buffer.from('{"descriptor":true}\n');
+      const result = stagePreapprovalDeliveryUnit({
+        outputDirectory: root,
+        candidate: { bundle, documents: { descriptor } },
+        verified: { bundleDigest: digest(bundle) },
+      });
+      const manifest = JSON.parse(
+        readFileSync(join(result.root, "preapproval-manifest.json"), "utf8"),
+      );
+      assert.deepEqual(Object.keys(manifest.files).sort(), [
+        "bundle.bin",
+        "test-vision-candidate.ps1",
+        "vision-diagnostic-redaction.psm1",
+        "vision-release-descriptor.json",
+        "vision-release-materialization.psm1",
+      ]);
+      for (const [name, expected] of Object.entries(manifest.files)) {
+        assert.equal(digest(readFileSync(join(result.root, name))), expected);
+      }
+      assert.equal(existsSync(join(result.root, "SHA256SUMS")), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("makes the exact candidate and every executed script hash-addressable", () => {

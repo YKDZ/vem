@@ -10,6 +10,15 @@ function Get-HarnessSha256([string]$Path) {
   return "sha256:" + (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
 }
 
+function Get-HarnessSha256Bytes([byte[]]$Bytes) {
+  $hash = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($hash.ComputeHash($Bytes))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $hash.Dispose()
+  }
+}
+
 function Assert-ExpectedFailure([scriptblock]$Action, [string]$ExpectedMessage) {
   try {
     & $Action
@@ -55,6 +64,35 @@ function New-CandidateHarnessInputs([string]$Root) {
   return [pscustomobject]@{ bundle = $bundle; digest = $bundleDigest; descriptor = $descriptorPath }
 }
 
+function ConvertTo-HarnessCanonicalJson([object]$Value) {
+  if ($null -eq $Value) { return "null" }
+  if ($Value -is [string] -or $Value -is [char] -or $Value -is [bool] -or $Value -is [ValueType]) { return (ConvertTo-Json -InputObject $Value -Compress) }
+  if ($Value -is [Array]) { return "[" + ((@($Value) | ForEach-Object { ConvertTo-HarnessCanonicalJson $_ }) -join ",") + "]" }
+  if ($Value -is [Collections.IDictionary]) { return "{" + ((@($Value.Keys | Sort-Object) | ForEach-Object { (ConvertTo-Json -InputObject ([string]$_) -Compress) + ":" + (ConvertTo-HarnessCanonicalJson $Value[$_]) }) -join ",") + "}" }
+  return "{" + ((@($Value.PSObject.Properties | Sort-Object Name) | ForEach-Object { (ConvertTo-Json -InputObject $_.Name -Compress) + ":" + (ConvertTo-HarnessCanonicalJson $_.Value) }) -join ",") + "}"
+}
+
+function New-PreapprovalDeliveryUnit([string]$Root, [string]$SourceEntrypoint, [object]$Inputs) {
+  $delivery = Join-Path $Root "preapproval-delivery"
+  New-Item -ItemType Directory -Path $delivery -Force | Out-Null
+  $sourceRoot = Split-Path -Parent $SourceEntrypoint
+  foreach ($name in @("test-vision-candidate.ps1", "vision-release-materialization.psm1", "vision-diagnostic-redaction.psm1")) {
+    Copy-Item -LiteralPath (Join-Path $sourceRoot $name) -Destination (Join-Path $delivery $name) -Force
+  }
+  Copy-Item -LiteralPath $Inputs.bundle -Destination (Join-Path $delivery "bundle.bin") -Force
+  Copy-Item -LiteralPath $Inputs.descriptor -Destination (Join-Path $delivery "vision-release-descriptor.json") -Force
+  $files = [ordered]@{}
+  foreach ($name in @("bundle.bin", "vision-release-descriptor.json", "test-vision-candidate.ps1", "vision-release-materialization.psm1", "vision-diagnostic-redaction.psm1")) {
+    $files[$name] = Get-HarnessSha256 (Join-Path $delivery $name)
+  }
+  $unsigned = [ordered]@{ schemaVersion="vem-vision-preapproval-delivery/v1"; kind="vision-preapproval-delivery"; expectedDigest=$Inputs.digest; descriptorDigest=$files["vision-release-descriptor.json"]; files=$files }
+  $identityBytes = [Text.UTF8Encoding]::new($false).GetBytes(((ConvertTo-HarnessCanonicalJson $unsigned) + [char]10))
+  $manifest = [ordered]@{ schemaVersion=$unsigned.schemaVersion; kind=$unsigned.kind; expectedDigest=$unsigned.expectedDigest; descriptorDigest=$unsigned.descriptorDigest; files=$files; identity=("sha256:" + (Get-HarnessSha256Bytes $identityBytes)) }
+  $manifestPath = Join-Path $delivery "preapproval-manifest.json"
+  [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 16 -Compress), [Text.UTF8Encoding]::new($false))
+  return [pscustomobject]@{ root=$delivery; entrypoint=(Join-Path $delivery "test-vision-candidate.ps1"); bundle=(Join-Path $delivery "bundle.bin"); descriptor=(Join-Path $delivery "vision-release-descriptor.json"); manifest=$manifestPath }
+}
+
 if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
   throw "Candidate entrypoint is missing: $CandidatePath"
 }
@@ -63,6 +101,7 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ("vem candidate entrypoint with spa
 try {
   New-Item -ItemType Directory -Path $root -Force | Out-Null
   $inputs = New-CandidateHarnessInputs $root
+  $delivery = New-PreapprovalDeliveryUnit $root $CandidatePath $inputs
 
   # Replace an already-created work-root path with a junction.  The actual
   # entrypoint must reject this reparse traversal before materializing bytes.
@@ -72,7 +111,7 @@ try {
   Remove-Item -LiteralPath $replacedWorkRoot -Force
   New-Item -ItemType Junction -Path $replacedWorkRoot -Target $reparseTarget | Out-Null
   Assert-ExpectedFailure {
-    & $CandidatePath -BundlePath $inputs.bundle -ExpectedDigest $inputs.digest -DescriptorPath $inputs.descriptor -ConformanceEvidencePath (Join-Path $root "reparse conformance.json") -ReportPath (Join-Path $root "reparse report.json") -WorkRoot $replacedWorkRoot
+    & $delivery.entrypoint -BundlePath $delivery.bundle -ExpectedDigest $inputs.digest -DescriptorPath $delivery.descriptor -PreapprovalManifestPath $delivery.manifest -ConformanceEvidencePath (Join-Path $root "reparse conformance.json") -ReportPath (Join-Path $root "reparse report.json") -WorkRoot $replacedWorkRoot
   } "must not traverse a reparse point"
 
   # Execute the entrypoint again through a normal path with spaces.  The
@@ -81,7 +120,7 @@ try {
   $workRoot = Join-Path $root "candidate work root with spaces"
   $reportPath = Join-Path $root "candidate report with spaces.json"
   Assert-ExpectedFailure {
-    & $CandidatePath -BundlePath $inputs.bundle -ExpectedDigest $inputs.digest -DescriptorPath $inputs.descriptor -ConformanceEvidencePath (Join-Path $root "candidate conformance with spaces.json") -ReportPath $reportPath -WorkRoot $workRoot
+    & $delivery.entrypoint -BundlePath $delivery.bundle -ExpectedDigest $inputs.digest -DescriptorPath $delivery.descriptor -PreapprovalManifestPath $delivery.manifest -ConformanceEvidencePath (Join-Path $root "candidate conformance with spaces.json") -ReportPath $reportPath -WorkRoot $workRoot
   } "Vision Candidate did not remain at the exact extracted entrypoint"
   if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
     throw "Candidate entrypoint did not emit its report through a spaced path"

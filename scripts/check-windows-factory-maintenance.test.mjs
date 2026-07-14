@@ -348,6 +348,9 @@ test("generated clean-base orchestration is profile-neutral and parses", () => {
       remoteOpenSshPackagePath: "C:\\Windows\\Temp\\OpenSSH.msi",
       remoteWireGuardPackagePath: "C:\\Windows\\Temp\\WireGuard.msi",
       remoteMaintenanceCaPublicKeyPath: "C:\\Windows\\Temp\\maintenance-ca.pub",
+      factoryMediaRoot: "C:\\VEM\\factory-media",
+      visionConfigurationSourcePath:
+        "C:\\VEM\\factory-media\\assets\\vision-configuration.json",
       maintenanceCaPublicKeySha256: "c".repeat(64),
       openSshPackageSha256: "d".repeat(64),
       wireGuardPackageSha256: "e".repeat(64),
@@ -372,6 +375,14 @@ test("generated clean-base orchestration is profile-neutral and parses", () => {
     assert.match(productionInvocation, /HardwareMode = 'production'/);
     assert.match(productionInvocation, /ExpectedMaintenanceUser = 'Admin'/);
     assert.match(productionInvocation, /FactoryProfile = 'production'/);
+    assert.match(
+      productionInvocation,
+      /FactoryMediaRoot = 'C:\\VEM\\factory-media'/,
+    );
+    assert.match(
+      productionInvocation,
+      /VisionConfigurationSourcePath = 'C:\\VEM\\factory-media\\assets\\vision-configuration\.json'/,
+    );
     assert.doesNotMatch(
       productionInvocation,
       /YKDZ|legacy-provider|simulated/i,

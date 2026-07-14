@@ -52,6 +52,23 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["factory preparation"],
+    deliveryAssemblyAction: "javascript-stage",
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryAssemblyEvidence: {
+      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+      verifier: "scripts/factory/build-factory-media.test.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/factory/build-factory-media.test.mjs",
@@ -143,6 +160,25 @@ const DEFAULT_INVENTORY = [
       "scripts/windows/vision-release-materialization.psm1",
       "scripts/windows/vision-diagnostic-redaction.psm1",
     ],
+    deliveryAssemblyEvidence: {
+      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+      verifier: "scripts/factory/experimental-vision-candidate.test.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
+    preapprovalDeliveryAssembly: {
+      artifact: "VEM-VISION-PREAPPROVAL/preapproval-manifest.json",
+      verifier: "scripts/factory/experimental-vision-candidate.test.mjs",
+      members: [
+        "scripts/windows/test-vision-candidate.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/factory/experimental-vision-candidate.test.mjs",
@@ -337,6 +373,16 @@ const DEFAULT_INVENTORY = [
       "scripts/windows/vision-release-materialization.psm1",
       "scripts/windows/vision-diagnostic-redaction.psm1",
     ],
+    deliveryAssemblyEvidence: {
+      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+      verifier: "scripts/windows/vision-release-install.test.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/testbed/factory-image-acceptance.mjs",
@@ -469,6 +515,13 @@ const DEFAULT_INVENTORY = [
       "scripts/windows/vision-release-materialization.psm1",
       "scripts/windows/vision-diagnostic-redaction.psm1",
     ],
+    deliveryClosureEvidence: {
+      verifier: "scripts/windows/vision-release-install.test.mjs",
+      members: [
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/windows/vision-release-materialization.psm1",
@@ -485,6 +538,13 @@ const DEFAULT_INVENTORY = [
       "scripts/windows/vision-release-materialization.psm1",
       "scripts/windows/vision-diagnostic-redaction.psm1",
     ],
+    deliveryClosureEvidence: {
+      verifier: "scripts/windows/vision-release-install.test.mjs",
+      members: [
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/windows/test-vision-candidate.fixtures.ps1",
@@ -509,6 +569,23 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["factory preparation"],
+    deliveryAssemblyAction: "powershell-copy",
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryAssemblyEvidence: {
+      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+      verifier: "scripts/windows/vision-release-install.test.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/windows/vision-release-install.test.mjs",
@@ -534,6 +611,16 @@ const DEFAULT_INVENTORY = [
       "scripts/windows/vision-release-materialization.psm1",
       "scripts/windows/vision-diagnostic-redaction.psm1",
     ],
+    deliveryAssemblyEvidence: {
+      artifact: "VEM/VISION-INSTALLER",
+      verifier: "scripts/windows/vision-release-install.test.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/windows/vision-release-install-harness.behavior.ps1",
@@ -553,6 +640,23 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "canonical entrypoint",
     workflows: ["factory preparation"],
+    deliveryAssemblyAction: "powershell-copy",
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryAssemblyEvidence: {
+      artifact: "VEM/factory-runtime-manifest.json",
+      verifier: "scripts/check-windows-factory-maintenance.test.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/windows/factory-maintenance-fixtures/clean-state-evidence.json",
@@ -851,7 +955,7 @@ function validateInventoryEntry(entry) {
   return failures;
 }
 
-function validateDeliveryClosure(entry, entriesByPath, source) {
+function validateDeliveryClosure(entry, entriesByPath) {
   if (entry.deliveryClosure === undefined) return [];
   if (
     !Array.isArray(entry.deliveryClosure) ||
@@ -861,7 +965,20 @@ function validateDeliveryClosure(entry, entriesByPath, source) {
       `${entry.path} deliveryClosure must name one or more closure members`,
     ];
   }
+  const evidence = entry.deliveryClosureEvidence;
+  if (
+    !evidence ||
+    typeof evidence.verifier !== "string" ||
+    !entriesByPath.has(evidence.verifier) ||
+    entriesByPath.get(evidence.verifier).category !== "verifier-test guard" ||
+    !Array.isArray(evidence.members)
+  ) {
+    return [
+      `${entry.path} delivery closure must declare a classified verifier and exact members`,
+    ];
+  }
   const failures = [];
+  const declaredMembers = new Set(evidence.members);
   for (const closurePath of entry.deliveryClosure) {
     if (typeof closurePath !== "string" || !entriesByPath.has(closurePath)) {
       failures.push(
@@ -869,10 +986,16 @@ function validateDeliveryClosure(entry, entriesByPath, source) {
       );
       continue;
     }
-    const closureName = closurePath.split("/").at(-1);
-    if (!importsPowerShellSiblingModule(source, closureName)) {
+    if (!declaredMembers.has(closurePath)) {
       failures.push(
-        `${entry.path} delivery closure is not imported from its sibling path: ${closurePath}`,
+        `${entry.path} delivery closure evidence omits classified member: ${closurePath}`,
+      );
+    }
+  }
+  for (const member of declaredMembers) {
+    if (!entry.deliveryClosure.includes(member)) {
+      failures.push(
+        `${entry.path} delivery closure evidence names an undeclared member: ${member}`,
       );
     }
   }
@@ -885,127 +1008,7 @@ const DELIVERY_ASSEMBLY_ACTIONS = new Set([
   "powershell-copy",
 ]);
 
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function removeJavaScriptComments(source) {
-  let result = "";
-  let quote = null;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    const next = source[index + 1];
-    if (quote) {
-      result += character;
-      if (character === "\\") {
-        result += next ?? "";
-        index += 1;
-      } else if (character === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      result += character;
-      continue;
-    }
-    if (character === "/" && next === "/") {
-      while (index < source.length && source[index] !== "\n") {
-        result += " ";
-        index += 1;
-      }
-      result += source[index] ?? "";
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      result += "  ";
-      index += 2;
-      while (
-        index < source.length &&
-        !(source[index] === "*" && source[index + 1] === "/")
-      ) {
-        result += source[index] === "\n" ? "\n" : " ";
-        index += 1;
-      }
-      if (index < source.length) {
-        result += "  ";
-        index += 1;
-      }
-      continue;
-    }
-    result += character;
-  }
-  return result;
-}
-
-function executablePowerShell(source) {
-  return source
-    .replace(/<#[\s\S]*?#>/g, "")
-    .split(/\r?\n/)
-    .filter((line) => !line.trimStart().startsWith("#"))
-    .join("\n");
-}
-
-function importsPowerShellSiblingModule(source, moduleName) {
-  const name = escapeRegex(moduleName);
-  return new RegExp(
-    `^\\s*Import-Module\\s+\\(?\\s*Join-Path\\s+\\$PSScriptRoot\\s+["']${name}["']`,
-    "m",
-  ).test(executablePowerShell(source));
-}
-
-function javascriptStagedMember(source, memberName) {
-  const name = escapeRegex(memberName);
-  const literal = `(?:["']${name}["'])`;
-  return new RegExp(
-    `for\\s*\\(\\s*const\\s+(\\w+)\\s+of\\s*\\[[\\s\\S]*?${literal}[\\s\\S]*?\\]\\s*\\)\\s*\\{[\\s\\S]*?\\bstage\\s*\\([\\s\\S]*?\\$\\{\\1\\}`,
-  ).test(removeJavaScriptComments(source));
-}
-
-function javascriptUploadedMember(source, memberName) {
-  const name = escapeRegex(memberName);
-  const cleaned = removeJavaScriptComments(source);
-  const listed = new RegExp(
-    `const\\s+FACTORY_SUPPORT_SCRIPT_NAMES\\s*=\\s*\\[[\\s\\S]*?["']${name}["'][\\s\\S]*?\\]`,
-  ).test(cleaned);
-  const uploaded =
-    /for\s*\(\s*const\s+scriptName\s+of\s+FACTORY_SUPPORT_SCRIPT_NAMES\s*\)\s*\{[\s\S]*?buildScpCommand\s*\(\s*`scripts\/windows\/\$\{scriptName\}`[\s\S]*?runTransientSshOperation\s*\(/.test(
-      cleaned,
-    );
-  return listed && uploaded;
-}
-
-function powerShellCopiedMember(source, memberName) {
-  const name = escapeRegex(memberName);
-  return new RegExp(
-    `^\\s*Copy-Item\\b[^\\r\\n]*["']${name}["'][^\\r\\n]*$`,
-    "m",
-  ).test(executablePowerShell(source));
-}
-
-function hasDeliveryAssemblyAction(source, action, memberName) {
-  switch (action) {
-    case "javascript-stage":
-      return javascriptStagedMember(source, memberName);
-    case "javascript-upload":
-      return javascriptUploadedMember(source, memberName);
-    case "powershell-copy":
-      return powerShellCopiedMember(source, memberName);
-    default:
-      return false;
-  }
-}
-
-function deliveryAssemblyVerb(action) {
-  return {
-    "javascript-stage": "stage",
-    "javascript-upload": "upload",
-    "powershell-copy": "copy",
-  }[action];
-}
-
-function validateDeliveryAssembly(entry, entriesByPath, source) {
+function validateDeliveryAssembly(entry, entriesByPath) {
   if (entry.deliveryAssembly === undefined) return [];
   if (
     !Array.isArray(entry.deliveryAssembly) ||
@@ -1020,7 +1023,22 @@ function validateDeliveryAssembly(entry, entriesByPath, source) {
       `${entry.path} deliveryAssembly must declare a supported deliveryAssemblyAction`,
     ];
   }
+  const evidence = entry.deliveryAssemblyEvidence;
+  if (
+    !evidence ||
+    typeof evidence.artifact !== "string" ||
+    !evidence.artifact.startsWith("VEM/") ||
+    typeof evidence.verifier !== "string" ||
+    !entriesByPath.has(evidence.verifier) ||
+    entriesByPath.get(evidence.verifier).category !== "verifier-test guard" ||
+    !Array.isArray(evidence.members)
+  ) {
+    return [
+      `${entry.path} delivery assembly must declare a classified verifier and VEM evidence artifact`,
+    ];
+  }
   const failures = [];
+  const declaredMembers = new Set(evidence.members);
   for (const assemblyPath of entry.deliveryAssembly) {
     if (typeof assemblyPath !== "string" || !entriesByPath.has(assemblyPath)) {
       failures.push(
@@ -1028,16 +1046,44 @@ function validateDeliveryAssembly(entry, entriesByPath, source) {
       );
       continue;
     }
-    const assemblyName = assemblyPath.split("/").at(-1);
-    if (
-      !hasDeliveryAssemblyAction(
-        source,
-        entry.deliveryAssemblyAction,
-        assemblyName,
-      )
-    ) {
+    if (!declaredMembers.has(assemblyPath)) {
       failures.push(
-        `${entry.path} delivery assembly does not ${deliveryAssemblyVerb(entry.deliveryAssemblyAction)} classified member: ${assemblyPath}`,
+        `${entry.path} delivery assembly evidence omits classified member: ${assemblyPath}`,
+      );
+    }
+  }
+  for (const member of declaredMembers) {
+    if (!entry.deliveryAssembly.includes(member)) {
+      failures.push(
+        `${entry.path} delivery assembly evidence names an undeclared member: ${member}`,
+      );
+    }
+  }
+  return failures;
+}
+
+function validatePreapprovalDeliveryAssembly(entry, entriesByPath) {
+  if (entry.preapprovalDeliveryAssembly === undefined) return [];
+  const evidence = entry.preapprovalDeliveryAssembly;
+  if (
+    !evidence ||
+    typeof evidence.artifact !== "string" ||
+    !evidence.artifact.startsWith("VEM-VISION-PREAPPROVAL/") ||
+    typeof evidence.verifier !== "string" ||
+    !entriesByPath.has(evidence.verifier) ||
+    entriesByPath.get(evidence.verifier).category !== "verifier-test guard" ||
+    !Array.isArray(evidence.members) ||
+    evidence.members.length === 0
+  ) {
+    return [
+      `${entry.path} preapproval delivery assembly must declare a classified verifier and VEM preapproval evidence artifact`,
+    ];
+  }
+  const failures = [];
+  for (const member of evidence.members) {
+    if (typeof member !== "string" || !entriesByPath.has(member)) {
+      failures.push(
+        `${entry.path} preapproval delivery assembly member is not classified: ${String(member)}`,
       );
     }
   }
@@ -1259,16 +1305,15 @@ export function checkRepositoryScriptInventory(options = {}) {
       ...validateDeliveryClosure(
         entry,
         entriesByPath,
-        readText(root, entry.path),
       ),
     );
     failures.push(
       ...validateDeliveryAssembly(
         entry,
         entriesByPath,
-        readText(root, entry.path),
       ),
     );
+    failures.push(...validatePreapprovalDeliveryAssembly(entry, entriesByPath));
     for (const failure of validateLegacyEvidence(root, entry)) {
       failures.push(failure);
     }

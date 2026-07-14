@@ -437,20 +437,43 @@ pub(crate) async fn harden_machine_protected_file_permissions(
 
     #[cfg(windows)]
     {
-        let status = tokio::process::Command::new("icacls.exe")
+        // Do not use account names here: localized Windows images can resolve
+        // them differently.  Rebuild the explicit DACL so a pre-existing temp
+        // file cannot retain an unrelated allow or deny ACE after replacement.
+        let status = tokio::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                windows_secret_acl_script(),
+            ])
             .arg(path)
-            .args(WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS)
             .status()
             .await
-            .map_err(|error| format!("run icacls for file secret failed: {error}"))?;
+            .map_err(|error| format!("set file secret ACL failed: {error}"))?;
         if !status.success() {
-            return Err(format!(
-                "icacls for file secret failed with status {status}"
-            ));
+            return Err(format!("set file secret ACL failed with status {status}"));
         }
     }
 
     Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn windows_secret_acl_script() -> &'static str {
+    r#"$path = [IO.Path]::GetFullPath($args[0])
+$acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+$system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$administrators = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$acl.SetOwner($system)
+foreach ($sid in @($system, $administrators)) {
+  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+    $sid, 'FullControl', 'None', 'None', 'Allow'
+  ))
+}
+Set-Acl -LiteralPath $path -AclObject $acl"#
 }
 
 fn protected_secret_protection_name() -> &'static str {
@@ -863,5 +886,17 @@ mod tests {
                 .as_deref(),
             Some("machine-secret-after-restart"),
         );
+    }
+
+    #[test]
+    fn windows_secret_acl_replaces_existing_explicit_rules_with_stable_sids() {
+        let script = windows_secret_acl_script();
+        assert!(script.contains("SetAccessRuleProtection($true, $false)"));
+        assert!(script.contains("RemoveAccessRuleSpecific"));
+        assert!(script.contains("S-1-5-18"));
+        assert!(script.contains("S-1-5-32-544"));
+        assert!(script.contains("$acl.SetOwner($system)"));
+        assert!(!script.contains("Administrators:F"));
+        assert!(!script.contains("SYSTEM:F"));
     }
 }

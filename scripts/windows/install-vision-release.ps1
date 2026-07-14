@@ -382,8 +382,11 @@ function Set-SystemInstallerAcl([string]$Path, [bool]$KioskReadable) {
   }
   $acl = Get-Acl -LiteralPath $Path
   $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
-  foreach ($identity in @("SYSTEM", "BUILTIN\\Administrators")) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, "FullControl", $inheritanceFlags, "None", "Allow")) }
+  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+  $system = [Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+  $administrators = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+  $acl.SetOwner($system)
+  foreach ($identity in @($system, $administrators)) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, "FullControl", $inheritanceFlags, "None", "Allow")) }
   if ($KioskReadable) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new("VEMKiosk", "ReadAndExecute", $inheritanceFlags, "None", "Allow")) }
   Set-Acl -LiteralPath $Path -AclObject $acl
 }

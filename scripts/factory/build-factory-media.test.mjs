@@ -1679,24 +1679,42 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(ingest, /\[IO\.DriveType\]::CDRom/);
       assert.match(ingest, /Copy-Item -LiteralPath \$sourcePath/);
       assert.doesNotMatch(ingest, /Get-Volume|Get-Partition|Get-Disk/);
-      assert.deepEqual(
-        JSON.parse(
-          await readFile(
-            join(
-              directory,
-              "sources",
-              "$OEM$",
-              "$1",
-              "VEM",
-              "Factory",
-              "VEM",
-              "VISION-FACTORY-PROVISIONING.JSON",
-            ),
-            "utf8",
-          ),
-        ).schemaVersion,
+      const visionProvisioningRoot = join(
+        directory,
+        "sources",
+        "$OEM$",
+        "$1",
+        "VEM",
+        "Factory",
+        "VEM",
+      );
+      const visionProvisioning = JSON.parse(
+        await readFile(
+          join(visionProvisioningRoot, "VISION-FACTORY-PROVISIONING.JSON"),
+          "utf8",
+        ),
+      );
+      assert.equal(
+        visionProvisioning.schemaVersion,
         "vem-vision-factory-provisioning/v1",
       );
+      const expectedInstallerFiles = [
+        "install-vision-release.ps1",
+        "provision-vision-factory-release.ps1",
+        "vision-release-materialization.psm1",
+        "vision-diagnostic-redaction.psm1",
+      ];
+      for (const name of expectedInstallerFiles) {
+        const relative = `VISION-INSTALLER/${name}`;
+        assert.match(visionProvisioning.files[relative], /^sha256:[a-f0-9]{64}$/);
+        const staged = await readFile(
+          join(visionProvisioningRoot, "VISION-INSTALLER", name),
+        );
+        assert.equal(
+          `sha256:${createHash("sha256").update(staged).digest("hex")}`,
+          visionProvisioning.files[relative],
+        );
+      }
     } finally {
       await rm(data.root, { recursive: true, force: true });
     }

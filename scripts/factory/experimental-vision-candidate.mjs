@@ -172,6 +172,22 @@ function writeBytes(path, bytes) {
   writeFileSync(path, bytes);
 }
 
+export const FACTORY_VISION_INSTALLER_FILES = Object.freeze([
+  "install-vision-release.ps1",
+  "provision-vision-factory-release.ps1",
+  "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1",
+]);
+
+export function stageFactoryVisionInstaller(stage) {
+  for (const script of FACTORY_VISION_INSTALLER_FILES) {
+    stage(
+      `VISION-INSTALLER/${script}`,
+      readFileSync(new URL(`../windows/${script}`, import.meta.url)),
+    );
+  }
+}
+
 export function createPreapprovalDeliveryManifest({
   bundle,
   descriptor,
@@ -440,17 +456,7 @@ export function finalizeExperimentalCandidate(options) {
     canonicalBytes(trustAnchor),
   );
   stage("VISION-TRUST/vision-release-verifier.exe", verifierBytes);
-  for (const script of [
-    "install-vision-release.ps1",
-    "provision-vision-factory-release.ps1",
-    "vision-release-materialization.psm1",
-    "vision-diagnostic-redaction.psm1",
-  ]) {
-    stage(
-      `VISION-INSTALLER/${script}`,
-      readFileSync(new URL(`../windows/${script}`, import.meta.url)),
-    );
-  }
+  stageFactoryVisionInstaller(stage);
   const provisioningManifest = {
     schemaVersion: "vem-vision-factory-provisioning/v1",
     kind: "vision-factory-provisioning",

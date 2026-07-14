@@ -61,8 +61,11 @@ function Set-SystemOnlyAcl([string]$Path) {
   }
   $acl = Get-Acl -LiteralPath $Path
   $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
-  foreach ($identity in @("SYSTEM", "BUILTIN\Administrators")) {
+  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+  $system = [Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+  $administrators = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+  $acl.SetOwner($system)
+  foreach ($identity in @($system, $administrators)) {
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
       $identity, "FullControl", $inheritanceFlags, "None", "Allow"
     ))
