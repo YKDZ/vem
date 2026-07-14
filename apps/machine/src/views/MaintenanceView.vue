@@ -592,6 +592,62 @@ const stockForm = reactive({
   attributedTo: "front-panel",
 });
 
+type PendingStockMovement = {
+  movementId: string;
+  planogramVersion: string;
+  slotId: string;
+  movementType: "planned_refill" | "stock_count_correction";
+  quantity: number;
+  attributedTo: string;
+};
+
+const PENDING_STOCK_MOVEMENT_STORAGE_KEY =
+  "vem.machine.pending-stock-movement.v1";
+
+function loadPendingStockMovement(): PendingStockMovement | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(
+      PENDING_STOCK_MOVEMENT_STORAGE_KEY,
+    );
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PendingStockMovement>;
+    if (
+      typeof value.movementId !== "string" ||
+      typeof value.planogramVersion !== "string" ||
+      typeof value.slotId !== "string" ||
+      (value.movementType !== "planned_refill" &&
+        value.movementType !== "stock_count_correction") ||
+      typeof value.quantity !== "number" ||
+      typeof value.attributedTo !== "string"
+    ) {
+      return null;
+    }
+    return value as PendingStockMovement;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingStockMovement(pending: PendingStockMovement | null): void {
+  try {
+    if (pending) {
+      globalThis.localStorage?.setItem(
+        PENDING_STOCK_MOVEMENT_STORAGE_KEY,
+        JSON.stringify(pending),
+      );
+    } else {
+      globalThis.localStorage?.removeItem(PENDING_STOCK_MOVEMENT_STORAGE_KEY);
+    }
+  } catch {
+    // The daemon still owns the durable idempotency record. Storage is only
+    // the browser-side response-loss retry aid.
+  }
+}
+
+const pendingStockMovement = ref<PendingStockMovement | null>(
+  loadPendingStockMovement(),
+);
+
 const adapters: HardwareAdapter[] = ["mock", "serial"];
 
 const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
@@ -1200,23 +1256,46 @@ function nextMovementId(): string {
 async function submitStockMovement(): Promise<void> {
   stockMaintenance.loading = true;
   stockMaintenance.message = null;
+  const candidate = {
+    planogramVersion: stockForm.planogramVersion.trim(),
+    slotId: stockForm.slotId,
+    movementType: stockForm.movementType,
+    quantity: Number(stockForm.quantity),
+    attributedTo: stockForm.attributedTo.trim() || "front-panel",
+  } satisfies Omit<PendingStockMovement, "movementId">;
+  const pending =
+    pendingStockMovement.value &&
+    pendingStockMovement.value.planogramVersion ===
+      candidate.planogramVersion &&
+    pendingStockMovement.value.slotId === candidate.slotId &&
+    pendingStockMovement.value.movementType === candidate.movementType &&
+    pendingStockMovement.value.quantity === candidate.quantity &&
+    pendingStockMovement.value.attributedTo === candidate.attributedTo
+      ? pendingStockMovement.value
+      : { movementId: nextMovementId(), ...candidate };
+  pendingStockMovement.value = pending;
+  savePendingStockMovement(pending);
   try {
     const snapshot = await daemonClient.recordStockMovement({
-      movementId: nextMovementId(),
-      planogramVersion: stockForm.planogramVersion.trim(),
-      slotId: stockForm.slotId,
-      movementType: stockForm.movementType,
-      quantity: Number(stockForm.quantity),
+      movementId: pending.movementId,
+      planogramVersion: candidate.planogramVersion,
+      slotId: candidate.slotId,
+      movementType: candidate.movementType,
+      quantity: candidate.quantity,
       source: "local_maintenance",
-      attributedTo: stockForm.attributedTo.trim() || "front-panel",
+      attributedTo: candidate.attributedTo,
     });
     catalogStore.applySnapshot(snapshot);
+    pendingStockMovement.value = null;
+    savePendingStockMovement(null);
     stockMaintenance.message = "库存动作已记录";
     await refreshStockMaintenanceView();
   } catch (error) {
     clearMaintenanceSessionAfterAuthorizationFailure(error);
     stockMaintenance.message =
-      error instanceof Error ? error.message : String(error);
+      error instanceof Error
+        ? `${error.message}；将保留本次动作编号，可在修复后重试。`
+        : "库存动作提交结果未确认；将保留本次动作编号，可重试。";
   } finally {
     stockMaintenance.loading = false;
   }

@@ -465,69 +465,61 @@ function currentFixtures(): Record<string, unknown> {
         ready: false,
         canSell: false,
         suggestedRoute: "maintenance",
-        blockingCodes: ["PHYSICAL_STOCK_ATTESTATION_MISSING"],
+        blockingCodes: [
+          stockAttestationSubmitted
+            ? "PHYSICAL_STOCK_ATTESTATION_PENDING"
+            : "PHYSICAL_STOCK_ATTESTATION_MISSING",
+        ],
         blockingReasons: [
           {
-            code: "PHYSICAL_STOCK_ATTESTATION_MISSING",
+            code: stockAttestationSubmitted
+              ? "PHYSICAL_STOCK_ATTESTATION_PENDING"
+              : "PHYSICAL_STOCK_ATTESTATION_MISSING",
             component: "stock",
-            message: "physical stock attestation is missing",
+            message: stockAttestationSubmitted
+              ? "physical stock attestation is awaiting Platform acknowledgement"
+              : "physical stock attestation is missing",
           },
         ],
       }),
-      bringUp: stockAttestationSubmitted
-        ? {
-            ...bringUpSnapshot("runtime_ready"),
-            state: "profile_applied",
-            readinessLevel: "not_ready",
-            allowedActions: {
-              configureNetwork: false,
-              claimMachine: false,
-              retryClaim: false,
-              syncProfile: true,
-              resolveTopology: false,
-              runRuntimeAcceptance: true,
-              runHardwareAcceptance: false,
-              attestStock: false,
-              startSales: false,
-            },
-            currentTask: {
-              contractVersion: 1,
-              taskId: "bring_up.sync_profile",
-              taskVersion: 1,
-              kind: "sync_profile",
-              intent: "refresh_profile",
-              rotateMaintenanceIdentity: false,
-              projection: { type: "profile_sync" },
-            },
-          }
-        : {
-            ...bringUpSnapshot("runtime_ready"),
-            state: "stock_attestation_required",
-            readinessLevel: "not_ready",
-            allowedActions: {
-              configureNetwork: false,
-              claimMachine: false,
-              retryClaim: false,
-              syncProfile: false,
-              resolveTopology: false,
-              runRuntimeAcceptance: true,
-              runHardwareAcceptance: false,
-              attestStock: true,
-              startSales: false,
-            },
-            currentTask: {
-              contractVersion: 1,
-              taskId: "bring_up.attest_stock",
-              taskVersion: 1,
-              kind: "attest_stock",
-              intent: "record_stock",
-              rotateMaintenanceIdentity: false,
-              projection: {
-                type: "stock_attestation",
-                entryMode: "final_actual_quantities",
+      bringUp: {
+        ...bringUpSnapshot("runtime_ready"),
+        state: "stock_attestation_required",
+        readinessLevel: "not_ready",
+        diagnostics: stockAttestationSubmitted
+          ? [
+              {
+                code: "PHYSICAL_STOCK_ATTESTATION_PENDING",
+                component: "stock",
+                message:
+                  "physical stock attestation is awaiting Platform acknowledgement",
               },
-            },
+            ]
+          : [],
+        allowedActions: {
+          configureNetwork: false,
+          claimMachine: false,
+          retryClaim: false,
+          syncProfile: false,
+          resolveTopology: false,
+          runRuntimeAcceptance: true,
+          runHardwareAcceptance: false,
+          attestStock: !stockAttestationSubmitted,
+          startSales: false,
+        },
+        currentTask: {
+          contractVersion: 1,
+          taskId: "bring_up.attest_stock",
+          taskVersion: 1,
+          kind: "attest_stock",
+          intent: "record_stock",
+          rotateMaintenanceIdentity: false,
+          projection: {
+            type: "stock_attestation",
+            entryMode: "final_actual_quantities",
           },
+        },
+      },
       transaction: emptyTransaction,
     };
   }
@@ -1015,7 +1007,7 @@ test("provisioning UI sends a PIN-gated typed claim without echoing the code", a
   ]);
 });
 
-test("record-stock UI PIN-gates and advances the typed physical attestation cursor", async ({
+test("record-stock UI PIN-gates and keeps the typed cursor pending for Platform acknowledgement", async ({
   page,
 }) => {
   scenario = "stockAttestation";
@@ -1033,7 +1025,13 @@ test("record-stock UI PIN-gates and advances the typed physical attestation curs
   await page.getByLabel("已逐格核对实物数量，并确认提交。").check();
   await page.getByRole("button", { name: "确认并提交实物库存" }).click();
 
-  await expect(page.getByText("当前任务：同步运行档案")).toBeVisible();
+  await expect(page.getByText("当前任务：确认初始库存")).toBeVisible();
+  await expect(
+    page.getByText("PHYSICAL_STOCK_ATTESTATION_PENDING", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "正在等待平台确认" }),
+  ).toBeDisabled();
   expect(protectedBringUpRequests).toEqual([
     {
       maintenanceSession: "e2e-maintenance-session",

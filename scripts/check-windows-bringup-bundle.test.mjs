@@ -14,6 +14,7 @@ const factoryPreparation = readFileSync(
   "scripts/windows/prepare-factory-runtime.ps1",
   "utf8",
 );
+const daemonIpc = readFileSync("apps/vending-daemon/src/ipc.rs", "utf8");
 
 test("Windows Bring-up bundle delivers executable runtime and a secure maintenance-session path", () => {
   const result = checkWindowsBringUpBundle({
@@ -21,27 +22,52 @@ test("Windows Bring-up bundle delivers executable runtime and a secure maintenan
     readme,
     smoke,
     factoryPreparation,
+    daemonIpc,
   });
 
   assert.equal(result.ok, true, result.failures.join("\n"));
 });
 
-test("Windows Bring-up bundle checker rejects a smoke example without a secure session source", () => {
+test("Windows Bring-up bundle checker rejects a README that leaks the PIN into a child process command", () => {
   const result = checkWindowsBringUpBundle({
     workflow,
     readme: readme.replace(
-      "-MaintenancePin $env:VEM_MAINTENANCE_PIN",
-      "-ScannerPort COM4",
+      "& C:\\VEM\\bringup\\scripts\\windows\\vending-daemon-smoke.ps1",
+      "powershell -ExecutionPolicy Bypass -File C:\\VEM\\bringup\\scripts\\windows\\vending-daemon-smoke.ps1",
     ),
     smoke,
     factoryPreparation,
+    daemonIpc,
   });
 
   assert.equal(result.ok, false);
   assert.ok(
     result.failures.some((failure) =>
       failure.includes(
-        "README supplies MaintenancePin from a secure operator source",
+        "README-reads-and-calls-maintenance-PIN-in-current-process",
+      ),
+    ),
+    result.failures.join("\n"),
+  );
+});
+
+test("Windows Bring-up bundle checker rejects a smoke script that targets a fake bootstrap endpoint", () => {
+  const result = checkWindowsBringUpBundle({
+    workflow,
+    readme,
+    smoke: smoke.replace(
+      "/v1/factory/bootstrap/maintenance-session",
+      "/v1/factory/bootstrap/pretend-session",
+    ),
+    factoryPreparation,
+    daemonIpc,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.failures.some((failure) =>
+      failure.includes(
+        "smoke-protected-session-contract-is-real-and-fail-closed",
       ),
     ),
     result.failures.join("\n"),

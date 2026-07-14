@@ -50,6 +50,9 @@ const maintenanceSessionAuthorized = ref(
   daemonClient.hasMaintenanceSessionForRoute("bring-up"),
 );
 let removeMaintenanceSessionInvalidationListener: (() => void) | null = null;
+let attestationRefreshTimer: ReturnType<typeof globalThis.setTimeout> | null =
+  null;
+const attestationAwaitingPlatform = ref(false);
 type BringUpProgressStep = NonNullable<BringUpSnapshot["progress"]>[number];
 
 const currentTask = computed(() => bringUp.value?.currentTask ?? null);
@@ -57,6 +60,11 @@ const currentTaskLabel = computed(() =>
   currentTask.value ? taskLabel(currentTask.value.kind) : "正在确认本机状态",
 );
 const progress = computed(() => bringUp.value?.progress ?? []);
+const attestationRecovery = computed(() =>
+  bringUp.value?.diagnostics.find((reason) =>
+    reason.code.startsWith("PHYSICAL_STOCK_ATTESTATION_"),
+  ),
+);
 const currentTaskNeedsMaintenanceSession = computed(() =>
   [
     "configure_network",
@@ -225,6 +233,16 @@ async function loadPhysicalStockAttestation(): Promise<void> {
   stockAttestation.loading = true;
   try {
     populatePhysicalStockAttestation(await daemonClient.getSaleView());
+    if (
+      attestationRecovery.value?.code === "PHYSICAL_STOCK_ATTESTATION_REJECTED"
+    ) {
+      // A terminal Platform rejection needs a new generation after the
+      // operator corrects the observation.  Keep quantities visible, but do
+      // not replay the rejected idempotency key.
+      stockAttestation.attestationId = newPhysicalAttestationId();
+      stockAttestation.confirmed = false;
+      attestationAwaitingPlatform.value = false;
+    }
   } catch {
     resetPhysicalStockAttestation();
     statusMessage.value = "无法读取当前货道库存，请检查本机服务后重试。";
@@ -260,6 +278,38 @@ async function refreshBringUp(): Promise<void> {
   }
 }
 
+function stopAttestationCursorRefresh(): void {
+  if (attestationRefreshTimer !== null) {
+    globalThis.clearTimeout(attestationRefreshTimer);
+    attestationRefreshTimer = null;
+  }
+}
+
+function refreshAttestationCursorAfterDelay(): void {
+  stopAttestationCursorRefresh();
+  if (
+    !attestationAwaitingPlatform.value ||
+    currentTask.value?.kind !== "attest_stock"
+  ) {
+    return;
+  }
+  attestationRefreshTimer = globalThis.setTimeout(async () => {
+    attestationRefreshTimer = null;
+    await refreshBringUp();
+    if (
+      attestationRecovery.value?.code === "PHYSICAL_STOCK_ATTESTATION_REJECTED"
+    ) {
+      attestationAwaitingPlatform.value = false;
+      return;
+    }
+    if (currentTask.value?.kind === "attest_stock") {
+      refreshAttestationCursorAfterDelay();
+    } else {
+      attestationAwaitingPlatform.value = false;
+    }
+  }, 1_500);
+}
+
 async function submitPhysicalStockAttestation(): Promise<void> {
   const task = currentTask.value;
   if (
@@ -288,12 +338,20 @@ async function submitPhysicalStockAttestation(): Promise<void> {
         })),
       },
     });
-    statusMessage.value = "实物库存已确认，正在读取下一项部署任务。";
+    attestationAwaitingPlatform.value = true;
+    statusMessage.value =
+      "实物库存已提交，正在等待平台确认；将自动刷新部署游标。";
     await refreshBringUp();
   } catch {
-    statusMessage.value = "实物库存确认失败，请核对每个货道后重试。";
+    // The daemon may have committed the durable outbox just before the HTTP
+    // response was lost. Refresh the daemon-owned cursor rather than creating
+    // a second local completion or a new attestation id.
+    attestationAwaitingPlatform.value = true;
+    statusMessage.value = "提交结果暂未确认，正在重新读取平台确认状态。";
+    await refreshBringUp();
   } finally {
     submitting.value = false;
+    refreshAttestationCursorAfterDelay();
   }
 }
 
@@ -441,6 +499,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopAttestationCursorRefresh();
   removeMaintenanceSessionInvalidationListener?.();
   removeMaintenanceSessionInvalidationListener = null;
   daemonClient.releaseMaintenanceSessionRoute("bring-up");
@@ -579,6 +638,12 @@ onUnmounted(() => {
               <p>逐格填写现场实际数量；提交后将作为首次部署库存凭证。</p>
             </div>
             <p v-if="stockAttestation.loading">正在读取有效货道…</p>
+            <p
+              v-if="attestationRecovery"
+              class="physical-stock-attestation__recovery"
+            >
+              {{ attestationRecovery.code }}：{{ attestationRecovery.message }}
+            </p>
             <div v-else class="physical-stock-attestation__slots">
               <label v-for="slot in stockAttestation.slots" :key="slot.slotId">
                 <span
@@ -609,10 +674,17 @@ onUnmounted(() => {
                 !canExecuteCurrentTask() ||
                 !physicalStockAttestationReady ||
                 submitting ||
+                attestationAwaitingPlatform ||
                 stockAttestation.loading
               "
             >
-              {{ submitting ? "正在提交实物库存" : "确认并提交实物库存" }}
+              {{
+                submitting
+                  ? "正在提交实物库存"
+                  : attestationAwaitingPlatform
+                    ? "正在等待平台确认"
+                    : "确认并提交实物库存"
+              }}
             </button>
           </form>
 
@@ -755,6 +827,10 @@ button {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+}
+
+.physical-stock-attestation__recovery {
+  color: #fde68a;
 }
 .physical-stock-attestation__confirmation input {
   width: 1.25rem;

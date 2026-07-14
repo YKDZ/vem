@@ -31,21 +31,31 @@ print it. If the file is present and unconsumed, run the smoke command without
 `-MaintenancePin`; the script will use that one-shot capability.
 
 For every later smoke, or whenever the one-shot file is absent, obtain a
-maintenance PIN through the approved operator secret channel and make it
-available only to the current PowerShell process. The following command is
-runnable only after that secure input is present; it deliberately contains no
-PIN value:
+maintenance PIN through the approved operator secret channel. Read it as a
+`SecureString` and invoke the smoke script from this current PowerShell
+process: do not put a PIN in an environment variable or start a child
+`powershell -File` command with it.
 
 ```powershell
-if ([string]::IsNullOrWhiteSpace($env:VEM_MAINTENANCE_PIN)) { throw "obtain a maintenance PIN through the approved operator secret channel first" }
-powershell -ExecutionPolicy Bypass -File C:\VEM\bringup\scripts\windows\vending-daemon-smoke.ps1 `
+$secureMaintenancePin = Read-Host "Maintenance PIN" -AsSecureString
+$pinBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureMaintenancePin)
+try {
+  $maintenancePin = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pinBstr)
+  if ([string]::IsNullOrWhiteSpace($maintenancePin)) { throw "obtain a maintenance PIN through the approved operator secret channel first" }
+  & C:\VEM\bringup\scripts\windows\vending-daemon-smoke.ps1 `
   -DaemonExe C:\VEM\bringup\vending-daemon.exe `
   -MachineUiExe C:\VEM\bringup\machine.exe `
   -DataDir C:\ProgramData\VEM\vending-daemon `
   -MachineConfig C:\VEM\bringup\machine-config.json `
   -ComPort COM3 `
   -ScannerPort COM4 `
-  -MaintenancePin $env:VEM_MAINTENANCE_PIN
+  -MaintenancePin $maintenancePin
+} finally {
+  $maintenancePin = $null
+  if ($pinBstr -ne [IntPtr]::Zero) {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pinBstr)
+  }
+}
 ```
 
 Use the same Factory/Testbed bootstrap origin as the installed runtime. A

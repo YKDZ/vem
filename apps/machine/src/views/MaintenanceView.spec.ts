@@ -290,6 +290,7 @@ function provisionedConfigSummary(): ConfigSummary {
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
+  globalThis.localStorage.clear();
   vi.clearAllMocks();
   maintenanceSessionInvalidationListener = null;
   routeMock.query = { source: "operator" };
@@ -1640,5 +1641,31 @@ describe("MaintenanceView stock maintenance", () => {
         }),
       );
     });
+  });
+
+  it("reuses the persisted refill idempotency key after a lost response", async () => {
+    const host = await mountView();
+    await unlockMaintenance(host);
+    recordStockMovementMock
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(saleViewFixture());
+
+    submitButton(host).click();
+    await vi.waitFor(() => {
+      expect(recordStockMovementMock).toHaveBeenCalledTimes(1);
+    });
+    await vi.waitFor(() => {
+      expect(submitButton(host).disabled).toBe(false);
+    });
+    submitButton(host).click();
+    await vi.waitFor(() => {
+      expect(recordStockMovementMock).toHaveBeenCalledTimes(2);
+    });
+
+    const [first, second] = recordStockMovementMock.mock.calls.map(
+      ([body]) => body as { movementId: string },
+    );
+    expect(first.movementId).toMatch(/^LOCAL-/);
+    expect(second.movementId).toBe(first.movementId);
   });
 });

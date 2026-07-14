@@ -1610,6 +1610,25 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
         updated_at: crate::state::store::now_iso(),
     });
     let mut snapshot = snapshot;
+    if let Some(physical_stock_attestation) = sale_readiness
+        .as_ref()
+        .and_then(|value| value.get("components"))
+        .and_then(|value| value.get("physicalStockAttestation"))
+    {
+        let code = physical_stock_attestation
+            .get("code")
+            .and_then(|value| value.as_str());
+        let message = physical_stock_attestation
+            .get("message")
+            .and_then(|value| value.as_str());
+        if let (Some(code), Some(message)) = (code, message) {
+            snapshot.diagnostics.push(crate::bring_up::BringUpReason {
+                code: code.to_string(),
+                component: "stock".to_string(),
+                message: message.to_string(),
+            });
+        }
+    }
     if let Some(network) = network_status {
         snapshot
             .diagnostics
@@ -5031,7 +5050,7 @@ mod tests {
     use crate::{
         config::default_public_config,
         secret::{InMemorySecretStore, SecretStore},
-        state::store::OutboxInput,
+        state::{store::OutboxInput, LocalStateStore},
         transaction::TransactionStateMachine,
     };
     use axum::{
@@ -5994,30 +6013,29 @@ mod tests {
     }
 
     async fn record_attested_stock(
-        app: &Router,
+        state: &LocalStateStore,
         planogram_version: &str,
         slot_id: &str,
         quantity: i64,
     ) {
-        let response = post_json_with_maintenance(
-            app,
-            "/v1/stock/attestation",
-            "token-1",
-            json!({
-                "attestationId": format!("ATT-{planogram_version}"),
-                "planogramVersion": planogram_version,
-                "operatorId": "operator-1",
-                "slots": [{
-                    "slotId": slot_id,
-                    "slotCode": "A1",
-                    "sku": "WATER-001",
-                    "quantity": quantity,
-                    "enabled": true
-                }]
-            }),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::CREATED);
+        // Sale-intent tests need an already Platform-accepted baseline. The
+        // typed IPC path is covered separately by outbox acceptance tests;
+        // this fixture deliberately seeds the post-ack local projection.
+        state
+            .record_physical_stock_attestation(PhysicalStockAttestationInput {
+                attestation_id: format!("ATT-{planogram_version}"),
+                planogram_version: planogram_version.to_string(),
+                operator_id: "operator-1".to_string(),
+                slots: vec![crate::state::store::PhysicalStockAttestationSlotInput {
+                    slot_id: slot_id.to_string(),
+                    slot_code: "A1".to_string(),
+                    sku: "WATER-001".to_string(),
+                    quantity,
+                    enabled: true,
+                }],
+            })
+            .await
+            .expect("accepted attestation fixture");
     }
 
     async fn get_ipc_json(app: &Router, uri: &str, token: Option<&str>) -> serde_json::Value {
@@ -8404,7 +8422,7 @@ mod tests {
                     "frameImageBase64": "raw-frame-must-remain-diagnostic-only"
                 }));
             }
-            let app = build_router(ctx);
+            let app = build_router(ctx.clone());
             let slot_id = format!("550e8400-e29b-41d4-a716-44665544{slot_suffix}");
             let inventory_id = format!("550e8400-e29b-41d4-a716-44665545{slot_suffix}");
             let planogram_version = format!("PLAN-TRY-ON-{slot_suffix}");
@@ -8440,7 +8458,7 @@ mod tests {
                 StatusCode::CREATED,
                 "{case_name}: stock movement should apply"
             );
-            record_attested_stock(&app, &planogram_version, &slot_id, 2).await;
+            record_attested_stock(&ctx.state, &planogram_version, &slot_id, 2).await;
 
             let readyz = get_ipc_json(&app, "/readyz", None).await;
             assert_eq!(readyz["canSell"], true, "{case_name}: readyz can sell");
@@ -8541,7 +8559,7 @@ mod tests {
             scanner.updated_at = (chrono::Utc::now() - chrono::Duration::seconds(120))
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         }
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
 
         let response = app
             .oneshot(
@@ -8626,7 +8644,7 @@ mod tests {
             scanner.code = "SCANNER_OPEN_FAILED".to_string();
             scanner.message = "open serial port /dev/vem-secret-scanner failed".to_string();
         }
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
 
         let options = get_ipc_json(&app, "/v1/payment-options", Some("token-1")).await;
         let option_keys: Vec<&str> = options["options"]
@@ -8708,7 +8726,7 @@ mod tests {
             scanner.code = "SCANNER_READ_ERROR".to_string();
             scanner.message = "scanner read error on COM3".to_string();
         }
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
 
         let options = get_ipc_json(&app, "/v1/payment-options", Some("token-1")).await;
         let payment_code = options["options"]
@@ -8783,7 +8801,7 @@ mod tests {
             scanner.updated_at = (chrono::Utc::now() - chrono::Duration::seconds(120))
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         }
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440901";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440902";
         assert_eq!(
@@ -8816,7 +8834,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-SCANNER-STALE", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-SCANNER-STALE", slot_id, 2).await;
 
         let response = app
             .oneshot(
@@ -8902,7 +8920,7 @@ mod tests {
         )
         .await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
 
         let response = post_json_with_maintenance(
             &app,
@@ -8983,7 +9001,7 @@ mod tests {
         )
         .await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440701";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440702";
         assert_eq!(
@@ -9016,7 +9034,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-SINGLE-ITEM-ONLY", slot_id, 3).await;
+        record_attested_stock(&ctx.state, "PLAN-SINGLE-ITEM-ONLY", slot_id, 3).await;
 
         let response = post_json_with_maintenance(
             &app,
@@ -9139,7 +9157,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-PRODUCTION-PATH", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-PRODUCTION-PATH", slot_id, 2).await;
 
         let response = app
             .clone()
@@ -9340,7 +9358,7 @@ mod tests {
         write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
         apply_platform_topology(&ctx, "vem-prod-24", "2026-06-adr0026").await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440901";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440902";
 
@@ -9374,7 +9392,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-TOPOLOGY-MATCH", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-TOPOLOGY-MATCH", slot_id, 2).await;
 
         let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
         assert_eq!(readiness["canStartNetworkAuthorizedSale"], true);
@@ -9398,7 +9416,7 @@ mod tests {
         write_factory_manifest(temp_dir.path(), "vem-prod-24", "factory-v1").await;
         apply_platform_topology(&ctx, "vem-prod-24", "platform-v2").await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
 
         let response = post_json_with_maintenance(
             &app,
@@ -9445,7 +9463,7 @@ mod tests {
         write_factory_manifest(temp_dir.path(), "vem-prod-24", "factory-v1").await;
         apply_platform_topology(&ctx, "vem-prod-24", "platform-v2").await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
 
         let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
 
@@ -10655,7 +10673,7 @@ mod tests {
         )
         .await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440201";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440202";
         assert_eq!(
@@ -10688,7 +10706,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-FROZEN-CREATE", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-FROZEN-CREATE", slot_id, 2).await;
         assert_eq!(
             post_json_with_maintenance(
                 &app,
@@ -10801,7 +10819,7 @@ mod tests {
             scanner.code = "SCANNER_OPEN_FAILED".to_string();
             scanner.message = "scanner open failed".to_string();
         }
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440301";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440302";
         assert_eq!(
@@ -10834,7 +10852,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-SCANNER-PAYMENT-CODE", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-SCANNER-PAYMENT-CODE", slot_id, 2).await;
 
         let readiness_response = app
             .clone()
@@ -10967,7 +10985,7 @@ mod tests {
             scanner.code = "SCANNER_OPEN_FAILED".to_string();
             scanner.message = "scanner open failed".to_string();
         }
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440401";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440402";
         assert_eq!(
@@ -11000,7 +11018,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-SCANNER-QR", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-SCANNER-QR", slot_id, 2).await;
 
         let response = post_json_with_maintenance(
             &app,
@@ -11117,7 +11135,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-SCANNER-RACE", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-SCANNER-RACE", slot_id, 2).await;
 
         let create_response = post_json_with_maintenance(
             &app,
@@ -11220,7 +11238,7 @@ mod tests {
             scanner.code = "SCANNER_OPEN_FAILED".to_string();
             scanner.message = "scanner open failed".to_string();
         }
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440501";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440502";
         assert_eq!(
@@ -11253,7 +11271,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-SCANNER-MOCK", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-SCANNER-MOCK", slot_id, 2).await;
 
         let response = post_json_with_maintenance(
             &app,
@@ -11338,7 +11356,7 @@ mod tests {
         )
         .await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         assert_eq!(
             post_json_with_maintenance(
                 &app,
@@ -11369,7 +11387,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-NETWORK-AUTH", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-NETWORK-AUTH", slot_id, 2).await;
 
         let response = post_json_with_maintenance(
             &app,
@@ -11433,7 +11451,7 @@ mod tests {
         )
         .await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
         assert_eq!(
             post_json_with_maintenance(
                 &app,
@@ -11464,7 +11482,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
-        record_attested_stock(&app, "PLAN-PLATFORM-REFUSAL", slot_id, 2).await;
+        record_attested_stock(&ctx.state, "PLAN-PLATFORM-REFUSAL", slot_id, 2).await;
 
         let response = post_json_with_maintenance(
             &app,
@@ -12840,7 +12858,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn physical_stock_attestation_endpoint_unblocks_production_sale_readiness() {
+    async fn physical_stock_attestation_endpoint_keeps_production_cursor_pending_until_platform_acknowledgement(
+    ) {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
@@ -12951,9 +12970,9 @@ mod tests {
         assert_eq!(attestation.status(), StatusCode::CREATED);
 
         let bring_up_after = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
-        assert_ne!(
+        assert_eq!(
             bring_up_after["currentTask"]["kind"], "attest_stock",
-            "typed attestation must advance the daemon-owned cursor"
+            "durable outbox staging must not advance the typed cursor"
         );
 
         let readiness = app
@@ -12974,13 +12993,13 @@ mod tests {
         let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
             readiness["components"]["physicalStockAttestation"]["status"],
-            "ready"
+            "pending"
         );
-        assert!(!readiness["blockingCodes"]
+        assert!(readiness["blockingCodes"]
             .as_array()
             .unwrap()
-            .contains(&json!("PHYSICAL_STOCK_ATTESTATION_MISSING")));
-        assert_eq!(readiness["canStartNetworkAuthorizedSale"], true);
+            .contains(&json!("PHYSICAL_STOCK_ATTESTATION_PENDING")));
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
     }
 
     #[tokio::test]

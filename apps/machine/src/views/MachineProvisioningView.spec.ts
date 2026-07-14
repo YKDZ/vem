@@ -470,7 +470,7 @@ describe("Bring-Up Console", () => {
     expect(host.textContent).not.toContain("无线网络密码");
   });
 
-  it("submits a PIN-gated physical stock attestation through the typed cursor without opening maintenance", async () => {
+  it("keeps the typed record-stock cursor pending until Platform acknowledgement", async () => {
     hasMaintenanceSessionForRouteMock.mockReturnValue(false);
     getBringUpMock
       .mockResolvedValueOnce(
@@ -493,19 +493,28 @@ describe("Bring-Up Console", () => {
       )
       .mockResolvedValueOnce(
         snapshot({
-          state: "profile_applied",
+          state: "stock_attestation_required",
+          diagnostics: [
+            {
+              code: "PHYSICAL_STOCK_ATTESTATION_PENDING",
+              component: "stock",
+              message:
+                "physical stock attestation is awaiting Platform acknowledgement",
+            },
+          ],
           currentTask: {
             contractVersion: 1,
-            taskId: "bring_up.sync_profile",
+            taskId: "bring_up.attest_stock",
             taskVersion: 1,
-            kind: "sync_profile",
-            intent: "refresh_profile",
+            kind: "attest_stock",
+            intent: "record_stock",
             rotateMaintenanceIdentity: false,
-            projection: { type: "profile_sync" },
+            projection: {
+              type: "stock_attestation",
+              entryMode: "final_actual_quantities",
+            },
           },
-          progress: [
-            { kind: "stock", status: "completed", evidence: "durable" },
-          ],
+          progress: [{ kind: "stock", status: "current", evidence: "durable" }],
         }),
       );
     executeBringUpTaskMock.mockResolvedValueOnce(saleView());
@@ -563,7 +572,9 @@ describe("Bring-Up Console", () => {
     });
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("当前任务：同步运行档案");
+      expect(host.textContent).toContain("当前任务：确认初始库存");
+      expect(host.textContent).toContain("PHYSICAL_STOCK_ATTESTATION_PENDING");
+      expect(host.textContent).toContain("正在等待平台确认");
     });
   });
 
