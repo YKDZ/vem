@@ -341,6 +341,20 @@ try {
   Assert-Fixture ($caEvidence.fingerprint -match "^SHA256:[A-Za-z0-9+/]+$") "CA fingerprint must be measured by ssh-keygen"
   Assert-Fixture ($caEvidence.keyCount -eq 1) "CA file must contain exactly one public key"
 
+  $verifierCaEvidence = Get-MaintenanceCaEvidence -Manifest ([pscustomobject]@{
+    factoryProfile = "testbed"
+    maintenanceSsh = [pscustomobject]@{
+      caPath = $caPublicPath
+      caSha256 = $script:MaintenanceSshCaPublicKeySha256
+      caFingerprint = $caEvidence.fingerprint
+    }
+  })
+  Assert-Fixture ($verifierCaEvidence.keyCount -eq 1) "verifier must retain a single CA key as an array"
+  Assert-Fixture ($verifierCaEvidence.keyType -ceq "ssh-ed25519") "verifier must parse the complete CA key line"
+  Assert-Fixture ($verifierCaEvidence.profileMatches) "verifier must accept the prepared CA profile"
+  Assert-Fixture ($verifierCaEvidence.fingerprintMatches) "verifier must accept the prepared CA fingerprint"
+  Assert-Fixture ($verifierCaEvidence.publicKeyOnly) "verifier must classify the CA as one public key"
+
   Add-Content -LiteralPath $caPublicPath -Value (Get-Content -LiteralPath $caPublicPath -Raw)
   $script:MaintenanceSshCaPublicKeySha256 = (Get-FileHash -LiteralPath $caPublicPath -Algorithm SHA256).Hash.ToLowerInvariant()
   Assert-ThrowsLike -Action { Assert-MaintenanceCaInput } -Pattern "exactly one" -Message "CA file must reject multiple public keys"
