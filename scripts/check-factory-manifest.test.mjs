@@ -1386,6 +1386,51 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.equal(parsed.jobs.build["runs-on"], "windows-2022");
     assert.match(workflow, /node-version:\s*24\.16\.0/);
     assert.match(workflow, /toolchain:\s*1\.96\.0/);
+    const rustInstallStep = workflowStep(parsed, "Install Rust");
+    assert.equal(rustInstallStep.with.components, "llvm-tools-preview");
+    const cargoCacheStep = workflowStep(parsed, "Restore Cargo cache");
+    assert.match(
+      cargoCacheStep.with.key,
+      /hashFiles\('Cargo\.lock', '\.github\/workflows\/build-windows-runtime-artifacts\.yml'\)/,
+    );
+    const daemonBuildStep = workflowStep(parsed, "Build Vending Daemon");
+    assert.equal(
+      daemonBuildStep.env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS,
+      "-Ctarget-feature=+crt-static",
+    );
+    assert.equal(
+      parsed.jobs.build.env?.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS,
+      undefined,
+    );
+    assert.deepEqual(
+      parsed.jobs.build.steps
+        .filter((step) =>
+          Object.hasOwn(
+            step.env ?? {},
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
+          ),
+        )
+        .map((step) => step.name),
+      ["Build Vending Daemon"],
+    );
+    const importGateStep = workflowStep(
+      parsed,
+      "Verify Vending Daemon Static CRT Imports",
+    );
+    assert.match(importGateStep.run, /rustc --print sysroot/);
+    assert.match(importGateStep.run, /llvm-readobj\.exe/);
+    assert.match(importGateStep.run, /--coff-imports/);
+    assert.match(importGateStep.run, /VCRUNTIME140/);
+    assert.match(importGateStep.run, /api-ms-win-crt-/);
+    const stageStep = workflowStep(parsed, "Stage Runtime Artifacts");
+    assert.match(stageStep.run, /runtime-artifact-descriptor\.mjs/);
+    assert.ok(
+      parsed.jobs.build.steps.indexOf(daemonBuildStep) <
+        parsed.jobs.build.steps.indexOf(importGateStep) &&
+        parsed.jobs.build.steps.indexOf(importGateStep) <
+          parsed.jobs.build.steps.indexOf(stageStep),
+      "static CRT import gate must run after the daemon build and before descriptor generation",
+    );
     assert.match(workflow, /pnpm exec tauri build/);
     assert.doesNotMatch(workflow, /pnpm dlx|@tauri-apps\/cli@\^/);
     assert.match(workflow, /runtime-artifact-descriptor\.mjs/);

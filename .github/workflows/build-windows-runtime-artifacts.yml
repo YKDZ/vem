@@ -73,6 +73,7 @@ jobs:
         with:
           toolchain: 1.96.0
           targets: x86_64-pc-windows-msvc
+          components: llvm-tools-preview
 
       - name: Restore Cargo cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -81,7 +82,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/registry
             target
-          key: ${{ runner.os }}-cargo-windows-runtime-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-windows-runtime-${{ hashFiles('Cargo.lock', '.github/workflows/build-windows-runtime-artifacts.yml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-windows-runtime-
             ${{ runner.os }}-cargo-
@@ -102,7 +103,25 @@ jobs:
         run: pnpm turbo build --filter @vem/shared
 
       - name: Build Vending Daemon
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -Ctarget-feature=+crt-static
         run: cargo build -p vending-daemon --release --target x86_64-pc-windows-msvc
+
+      - name: Verify Vending Daemon Static CRT Imports
+        run: |
+          $ErrorActionPreference = "Stop"
+          $daemonExe = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\vending-daemon.exe"
+          if (-not (Test-Path $daemonExe)) { throw "vending-daemon.exe not found: $daemonExe" }
+
+          $rustSysroot = (rustc --print sysroot).Trim()
+          $llvmReadobj = Join-Path $rustSysroot "lib\rustlib\x86_64-pc-windows-msvc\bin\llvm-readobj.exe"
+          if (-not (Test-Path $llvmReadobj)) { throw "llvm-readobj.exe not found in pinned Rust llvm-tools-preview: $llvmReadobj" }
+
+          $coffImports = & $llvmReadobj --coff-imports $daemonExe 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "llvm-readobj.exe failed to inspect $daemonExe: $coffImports" }
+          if ($coffImports -match '(?i)\b(?:VCRUNTIME140[^\s"]*\.dll|api-ms-win-crt-[^\s"]*\.dll)\b') {
+            throw "vending-daemon.exe imports a dynamic MSVC CRT: $Matches[0]"
+          }
 
       - name: Build Machine UI Kiosk
         working-directory: apps/machine
