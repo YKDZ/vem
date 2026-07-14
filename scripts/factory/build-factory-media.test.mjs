@@ -1059,6 +1059,8 @@ describe("real deterministic Factory ISO builder", () => {
       "HideLocalAccountScreen",
       "HideOnlineAccountScreens",
       "HideWirelessSetupInOOBE",
+      "SkipMachineOOBE",
+      "SkipUserOOBE",
     ]) {
       assert.match(bios, new RegExp(`<${setting}>true</${setting}>`));
     }

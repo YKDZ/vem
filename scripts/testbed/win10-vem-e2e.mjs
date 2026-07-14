@@ -3512,6 +3512,29 @@ if (-not (Test-Path -LiteralPath $verifierPath -PathType Leaf)) {
 }
 
 try {
+  $oobeDeadline = (Get-Date).AddMinutes(30)
+  do {
+    $oobeStatus = if (Test-Path -LiteralPath $oobeStatusPath -PathType Leaf) {
+      Get-Content -LiteralPath $oobeStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    } else { $null }
+    $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
+    $cleanupTask = Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue
+    $personalizationVolumes = @(Get-Volume -FileSystemLabel 'VEM_PERSONALIZATION' -ErrorAction SilentlyContinue)
+    $oobeComplete =
+      $null -ne $oobeStatus -and
+      $oobeStatus.state -eq 'succeeded' -and
+      $oobeStatus.stage -eq 'complete' -and
+      [int]$setupState.OOBEInProgress -eq 0 -and
+      [int]$setupState.SystemSetupInProgress -eq 0 -and
+      [int]$setupState.SetupType -eq 0 -and
+      [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
+      -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
+      $null -eq $cleanupTask -and
+      $personalizationVolumes.Count -eq 0
+    if ($oobeComplete) { break }
+    Start-Sleep -Seconds 10
+  } while ((Get-Date) -lt $oobeDeadline)
+
   $factoryVerificationJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifierPath -EvidencePath $verifierEvidencePath
   $factoryVerifierExit = $LASTEXITCODE
   $factoryVerification = $factoryVerificationJson | ConvertFrom-Json
@@ -3577,23 +3600,6 @@ try {
     $identityFiles.Count -eq 0 -and
     $provisioningFiles.Count -eq 0 -and
     $secretFiles.Count -eq 0
-  $oobeStatus = if (Test-Path -LiteralPath $oobeStatusPath -PathType Leaf) {
-    Get-Content -LiteralPath $oobeStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
-  } else { $null }
-  $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
-  $cleanupTask = Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue
-  $personalizationVolumes = @(Get-Volume -FileSystemLabel 'VEM_PERSONALIZATION' -ErrorAction SilentlyContinue)
-  $oobeComplete =
-    $null -ne $oobeStatus -and
-    $oobeStatus.state -eq 'succeeded' -and
-    $oobeStatus.stage -eq 'complete' -and
-    [int]$setupState.OOBEInProgress -eq 0 -and
-    [int]$setupState.SystemSetupInProgress -eq 0 -and
-    [int]$setupState.SetupType -eq 0 -and
-    [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
-    -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
-    $null -eq $cleanupTask -and
-    $personalizationVolumes.Count -eq 0
   $result = [ordered]@{
     schemaVersion = 'factory-preclaim-verification/v1'
     kind = 'factory-preclaim-verification'

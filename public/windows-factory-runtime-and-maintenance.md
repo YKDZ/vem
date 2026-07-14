@@ -100,8 +100,8 @@ partition, Windows partition, and MBR recovery partition. The ISO remains
 BIOS+UEFI bootable in either case, but acceptance must boot it using the
 firmware mode declared by the manifest. The deterministic Factory ISO owns a
 non-secret `oobeSystem` pass that fixes locale and suppresses interactive OOBE
-pages, but contains neither an account password nor machine-specific OOBE
-state. During `specialize`, the installer consumes the restricted one-time
+pages, including the Win10 machine and user OOBE phases, but contains neither an
+account password nor machine-specific OOBE state. During `specialize`, the installer consumes the restricted one-time
 personalization media and configures the profile accounts, runtime, and kiosk
 Winlogon state directly. No password-bearing answer file or Setup registry
 override is generated.

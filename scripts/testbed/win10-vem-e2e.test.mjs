@@ -1728,6 +1728,8 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /VEM_PERSONALIZATION/);
     assert.match(script, /oobe-unattend\.xml/);
     assert.match(script, /-and \$oobeComplete/);
+    assert.match(script, /AddMinutes\(30\)/);
+    assert.match(script, /Start-Sleep -Seconds 10/);
     assert.doesNotMatch(script, /prepare-factory-runtime\.ps1/);
   });
 
