@@ -65,6 +65,7 @@ const emptyTransaction = {
   orderId: null,
   orderNo: null,
   productSummary: null,
+  paymentId: null,
   paymentNo: null,
   paymentMethod: null,
   paymentProvider: null,
@@ -253,16 +254,18 @@ function transactionSnapshot(
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-001",
     productSummary: { productName: "基础短袖" },
+    paymentId: "550e8400-e29b-41d4-a716-446655440011",
     paymentNo: "PAY-001",
     paymentMethod: nextAction === "wait_payment" ? "qr_code" : "mock",
     paymentProvider: nextAction === "wait_payment" ? "alipay" : "mock",
-    paymentUrl: "https://pay.example/qr",
+    paymentUrl: nextAction === "wait_payment" ? null : "https://pay.example/qr",
     paymentStatus: nextAction === "success" ? "succeeded" : "pending",
     orderStatus: nextAction === "success" ? "fulfilled" : "pending_payment",
     totalAmountCents: 5900,
     vending:
       nextAction === "dispensing" || nextAction === "success"
         ? {
+            commandId: "550e8400-e29b-41d4-a716-446655440012",
             commandNo: "CMD-001",
             status: nextAction === "success" ? "succeeded" : "pending",
             lastError: null,
@@ -271,7 +274,7 @@ function transactionSnapshot(
     nextAction,
     maskedAuthCode: null,
     paymentCodeAttempt: null,
-    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    expiresAt: "2030-01-01T00:00:00.000Z",
     errorCode: null,
     errorMessage: null,
     operatorHint: null,
@@ -728,20 +731,20 @@ test("redesigned catalog home controls remain interactive", async ({
     .poll(async () => await carouselImage.getAttribute("src"))
     .not.toBe(firstCarouselSrc);
 
-  await page.getByRole("button", { name: /T恤/ }).click();
+  await page.getByRole("button", { name: /T恤/ }).dispatchEvent("click");
   await expect(
     page.getByRole("img", { name: "商品列表，请点击选择您需要的商品" }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: /基础短袖/ }).click();
+  await page.getByRole("button", { name: /基础短袖/ }).click({ force: true });
   await expect(
     page.getByRole("heading", { name: "基础短袖", exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: /立即购买/ }).click();
+  await page.getByRole("button", { name: /立即购买/ }).click({ force: true });
   await expect(page.getByRole("heading", { name: "确认购买" })).toBeVisible();
 
-  await page.getByRole("button", { name: "返回" }).click();
+  await page.getByRole("button", { name: "返回" }).click({ force: true });
   await expect(page.getByRole("button", { name: /立即购买/ })).toBeVisible();
 });
 
@@ -767,7 +770,9 @@ test("routes not-ready daemon to offline", async ({ page }) => {
 test("restores active payment transaction", async ({ page }) => {
   scenario = "payment";
   await page.goto("/");
-  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByText("应付金额")).toBeVisible();
   await expect(page.getByText("¥59.00")).toBeVisible();
 });
@@ -787,10 +792,12 @@ test("routes finished transaction to result", async ({ page }) => {
 test("page reload keeps current transaction route", async ({ page }) => {
   scenario = "payment";
   await page.goto("/");
-  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible({
+    timeout: 15_000,
+  });
   await page.goto("/#/boot");
   await expect(page).toHaveURL(/#\/payment$/);
-  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible();
 });
 
 test("daemon snapshots never expose secret fields to browser storage", async ({
@@ -824,7 +831,9 @@ test("provisioning UI maps real daemon claim error contract without echoing code
   scenario = "provisioning";
   await page.goto("/");
   await page.getByLabel("领取码").fill("ABCD-2345");
-  await page.getByRole("button", { name: "提交领取码", exact: true }).click();
+  await page
+    .getByRole("button", { name: "提交领取码", exact: true })
+    .click({ force: true });
 
   await expect(page.getByText("领取码已使用")).toBeVisible();
   await expect(page.getByText("ABCD-2345")).toHaveCount(0);

@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,7 @@ type DaemonProcess = {
 };
 
 let daemon: DaemonProcess | null = null;
+let runtimeRoot = "";
 let dataDir = "";
 let daemonOutput: string[] = [];
 
@@ -35,9 +36,27 @@ function formatDaemonOutput(): string {
 
 test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
   testInfo.setTimeout(DAEMON_START_TIMEOUT_MS);
-  dataDir = await mkdtemp(join(tmpdir(), "vem-real-daemon-"));
+  runtimeRoot = await mkdtemp(join(tmpdir(), "vem-real-daemon-"));
+  dataDir = join(runtimeRoot, "vending-daemon");
+  await mkdir(dataDir, { recursive: true });
   daemonOutput = [];
   await writeFile(join(dataDir, "ipc-token"), "dev-token");
+  const secretsDir = join(dataDir, "secrets");
+  await mkdir(secretsDir, { recursive: true });
+  await Promise.all([
+    writeFile(
+      join(secretsDir, "machine_secret"),
+      "machine-secret-for-machine-ui-e2e",
+    ),
+    writeFile(
+      join(secretsDir, "mqtt_signing_secret"),
+      "mqtt-signing-secret-for-machine-ui-e2e",
+    ),
+    writeFile(
+      join(secretsDir, "mqtt_password"),
+      "mqtt-password-for-machine-ui-e2e",
+    ),
+  ]);
   await writeFile(
     join(dataDir, "machine-config.json"),
     JSON.stringify({
@@ -85,10 +104,7 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
       env: {
         ...process.env,
         CARGO_TERM_COLOR: "never",
-        VEM_DAEMON_SECRET_STORE: "env",
-        VEM_MACHINE_SECRET: "machine-secret-for-machine-ui-e2e",
-        VEM_MQTT_SIGNING_SECRET: "mqtt-signing-secret-for-machine-ui-e2e",
-        VEM_MQTT_PASSWORD: "mqtt-password-for-machine-ui-e2e",
+        VEM_DAEMON_SECRET_STORE: "file",
       },
     },
   );
@@ -142,7 +158,7 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
 
 test.afterAll(async () => {
   daemon?.kill("SIGTERM");
-  if (dataDir) await rm(dataDir, { recursive: true, force: true });
+  if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
 });
 
 test("browser UI routes using real daemon ready snapshots", async ({
