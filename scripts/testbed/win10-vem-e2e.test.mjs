@@ -54,9 +54,14 @@ import {
 } from "./win10-vem-e2e.mjs";
 
 describe("transient SSH operation retry", () => {
-  it("retries a startup-window connection reset before an idempotent upload", async () => {
+  it("retries a legacy SCP upload after a startup-window connection reset", async () => {
     const calls = [];
     const sleeps = [];
+    const scpCommand = buildScpCommand(
+      "/tmp/run.ps1",
+      "C:\\Windows\\Temp\\vem-factory-acceptance-run.ps1",
+      CERTIFICATE_SSH_OPTIONS,
+    );
     const results = [
       {
         status: 255,
@@ -67,18 +72,25 @@ describe("transient SSH operation retry", () => {
       { status: 0, stdout: "uploaded", stderr: "" },
     ];
 
-    const result = await runTransientSshOperation("scp", ["source", "target"], {
-      run: async (command, args) => {
-        calls.push({ command, args });
-        return results.shift();
+    const result = await runTransientSshOperation(
+      scpCommand[0],
+      scpCommand.slice(1),
+      {
+        run: async (command, args) => {
+          calls.push({ command, args });
+          return results.shift();
+        },
+        sleep: async (milliseconds) => sleeps.push(milliseconds),
+        maxAttempts: 3,
+        retryDelayMs: 25,
       },
-      sleep: async (milliseconds) => sleeps.push(milliseconds),
-      maxAttempts: 3,
-      retryDelayMs: 25,
-    });
+    );
 
     assert.equal(result.status, 0);
-    assert.equal(calls.length, 2);
+    assert.deepEqual(calls, [
+      { command: "scp", args: scpCommand.slice(1) },
+      { command: "scp", args: scpCommand.slice(1) },
+    ]);
     assert.deepEqual(sleeps, [25]);
   });
 
@@ -4435,6 +4447,7 @@ describe("win10-vem-e2e reset planning", () => {
       ),
       [
         "scp",
+        "-O",
         ...CERTIFICATE_SSH_ARGS,
         "-o",
         "ProxyCommand=none",
@@ -4484,6 +4497,7 @@ describe("win10-vem-e2e reset planning", () => {
       ),
       [
         "scp",
+        "-O",
         ...CERTIFICATE_SSH_ARGS,
         "-o",
         "ProxyCommand=none",

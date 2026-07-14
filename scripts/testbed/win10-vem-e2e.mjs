@@ -7725,6 +7725,7 @@ export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
   const remote = options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE;
   return [
     "scp",
+    "-O",
     ...buildSshOptionArgs(options, { portFlag: "-P" }),
     sourcePath,
     `${remote}:${remotePathForScp(remoteScriptPath)}`,
