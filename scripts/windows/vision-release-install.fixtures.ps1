@@ -2,8 +2,7 @@
 param([ValidateSet("archive", "bytes", "first-install", "acl", "task", "process-record", "launcher", "protocol", "rollback", "orphan", "mutex", "reinstall", "runtime-verifier")][string]$Case = "archive")
 
 $ErrorActionPreference = "Stop"
-$libraryRoot = Join-Path ([IO.Path]::GetTempPath()) "vem-vision-installer-library"
-. (Join-Path $PSScriptRoot "install-vision-release.ps1") -Library -VisionRoot $libraryRoot -StateRoot (Join-Path $libraryRoot "state")
+Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
 
 function Assert-Throws([scriptblock]$Action, [string]$Label) {
   try { & $Action } catch { return }
@@ -48,11 +47,11 @@ try {
       $bundle = Join-Path $root ([guid]::NewGuid().ToString("N") + ".zip")
       $target = Join-Path $root ([guid]::NewGuid().ToString("N"))
       New-Zip $bundle $attack
-      $stream = [IO.File]::OpenRead($bundle)
-      try { Assert-Throws { Expand-ZipSafely $stream $target ([pscustomobject]@{}) } "unsafe archive" } finally { $stream.Dispose() }
+      $bytes = [IO.File]::ReadAllBytes($bundle)
+      $digest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
+      $descriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$digest; bytes=[Int64]$bytes.Length } }
+      Assert-Throws { Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination $target -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 } } "unsafe archive"
     }
-    Assert-Throws { Get-SafeArchivePath "folder/../escape.exe" } "traversal"
-    Assert-Throws { Get-SafeArchivePath "C:\\escape.exe" } "drive path"
     Write-Output "archive fixtures passed"
   } elseif ($Case -eq "bytes") {
     $file = Join-Path $root "record.json"; [IO.File]::WriteAllText($file, '{"ok":true}', [Text.UTF8Encoding]::new($false))

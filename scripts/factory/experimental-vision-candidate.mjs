@@ -367,6 +367,7 @@ export function finalizeExperimentalCandidate(options) {
   for (const script of [
     "install-vision-release.ps1",
     "provision-vision-factory-release.ps1",
+    "vision-release-materialization.psm1",
   ]) {
     stage(
       `VISION-INSTALLER/${script}`,

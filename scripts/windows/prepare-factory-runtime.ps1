@@ -875,7 +875,8 @@ function Assert-FactoryRuntimePreflight {
     "verify-vem-runtime.ps1",
     "apply-managed-update.ps1",
     "provision-vision-factory-release.ps1",
-    "install-vision-release.ps1"
+    "install-vision-release.ps1",
+    "vision-release-materialization.psm1"
   ) | ForEach-Object { Assert-SupportScriptPresent -Name $_ }
 
   return [pscustomobject]@{
@@ -1400,7 +1401,8 @@ function Invoke-FactoryVisionRelease {
   $configurationDigest = (Get-FileHash -LiteralPath $configurationPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $installer = "C:\VEM\bringup\install-vision-release.ps1"
   if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Factory Vision installer was not provisioned" }
-  & $installer -ConfigurationPath $configurationPath -EvidencePath ([string]$Plan.layout.visionInstallEvidencePath) -TaskUser $ExpectedAutoLogonUser
+  $deliveryRoot = "C:\ProgramData\VEM\factory\vision-release"
+  & $installer -BundlePath (Join-Path $deliveryRoot "bundle.bin") -DescriptorPath (Join-Path $deliveryRoot "descriptor.json") -AttestationPath (Join-Path $deliveryRoot "attestation.json") -SbomPath (Join-Path $deliveryRoot "sbom.json") -ProvenancePath (Join-Path $deliveryRoot "provenance.json") -ConformanceEvidencePath (Join-Path $deliveryRoot "conformance.json") -ApprovalPath (Join-Path $deliveryRoot "approval.json") -FactoryManifestPath (Join-Path $deliveryRoot "factory-manifest.json") -ConfigurationPath $configurationPath -EvidencePath ([string]$Plan.layout.visionInstallEvidencePath) -TaskUser $ExpectedAutoLogonUser
 
   $evidence = Read-JsonFile -Path ([string]$Plan.layout.visionInstallEvidencePath)
   if (
@@ -1499,6 +1501,7 @@ function Write-FactoryRuntimeFiles {
   Copy-ScriptIfPresent -Name "apply-managed-update.ps1" -TargetDirectory $scriptsRoot
   Copy-ScriptIfPresent -Name "provision-vision-factory-release.ps1" -TargetDirectory $scriptsRoot
   Copy-ScriptIfPresent -Name "install-vision-release.ps1" -TargetDirectory $scriptsRoot
+  Copy-ScriptIfPresent -Name "vision-release-materialization.psm1" -TargetDirectory $scriptsRoot
 
   $machineUiStartupMode = if (Test-ShellLauncherAvailable) { "shell_launcher" } else { "scheduled_task" }
   $manifest = [ordered]@{

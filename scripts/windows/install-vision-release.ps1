@@ -12,13 +12,13 @@ param(
   [string]$EvidencePath = "C:\ProgramData\VEM\evidence\vision-release-install.json",
   [string]$VisionRoot = "C:\VEM\vision",
   [string]$StateRoot = "C:\ProgramData\VEM\vision",
-  [string]$TaskUser = "VEMKiosk",
-  [switch]$Library
+  [string]$TaskUser = "VEMKiosk"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
+Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
 
 $releaseRoot = Join-Path $VisionRoot "releases"
 $visionRoot = $VisionRoot # Kept for task/runbook compatibility.
@@ -33,7 +33,6 @@ $FactoryTrustRoot = "C:\ProgramData\VEM\factory-trust"
 $FactoryTrustPolicyPath = "$FactoryTrustRoot\vision-release-trust-policy.json"
 $FactoryEvidenceVerifierPath = "$FactoryTrustRoot\vision-release-verifier.exe"
 $FactoryTrustAnchorPath = "$FactoryTrustRoot\vision-release-trust-anchor.json"
-$FactoryVisionDeliveryRoot = "C:\ProgramData\VEM\factory\vision-release"
 $maxArchiveEntries = 4096
 $maxExpandedBytes = 4GB
 $maxExpansionRatio = 200
@@ -275,23 +274,6 @@ function Assert-ReleaseContracts {
   if ($asset[0].digest -cne $Descriptor.bundle.digest -or $asset[0].version -cne $Descriptor.releaseVersion -or $selection.descriptorDigest -cne $Descriptor.identity -or $selection.attestationDigest -cne $Documents.attestation.digest -or $selection.approvalDigest -cne $Documents.approval.digest -or $selection.conformanceEvidenceDigest -cne $Documents.conformance.digest -or $Attestation.bundleDigest -cne $Descriptor.bundle.digest -or $Attestation.descriptorDigest -cne $Descriptor.identity -or $Attestation.sbomDigest -cne $Descriptor.sbom.digest -or $Attestation.provenanceDigest -cne $Descriptor.provenance.digest -or $Approval.bundleDigest -cne $Descriptor.bundle.digest -or $Approval.descriptorDigest -cne $Descriptor.identity -or $Approval.attestationDigest -cne $Documents.attestation.digest -or $Approval.conformanceEvidenceDigest -cne $Documents.conformance.digest -or $Approval.releaseVersion -cne $Descriptor.releaseVersion) { Throw-InstallError "release evidence does not bind the selected approved bundle" }
 }
 
-function Get-VerifiedBundleStream {
-  param([object]$Descriptor)
-  $item = Get-Item -LiteralPath $BundlePath -Force -ErrorAction Stop
-  if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { Throw-InstallError "Vision bundle must be a regular non-reparse file" }
-  if ($item.Length -ne [Int64]$Descriptor.bundle.bytes) { Throw-InstallError "Vision bundle byte count does not match descriptor" }
-  $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-  $hash = [Security.Cryptography.SHA256]::Create()
-  try {
-    $buffer = [byte[]]::new(1048576); $readTotal = [Int64]0
-    while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) { $hash.TransformBlock($buffer, 0, $count, $null, 0) | Out-Null; $readTotal += $count }
-    $hash.TransformFinalBlock([byte[]]::new(0), 0, 0) | Out-Null
-    if ($readTotal -ne $item.Length -or ("sha256:" + (ConvertTo-LowerHex $hash.Hash)) -cne [string]$Descriptor.bundle.digest) { Throw-InstallError "Vision bundle exact bytes do not match approved descriptor" }
-    $stream.Position = 0
-    return $stream
-  } catch { $stream.Dispose(); throw } finally { $hash.Dispose() }
-}
-
 function Get-SafeArchivePath([string]$Name) {
   if ([string]::IsNullOrWhiteSpace($Name) -or $Name -match '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)|(^|[\\/])[^\\/]*:|[\x00-\x1f]') { Throw-InstallError "Vision archive contains an unsafe path" }
   $segments = $Name -split '[\\/]'
@@ -365,34 +347,6 @@ function Quarantine-UntrustedReleaseDirectory([string]$InstallDirectory, [string
   Move-Item -LiteralPath $InstallDirectory -Destination $destination -ErrorAction Stop
   Assert-NonReparsePath $destination "quarantined Vision release directory"
   Set-SystemInstallerAcl $destination $false
-}
-
-function Expand-ZipSafely {
-  param([IO.Stream]$BundleStream, [string]$Destination, [object]$Descriptor)
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $archive = [IO.Compression.ZipArchive]::new($BundleStream, [IO.Compression.ZipArchiveMode]::Read, $true)
-  try {
-    if ($archive.Entries.Count -lt 1 -or $archive.Entries.Count -gt $maxArchiveEntries) { Throw-InstallError "Vision archive entry count is unsafe" }
-    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $expanded = [Int64]0; $compressed = [Int64]0
-    foreach ($entry in $archive.Entries) {
-      $relative = Get-SafeArchivePath $entry.FullName
-      if ($entry.FullName.EndsWith("/")) { continue }
-      if (-not $seen.Add($relative)) { Throw-InstallError "Vision archive has case-colliding paths" }
-      if ($entry.Length -lt 0 -or $entry.CompressedLength -lt 0) { Throw-InstallError "Vision archive lengths are invalid" }
-      $expanded += $entry.Length; $compressed += $entry.CompressedLength
-      if ($expanded -gt $maxExpandedBytes -or ($compressed -gt 0 -and $expanded -gt ($compressed * $maxExpansionRatio))) { Throw-InstallError "Vision archive expansion budget is unsafe" }
-    }
-    $drive = [IO.DriveInfo]::new((Split-Path -Qualifier $Destination))
-    if ($drive.AvailableFreeSpace -lt ($expanded + 256MB)) { Throw-InstallError "insufficient disk space for Vision archive" }
-    foreach ($entry in $archive.Entries) {
-      if ($entry.FullName.EndsWith("/")) { continue }
-      $target = Join-Path $Destination (Get-SafeArchivePath $entry.FullName)
-      $parent = Split-Path -Parent $target; New-Item -ItemType Directory -Path $parent -Force | Out-Null
-      $input = $entry.Open(); $output = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-      try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
-      if ((Get-Item -LiteralPath $target -Force).Length -ne $entry.Length) { Throw-InstallError "Vision archive entry was extracted incompletely" }
-    }
-  } finally { $archive.Dispose() }
 }
 
 function Write-AtomicJson([string]$Path, [object]$Value) {
@@ -890,8 +844,6 @@ function Sanitize([string]$Message) {
   return $clean.Substring(0, [Math]::Min(240, $clean.Length))
 }
 
-if ($Library) { return }
-
 function Rollback-PreviousRelease([object]$Previous, [object]$Candidate) {
   Stop-RecordedVision $Candidate
   if ($null -eq $Previous) {
@@ -925,17 +877,6 @@ $previous = $null; $next = $null; $activationStarted = $false; $lockHeld = $fals
 try {
   if (-not $mutex.WaitOne([TimeSpan]::FromMinutes(5))) { Throw-InstallError "another Vision installation is active" }
   $lockHeld = $true
-  if (-not (Test-Path -LiteralPath $selectionPath -PathType Leaf)) {
-    Assert-NonReparsePath $FactoryVisionDeliveryRoot "Factory Vision delivery unit"
-    $BundlePath = "$FactoryVisionDeliveryRoot\bundle.bin"
-    $DescriptorPath = "$FactoryVisionDeliveryRoot\descriptor.json"
-    $AttestationPath = "$FactoryVisionDeliveryRoot\attestation.json"
-    $SbomPath = "$FactoryVisionDeliveryRoot\sbom.json"
-    $ProvenancePath = "$FactoryVisionDeliveryRoot\provenance.json"
-    $ConformanceEvidencePath = "$FactoryVisionDeliveryRoot\conformance.json"
-    $ApprovalPath = "$FactoryVisionDeliveryRoot\approval.json"
-    $FactoryManifestPath = "$FactoryVisionDeliveryRoot\factory-manifest.json"
-  }
   foreach ($required in @($BundlePath,$DescriptorPath,$AttestationPath,$SbomPath,$ProvenancePath,$ConformanceEvidencePath,$ApprovalPath,$FactoryManifestPath,$ConfigurationPath)) { if ([string]::IsNullOrWhiteSpace($required)) { Throw-InstallError "all release inputs are required" } }
   foreach ($input in @($DescriptorPath,$AttestationPath,$SbomPath,$ProvenancePath,$ConformanceEvidencePath,$ApprovalPath,$FactoryManifestPath,$ConfigurationPath)) { [void](Get-ExactFileBytes $input "release input") }
   $documents = @{}
@@ -943,7 +884,7 @@ try {
   New-Item -ItemType Directory -Path $configurationRoot -Force | Out-Null
   [void](Get-CanonicalContainedPath $configurationRoot $ConfigurationPath "Vision configuration")
   $policy=Get-FactoryTrustPolicy; Invoke-ReleaseEvidenceVerifier $policy $documents; Assert-ReleaseContracts $documents.descriptor.value $documents.attestation.value $documents.approval.value $documents.manifest.value $documents
-  $descriptor=$documents.descriptor.value; $bundle=Get-VerifiedBundleStream $descriptor; $evidence.bundleDigest=$descriptor.bundle.digest; $evidence.descriptorDigest=$descriptor.identity; $evidence.approvalDigest=$documents.approval.digest
+  $descriptor=$documents.descriptor.value; $evidence.bundleDigest=$descriptor.bundle.digest; $evidence.descriptorDigest=$descriptor.identity; $evidence.approvalDigest=$documents.approval.digest
   $key=(($descriptor.releaseVersion -replace '\+','_') + "-" + $descriptor.bundle.digest.Substring(7,16)); $install=Join-Path $releaseRoot $key; $metadata=Join-Path $metadataRoot "$key.json"
   New-Item -ItemType Directory -Path $releaseRoot,$metadataRoot,$configurationRoot -Force | Out-Null
   Assert-NonReparsePath $VisionRoot "Vision root"
@@ -953,7 +894,6 @@ try {
   Set-VisionStateAcl
   $releaseAlreadyPresent = Test-Path -LiteralPath $install
   if ($releaseAlreadyPresent -and -not (Test-Path -LiteralPath $metadata -PathType Leaf)) {
-    $bundle.Dispose()
     Quarantine-UntrustedReleaseDirectory $install $key
     Throw-InstallError "existing Vision release directory has no trusted metadata and was quarantined"
   }
@@ -962,17 +902,16 @@ try {
     New-Item -ItemType Directory -Path $staging -Force | Out-Null
     try {
       if ($descriptor.bundle.extractor.handler -cne "zip-safe-v1") { Throw-InstallError "declared extractor handler is not installed" }
-      Expand-ZipSafely $bundle $staging $descriptor
+      # Merge preservation: VEM materializes the supplier's exact candidate bytes;
+      # it never rebuilds or selects an implicit Vision bundle.
+      Invoke-VisionReleaseMaterialization -CandidatePath $BundlePath -ExpectedDigest $descriptor.bundle.digest -Descriptor $descriptor -Destination $staging -ExtractionPolicy @{ MaxArchiveEntries=$maxArchiveEntries; MaxExpandedBytes=$maxExpandedBytes; MaxExpansionRatio=$maxExpansionRatio } | Out-Null
       $entry=Join-TrustedRelativePath $staging $descriptor.entrypoint.command "staged Vision entrypoint"
       if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) { Throw-InstallError "declared Vision entrypoint was not extracted" }
       Move-Item -LiteralPath $staging -Destination $install
       Set-SystemInstallerAcl $install $true
     } finally {
-      $bundle.Dispose()
       Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
-  } else {
-    $bundle.Dispose()
   }
   $entrypoint=Join-TrustedRelativePath $install $descriptor.entrypoint.command "Vision entrypoint"
   $storedDocuments=[ordered]@{}

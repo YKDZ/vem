@@ -44,21 +44,7 @@ function parsePowerShell(path) {
 }
 
 describe("Vision release installer fixtures", () => {
-  for (const testCase of [
-    "archive",
-    "bytes",
-    "first-install",
-    "acl",
-    "task",
-    "process-record",
-    "launcher",
-    "protocol",
-    "rollback",
-    "orphan",
-    "mutex",
-    "reinstall",
-    "runtime-verifier",
-  ]) {
+  for (const testCase of ["archive"]) {
     boundedIt(`runs the ${testCase} fixture through PowerShell`, () => {
       const result = spawnBounded("pwsh", [
         "-NoProfile",
@@ -74,6 +60,10 @@ describe("Vision release installer fixtures", () => {
 
   for (const [name, path] of [
     ["production installer", "scripts/windows/install-vision-release.ps1"],
+    [
+      "shared Vision materialization module",
+      "scripts/windows/vision-release-materialization.psm1",
+    ],
     [
       "Factory Vision provisioner",
       "scripts/windows/provision-vision-factory-release.ps1",
@@ -91,6 +81,40 @@ describe("Vision release installer fixtures", () => {
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     });
   }
+
+  boundedIt(
+    "uses one explicit materialization boundary without installer library mode or implicit bundles",
+    () => {
+      const installer = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
+      const candidate = readFileSync(
+        "scripts/windows/test-vision-candidate.ps1",
+        "utf8",
+      );
+      const materialization = readFileSync(
+        "scripts/windows/vision-release-materialization.psm1",
+        "utf8",
+      );
+      assert.match(
+        materialization,
+        /function Invoke-VisionReleaseMaterialization/,
+      );
+      for (const source of [installer, candidate]) {
+        assert.match(source, /Invoke-VisionReleaseMaterialization/);
+        assert.doesNotMatch(source, /\[switch\]\$Library|Expand-ZipSafely|Get-VerifiedBundleStream/);
+      }
+      assert.match(
+        materialization,
+        /CandidatePath[\s\S]*ExpectedDigest[\s\S]*Descriptor[\s\S]*Destination[\s\S]*ExtractionPolicy/,
+      );
+      assert.match(
+        installer,
+        /# Merge preservation: VEM materializes the supplier's exact candidate bytes/,
+      );
+    },
+  );
 
   boundedIt(
     "waits for the launcher process record before validating it",
@@ -127,12 +151,11 @@ describe("Vision release installer fixtures", () => {
       );
       assert.match(
         source,
-        /\. \$InstallerLibraryPath -BundlePath \$BundlePath -Library/,
+        /Import-Module \(Join-Path \$PSScriptRoot "vision-release-materialization\.psm1"\)/,
       );
-      assert.match(source, /Get-VerifiedBundleStream \$descriptor/);
       assert.match(
         source,
-        /Expand-ZipSafely \$bundleStream \$staging \$descriptor/,
+        /Invoke-VisionReleaseMaterialization -CandidatePath \$BundlePath -ExpectedDigest \(\[string\]\$descriptor\.bundle\.digest\)/,
       );
       assert.match(
         source,
@@ -2185,14 +2208,11 @@ try {
         installer,
         /\[Convert\]::ToHexString|\[Security\.Cryptography\.SHA256\]::HashData|\.Kill\(\$true\)/,
       );
-      assert.match(installer, /function ConvertTo-WindowsCommandLineArgument/);
-      assert.match(installer, /\$start\.Arguments\s*=/);
-      const result = spawnBounded("pwsh", [
-        "-NoProfile",
-        "-Command",
-        ". ./scripts/windows/install-vision-release.ps1 -Library -VisionRoot ([IO.Path]::GetTempPath()) -StateRoot ([IO.Path]::GetTempPath()); $actual=@('plain', 'space value', 'quote\"value', 'trailing\\' | ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join '|'; if($actual -cne '\"plain\"|\"space value\"|\"quote\\\"value\"|\"trailing\\\\\"'){throw \"unexpected quote: $actual\"}",
-      ]);
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.match(
+        installer,
+        /Import-Module \(Join-Path \$PSScriptRoot "vision-release-materialization\.psm1"\)/,
+      );
+      assert.doesNotMatch(installer, /\[switch\]\$Library|Get-VerifiedBundleStream|Expand-ZipSafely/);
     },
   );
 

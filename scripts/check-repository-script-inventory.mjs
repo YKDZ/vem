@@ -447,6 +447,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation", "managed update"],
   },
   {
+    path: "scripts/windows/vision-release-materialization.psm1",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["factory preparation", "managed update", "runtime acceptance"],
+  },
+  {
     path: "scripts/windows/test-vision-candidate.ps1",
     owner: "field-operations",
     category: "public runbook operation",

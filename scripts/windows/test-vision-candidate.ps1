@@ -2,7 +2,6 @@
 param(
   [Parameter(Mandatory = $true)][string]$BundlePath,
   [Parameter(Mandatory = $true)][string]$DescriptorPath,
-  [Parameter(Mandatory = $true)][string]$InstallerLibraryPath,
   [Parameter(Mandatory = $true)][string]$ConformanceEvidencePath,
   [Parameter(Mandatory = $true)][string]$ReportPath,
   [string]$WorkRoot = "C:\ProgramData\VEM\testbed\vision-candidate"
@@ -10,8 +9,26 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
 
-. $InstallerLibraryPath -BundlePath $BundlePath -Library
+function Read-StrictJson([string]$Path, [string]$Label) {
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw "$Label must be a regular file" }
+  $bytes = [IO.File]::ReadAllBytes($item.FullName)
+  return [pscustomobject]@{ value=([Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json); digest=("sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()) }
+}
+function Write-AtomicJson([string]$Path, [object]$Value) {
+  $parent = Split-Path -Parent $Path; New-Item -ItemType Directory -Path $parent -Force | Out-Null
+  $temporary = Join-Path $parent ("." + [guid]::NewGuid().ToString("N") + ".tmp")
+  try { [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 64 -Compress), [Text.UTF8Encoding]::new($false)); Move-Item -LiteralPath $temporary -Destination $Path -Force } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+}
+function Sanitize([string]$Message) { return ([string]$Message).Substring(0, [Math]::Min(240, ([string]$Message).Length)) }
+function Resolve-CandidateEntrypoint([string]$Root, [string]$Relative) {
+  if ([string]::IsNullOrWhiteSpace($Relative) -or $Relative -match '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)') { throw "Vision Candidate entrypoint is unsafe" }
+  $path = [IO.Path]::GetFullPath((Join-Path $Root $Relative)); $prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\\','/') + [IO.Path]::DirectorySeparatorChar
+  if (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Vision Candidate entrypoint escapes staging" }
+  return $path
+}
 
 $candidateProcess = $null
 $staging = Join-Path $WorkRoot ([guid]::NewGuid().ToString("N"))
@@ -54,7 +71,7 @@ try {
     $previousSelection = (Read-StrictJson $selectionPathForPrevious "previous Vision selection").value
     $previousRecord = (Read-StrictJson $processPathForPrevious "previous Vision process record").value
     $previousWasRunning = $null -ne (Get-Process -Id ([int]$previousRecord.processId) -ErrorAction SilentlyContinue)
-    if ($previousWasRunning) { Stop-RecordedVision $previousSelection }
+    if ($previousWasRunning) { Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue }
   }
   Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
 
@@ -63,13 +80,8 @@ try {
   }
 
   New-Item -ItemType Directory -Path $staging -Force | Out-Null
-  $bundleStream = Get-VerifiedBundleStream $descriptor
-  try {
-    Expand-ZipSafely $bundleStream $staging $descriptor
-  } finally {
-    $bundleStream.Dispose()
-  }
-  $entrypoint = Join-TrustedRelativePath $staging ([string]$descriptor.entrypoint.command) "Vision Candidate entrypoint"
+  Invoke-VisionReleaseMaterialization -CandidatePath $BundlePath -ExpectedDigest ([string]$descriptor.bundle.digest) -Descriptor $descriptor -Destination $staging -ExtractionPolicy @{ MaxArchiveEntries=4096; MaxExpandedBytes=4GB; MaxExpansionRatio=200 } | Out-Null
+  $entrypoint = Resolve-CandidateEntrypoint $staging ([string]$descriptor.entrypoint.command)
   if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) {
     throw "Vision Candidate entrypoint was not extracted"
   }
