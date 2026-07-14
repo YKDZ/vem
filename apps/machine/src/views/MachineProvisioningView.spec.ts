@@ -216,6 +216,100 @@ describe("Bring-Up Console", () => {
     });
   });
 
+  it("shows distinct local, Platform API, and MQTT readiness evidence without retaining a Wi-Fi password", async () => {
+    const host = await mountView();
+    const select = host.querySelector("select");
+    if (!(select instanceof HTMLSelectElement))
+      throw new Error("network selector not found");
+    await vi.waitFor(() => {
+      expect(select.options).toHaveLength(2);
+    });
+    select.value = "Store-WiFi";
+    select.dispatchEvent(new Event("change"));
+    const password = inputByLabel(host, "无线网络密码");
+    password.value = "replacement-pass";
+    password.dispatchEvent(new Event("input"));
+    await nextTick();
+    executeBringUpTaskMock.mockResolvedValueOnce({
+      status: "failed",
+      ssid: "Store-WiFi",
+      hidden: false,
+      diagnostics: [
+        {
+          component: "local_network",
+          level: "ok",
+          code: "WIFI_ASSOCIATED",
+          message: "association observed",
+        },
+        {
+          component: "provisioning_endpoint",
+          level: "error",
+          code: "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+          message: "Platform API unavailable",
+        },
+        {
+          component: "mqtt",
+          level: "unknown",
+          code: "MQTT_NOT_CHECKED",
+          message: "MQTT was not checked after Platform API failure",
+        },
+      ],
+      operatorGuidance: "平台不可达，请检查平台服务。",
+      updatedAt: "2026-07-04T00:01:00Z",
+    });
+
+    buttonByText(host, "提交网络设置").click();
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("local_network · WIFI_ASSOCIATED");
+      expect(host.textContent).toContain(
+        "provisioning_endpoint · PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+      );
+      expect(host.textContent).toContain("mqtt · MQTT_NOT_CHECKED");
+    });
+    expect(password.value).toBe("");
+    expect(host.innerHTML).not.toContain("replacement-pass");
+  });
+
+  it("shows a bad-password diagnostic without retaining the submitted credential", async () => {
+    const host = await mountView();
+    const select = host.querySelector("select");
+    if (!(select instanceof HTMLSelectElement))
+      throw new Error("network selector not found");
+    await vi.waitFor(() => {
+      expect(select.options).toHaveLength(2);
+    });
+    select.value = "Store-WiFi";
+    select.dispatchEvent(new Event("change"));
+    const password = inputByLabel(host, "无线网络密码");
+    password.value = "wrong-password";
+    password.dispatchEvent(new Event("input"));
+    await nextTick();
+    executeBringUpTaskMock.mockResolvedValueOnce({
+      status: "failed",
+      ssid: "Store-WiFi",
+      hidden: false,
+      diagnostics: [
+        {
+          component: "local_network",
+          level: "error",
+          code: "WIFI_AUTH_FAILED",
+          message: "Wi-Fi password was rejected",
+        },
+      ],
+      operatorGuidance: "Wi-Fi 密码验证失败。请重新输入密码。",
+      updatedAt: "2026-07-04T00:01:00Z",
+    });
+
+    buttonByText(host, "提交网络设置").click();
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("local_network · WIFI_AUTH_FAILED");
+    });
+    expect(password.value).toBe("");
+    expect(host.innerHTML).not.toContain("wrong-password");
+  });
+
   it("renders only the claim form when the daemon advances to machine claim", async () => {
     getBringUpMock.mockResolvedValue(
       snapshot({

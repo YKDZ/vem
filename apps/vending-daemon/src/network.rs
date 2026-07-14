@@ -231,6 +231,12 @@ async fn validate_preclaim_platform_health_response(
                 "PROVISIONING_ENDPOINT_REACHABLE",
                 "Pre-claim Platform endpoint is reachable",
             ),
+            diagnostic(
+                "mqtt",
+                "ok",
+                "MQTT_REACHABLE",
+                "Pre-claim Platform health reports its MQTT connection is ready",
+            ),
         ],
         operator_guidance: "已验证现有有线或已连接无线网络可访问平台，可以继续领取机器。"
             .to_string(),
@@ -560,16 +566,7 @@ impl NetworkAdapter for WindowsWlanAdapter {
         request: NetworkSettingsRequest,
     ) -> NetworkSettingsResponse {
         match apply_windows_wlan_profile(&request).await {
-            Ok(()) => NetworkSettingsResponse {
-                status: NetworkSetupStatus::Connected,
-                ssid: request.ssid.trim().to_string(),
-                hidden: request.hidden,
-                diagnostics: pending_reachability_diagnostics(),
-                operator_guidance:
-                    "Wi-Fi 已提交连接请求，但本机尚未确认 DHCP/IP、DNS、平台或 MQTT 连通性。请等待现场网络稳定后重试。"
-                        .to_string(),
-                updated_at: crate::state::store::now_iso(),
-            },
+            Ok(observation) => observed_windows_wifi_response(&request, observation),
             Err(error) => NetworkSettingsResponse {
                 status: NetworkSetupStatus::Failed,
                 ssid: request.ssid.trim().to_string(),
@@ -585,6 +582,93 @@ impl NetworkAdapter for WindowsWlanAdapter {
                 updated_at: crate::state::store::now_iso(),
             },
         }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn observed_windows_wifi_response(
+    request: &NetworkSettingsRequest,
+    observation: WlanConnectionObservation,
+) -> NetworkSettingsResponse {
+    let (status, diagnostics, operator_guidance) = if !observation.associated {
+        (
+            NetworkSetupStatus::Failed,
+            vec![
+                diagnostic(
+                    "local_network",
+                    "error",
+                    "WIFI_ASSOCIATION_NOT_CONFIRMED",
+                    "Windows accepted the connection request but did not observe association with the requested SSID",
+                ),
+                diagnostic(
+                    "dhcp_ip",
+                    "unknown",
+                    "LOCAL_ADDRESS_NOT_CHECKED",
+                    "A local address cannot be verified before Wi-Fi association succeeds",
+                ),
+            ],
+            "未确认 Wi-Fi 已关联到所选网络。请核对 SSID、密码和信号；密码错误会表现为关联失败。".to_string(),
+        )
+    } else if !observation.local_address_ready {
+        (
+            NetworkSetupStatus::Failed,
+            vec![
+                diagnostic(
+                    "local_network",
+                    "ok",
+                    "WIFI_ASSOCIATED",
+                    "Windows observed Wi-Fi association with the requested SSID",
+                ),
+                diagnostic(
+                    "dhcp_ip",
+                    "error",
+                    "LOCAL_ADDRESS_UNAVAILABLE",
+                    "No usable non-loopback IPv4 address was observed after Wi-Fi association",
+                ),
+            ],
+            "Wi-Fi 已关联，但未取得可用本地地址。请检查 DHCP、网关或现场网络限制后重试。"
+                .to_string(),
+        )
+    } else {
+        (
+            NetworkSetupStatus::Connected,
+            vec![
+                diagnostic(
+                    "local_network",
+                    "ok",
+                    "WIFI_ASSOCIATED",
+                    "Windows observed Wi-Fi association with the requested SSID",
+                ),
+                diagnostic(
+                    "dhcp_ip",
+                    "ok",
+                    "LOCAL_ADDRESS_READY",
+                    "A usable local IPv4 address was observed after Wi-Fi association",
+                ),
+                diagnostic(
+                    "provisioning_endpoint",
+                    "unknown",
+                    "PROVISIONING_ENDPOINT_PENDING",
+                    "Platform API reachability must be verified separately",
+                ),
+                diagnostic(
+                    "mqtt",
+                    "unknown",
+                    "MQTT_PENDING",
+                    "MQTT reachability must be verified separately",
+                ),
+            ],
+            "已确认 Wi-Fi 关联和本地地址；请继续验证平台 API 与 MQTT 连通性。".to_string(),
+        )
+    };
+
+    NetworkSettingsResponse {
+        status,
+        ssid: request.ssid.trim().to_string(),
+        hidden: request.hidden,
+        diagnostics,
+        operator_guidance,
+        updated_at: crate::state::store::now_iso(),
     }
 }
 
@@ -774,7 +858,9 @@ fn wlan_scan_error_guidance(code: u32) -> String {
 }
 
 #[cfg(windows)]
-async fn apply_windows_wlan_profile(request: &NetworkSettingsRequest) -> Result<(), String> {
+async fn apply_windows_wlan_profile(
+    request: &NetworkSettingsRequest,
+) -> Result<WlanConnectionObservation, String> {
     let runner = NetshWlanCommandRunner;
     apply_windows_wlan_profile_with_runner(&runner, request, &std::env::temp_dir()).await
 }
@@ -783,6 +869,7 @@ async fn apply_windows_wlan_profile(request: &NetworkSettingsRequest) -> Result<
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WlanCommandOutput {
     success: bool,
+    stdout: String,
     stderr: String,
 }
 
@@ -792,6 +879,7 @@ impl WlanCommandOutput {
     fn success() -> Self {
         Self {
             success: true,
+            stdout: String::new(),
             stderr: String::new(),
         }
     }
@@ -802,9 +890,20 @@ impl From<std::process::Output> for WlanCommandOutput {
     fn from(output: std::process::Output) -> Self {
         Self {
             success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         }
     }
+}
+
+/// Evidence collected after Windows accepts a profile and connection request.
+/// A successful `netsh wlan connect` only means the request was dispatched; it
+/// does not prove the adapter associated or received a usable local address.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WlanConnectionObservation {
+    associated: bool,
+    local_address_ready: bool,
 }
 
 #[cfg(any(windows, test))]
@@ -813,6 +912,7 @@ trait WlanCommandRunner: Send + Sync {
     async fn add_profile(&self, path: &std::path::Path) -> Result<WlanCommandOutput, String>;
     async fn connect(&self, profile_name: &str, ssid: &str) -> Result<WlanCommandOutput, String>;
     async fn delete_profile(&self, profile_name: &str) -> Result<WlanCommandOutput, String>;
+    async fn observe_connection(&self, ssid: &str) -> Result<WlanConnectionObservation, String>;
 }
 
 #[cfg(windows)]
@@ -858,6 +958,64 @@ impl WlanCommandRunner for NetshWlanCommandRunner {
             .map(WlanCommandOutput::from)
             .map_err(|error| format!("run netsh wlan delete profile failed: {error}"))
     }
+
+    async fn observe_connection(&self, ssid: &str) -> Result<WlanConnectionObservation, String> {
+        use tokio::process::Command;
+
+        let wlan = Command::new("netsh")
+            .args(["wlan", "show", "interfaces"])
+            .output()
+            .await
+            .map(WlanCommandOutput::from)
+            .map_err(|error| format!("inspect WLAN association failed: {error}"))?;
+        if !wlan.success {
+            return Err(format!("inspect WLAN association failed: {}", wlan.stderr));
+        }
+
+        let associated = windows_wlan_output_is_associated(&wlan.stdout, ssid);
+        let local_address_ready = if associated {
+            let local_address = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "@(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.IPAddress -notlike '169.254.*' }).Count -gt 0",
+                ])
+                .output()
+                .await
+                .map(WlanCommandOutput::from)
+                .map_err(|error| format!("inspect local IP address failed: {error}"))?;
+            local_address.success && local_address.stdout.trim().eq_ignore_ascii_case("true")
+        } else {
+            false
+        };
+
+        Ok(WlanConnectionObservation {
+            associated,
+            local_address_ready,
+        })
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_wlan_output_is_associated(output: &str, expected_ssid: &str) -> bool {
+    let mut state = None;
+    let mut ssid = None;
+    for line in output.lines() {
+        let Some((label, value)) = line.split_once(':') else {
+            continue;
+        };
+        let label = label.trim();
+        let value = value.trim();
+        if label.eq_ignore_ascii_case("state") || label == "状态" {
+            state = Some(value);
+        } else if (label.eq_ignore_ascii_case("ssid") || label == "SSID")
+            && !label.eq_ignore_ascii_case("bssid")
+        {
+            ssid = Some(value);
+        }
+    }
+    matches!(state, Some("connected" | "已连接")) && ssid == Some(expected_ssid)
 }
 
 #[cfg(any(windows, test))]
@@ -865,7 +1023,7 @@ async fn apply_windows_wlan_profile_with_runner(
     runner: &(impl WlanCommandRunner + ?Sized),
     request: &NetworkSettingsRequest,
     temp_dir: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<WlanConnectionObservation, String> {
     let ssid = request.ssid.trim();
     if ssid.is_empty() {
         return Err("SSID is required".to_string());
@@ -923,8 +1081,17 @@ async fn apply_windows_wlan_profile_with_runner(
         .await);
     }
 
-    cleanup_windows_wlan_profile(runner, &profile_name, &request.password).await?;
-    Ok(())
+    // Windows owns the imported profile durably.  The plaintext import XML is
+    // already removed; deleting the OS profile here would turn every reboot
+    // into another password prompt and lose the requested network setup.
+    let observation = runner
+        .observe_connection(ssid)
+        .await
+        .map_err(|error| sanitize_secret(&error, &request.password))?;
+    if !observation.associated {
+        cleanup_windows_wlan_profile(runner, &profile_name, &request.password).await?;
+    }
+    Ok(observation)
 }
 
 #[cfg(any(windows, test))]
@@ -1048,6 +1215,10 @@ mod tests {
             item.component == "provisioning_endpoint"
                 && item.code == "PROVISIONING_ENDPOINT_REACHABLE"
         }));
+        assert!(response
+            .diagnostics
+            .iter()
+            .any(|item| { item.component == "mqtt" && item.code == "MQTT_REACHABLE" }));
     }
 
     #[tokio::test]
@@ -1159,10 +1330,34 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn bad_wifi_password_has_a_distinct_diagnostic_without_echoing_the_credential() {
+        let password = "wrong-password".to_string();
+        let response = FakeNetworkAdapter {
+            outcome: "invalid_password".to_string(),
+        }
+        .apply_wifi_settings(NetworkSettingsRequest {
+            ssid: "VEM-Lab".to_string(),
+            password: password.clone(),
+            hidden: false,
+        })
+        .await;
+
+        assert_eq!(response.status, NetworkSetupStatus::Failed);
+        assert!(response
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "WIFI_AUTH_FAILED"));
+        let serialized = serde_json::to_string(&response).expect("serialize diagnostic");
+        assert!(!serialized.contains(&password));
+    }
+
     #[derive(Clone)]
     struct FakeWlanCommandRunner {
         calls: Arc<Mutex<Vec<String>>>,
         connect_success: bool,
+        associated: bool,
+        local_address_ready: bool,
         leaked_password: String,
     }
 
@@ -1187,6 +1382,7 @@ mod tests {
                 .push(format!("connect:{profile_name}:{ssid}"));
             Ok(WlanCommandOutput {
                 success: self.connect_success,
+                stdout: String::new(),
                 stderr: format!(
                     "authentication failed for password {}",
                     self.leaked_password
@@ -1201,6 +1397,16 @@ mod tests {
                 .push(format!("delete:{profile_name}"));
             Ok(WlanCommandOutput::success())
         }
+
+        async fn observe_connection(
+            &self,
+            _ssid: &str,
+        ) -> Result<WlanConnectionObservation, String> {
+            Ok(WlanConnectionObservation {
+                associated: self.associated,
+                local_address_ready: self.local_address_ready,
+            })
+        }
     }
 
     #[tokio::test]
@@ -1210,6 +1416,8 @@ mod tests {
         let runner = FakeWlanCommandRunner {
             calls: calls.clone(),
             connect_success: false,
+            associated: false,
+            local_address_ready: false,
             leaked_password: submitted_password.clone(),
         };
         let temp = tempfile::tempdir().expect("temp");
@@ -1245,12 +1453,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn windows_profile_success_returns_connected_pending_reachability() {
+    async fn windows_profile_success_keeps_durable_profile_and_observes_local_connectivity() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let submitted_password = ["secret", "pass", "123"].join("-");
         let runner = FakeWlanCommandRunner {
-            calls,
+            calls: calls.clone(),
             connect_success: true,
+            associated: true,
+            local_address_ready: true,
             leaked_password: submitted_password.clone(),
         };
         let temp = tempfile::tempdir().expect("temp");
@@ -1260,29 +1470,85 @@ mod tests {
             hidden: false,
         };
 
-        apply_windows_wlan_profile_with_runner(&runner, &request, temp.path())
+        let observation = apply_windows_wlan_profile_with_runner(&runner, &request, temp.path())
             .await
             .expect("netsh success");
-        let response = NetworkSettingsResponse {
-            status: NetworkSetupStatus::Connected,
-            ssid: request.ssid.trim().to_string(),
-            hidden: request.hidden,
-            diagnostics: pending_reachability_diagnostics(),
-            operator_guidance:
-                "Wi-Fi 已提交连接请求，但本机尚未确认 DHCP/IP、DNS、平台或 MQTT 连通性。请等待现场网络稳定后重试。"
-                    .to_string(),
-            updated_at: crate::state::store::now_iso(),
+
+        assert!(observation.associated);
+        assert!(observation.local_address_ready);
+        let calls = calls.lock().expect("calls").clone();
+        assert!(calls.iter().any(|call| call.starts_with("add:")));
+        assert!(calls.iter().any(|call| call.starts_with("connect:")));
+        assert!(
+            !calls.iter().any(|call| call.starts_with("delete:")),
+            "a successful replacement Wi-Fi profile must remain durable in Windows"
+        );
+        assert_eq!(
+            std::fs::read_dir(temp.path()).expect("temp dir").count(),
+            0,
+            "temporary plaintext profile XML must be removed after import"
+        );
+    }
+
+    #[tokio::test]
+    async fn windows_profile_requires_association_and_local_address_after_connect_dispatch() {
+        let runner = FakeWlanCommandRunner {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            connect_success: true,
+            associated: true,
+            local_address_ready: false,
+            leaked_password: "secret-pass".to_string(),
+        };
+        let temp = tempfile::tempdir().expect("temp");
+        let request = NetworkSettingsRequest {
+            ssid: "VEM-Lab".to_string(),
+            password: "secret-pass".to_string(),
+            hidden: false,
         };
 
-        assert_eq!(response.status, NetworkSetupStatus::Connected);
-        assert!(response.diagnostics.iter().any(|item| {
-            item.component == "provisioning_endpoint"
-                && item.code == "PROVISIONING_ENDPOINT_PENDING"
-        }));
-        assert!(!response
+        let observation = apply_windows_wlan_profile_with_runner(&runner, &request, temp.path())
+            .await
+            .expect("profile import and connect dispatch");
+
+        assert!(observation.associated);
+        assert!(
+            !observation.local_address_ready,
+            "connect dispatch is not a local-network-ready proof"
+        );
+    }
+
+    #[test]
+    fn windows_observation_reports_association_and_local_address_failures_separately() {
+        let request = NetworkSettingsRequest {
+            ssid: "VEM-Lab".to_string(),
+            password: "secret-pass".to_string(),
+            hidden: false,
+        };
+        let association_failed = observed_windows_wifi_response(
+            &request,
+            WlanConnectionObservation {
+                associated: false,
+                local_address_ready: false,
+            },
+        );
+        let no_local_address = observed_windows_wifi_response(
+            &request,
+            WlanConnectionObservation {
+                associated: true,
+                local_address_ready: false,
+            },
+        );
+
+        assert_eq!(association_failed.status, NetworkSetupStatus::Failed);
+        assert!(association_failed
             .diagnostics
             .iter()
-            .any(|item| item.code == "PROVISIONING_ENDPOINT_REACHABLE"));
+            .any(|item| item.code == "WIFI_ASSOCIATION_NOT_CONFIRMED"));
+        assert_eq!(no_local_address.status, NetworkSetupStatus::Failed);
+        assert!(no_local_address
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "LOCAL_ADDRESS_UNAVAILABLE"));
     }
 
     #[test]
@@ -1307,5 +1573,21 @@ mod tests {
         assert_eq!(existing.signal_quality, 88);
         assert!(existing.connected);
         assert!(existing.profile_saved);
+    }
+
+    #[test]
+    fn windows_wlan_association_requires_the_requested_ssid_and_connected_state() {
+        assert!(windows_wlan_output_is_associated(
+            "State : connected\nSSID : Store-WiFi\nBSSID : aa:bb:cc:dd:ee:ff",
+            "Store-WiFi"
+        ));
+        assert!(!windows_wlan_output_is_associated(
+            "State : disconnected\nSSID : Store-WiFi",
+            "Store-WiFi"
+        ));
+        assert!(!windows_wlan_output_is_associated(
+            "State : connected\nSSID : Other-WiFi",
+            "Store-WiFi"
+        ));
     }
 }

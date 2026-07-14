@@ -7,12 +7,12 @@ import type {
   NetworkSettingsResponse,
   WifiNetwork,
 } from "@/daemon/schemas";
+
+import { DaemonUnavailableError, daemonClient } from "@/daemon/client";
 import {
   networkSettingsResponseSchema,
   provisioningClaimResponseSchema,
 } from "@/daemon/schemas";
-
-import { DaemonUnavailableError, daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useMachineStore } from "@/stores/machine";
 
@@ -297,6 +297,20 @@ onMounted(async () => {
           </button>
 
           <p v-if="networkResult">{{ networkResult.operatorGuidance }}</p>
+          <ul
+            v-if="networkResult?.diagnostics.length"
+            class="network-diagnostics"
+            aria-label="网络就绪诊断"
+          >
+            <li
+              v-for="diagnostic in networkResult.diagnostics"
+              :key="diagnostic.code"
+            >
+              {{ diagnostic.component }} · {{ diagnostic.code }}：{{
+                diagnostic.message
+              }}
+            </li>
+          </ul>
           <p v-if="statusMessage">{{ statusMessage }}</p>
         </section>
 
@@ -329,6 +343,11 @@ main {
   display: grid;
   gap: 1.5rem;
   margin-top: 2rem;
+}
+.network-diagnostics {
+  margin: 1rem 0 0;
+  padding-left: 1.25rem;
+  color: #dbeafe;
 }
 .current-task,
 .progress {
