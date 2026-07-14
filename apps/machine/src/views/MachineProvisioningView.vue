@@ -7,6 +7,10 @@ import type {
   NetworkSettingsResponse,
   WifiNetwork,
 } from "@/daemon/schemas";
+import {
+  networkSettingsResponseSchema,
+  provisioningClaimResponseSchema,
+} from "@/daemon/schemas";
 
 import { DaemonUnavailableError, daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
@@ -99,12 +103,14 @@ async function submitNetworkSettings(): Promise<void> {
   submitting.value = true;
   const password = networkForm.password;
   try {
-    await daemonClient.executeBringUpTask(currentTask.value);
-    networkResult.value = await daemonClient.applyNetworkSettings({
-      ssid: networkForm.ssid.trim(),
-      password,
-      hidden: networkForm.hidden,
-    });
+    networkResult.value = networkSettingsResponseSchema.parse(
+      await daemonClient.executeBringUpTask(currentTask.value, {
+        type: "configure_network",
+        ssid: networkForm.ssid.trim(),
+        password,
+        hidden: networkForm.hidden,
+      }),
+    );
     statusMessage.value = networkResult.value.operatorGuidance;
     await refreshBringUp();
   } catch {
@@ -128,10 +134,12 @@ async function submitClaim(): Promise<void> {
   submitting.value = true;
   const claimCode = claimForm.claimCode.trim().toUpperCase();
   try {
-    await daemonClient.executeBringUpTask(task);
-    const result = await daemonClient.claimMachine(claimCode, {
-      rotateMaintenanceIdentity: task.rotateMaintenanceIdentity,
-    });
+    const result = provisioningClaimResponseSchema.parse(
+      await daemonClient.executeBringUpTask(task, {
+        type: "claim_machine",
+        claimCode,
+      }),
+    );
     machineStore.configSummary = result.config;
     machineStore.configLoaded = true;
     claimForm.claimCode = "";
@@ -158,7 +166,10 @@ async function submitCurrentTask(): Promise<void> {
     return;
   }
   if (currentTask.value.intent === "refresh_profile") {
-    bringUp.value = await daemonClient.executeBringUpTask(currentTask.value);
+    await daemonClient.executeBringUpTask(currentTask.value, {
+      type: "refresh_profile",
+    });
+    await refreshBringUp();
   }
 }
 

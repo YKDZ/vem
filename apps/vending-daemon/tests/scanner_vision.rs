@@ -616,19 +616,29 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
     );
 
     let attestation = client
-        .post(format!("{base}/v1/stock/attestation"))
+        .post(format!("{base}/v1/bring-up/tasks/execute"))
         .header("Authorization", daemon.bearer())
         .json(&json!({
-            "attestationId": "ATT-SCAN-READY",
-            "planogramVersion": "PLAN-SCAN",
-            "operatorId": "test",
-            "slots": [{
-                "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                "slotCode": "A1",
-                "sku": "WATER-001",
-                "quantity": 3,
-                "enabled": true
-            }]
+            "contractVersion": 1,
+            "taskId": "bring_up.attest_stock",
+            "taskVersion": 1,
+            "kind": "attest_stock",
+            "intent": "record_stock",
+            "mutation": {
+                "type": "record_stock",
+                "attestation": {
+                    "attestationId": "ATT-SCAN-READY",
+                    "planogramVersion": "PLAN-SCAN",
+                    "operatorId": "test",
+                    "slots": [{
+                        "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                        "slotCode": "A1",
+                        "sku": "WATER-001",
+                        "quantity": 3,
+                        "enabled": true
+                    }]
+                }
+            }
         }))
         .send()
         .await

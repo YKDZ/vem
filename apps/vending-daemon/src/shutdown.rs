@@ -177,6 +177,8 @@ async fn run_console_cycle(
         network_adapter: crate::network::adapter_from_env(),
         ui,
         background_shutdown: CancellationToken::new(),
+        bring_up_execution_lock: Arc::new(tokio::sync::Mutex::new(())),
+        maintenance_authorization: Arc::new(ipc::UnavailableMaintenanceAuthorization),
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
         .await

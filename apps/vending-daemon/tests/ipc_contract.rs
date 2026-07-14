@@ -23,6 +23,34 @@ fn configured_daemon() -> serde_json::Value {
     })
 }
 
+async fn execute_network_task(
+    daemon: &DaemonHarness,
+    base: &str,
+    ssid: &str,
+    password: &str,
+    hidden: bool,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{base}/v1/bring-up/tasks/execute"))
+        .header("Authorization", daemon.bearer())
+        .json(&serde_json::json!({
+            "contractVersion": 1,
+            "taskId": "bring_up.configure_network",
+            "taskVersion": 1,
+            "kind": "configure_network",
+            "intent": "configure_network",
+            "mutation": {
+                "type": "configure_network",
+                "ssid": ssid,
+                "password": password,
+                "hidden": hidden
+            }
+        }))
+        .send()
+        .await
+        .expect("network settings response")
+}
+
 #[tokio::test]
 async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
     let mut daemon = DaemonHarness::start(configured_daemon(), &[])
@@ -155,17 +183,7 @@ async fn protected_network_settings_connects_password_wifi_without_persisting_se
     .expect("start");
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Lab",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(&daemon, base, "VEM-Lab", &wifi_password, false).await;
     assert_eq!(response.status(), StatusCode::OK);
     let result: serde_json::Value = response.json().await.expect("network json");
 
@@ -241,17 +259,8 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
     assert_eq!(before["allowedActions"]["claimMachine"], false);
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Field-WPA2",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response =
+        execute_network_task(&daemon, base, "VEM-Field-WPA2", &wifi_password, false).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let summary = daemon.get_json("/v1/config/summary").await;
@@ -364,17 +373,8 @@ async fn network_bootstrap_moves_unclaimed_runtime_from_offline_to_claim_ready()
     assert_eq!(before["allowedActions"]["claimMachine"], false);
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Field-WPA2",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response =
+        execute_network_task(&daemon, base, "VEM-Field-WPA2", &wifi_password, false).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let after = daemon.get_json("/v1/bring-up").await;
@@ -418,17 +418,8 @@ async fn network_bootstrap_connected_pending_persists_without_claim_ready() {
     .expect("start");
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Field-WPA2",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response =
+        execute_network_task(&daemon, base, "VEM-Field-WPA2", &wifi_password, false).await;
     assert_eq!(response.status(), StatusCode::OK);
     let result: serde_json::Value = response.json().await.expect("network json");
     assert_eq!(result["status"], "connected");
@@ -475,17 +466,7 @@ async fn protected_network_settings_does_not_report_reachability_until_diagnosti
     .expect("start");
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Lab",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(&daemon, base, "VEM-Lab", &wifi_password, false).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let result: serde_json::Value = response.json().await.expect("network json");
 
@@ -537,17 +518,7 @@ async fn protected_network_settings_reports_invalid_password_without_echoing_sec
     .expect("start");
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Lab",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(&daemon, base, "VEM-Lab", &wifi_password, false).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let result: serde_json::Value = response.json().await.expect("network json");
 
@@ -591,17 +562,8 @@ async fn protected_network_settings_accepts_hidden_ssid_manual_entry() {
     .expect("start");
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "Hidden-VEM-Lab",
-            "password": wifi_password,
-            "hidden": true
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response =
+        execute_network_task(&daemon, base, "Hidden-VEM-Lab", &wifi_password, true).await;
     assert_eq!(response.status(), StatusCode::OK);
     let result: serde_json::Value = response.json().await.expect("network json");
 
@@ -632,17 +594,7 @@ async fn protected_network_settings_rejects_captive_portal_with_operator_guidanc
     .expect("start");
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "Venue-Guest",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(&daemon, base, "Venue-Guest", &wifi_password, false).await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let result: serde_json::Value = response.json().await.expect("network json");
 

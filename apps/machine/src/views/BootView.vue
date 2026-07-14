@@ -10,7 +10,7 @@ import type {
 
 import { runBoundedBootCheck } from "@/daemon/boot-check";
 import { daemonClient } from "@/daemon/client";
-import { routeForStartup } from "@/daemon/startup";
+import { routeForBootFailure, routeForStartup } from "@/daemon/startup";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -204,16 +204,7 @@ async function runBootCheck(): Promise<void> {
       if (!ownsBoot(signal, generation)) return;
       connectivityStore.markStale(error);
       pushStep("daemon 不可用，进入维护页");
-      await router.replace(
-        routeForStartup({
-          daemonAvailable: false,
-          health: null,
-          config: null,
-          bringUp: null,
-          ready: null,
-          restoredTransaction: null,
-        }),
-      );
+      await router.replace(routeForBootFailure(recoveredTransaction));
     }
   }, 10_000);
 }

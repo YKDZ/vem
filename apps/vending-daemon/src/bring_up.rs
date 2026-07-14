@@ -8,6 +8,7 @@ pub enum BringUpState {
     NetworkRequired,
     PlatformReachable,
     ClaimRequired,
+    ReclaimRequired,
     // Claiming is intentionally absent until claim attempts have a durable async tracker.
     ProfileApplied,
     TopologyMismatch,
@@ -59,6 +60,12 @@ pub enum BringUpTaskIntent {
 #[serde(rename_all = "camelCase")]
 pub struct BringUpTask {
     pub contract_version: u8,
+    /// Stable daemon-owned cursor identity.  The UI must echo this exact
+    /// value when it submits the task rather than reconstructing a cursor
+    /// from route state.
+    pub task_id: String,
+    /// Bump when the payload contract for this cursor changes.
+    pub task_version: u64,
     pub kind: BringUpTaskKind,
     pub intent: BringUpTaskIntent,
     pub rotate_maintenance_identity: bool,
@@ -179,6 +186,10 @@ pub struct BringUpEvaluationInput {
     /// reclaim path so it rotates, rather than overwrites, daemon-owned
     /// maintenance identity.
     pub reclaim_required: bool,
+    /// A protected maintenance action persisted by the daemon.  It is
+    /// intentionally separate from profile-cache presence: a cache is normal
+    /// after a successful claim and must not manufacture a reclaim cursor.
+    pub reclaim_requested: bool,
     pub updated_at: String,
 }
 
@@ -230,6 +241,13 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
         BringUpState::NetworkRequired
     } else if input.config.is_none() {
         BringUpState::PlatformReachable
+    } else if input.reclaim_requested {
+        blocking_reasons.push(reason(
+            "RECLAIM_AUTHORIZED",
+            "provisioning",
+            "protected maintenance authorized this machine reclaim",
+        ));
+        BringUpState::ReclaimRequired
     } else if !provisioned {
         blocking_reasons.push(reason(
             "CLAIM_REQUIRED",
@@ -304,8 +322,14 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
 
     let allowed_actions = BringUpAllowedActions {
         configure_network: state == BringUpState::NetworkRequired,
-        claim_machine: state == BringUpState::ClaimRequired,
-        retry_claim: state == BringUpState::ClaimRequired,
+        claim_machine: matches!(
+            state,
+            BringUpState::ClaimRequired | BringUpState::ReclaimRequired
+        ),
+        retry_claim: matches!(
+            state,
+            BringUpState::ClaimRequired | BringUpState::ReclaimRequired
+        ),
         sync_profile: matches!(
             state,
             BringUpState::PlatformReachable | BringUpState::ProfileApplied
@@ -322,7 +346,7 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
         start_sales: state == BringUpState::SellReady,
     };
 
-    let current_task = task_for_state(&state, input.reclaim_required);
+    let current_task = task_for_state(&state, input.reclaim_required || input.reclaim_requested);
     let progress = progress_for_state(&state, &input, provisioned);
 
     BringUpSnapshot {
@@ -347,6 +371,10 @@ fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringU
         BringUpState::PlatformReachable | BringUpState::ProfileApplied => (
             BringUpTaskKind::SyncProfile,
             BringUpTaskIntent::RefreshProfile,
+        ),
+        BringUpState::ReclaimRequired => (
+            BringUpTaskKind::ReclaimMachine,
+            BringUpTaskIntent::ReclaimMachine,
         ),
         BringUpState::ClaimRequired if reclaim_required => (
             BringUpTaskKind::ReclaimMachine,
@@ -376,11 +404,30 @@ fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringU
     let projection = task_projection(&kind, reclaim_required);
     Some(BringUpTask {
         contract_version: 1,
+        task_id: task_id(&kind).to_string(),
+        task_version: 1,
         kind,
         intent,
-        rotate_maintenance_identity: reclaim_required && state == &BringUpState::ClaimRequired,
+        rotate_maintenance_identity: reclaim_required
+            && matches!(
+                state,
+                BringUpState::ClaimRequired | BringUpState::ReclaimRequired
+            ),
         projection,
     })
+}
+
+fn task_id(kind: &BringUpTaskKind) -> &'static str {
+    match kind {
+        BringUpTaskKind::ConfigureNetwork => "bring_up.configure_network",
+        BringUpTaskKind::ClaimMachine => "bring_up.claim_machine",
+        BringUpTaskKind::ReclaimMachine => "bring_up.reclaim_machine",
+        BringUpTaskKind::SyncProfile => "bring_up.sync_profile",
+        BringUpTaskKind::ResolveTopology => "bring_up.resolve_topology",
+        BringUpTaskKind::RunHardwareAcceptance => "bring_up.hardware_acceptance",
+        BringUpTaskKind::AttestStock => "bring_up.attest_stock",
+        BringUpTaskKind::StartSales => "bring_up.start_sales",
+    }
 }
 
 fn task_projection(kind: &BringUpTaskKind, reclaim_required: bool) -> BringUpTaskProjection {
@@ -414,7 +461,9 @@ fn progress_for_state(
 ) -> Vec<BringUpProgressStep> {
     let current = match state {
         BringUpState::NetworkRequired => Some(0),
-        BringUpState::PlatformReachable | BringUpState::ClaimRequired => Some(1),
+        BringUpState::PlatformReachable
+        | BringUpState::ClaimRequired
+        | BringUpState::ReclaimRequired => Some(1),
         BringUpState::ProfileApplied | BringUpState::TopologyMismatch => Some(2),
         BringUpState::HardwareAcceptanceRequired => Some(3),
         BringUpState::StockAttestationRequired => Some(4),
@@ -469,11 +518,11 @@ fn progress_status(
         {
             BringUpStepStatus::Revalidate
         }
-        BringUpStepKind::Stock
-            if !input.stock_attestation_required || input.stock_attestation_ready =>
-        {
-            BringUpStepStatus::Completed
-        }
+        // A durable completion is evidence, never the absence of a
+        // requirement. When this machine does not yet require stock, leave
+        // the later step pending; a later production profile must not see a
+        // fictitious completed attestation and then regress it.
+        BringUpStepKind::Stock if input.stock_attestation_ready => BringUpStepStatus::Completed,
         BringUpStepKind::SaleReadiness if input.sale_ready => BringUpStepStatus::Revalidate,
         _ if matches!(evidence, BringUpEvidenceKind::Volatile)
             && current.is_some_and(|current| index < current) =>
@@ -599,6 +648,8 @@ mod tests {
             snapshot.current_task,
             Some(BringUpTask {
                 contract_version: 1,
+                task_id: "bring_up.configure_network".to_string(),
+                task_version: 1,
                 kind: BringUpTaskKind::ConfigureNetwork,
                 intent: BringUpTaskIntent::ConfigureNetwork,
                 rotate_maintenance_identity: false,
@@ -668,6 +719,8 @@ mod tests {
             snapshot.current_task,
             Some(BringUpTask {
                 contract_version: 1,
+                task_id: "bring_up.reclaim_machine".to_string(),
+                task_version: 1,
                 kind: BringUpTaskKind::ReclaimMachine,
                 intent: BringUpTaskIntent::ReclaimMachine,
                 rotate_maintenance_identity: true,
@@ -696,6 +749,25 @@ mod tests {
         assert!(snapshot.progress.iter().any(|step| {
             step.kind == BringUpStepKind::Provisioning
                 && step.status == BringUpStepStatus::Completed
+                && step.evidence == BringUpEvidenceKind::Durable
+        }));
+    }
+
+    #[test]
+    fn stock_stays_pending_until_persistent_attestation_evidence_exists() {
+        let snapshot = evaluate_bring_up(BringUpEvaluationInput {
+            config: Some(provisioned_config()),
+            platform_reachable: true,
+            active_planogram_ready: true,
+            stock_attestation_required: false,
+            stock_attestation_ready: false,
+            updated_at: "2026-07-14T00:00:00Z".to_string(),
+            ..BringUpEvaluationInput::default()
+        });
+
+        assert!(snapshot.progress.iter().any(|step| {
+            step.kind == BringUpStepKind::Stock
+                && step.status == BringUpStepStatus::Upcoming
                 && step.evidence == BringUpEvidenceKind::Durable
         }));
     }

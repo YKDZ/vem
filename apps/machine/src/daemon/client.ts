@@ -191,17 +191,19 @@ export class DaemonApiClient {
 
   async executeBringUpTask(
     task: NonNullable<BringUpSnapshot["currentTask"]>,
-  ): Promise<BringUpSnapshot> {
-    return bringUpSnapshotSchema.parse(
-      await this.request("/v1/bring-up/tasks/execute", {
-        method: "POST",
-        body: {
-          contractVersion: task.contractVersion,
-          kind: task.kind,
-          intent: task.intent,
-        },
-      }),
-    );
+    mutation: unknown,
+  ): Promise<unknown> {
+    return this.request("/v1/bring-up/tasks/execute", {
+      method: "POST",
+      body: {
+        contractVersion: task.contractVersion,
+        taskId: task.taskId,
+        taskVersion: task.taskVersion,
+        kind: task.kind,
+        intent: task.intent,
+        mutation,
+      },
+    });
   }
 
   async applyNetworkSettings(

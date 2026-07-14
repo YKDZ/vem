@@ -1492,6 +1492,8 @@ mod tests {
                 status_cache,
             },
             background_shutdown: CancellationToken::new(),
+            bring_up_execution_lock: Arc::new(tokio::sync::Mutex::new(())),
+            maintenance_authorization: Arc::new(crate::ipc::UnavailableMaintenanceAuthorization),
         }
     }
 

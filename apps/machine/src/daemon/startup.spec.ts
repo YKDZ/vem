@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { routeForStartup } from "./startup";
+import { routeForBootFailure, routeForStartup } from "./startup";
 
 describe("routeForStartup", () => {
   const healthBase = {
@@ -71,6 +71,33 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
+  it("keeps a recovered payment transaction when a later ordinary Boot read fails", () => {
+    expect(
+      routeForBootFailure({
+        orderId: "o",
+        orderNo: "ord",
+        productSummary: null,
+        paymentId: null,
+        paymentNo: null,
+        paymentMethod: "qr_code",
+        paymentProvider: "alipay",
+        paymentUrl: "https://pay.example/ord",
+        paymentStatus: "pending",
+        orderStatus: "pending_payment",
+        totalAmountCents: 100,
+        vending: null,
+        nextAction: "wait_payment",
+        maskedAuthCode: null,
+        paymentCodeAttempt: null,
+        expiresAt: null,
+        errorCode: null,
+        errorMessage: null,
+        operatorHint: null,
+        updatedAt: "2026-07-14T00:00:00Z",
+      }),
+    ).toBe("/payment");
+  });
+
   it("routes maintenance when config missing", () => {
     expect(
       routeForStartup({
@@ -136,6 +163,8 @@ describe("routeForStartup", () => {
           },
           currentTask: {
             contractVersion: 1,
+            taskId: "bring_up.claim_machine",
+            taskVersion: 1,
             kind: "claim_machine",
             intent: "claim_machine",
             rotateMaintenanceIdentity: false,
@@ -180,6 +209,8 @@ describe("routeForStartup", () => {
           },
           currentTask: {
             contractVersion: 1,
+            taskId: "bring_up.hardware_acceptance",
+            taskVersion: 1,
             kind: "run_hardware_acceptance",
             intent: "open_maintenance",
             rotateMaintenanceIdentity: false,

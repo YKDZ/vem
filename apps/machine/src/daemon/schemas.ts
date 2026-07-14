@@ -165,6 +165,8 @@ const bringUpReasonSchema = z.object({
 
 const bringUpTaskSchema = z.object({
   contractVersion: z.literal(1),
+  taskId: z.string().default(""),
+  taskVersion: z.number().int().positive().default(1),
   kind: z.enum([
     "configure_network",
     "claim_machine",
@@ -228,6 +230,7 @@ export const bringUpSnapshotSchema = z.object({
     "network_required",
     "platform_reachable",
     "claim_required",
+    "reclaim_required",
     "profile_applied",
     "topology_mismatch",
     "hardware_acceptance_required",

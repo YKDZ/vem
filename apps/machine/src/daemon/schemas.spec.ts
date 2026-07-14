@@ -228,6 +228,8 @@ describe("daemon schemas", () => {
     expect(parsed.state).toBe("stock_attestation_required");
     expect(parsed.currentTask).toEqual({
       contractVersion: 1,
+      taskId: "",
+      taskVersion: 1,
       kind: "attest_stock",
       intent: "record_stock",
       rotateMaintenanceIdentity: false,

@@ -85,3 +85,21 @@ export function routeForStartup(input: {
   }
   return "/maintenance";
 }
+
+/**
+ * A bounded Boot Check may fail after the transaction read succeeded (for
+ * example health/ready/schema reads can reject). Keep the recovered customer
+ * journey as the only navigation authority for that failure path.
+ */
+export function routeForBootFailure(
+  restoredTransaction: TransactionSnapshot | null,
+): StartupRoute {
+  return routeForStartup({
+    daemonAvailable: restoredTransaction !== null,
+    health: null,
+    config: null,
+    bringUp: null,
+    ready: null,
+    restoredTransaction,
+  });
+}

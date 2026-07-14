@@ -1552,6 +1552,33 @@ impl ConfigStore {
         self.maintenance.status().await
     }
 
+    /// Records a reclaim authorization issued by protected maintenance.  The
+    /// durable flag is the source of the Bring-Up cursor; a provisioning
+    /// profile cache is only historical profile evidence and is never used as
+    /// an implicit reclaim request.
+    pub async fn request_machine_reclaim(&self) -> Result<(), String> {
+        self.state
+            .put_metadata("bring_up_reclaim_requested", &true)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn machine_reclaim_requested(&self) -> Result<bool, String> {
+        Ok(self
+            .state
+            .get_metadata::<bool>("bring_up_reclaim_requested")
+            .await
+            .map_err(|error| error.to_string())?
+            .unwrap_or(false))
+    }
+
+    pub async fn clear_machine_reclaim_request(&self) -> Result<(), String> {
+        self.state
+            .delete_metadata("bring_up_reclaim_requested")
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn promote_maintenance_reclaim(
         &self,
         public_key: &str,

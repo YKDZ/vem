@@ -8,16 +8,12 @@ const {
   routerReplaceMock,
   getBringUpMock,
   executeBringUpTaskMock,
-  claimMachineMock,
-  applyNetworkSettingsMock,
   scanWifiNetworksMock,
 } = vi.hoisted(() => ({
   DaemonUnavailableErrorMock: class DaemonUnavailableError extends Error {},
   routerReplaceMock: vi.fn(),
   getBringUpMock: vi.fn(),
   executeBringUpTaskMock: vi.fn(),
-  claimMachineMock: vi.fn(),
-  applyNetworkSettingsMock: vi.fn(),
   scanWifiNetworksMock: vi.fn(),
 }));
 
@@ -32,8 +28,6 @@ vi.mock("@/daemon/client", () => ({
   daemonClient: {
     getBringUp: getBringUpMock,
     executeBringUpTask: executeBringUpTaskMock,
-    claimMachine: claimMachineMock,
-    applyNetworkSettings: applyNetworkSettingsMock,
     scanWifiNetworks: scanWifiNetworksMock,
   },
 }));
@@ -123,7 +117,14 @@ beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
   getBringUpMock.mockResolvedValue(snapshot());
-  executeBringUpTaskMock.mockResolvedValue(snapshot());
+  executeBringUpTaskMock.mockResolvedValue({
+    status: "connected",
+    ssid: "Store-WiFi",
+    hidden: false,
+    diagnostics: [],
+    operatorGuidance: "现场网络已连通",
+    updatedAt: "2026-07-04T00:01:00Z",
+  });
   scanWifiNetworksMock.mockResolvedValue({
     networks: [
       {
@@ -134,20 +135,6 @@ beforeEach(() => {
         profileSaved: false,
       },
     ],
-  });
-  applyNetworkSettingsMock.mockResolvedValue({
-    status: "connected",
-    ssid: "Store-WiFi",
-    hidden: false,
-    diagnostics: [],
-    operatorGuidance: "现场网络已连通",
-    updatedAt: "2026-07-04T00:01:00Z",
-  });
-  claimMachineMock.mockResolvedValue({
-    status: "provisioned",
-    machineCode: "M001",
-    restartRequested: true,
-    config: provisionedConfig(),
   });
 });
 
@@ -185,11 +172,15 @@ describe("Bring-Up Console", () => {
 
     buttonByText(host, "提交网络设置").click();
     await vi.waitFor(() => {
-      expect(applyNetworkSettingsMock).toHaveBeenCalledWith({
-        ssid: "Store-WiFi",
-        password: "secret-pass",
-        hidden: false,
-      });
+      expect(executeBringUpTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({ intent: "configure_network" }),
+        {
+          type: "configure_network",
+          ssid: "Store-WiFi",
+          password: "secret-pass",
+          hidden: false,
+        },
+      );
     });
     await vi.waitFor(() => {
       expect(password.value).toBe("");
@@ -223,11 +214,18 @@ describe("Bring-Up Console", () => {
     claimCode.dispatchEvent(new Event("input"));
     await nextTick();
 
+    executeBringUpTaskMock.mockResolvedValueOnce({
+      status: "provisioned",
+      machineCode: "M001",
+      restartRequested: true,
+      config: provisionedConfig(),
+    });
     buttonByText(host, "提交领取码").click();
     await vi.waitFor(() => {
-      expect(claimMachineMock).toHaveBeenCalledWith("ABCD-2345", {
-        rotateMaintenanceIdentity: false,
-      });
+      expect(executeBringUpTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({ intent: "claim_machine" }),
+        { type: "claim_machine", claimCode: "ABCD-2345" },
+      );
     });
     expect(host.textContent).not.toContain("无线网络密码");
   });

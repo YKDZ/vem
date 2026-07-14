@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, path::Path, path::PathBuf, sync::Arc};
 
+use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{Path as AxumPath, Query, State, WebSocketUpgrade},
@@ -12,7 +13,7 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -62,8 +63,107 @@ struct ClaimMachineRequest {
 #[serde(rename_all = "camelCase")]
 struct BringUpTaskExecutionRequest {
     contract_version: u8,
+    task_id: String,
+    task_version: u64,
     kind: crate::bring_up::BringUpTaskKind,
     intent: crate::bring_up::BringUpTaskIntent,
+    mutation: BringUpTaskMutation,
+}
+
+/// The only mutating payload accepted by the ordered Bring-Up cursor.  This
+/// deliberately keeps the machine UI from validating a task in one request
+/// and changing the machine through a second, unrelated endpoint.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum BringUpTaskMutation {
+    ConfigureNetwork {
+        ssid: String,
+        password: String,
+        hidden: bool,
+    },
+    ClaimMachine {
+        #[serde(rename = "claimCode")]
+        claim_code: String,
+        #[serde(default, rename = "maintenanceAuthorization")]
+        maintenance_authorization: Option<MaintenanceAuthorizationContext>,
+    },
+    RecordStock {
+        attestation: PhysicalStockAttestationInput,
+    },
+    RefreshProfile,
+}
+
+/// Opaque context issued by the Protected Local Maintenance Session boundary.
+/// Issue03 owns PIN verification, session issuance and expiry; Bring-Up only
+/// receives this explicit capability and fails closed until that boundary
+/// verifies it.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceAuthorizationContext {
+    pub session_id: String,
+}
+
+#[async_trait]
+pub trait MaintenanceAuthorization: Send + Sync {
+    async fn authorize_reclaim(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+    ) -> Result<(), String>;
+
+    async fn authorize_non_bring_up_mutation(
+        &self,
+        _context: &MaintenanceAuthorizationContext,
+    ) -> Result<(), String> {
+        Err("protected maintenance authorization is unavailable".to_string())
+    }
+}
+
+pub struct UnavailableMaintenanceAuthorization;
+
+#[async_trait]
+impl MaintenanceAuthorization for UnavailableMaintenanceAuthorization {
+    async fn authorize_reclaim(
+        &self,
+        _context: &MaintenanceAuthorizationContext,
+    ) -> Result<(), String> {
+        Err("protected maintenance authorization is unavailable".to_string())
+    }
+}
+
+async fn require_non_bring_up_maintenance_authorization(
+    ctx: &IpcContext,
+    headers: &HeaderMap,
+) -> Result<(), axum::response::Response> {
+    let Some(session_id) = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage {
+                code: "protected_maintenance_authorization_required",
+                message: "legacy mutation requires protected maintenance authorization".to_string(),
+            }),
+        )
+            .into_response());
+    };
+    ctx.maintenance_authorization
+        .authorize_non_bring_up_mutation(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|message| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(ErrorMessage {
+                    code: "protected_maintenance_authorization_denied",
+                    message,
+                }),
+            )
+                .into_response()
+        })
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -203,6 +303,11 @@ pub struct IpcContext {
     pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
     pub background_shutdown: CancellationToken,
+    /// Serializes task validation and the following local mutation.  The
+    /// cursor is derived from durable daemon state, so checking it outside
+    /// this critical section would reintroduce the UI-side TOCTOU.
+    pub bring_up_execution_lock: Arc<Mutex<()>>,
+    pub maintenance_authorization: Arc<dyn MaintenanceAuthorization>,
 }
 
 #[derive(Clone)]
@@ -905,7 +1010,7 @@ async fn bring_up_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) ->
 }
 
 async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnapshot {
-    let (config, config_error, hardware_mode, reclaim_required) =
+    let (config, config_error, hardware_mode, reclaim_required, reclaim_requested) =
         match ctx.config_store.load_runtime_configuration_summary().await {
             Ok(summary) => {
                 let hardware_mode = summary
@@ -916,21 +1021,27 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
                     })
                     .unwrap_or_default();
                 let config = bring_up_runtime_config_from_summary(summary.clone());
-                // A cached daemon-owned maintenance identity with an absent
-                // applied profile is a replacement/reinstall, not a normal
-                // first claim. It must take the rotating reclaim task.
-                let reclaim_required = summary
-                    .provisioning_profile_cache
-                    .as_ref()
-                    .and_then(|profile| profile.maintenance.as_ref())
-                    .is_some()
-                    && !config.provisioned;
-                (Some(config), None, hardware_mode, reclaim_required)
+                let reclaim_requested = ctx
+                    .config_store
+                    .machine_reclaim_requested()
+                    .await
+                    .unwrap_or(false);
+                // A cache is expected on every provisioned machine.  Only a
+                // daemon-owned protected-maintenance request may expose the
+                // destructive reclaim cursor.
+                (
+                    Some(config),
+                    None,
+                    hardware_mode,
+                    reclaim_requested,
+                    reclaim_requested,
+                )
             }
             Err(error) => (
                 None,
                 Some(error),
                 crate::bring_up::BringUpHardwareMode::default(),
+                false,
                 false,
             ),
         };
@@ -994,6 +1105,7 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
         reclaim_required,
+        reclaim_requested,
         updated_at: crate::state::store::now_iso(),
     });
     let mut snapshot = snapshot;
@@ -1023,6 +1135,7 @@ async fn execute_bring_up_task(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
+    let _execution_guard = ctx.bring_up_execution_lock.lock().await;
     let snapshot = bring_up_snapshot_for(&ctx).await;
     let Some(task) = snapshot.current_task.as_ref() else {
         return (
@@ -1035,6 +1148,8 @@ async fn execute_bring_up_task(
             .into_response();
     };
     if task.contract_version != payload.contract_version
+        || task.task_id != payload.task_id
+        || task.task_version != payload.task_version
         || task.kind != payload.kind
         || task.intent != payload.intent
     {
@@ -1048,13 +1163,118 @@ async fn execute_bring_up_task(
             .into_response();
     }
 
-    // This POST is the task execution gate. Network/claim mutation handlers
-    // additionally re-check their task before changing machine state; a UI
-    // cannot advance the ordered daemon cursor by issuing a legacy GET.
-    (StatusCode::OK, Json(snapshot)).into_response()
+    // Validate the typed payload against the task selected while this lock is
+    // held, then execute it before releasing the cursor.  No UI follow-up
+    // request may race this validation.
+    match (task.kind.clone(), payload.mutation) {
+        (
+            crate::bring_up::BringUpTaskKind::ConfigureNetwork,
+            BringUpTaskMutation::ConfigureNetwork {
+                ssid,
+                password,
+                hidden,
+            },
+        ) => apply_network_settings_mutation(
+            State(ctx.clone()),
+            headers,
+            Json(serde_json::json!({
+                "ssid": ssid,
+                "password": password,
+                "hidden": hidden,
+            })),
+        )
+        .await
+        .into_response(),
+        (
+            crate::bring_up::BringUpTaskKind::ClaimMachine
+            | crate::bring_up::BringUpTaskKind::ReclaimMachine,
+            BringUpTaskMutation::ClaimMachine {
+                claim_code,
+                maintenance_authorization,
+            },
+        ) => {
+            if task.kind == crate::bring_up::BringUpTaskKind::ReclaimMachine {
+                let Some(maintenance_authorization) = maintenance_authorization.as_ref() else {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ErrorMessage {
+                            code: "protected_maintenance_authorization_required",
+                            message:
+                                "machine reclaim requires a protected maintenance authorization"
+                                    .to_string(),
+                        }),
+                    )
+                        .into_response();
+                };
+                if let Err(message) = ctx
+                    .maintenance_authorization
+                    .authorize_reclaim(maintenance_authorization)
+                    .await
+                {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ErrorMessage {
+                            code: "protected_maintenance_authorization_denied",
+                            message,
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+            // Reclaim rotation is an invariant of the daemon-projected task;
+            // the client never chooses it.
+            claim_machine_mutation(
+                State(ctx.clone()),
+                headers,
+                Json(ClaimMachineRequest {
+                    claim_code,
+                    rotate_maintenance_identity: task.rotate_maintenance_identity,
+                }),
+            )
+            .await
+            .into_response()
+        }
+        (
+            crate::bring_up::BringUpTaskKind::AttestStock,
+            BringUpTaskMutation::RecordStock { attestation },
+        ) => record_physical_stock_attestation_mutation(
+            State(ctx.clone()),
+            headers,
+            Json(attestation),
+        )
+        .await
+        .into_response(),
+        (crate::bring_up::BringUpTaskKind::SyncProfile, BringUpTaskMutation::RefreshProfile) => {
+            (StatusCode::OK, Json(snapshot)).into_response()
+        }
+        _ => (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "bring_up_task_mutation_mismatch",
+                message: "mutation does not match the daemon current bring-up task".to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn apply_network_settings(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(_payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+        return response;
+    }
+    apply_network_settings_mutation(State(ctx), headers, Json(_payload))
+        .await
+        .into_response()
+}
+
+async fn apply_network_settings_mutation(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
@@ -1294,6 +1514,22 @@ async fn put_config(
 async fn claim_machine(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
+    Json(_payload): Json<ClaimMachineRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+        return response;
+    }
+    claim_machine_mutation(State(ctx), headers, Json(_payload))
+        .await
+        .into_response()
+}
+
+async fn claim_machine_mutation(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
     Json(payload): Json<ClaimMachineRequest>,
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
@@ -1301,7 +1537,24 @@ async fn claim_machine(
     }
 
     let claim_code = payload.claim_code.trim().to_ascii_uppercase();
-    let maintenance_public_key = match if payload.rotate_maintenance_identity {
+    // A machine that already owns a maintenance identity can only claim as a
+    // reclaim.  Client `false` is advisory at best and must never preserve an
+    // identity that the platform is replacing.
+    let rotate_maintenance_identity = payload.rotate_maintenance_identity
+        || ctx
+            .config_store
+            .machine_reclaim_requested()
+            .await
+            .unwrap_or(false)
+        || ctx
+            .config_store
+            .load_provisioning_profile_cache_summary()
+            .await
+            .ok()
+            .flatten()
+            .and_then(|profile| profile.maintenance)
+            .is_some();
+    let maintenance_public_key = match if rotate_maintenance_identity {
         ctx.config_store
             .ensure_reclaim_maintenance_public_key(&claim_code)
             .await
@@ -1352,7 +1605,7 @@ async fn claim_machine(
             &claim_code,
             &maintenance_public_key,
             &provisioning_profile,
-            payload.rotate_maintenance_identity,
+            rotate_maintenance_identity,
         )
         .await
     {
@@ -1378,10 +1631,7 @@ async fn claim_machine(
         Ok(config) => {
             if ctx
                 .config_store
-                .apply_maintenance_profile(
-                    &maintenance_identity,
-                    payload.rotate_maintenance_identity,
-                )
+                .apply_maintenance_profile(&maintenance_identity, rotate_maintenance_identity)
                 .await
                 .is_err()
             {
@@ -1394,7 +1644,7 @@ async fn claim_machine(
                 )
                     .into_response();
             }
-            if payload.rotate_maintenance_identity {
+            if rotate_maintenance_identity {
                 let reconcile_context = ctx.clone();
                 let background_shutdown = ctx.background_shutdown.clone();
                 tokio::spawn(async move {
@@ -1413,6 +1663,7 @@ async fn claim_machine(
                 reason: "machine_provisioned".to_string(),
                 machine_code: Some(machine_code.clone()),
             });
+            let _ = ctx.config_store.clear_machine_reclaim_request().await;
             (
                 StatusCode::OK,
                 Json(ClaimMachineResponse {
@@ -3023,6 +3274,22 @@ async fn apply_planogram(
 async fn record_physical_stock_attestation(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
+    Json(_input): Json<PhysicalStockAttestationInput>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+        return response;
+    }
+    record_physical_stock_attestation_mutation(State(ctx), headers, Json(_input))
+        .await
+        .into_response()
+}
+
+async fn record_physical_stock_attestation_mutation(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
     Json(input): Json<PhysicalStockAttestationInput>,
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
@@ -4252,6 +4519,8 @@ mod tests {
                 status_cache,
             },
             background_shutdown: CancellationToken::new(),
+            bring_up_execution_lock: Arc::new(Mutex::new(())),
+            maintenance_authorization: Arc::new(TestMaintenanceAuthorization { allow: false }),
         }
     }
 
@@ -5025,6 +5294,7 @@ mod tests {
                     .method(Method::POST)
                     .uri(uri)
                     .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header("x-vem-maintenance-session", "test-maintenance-session")
                     .header(CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(payload.to_string()))
                     .unwrap(),
@@ -8321,8 +8591,14 @@ mod tests {
             "token-1",
             json!({
                 "contractVersion": 1,
+                "taskId": "bring_up.claim_machine",
+                "taskVersion": 1,
                 "kind": "claim_machine",
-                "intent": "claim_machine"
+                "intent": "claim_machine",
+                "mutation": {
+                    "type": "claim_machine",
+                    "claimCode": "ABCD-2345"
+                }
             }),
         )
         .await;
@@ -8335,6 +8611,242 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
             "bring_up_task_stale"
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_bring_up_mutation_endpoints_do_not_bypass_the_cursor_with_only_ipc_token() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await,
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/network/settings")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({
+                            "ssid": "field-network",
+                            "password": "correct-horse-battery-staple",
+                            "hidden": false,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    struct TestMaintenanceAuthorization {
+        allow: bool,
+    }
+
+    #[async_trait]
+    impl MaintenanceAuthorization for TestMaintenanceAuthorization {
+        async fn authorize_reclaim(
+            &self,
+            context: &MaintenanceAuthorizationContext,
+        ) -> Result<(), String> {
+            if self.allow && context.session_id == "protected-session-1" {
+                Ok(())
+            } else {
+                Err("protected maintenance session is not authorized for reclaim".to_string())
+            }
+        }
+
+        async fn authorize_non_bring_up_mutation(
+            &self,
+            context: &MaintenanceAuthorizationContext,
+        ) -> Result<(), String> {
+            if context.session_id == "test-maintenance-session" {
+                Ok(())
+            } else {
+                Err("protected maintenance session is not authorized for mutation".to_string())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reclaim_task_is_projected_from_durable_daemon_intent_and_requires_authorization() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.config_store
+            .request_machine_reclaim()
+            .await
+            .expect("persist reclaim request");
+        *ctx.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
+            status: NetworkSetupStatus::Connected,
+            ssid: "field-network".to_string(),
+            hidden: false,
+            diagnostics: vec![crate::network::NetworkDiagnostic {
+                component: "provisioning_endpoint".to_string(),
+                level: "info".to_string(),
+                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
+                message: "reachable".to_string(),
+            }],
+            operator_guidance: "reachable".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        });
+        let app = build_router(ctx);
+
+        let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(snapshot["state"], "reclaim_required");
+        assert_eq!(snapshot["currentTask"]["kind"], "reclaim_machine");
+        assert_eq!(snapshot["currentTask"]["rotateMaintenanceIdentity"], true);
+
+        let response = post_json(
+            &app,
+            "/v1/bring-up/tasks/execute",
+            "token-1",
+            json!({
+                "contractVersion": 1,
+                "taskId": "bring_up.reclaim_machine",
+                "taskVersion": 1,
+                "kind": "reclaim_machine",
+                "intent": "reclaim_machine",
+                "mutation": {
+                    "type": "claim_machine",
+                    "claimCode": "RECL-2345"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+            "protected_maintenance_authorization_required"
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_task_uses_injected_maintenance_authorization_allow_and_deny_boundaries() {
+        for allow in [false, true] {
+            let temp_dir = tempdir().expect("tmp");
+            let mut ctx = test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await;
+            ctx.config_store
+                .request_machine_reclaim()
+                .await
+                .expect("persist reclaim request");
+            *ctx.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
+                status: NetworkSetupStatus::Connected,
+                ssid: "field-network".to_string(),
+                hidden: false,
+                diagnostics: vec![crate::network::NetworkDiagnostic {
+                    component: "provisioning_endpoint".to_string(),
+                    level: "info".to_string(),
+                    code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
+                    message: "reachable".to_string(),
+                }],
+                operator_guidance: "reachable".to_string(),
+                updated_at: crate::state::store::now_iso(),
+            });
+            ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow });
+            let app = build_router(ctx);
+            let response = post_json(
+                &app,
+                "/v1/bring-up/tasks/execute",
+                "token-1",
+                json!({
+                    "contractVersion": 1,
+                    "taskId": "bring_up.reclaim_machine",
+                    "taskVersion": 1,
+                    "kind": "reclaim_machine",
+                    "intent": "reclaim_machine",
+                    "mutation": {
+                        "type": "claim_machine",
+                        "claimCode": "RECL-2345",
+                        "maintenanceAuthorization": { "sessionId": "protected-session-1" }
+                    }
+                }),
+            )
+            .await;
+            if allow {
+                assert_ne!(response.status(), StatusCode::FORBIDDEN);
+            } else {
+                assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stock_progress_stays_pending_after_real_daemon_store_reopen_without_attestation_evidence(
+    ) {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        *ctx.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
+            status: NetworkSetupStatus::Connected,
+            ssid: "field-network".to_string(),
+            hidden: false,
+            diagnostics: vec![crate::network::NetworkDiagnostic {
+                component: "provisioning_endpoint".to_string(),
+                level: "info".to_string(),
+                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
+                message: "reachable".to_string(),
+            }],
+            operator_guidance: "reachable".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        });
+        let before =
+            get_ipc_json(&build_router(ctx.clone()), "/v1/bring-up", Some("token-1")).await;
+        assert!(before["progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["kind"] == "stock" && step["status"] == "upcoming"));
+        drop(ctx);
+
+        let restarted = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        *restarted.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
+            status: NetworkSetupStatus::Connected,
+            ssid: "field-network".to_string(),
+            hidden: false,
+            diagnostics: vec![crate::network::NetworkDiagnostic {
+                component: "provisioning_endpoint".to_string(),
+                level: "info".to_string(),
+                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
+                message: "reachable".to_string(),
+            }],
+            operator_guidance: "reachable".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        });
+        let after = get_ipc_json(&build_router(restarted), "/v1/bring-up", Some("token-1")).await;
+        assert!(after["progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["kind"] == "stock" && step["status"] == "upcoming"));
     }
 
     #[tokio::test]
