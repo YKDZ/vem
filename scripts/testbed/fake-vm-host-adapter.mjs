@@ -304,7 +304,7 @@ function semanticRecords(request) {
   ];
 }
 
-function fakeReport(request, scenario, state) {
+function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
   const resultByScenario = {
     success: "succeeded",
     failure: "failed",
@@ -355,12 +355,6 @@ function fakeReport(request, scenario, state) {
     isV2 &&
     (request.operation === "start-serial-session" || serialRequest !== null) &&
     result === "succeeded";
-  const serialFaultCode = {
-    "malformed-frame": "serial_malformed_frame",
-    "device-disconnected": "serial_device_disconnected",
-    "scanner-timeout": "serial_scanner_timeout",
-    "dispense-failed": "serial_dispense_failed",
-  }[String(process.env.VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT ?? "").trim()];
   return {
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-report/v2",
@@ -461,8 +455,8 @@ function fakeReport(request, scenario, state) {
       {
         code:
           result === "succeeded"
-            ? "adapter_completed"
-            : serialFaultCode ?? `adapter_${result}`,
+            ? (observedSerialFaultCode ?? "adapter_completed")
+            : `adapter_${result}`,
       },
     ],
     ...(isV2
@@ -610,7 +604,7 @@ const serialFaultOperation =
   serialFault === "scanner-timeout"
     ? "inject-scanner-code"
     : "collect-serial-evidence";
-if (
+const observedSerialFaultCode =
   request.operation === serialFaultOperation &&
   new Set([
     "malformed-frame",
@@ -618,8 +612,18 @@ if (
     "scanner-timeout",
     "dispense-failed",
   ]).has(serialFault)
+    ? {
+        "malformed-frame": "serial_malformed_frame",
+        "device-disconnected": "serial_device_disconnected",
+        "scanner-timeout": "serial_scanner_timeout",
+        "dispense-failed": "serial_dispense_failed",
+      }[serialFault]
+    : null;
+if (
+  request.operation === serialFaultOperation &&
+  observedSerialFaultCode !== null
 )
-  scenarioForOperation = "failure";
+  scenarioForOperation = "success";
 if (
   scenarioForOperation === "hang" &&
   request.operation !== "cleanup" &&
@@ -643,7 +647,7 @@ if (
         : scenarioForOperation;
   const statePath = process.env.VEM_VM_HOST_ADAPTER_STATE_FILE;
   const state = readState(statePath);
-  const report = fakeReport(request, scenario, state);
+  const report = fakeReport(request, scenario, state, observedSerialFaultCode);
   writeState(statePath, state);
   writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { mode: 0o600 });
 }

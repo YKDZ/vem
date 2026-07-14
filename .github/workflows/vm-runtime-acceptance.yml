@@ -573,6 +573,16 @@ jobs:
           process.stdout.write(`VM_GUEST_MAINTENANCE_HOST=${endpoint.host}\nVM_GUEST_MAINTENANCE_PORT=${endpoint.port}\n`);
           NODE
 
+      - name: Prepare Protected Simulated Scanner Code
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          scanner_code_file="$RUNNER_TEMP/vem-scanner-code-$RUN_ID"
+          node -e 'const { randomInt } = require("node:crypto"); let value = "28"; while (value.length < 18) value += randomInt(10); process.stdout.write(value)' > "$scanner_code_file"
+          chmod 600 "$scanner_code_file"
+          echo "VEM_VM_HOST_SCANNER_CODE_FILE=$scanner_code_file" >> "$GITHUB_ENV"
+
       - name: Run VM Runtime Acceptance
         run: |
           set -euo pipefail
@@ -596,6 +606,11 @@ jobs:
             --scanner-code-file "$VEM_VM_HOST_SCANNER_CODE_FILE" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
+
+      - name: Remove Protected Simulated Scanner Code
+        if: always()
+        shell: bash
+        run: rm -f -- "${VEM_VM_HOST_SCANNER_CODE_FILE:-}"
 
       - name: Bind Active Kiosk Session For Native Audio Capture
         if: success()

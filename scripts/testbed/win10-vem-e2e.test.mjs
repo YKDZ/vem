@@ -3399,10 +3399,9 @@ describe("win10-vem-e2e reset planning", () => {
       sshPort: 22022,
     });
     for (const step of plan.steps.filter((step) =>
-      [
-        "dirty-host factory reset acceptance",
-        "runtime acceptance",
-      ].includes(step.name),
+      ["dirty-host factory reset acceptance", "runtime acceptance"].includes(
+        step.name,
+      ),
     )) {
       assert.equal(commandArg(step.command, "--ssh-port"), "22022");
     }
@@ -3980,7 +3979,7 @@ describe("win10-vem-e2e reset planning", () => {
           },
         }),
       }),
-      0,
+      1,
     );
     assert.equal(
       getRuntimeAcceptanceExitStatus({

@@ -86,6 +86,7 @@ export class PaymentCodeOrchestratorService {
       idempotencyKey: input.idempotencyKey,
       source: input.source,
       scannerHealthJson: input.scannerHealth ?? null,
+      mockPaymentEnabled: this.appConfig.paymentMockEnabled,
     });
 
     if (replayed) {
@@ -93,8 +94,6 @@ export class PaymentCodeOrchestratorService {
     }
 
     assertPaymentCodeProvider(payment.providerCode);
-    if (payment.providerCode === "mock" && !this.appConfig.paymentMockEnabled)
-      throw new ConflictException("Mock payment code is disabled");
     if (payment.providerCode !== "mock")
       await this.configService.assertMachinePaymentChannelAvailable({
         providerCode: payment.providerCode,

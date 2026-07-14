@@ -376,7 +376,10 @@ export class OrdersService {
     let resolvedProviderConfig:
       | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
       | null = null;
-    if (paymentSelection.providerCode !== "mock") {
+    if (
+      paymentSelection.providerCode !== "mock" ||
+      paymentSelection.method === "payment_code"
+    ) {
       await this.paymentProviderConfigService.assertMachinePaymentChannelAvailable(
         {
           providerCode: paymentSelection.providerCode,
@@ -384,11 +387,13 @@ export class OrdersService {
           machineId: machine.id,
         },
       );
-      resolvedProviderConfig =
-        await this.paymentProviderConfigService.resolveForPayment({
-          providerCode: paymentSelection.providerCode,
-          machineId: machine.id,
-        });
+      if (paymentSelection.providerCode !== "mock") {
+        resolvedProviderConfig =
+          await this.paymentProviderConfigService.resolveForPayment({
+            providerCode: paymentSelection.providerCode,
+            machineId: machine.id,
+          });
+      }
     }
 
     const qrExpiresMinutes = resolvedProviderConfig

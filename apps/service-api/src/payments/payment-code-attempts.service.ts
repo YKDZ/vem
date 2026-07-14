@@ -40,6 +40,7 @@ export type CreatePaymentCodeAttemptInput = {
   idempotencyKey: string;
   source: string;
   scannerHealthJson?: Record<string, unknown> | null;
+  mockPaymentEnabled?: boolean;
 };
 
 export type PaymentCodeAttemptRow = typeof paymentCodeAttempts.$inferSelect;
@@ -143,6 +144,9 @@ export class PaymentCodeAttemptsService {
       if (!row) throw new NotFoundException("Machine order not found");
       if (row.paymentMethod !== "payment_code") {
         throw new ConflictException("Order is not a payment_code order");
+      }
+      if (row.providerCode === "mock" && input.mockPaymentEnabled !== true) {
+        throw new ConflictException("Mock payment code is disabled");
       }
       if (row.paymentStatus === "succeeded") {
         throw new ConflictException("Payment already succeeded");

@@ -16,7 +16,6 @@ import {
   createVmHostAdapterRequest,
   runVmHostAdapter,
   VM_HOST_ADAPTER_CONTRACT_VERSION,
-  VmHostAdapterExecutionError,
 } from "./vm-host-adapter-contract.mjs";
 
 function readOption(name) {
@@ -305,17 +304,31 @@ async function main() {
     });
     if (!repeatedStop.serialSession.simulatorCleanup.idempotencyVerified)
       throw new Error("adapter did not prove repeated serial stop idempotency");
-    failureMatrix = await runFailureMatrix({
-      runId,
-      targetIdentity,
-      lifecycleReference,
-      approvedRuntimeBase,
-      saleCorrelationId,
-      saleBinding: completedSale,
-      scannerCode,
-      workDirectory,
-      environment,
-    });
+    failureMatrix = contractTest
+      ? await runFailureMatrix({
+          runId,
+          targetIdentity,
+          lifecycleReference,
+          approvedRuntimeBase,
+          saleCorrelationId,
+          saleBinding: completedSale,
+          scannerCode,
+          workDirectory,
+          environment,
+        })
+      : await runProductionFailureMatrix({
+          runId,
+          targetIdentity,
+          lifecycleReference,
+          approvedRuntimeBase,
+          saleCorrelationId,
+          successfulSaleBinding: completedSale,
+          scannerCode,
+          workDirectory,
+          environment,
+          salePrepareCommandJson: readOption("--sale-prepare-command-json"),
+          saleCompleteCommandJson: readOption("--sale-complete-command-json"),
+        });
   } catch (error) {
     primaryError = error;
   } finally {
@@ -414,6 +427,245 @@ function runSaleCommand(commandJson, expectedPhase) {
   };
 }
 
+function runFailedDispenseCommand(commandJson) {
+  const command = JSON.parse(commandJson);
+  if (!Array.isArray(command) || command.length < 2)
+    throw new Error("failed-dispense sale command must be a JSON array");
+  const result = spawnSync(command[0], command.slice(1), {
+    cwd: process.cwd(),
+    env: process.env,
+    encoding: "utf8",
+  });
+  const output = JSON.parse(result.stdout || "null");
+  const sale = output?.simulatedHardwareSaleFlow?.sale;
+  if (
+    result.status === 0 ||
+    output?.simulatedHardwareSaleFlow?.phase !== "complete" ||
+    sale?.dispenseResult !== "failed" ||
+    typeof sale?.orderId !== "string" ||
+    typeof sale?.paymentId !== "string" ||
+    typeof sale?.vendingCommandId !== "string"
+  )
+    throw new Error(
+      "dispense-failed sale did not prove an actual failed command",
+    );
+  return {
+    saleCorrelationId: readOption("--sale-correlation-id"),
+    orderId: sale.orderId,
+    paymentId: sale.paymentId,
+    vendingCommandId: sale.vendingCommandId,
+  };
+}
+
+async function runProductionFailureMatrix(options) {
+  const cases = await runFailureMatrix({
+    ...options,
+    saleBinding: options.successfulSaleBinding,
+    failureModes: ["malformed-frame", "device-disconnected"],
+  });
+
+  let pendingSale;
+  let scannerSession;
+  try {
+    const start = await runVmHostAdapter({
+      request: requestFor({
+        operation: "start-serial-session",
+        ...options,
+        saleBinding: null,
+      }),
+      workDirectory: options.workDirectory,
+      environment: options.environment,
+    });
+    scannerSession = start.serialSession;
+    pendingSale = runSaleCommand(options.salePrepareCommandJson, "prepare");
+    const scannerTimeout = await runVmHostAdapter({
+      request: requestFor({
+        operation: "inject-scanner-code",
+        ...options,
+        session: scannerSession,
+        scannerDescriptor: createScannerCodeDescriptor(options.scannerCode),
+        saleBinding: pendingSale,
+      }),
+      workDirectory: options.workDirectory,
+      environment: {
+        ...options.environment,
+        VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: "scanner-timeout",
+      },
+      scannerCode: options.scannerCode,
+    });
+    const scannerTimeoutCode = assertObservedDeviceFault(
+      scannerTimeout,
+      "scanner-timeout",
+      "serial_scanner_timeout",
+      pendingSale,
+    );
+    cases.push(
+      observedFailureCase({
+        failureMode: "scanner-timeout",
+        operation: "inject-scanner-code",
+        report: scannerTimeout,
+        saleBinding: pendingSale,
+        diagnosticCode: scannerTimeoutCode,
+      }),
+    );
+  } finally {
+    if (scannerSession)
+      await stopFailureSession(options, scannerSession, pendingSale);
+  }
+
+  let dispenseSession;
+  let failedSale;
+  try {
+    const start = await runVmHostAdapter({
+      request: requestFor({
+        operation: "start-serial-session",
+        ...options,
+        saleBinding: null,
+      }),
+      workDirectory: options.workDirectory,
+      environment: {
+        ...options.environment,
+        VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: "dispense-failed",
+      },
+    });
+    dispenseSession = start.serialSession;
+    const dispenseInject = await runVmHostAdapter({
+      request: requestFor({
+        operation: "inject-scanner-code",
+        ...options,
+        session: dispenseSession,
+        scannerDescriptor: createScannerCodeDescriptor(options.scannerCode),
+        saleBinding: pendingSale,
+      }),
+      workDirectory: options.workDirectory,
+      environment: options.environment,
+      scannerCode: options.scannerCode,
+    });
+    failedSale = runFailedDispenseCommand(options.saleCompleteCommandJson);
+    if (
+      failedSale.orderId !== pendingSale.orderId ||
+      failedSale.paymentId !== pendingSale.paymentId
+    )
+      throw new Error("dispense-failed sale changed the pending business IDs");
+    const dispenseFailure = await runVmHostAdapter({
+      request: requestFor({
+        operation: "collect-serial-evidence",
+        ...options,
+        session: dispenseSession,
+        scannerDescriptor: {
+          operationNonce: dispenseInject.request.operationNonce,
+          ...createScannerCodeDescriptor(options.scannerCode),
+        },
+        saleBinding: failedSale,
+      }),
+      workDirectory: options.workDirectory,
+      environment: {
+        ...options.environment,
+        VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: "dispense-failed",
+      },
+    });
+    const dispenseFailureCode = assertObservedDeviceFault(
+      dispenseFailure,
+      "dispense-failed",
+      "serial_dispense_failed",
+      failedSale,
+    );
+    cases.push(
+      observedFailureCase({
+        failureMode: "dispense-failed",
+        operation: "collect-serial-evidence",
+        report: dispenseFailure,
+        saleBinding: failedSale,
+        diagnosticCode: dispenseFailureCode,
+      }),
+    );
+  } finally {
+    if (dispenseSession)
+      await stopFailureSession(
+        options,
+        dispenseSession,
+        failedSale ?? pendingSale,
+      );
+  }
+  return cases;
+}
+
+function assertObservedDeviceFault(
+  report,
+  failureMode,
+  expectedCode,
+  saleBinding,
+) {
+  const actualCode = report.diagnostics?.find(
+    (diagnostic) => diagnostic?.code === expectedCode,
+  )?.code;
+  if (report.result !== "succeeded" || actualCode !== expectedCode)
+    throw new Error(
+      `${failureMode} adapter returned ${actualCode ?? "no diagnostic"}, expected ${expectedCode}`,
+    );
+  if (
+    report.cleanup?.status !== "not-run" ||
+    report.cleanup?.overlayDisposition !== "active" ||
+    report.cleanup?.observed?.overlay !== "present" ||
+    report.cleanup?.observed?.runDirectory !== "present"
+  )
+    throw new Error(`${failureMode} unexpectedly cleaned the active overlay`);
+  if (
+    JSON.stringify(report.request.serialSession.saleBindings) !==
+    JSON.stringify([saleBinding])
+  )
+    throw new Error(`${failureMode} did not bind the observed device fault`);
+  return actualCode;
+}
+
+function observedFailureCase({
+  failureMode,
+  operation,
+  report,
+  saleBinding,
+  diagnosticCode,
+}) {
+  return {
+    failureMode,
+    operation,
+    result: "observed_failure",
+    adapterResult: report.result,
+    diagnosticCode,
+    orderId: saleBinding.orderId,
+    paymentId: saleBinding.paymentId,
+    ...(saleBinding.vendingCommandId
+      ? { vendingCommandId: saleBinding.vendingCommandId }
+      : {}),
+  };
+}
+
+async function stopFailureSession(options, session, saleBinding) {
+  await runVmHostAdapter({
+    request: requestFor({
+      operation: "stop-serial-session",
+      ...options,
+      session,
+      saleBinding,
+    }),
+    workDirectory: options.workDirectory,
+    environment: options.environment,
+  });
+  const repeatedStop = await runVmHostAdapter({
+    request: requestFor({
+      operation: "stop-serial-session",
+      ...options,
+      session,
+      saleBinding,
+      idempotencyCheck: true,
+    }),
+    workDirectory: options.workDirectory,
+    environment: options.environment,
+  });
+  if (!repeatedStop.serialSession.simulatorCleanup.idempotencyVerified)
+    throw new Error("adapter did not prove repeated serial stop idempotency");
+  return repeatedStop;
+}
+
 async function runFailureMatrix({
   runId,
   targetIdentity,
@@ -424,14 +676,15 @@ async function runFailureMatrix({
   scannerCode,
   workDirectory,
   environment,
-}) {
-  const cases = [];
-  for (const failureMode of [
+  failureModes = [
     "malformed-frame",
     "device-disconnected",
     "scanner-timeout",
     "dispense-failed",
-  ]) {
+  ],
+}) {
+  const cases = [];
+  for (const failureMode of failureModes) {
     const expectedCode = {
       "malformed-frame": "serial_malformed_frame",
       "device-disconnected": "serial_device_disconnected",
@@ -439,7 +692,6 @@ async function runFailureMatrix({
       "dispense-failed": "serial_dispense_failed",
     }[failureMode];
     let session;
-    let stop;
     try {
       const start = await runVmHostAdapter({
         request: requestFor({
@@ -456,88 +708,85 @@ async function runFailureMatrix({
       });
       session = start.serialSession;
       const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
-      try {
-        const inject = await runVmHostAdapter({
-          request: requestFor({
-            operation: "inject-scanner-code",
-            runId,
-            targetIdentity,
-            lifecycleReference,
-            approvedRuntimeBase,
-            session,
-            scannerDescriptor,
-            saleCorrelationId,
-            saleBinding,
-          }),
-          workDirectory,
-          environment:
-            failureMode === "scanner-timeout"
-              ? {
-                  ...environment,
-                  VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
-                }
-              : environment,
-          scannerCode,
-        });
-        if (failureMode !== "scanner-timeout")
-          await runVmHostAdapter({
-            request: requestFor({
-              operation: "collect-serial-evidence",
-              runId,
-              targetIdentity,
-              lifecycleReference,
-              approvedRuntimeBase,
-              session,
-              scannerDescriptor: {
-                operationNonce: inject.request.operationNonce,
-                ...scannerDescriptor,
+      const inject = await runVmHostAdapter({
+        request: requestFor({
+          operation: "inject-scanner-code",
+          runId,
+          targetIdentity,
+          lifecycleReference,
+          approvedRuntimeBase,
+          session,
+          scannerDescriptor,
+          saleCorrelationId,
+          saleBinding,
+        }),
+        workDirectory,
+        environment:
+          failureMode === "scanner-timeout"
+            ? {
+                ...environment,
+                VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
+              }
+            : environment,
+        scannerCode,
+      });
+      const observation =
+        failureMode === "scanner-timeout"
+          ? inject
+          : await runVmHostAdapter({
+              request: requestFor({
+                operation: "collect-serial-evidence",
+                runId,
+                targetIdentity,
+                lifecycleReference,
+                approvedRuntimeBase,
+                session,
+                scannerDescriptor: {
+                  operationNonce: inject.request.operationNonce,
+                  ...scannerDescriptor,
+                },
+                saleCorrelationId,
+                saleBinding,
+              }),
+              workDirectory,
+              environment: {
+                ...environment,
+                VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
               },
-              saleCorrelationId,
-              saleBinding,
-            }),
-            workDirectory,
-            environment: {
-              ...environment,
-              VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
-            },
-          });
-        throw new Error(`${failureMode} unexpectedly produced sale evidence`);
-      } catch (error) {
-        if (!(error instanceof VmHostAdapterExecutionError)) throw error;
-        if (error.diagnostic.result !== "failed")
-          throw new Error(`${failureMode} did not fail the serial session`);
-        const actualCode = error.diagnostic.diagnostics?.[0]?.code;
-        if (actualCode !== expectedCode)
-          throw new Error(
-            `${failureMode} returned ${actualCode ?? "no diagnostic"}, expected ${expectedCode}`,
-          );
-        cases.push({
+            });
+      const diagnosticCode = assertObservedDeviceFault(
+        observation,
+        failureMode,
+        expectedCode,
+        saleBinding,
+      );
+      cases.push(
+        observedFailureCase({
           failureMode,
           operation:
             failureMode === "scanner-timeout"
               ? "inject-scanner-code"
               : "collect-serial-evidence",
-          result: error.diagnostic.result,
-          diagnosticCode: actualCode,
-        });
-      }
+          report: observation,
+          saleBinding,
+          diagnosticCode,
+        }),
+      );
     } finally {
       if (session) {
-        stop = await runVmHostAdapter({
-          request: requestFor({
-            operation: "stop-serial-session",
+        const stop = await stopFailureSession(
+          {
             runId,
             targetIdentity,
             lifecycleReference,
             approvedRuntimeBase,
-            session,
             saleCorrelationId,
-            saleBinding,
-            idempotencyCheck: true,
-          }),
-          workDirectory,
-          environment,
-        });
+            workDirectory,
+            environment,
+          },
+          session,
+          saleBinding,
+        );
         if (stop.serialSession.simulatorCleanup.survivingProcessCount !== 0)
           throw new Error(
             `${failureMode} left serial simulator processes behind`,

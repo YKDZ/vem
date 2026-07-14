@@ -29,6 +29,46 @@ function makeCountResult(total: number) {
 }
 
 describe("PaymentCodeAttemptsService", () => {
+  it("rejects disabled mock payment before creating or replaying an attempt", async () => {
+    const tx = { select: vi.fn(), insert: vi.fn() };
+    tx.select.mockReturnValueOnce(
+      makeSelectResult([
+        {
+          orderId: "order-1",
+          orderNo: "ORD001",
+          machineId: "machine-1",
+          paymentId: "payment-1",
+          paymentNo: "PAY001",
+          paymentProviderConfigId: null,
+          amountCents: 300,
+          paymentStatus: "pending",
+          paymentMethod: "payment_code",
+          providerId: "provider-mock",
+          providerCode: "mock",
+        },
+      ]),
+    );
+    const db = {
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (value: unknown) => unknown) => fn(tx)),
+    };
+    const service = new PaymentCodeAttemptsService(db as never);
+
+    await expect(
+      service.createOrReplay({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-disabled",
+        source: "serial_text",
+        mockPaymentEnabled: false,
+      }),
+    ).rejects.toThrow("Mock payment code is disabled");
+    expect(tx.insert).not.toHaveBeenCalled();
+    expect(tx.select).toHaveBeenCalledTimes(1);
+  });
+
   it("returns replayed=true for the same idempotencyKey", async () => {
     const existingAttempt = {
       id: "attempt-1",

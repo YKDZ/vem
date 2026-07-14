@@ -6439,8 +6439,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       do {
         $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
         if (
-          [string]$currentTransaction.fulfillmentStatus -eq "dispensed" -or
-          [string]$currentTransaction.fulfillmentStatus -eq "dispense_failed" -or
+          [string]$currentTransaction.vending.status -eq "succeeded" -or
+          [string]$currentTransaction.vending.status -eq "failed" -or
           [string]$currentTransaction.paymentStatus -eq "failed"
         ) { break }
         Start-Sleep -Milliseconds 500
@@ -6482,8 +6482,10 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     "unknown"
   }
-  $fulfillmentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.fulfillmentStatus)) {
-    [string]$currentTransaction.fulfillmentStatus
+  $fulfillmentStatus = if ([string]$currentTransaction.vending.status -eq "succeeded") {
+    "dispensed"
+  } elseif ([string]$currentTransaction.vending.status -eq "failed") {
+    "dispense_failed"
   } elseif ($salePhase -eq "prepare") {
     "pending"
   } else {
@@ -7493,9 +7495,7 @@ export function getRuntimeAcceptanceExitStatus({
       const simulatedHardwareReady =
         output?.simulatedHardwareSaleFlow?.result?.simulatedHardwareReady
           ?.status;
-      const phase =
-        output?.simulatedHardwareSaleFlow?.phase ??
-        (simulatedHardwareReady === "passed" ? "complete" : null);
+      const phase = output?.simulatedHardwareSaleFlow?.phase;
       return output?.ok === true &&
         ((phase === "prepare" &&
           simulatedHardwareReady === "awaiting_scanner") ||

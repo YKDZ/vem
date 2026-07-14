@@ -342,7 +342,15 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
 
   it("runs the production serial COM and scanner sale conformance with protected scanner input", () => {
     const workflow = readWorkflow();
+    const prepareScanner = stepBlock(
+      workflow,
+      "Prepare Protected Simulated Scanner Code",
+    );
     const runtime = stepBlock(workflow, "Run VM Runtime Acceptance");
+    const removeScanner = stepBlock(
+      workflow,
+      "Remove Protected Simulated Scanner Code",
+    );
     const display = stepBlock(
       workflow,
       "Capture Windows Display Evidence Through Host Adapter",
@@ -354,6 +362,13 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.match(runtime, /stat -c '%a'/);
     assert.doesNotMatch(runtime, /VEM_VM_HOST_SCANNER_CODE(?:[^_]|$)/);
     assert.doesNotMatch(runtime, /mock-payment/);
+    assert.match(prepareScanner, /umask 077/);
+    assert.match(prepareScanner, /RUNNER_TEMP/);
+    assert.match(prepareScanner, /chmod 600/);
+    assert.match(prepareScanner, /randomInt/);
+    assert.match(removeScanner, /if: always\(\)/);
+    assert.ok(workflow.indexOf(prepareScanner) < workflow.indexOf(runtime));
+    assert.ok(workflow.indexOf(runtime) < workflow.indexOf(removeScanner));
     assert.ok(workflow.indexOf(runtime) < workflow.indexOf(display));
   });
 });

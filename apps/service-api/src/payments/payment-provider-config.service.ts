@@ -478,8 +478,8 @@ export class PaymentProviderConfigService {
 
   async assertMachinePaymentChannelAvailable(input: {
     machineId: string;
-    providerCode: "alipay" | "wechat_pay";
-    method: "qr_code" | "payment_code";
+    providerCode: "alipay" | "wechat_pay" | "mock";
+    method: "qr_code" | "payment_code" | "mock";
   }): Promise<void> {
     const optionKey = `${input.method}:${input.providerCode}` as const;
     const projection = await this.listMachinePaymentOptionsForMachine(

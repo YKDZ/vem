@@ -474,8 +474,7 @@ function reportFor(request, overrides = {}) {
             },
             capture: {
               source: "contract-test-generated-png",
-              adapterIdentity:
-                "vm-host-adapter://deterministic-fake@1.0.0",
+              adapterIdentity: "vm-host-adapter://deterministic-fake@1.0.0",
               artifact: evidence[0].identity,
               format: "png",
               widthPx: 1080,
@@ -508,8 +507,7 @@ function reportFor(request, overrides = {}) {
             },
             capture: {
               source: "contract-test-generated-wav",
-              adapterIdentity:
-                "vm-host-adapter://deterministic-fake@1.0.0",
+              adapterIdentity: "vm-host-adapter://deterministic-fake@1.0.0",
               artifact: evidence[0].identity,
               format: "wav_pcm",
               encoding: "pcm_s16le",
@@ -1842,6 +1840,64 @@ describe("VM Host Adapter contract", () => {
     }
   });
 
+  it("reports an expected serial device fault without cleaning the active overlay", async () => {
+    const workDirectory = mkdtempSync(
+      join(tmpdir(), "vem-vm-host-serial-device-fault-"),
+    );
+    const statePath = join(workDirectory, "state.json");
+    const environment = {
+      VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+      VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+      VEM_VM_HOST_ADAPTER_STATE_FILE: statePath,
+    };
+    const start = await runVmHostAdapter({
+      request: createVmHostAdapterRequest(
+        serialSessionRequest("start-serial-session"),
+      ),
+      workDirectory,
+      environment,
+    });
+    const input = serialSessionRequest("inject-scanner-code");
+    const report = await runVmHostAdapter({
+      request: createVmHostAdapterRequest({
+        ...input,
+        serialSession: {
+          ...input.serialSession,
+          serialSessionId: start.serialSession.serialSessionId,
+          sessionBindingToken: start.serialSession.sessionBindingToken,
+          startOperationReference: start.serialSession.startOperationReference,
+          deviceMappingDigest: start.serialSession.deviceMappingDigest,
+        },
+      }),
+      workDirectory,
+      environment: {
+        ...environment,
+        VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: "scanner-timeout",
+      },
+      scannerCode: PROTECTED_SCANNER_INPUT,
+    });
+    assert.equal(report.result, "succeeded");
+    assert.deepEqual(report.diagnostics, [{ code: "serial_scanner_timeout" }]);
+    assert.deepEqual(report.cleanup, {
+      status: "not-run",
+      overlayDisposition: "active",
+      observed: {
+        overlay: "present",
+        runDirectory: "present",
+        personalizationMedia: "not-mounted",
+      },
+    });
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.equal(
+      state.sessions[start.serialSession.serialSessionId].active,
+      true,
+    );
+    assert.equal(
+      state.sessions[start.serialSession.serialSessionId].cleanupAttemptCount,
+      0,
+    );
+  });
+
   it("retains known serial session binding during failed-operation recovery cleanup", async () => {
     const workDirectory = mkdtempSync(
       join(tmpdir(), "vem-vm-host-serial-recovery-"),
@@ -2397,26 +2453,42 @@ describe("VM Host Adapter contract", () => {
       {
         failureMode: "malformed-frame",
         operation: "collect-serial-evidence",
-        result: "failed",
+        result: "observed_failure",
+        adapterResult: "succeeded",
         diagnosticCode: "serial_malformed_frame",
+        orderId: "order-001",
+        paymentId: "payment-001",
+        vendingCommandId: "vending-command-001",
       },
       {
         failureMode: "device-disconnected",
         operation: "collect-serial-evidence",
-        result: "failed",
+        result: "observed_failure",
+        adapterResult: "succeeded",
         diagnosticCode: "serial_device_disconnected",
+        orderId: "order-001",
+        paymentId: "payment-001",
+        vendingCommandId: "vending-command-001",
       },
       {
         failureMode: "scanner-timeout",
         operation: "inject-scanner-code",
-        result: "failed",
+        result: "observed_failure",
+        adapterResult: "succeeded",
         diagnosticCode: "serial_scanner_timeout",
+        orderId: "order-001",
+        paymentId: "payment-001",
+        vendingCommandId: "vending-command-001",
       },
       {
         failureMode: "dispense-failed",
         operation: "collect-serial-evidence",
-        result: "failed",
+        result: "observed_failure",
+        adapterResult: "succeeded",
         diagnosticCode: "serial_dispense_failed",
+        orderId: "order-001",
+        paymentId: "payment-001",
+        vendingCommandId: "vending-command-001",
       },
     ]);
     assert.doesNotMatch(
