@@ -1949,6 +1949,7 @@ Write-Json (Join-Path $context.trust "vision-release-trust-anchor.json") @{schem
 try {
 Copy-Item -LiteralPath $context.installerPath -Destination (Join-Path $context.installerMedia "install-vision-release.ps1")
 Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $context.installerPath) "vision-release-materialization.psm1") -Destination (Join-Path $context.installerMedia "vision-release-materialization.psm1")
+Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $context.installerPath) "vision-diagnostic-redaction.psm1") -Destination (Join-Path $context.installerMedia "vision-diagnostic-redaction.psm1")
 Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $context.installerPath) "provision-vision-factory-release.ps1") -Destination (Join-Path $context.installerMedia "provision-vision-factory-release.ps1")
 $provisioningManifestPath = Join-Path $context.visionMediaRoot "VISION-FACTORY-PROVISIONING.JSON"
 $files = @{}; Get-ChildItem -LiteralPath $context.visionMediaRoot -Recurse -File | Where-Object { $_.FullName -ine $provisioningManifestPath } | ForEach-Object { $relative=$_.FullName.Substring($context.visionMediaRoot.Length+1).Replace("\","/"); $files[$relative]=Get-Digest $_.FullName }

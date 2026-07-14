@@ -136,6 +136,12 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["runtime acceptance", "managed update"],
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
   },
   {
     path: "scripts/factory/experimental-vision-candidate.test.mjs",
@@ -323,6 +329,12 @@ const DEFAULT_INVENTORY = [
       "runtime acceptance",
       "testbed workflows",
     ],
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
   },
   {
     path: "scripts/testbed/factory-image-acceptance.mjs",
@@ -451,6 +463,10 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["factory preparation", "managed update"],
+    deliveryClosure: [
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
   },
   {
     path: "scripts/windows/vision-release-materialization.psm1",
@@ -509,6 +525,12 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation", "managed update"],
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
   },
   {
     path: "scripts/windows/vision-release-install-harness.behavior.ps1",
@@ -855,6 +877,34 @@ function validateDeliveryClosure(entry, entriesByPath, source) {
   return failures;
 }
 
+function validateDeliveryAssembly(entry, entriesByPath, source) {
+  if (entry.deliveryAssembly === undefined) return [];
+  if (
+    !Array.isArray(entry.deliveryAssembly) ||
+    entry.deliveryAssembly.length === 0
+  ) {
+    return [
+      `${entry.path} deliveryAssembly must name one or more assembled members`,
+    ];
+  }
+  const failures = [];
+  for (const assemblyPath of entry.deliveryAssembly) {
+    if (typeof assemblyPath !== "string" || !entriesByPath.has(assemblyPath)) {
+      failures.push(
+        `${entry.path} delivery assembly member is not classified: ${String(assemblyPath)}`,
+      );
+      continue;
+    }
+    const assemblyName = assemblyPath.split("/").at(-1);
+    if (!source.includes(assemblyName)) {
+      failures.push(
+        `${entry.path} delivery assembly omits classified member: ${assemblyPath}`,
+      );
+    }
+  }
+  return failures;
+}
+
 function scriptMaintainsFactoryDeliveryEvidence(source) {
   return (
     source.includes("factory-runtime-manifest.json") &&
@@ -1068,6 +1118,13 @@ export function checkRepositoryScriptInventory(options = {}) {
     );
     failures.push(
       ...validateDeliveryClosure(
+        entry,
+        entriesByPath,
+        readText(root, entry.path),
+      ),
+    );
+    failures.push(
+      ...validateDeliveryAssembly(
         entry,
         entriesByPath,
         readText(root, entry.path),

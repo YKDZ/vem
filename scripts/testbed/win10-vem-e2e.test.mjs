@@ -875,6 +875,23 @@ function approvedPreclaimBaseEvidence() {
 }
 
 describe("win10-vem-e2e reset planning", () => {
+  it("stages the complete Vision installer closure for dirty-host and clean-base Factory acceptance", () => {
+    const source = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
+
+    assert.match(
+      source,
+      /const FACTORY_SUPPORT_SCRIPT_NAMES = \[[\s\S]*?"install-vision-release\.ps1"[\s\S]*?"vision-release-materialization\.psm1"[\s\S]*?"vision-diagnostic-redaction\.psm1"[\s\S]*?\];/,
+    );
+    assert.match(
+      source,
+      /foreach \(\$scriptName in \$\{psArray\(FACTORY_SUPPORT_SCRIPT_NAMES\)\}\)[\s\S]*?Copy-Item -LiteralPath \$source -Destination \(Join-Path \$scriptRoot \$scriptName\)/,
+    );
+    assert.match(
+      source,
+      /for \(const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES\)[\s\S]*?scripts\/windows\/\$\{scriptName\}/,
+    );
+  });
+
   it("requires the exact protected GitHub gate and runner identity before secret media can be opened", () => {
     const trusted = {
       GITHUB_ACTIONS: "true",

@@ -218,6 +218,11 @@ describe("Vision release installer fixtures", () => {
         prepare,
         /Copy-ScriptIfPresent -Name "vision-diagnostic-redaction\.psm1" -TargetDirectory \$scriptsRoot/,
       );
+      const harness = readFileSync(windowsHarness, "utf8");
+      assert.match(
+        harness,
+        /Copy-Item -LiteralPath \(Join-Path \(Split-Path -Parent \$context\.installerPath\) "vision-diagnostic-redaction\.psm1"\) -Destination \(Join-Path \$context\.installerMedia "vision-diagnostic-redaction\.psm1"\)/,
+      );
     },
   );
 

@@ -444,6 +444,7 @@ export function finalizeExperimentalCandidate(options) {
     "install-vision-release.ps1",
     "provision-vision-factory-release.ps1",
     "vision-release-materialization.psm1",
+    "vision-diagnostic-redaction.psm1",
   ]) {
     stage(
       `VISION-INSTALLER/${script}`,

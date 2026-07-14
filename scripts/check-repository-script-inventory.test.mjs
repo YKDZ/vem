@@ -99,6 +99,63 @@ describe("repository script inventory guard", () => {
     );
   });
 
+  it("fails when a delivery producer omits a classified assembly member", () => {
+    withFixture(
+      {
+        "scripts/factory/finalize.mjs":
+          'const files = ["install-vision-release.ps1", "vision-release-materialization.psm1"];',
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+        "scripts/windows/vision-diagnostic-redaction.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/factory/finalize.mjs",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+                "scripts/windows/vision-diagnostic-redaction.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-diagnostic-redaction.psm1",
+              owner: "field-operations",
+              category: "test support operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /finalize\.mjs delivery assembly omits classified member: scripts\/windows\/vision-diagnostic-redaction\.psm1/,
+        );
+      },
+    );
+  });
+
   it("fails when a factory image preparation script bypasses delivery evidence", () => {
     withFixture(
       {

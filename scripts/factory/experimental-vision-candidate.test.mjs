@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { createPreapprovalDeliveryManifest } from "./experimental-vision-candidate.mjs";
@@ -9,6 +10,22 @@ const digest = (bytes) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 describe("experimental Vision preapproval delivery", () => {
+  it("includes the diagnostic redactor in finalized Factory installer media and hash evidence", () => {
+    const source = readFileSync(
+      "scripts/factory/experimental-vision-candidate.mjs",
+      "utf8",
+    );
+
+    assert.match(
+      source,
+      /for \(const script of \[[\s\S]*?"vision-diagnostic-redaction\.psm1"[\s\S]*?\]\)/,
+    );
+    assert.match(
+      source,
+      /stage\(\s*`VISION-INSTALLER\/\$\{script\}`,\s*readFileSync\(/,
+    );
+  });
+
   it("makes the exact candidate and every executed script hash-addressable", () => {
     const bundle = Buffer.from("exact candidate bundle");
     const descriptor = Buffer.from('{"descriptor":true}\n');
