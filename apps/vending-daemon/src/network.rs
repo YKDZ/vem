@@ -114,6 +114,7 @@ async fn probe_preclaim_platform_endpoint(api_base_url: &str) -> NetworkSettings
     }
 
     let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(8))
         .build()
@@ -128,39 +129,112 @@ async fn probe_preclaim_platform_endpoint(api_base_url: &str) -> NetworkSettings
     };
 
     match client.get(endpoint).send().await {
-        Ok(response) if response.status().is_success() => NetworkSettingsResponse {
-            status: NetworkSetupStatus::Connected,
-            ssid: "existing-network".to_string(),
-            hidden: false,
-            diagnostics: vec![
-                diagnostic(
-                    "local_network",
-                    "ok",
-                    "LOCAL_NETWORK_ROUTE_READY",
-                    "An existing local network route reached the Platform endpoint",
-                ),
-                diagnostic(
-                    "provisioning_endpoint",
-                    "ok",
-                    "PROVISIONING_ENDPOINT_REACHABLE",
-                    "Pre-claim Platform endpoint is reachable",
-                ),
-            ],
-            operator_guidance: "已验证现有有线或已连接无线网络可访问平台，可以继续领取机器。"
-                .to_string(),
-            updated_at: crate::state::store::now_iso(),
-        },
-        Ok(response) => failed_preclaim_probe_response(
+        Ok(response) if response.status().is_redirection() => failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_ENDPOINT_REDIRECTED",
+            &format!(
+                "Pre-claim Platform health endpoint redirected with HTTP {}",
+                response.status().as_u16()
+            ),
+        ),
+        Ok(response) if !response.status().is_success() => failed_preclaim_probe_response(
             "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
             &format!(
                 "Pre-claim Platform endpoint returned HTTP {}",
                 response.status().as_u16()
             ),
         ),
+        Ok(response) => validate_preclaim_platform_health_response(response).await,
         Err(_) => failed_preclaim_probe_response(
             "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
             "Existing local network could not reach the pre-claim Platform endpoint",
         ),
+    }
+}
+
+async fn validate_preclaim_platform_health_response(
+    response: reqwest::Response,
+) -> NetworkSettingsResponse {
+    let content_type_is_json = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value.split(';').next().is_some_and(|media_type| {
+                media_type.trim().eq_ignore_ascii_case("application/json")
+            })
+        })
+        .unwrap_or(false);
+    if !content_type_is_json {
+        return failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_HEALTH_INVALID_CONTENT_TYPE",
+            "Pre-claim Platform health endpoint did not return application/json",
+        );
+    }
+
+    let body = match response.bytes().await {
+        Ok(body) => body,
+        Err(_) => {
+            return failed_preclaim_probe_response(
+                "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+                "Existing local network could not read the pre-claim Platform health response",
+            );
+        }
+    };
+    let health: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(health) => health,
+        Err(_) => {
+            return failed_preclaim_probe_response(
+                "PRECLAIM_PLATFORM_HEALTH_INVALID_JSON",
+                "Pre-claim Platform health endpoint returned malformed JSON",
+            );
+        }
+    };
+    let Some(database) = health.get("database").and_then(serde_json::Value::as_str) else {
+        return failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_HEALTH_INVALID_CONTRACT",
+            "Pre-claim Platform health response is missing its database status",
+        );
+    };
+    let Some(mqtt) = health.get("mqtt").and_then(serde_json::Value::as_str) else {
+        return failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_HEALTH_INVALID_CONTRACT",
+            "Pre-claim Platform health response is missing its MQTT status",
+        );
+    };
+    if database != "ok" {
+        return failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_DATABASE_UNHEALTHY",
+            "Pre-claim Platform database health is not ok",
+        );
+    }
+    if mqtt != "connected" {
+        return failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_MQTT_UNAVAILABLE",
+            "Pre-claim Platform MQTT health is not connected",
+        );
+    }
+
+    NetworkSettingsResponse {
+        status: NetworkSetupStatus::Connected,
+        ssid: "existing-network".to_string(),
+        hidden: false,
+        diagnostics: vec![
+            diagnostic(
+                "local_network",
+                "ok",
+                "LOCAL_NETWORK_ROUTE_READY",
+                "An existing local network route reached the Platform endpoint",
+            ),
+            diagnostic(
+                "provisioning_endpoint",
+                "ok",
+                "PROVISIONING_ENDPOINT_REACHABLE",
+                "Pre-claim Platform endpoint is reachable",
+            ),
+        ],
+        operator_guidance: "已验证现有有线或已连接无线网络可访问平台，可以继续领取机器。"
+            .to_string(),
+        updated_at: crate::state::store::now_iso(),
     }
 }
 
@@ -957,7 +1031,10 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/health"))
-            .respond_with(ResponseTemplate::new(200))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "database": "ok",
+                "mqtt": "connected"
+            })))
             .mount(&server)
             .await;
 
@@ -971,6 +1048,115 @@ mod tests {
             item.component == "provisioning_endpoint"
                 && item.code == "PROVISIONING_ENDPOINT_REACHABLE"
         }));
+    }
+
+    #[tokio::test]
+    async fn existing_network_probe_rejects_html_success_as_non_platform_health() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/health"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .set_body_string("<html><title>login</title></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let response = probe_preclaim_platform_endpoint(&format!("{}/api", server.uri())).await;
+
+        assert_eq!(response.status, NetworkSetupStatus::Failed);
+        assert!(response.diagnostics.iter().any(|item| {
+            item.component == "provisioning_endpoint"
+                && item.code == "PRECLAIM_PLATFORM_HEALTH_INVALID_CONTENT_TYPE"
+        }));
+        assert!(!response
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "PROVISIONING_ENDPOINT_REACHABLE"));
+    }
+
+    #[tokio::test]
+    async fn existing_network_probe_rejects_redirects_and_unhealthy_platform_health() {
+        for (status, content_type, body, expected_code) in [
+            (
+                302,
+                "text/html",
+                "",
+                "PRECLAIM_PLATFORM_ENDPOINT_REDIRECTED",
+            ),
+            (
+                200,
+                "application/json",
+                "{not-json",
+                "PRECLAIM_PLATFORM_HEALTH_INVALID_JSON",
+            ),
+            (
+                200,
+                "application/json",
+                r#"{"database":"ok"}"#,
+                "PRECLAIM_PLATFORM_HEALTH_INVALID_CONTRACT",
+            ),
+            (
+                200,
+                "application/json",
+                r#"{"database":"unavailable","mqtt":"connected"}"#,
+                "PRECLAIM_PLATFORM_DATABASE_UNHEALTHY",
+            ),
+            (
+                200,
+                "application/json",
+                r#"{"database":"ok","mqtt":"disconnected"}"#,
+                "PRECLAIM_PLATFORM_MQTT_UNAVAILABLE",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            let template = if status == 302 {
+                ResponseTemplate::new(status)
+                    .insert_header("location", format!("{}/login", server.uri()))
+                    .set_body_string(body)
+            } else {
+                ResponseTemplate::new(status).set_body_raw(body, content_type)
+            };
+            Mock::given(method("GET"))
+                .and(path("/api/health"))
+                .respond_with(template)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/login"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/html")
+                        .set_body_string("<html><title>login</title></html>"),
+                )
+                .mount(&server)
+                .await;
+
+            let response = probe_preclaim_platform_endpoint(&format!("{}/api", server.uri())).await;
+
+            assert_eq!(
+                response.status,
+                NetworkSetupStatus::Failed,
+                "{expected_code}"
+            );
+            assert!(
+                response.diagnostics.iter().any(|item| {
+                    item.component == "provisioning_endpoint" && item.code == expected_code
+                }),
+                "expected {expected_code}, diagnostics: {:?}",
+                response.diagnostics
+            );
+            assert!(!response
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "PROVISIONING_ENDPOINT_REACHABLE"));
+            if status == 302 {
+                let requests = server.received_requests().await.expect("requests");
+                assert_eq!(requests.len(), 1, "redirect must not be followed");
+                assert_eq!(requests[0].url.path(), "/api/health");
+            }
+        }
     }
 
     #[derive(Clone)]

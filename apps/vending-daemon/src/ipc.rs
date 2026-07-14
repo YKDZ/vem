@@ -4972,6 +4972,25 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct PlatformHealthProbeAdapter;
+
+    #[async_trait::async_trait]
+    impl crate::network::NetworkAdapter for PlatformHealthProbeAdapter {
+        async fn apply_wifi_settings(
+            &self,
+            request: crate::network::NetworkSettingsRequest,
+        ) -> crate::network::NetworkSettingsResponse {
+            crate::network::NetworkSettingsResponse {
+                status: crate::network::NetworkSetupStatus::Failed,
+                ssid: request.ssid,
+                hidden: request.hidden,
+                diagnostics: vec![],
+                operator_guidance: "not used by this probe test".to_string(),
+                updated_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl crate::network::NetworkAdapter for CountingNetworkAdapter {
         async fn apply_wifi_settings(
@@ -8950,6 +8969,67 @@ mod tests {
         let after = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
         assert_eq!(after["state"], "claim_required");
         assert_eq!(after["currentTask"]["kind"], "claim_machine");
+    }
+
+    #[tokio::test]
+    async fn preclaim_network_probe_keeps_bring_up_network_required_when_platform_health_is_invalid(
+    ) {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "database": "ok",
+                "mqtt": "disconnected"
+            })))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            None,
+            &format!("{}/api", server.uri()),
+        )
+        .await;
+        *ctx.ui.status_cache.network.write().await = None;
+        ctx.network_adapter = Arc::new(PlatformHealthProbeAdapter);
+        let app = build_router(ctx);
+
+        let before = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        let response = post_json(
+            &app,
+            "/v1/bring-up/tasks/execute",
+            "token-1",
+            json!({
+                "contractVersion": before["currentTask"]["contractVersion"],
+                "taskId": before["currentTask"]["taskId"],
+                "taskVersion": before["currentTask"]["taskVersion"],
+                "kind": before["currentTask"]["kind"],
+                "intent": before["currentTask"]["intent"],
+                "mutation": { "type": "probe_network" }
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("network probe body");
+        let result: serde_json::Value = serde_json::from_slice(&body).expect("network probe json");
+        assert!(result["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .any(|item| item["code"] == "PRECLAIM_PLATFORM_MQTT_UNAVAILABLE"));
+        assert!(!result["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .any(|item| item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+
+        let after = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(after["state"], "network_required");
+        assert_eq!(after["currentTask"]["kind"], "configure_network");
     }
 
     #[tokio::test]
