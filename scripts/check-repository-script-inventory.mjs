@@ -60,6 +60,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/factory/oobe-registry.mjs",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["factory preparation"],
+  },
+  {
     path: "scripts/factory/Dockerfile",
     owner: "field-operations",
     category: "public runbook operation",
@@ -187,6 +193,12 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/check-windows-factory-maintenance.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/check-windows-oobe-registry.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation"],
