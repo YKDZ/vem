@@ -56,6 +56,8 @@ jobs:
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
       VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
+      VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY }}
+      VEM_VM_HOST_EXPECTED_ADAPTER_SHA256: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_SHA256 }}
     steps:
       - name: Checkout Trusted Commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -172,10 +174,13 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${VEM_VM_HOST_ADAPTER:-}"
+          test -x "$VEM_VM_HOST_ADAPTER"
           test -n "${VEM_VM_HOST_TARGET_ID:-}"
           test -n "${VEM_VM_HOST_APPROVED_BASE_ID:-}"
           test -n "${VEM_VM_HOST_FACTORY_ISO_ID:-}"
           test -n "${VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID:-}"
+          observed_adapter_sha256="$(sha256sum "$VEM_VM_HOST_ADAPTER" | awk '{print $1}')"
+          test "$observed_adapter_sha256" = "$VEM_VM_HOST_EXPECTED_ADAPTER_SHA256"
           node scripts/testbed/vm-host-adapter-conformance.mjs \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-conformance.json"
 
@@ -543,8 +548,8 @@ jobs:
           node - "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json" <<'NODE'
           const fs = require("node:fs");
           const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-          if (report.adapter?.identity === "vm-host-adapter://deterministic-fake@1.0.0") {
-            throw new Error("deterministic fake adapter is forbidden in VM runtime acceptance");
+          if (report.adapter?.identity !== process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY) {
+            throw new Error(`VM Host Adapter identity mismatch: ${report.adapter?.identity ?? "missing"}`);
           }
           NODE
 

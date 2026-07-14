@@ -2,6 +2,9 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const WINDOWS_SSH_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const ADAPTER_IDENTITY_PATTERN =
+  /^vm-host-adapter:\/\/[A-Za-z0-9._/-]+@[0-9]+\.[0-9]+\.[0-9]+$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const AMBIGUOUS_URL_DELIMITER_PATTERN = /[\u0000-\u0020\u007f\\\\?#[\[\]]/;
 
 function requiredEnvironmentVariable(name) {
@@ -47,6 +50,11 @@ function canonicalControlPlaneUrl() {
 function main() {
   validateInput("RUN_ID", RUN_ID_PATTERN);
   validateInput("WINDOWS_SSH_USER", WINDOWS_SSH_USER_PATTERN);
+  validateInput(
+    "VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY",
+    ADAPTER_IDENTITY_PATTERN,
+  );
+  validateInput("VEM_VM_HOST_EXPECTED_ADAPTER_SHA256", SHA256_PATTERN);
 
   for (const name of [
     "MAINTENANCE_RUNNER_PEER_ID",
