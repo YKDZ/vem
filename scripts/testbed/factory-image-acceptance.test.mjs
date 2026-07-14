@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -108,14 +109,21 @@ describe("Factory Image Acceptance lifecycle", () => {
       port: 22,
       reachability: "discovered",
     };
+    const sshKnownHostsPath = join(root, "lifecycle-known-hosts");
     const preclaimInvocation = buildFactoryPreclaimVerifyInvocation(
       input,
       endpoint,
+      sshKnownHostsPath,
     );
-    const claimInvocation = buildFactoryMachineClaimInvocation(input, endpoint);
+    const claimInvocation = buildFactoryMachineClaimInvocation(
+      input,
+      endpoint,
+      sshKnownHostsPath,
+    );
     const runtimeInvocation = buildFactoryRuntimeAcceptanceInvocation(
       input,
       endpoint,
+      sshKnownHostsPath,
     );
     assert.deepEqual(preclaimInvocation.slice(0, 4), [
       "node",
@@ -130,6 +138,16 @@ describe("Factory Image Acceptance lifecycle", () => {
       "provision",
     ]);
     assert.equal(runtimeInvocation[3], "runtime-acceptance");
+    for (const invocation of [
+      preclaimInvocation,
+      claimInvocation,
+      runtimeInvocation,
+    ]) {
+      assert.equal(
+        invocation[invocation.indexOf("--ssh-known-hosts-path") + 1],
+        sshKnownHostsPath,
+      );
+    }
     assert.equal(
       preclaimInvocation.includes("--ephemeral-platform-evidence"),
       false,
@@ -308,6 +326,12 @@ describe("Factory Image Acceptance lifecycle", () => {
           outputDigest: `sha256:${"a".repeat(64)}`,
           effectiveInputsDigest: `sha256:${"e".repeat(64)}`,
         }),
+      );
+      assert.deepEqual(
+        readdirSync(root).filter((entry) =>
+          entry.startsWith("factory-ssh-trust-"),
+        ),
+        [],
       );
       const report = JSON.parse(
         readFileSync(input.evidence.lifecycleReport, "utf8"),
@@ -598,6 +622,10 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       );
       chmodSync(ssh, 0o700);
       const output = join(root, "preclaim.json");
+      const lifecycleKnownHosts = join(root, "lifecycle-known-hosts");
+      writeFileSync(lifecycleKnownHosts, "retained-by-parent\n", {
+        mode: 0o600,
+      });
       const result = spawnSync(
         process.execPath,
         [
@@ -614,6 +642,8 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
           "/tmp/identity",
           "--certificate",
           "/tmp/certificate",
+          "--ssh-known-hosts-path",
+          lifecycleKnownHosts,
           "--factory-guest-endpoint-json",
           JSON.stringify({
             protocol: "ssh",
@@ -635,7 +665,17 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       const sshArgs = readFileSync(join(root, "ssh-args.txt"), "utf8");
       assert.match(sshArgs, /-p\n2222\n/);
       assert.match(sshArgs, /YKDZ@10\.91\.2\.10/);
+      assert.match(sshArgs, /StrictHostKeyChecking=accept-new/);
+      assert.match(
+        sshArgs,
+        new RegExp(`UserKnownHostsFile=${lifecycleKnownHosts}`),
+      );
+      assert.match(sshArgs, /HostKeyAlias=vem-factory-run-15-lifecycle/);
       assert.match(sshArgs, /-EncodedCommand/);
+      assert.equal(
+        readFileSync(lifecycleKnownHosts, "utf8"),
+        "retained-by-parent\n",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

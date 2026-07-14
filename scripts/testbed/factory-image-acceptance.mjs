@@ -9,6 +9,7 @@ import {
   existsSync,
   fstatSync,
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -16,6 +17,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
@@ -406,7 +408,7 @@ function verifierOutput(input, name) {
 function commonVerifierArgs(
   input,
   endpoint,
-  { ephemeralPlatform = true } = {},
+  { ephemeralPlatform = true, sshKnownHostsPath = null } = {},
 ) {
   const args = [
     "--run-id",
@@ -422,6 +424,9 @@ function commonVerifierArgs(
     "--factory-guest-endpoint-json",
     endpointArgument(endpoint),
   ];
+  if (sshKnownHostsPath) {
+    args.push("--ssh-known-hosts-path", sshKnownHostsPath);
+  }
   if (ephemeralPlatform) {
     args.splice(
       4,
@@ -435,40 +440,55 @@ function commonVerifierArgs(
   return args;
 }
 
-export function buildFactoryPreclaimVerifyInvocation(input, endpoint) {
+export function buildFactoryPreclaimVerifyInvocation(
+  input,
+  endpoint,
+  sshKnownHostsPath = null,
+) {
   const accepted = validateFactoryImageAcceptanceInput(input);
   return [
     "node",
     "scripts/testbed/win10-vem-e2e.mjs",
     "--mode",
     "factory-preclaim-verify",
-    ...commonVerifierArgs(accepted, endpoint, { ephemeralPlatform: false }),
+    ...commonVerifierArgs(accepted, endpoint, {
+      ephemeralPlatform: false,
+      sshKnownHostsPath,
+    }),
     "--out",
     verifierOutput(accepted, "factory-preclaim-verify.json"),
   ];
 }
 
-export function buildFactoryMachineClaimInvocation(input, endpoint) {
+export function buildFactoryMachineClaimInvocation(
+  input,
+  endpoint,
+  sshKnownHostsPath = null,
+) {
   const accepted = validateFactoryImageAcceptanceInput(input);
   return [
     "node",
     "scripts/testbed/win10-vem-e2e.mjs",
     "--mode",
     "provision",
-    ...commonVerifierArgs(accepted, endpoint),
+    ...commonVerifierArgs(accepted, endpoint, { sshKnownHostsPath }),
     "--out",
     verifierOutput(accepted, "machine-claim.json"),
   ];
 }
 
-export function buildFactoryRuntimeAcceptanceInvocation(input, endpoint) {
+export function buildFactoryRuntimeAcceptanceInvocation(
+  input,
+  endpoint,
+  sshKnownHostsPath = null,
+) {
   const accepted = validateFactoryImageAcceptanceInput(input);
   return [
     "node",
     "scripts/testbed/win10-vem-e2e.mjs",
     "--mode",
     "runtime-acceptance",
-    ...commonVerifierArgs(accepted, endpoint),
+    ...commonVerifierArgs(accepted, endpoint, { sshKnownHostsPath }),
     "--out",
     verifierOutput(accepted, "runtime-acceptance.json"),
   ];
@@ -777,9 +797,10 @@ async function runCleanupOnly(input) {
   });
 }
 
-export async function runAdmittedFactoryImageAcceptanceLifecycle(
+async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
   input,
   admission,
+  sshKnownHostsPath,
 ) {
   const iso = asset("factory-iso", input.factory.isoIdentity);
   const personalisation = asset(
@@ -804,6 +825,7 @@ export async function runAdmittedFactoryImageAcceptanceLifecycle(
     const preclaim = buildFactoryPreclaimVerifyInvocation(
       input,
       reports.cleanInstall.guest.maintenanceEndpoint,
+      sshKnownHostsPath,
     );
     runExact(preclaim, "Factory preclaim verification failed");
     const preclaimPath = verifierOutput(input, "factory-preclaim-verify.json");
@@ -836,13 +858,21 @@ export async function runAdmittedFactoryImageAcceptanceLifecycle(
       );
     }
     const endpoint = reports.overlay.guest.maintenanceEndpoint;
-    const claim = buildFactoryMachineClaimInvocation(input, endpoint);
+    const claim = buildFactoryMachineClaimInvocation(
+      input,
+      endpoint,
+      sshKnownHostsPath,
+    );
     runExact(claim, "Machine Claim failed");
     reports.machineClaim = verifyClaimResult(
       verifierOutput(input, "machine-claim.json"),
       input,
     );
-    const runtime = buildFactoryRuntimeAcceptanceInvocation(input, endpoint);
+    const runtime = buildFactoryRuntimeAcceptanceInvocation(
+      input,
+      endpoint,
+      sshKnownHostsPath,
+    );
     runExact(runtime, "runtime acceptance failed");
     reports.runtimeAcceptance = verifyRuntimeResult(
       verifierOutput(input, "runtime-acceptance.json"),
@@ -914,6 +944,24 @@ export async function runAdmittedFactoryImageAcceptanceLifecycle(
         upload: input.evidence.sanitizedUpload,
       });
     }
+  }
+}
+
+export async function runAdmittedFactoryImageAcceptanceLifecycle(
+  input,
+  admission,
+) {
+  const tempRoot = process.env.RUNNER_TEMP ?? tmpdir();
+  mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
+  const sshTrustDirectory = mkdtempSync(join(tempRoot, "factory-ssh-trust-"));
+  try {
+    return await runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
+      input,
+      admission,
+      join(sshTrustDirectory, "known_hosts"),
+    );
+  } finally {
+    rmSync(sshTrustDirectory, { recursive: true, force: true });
   }
 }
 
