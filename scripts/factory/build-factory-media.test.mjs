@@ -1049,9 +1049,22 @@ describe("real deterministic Factory ISO builder", () => {
     );
     assert.match(bios, /<settings pass="specialize">/);
     assert.match(bios, /prepare-oobe-bootstrap\.ps1/);
+    assert.match(bios, /<settings pass="oobeSystem">/);
+    assert.match(
+      bios,
+      /<component name="Microsoft-Windows-International-Core"[^>]*>[\s\S]*?<InputLocale>zh-CN<\/InputLocale>[\s\S]*?<SystemLocale>zh-CN<\/SystemLocale>[\s\S]*?<UILanguage>zh-CN<\/UILanguage>[\s\S]*?<UserLocale>zh-CN<\/UserLocale>/,
+    );
+    for (const setting of [
+      "HideEULAPage",
+      "HideLocalAccountScreen",
+      "HideOnlineAccountScreens",
+      "HideWirelessSetupInOOBE",
+    ]) {
+      assert.match(bios, new RegExp(`<${setting}>true</${setting}>`));
+    }
     assert.doesNotMatch(
       bios,
-      /<settings pass="oobeSystem">|<UserAccounts>|<AutoLogon>|<FirstLogonCommands>/,
+      /<UserAccounts>|<AutoLogon>|<FirstLogonCommands>/,
     );
     assert.doesNotMatch(bios, /<Password>|YKDZ/);
 
@@ -1554,10 +1567,9 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(prepareOobe, /one-time-personalization\.json/);
       assert.match(prepareOobe, /credentials\.bootstrap/);
       assert.match(prepareOobe, /-cne 'YKDZ'/);
-      assert.match(prepareOobe, /oobe-unattend\.xml/);
-      assert.match(prepareOobe, /HideWirelessSetupInOOBE/);
-      assert.match(prepareOobe, /<Value>\$password<\/Value>/);
-      assert.match(prepareOobe, /<Username>\$user<\/Username>/);
+      assert.doesNotMatch(prepareOobe, /oobe-unattend\.xml/);
+      assert.doesNotMatch(prepareOobe, /<unattend|UnattendFile|Panther/i);
+      assert.doesNotMatch(prepareOobe, /<AutoLogon>|<UserAccounts>/);
       assert.doesNotMatch(
         prepareOobe,
         /<FirstLogonCommands>|RequiresUserInput/,
@@ -1590,19 +1602,6 @@ describe("real deterministic Factory ISO builder", () => {
         prepareOobe,
         /Unregister-ScheduledTask[^\n]+VEMFactoryOobeCleanup/,
       );
-      assert.ok(prepareOobe.includes("HKLM:\\SYSTEM\\Setup"));
-      assert.match(prepareOobe, /New-ItemProperty[^\n]+UnattendFile/);
-      assert.ok(prepareOobe.includes("Panther\\unattend.xml"));
-      assert.ok(prepareOobe.includes("Panther\\Unattend\\unattend.xml"));
-      assert.match(prepareOobe, /WriteAllText\(\$pantherAnswerPath, \$answer/);
-      assert.match(
-        prepareOobe,
-        /WriteAllText\(\$pantherUnattendAnswerPath, \$answer/,
-      );
-      assert.match(
-        prepareOobe,
-        /catch \{[\s\S]+Remove-Item[^\n]+\$pantherAnswerPath[\s\S]+Remove-Item[^\n]+\$pantherUnattendAnswerPath/,
-      );
       const completeOobe = await readFile(
         join(
           directory,
@@ -1616,8 +1615,7 @@ describe("real deterministic Factory ISO builder", () => {
         "utf8",
       );
       assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
-      assert.match(completeOobe, /Remove-ItemProperty[^\n]+UnattendFile/);
-      assert.ok(completeOobe.includes("Panther\\unattend.xml"));
+      assert.doesNotMatch(completeOobe, /UnattendFile|Panther/i);
       assert.match(completeOobe, /VEM_PERSONALIZATION/);
       assert.match(completeOobe, /InvokeVerb\('Eject'\)/);
       assert.match(completeOobe, /attempt -lt 30/);

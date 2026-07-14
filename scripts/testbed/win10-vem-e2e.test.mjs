@@ -1721,6 +1721,13 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /C:\\VEM\\bringup\\verify-factory-runtime\.ps1/);
     assert.match(script, /factory-preclaim-verification\/v1/);
     assert.match(script, /absentMachineIdentity/);
+    assert.match(script, /oobe-bootstrap-status\.json/);
+    assert.match(script, /OOBEInProgress/);
+    assert.match(script, /SystemSetupInProgress/);
+    assert.match(script, /VEMFactoryOobeCleanup/);
+    assert.match(script, /VEM_PERSONALIZATION/);
+    assert.match(script, /oobe-unattend\.xml/);
+    assert.match(script, /-and \$oobeComplete/);
     assert.doesNotMatch(script, /prepare-factory-runtime\.ps1/);
   });
 
