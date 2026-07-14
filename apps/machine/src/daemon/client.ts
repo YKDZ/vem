@@ -1,5 +1,6 @@
 import { isManagedMediaReference } from "@vem/shared";
 
+import { managedMediaDiagnosticKey } from "@/catalog/managed-media";
 import {
   getDaemonConnectionInfo,
   type DaemonConnectionInfo,
@@ -77,7 +78,10 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
       }
       mediaDiagnostics.push({
         reference: typeof reference === "string" ? reference : null,
-        diagnosticKey: `media:${itemIdentity}:${field}`,
+        diagnosticKey: managedMediaDiagnosticKey(
+          `media:${itemIdentity}:${field}`,
+          reference,
+        ),
         message:
           reference === null || reference === undefined
             ? `daemon sale view contained no ${field} managed media reference`

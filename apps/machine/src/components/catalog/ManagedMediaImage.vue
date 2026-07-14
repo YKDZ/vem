@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 
-import { resolveManagedMediaReference } from "@/catalog/managed-media";
+import {
+  managedMediaDiagnosticKey,
+  resolveManagedMediaReference,
+} from "@/catalog/managed-media";
 
 const props = defineProps<{
   reference: string | null | undefined;
@@ -26,7 +29,10 @@ watch(
     source.value = next.url ?? props.fallback;
     if (next.diagnostic) {
       emit("diagnostic", {
-        diagnosticKey: props.diagnosticKey,
+        diagnosticKey: managedMediaDiagnosticKey(
+          props.diagnosticKey,
+          props.reference,
+        ),
         message: next.diagnostic,
       });
     }
@@ -38,7 +44,10 @@ function usePlaceholder(): void {
   if (source.value === props.fallback) return;
   source.value = props.fallback;
   emit("diagnostic", {
-    diagnosticKey: props.diagnosticKey,
+    diagnosticKey: managedMediaDiagnosticKey(
+      props.diagnosticKey,
+      props.reference,
+    ),
     message: "managed media failed to load",
   });
 }

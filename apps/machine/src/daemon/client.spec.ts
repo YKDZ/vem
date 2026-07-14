@@ -576,14 +576,14 @@ describe("DaemonApiClient", () => {
         expect.objectContaining({
           reference: null,
           diagnosticKey:
-            "media:550e8400-e29b-41d4-a716-446655440001:coverImageUrl",
+            "media:550e8400-e29b-41d4-a716-446655440001:coverImageUrl:missing",
           message:
             "daemon sale view contained no coverImageUrl managed media reference",
         }),
         expect.objectContaining({
           reference: "",
           diagnosticKey:
-            "media:550e8400-e29b-41d4-a716-446655440011:coverImageUrl",
+            "media:550e8400-e29b-41d4-a716-446655440011:coverImageUrl:invalid:empty",
           message:
             "daemon sale view contained an invalid coverImageUrl managed media reference",
         }),

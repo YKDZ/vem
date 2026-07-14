@@ -101,6 +101,10 @@ test.describe("catalog recovery visual behavior matrix", () => {
     const socks = page.getByRole("button", { name: /袜子/ });
     await expect(socks).toBeVisible();
     await expect(socks).toBeDisabled();
+    await expect(socks).toHaveAttribute("data-sale-state", "sold-out");
+    await expect(socks).toHaveClass(/home-category-card-sold-out/);
+    await expect(socks).toHaveCSS("filter", "grayscale(1)");
+    await expect(socks).toHaveCSS("opacity", "0.72");
     await expect(page.getByRole("button", { name: /内裤/ })).toBeEnabled();
     await expect(page.getByRole("button", { name: /T恤/ })).toBeEnabled();
     await expect(page.locator(".home-category-card:disabled")).toHaveCount(1);

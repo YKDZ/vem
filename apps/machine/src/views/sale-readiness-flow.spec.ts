@@ -1079,6 +1079,44 @@ describe("sale readiness UI flow", () => {
     ]);
   });
 
+  it("keeps one media diagnostic through invalid-client normalization and the catalog placeholder", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      coverImageUrl: null,
+    };
+    const locationKey = `media:${item.slotId}:coverImageUrl`;
+    const invalidReference = "https://forged.example/product.png";
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+      mediaDiagnostics: [
+        {
+          reference: invalidReference,
+          diagnosticKey: `${locationKey}:invalid:${invalidReference}`,
+          message:
+            "daemon sale view contained an invalid coverImageUrl managed media reference",
+        },
+      ],
+    });
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+
+    const host = await mountView(CatalogView);
+    requireButtonByText(host, "T恤").click();
+    await nextTick();
+
+    expect(useCatalogStore().mediaDiagnostics).toEqual([
+      expect.objectContaining({
+        diagnosticKey: `${locationKey}:invalid:${invalidReference}`,
+        reference: invalidReference,
+      }),
+    ]);
+    expect(host.querySelector(".product-image-fallback")).toBeTruthy();
+  });
+
   it("opens catalog product detail without selecting a checkout item", async () => {
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({

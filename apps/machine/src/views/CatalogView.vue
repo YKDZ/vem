@@ -439,6 +439,9 @@ onUnmounted(() => {
           :class="{
             'home-category-card-sold-out': !categoryHasProducts(category.key),
           }"
+          :data-sale-state="
+            categoryHasProducts(category.key) ? 'available' : 'sold-out'
+          "
           :disabled="!categoryHasProducts(category.key)"
           type="button"
           @click="selectTopCategory(category.key)"

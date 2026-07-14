@@ -8,6 +8,10 @@ import type {
   MachineSaleViewItem,
 } from "@/types/catalog";
 
+import {
+  managedMediaDiagnosticKey,
+  managedMediaDiagnosticLocation,
+} from "@/catalog/managed-media";
 import { daemonClient } from "@/daemon/client";
 
 const DEFAULT_AUTO_REFRESH_INTERVAL_MS = 5_000;
@@ -35,6 +39,23 @@ function catalogKeyFor(item: Pick<MachineSaleViewItem, "productId">): string {
 
 function mediaDiagnosticKey(reference: string | null | undefined): string {
   return `media:${reference ?? "missing"}`;
+}
+
+function mediaDiagnosticKeysFor(
+  items: readonly MachineSaleViewItem[],
+): Record<string, string> {
+  return Object.fromEntries(
+    items.flatMap((item) =>
+      ["coverImageUrl", "tryOnSilhouetteUrl"].map((field) => {
+        const locationKey = `media:${item.slotId}:${field}`;
+        const reference =
+          field === "coverImageUrl"
+            ? item.coverImageUrl
+            : item.tryOnSilhouetteUrl;
+        return [locationKey, managedMediaDiagnosticKey(locationKey, reference)];
+      }),
+    ),
+  );
 }
 
 function slotCandidateFor(
@@ -249,6 +270,7 @@ export const useCatalogStore = defineStore("catalog", {
     error: null as string | null,
     mediaDiagnostics: [] as CatalogMediaDiagnostic[],
     operatorDiagnostics: [] as CatalogOperatorDiagnostic[],
+    mediaDiagnosticKeysByLocation: {} as Record<string, string>,
     autoRefreshEnabled: false,
   }),
   getters: {
@@ -301,6 +323,9 @@ export const useCatalogStore = defineStore("catalog", {
       mediaDiagnostics?: readonly SaleViewMediaDiagnostic[];
     }): void {
       this.items = snapshot.items.map((item) => asCatalogItem(item));
+      this.mediaDiagnosticKeysByLocation = mediaDiagnosticKeysFor(
+        snapshot.items,
+      );
       this.cachedOnly = snapshot.cached ?? false;
       this.source = snapshot.source;
       this.planogramVersion = snapshot.planogramVersion ?? null;
@@ -319,9 +344,32 @@ export const useCatalogStore = defineStore("catalog", {
       message: string,
       diagnosticKey = mediaDiagnosticKey(reference),
     ): void {
+      const locationKey = managedMediaDiagnosticLocation(diagnosticKey);
+      const placeholderDiagnosticKey = locationKey
+        ? managedMediaDiagnosticKey(locationKey, null)
+        : null;
+      const effectiveDiagnosticKey =
+        locationKey && diagnosticKey === locationKey
+          ? (this.mediaDiagnosticKeysByLocation[locationKey] ??
+            managedMediaDiagnosticKey(locationKey, reference))
+          : locationKey &&
+              diagnosticKey === placeholderDiagnosticKey &&
+              this.mediaDiagnosticKeysByLocation[locationKey]
+            ? this.mediaDiagnosticKeysByLocation[locationKey]
+            : diagnosticKey;
+      if (
+        locationKey &&
+        diagnosticKey !== locationKey &&
+        effectiveDiagnosticKey === diagnosticKey
+      ) {
+        this.mediaDiagnosticKeysByLocation = {
+          ...this.mediaDiagnosticKeysByLocation,
+          [locationKey]: effectiveDiagnosticKey,
+        };
+      }
       if (
         this.mediaDiagnostics.some(
-          (diagnostic) => diagnostic.diagnosticKey === diagnosticKey,
+          (diagnostic) => diagnostic.diagnosticKey === effectiveDiagnosticKey,
         )
       ) {
         return;
@@ -330,12 +378,17 @@ export const useCatalogStore = defineStore("catalog", {
         ...this.mediaDiagnostics.slice(-19),
         {
           reference: reference ?? null,
-          diagnosticKey,
+          diagnosticKey: effectiveDiagnosticKey,
           message,
           recordedAt: new Date().toISOString(),
         },
       ];
-      this.recordCatalogDiagnostic("media", reference, message, diagnosticKey);
+      this.recordCatalogDiagnostic(
+        "media",
+        reference,
+        message,
+        effectiveDiagnosticKey,
+      );
     },
     recordCatalogDiagnostic(
       kind: CatalogOperatorDiagnostic["kind"],

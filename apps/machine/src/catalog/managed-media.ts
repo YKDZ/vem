@@ -5,6 +5,30 @@ export type ManagedMediaResolution = {
   diagnostic: string | null;
 };
 
+export function managedMediaDiagnosticIdentity(reference: unknown): string {
+  if (reference === null || reference === undefined) return "missing";
+  if (typeof reference !== "string") return `invalid:${typeof reference}`;
+  if (isManagedMediaReference(reference)) return `managed:${reference}`;
+  return `invalid:${reference || "empty"}`;
+}
+
+export function managedMediaDiagnosticKey(
+  locationKey: string,
+  reference: unknown,
+): string {
+  return `${locationKey}:${managedMediaDiagnosticIdentity(reference)}`;
+}
+
+export function managedMediaDiagnosticLocation(
+  diagnosticKey: string,
+): string | null {
+  const match =
+    /^(media:[^:]+:(?:coverImageUrl|tryOnSilhouetteUrl))(?:$|:)/.exec(
+      diagnosticKey,
+    );
+  return match?.[1] ?? null;
+}
+
 export function resolveManagedMediaReference(
   reference: string | null | undefined,
   provisionedApiBaseUrl: string,

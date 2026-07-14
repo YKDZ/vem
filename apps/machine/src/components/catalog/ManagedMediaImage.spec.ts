@@ -32,7 +32,8 @@ describe("ManagedMediaImage", () => {
     expect(image.getAttribute("src")).toBe("/assets/placeholder.png");
     expect(diagnostics).toEqual([
       {
-        diagnosticKey: "media:slot-1:coverImageUrl",
+        diagnosticKey:
+          "media:slot-1:coverImageUrl:managed:/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
         message: "managed media failed to load",
       },
     ]);
