@@ -41,6 +41,7 @@ import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { admitFactoryAcceptance } from "./factory-acceptance-admission.mjs";
 import { canonicalJson, createFactoryManifest } from "./factory-manifest.mjs";
 import { createSignedAssetEvidence } from "./verify-asset-evidence.mjs";
+import { verifyFactoryVisionDelivery } from "./verify-vision-delivery-assembly.mjs";
 import {
   createVisionReleaseApproval,
   createVisionReleaseDescriptor,
@@ -1694,6 +1695,37 @@ describe("real deterministic Factory ISO builder", () => {
           "utf8",
         ),
       );
+      const deliveryEvidence = verifyFactoryVisionDelivery(
+        visionProvisioningRoot,
+      );
+      const externalDeliveryEvidence = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            "scripts/factory/verify-vision-delivery-assembly.mjs",
+            "--kind",
+            "factory",
+            "--root",
+            visionProvisioningRoot,
+          ],
+          { encoding: "utf8" },
+        ),
+      );
+      assert.equal(
+        externalDeliveryEvidence.artifactDigest,
+        deliveryEvidence.artifactDigest,
+      );
+      assert.deepEqual(
+        Object.keys(deliveryEvidence.files)
+          .filter((path) => path.startsWith("VISION-INSTALLER/"))
+          .sort(),
+        [
+          "VISION-INSTALLER/install-vision-release.ps1",
+          "VISION-INSTALLER/provision-vision-factory-release.ps1",
+          "VISION-INSTALLER/vision-diagnostic-redaction.psm1",
+          "VISION-INSTALLER/vision-release-materialization.psm1",
+        ],
+      );
       assert.equal(
         visionProvisioning.schemaVersion,
         "vem-vision-factory-provisioning/v1",
@@ -1706,7 +1738,10 @@ describe("real deterministic Factory ISO builder", () => {
       ];
       for (const name of expectedInstallerFiles) {
         const relative = `VISION-INSTALLER/${name}`;
-        assert.match(visionProvisioning.files[relative], /^sha256:[a-f0-9]{64}$/);
+        assert.match(
+          visionProvisioning.files[relative],
+          /^sha256:[a-f0-9]{64}$/,
+        );
         const staged = await readFile(
           join(visionProvisioningRoot, "VISION-INSTALLER", name),
         );

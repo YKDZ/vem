@@ -53,6 +53,10 @@ param(
 
   [switch]$ResetExistingVemState,
   [switch]$DryRun,
+  # Executes the production support-script copy loop into a disposable root
+  # and emits only byte-derived assembly evidence. It never prepares the host.
+  [switch]$DeliveryAssemblyEvidenceOnly,
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyOutputRoot,
   # Emits only the profile/trace-metadata boundary that this entrypoint would
   # write.  This is intentionally non-mutating and lets CI exercise the
   # PowerShell-to-daemon contract without pretending to prepare a Windows host.
@@ -62,6 +66,17 @@ param(
 $ErrorActionPreference = "Stop"
 $RuntimeRoot = "C:\VEM\bringup"
 $ProgramDataRoot = "C:\ProgramData\VEM"
+$FactoryRuntimeSupportScripts = @(
+  "setup-scheduled-tasks.ps1",
+  "verify-factory-runtime.ps1",
+  "verify-kiosk-lockdown.ps1",
+  "verify-vem-runtime.ps1",
+  "apply-managed-update.ps1",
+  "provision-vision-factory-release.ps1",
+  "install-vision-release.ps1",
+  "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1"
+)
 
 function Assert-RequiredInputs {
   $missing = @()
@@ -891,7 +906,38 @@ function Copy-ScriptIfPresent {
   if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
     throw "required support script not found: $source"
   }
-  Copy-Item -LiteralPath $source -Destination (Join-Path $TargetDirectory $Name) -Force
+  $destination = Join-Path $TargetDirectory $Name
+  Copy-Item -LiteralPath $source -Destination $destination -Force
+  $sourceDigest = "sha256:" + (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+  $destinationDigest = "sha256:" + (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($sourceDigest -cne $destinationDigest) {
+    throw "copied support script digest mismatch: $Name"
+  }
+  return [ordered]@{ name=$Name; sourceDigest=$sourceDigest; destinationDigest=$destinationDigest }
+}
+
+function Invoke-FactoryRuntimeDeliveryAssemblyEvidence {
+  if ([string]::IsNullOrWhiteSpace($DeliveryAssemblyOutputRoot)) {
+    throw "DeliveryAssemblyOutputRoot is required with DeliveryAssemblyEvidenceOnly"
+  }
+  $targetRoot = [IO.Path]::GetFullPath($DeliveryAssemblyOutputRoot)
+  if (Test-Path -LiteralPath $targetRoot) {
+    throw "DeliveryAssemblyOutputRoot must not already exist"
+  }
+  New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
+  $copied = @($FactoryRuntimeSupportScripts | ForEach-Object {
+    Copy-ScriptIfPresent -Name $_ -TargetDirectory $targetRoot
+  })
+  $files = [ordered]@{}
+  foreach ($record in $copied) {
+    $files[[string]$record.name] = [string]$record.destinationDigest
+  }
+  return [ordered]@{
+    schemaVersion = "vem-factory-runtime-delivery-assembly/v1"
+    kind = "factory-runtime-support-scripts"
+    root = $targetRoot
+    files = $files
+  }
 }
 
 function Assert-SupportScriptPresent {
@@ -919,17 +965,7 @@ function Assert-FactoryRuntimePreflight {
   $maintenanceCa = Assert-MaintenanceCaInput
   $rolePools = Assert-RolePools
   $maintenanceIngress = Get-FactoryMaintenanceIngressPolicy -Profile $FactoryProfile -WireGuardInterfaceAlias $MaintenanceWireGuardInterfaceAlias -WireGuardListenAddress $MaintenanceWireGuardListenAddress
-  $supportScripts = @(
-    "setup-scheduled-tasks.ps1",
-    "verify-factory-runtime.ps1",
-    "verify-kiosk-lockdown.ps1",
-    "verify-vem-runtime.ps1",
-    "apply-managed-update.ps1",
-    "provision-vision-factory-release.ps1",
-    "install-vision-release.ps1",
-    "vision-release-materialization.psm1",
-    "vision-diagnostic-redaction.psm1"
-  ) | ForEach-Object { Assert-SupportScriptPresent -Name $_ }
+  $supportScripts = @($FactoryRuntimeSupportScripts | ForEach-Object { Assert-SupportScriptPresent -Name $_ })
 
   return [pscustomobject]@{
     DaemonSha256 = $daemonHash
@@ -1546,15 +1582,9 @@ function Write-FactoryRuntimeFiles {
   if ($LASTEXITCODE -ne 0) { throw "Maintenance SSH CA ACL setup failed" }
 
   $scriptsRoot = [string]$Plan.layout.scriptsRoot
-  Copy-ScriptIfPresent -Name "setup-scheduled-tasks.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "verify-factory-runtime.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "verify-kiosk-lockdown.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "verify-vem-runtime.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "apply-managed-update.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "provision-vision-factory-release.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "install-vision-release.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "vision-release-materialization.psm1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "vision-diagnostic-redaction.psm1" -TargetDirectory $scriptsRoot
+  $supportScriptEvidence = @($FactoryRuntimeSupportScripts | ForEach-Object {
+    Copy-ScriptIfPresent -Name $_ -TargetDirectory $scriptsRoot
+  })
 
   $machineUiStartupMode = if (Test-ShellLauncherAvailable) { "shell_launcher" } else { "scheduled_task" }
   $manifest = [ordered]@{
@@ -1729,10 +1759,15 @@ function Write-FactoryRuntimeFiles {
     wireGuardApplication = $wireGuardApplication
     packageInstallation = [ordered]@{ openSsh = $openSshInstallation; wireGuard = $wireGuardInstallation }
     visionInstallation = $visionInstallation
+    supportScripts = $supportScriptEvidence
   }
 }
 
 try {
+  if ($DeliveryAssemblyEvidenceOnly) {
+    Invoke-FactoryRuntimeDeliveryAssemblyEvidence | ConvertTo-Json -Depth 20
+    exit 0
+  }
   Assert-RequiredInputs
   if ($ProjectionOnly) {
     New-FactoryRuntimeBoundaryProjection | ConvertTo-Json -Depth 20

@@ -61,7 +61,9 @@ const DEFAULT_INVENTORY = [
     ],
     deliveryAssemblyEvidence: {
       artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
-      verifier: "scripts/factory/build-factory-media.test.mjs",
+      producer: "scripts/factory/build-factory-media.mjs",
+      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
+      executionTest: "scripts/factory/build-factory-media.test.mjs",
       members: [
         "scripts/windows/install-vision-release.ps1",
         "scripts/windows/provision-vision-factory-release.ps1",
@@ -162,7 +164,9 @@ const DEFAULT_INVENTORY = [
     ],
     deliveryAssemblyEvidence: {
       artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
-      verifier: "scripts/factory/experimental-vision-candidate.test.mjs",
+      producer: "scripts/factory/experimental-vision-candidate.mjs",
+      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
+      executionTest: "scripts/factory/experimental-vision-candidate.test.mjs",
       members: [
         "scripts/windows/install-vision-release.ps1",
         "scripts/windows/provision-vision-factory-release.ps1",
@@ -172,7 +176,9 @@ const DEFAULT_INVENTORY = [
     },
     preapprovalDeliveryAssembly: {
       artifact: "VEM-VISION-PREAPPROVAL/preapproval-manifest.json",
-      verifier: "scripts/factory/experimental-vision-candidate.test.mjs",
+      producer: "scripts/factory/experimental-vision-candidate.mjs",
+      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
+      executionTest: "scripts/factory/experimental-vision-candidate.test.mjs",
       members: [
         "scripts/windows/test-vision-candidate.ps1",
         "scripts/windows/vision-release-materialization.psm1",
@@ -185,6 +191,12 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/factory/verify-vision-delivery-assembly.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
   },
   {
     path: "scripts/factory/factory-personalization-media.mjs",
@@ -366,23 +378,6 @@ const DEFAULT_INVENTORY = [
       "runtime acceptance",
       "testbed workflows",
     ],
-    deliveryAssemblyAction: "javascript-upload",
-    deliveryAssembly: [
-      "scripts/windows/install-vision-release.ps1",
-      "scripts/windows/provision-vision-factory-release.ps1",
-      "scripts/windows/vision-release-materialization.psm1",
-      "scripts/windows/vision-diagnostic-redaction.psm1",
-    ],
-    deliveryAssemblyEvidence: {
-      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
-      verifier: "scripts/windows/vision-release-install.test.mjs",
-      members: [
-        "scripts/windows/install-vision-release.ps1",
-        "scripts/windows/provision-vision-factory-release.ps1",
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
   },
   {
     path: "scripts/testbed/factory-image-acceptance.mjs",
@@ -577,8 +572,10 @@ const DEFAULT_INVENTORY = [
       "scripts/windows/vision-diagnostic-redaction.psm1",
     ],
     deliveryAssemblyEvidence: {
-      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+      artifact: "stdout:vem-factory-vision-provisioning-evidence/v1",
+      producer: "scripts/windows/provision-vision-factory-release.ps1",
       verifier: "scripts/windows/vision-release-install.test.mjs",
+      executionTest: "scripts/windows/vision-release-install.test.mjs",
       members: [
         "scripts/windows/install-vision-release.ps1",
         "scripts/windows/provision-vision-factory-release.ps1",
@@ -604,23 +601,6 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation", "managed update"],
-    deliveryAssemblyAction: "powershell-copy",
-    deliveryAssembly: [
-      "scripts/windows/install-vision-release.ps1",
-      "scripts/windows/provision-vision-factory-release.ps1",
-      "scripts/windows/vision-release-materialization.psm1",
-      "scripts/windows/vision-diagnostic-redaction.psm1",
-    ],
-    deliveryAssemblyEvidence: {
-      artifact: "VEM/VISION-INSTALLER",
-      verifier: "scripts/windows/vision-release-install.test.mjs",
-      members: [
-        "scripts/windows/install-vision-release.ps1",
-        "scripts/windows/provision-vision-factory-release.ps1",
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
   },
   {
     path: "scripts/windows/vision-release-install-harness.behavior.ps1",
@@ -648,8 +628,10 @@ const DEFAULT_INVENTORY = [
       "scripts/windows/vision-diagnostic-redaction.psm1",
     ],
     deliveryAssemblyEvidence: {
-      artifact: "VEM/factory-runtime-manifest.json",
-      verifier: "scripts/check-windows-factory-maintenance.test.mjs",
+      artifact: "stdout:vem-factory-runtime-delivery-assembly/v1",
+      producer: "scripts/windows/prepare-factory-runtime.ps1",
+      verifier: "scripts/windows/vision-release-install.test.mjs",
+      executionTest: "scripts/windows/vision-release-install.test.mjs",
       members: [
         "scripts/windows/install-vision-release.ps1",
         "scripts/windows/provision-vision-factory-release.ps1",
@@ -1027,14 +1009,19 @@ function validateDeliveryAssembly(entry, entriesByPath) {
   if (
     !evidence ||
     typeof evidence.artifact !== "string" ||
-    !evidence.artifact.startsWith("VEM/") ||
+    evidence.artifact.length === 0 ||
+    evidence.producer !== entry.path ||
     typeof evidence.verifier !== "string" ||
     !entriesByPath.has(evidence.verifier) ||
     entriesByPath.get(evidence.verifier).category !== "verifier-test guard" ||
+    typeof evidence.executionTest !== "string" ||
+    !entriesByPath.has(evidence.executionTest) ||
+    entriesByPath.get(evidence.executionTest).category !==
+      "verifier-test guard" ||
     !Array.isArray(evidence.members)
   ) {
     return [
-      `${entry.path} delivery assembly must declare a classified verifier and VEM evidence artifact`,
+      `${entry.path} delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact`,
     ];
   }
   const failures = [];
@@ -1068,10 +1055,15 @@ function validatePreapprovalDeliveryAssembly(entry, entriesByPath) {
   if (
     !evidence ||
     typeof evidence.artifact !== "string" ||
-    !evidence.artifact.startsWith("VEM-VISION-PREAPPROVAL/") ||
+    evidence.artifact.length === 0 ||
+    evidence.producer !== entry.path ||
     typeof evidence.verifier !== "string" ||
     !entriesByPath.has(evidence.verifier) ||
     entriesByPath.get(evidence.verifier).category !== "verifier-test guard" ||
+    typeof evidence.executionTest !== "string" ||
+    !entriesByPath.has(evidence.executionTest) ||
+    entriesByPath.get(evidence.executionTest).category !==
+      "verifier-test guard" ||
     !Array.isArray(evidence.members) ||
     evidence.members.length === 0
   ) {
@@ -1301,18 +1293,8 @@ export function checkRepositoryScriptInventory(options = {}) {
     failures.push(
       ...validateStaleIntegrationText(entry.path, readText(root, entry.path)),
     );
-    failures.push(
-      ...validateDeliveryClosure(
-        entry,
-        entriesByPath,
-      ),
-    );
-    failures.push(
-      ...validateDeliveryAssembly(
-        entry,
-        entriesByPath,
-      ),
-    );
+    failures.push(...validateDeliveryClosure(entry, entriesByPath));
+    failures.push(...validateDeliveryAssembly(entry, entriesByPath));
     failures.push(...validatePreapprovalDeliveryAssembly(entry, entriesByPath));
     for (const failure of validateLegacyEvidence(root, entry)) {
       failures.push(failure);

@@ -11,8 +11,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
-Import-Module (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1") -Force -ErrorAction Stop
 
 function Assert-CandidateNonReparsePath([string]$Path, [string]$Label) {
   $cursor = [IO.Path]::GetFullPath($Path)
@@ -64,7 +62,16 @@ function Write-AtomicJson([string]$Path, [object]$Value) {
   $temporary = Join-Path $parent ("." + [guid]::NewGuid().ToString("N") + ".tmp")
   try { [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 64 -Compress), [Text.UTF8Encoding]::new($false)); Move-Item -LiteralPath $temporary -Destination $Path -Force } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
 }
-function Sanitize([string]$Message) { $null = $Message; return Get-VisionRedactedDiagnostic "candidate preapproval" }
+function Sanitize([string]$Message) {
+  $null = $Message
+  $redactor = Get-Command Get-VisionRedactedDiagnostic -ErrorAction SilentlyContinue
+  if ($null -ne $redactor) {
+    return Get-VisionRedactedDiagnostic "candidate preapproval"
+  }
+  # A manifest rejection happens before imports by design.  Keep that failure
+  # redacted without allowing an unverified module to influence the report.
+  return "Vision candidate preapproval failed; inspect protected local diagnostics"
+}
 function Resolve-CandidateEntrypoint([string]$Root, [string]$Relative) {
   if ([string]::IsNullOrWhiteSpace($Relative) -or $Relative -match '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)') { throw "Vision Candidate entrypoint is unsafe" }
   $trustedRoot = Assert-CandidateNonReparsePath $Root "Vision Candidate staging root"
@@ -235,6 +242,11 @@ try {
     $descriptor.configuration.schemaVersion -cne "vending-vision-site-config/v1"
   ) { throw "Vision Candidate does not use the supported install and runtime contracts" }
   Assert-PreapprovalDeliveryManifest $PreapprovalManifestPath $ExpectedDigest $BundlePath $DescriptorPath
+  # This entrypoint is itself inside the preapproval unit.  Hash every
+  # executable member before importing either module, so a replacement module
+  # cannot execute a top-level side effect before its digest is rejected.
+  Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
+  Import-Module (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1") -Force -ErrorAction Stop
 
   $selectionPathForPrevious = "C:\ProgramData\VEM\vision\current.json"
   $processPathForPrevious = "C:\ProgramData\VEM\vision\process-state\active-process.json"

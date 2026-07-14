@@ -1,22 +1,40 @@
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)][string]$FactoryMediaRoot
+  [Parameter(Mandatory = $true)][string]$FactoryMediaRoot,
+  # Test-only producer mode: use a disposable root while retaining the exact
+  # manifest verification and copy loop used by Factory provisioning.
+  [switch]$DeliveryAssemblyEvidenceOnly,
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyOutputRoot
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
 
-$factoryRoot = "C:\ProgramData\VEM\factory"
-$trustRoot = "C:\ProgramData\VEM\factory-trust"
-$bringupRoot = "C:\VEM\bringup"
+$script:AllowDeliveryAssemblyTestPaths = [bool]$DeliveryAssemblyEvidenceOnly
+if ($DeliveryAssemblyEvidenceOnly) {
+  if ([string]::IsNullOrWhiteSpace($DeliveryAssemblyOutputRoot)) {
+    throw "DeliveryAssemblyOutputRoot is required with DeliveryAssemblyEvidenceOnly"
+  }
+  $deliveryOutputRoot = [IO.Path]::GetFullPath($DeliveryAssemblyOutputRoot)
+  if (Test-Path -LiteralPath $deliveryOutputRoot) {
+    throw "DeliveryAssemblyOutputRoot must not already exist"
+  }
+  $factoryRoot = Join-Path $deliveryOutputRoot "factory"
+  $trustRoot = Join-Path $deliveryOutputRoot "factory-trust"
+  $bringupRoot = Join-Path $deliveryOutputRoot "bringup"
+} else {
+  $factoryRoot = "C:\ProgramData\VEM\factory"
+  $trustRoot = "C:\ProgramData\VEM\factory-trust"
+  $bringupRoot = "C:\VEM\bringup"
+}
 
 function Assert-SafeWindowsPath([string]$Path, [string]$Label) {
   if (
     [string]::IsNullOrWhiteSpace($Path) -or
     $Path -match '[\x00-\x1f]' -or
     $Path -match '^(\\\\|//)' -or
-    $Path -notmatch '^[A-Za-z]:\\'
+    (-not $script:AllowDeliveryAssemblyTestPaths -and $Path -notmatch '^[A-Za-z]:\\')
   ) {
     throw "$Label must be an absolute local Windows path"
   }
@@ -122,9 +140,23 @@ foreach ($property in @($manifest.files.PSObject.Properties)) {
   Assert-NonReparsePath $parent "Factory Vision destination"
   Copy-Item -LiteralPath $source -Destination $destination -Force
   if ((Get-Sha256Digest $destination) -cne $expected) { throw "Factory Vision destination hash mismatch" }
-  $installedFiles += $destination
+  $installedFiles += [ordered]@{ relative=$relative; path=$destination; digest=$expected }
 }
-foreach ($path in @($factoryRoot, $trustRoot, $bringupRoot, (Join-Path $factoryRoot "vision-release")) + $installedFiles | Select-Object -Unique) {
+foreach ($path in @($factoryRoot, $trustRoot, $bringupRoot, (Join-Path $factoryRoot "vision-release")) + @($installedFiles | ForEach-Object { [string]$_.path }) | Select-Object -Unique) {
   Assert-NonReparsePath $path "Factory Vision installed path"
   Set-SystemOnlyAcl $path
 }
+
+$evidenceFiles = [ordered]@{}
+foreach ($installed in $installedFiles | Sort-Object relative) {
+  $evidenceFiles[[string]$installed.relative] = [ordered]@{
+    destination = [string]$installed.path
+    digest = [string]$installed.digest
+  }
+}
+[ordered]@{
+  schemaVersion = "vem-factory-vision-provisioning-evidence/v1"
+  kind = "factory-vision-provisioning-evidence"
+  sourceManifestDigest = Get-Sha256Digest $manifestPath
+  files = $evidenceFiles
+} | ConvertTo-Json -Depth 20

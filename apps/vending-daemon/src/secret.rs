@@ -441,13 +441,8 @@ pub(crate) async fn harden_machine_protected_file_permissions(
         // them differently.  Rebuild the explicit DACL so a pre-existing temp
         // file cannot retain an unrelated allow or deny ACE after replacement.
         let status = tokio::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                windows_secret_acl_script(),
-            ])
-            .arg(path)
+            .args(windows_secret_acl_command())
+            .env("VEM_DAEMON_SECRET_ACL_PATH", path)
             .status()
             .await
             .map_err(|error| format!("set file secret ACL failed: {error}"))?;
@@ -461,7 +456,10 @@ pub(crate) async fn harden_machine_protected_file_permissions(
 
 #[cfg(any(windows, test))]
 fn windows_secret_acl_script() -> &'static str {
-    r#"$path = [IO.Path]::GetFullPath($args[0])
+    r#"if ($args.Count -ne 0) { throw 'secret ACL command must not receive positional arguments' }
+$path = [Environment]::GetEnvironmentVariable('VEM_DAEMON_SECRET_ACL_PATH', 'Process')
+if ([string]::IsNullOrWhiteSpace($path)) { throw 'secret ACL path environment variable is missing' }
+$path = [IO.Path]::GetFullPath($path)
 $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
 $acl.SetAccessRuleProtection($true, $false)
 foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
@@ -474,6 +472,23 @@ foreach ($sid in @($system, $administrators)) {
   ))
 }
 Set-Acl -LiteralPath $path -AclObject $acl"#
+}
+
+#[cfg(any(windows, test))]
+fn windows_secret_acl_command() -> Vec<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let script = windows_secret_acl_script();
+    let utf16le = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    vec![
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-EncodedCommand".to_string(),
+        STANDARD.encode(utf16le),
+    ]
 }
 
 fn protected_secret_protection_name() -> &'static str {
@@ -699,6 +714,7 @@ pub fn default_secret_store(data_dir: PathBuf) -> Arc<dyn SecretStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn protected_file_acl_uses_language_independent_builtin_sids() {
@@ -898,5 +914,111 @@ mod tests {
         assert!(script.contains("$acl.SetOwner($system)"));
         assert!(!script.contains("Administrators:F"));
         assert!(!script.contains("SYSTEM:F"));
+    }
+
+    #[test]
+    fn windows_secret_acl_command_keeps_the_path_out_of_the_script_argument_boundary() {
+        let args = windows_secret_acl_command();
+        assert!(args.windows(2).any(|pair| pair[0] == "-EncodedCommand"));
+        assert!(!args.iter().any(|argument| argument == "-Command"));
+
+        let encoded = args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "-EncodedCommand").then_some(pair[1].as_str()))
+            .expect("encoded command");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("encoded PowerShell script");
+        let words = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        let script = String::from_utf16(&words).expect("PowerShell UTF-16 script");
+        assert!(script.contains("VEM_DAEMON_SECRET_ACL_PATH"));
+        assert!(script.contains("$args.Count -ne 0"));
+        assert!(!script.contains("$args[0]"));
+    }
+
+    #[cfg(windows)]
+    fn run_windows_acl_probe(path: &Path, script: &str) -> std::process::Output {
+        use std::process::Command;
+
+        let utf16le = script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(utf16le);
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+            .env("VEM_DAEMON_SECRET_ACL_PATH", path)
+            .output()
+            .expect("run PowerShell ACL probe")
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_secret_acl_hardens_spaced_common_and_wireguard_secret_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let secret_root = temp.path().join("secret paths with spaces");
+        std::fs::create_dir_all(&secret_root).unwrap();
+
+        for name in ["ordinary machine secret", "wireguard private key"] {
+            let path = secret_root.join(name);
+            std::fs::write(&path, "secret").unwrap();
+            let setup = run_windows_acl_probe(
+                &path,
+                r#"$path = [Environment]::GetEnvironmentVariable('VEM_DAEMON_SECRET_ACL_PATH', 'Process')
+$acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+$everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($everyone, 'ReadAndExecute', 'None', 'None', 'Allow'))
+Set-Acl -LiteralPath $path -AclObject $acl"#,
+            );
+            assert!(
+                setup.status.success(),
+                "failed to create preexisting ACE: {}",
+                String::from_utf8_lossy(&setup.stderr)
+            );
+
+            // Both ordinary and WireGuard secrets use this exact production
+            // process invocation; the probe never passes the path as an argv
+            // token and therefore also exercises a path containing spaces.
+            harden_machine_secret_file_permissions(&path).await.unwrap();
+
+            let probe = run_windows_acl_probe(
+                &path,
+                r#"$path = [Environment]::GetEnvironmentVariable('VEM_DAEMON_SECRET_ACL_PATH', 'Process')
+$acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+$owner = $acl.Owner.Translate([Security.Principal.SecurityIdentifier]).Value
+$rules = @($acl.Access | Where-Object { -not $_.IsInherited } | ForEach-Object {
+  [ordered]@{
+    sid = $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    rights = [int]$_.FileSystemRights
+    type = [string]$_.AccessControlType
+    inheritance = [string]$_.InheritanceFlags
+    propagation = [string]$_.PropagationFlags
+  }
+})
+[ordered]@{ protected = [bool]$acl.AreAccessRulesProtected; owner = $owner; rules = $rules } | ConvertTo-Json -Depth 8 -Compress"#,
+            );
+            assert!(
+                probe.status.success(),
+                "failed to read hardened ACL: {}",
+                String::from_utf8_lossy(&probe.stderr)
+            );
+            let value: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+            assert_eq!(value["protected"], true);
+            assert_eq!(value["owner"], "S-1-5-18");
+            let rules = value["rules"].as_array().unwrap();
+            assert_eq!(rules.len(), 2, "stale ACE survived for {name}");
+            for sid in ["S-1-5-18", "S-1-5-32-544"] {
+                assert!(rules.iter().any(|rule| {
+                    rule["sid"] == sid
+                        && rule["type"] == "Allow"
+                        && rule["inheritance"] == "None"
+                        && rule["propagation"] == "None"
+                }));
+            }
+            assert!(rules.iter().all(|rule| rule["sid"] != "S-1-1-0"));
+        }
     }
 }

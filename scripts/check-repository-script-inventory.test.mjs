@@ -191,7 +191,7 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /finalize\.mjs delivery assembly must declare a classified verifier and VEM evidence artifact/,
+          /finalize\.mjs delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact/,
         );
       },
     );
@@ -242,7 +242,7 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /experimental-vision-candidate\.mjs delivery assembly must declare a classified verifier and VEM evidence artifact/,
+          /experimental-vision-candidate\.mjs delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact/,
         );
       },
     );
@@ -293,7 +293,7 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /win10-vem-e2e\.mjs delivery assembly must declare a classified verifier and VEM evidence artifact/,
+          /win10-vem-e2e\.mjs delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact/,
         );
       },
     );
@@ -344,7 +344,7 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /vision-release-install\.windows-harness\.ps1 delivery assembly must declare a classified verifier and VEM evidence artifact/,
+          /vision-release-install\.windows-harness\.ps1 delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact/,
         );
       },
     );
@@ -353,10 +353,12 @@ describe("repository script inventory guard", () => {
   it("fails when structured assembly evidence omits a classified materializer", () => {
     withFixture(
       {
-        "scripts/factory/finalize.mjs": "dead source text is intentionally irrelevant",
+        "scripts/factory/finalize.mjs":
+          "dead source text is intentionally irrelevant",
         "scripts/factory/finalize.test.mjs": "test evidence",
         "scripts/windows/install-vision-release.ps1": "Write-Host install",
-        "scripts/windows/vision-release-materialization.psm1": "Export-ModuleMember",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
       },
       (root) => {
         const result = checkRepositoryScriptInventory({
@@ -374,7 +376,9 @@ describe("repository script inventory guard", () => {
               ],
               deliveryAssemblyEvidence: {
                 artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+                producer: "scripts/factory/finalize.mjs",
                 verifier: "scripts/factory/finalize.test.mjs",
+                executionTest: "scripts/factory/finalize.test.mjs",
                 members: ["scripts/windows/install-vision-release.ps1"],
               },
             },

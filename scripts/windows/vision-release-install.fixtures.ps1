@@ -56,6 +56,32 @@ function Test-SourceBoundary([string[]]$Needles) {
   }
 }
 
+function Assert-ExactSystemInstallerAcl([string]$Path, [bool]$KioskReadable) {
+  if ($env:OS -ne "Windows_NT") { return }
+  $acl = Get-Acl -LiteralPath $Path
+  if (-not $acl.AreAccessRulesProtected) {
+    throw "installer ACL must be protected"
+  }
+  $owner = $acl.Owner.Translate([Security.Principal.SecurityIdentifier]).Value
+  if ($owner -cne "S-1-5-18") { throw "installer ACL owner must be LocalSystem" }
+  $expected = @{
+    "S-1-5-18" = [int][Security.AccessControl.FileSystemRights]::FullControl
+    "S-1-5-32-544" = [int][Security.AccessControl.FileSystemRights]::FullControl
+  }
+  if ($KioskReadable) {
+    $kioskSid = ([Security.Principal.NTAccount]::new("VEMKiosk")).Translate([Security.Principal.SecurityIdentifier]).Value
+    $expected[$kioskSid] = [int][Security.AccessControl.FileSystemRights]::ReadAndExecute
+  }
+  $actual = @($acl.Access | Where-Object { -not $_.IsInherited })
+  if ($actual.Count -ne $expected.Count) { throw "installer ACL contains unexpected explicit ACEs" }
+  foreach ($rule in $actual) {
+    if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw "installer ACL ACE must allow" }
+    if ($rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit" -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw "installer ACL inheritance is not exact" }
+    $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    if (-not $expected.ContainsKey($sid) -or [int]$rule.FileSystemRights -ne $expected[$sid]) { throw "installer ACL contains an unexpected stable-SID ACE" }
+  }
+}
+
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-installer-fixture-" + [guid]::NewGuid().ToString("N"))
 try {
   New-Item -ItemType Directory -Path $root | Out-Null
@@ -110,9 +136,15 @@ try {
     Write-Output "first-install fixtures passed"
   } elseif ($Case -eq "acl") {
     $protected = Join-Path $root "protected"; New-Item -ItemType Directory -Path $protected | Out-Null
+    if ($env:OS -eq "Windows_NT") {
+      $before = Get-Acl -LiteralPath $protected
+      $before.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new("S-1-1-0"), "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow"))
+      Set-Acl -LiteralPath $protected -AclObject $before
+    }
     Set-SystemInstallerAcl $protected $false
     Assert-NonReparsePath $protected "fixture ACL root"
-    Test-SourceBoundary @("SetAccessRuleProtection", "SYSTEM", "BUILTIN\\Administrators", "VEMKiosk")
+    Assert-ExactSystemInstallerAcl $protected $false
+    Test-SourceBoundary @("SetAccessRuleProtection", "S-1-5-18", "S-1-5-32-544", "VEMKiosk")
     Write-Output "acl fixtures passed"
   } elseif ($Case -eq "task") {
     $script:registeredTask = $null

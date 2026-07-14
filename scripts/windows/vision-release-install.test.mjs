@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 const fixture = "scripts/windows/vision-release-install.fixtures.ps1";
@@ -16,6 +26,16 @@ const wireGuardAcceptance =
 const ciWorkflow = ".github/workflows/ci.yml";
 const SPAWN_TIMEOUT_MS = 45_000;
 const TEST_TIMEOUT_MS = 60_000;
+const FACTORY_VISION_INSTALLER_MEMBERS = [
+  "install-vision-release.ps1",
+  "provision-vision-factory-release.ps1",
+  "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1",
+];
+
+function sha256(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
 
 function boundedIt(name, options, fn) {
   if (typeof options === "function") {
@@ -134,6 +154,88 @@ describe("Vision release installer fixtures", () => {
   }
 
   boundedIt(
+    "runs Factory runtime and Vision provisioner delivery paths into disposable roots with byte-derived evidence",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-factory-delivery-"));
+      try {
+        const runtimeRoot = join(root, "runtime scripts");
+        const runtime = spawnBounded("pwsh", [
+          "-NoProfile",
+          "-File",
+          "scripts/windows/prepare-factory-runtime.ps1",
+          "-DeliveryAssemblyEvidenceOnly",
+          "-DeliveryAssemblyOutputRoot",
+          runtimeRoot,
+        ]);
+        assert.equal(runtime.status, 0, `${runtime.stdout}\n${runtime.stderr}`);
+        const runtimeEvidence = JSON.parse(runtime.stdout);
+        assert.equal(runtimeEvidence.kind, "factory-runtime-support-scripts");
+        for (const name of FACTORY_VISION_INSTALLER_MEMBERS) {
+          const source = readFileSync(join("scripts/windows", name));
+          const staged = readFileSync(join(runtimeRoot, name));
+          assert.deepEqual(staged, source, `${name} was not copied by runtime`);
+          assert.equal(runtimeEvidence.files[name], sha256(source));
+        }
+
+        const mediaRoot = join(root, "factory media");
+        const mediaInstallerRoot = join(mediaRoot, "VISION-INSTALLER");
+        mkdirSync(mediaInstallerRoot, { recursive: true });
+        const files = {};
+        for (const name of FACTORY_VISION_INSTALLER_MEMBERS) {
+          const source = join("scripts/windows", name);
+          const destination = join(mediaInstallerRoot, name);
+          cpSync(source, destination);
+          files[`VISION-INSTALLER/${name}`] = sha256(readFileSync(source));
+        }
+        writeFileSync(
+          join(mediaRoot, "VISION-FACTORY-PROVISIONING.JSON"),
+          JSON.stringify({
+            schemaVersion: "vem-vision-factory-provisioning/v1",
+            kind: "vision-factory-provisioning",
+            files,
+          }),
+        );
+        const provisionRoot = join(root, "provisioned scripts");
+        const provision = spawnBounded("pwsh", [
+          "-NoProfile",
+          "-File",
+          "scripts/windows/provision-vision-factory-release.ps1",
+          "-FactoryMediaRoot",
+          mediaRoot,
+          "-DeliveryAssemblyEvidenceOnly",
+          "-DeliveryAssemblyOutputRoot",
+          provisionRoot,
+        ]);
+        assert.equal(
+          provision.status,
+          0,
+          `${provision.stdout}\n${provision.stderr}`,
+        );
+        const provisionEvidence = JSON.parse(provision.stdout);
+        assert.equal(
+          provisionEvidence.kind,
+          "factory-vision-provisioning-evidence",
+        );
+        for (const name of FACTORY_VISION_INSTALLER_MEMBERS) {
+          const relative = `VISION-INSTALLER/${name}`;
+          const destination = join(provisionRoot, "bringup", name);
+          assert.deepEqual(
+            readFileSync(destination),
+            readFileSync(join(mediaInstallerRoot, name)),
+            `${name} was not copied by Factory provisioning`,
+          );
+          assert.equal(
+            provisionEvidence.files[relative].digest,
+            files[relative],
+          );
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  boundedIt(
     "uses one explicit materialization boundary without installer library mode or implicit bundles",
     () => {
       const installer = readFileSync(
@@ -208,6 +310,35 @@ describe("Vision release installer fixtures", () => {
       }
       assert.match(harness, /-PreapprovalManifestPath \$delivery\.manifest/);
       assert.match(harness, /Get-HarnessSha256Bytes/);
+      assert.match(
+        harness,
+        /Candidate imported a tampered delivery module before manifest verification/,
+      );
+    },
+  );
+
+  boundedIt(
+    "verifies every self-contained Candidate member before importing either module",
+    () => {
+      const candidate = readFileSync(
+        "scripts/windows/test-vision-candidate.ps1",
+        "utf8",
+      );
+      const verification = candidate.indexOf(
+        "Assert-PreapprovalDeliveryManifest $PreapprovalManifestPath",
+      );
+      const materializerImport = candidate.indexOf(
+        'Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1")',
+      );
+      const redactorImport = candidate.indexOf(
+        'Import-Module (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1")',
+      );
+
+      assert.ok(verification >= 0, "Candidate entrypoint must verify delivery");
+      assert.ok(
+        verification < materializerImport && verification < redactorImport,
+        "Candidate entrypoint imports unverified delivery modules",
+      );
     },
   );
 
@@ -244,10 +375,13 @@ describe("Vision release installer fixtures", () => {
         provisioner,
         /"VISION-INSTALLER\/vision-diagnostic-redaction\.psm1" = \(Join-Path \$bringupRoot "vision-diagnostic-redaction\.psm1"\)/,
       );
-      assert.match(prepare, /"vision-diagnostic-redaction\.psm1"/);
       assert.match(
         prepare,
-        /Copy-ScriptIfPresent -Name "vision-diagnostic-redaction\.psm1" -TargetDirectory \$scriptsRoot/,
+        /\$FactoryRuntimeSupportScripts = @\([\s\S]*"vision-diagnostic-redaction\.psm1"[\s\S]*\)/,
+      );
+      assert.match(
+        prepare,
+        /\$supportScriptEvidence = @\(\$FactoryRuntimeSupportScripts \| ForEach-Object \{[\s\S]*Copy-ScriptIfPresent -Name \$_ -TargetDirectory \$scriptsRoot/,
       );
       const harness = readFileSync(windowsHarness, "utf8");
       assert.match(

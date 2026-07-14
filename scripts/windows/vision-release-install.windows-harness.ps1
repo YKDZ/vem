@@ -1987,7 +1987,19 @@ Assert-True ($evidence.healthOk -and $evidence.webSocketOk -and $evidence.instal
 Assert-True (Test-Path -LiteralPath "C:\ProgramData\VEM\vision\current.json") "selection missing after signed install"
 Assert-True ($null -ne (Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue)) "Vision task missing"
 $acl = Get-Acl -LiteralPath "C:\ProgramData\VEM\vision\current.json"
-Assert-True ($acl.AreAccessRulesProtected) "selection ACL is inherited"
+Assert-True ($acl.AreAccessRulesProtected) "selection ACL is not protected"
+$system = [Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+$administrators = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+$kiosk = (Get-LocalUser -Name "VEMKiosk" -ErrorAction Stop).SID
+Assert-True ($acl.Owner.Translate([Security.Principal.SecurityIdentifier]).Value -ceq $system.Value) "selection ACL owner is not LocalSystem"
+$expectedRules = @(
+  [Security.AccessControl.FileSystemAccessRule]::new($system, "FullControl", "None", "None", "Allow"),
+  [Security.AccessControl.FileSystemAccessRule]::new($administrators, "FullControl", "None", "None", "Allow"),
+  [Security.AccessControl.FileSystemAccessRule]::new($kiosk, "ReadAndExecute", "None", "None", "Allow")
+)
+$expectedAcl = @($expectedRules | ForEach-Object { "{0}|{1}|{2}|{3}|{4}" -f $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value, [int]$_.FileSystemRights, $_.AccessControlType, $_.InheritanceFlags, $_.PropagationFlags } | Sort-Object)
+$actualAcl = @($acl.Access | Where-Object { -not $_.IsInherited } | ForEach-Object { "{0}|{1}|{2}|{3}|{4}" -f $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value, [int]$_.FileSystemRights, $_.AccessControlType, $_.InheritanceFlags, $_.PropagationFlags } | Sort-Object)
+Assert-True (@($actualAcl).Count -eq @($expectedAcl).Count -and $null -eq (Compare-Object -ReferenceObject $expectedAcl -DifferenceObject $actualAcl)) "selection ACL does not contain exactly the LocalSystem, Administrators, and kiosk ACEs"
 } catch {
   [IO.File]::WriteAllText((Join-Path $context.root "signed-install-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
   throw

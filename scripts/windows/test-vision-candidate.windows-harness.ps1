@@ -103,6 +103,22 @@ try {
   $inputs = New-CandidateHarnessInputs $root
   $delivery = New-PreapprovalDeliveryUnit $root $CandidatePath $inputs
 
+  # A delivery module is executable code.  Its digest must be checked before
+  # Import-Module can run its top-level statements, even on the failure path.
+  $markerPath = Join-Path $root "unverified-module-was-imported.txt"
+  $materializerPath = Join-Path $delivery.root "vision-release-materialization.psm1"
+  $originalMaterializer = [IO.File]::ReadAllBytes($materializerPath)
+  $markerLiteral = $markerPath.Replace("'", "''")
+  $injectedMaterializer = "[IO.File]::WriteAllText('$markerLiteral', 'executed')`r`n" + [Text.UTF8Encoding]::new($false).GetString($originalMaterializer)
+  [IO.File]::WriteAllText($materializerPath, $injectedMaterializer, [Text.UTF8Encoding]::new($false))
+  Assert-ExpectedFailure {
+    & $delivery.entrypoint -BundlePath $delivery.bundle -ExpectedDigest $inputs.digest -DescriptorPath $delivery.descriptor -PreapprovalManifestPath $delivery.manifest -ConformanceEvidencePath (Join-Path $root "tampered conformance.json") -ReportPath (Join-Path $root "tampered report.json") -WorkRoot (Join-Path $root "tampered work root")
+  } "Vision preapproval delivery file digest is invalid"
+  if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+    throw "Candidate imported a tampered delivery module before manifest verification"
+  }
+  [IO.File]::WriteAllBytes($materializerPath, $originalMaterializer)
+
   # Replace an already-created work-root path with a junction.  The actual
   # entrypoint must reject this reparse traversal before materializing bytes.
   $reparseTarget = Join-Path $root "reparse target"
