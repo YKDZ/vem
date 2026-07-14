@@ -4310,7 +4310,7 @@ function Get-SafeReadyzEvidence([string]$BaseUrl) {
   }
 }
 
-function Wait-DaemonIpcAfterProvisioningRestart([string]$ReadyFilePath) {
+function Wait-DaemonIpc([string]$ReadyFilePath) {
   $lastError = $null
   for ($attempt = 0; $attempt -lt 18; $attempt++) {
     try {
@@ -4338,7 +4338,7 @@ function Wait-DaemonIpcAfterProvisioningRestart([string]$ReadyFilePath) {
       Start-Sleep -Seconds 2
     }
   }
-  throw "daemon IPC did not recover after provisioning restart: $lastError"
+  throw "daemon IPC did not become available: $lastError"
 }
 
 function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
@@ -4476,12 +4476,10 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       throw "refusing to provision non-testbed target identity: ${machineCode}"
     }
 
-    $ready = Read-JsonFile ${psString(bringUpPlan.arguments.DaemonReadyFile)}
-    if ([string]::IsNullOrWhiteSpace($ready.ipcToken)) {
-      throw "ipcToken missing from daemon ready file"
-    }
-    $baseUrl = Get-IpcBaseUrl $ready
-    $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+    $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    $ready = $daemonIpc.ready
+    $baseUrl = $daemonIpc.baseUrl
+    $headers = $daemonIpc.headers
 
     $configBefore = Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers
     $public = $configBefore.public
@@ -4505,7 +4503,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       $evidence.machineCode = $claimResult.machineCode
       $evidence.claimResult.restartRequested = if ($null -ne $claimResult.restartRequested) { [bool]$claimResult.restartRequested } else { $null }
       if ([bool]$evidence.claimResult.restartRequested) {
-        $recoveredIpc = Wait-DaemonIpcAfterProvisioningRestart ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+        $recoveredIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
         $ready = $recoveredIpc.ready
         $baseUrl = $recoveredIpc.baseUrl
         $headers = $recoveredIpc.headers

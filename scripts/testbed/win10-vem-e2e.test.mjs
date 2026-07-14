@@ -1659,6 +1659,47 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /vms_local/);
   });
 
+  it("waits for daemon IPC before the first provisioning config read and claim", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      platformTarget: "vem-vps",
+    });
+    const waitFunctionStart = script.indexOf("function Wait-DaemonIpc(");
+    const provisioningStart = script.indexOf(
+      "function Invoke-TestbedProvisioningClaim($Actions)",
+    );
+    const daemonIpcWait = script.indexOf(
+      "$daemonIpc = Wait-DaemonIpc ",
+      provisioningStart,
+    );
+    const configRead = script.indexOf(
+      'Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers',
+      provisioningStart,
+    );
+    const claim = script.indexOf(
+      'Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim"',
+      provisioningStart,
+    );
+    const waitFunction = script.slice(waitFunctionStart, provisioningStart);
+    const serviceStart = waitFunction.indexOf(
+      'Start-Service -Name "VemVendingDaemon"',
+    );
+    const readyRead = waitFunction.indexOf("Read-JsonFile $ReadyFilePath");
+    const healthz = waitFunction.indexOf(
+      'Invoke-IpcJson "GET" "$baseUrl/healthz" @{}',
+    );
+
+    assert.notEqual(waitFunctionStart, -1);
+    assert.ok(serviceStart >= 0);
+    assert.ok(serviceStart < readyRead);
+    assert.ok(readyRead < healthz);
+    assert.ok(daemonIpcWait >= provisioningStart);
+    assert.ok(daemonIpcWait < configRead);
+    assert.ok(configRead < claim);
+  });
+
   it("emits provision diagnostics for missing ready file and token failures", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
