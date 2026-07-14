@@ -5312,7 +5312,7 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
       MqttUrl = ${psString(platform.mqttUrl)}
       HardwareMode = "simulated"
       HardwareModel = "win10-runtime-testbed"
-      TopologyIdentity = "vm-host-win10-runtime-testbed"
+      TopologyIdentity = "vm-runtime-testbed"
       TopologyVersion = "dirty-host-reset-v1"
       ExpectedDisplayWidth = "1080"
       ExpectedDisplayHeight = "1920"
@@ -6890,7 +6890,7 @@ $result = [ordered]@{
       distinction = [ordered]@{
         accepted = "dirty_host_reset_acceptance"
         notAccepted = "clean_base_preparation_acceptance"
-        reason = "Existing retired host Win10 VM was inventoried, locally reset, prepared, and verified; this does not prove a clean Windows base image."
+        reason = "Existing testbed VM was inventoried, locally reset, prepared, and verified; this does not prove a clean Windows base image."
       }
       evidenceRoot = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.evidenceRoot } else { $null }
       acceptancePath = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.acceptancePath } else { $null }
@@ -7420,7 +7420,7 @@ Dirty-host factory acceptance mode stages specified local artifacts and factory 
 SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
-Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, retired host, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
+Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
 
 Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
 

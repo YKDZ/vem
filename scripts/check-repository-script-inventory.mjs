@@ -315,6 +315,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/vm-host-adapter.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/vm-host-adapter.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/vm-host-adapter-contract.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
@@ -322,42 +334,6 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/testbed/vm-host-adapter-contract.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/default-audio-evidence.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/default-audio-evidence.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/display-evidence.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/display-evidence.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/windows-native-audio-evidence.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/windows-native-audio-evidence.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["runtime acceptance", "testbed workflows"],
@@ -378,6 +354,12 @@ const DEFAULT_INVENTORY = [
     path: "scripts/testbed/run-vm-host-adapter.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json",
+    owner: "field-operations",
+    category: "public runbook operation",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
@@ -462,9 +444,8 @@ const DEFAULT_INVENTORY = [
   {
     path: "scripts/windows/start-lower-controller-sim.ps1",
     owner: "machine-runtime",
-    category: "explicitly maintained legacy operation",
-    workflows: ["runtime acceptance", "testbed workflows"],
-    runbook: "public/vm-runtime-acceptance.md",
+    category: "test support operation",
+    workflows: ["testbed workflows"],
   },
   {
     path: "scripts/windows/vending-daemon-smoke.ps1",
@@ -494,79 +475,6 @@ const DEFAULT_INVENTORY = [
 ];
 
 const DEFAULT_PUBLIC_RUNBOOKS = [
-  {
-    path: "public/clean-base-factory-acceptance.md",
-    scripts: [
-      "scripts/testbed/win10-vem-e2e.mjs",
-      "scripts/windows/prepare-factory-runtime.ps1",
-      "scripts/windows/verify-factory-runtime.ps1",
-    ],
-    forbiddenText: ["<win10.iso>", "Tailscale identity"],
-    requiredContracts: [
-      {
-        schemaVersion: "clean-base-source-contract/v1",
-        requiredFields: {
-          "iso.uriPrefix": "vm-host://factory/isos/",
-          "iso.fileNameEvidenceField": "source.iso.fileName",
-          "iso.sha256EvidenceField": "source.iso.sha256",
-          "iso.uriEvidenceField": "source.iso.uri",
-          "iso.fileNamePattern": "^[^/\\\\]+\\.iso$",
-          "iso.sha256Pattern": "^[a-f0-9]{64}$",
-          "iso.uriRule":
-            "source.iso.uri == iso.uriPrefix + source.iso.fileName",
-          "iso.placeholderIdentityAllowed": false,
-          "canonicalVm.uri": "vm-host://factory/vms/win10-vem-clean-base",
-          "canonicalVm.sourceEvidenceField": "source.uri",
-          "cleanSnapshot.name": "vem-clean-base-before-factory-prep",
-          "cleanSnapshot.uri": "snapshot:vem-clean-base-before-factory-prep",
-          "cleanSnapshot.boundary": "pre-factory-preparation",
-          "cleanSnapshot.evidenceField": "source.snapshot",
-          "acceptanceEvidence.schemaVersion":
-            "clean-base-factory-acceptance-report/v1",
-          "acceptanceEvidence.kind": "clean-base-factory-acceptance",
-          "dirtySourcePolicy.retainedStateTestbed": "dirty-host-evidence-only",
-          "dirtySourcePolicy.localResetDoesNotPromoteCleanBase": true,
-        },
-        requiredIncludes: {
-          sourceChain: [
-            "approved-windows-10-iso",
-            "canonical-clean-base-vm",
-            "pre-factory-preparation-snapshot",
-            "clean-base-factory-acceptance-report",
-          ],
-          allowedBeforeCleanSnapshot: [
-            "windows-install-from-declared-iso",
-            "temporary-administrator-access",
-            "ssh-maintenance-reachability",
-            "portrait-display-baseline",
-            "temporary-network-setup",
-            "clean-snapshot-creation",
-          ],
-          forbiddenBeforeCleanSnapshot: [
-            "vem-runtime-installation",
-            "machine-provisioning-claim",
-            "production-identity-or-secrets",
-            "inventory-product-payment-or-order-state",
-            "unrecorded-windows-tuning",
-          ],
-        },
-      },
-    ],
-  },
-  {
-    path: "public/vm-runtime-acceptance.md",
-    scripts: [
-      "scripts/testbed/win10-vem-e2e.mjs",
-      "scripts/testbed/run-vm-host-adapter.mjs",
-      "scripts/testbed/vm-host-adapter-contract.mjs",
-    ],
-    requiredText: [
-      "[Maintenance Relay bring-up runbook](./maintenance-relay-bring-up.md)",
-      "Controlled Maintenance Ingress",
-      "WireGuard and SSH are implementation mechanisms",
-    ],
-    forbiddenText: ["Tailscale SSH", "Tailscale-backed"],
-  },
   {
     path: "public/customer-accessible-kiosk-lockdown.md",
     scripts: [
@@ -609,7 +517,28 @@ const REQUIRED_CATEGORIES = new Set([
   "verifier-test guard",
   "public runbook operation",
   "explicitly maintained legacy operation",
+  "test support operation",
 ]);
+
+const RETIRED_PUBLIC_RUNBOOKS = [
+  "public/clean-base-factory-acceptance.md",
+  "public/vm-runtime-acceptance.md",
+];
+
+const STALE_PUBLIC_CONTRACT_PATTERNS = [
+  { pattern: /\bunraid\b/i, label: "platform-specific host identity" },
+  { pattern: /\blibvirt\b/i, label: "platform-specific VM adapter" },
+  { pattern: /\bqcow2\b/i, label: "platform-specific disk format" },
+  { pattern: /\/mnt\/user\b/i, label: "host filesystem path" },
+  { pattern: /unraid:\/\//i, label: "platform-specific source URI" },
+  {
+    pattern: /static\s+(?:Service API\s+)?relay\s+plan(?:ner)?/i,
+    label: "static relay planner",
+  },
+  { pattern: /\biptables\b/i, label: "iptables renderer" },
+  { pattern: /maintenance-relay:plan/i, label: "static relay command" },
+  { pattern: /\bsshpass\b|\bSSHPASS\b/, label: "password SSH helper" },
+];
 
 const REQUIRED_WORKFLOWS = [
   "factory preparation",
@@ -702,6 +631,21 @@ function validateStaleIntegrationText(path, text) {
     ) {
       failures.push(
         `${path}:${index + 1} contains non-negative Tailscale wording: ${line.trim()}`,
+      );
+    }
+  }
+  return failures;
+}
+
+function validateStalePublicContractText(path, text) {
+  const failures = [];
+  const lines = text.split(/\r?\n/u);
+  for (const [index, line] of lines.entries()) {
+    for (const stalePattern of STALE_PUBLIC_CONTRACT_PATTERNS.filter((rule) =>
+      rule.pattern.test(line),
+    )) {
+      failures.push(
+        `${path}:${index + 1} contains retired public contract (${stalePattern.label}): ${line.trim()}`,
       );
     }
   }
@@ -817,6 +761,8 @@ function isRunbookFailure(failure) {
     failure.includes(" contains forbidden runbook text: ") ||
     failure.includes(" contains stale integration text ") ||
     failure.includes(" contains non-negative Tailscale wording") ||
+    failure.includes(" contains retired public contract ") ||
+    failure.startsWith("retired public runbook present") ||
     failure.includes(" missing required runbook contract: ") ||
     failure.includes(" invalid required runbook contract ") ||
     failure.includes(" required runbook contract ")
@@ -1005,10 +951,33 @@ export function checkRepositoryScriptInventory(options = {}) {
     failures.push(...validateRunbookContracts(runbook, text));
   }
 
+  for (const retiredRunbook of RETIRED_PUBLIC_RUNBOOKS) {
+    if (pathExists(root, retiredRunbook)) {
+      failures.push(`retired public runbook present: ${retiredRunbook}`);
+    }
+  }
+
+  if (directoryExists(root, "public")) {
+    for (const path of listFiles(root, "public")) {
+      if (!path.endsWith(".md")) continue;
+      const text = readText(root, path);
+      failures.push(...validateStaleIntegrationText(path, text));
+      failures.push(...validateStalePublicContractText(path, text));
+    }
+  }
+
   checks.push({
     name: "all-retained-scripts-classified",
     passed: !failures.some((failure) => failure.startsWith("unclassified")),
     detail: "every file under scripts/ has an owner and use category",
+  });
+  checks.push({
+    name: "retired-public-runbooks-absent",
+    passed: !failures.some((failure) =>
+      failure.startsWith("retired public runbook present"),
+    ),
+    detail:
+      "superseded platform-specific public runbooks cannot re-enter the repository",
   });
   checks.push({
     name: "required-workflows-covered",

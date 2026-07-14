@@ -1,7 +1,7 @@
 # Maintenance Relay Migration
 
-The former Service API static relay planner and iptables renderer are retired.
-They must not be used to create WireGuard peer files or firewall commands.
+The legacy Service API renderer is retired. It must not be used to create
+WireGuard peer files or firewall commands.
 
 The maintained implementation is the independently deployed
 `apps/maintenance-relay` application. It exchanges

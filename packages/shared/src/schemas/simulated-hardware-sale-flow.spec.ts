@@ -16,7 +16,7 @@ function completeFacts(): SimulatedHardwareSaleFlowFacts {
     },
     runtimeState: {
       hardwareMode: "simulated",
-      hardwareModel: "win10-retired-host-testbed",
+      hardwareModel: "win10-runtime-testbed",
       bringUpState: "simulated_hardware_ready",
       uiDiagnosticsExplicit: true,
     },

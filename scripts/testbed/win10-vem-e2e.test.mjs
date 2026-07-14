@@ -366,11 +366,11 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
     factoryProfile: "testbed",
     source: {
       kind: "clean-windows-base",
-      uri: "vm-host://factory/vms/win10-vem-clean-base",
+      uri: "factory-media://clean-windows-base",
       snapshot: "vem-clean-base-before-factory-prep",
       identity: {
         hostName: "WIN10-VEM-CLEAN",
-        sourceVmName: "win10-vem-clean-base",
+        adapterTargetId: "win10-vem-clean-base",
       },
     },
     factoryWindowsBaselinePolicy: {
@@ -2310,7 +2310,7 @@ describe("win10-vem-e2e reset planning", () => {
   it("plans clean-base factory acceptance with explicit clean-source evidence and destructive gates", () => {
     const plan = buildCleanBaseFactoryAcceptancePlan({
       runId: "RUN-182",
-      cleanBaseSource: "vm-host://factory/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
@@ -2319,10 +2319,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.equal(plan.schemaVersion, "clean-base-factory-acceptance-plan/v1");
     assert.equal(plan.mode, "clean-base-factory-acceptance");
     assert.equal(plan.runId, "RUN-182");
-    assert.equal(
-      plan.cleanBase.source,
-      "vm-host://factory/vms/win10-vem-clean-base",
-    );
+    assert.equal(plan.cleanBase.source, "factory-media://clean-windows-base");
     assert.equal(plan.cleanBase.snapshot, "vem-clean-base-before-factory-prep");
     assert.equal(plan.cleanBase.mustNotReuseDirtyHost, true);
     assert.deepEqual(plan.cleanBase.requiredBaseline, {
@@ -2393,7 +2390,7 @@ describe("win10-vem-e2e reset planning", () => {
   it("declares the Factory Windows Baseline policy and evidence contract", () => {
     const plan = buildCleanBaseFactoryAcceptancePlan({
       runId: "RUN-184",
-      cleanBaseSource: "vm-host://factory/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
@@ -2484,7 +2481,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "RUN-182",
         "--clean-base-source",
-        "vm-host://factory/vms/win10-vem-clean-base",
+        "factory-media://clean-windows-base",
         "--clean-base-snapshot",
         "vem-clean-base-before-factory-prep",
         "--daemon-artifact-sha256",
@@ -2518,7 +2515,7 @@ describe("win10-vem-e2e reset planning", () => {
           "--run-id",
           "RUN-190",
           "--clean-base-source",
-          "vm-host://factory/vms/win10-vem-clean-base",
+          "factory-media://clean-windows-base",
           "--clean-base-snapshot",
           "vem-clean-base-before-factory-prep",
           "--daemon-artifact-sha256",
@@ -2553,7 +2550,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "RUN-185",
         "--clean-base-source",
-        "vm-host://factory/vms/win10-vem-clean-base",
+        "factory-media://clean-windows-base",
         "--clean-base-snapshot",
         "vem-clean-base-before-factory-prep",
         "--daemon-artifact-sha256",
@@ -2582,7 +2579,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "RUN-185",
         "--clean-base-source",
-        "vm-host://factory/vms/win10-vem-clean-base",
+        "factory-media://clean-windows-base",
         "--clean-base-snapshot",
         "vem-clean-base-before-factory-prep",
         "--use-existing-remote-artifacts",
@@ -2609,7 +2606,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "RUN-185",
         "--clean-base-source",
-        "vm-host://factory/vms/win10-vem-clean-base",
+        "factory-media://clean-windows-base",
         "--clean-base-snapshot",
         "vem-clean-base-before-factory-prep",
         "--daemon-artifact-sha256",
@@ -2635,7 +2632,7 @@ describe("win10-vem-e2e reset planning", () => {
     const script = buildRemotePowerShellScript({
       mode: "clean-base-factory-acceptance",
       runId: "RUN-185",
-      cleanBaseSource: "vm-host://factory/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
       platformTarget: "vem-vps",
       machineCode: "VEM-TESTBED-WINVM-01",
@@ -2663,10 +2660,7 @@ describe("win10-vem-e2e reset planning", () => {
     );
     assert.match(script, /kind = "clean-base-factory-acceptance"/);
     assert.match(script, /source = \[ordered\]@{/);
-    assert.match(
-      script,
-      /uri = 'vm-host:\/\/factory\/vms\/win10-vem-clean-base'/,
-    );
+    assert.match(script, /uri = 'factory-media:\/\/clean-windows-base'/);
     assert.match(
       script,
       /factoryWindowsBaselinePolicy = \$factoryWindowsBaselinePolicy/,
@@ -2698,7 +2692,7 @@ describe("win10-vem-e2e reset planning", () => {
     const script = buildRemotePowerShellScript({
       mode: "clean-base-factory-acceptance",
       runId: "RUN-185",
-      cleanBaseSource: "vm-host://factory/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       platformTarget: "vem-vps",
       machineCode: "VEM-TESTBED-WINVM-01",
       daemonArtifactSha256: "a".repeat(64),
@@ -2754,7 +2748,7 @@ describe("win10-vem-e2e reset planning", () => {
   it("rejects dirty or production clean-base sources and malformed artifact hashes", () => {
     const baseOptions = {
       runId: "RUN-182",
-      cleanBaseSource: "vm-host://factory/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
     };
@@ -2763,7 +2757,7 @@ describe("win10-vem-e2e reset planning", () => {
       () =>
         buildCleanBaseFactoryAcceptancePlan({
           ...baseOptions,
-          cleanBaseSource: "vm-host://factory/vms/win10-vem-e2e",
+          cleanBaseSource: "factory-media://dirty-windows-base",
         }),
       /known dirty-host source/,
     );
@@ -2803,7 +2797,7 @@ describe("win10-vem-e2e reset planning", () => {
           cleanBaseFactoryAcceptanceEvidence({
             source: {
               kind: "clean-windows-base",
-              uri: "vm-host://factory/vms/win10-vem-e2e",
+              uri: "factory-media://other-windows-base",
               identity: {
                 hostName: "DESKTOP-2STVS5B",
               },
@@ -2936,7 +2930,7 @@ describe("win10-vem-e2e reset planning", () => {
         runId: "RUN-186",
         source: {
           kind: "clean-windows-base",
-          uri: "vm-host://factory/vms/win10-vem-clean-base",
+          uri: "factory-media://clean-windows-base",
           snapshot: "vem-clean-base-before-factory-prep",
           identity: {
             hostName: "WIN10-VEM-CLEAN",
@@ -2998,7 +2992,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.equal(report.runId, "RUN-186");
     assert.deepEqual(report.imageSource, {
       kind: "clean-windows-base",
-      uri: "vm-host://factory/vms/win10-vem-clean-base",
+      uri: "factory-media://clean-windows-base",
       snapshot: "vem-clean-base-before-factory-prep",
       identity: {
         hostName: "WIN10-VEM-CLEAN",
