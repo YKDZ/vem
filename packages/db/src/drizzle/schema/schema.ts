@@ -1087,6 +1087,10 @@ export const orders = t.pgTable(
       .notNull(),
     totalAmountCents: t.integer("total_amount_cents").notNull(),
     currency: t.char("currency", { length: 3 }).default("CNY").notNull(),
+    paymentCreationIdempotencyKey: t.varchar(
+      "payment_creation_idempotency_key",
+      { length: 128 },
+    ),
     paymentId: t
       .uuid("payment_id")
       .references((): t.AnyPgColumn => payments.id),
@@ -1108,6 +1112,10 @@ export const orders = t.pgTable(
     t.index("orders_payment_state_idx").on(table.paymentState),
     t.index("orders_fulfillment_state_idx").on(table.fulfillmentState),
     t.index("orders_created_at_idx").on(table.createdAt),
+    t
+      .uniqueIndex("orders_machine_payment_creation_idempotency_unique")
+      .on(table.machineId, table.paymentCreationIdempotencyKey)
+      .where(sql`${table.paymentCreationIdempotencyKey} IS NOT NULL`),
     t.check(
       "orders_total_amount_cents_non_negative",
       sql`${table.totalAmountCents} >= 0`,
@@ -1318,6 +1326,10 @@ export const payments = t.pgTable(
     isDrill: t.boolean("is_drill").default(false).notNull(),
     drillScenario: t.varchar("drill_scenario", { length: 64 }),
     paymentUrl: t.text("payment_url"),
+    intentCreationLeaseExpiresAt: t.timestamp(
+      "intent_creation_lease_expires_at",
+      { withTimezone: true },
+    ),
     expiresAt: t.timestamp("expires_at", { withTimezone: true }),
     paidAt: t.timestamp("paid_at", { withTimezone: true }),
     failedReason: t.text("failed_reason"),

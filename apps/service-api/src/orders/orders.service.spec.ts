@@ -1886,6 +1886,200 @@ describe("OrdersService", () => {
       expect(resultStr).not.toContain("privateKey");
     });
   });
+
+  describe("payment creation idempotency", () => {
+    it("joins concurrent provider creation for the same persisted payment", async () => {
+      const service = makeService({});
+      const internal = service as unknown as {
+        createAndPersistPaymentIntent(
+          draft: {
+            orderId: string;
+            orderNo: string;
+            paymentId: string;
+            paymentNo: string;
+            providerCode: string;
+            paymentMethod: "qr_code";
+            machineId: string;
+            totalAmountCents: number;
+            expiresAt: Date;
+            reservations: [];
+          },
+          config: null,
+        ): Promise<{
+          providerTradeNo: string | null;
+          paymentUrl: string;
+          initialStatus?: "pending" | "processing";
+        }>;
+        claimAndPersistPaymentIntent: ReturnType<typeof vi.fn>;
+      };
+      let resolveIntent!: (value: {
+        providerTradeNo: string | null;
+        paymentUrl: string;
+        initialStatus: "pending";
+      }) => void;
+      const claim = vi
+        .spyOn(internal, "claimAndPersistPaymentIntent")
+        .mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveIntent = resolve;
+            }),
+        );
+      const draft = {
+        orderId: "550e8400-e29b-41d4-a716-446655440030",
+        orderNo: "ORD-JOIN",
+        paymentId: "550e8400-e29b-41d4-a716-446655440031",
+        paymentNo: "PAY-JOIN",
+        providerCode: "alipay",
+        paymentMethod: "qr_code" as const,
+        machineId: "machine-1",
+        totalAmountCents: 100,
+        expiresAt: new Date("2026-07-14T01:00:00.000Z"),
+        reservations: [] as [],
+      };
+
+      const first = internal.createAndPersistPaymentIntent(draft, null);
+      const second = internal.createAndPersistPaymentIntent(draft, null);
+
+      expect(claim).toHaveBeenCalledTimes(1);
+      resolveIntent({
+        providerTradeNo: null,
+        paymentUrl: "https://qr.alipay.com/join",
+        initialStatus: "pending",
+      });
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        {
+          providerTradeNo: null,
+          paymentUrl: "https://qr.alipay.com/join",
+          initialStatus: "pending",
+        },
+        {
+          providerTradeNo: null,
+          paymentUrl: "https://qr.alipay.com/join",
+          initialStatus: "pending",
+        },
+      ]);
+    });
+
+    it("restores the persisted payment instead of allocating another order for the same checkout key", async () => {
+      const db = makeQueuedDb([
+        [{ id: "machine-1", code: "M001", status: "online" }],
+        [
+          {
+            orderId: "550e8400-e29b-41d4-a716-446655440010",
+            orderNo: "ORD-EXISTING",
+            paymentId: "550e8400-e29b-41d4-a716-446655440011",
+            paymentNo: "PAY-EXISTING",
+            providerCode: "alipay",
+            paymentMethod: "qr_code",
+            machineId: "machine-1",
+            totalAmountCents: 100,
+            expiresAt: new Date("2026-07-14T01:00:00.000Z"),
+            paymentStatus: "pending",
+            paymentUrl: "https://qr.alipay.com/existing",
+            providerTradeNo: null,
+            providerConfigId: "550e8400-e29b-41d4-a716-446655440012",
+            providerConfigSnapshotJson: {},
+            intentCreationLeaseExpiresAt: null,
+          },
+        ],
+      ]);
+      const configService = {
+        assertMachinePaymentChannelAvailable: vi.fn(),
+      };
+      const service = makeService({
+        db,
+        configService: configService as Partial<PaymentProviderConfigService>,
+      });
+
+      const result = await service.createMachineOrder({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "qr_code",
+        paymentProviderCode: "alipay",
+        idempotencyKey: "checkout:restore-existing",
+      });
+
+      expect(result).toMatchObject({
+        orderNo: "ORD-EXISTING",
+        paymentNo: "PAY-EXISTING",
+        paymentUrl: "https://qr.alipay.com/existing",
+      });
+      expect(
+        configService.assertMachinePaymentChannelAvailable,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("reconciles an indeterminate replay before it may retry the same provider payment number", async () => {
+      const db = makeQueuedDb([
+        [{ id: "machine-1", code: "M001", status: "online" }],
+        [
+          {
+            orderId: "550e8400-e29b-41d4-a716-446655440020",
+            orderNo: "ORD-UNCERTAIN",
+            paymentId: "550e8400-e29b-41d4-a716-446655440021",
+            paymentNo: "PAY-UNCERTAIN",
+            providerCode: "alipay",
+            paymentMethod: "qr_code",
+            machineId: "machine-1",
+            totalAmountCents: 100,
+            expiresAt: new Date("2026-07-14T01:00:00.000Z"),
+            paymentStatus: "processing",
+            paymentUrl: null,
+            providerTradeNo: null,
+            providerConfigId: "550e8400-e29b-41d4-a716-446655440022",
+            providerConfigSnapshotJson: {},
+            intentCreationLeaseExpiresAt: null,
+          },
+        ],
+      ]);
+      const reconcilePendingPaymentOnRead = vi.fn().mockResolvedValue({
+        status: "processing",
+        reconciled: false,
+        reason: "provider_processing",
+      });
+      const registry = { get: vi.fn() };
+      const service = makeService({
+        db,
+        registry,
+        paymentsService: { reconcilePendingPaymentOnRead },
+      });
+
+      const result = await service.createMachineOrder({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "qr_code",
+        paymentProviderCode: "alipay",
+        idempotencyKey: "checkout:reconcile-uncertain",
+      });
+
+      expect(reconcilePendingPaymentOnRead).toHaveBeenCalledWith(
+        "550e8400-e29b-41d4-a716-446655440021",
+      );
+      expect(registry.get).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        orderNo: "ORD-UNCERTAIN",
+        paymentNo: "PAY-UNCERTAIN",
+        paymentUrl: null,
+      });
+    });
+  });
 });
 
 // ---- transaction boundary tests -------------------------------------------
@@ -2118,7 +2312,9 @@ function makeGenericTx(db: OrdersDbHarness) {
 
   tx.update.mockReturnValue({
     set: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue([]),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "pay-001" }]),
+      }),
     }),
   });
 
@@ -2159,7 +2355,9 @@ function makeGenericTxForCancellation(db: OrdersDbHarness) {
 
   tx.update.mockReturnValue({
     set: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue([]),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "pay-001" }]),
+      }),
     }),
   });
 

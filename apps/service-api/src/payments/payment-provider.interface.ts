@@ -26,6 +26,7 @@ export type PaymentIntentResult = {
 export type ProviderPaymentQueryInput = {
   paymentNo: string;
   providerTradeNo: string | null;
+  amountCents: number;
   config: PaymentProviderRuntimeConfig;
 };
 

@@ -148,7 +148,7 @@ describe("AlipayProvider", () => {
     expect(sdk.exec).toHaveBeenCalledTimes(1);
   });
 
-  it("waits for sandbox order-code QR to become queryable before display", async () => {
+  it("does not wait for a sandbox order-code query before displaying a verified QR", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockResolvedValueOnce({
@@ -186,14 +186,8 @@ describe("AlipayProvider", () => {
     });
 
     expect(result.paymentUrl).toBe("https://qr.alipay.com/bax-sandbox");
-    expect(sdk.exec).toHaveBeenNthCalledWith(
-      2,
-      "alipay.trade.query",
-      expect.objectContaining({
-        bizContent: { out_trade_no: "PAY202605060120" },
-      }),
-    );
-    expect(sdk.exec).toHaveBeenCalledTimes(3);
+    expect(result.initialStatus).toBe("pending");
+    expect(sdk.exec).toHaveBeenCalledTimes(1);
   });
 
   it("rejects precreate business failures before displaying a QR", async () => {
@@ -217,7 +211,28 @@ describe("AlipayProvider", () => {
     ).rejects.toThrow("Alipay alipay.trade.precreate failed");
   });
 
-  it("marks order-code QR processing when readiness probe does not observe the trade yet", async () => {
+  it("rejects a precreate QR that echoes a different amount", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec).mockResolvedValueOnce({
+      code: "10000",
+      out_trade_no: "PAY202605060121",
+      total_amount: "9.99",
+      qr_code: "https://qr.alipay.com/bax-sandbox",
+    });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.createPaymentIntent({
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060121",
+        orderNo: "ORD202605060121",
+        amountCents: 100,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      }),
+    ).rejects.toThrow("Alipay alipay.trade.precreate total_amount mismatch");
+  });
+
+  it("presents a matching precreate QR immediately when a pre-scan query cannot find the trade", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockResolvedValueOnce({
@@ -249,11 +264,8 @@ describe("AlipayProvider", () => {
     });
 
     expect(result.paymentUrl).toBe("https://qr.alipay.com/bax-sandbox");
-    expect(result.initialStatus).toBe("processing");
-    expect(sdk.exec).not.toHaveBeenCalledWith(
-      "alipay.trade.cancel",
-      expect.anything(),
-    );
+    expect(result.initialStatus).toBe("pending");
+    expect(sdk.exec).toHaveBeenCalledTimes(1);
   });
 
   it("retries transient order-code precreate failures with the same payment number", async () => {
@@ -353,6 +365,8 @@ describe("AlipayProvider", () => {
       vi.mocked(sdk.exec).mockResolvedValue({
         trade_status: tradeStatus,
         trade_no: "2026050622000000001",
+        out_trade_no: "PAY202605060003",
+        total_amount: "12.34",
       });
       const provider = new AlipayProvider(factory);
 
@@ -360,6 +374,7 @@ describe("AlipayProvider", () => {
         config: makeRuntimeConfig(),
         paymentNo: "PAY202605060003",
         providerTradeNo: null,
+        amountCents: 1234,
       });
 
       expect(sdk.exec).toHaveBeenCalledWith(
@@ -375,7 +390,7 @@ describe("AlipayProvider", () => {
     },
   );
 
-  it("keeps order-code TRADE_NOT_EXIST query result indeterminate", async () => {
+  it("treats an order-code TRADE_NOT_EXIST query as pending before the customer scans", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec).mockResolvedValue({
       code: "40004",
@@ -389,10 +404,31 @@ describe("AlipayProvider", () => {
       config: makeRuntimeConfig(),
       paymentNo: "PAY202605060404",
       providerTradeNo: null,
+      amountCents: 1234,
     });
 
-    expect(result.status).toBe("processing");
+    expect(result.status).toBe("pending");
     expect(result.failedReason).toBe("ACQ.TRADE_NOT_EXIST");
+  });
+
+  it("does not report a mismatched successful query as paid", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec).mockResolvedValue({
+      code: "10000",
+      trade_status: "TRADE_SUCCESS",
+      out_trade_no: "PAY202605060999",
+      total_amount: "12.34",
+    });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.queryPayment({
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060003",
+        providerTradeNo: null,
+        amountCents: 1234,
+      }),
+    ).rejects.toThrow("Alipay alipay.trade.query out_trade_no mismatch");
   });
 
   it("maps terminal order-code query business errors to failed", async () => {
@@ -409,6 +445,7 @@ describe("AlipayProvider", () => {
       config: makeRuntimeConfig(),
       paymentNo: "PAY202605060405",
       providerTradeNo: null,
+      amountCents: 1234,
     });
 
     expect(result.status).toBe("failed");

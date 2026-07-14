@@ -16,6 +16,7 @@ import {
   inventoryMovements,
   inventoryReservations,
   isNull,
+  lt,
   machineRawStockMovementConflicts,
   machineRawStockMovements,
   machinePlanogramSlots,
@@ -88,6 +89,7 @@ type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
 const DEFAULT_UNCONFIRMED_QR_DISPLAY_DELAY_MS = 30_000;
+const PAYMENT_INTENT_CREATION_LEASE_MS = 30_000;
 const RECOVERY_ACTIONS = [
   "confirm_dispensed",
   "confirm_not_dispensed",
@@ -179,6 +181,8 @@ function isIndeterminateProviderError(error: unknown): boolean {
     lower.includes("gateway time-out") ||
     lower.includes("econn") ||
     lower.includes("socket") ||
+    lower.includes("payment provider unavailable") ||
+    message.includes("支付通道暂不可用") ||
     message.includes("HTTP 请求错误") ||
     message.includes("请求超时") ||
     message.includes("网络超时")
@@ -261,6 +265,15 @@ type LocalPaymentDraft = {
   reservations: Array<{ inventoryId: string; quantity: number }>;
 };
 
+type ExistingPaymentCreation = LocalPaymentDraft & {
+  paymentStatus: PaymentStatus;
+  paymentUrl: string | null;
+  providerTradeNo: string | null;
+  providerConfigId: string | null;
+  providerConfigSnapshotJson: unknown;
+  intentCreationLeaseExpiresAt: Date | null;
+};
+
 type MachineOrderStatusRow = {
   orderId: string;
   orderNo: string;
@@ -309,6 +322,15 @@ type CancelableMachineOrderCurrentRow = Pick<
 
 @Injectable()
 export class OrdersService {
+  private readonly paymentIntentCreationInFlight = new Map<
+    string,
+    Promise<{
+      providerTradeNo: string | null;
+      paymentUrl: string;
+      initialStatus?: PaymentStatus;
+    }>
+  >();
+
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly inventoryService: InventoryService,
@@ -370,7 +392,20 @@ export class OrdersService {
       throw new ConflictException("Machine is not accepting orders");
     }
 
-    const paymentSelection = resolvePaymentSelection(input);
+    const idempotencyKey =
+      input.idempotencyKey ?? `legacy-checkout:${createBusinessNo("ORD")}`;
+    const idempotentInput = { ...input, idempotencyKey };
+    const existing = input.idempotencyKey
+      ? await this.findPaymentCreationByIdempotencyKey(
+          machine.id,
+          idempotencyKey,
+        )
+      : null;
+    if (existing) {
+      return await this.restorePaymentCreation(existing);
+    }
+
+    const paymentSelection = resolvePaymentSelection(idempotentInput);
 
     // Resolve provider config before entering the transaction
     let resolvedProviderConfig:
@@ -404,13 +439,25 @@ export class OrdersService {
     );
 
     if (paymentSelection.method === "payment_code") {
-      const draft = await this.createLocalMachineOrderDraft(
-        input,
-        machine.id,
-        paymentExpiresAt,
-        paymentSelection,
-        resolvedProviderConfig,
-      );
+      let draft: LocalPaymentDraft;
+      try {
+        draft = await this.createLocalMachineOrderDraft(
+          idempotentInput,
+          machine.id,
+          paymentExpiresAt,
+          paymentSelection,
+          resolvedProviderConfig,
+        );
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          const replay = await this.findPaymentCreationByIdempotencyKey(
+            machine.id,
+            idempotencyKey,
+          );
+          if (replay) return await this.restorePaymentCreation(replay);
+        }
+        throw error;
+      }
       await this.db
         .update(payments)
         .set({
@@ -431,27 +478,89 @@ export class OrdersService {
       };
     }
 
-    const draft = await this.createLocalMachineOrderDraft(
-      input,
-      machine.id,
-      paymentExpiresAt,
-      paymentSelection,
-      resolvedProviderConfig,
-    );
-
-    let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
+    let draft: LocalPaymentDraft;
     try {
-      intent = await this.createPaymentIntent(
-        draft.providerCode,
-        {
-          paymentNo: draft.paymentNo,
-          orderNo: draft.orderNo,
-          amountCents: draft.totalAmountCents,
-          expiresAt: draft.expiresAt,
-        },
+      draft = await this.createLocalMachineOrderDraft(
+        idempotentInput,
+        machine.id,
+        paymentExpiresAt,
+        paymentSelection,
         resolvedProviderConfig,
       );
     } catch (error) {
+      if (isUniqueViolation(error)) {
+        const replay = await this.findPaymentCreationByIdempotencyKey(
+          machine.id,
+          idempotencyKey,
+        );
+        if (replay) return await this.restorePaymentCreation(replay);
+      }
+      throw error;
+    }
+
+    if (!input.idempotencyKey) {
+      let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
+      try {
+        intent = await this.createPaymentIntent(
+          draft.providerCode,
+          {
+            paymentNo: draft.paymentNo,
+            orderNo: draft.orderNo,
+            amountCents: draft.totalAmountCents,
+            expiresAt: draft.expiresAt,
+          },
+          resolvedProviderConfig,
+        );
+      } catch (error) {
+        await this.cancelLocalCreatedPayment(
+          draft,
+          "provider_create_failed",
+          error,
+        );
+        throw error;
+      }
+      try {
+        const initialStatus = intent.initialStatus ?? "pending";
+        await this.db
+          .update(payments)
+          .set({
+            status: initialStatus,
+            providerTradeNo: intent.providerTradeNo,
+            paymentUrl: intent.paymentUrl,
+            expiresAt: draft.expiresAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(payments.id, draft.paymentId));
+      } catch (error) {
+        await this.cancelProviderIntentAfterDbFailure(draft);
+        await this.cancelLocalCreatedPayment(
+          draft,
+          "provider_created_db_update_failed",
+          error,
+        );
+        throw error;
+      }
+      return this.toPaymentCreationResponse(draft, intent);
+    }
+
+    try {
+      const intent = await this.createAndPersistPaymentIntent(
+        draft,
+        resolvedProviderConfig,
+      );
+      return this.toPaymentCreationResponse(draft, intent);
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        const replay = await this.findPaymentCreationByIdempotencyKey(
+          machine.id,
+          idempotencyKey,
+        );
+        if (replay) return await this.restorePaymentCreation(replay);
+      }
+      if (isIndeterminateProviderError(error)) {
+        await this.markPaymentCreationUncertain(draft, error);
+        throw error;
+      }
       await this.cancelLocalCreatedPayment(
         draft,
         "provider_create_failed",
@@ -459,42 +568,6 @@ export class OrdersService {
       );
       throw error;
     }
-
-    try {
-      const initialStatus = intent.initialStatus ?? "pending";
-      await this.db
-        .update(payments)
-        .set({
-          status: initialStatus,
-          providerTradeNo: intent.providerTradeNo,
-          paymentUrl: intent.paymentUrl,
-          expiresAt: draft.expiresAt,
-          updatedAt: new Date(),
-        })
-        .where(eq(payments.id, draft.paymentId));
-    } catch (error) {
-      await this.cancelProviderIntentAfterDbFailure(draft);
-      await this.cancelLocalCreatedPayment(
-        draft,
-        "provider_created_db_update_failed",
-        error,
-      );
-      throw error;
-    }
-
-    return {
-      orderId: draft.orderId,
-      orderNo: draft.orderNo,
-      paymentId: draft.paymentId,
-      paymentNo: draft.paymentNo,
-      paymentUrl:
-        (intent.initialStatus ?? "pending") === "pending"
-          ? intent.paymentUrl
-          : null,
-      expiresAt: draft.expiresAt,
-      totalAmountCents: draft.totalAmountCents,
-      paymentProviderCode: draft.providerCode,
-    };
   }
 
   private async assertMachineOrderLinePlanogramContext(
@@ -627,6 +700,7 @@ export class OrdersService {
           fulfillmentState: "awaiting_fulfillment",
           totalAmountCents,
           currency: "CNY",
+          paymentCreationIdempotencyKey: input.idempotencyKey ?? null,
           profileSnapshot: input.profileSnapshot ?? null,
           createdFrom: "machine_ui",
         })
@@ -749,14 +823,22 @@ export class OrdersService {
     error: unknown,
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
-      await tx
+      const [failedPayment] = await tx
         .update(payments)
         .set({
           status: "failed",
           failedReason: reason,
+          intentCreationLeaseExpiresAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(payments.id, draft.paymentId));
+        .where(
+          and(
+            eq(payments.id, draft.paymentId),
+            inArray(payments.status, ["created", "processing"]),
+          ),
+        )
+        .returning({ id: payments.id });
+      if (!failedPayment) return;
 
       await tx
         .update(orders)
@@ -2438,6 +2520,235 @@ export class OrdersService {
       sensitiveConfigJson: {},
     };
     return await provider.createPaymentIntent({ ...input, config });
+  }
+
+  private async findPaymentCreationByIdempotencyKey(
+    machineId: string,
+    idempotencyKey: string,
+  ): Promise<ExistingPaymentCreation | null> {
+    const [row] = await this.db
+      .select({
+        orderId: orders.id,
+        orderNo: orders.orderNo,
+        paymentId: payments.id,
+        paymentNo: payments.paymentNo,
+        providerCode: paymentProviders.code,
+        paymentMethod: payments.method,
+        machineId: orders.machineId,
+        totalAmountCents: payments.amountCents,
+        expiresAt: payments.expiresAt,
+        paymentStatus: payments.status,
+        paymentUrl: payments.paymentUrl,
+        providerTradeNo: payments.providerTradeNo,
+        providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
+        intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
+      })
+      .from(orders)
+      .innerJoin(payments, eq(payments.id, orders.paymentId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(
+        and(
+          eq(orders.machineId, machineId),
+          eq(orders.paymentCreationIdempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+
+    return row
+      ? {
+          ...row,
+          expiresAt: row.expiresAt ?? new Date(),
+          paymentMethod: row.paymentMethod,
+          reservations: [],
+        }
+      : null;
+  }
+
+  private toPaymentCreationResponse(
+    draft: Pick<
+      LocalPaymentDraft,
+      | "orderId"
+      | "orderNo"
+      | "paymentId"
+      | "paymentNo"
+      | "expiresAt"
+      | "totalAmountCents"
+      | "providerCode"
+    >,
+    intent: { paymentUrl: string; initialStatus?: PaymentStatus },
+  ) {
+    const status = intent.initialStatus ?? "pending";
+    return {
+      orderId: draft.orderId,
+      orderNo: draft.orderNo,
+      paymentId: draft.paymentId,
+      paymentNo: draft.paymentNo,
+      paymentUrl: status === "pending" ? intent.paymentUrl : null,
+      expiresAt: draft.expiresAt,
+      totalAmountCents: draft.totalAmountCents,
+      paymentProviderCode: draft.providerCode,
+    };
+  }
+
+  private async restorePaymentCreation(existing: ExistingPaymentCreation) {
+    if (existing.paymentMethod === "payment_code") {
+      return this.toPaymentCreationResponse(existing, {
+        paymentUrl: "",
+        initialStatus: "processing",
+      });
+    }
+    if (
+      existing.paymentUrl ||
+      !["created", "pending", "processing"].includes(existing.paymentStatus)
+    ) {
+      return this.toPaymentCreationResponse(existing, {
+        paymentUrl: existing.paymentUrl ?? "",
+        initialStatus: existing.paymentStatus,
+      });
+    }
+
+    if (existing.paymentStatus === "processing") {
+      const reconciliation =
+        (await this.paymentsService?.reconcilePendingPaymentOnRead(
+          existing.paymentId,
+        )) ?? { status: "processing" as const, reconciled: false };
+      if (reconciliation.status !== "pending") {
+        return this.toPaymentCreationResponse(existing, {
+          paymentUrl: "",
+          initialStatus:
+            reconciliation.status === "not_found"
+              ? existing.paymentStatus
+              : reconciliation.status,
+        });
+      }
+    }
+
+    const config = await this.resolveExistingPaymentConfig(existing);
+    try {
+      const intent = await this.createAndPersistPaymentIntent(existing, config);
+      return this.toPaymentCreationResponse(existing, intent);
+    } catch (error) {
+      if (isIndeterminateProviderError(error)) {
+        await this.markPaymentCreationUncertain(existing, error);
+      }
+      throw error;
+    }
+  }
+
+  private async resolveExistingPaymentConfig(payment: ExistingPaymentCreation) {
+    if (payment.providerCode === "mock") {
+      return null;
+    }
+    return await this.paymentProviderConfigService.resolveForExistingPayment({
+      providerCode: payment.providerCode,
+      providerConfigId: payment.providerConfigId,
+      machineId: payment.machineId,
+      providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
+    });
+  }
+
+  private async createAndPersistPaymentIntent(
+    draft: LocalPaymentDraft,
+    resolvedConfig:
+      | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
+      | null,
+  ) {
+    const existing = this.paymentIntentCreationInFlight.get(draft.paymentId);
+    if (existing) return await existing;
+
+    const task = this.claimAndPersistPaymentIntent(draft, resolvedConfig);
+    this.paymentIntentCreationInFlight.set(draft.paymentId, task);
+    try {
+      return await task;
+    } finally {
+      this.paymentIntentCreationInFlight.delete(draft.paymentId);
+    }
+  }
+
+  private async claimAndPersistPaymentIntent(
+    draft: LocalPaymentDraft,
+    resolvedConfig:
+      | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
+      | null,
+  ) {
+    const now = new Date();
+    const [claimed] = await this.db
+      .update(payments)
+      .set({
+        intentCreationLeaseExpiresAt: new Date(
+          now.getTime() + PAYMENT_INTENT_CREATION_LEASE_MS,
+        ),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(payments.id, draft.paymentId),
+          isNull(payments.paymentUrl),
+          inArray(payments.status, ["created", "processing"]),
+          or(
+            isNull(payments.intentCreationLeaseExpiresAt),
+            lt(payments.intentCreationLeaseExpiresAt, now),
+          ),
+        ),
+      )
+      .returning({ id: payments.id });
+
+    if (!claimed) {
+      return {
+        providerTradeNo: null,
+        paymentUrl: "",
+        initialStatus: "processing" as const,
+      };
+    }
+
+    const intent = await this.createPaymentIntent(
+      draft.providerCode,
+      {
+        paymentNo: draft.paymentNo,
+        orderNo: draft.orderNo,
+        amountCents: draft.totalAmountCents,
+        expiresAt: draft.expiresAt,
+      },
+      resolvedConfig,
+    );
+    const initialStatus = intent.initialStatus ?? "pending";
+    try {
+      await this.db
+        .update(payments)
+        .set({
+          status: initialStatus,
+          providerTradeNo: intent.providerTradeNo,
+          paymentUrl: intent.paymentUrl,
+          expiresAt: draft.expiresAt,
+          intentCreationLeaseExpiresAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, draft.paymentId));
+    } catch (error) {
+      await this.cancelProviderIntentAfterDbFailure(draft);
+      throw error;
+    }
+    return intent;
+  }
+
+  private async markPaymentCreationUncertain(
+    draft: Pick<LocalPaymentDraft, "paymentId">,
+    error: unknown,
+  ): Promise<void> {
+    await this.db
+      .update(payments)
+      .set({
+        status: "processing",
+        failedReason:
+          `provider_create_uncertain:${error instanceof Error ? error.message : String(error)}`.slice(
+            0,
+            500,
+          ),
+        intentCreationLeaseExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(payments.id, draft.paymentId));
   }
 }
 

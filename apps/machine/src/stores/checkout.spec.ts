@@ -542,6 +542,7 @@ describe("checkout store", () => {
       paymentMethod: "payment_code",
       paymentProviderCode: "alipay",
       profileSnapshot: null,
+      idempotencyKey: expect.stringMatching(/^checkout:/),
     });
     expect(store.customerCheckoutView).toMatchObject({
       stage: "payment",
@@ -562,6 +563,53 @@ describe("checkout store", () => {
       },
     });
     expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
+  });
+
+  it("reuses one checkout idempotency key when the customer retries a failed create", async () => {
+    const item = makeCatalogItem();
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "qr_code:alipay",
+        providerCode: "alipay",
+        method: "qr_code",
+        displayName: "支付宝扫码",
+        description: "请扫码支付",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "qr_code:alipay";
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyNetworkSaleReady();
+    store.selectItem(item);
+    createOrderMock
+      .mockRejectedValueOnce(new Error("daemon timeout"))
+      .mockResolvedValueOnce(
+        makeTransactionSnapshot({ paymentMethod: "qr_code" }),
+      );
+
+    await expect(store.createOrder()).rejects.toThrow("daemon timeout");
+    await store.createOrder();
+
+    const [firstRequest, secondRequest] = createOrderMock.mock.calls;
+    expect(firstRequest?.[0]).toEqual(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^checkout:/),
+      }),
+    );
+    expect(secondRequest?.[0]).toEqual(
+      expect.objectContaining({
+        idempotencyKey: firstRequest?.[0].idempotencyKey,
+      }),
+    );
   });
 
   it("shows customer-safe scanner copy when create-order local payment-code recheck fails", async () => {

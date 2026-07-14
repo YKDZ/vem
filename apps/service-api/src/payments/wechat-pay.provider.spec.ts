@@ -867,6 +867,7 @@ describe("WeChatPayProvider", () => {
           config: makeConfig(),
           paymentNo: "PAY_QUERY_001",
           providerTradeNo: null,
+          amountCents: 1234,
         });
       } finally {
         vi.unstubAllGlobals();

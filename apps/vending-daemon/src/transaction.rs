@@ -119,6 +119,24 @@ impl TransactionStateMachine {
         items: serde_json::Value,
         profile_snapshot: Option<serde_json::Value>,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
+        self.create_order_with_idempotency(
+            payment_method,
+            payment_provider_code,
+            items,
+            profile_snapshot,
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_order_with_idempotency(
+        &self,
+        payment_method: &str,
+        payment_provider_code: Option<String>,
+        items: serde_json::Value,
+        profile_snapshot: Option<serde_json::Value>,
+        idempotency_key: Option<&str>,
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         if let Some(current) = self.refresh_current_from_backend().await? {
             if is_active_transaction(&current) {
                 return Ok(current);
@@ -129,6 +147,10 @@ impl TransactionStateMachine {
             .machine_code
             .clone()
             .ok_or_else(|| "machine code is required".to_string())?;
+        let idempotency_key = idempotency_key
+            .filter(|value| !value.trim().is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("checkout:{}", Uuid::new_v4()));
 
         let response = match self
             .backend
@@ -138,6 +160,7 @@ impl TransactionStateMachine {
                 payment_method,
                 payment_provider_code.as_deref(),
                 profile_snapshot,
+                &idempotency_key,
             )
             .await
         {
@@ -893,11 +916,12 @@ mod tests {
             TransactionStateMachine::new(state, backend, Some("M-1".to_string()), events_tx);
 
         let current = machine
-            .create_order(
+            .create_order_with_idempotency(
                 "mock",
                 Some("mock".to_string()),
                 json!([{ "slotCode": "A1", "quantity": 1 }]),
                 None,
+                Some("checkout:stable-daemon-retry"),
             )
             .await
             .expect("create response remains usable");
@@ -905,6 +929,17 @@ mod tests {
         assert_eq!(
             current.payment_id.as_deref(),
             Some("550e8400-e29b-41d4-a716-446655440011")
+        );
+        let requests = server.received_requests().await.expect("requests");
+        let create_request = requests
+            .iter()
+            .find(|request| request.url.path() == "/machine-orders")
+            .expect("create order request");
+        let body: serde_json::Value =
+            serde_json::from_slice(&create_request.body).expect("create body");
+        assert_eq!(
+            body["idempotencyKey"],
+            serde_json::Value::String("checkout:stable-daemon-retry".to_string())
         );
     }
 

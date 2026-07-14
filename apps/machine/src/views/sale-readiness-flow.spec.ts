@@ -1869,6 +1869,7 @@ describe("sale readiness UI flow", () => {
       paymentMethod: "mock",
       paymentProviderCode: "mock",
       profileSnapshot: null,
+      idempotencyKey: expect.stringMatching(/^checkout:/),
     });
     expect(JSON.stringify(createOrderMock.mock.calls)).not.toMatch(
       /frame|image|raw|canvas|dataUrl|blob|base64|diagnostic|vision/i,
@@ -1960,6 +1961,7 @@ describe("sale readiness UI flow", () => {
       paymentMethod: "mock",
       paymentProviderCode: "mock",
       profileSnapshot: null,
+      idempotencyKey: expect.stringMatching(/^checkout:/),
     });
     expect(JSON.stringify(createOrderMock.mock.calls)).not.toMatch(
       /frame|image|raw|canvas|dataUrl|blob|base64|diagnostic|vision/i,

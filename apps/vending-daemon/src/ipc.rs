@@ -1008,6 +1008,7 @@ struct CreateOrder {
     payment_method: String,
     payment_provider_code: Option<String>,
     profile_snapshot: Option<serde_json::Value>,
+    idempotency_key: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2568,11 +2569,12 @@ async fn create_order_intent(
     match ctx
         .ui
         .transaction
-        .create_order(
+        .create_order_with_idempotency(
             &input.payment_method,
             payment_provider_code,
             items,
             sanitize_profile_snapshot(input.profile_snapshot),
+            input.idempotency_key.as_deref(),
         )
         .await
     {

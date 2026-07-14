@@ -586,6 +586,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         paymentId: payments.id,
         paymentNo: payments.paymentNo,
+        amountCents: payments.amountCents,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
         providerTradeNo: payments.providerTradeNo,
@@ -641,6 +642,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             const queryResult = await provider.queryPayment({
               paymentNo: payment.paymentNo,
               providerTradeNo: payment.providerTradeNo,
+              amountCents: payment.amountCents,
               config,
             });
 
@@ -1987,6 +1989,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: payments.id,
         paymentNo: payments.paymentNo,
+        amountCents: payments.amountCents,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
         providerTradeNo: payments.providerTradeNo,
@@ -2088,6 +2091,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             result = await provider.queryPayment({
               paymentNo: payment.paymentNo,
               providerTradeNo: payment.providerTradeNo,
+              amountCents: payment.amountCents,
               config,
             });
           } catch (err) {
@@ -2238,6 +2242,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: payments.id,
         paymentNo: payments.paymentNo,
+        amountCents: payments.amountCents,
         status: payments.status,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
@@ -2350,6 +2355,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       result = await provider.queryPayment({
         paymentNo: payment.paymentNo,
         providerTradeNo: payment.providerTradeNo,
+        amountCents: payment.amountCents,
         config,
       });
     } catch (err) {
@@ -3668,6 +3674,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: payments.id,
         paymentNo: payments.paymentNo,
+        amountCents: payments.amountCents,
         status: payments.status,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
@@ -3770,6 +3777,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       result = await provider.queryPayment({
         paymentNo: payment.paymentNo,
         providerTradeNo: payment.providerTradeNo,
+        amountCents: payment.amountCents,
         config,
       });
     } catch (err) {

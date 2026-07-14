@@ -2816,6 +2816,26 @@ describe("shared API contract", () => {
       expect(result.paymentMethod).toBe("qr_code");
     });
 
+    it("preserves the stable checkout idempotency key", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "qr_code",
+        paymentProviderCode: "alipay",
+        idempotencyKey: "checkout:attempt-001",
+      });
+
+      expect(result.idempotencyKey).toBe("checkout:attempt-001");
+    });
+
     it("accepts mock without paymentProviderCode", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",

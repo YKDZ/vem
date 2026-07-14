@@ -29,6 +29,11 @@ const DISMISSED_TERMINAL_ORDER_LIMIT = 50;
 const PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE =
   "扫码器暂不可用，请选择其他支付方式";
 
+function createCheckoutAttemptIdempotencyKey(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  return `checkout:${randomUuid ?? `${Date.now()}:${Math.random().toString(36).slice(2)}`}`;
+}
+
 function browserLocalStorage(): Storage | null {
   if (typeof window === "undefined") return null;
   try {
@@ -249,6 +254,7 @@ export const useCheckoutStore = defineStore("checkout", {
     paymentCodeMessage: null as string | null,
     paymentCodeLastMasked: null as string | null,
     paymentOptionsLoaded: false,
+    checkoutAttemptIdempotencyKey: null as string | null,
     dismissedTerminalOrderNos: readDismissedTerminalOrderNos(),
     lastTransactionRestored: false,
   }),
@@ -299,6 +305,8 @@ export const useCheckoutStore = defineStore("checkout", {
       this.selectedItem = item;
       this.transaction = null;
       this.error = null;
+      this.checkoutAttemptIdempotencyKey =
+        createCheckoutAttemptIdempotencyKey();
       this.nowMs = Date.now();
     },
     reset(): void {
@@ -309,6 +317,7 @@ export const useCheckoutStore = defineStore("checkout", {
       this.paymentCodeSubmitting = false;
       this.paymentCodeMessage = null;
       this.paymentCodeLastMasked = null;
+      this.checkoutAttemptIdempotencyKey = null;
       this.nowMs = Date.now();
     },
     shouldIgnoreTransaction(snapshot: TransactionSnapshot | null): boolean {
@@ -417,6 +426,10 @@ export const useCheckoutStore = defineStore("checkout", {
       if (!isMachineSaleReady()) throw new Error("当前机器暂不可创建订单");
       const planogramVersion = activePlanogramVersion();
       if (!planogramVersion) throw new Error("当前货道图暂不可创建订单");
+      const idempotencyKey =
+        this.checkoutAttemptIdempotencyKey ??
+        createCheckoutAttemptIdempotencyKey();
+      this.checkoutAttemptIdempotencyKey = idempotencyKey;
 
       this.loading = true;
       this.error = null;
@@ -430,6 +443,7 @@ export const useCheckoutStore = defineStore("checkout", {
           paymentMethod: selected.method,
           paymentProviderCode: selected.providerCode,
           profileSnapshot: null,
+          idempotencyKey,
         });
         this.applyTransaction(snapshot);
         return orderResponseFromSnapshot(snapshot, selectedItem.priceCents);

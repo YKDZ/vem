@@ -461,6 +461,7 @@ impl BackendClient {
         payment_method: &str,
         payment_provider_code: Option<&str>,
         profile_snapshot: Option<serde_json::Value>,
+        idempotency_key: &str,
     ) -> Result<serde_json::Value, String> {
         let body = serde_json::json!({
             "machineCode": machine_code,
@@ -468,6 +469,7 @@ impl BackendClient {
             "paymentMethod": payment_method,
             "paymentProviderCode": payment_provider_code,
             "profileSnapshot": profile_snapshot,
+            "idempotencyKey": idempotency_key,
         });
         self.request_json_with_timeout(
             reqwest::Method::POST,
