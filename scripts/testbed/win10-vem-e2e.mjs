@@ -7662,6 +7662,9 @@ function buildSshOptionArgs(options = {}, { portFlag = "-p" } = {}) {
       `UserKnownHostsFile=${options.sshKnownHostsPath}`,
     );
   }
+  if (options.sshHostKeyAlias) {
+    sshArgs.push("-o", `HostKeyAlias=${options.sshHostKeyAlias}`);
+  }
   if (options.proxyCommand) {
     sshArgs.push("-o", `ProxyCommand=${options.proxyCommand}`);
   } else if (options.sshConfig !== true) {
@@ -7974,6 +7977,12 @@ function parseArgs(argv) {
         throw new Error("--ssh-port must be a valid TCP port");
       options.sshPort = port;
       index += 1;
+    } else if (arg === "--ssh-known-hosts-path") {
+      if (typeof next !== "string" || !next.startsWith("/")) {
+        throw new Error("--ssh-known-hosts-path must be an absolute path");
+      }
+      options.sshKnownHostsPath = next;
+      index += 1;
     } else if (arg === "--identity") {
       options.identity = next;
       index += 1;
@@ -8210,6 +8219,7 @@ function applyFactoryGuestEndpoint(options) {
     ...options,
     remote: `${options.expectedTestbedUser}@${endpoint.host}`,
     sshPort: endpoint.port,
+    sshHostKeyAlias: `vem-factory-${normalizeEphemeralRunId(options.runId).toLowerCase()}`,
     expectedMaintenanceIngressHost:
       options.expectedMaintenanceIngressHost ?? endpoint.host,
   };
@@ -8236,11 +8246,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       options.factoryMediaAdmission =
         await admitFactoryMediaBeforeAcceptance(options);
       if (options.mode === "factory-preclaim-verify") {
-        const localTempDirectory = mkdtempSync(
-          join(tmpdir(), "vem-factory-preclaim-"),
-        );
+        const ownsSshTrust = !options.sshKnownHostsPath;
+        const localTempDirectory = ownsSshTrust
+          ? mkdtempSync(join(tmpdir(), "vem-factory-preclaim-"))
+          : null;
         try {
-          options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
+          if (ownsSshTrust) {
+            options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
+          }
           const sshCommand = buildSshCommand(options);
           const remoteCommand = buildEncodedPowerShellCommand(
             buildRemotePowerShellScript(options),
@@ -8265,7 +8278,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             process.exitCode = 1;
           }
         } finally {
-          rmSync(localTempDirectory, { recursive: true, force: true });
+          if (ownsSshTrust) {
+            rmSync(localTempDirectory, { recursive: true, force: true });
+          }
         }
         return;
       }
@@ -8388,8 +8403,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         mkdirSync(localTempDirectory, { recursive: true, mode: 0o700 });
       }
       if (
-        options.mode === "clean-base-factory-acceptance" ||
-        options.factoryGuestEndpointJson
+        !options.sshKnownHostsPath &&
+        (options.mode === "clean-base-factory-acceptance" ||
+          options.factoryGuestEndpointJson)
       ) {
         options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
       }
