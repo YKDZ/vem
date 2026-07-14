@@ -392,11 +392,25 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       );
       assert.equal(report.reports.postCleanup.preclaimEvidence.unchanged, true);
       assert.equal(
+        report.reports.postCleanup.finalCleanup.cleanup.overlayDisposition,
+        "removed",
+      );
+      assert.equal(
+        report.reports.postCleanup.finalCleanup.observed.baseIdentity,
+        `factory-cas://sha256/${"f".repeat(64)}`,
+      );
+      assert.equal(
         readFileSync(adapterLog, "utf8")
           .trim()
           .split("\n")
           .filter((operation) => operation === "capture-approved-base").length,
         2,
+      );
+      const operations = readFileSync(adapterLog, "utf8").trim().split("\n");
+      assert.equal(operations.at(-1), "cleanup");
+      assert.ok(
+        operations.lastIndexOf("cleanup") >
+          operations.lastIndexOf("capture-approved-base"),
       );
     } finally {
       for (const [key, value] of Object.entries(environment)) {

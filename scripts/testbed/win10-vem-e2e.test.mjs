@@ -2074,6 +2074,15 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /bringUpState = if \(\$null -ne \$bringUp/);
     assert.match(
       script,
+      /hardwareOnline = \[bool\]\$daemonIpc\.healthz\.hardwareOnline/,
+    );
+    assert.match(
+      script,
+      /scannerOnline = \[bool\]\$daemonIpc\.healthz\.scannerOnline/,
+    );
+    assert.match(script, /daemonHealth = \$facts\.daemonHealth/);
+    assert.match(
+      script,
       /\$Facts\.runtimeState\.bringUpState -ne "simulated_hardware_ready"/,
     );
     assert.match(

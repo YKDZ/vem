@@ -2568,6 +2568,17 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("requires swapped and missing serial mappings to block a new sale before business IDs exist", () => {
+    const source = readFileSync(SERIAL_CONFORMANCE, "utf8");
+    assert.match(source, /prepare-sale-with-faulted-mapping/);
+    assert.match(source, /flow\?\.runtimeState\?\.bringUpState/);
+    assert.match(source, /flow\?\.daemonHealth\?\.hardwareOnline !== false/);
+    assert.match(source, /flow\?\.daemonHealth\?\.scannerOnline !== false/);
+    assert.match(source, /typeof sale\?\.orderId === "string"/);
+    assert.match(source, /typeof sale\?\.paymentId === "string"/);
+    assert.match(source, /typeof sale\?\.vendingCommandId === "string"/);
+  });
+
   it("stops the serial session from finally when evidence collection fails", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-finally-"));
     const scannerCodePath = join(root, "protected-scanner-code.txt");
@@ -2639,11 +2650,6 @@ describe("VM Host Adapter contract", () => {
           VEM_VM_HOST_FACTORY_ISO_ID: `factory-cas://sha256/${"d".repeat(64)}`,
           VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID: `factory-cas://sha256/${"e".repeat(64)}`,
           VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence-export"),
-          VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER: "VEMKiosk",
-          VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID: "3",
-          VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE:
-            "http://tauri.localhost/#/",
-          VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID: "cdp-target-runtime-001",
           VEM_VM_HOST_CLEAN_INSTALL_STATUS: "blocked-issue15",
           VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
         },

@@ -889,6 +889,10 @@ export async function runAdmittedFactoryImageAcceptanceLifecycle(
             unchanged: true,
           },
         };
+        reports.postCleanup.finalCleanup = await runAdapter(input, "cleanup", [
+          capturedBase,
+        ]);
+        assertCleanup(reports.postCleanup.finalCleanup);
       }
       mkdirSync(dirname(input.evidence.lifecycleReport), {
         recursive: true,

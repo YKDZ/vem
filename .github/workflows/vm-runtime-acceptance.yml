@@ -56,10 +56,6 @@ jobs:
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
       VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
-      VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER }}
-      VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID }}
-      VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE }}
-      VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID }}
     steps:
       - name: Checkout Trusted Commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -180,10 +176,6 @@ jobs:
           test -n "${VEM_VM_HOST_APPROVED_BASE_ID:-}"
           test -n "${VEM_VM_HOST_FACTORY_ISO_ID:-}"
           test -n "${VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID:-}"
-          test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER:-}"
-          test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID:-}"
-          test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE:-}"
-          test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID:-}"
           node scripts/testbed/vm-host-adapter-conformance.mjs \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-conformance.json"
 
@@ -631,11 +623,14 @@ jobs:
             !Number.isInteger(kiosk.sessionId) ||
             kiosk.sessionId < 1 ||
             typeof kiosk.url !== "string" ||
-            kiosk.url !== "http://tauri.localhost/#/"
+            kiosk.url !== "http://tauri.localhost/#/" ||
+            typeof kiosk.cdpTargetId !== "string" ||
+            !/^[A-Za-z0-9._:-]{8,256}$/.test(kiosk.cdpTargetId)
           ) throw new Error("runtime acceptance did not observe an active VEMKiosk session");
           process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_USER=${kiosk.sessionUser}\n`);
           process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_ID=${kiosk.sessionId}\n`);
           process.stdout.write(`VEM_ACTIVE_KIOSK_TAURI_ROUTE=${kiosk.url}\n`);
+          process.stdout.write(`VEM_ACTIVE_KIOSK_CDP_TARGET_ID=${kiosk.cdpTargetId}\n`);
           NODE
 
       - name: Capture Windows Display Evidence Through Host Adapter
@@ -650,6 +645,7 @@ jobs:
             --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
             --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
             --tauri-route "$VEM_ACTIVE_KIOSK_TAURI_ROUTE" \
+            --cdp-target-id "$VEM_ACTIVE_KIOSK_CDP_TARGET_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-display-capture-report.json"
 
       - name: Capture Windows Default Audio Evidence Through Host Adapter

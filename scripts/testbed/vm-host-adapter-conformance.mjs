@@ -28,8 +28,6 @@ const CAPABILITIES = {
     "cancellation",
     "cleanup",
   ],
-  "capture-display": ["display-capture", "cancellation", "cleanup"],
-  "capture-default-audio": ["default-audio-capture", "cancellation", "cleanup"],
   cleanup: ["cleanup", "cancellation"],
 };
 
@@ -68,37 +66,7 @@ function runId() {
   return `CONFORMANCE-${value}`.slice(0, 63);
 }
 
-function activeKioskSessionFromEnvironment() {
-  const sessionUser = String(
-    process.env.VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER ?? "",
-  ).trim();
-  const sessionId = Number(
-    process.env.VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID,
-  );
-  const tauriRoute = String(
-    process.env.VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE ?? "",
-  ).trim();
-  const cdpTargetId = String(
-    process.env.VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID ?? "",
-  ).trim();
-  if (
-    sessionUser !== "VEMKiosk" ||
-    !Number.isInteger(sessionId) ||
-    sessionId < 1
-  )
-    throw new Error(
-      "adapter conformance requires an observed VEMKiosk session binding",
-    );
-  if (!/^http:\/\/tauri\.localhost\/#\//.test(tauriRoute))
-    throw new Error(
-      "adapter conformance requires an observed Tauri kiosk hash route",
-    );
-  if (!/^[A-Za-z0-9._:-]{8,256}$/.test(cdpTargetId))
-    throw new Error("adapter conformance requires an observed CDP target id");
-  return { sessionUser, sessionId, tauriRoute, cdpTargetId };
-}
-
-function requestFor({ operation, run, targetIdentity, assets, kiosk }) {
+function requestFor({ operation, run, targetIdentity, assets }) {
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   const lifecycleSeed = createHash("sha256")
     .update(`${run}\n${targetIdentity}`)
@@ -116,48 +84,8 @@ function requestFor({ operation, run, targetIdentity, assets, kiosk }) {
     cancelOperationReference: null,
     target: { identity: targetIdentity },
     factoryMedia: null,
-    displayCapture:
-      operation === "capture-display"
-        ? {
-            activeKioskSession: {
-              sessionUser: kiosk.sessionUser,
-              sessionId: kiosk.sessionId,
-            },
-            tauriRoute: kiosk.tauriRoute,
-            cdpTargetId: kiosk.cdpTargetId,
-            visualChallenge: {
-              token: randomBytes(32).toString("hex"),
-              colorRgb: [randomBytes(1)[0] || 1, randomBytes(1)[0] || 1, 255],
-              region: {
-                x: randomBytes(1)[0] % 1033,
-                y: randomBytes(1)[0] % 1897,
-                width: 48,
-                height: 24,
-              },
-            },
-          }
-        : null,
-    audioCapture:
-      operation === "capture-default-audio"
-        ? {
-            schemaVersion: "vm-default-audio-capture-request/v1",
-            activeKioskSession: {
-              sessionUser: kiosk.sessionUser,
-              sessionId: kiosk.sessionId,
-            },
-            nativeCue: {
-              source: "tauri_native_audio",
-              command: "play_machine_audio",
-              challenge: randomBytes(32).toString("hex"),
-            },
-            threshold: {
-              minimumPeakAbsoluteSample: 512,
-              minimumNonSilentFrames: 24_000,
-              minimumDurationMs: 500,
-              minimumDistinctNonSilentSampleMagnitudes: 2,
-            },
-          }
-        : null,
+    displayCapture: null,
+    audioCapture: null,
     assets,
     requestedCapabilities: CAPABILITIES[operation],
     serialSession: null,
@@ -179,37 +107,6 @@ function assertActiveRuntimeEvidence(report) {
     throw new Error(
       "adapter did not preserve the active overlay for evidence capture",
     );
-}
-
-function assertCaptureEvidence(report, role) {
-  if (report.evidence.length !== 1 || report.evidence[0].role !== role)
-    throw new Error(`adapter did not produce ${role} evidence`);
-}
-
-function assertDefaultAudioEvidence(report) {
-  assertCaptureEvidence(report, "default-audio-capture");
-  const audio = report.defaultAudioCapture;
-  if (
-    audio?.runId !== report.request.runId ||
-    audio.lifecycleReference !== report.request.lifecycleReference ||
-    audio.captureOperationReference !== report.request.operationReference ||
-    audio?.endpoint?.status !== "selected" ||
-    audio.endpoint.identity !== report.guest.defaultAudioIdentity ||
-    audio.nativeCue?.status !== "emitted" ||
-    audio.nativeCue.source !== "tauri_native_audio" ||
-    audio.nativeCue.command !== "play_machine_audio" ||
-    audio.nativeCue.challenge !==
-      report.request.audioCapture.nativeCue.challenge ||
-    audio.capture?.artifact !== report.evidence[0].identity ||
-    audio.capture.nonSilentFrameCount <
-      audio.capture.threshold.minimumNonSilentFrames ||
-    audio.capture.peakAbsoluteSample <
-      audio.capture.threshold.minimumPeakAbsoluteSample ||
-    audio.capture.durationMs < audio.capture.threshold.minimumDurationMs ||
-    audio.capture.distinctNonSilentSampleMagnitudes <
-      audio.capture.threshold.minimumDistinctNonSilentSampleMagnitudes
-  )
-    throw new Error("adapter did not produce semantic default-audio evidence");
 }
 
 function assertRemoved(report) {
@@ -248,7 +145,6 @@ async function main() {
     process.env.VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID ?? "",
   ).trim();
   const status = cleanInstallStatus();
-  const kiosk = activeKioskSessionFromEnvironment();
   const run = runId();
   const baseAssets = [asset("approved-runtime-base", approvedBaseIdentity)];
   const installAssets = [
@@ -265,10 +161,7 @@ async function main() {
     schema: null,
     cleanInstall: null,
     restore: null,
-    display: null,
-    audio: null,
     cancellation: null,
-    failure: null,
     cleanup: null,
     cleanupFinalizer: null,
   };
@@ -280,7 +173,6 @@ async function main() {
           run,
           targetIdentity,
           assets: installAssets,
-          kiosk,
         }),
         workDirectory,
       });
@@ -292,29 +184,12 @@ async function main() {
           run,
           targetIdentity,
           assets: baseAssets,
-          kiosk,
         }),
         workDirectory,
       });
       assertRemoved(cleanCleanup);
     } else {
       evidence.cleanInstall = { status: "blocked-issue15" };
-    }
-
-    try {
-      await runVmHostAdapter({
-        request: requestFor({
-          operation: "capture-display",
-          run,
-          targetIdentity,
-          assets: baseAssets,
-          kiosk,
-        }),
-        workDirectory,
-      });
-      throw new Error("adapter accepted capture without a restored overlay");
-    } catch (error) {
-      evidence.failure = sanitizedFailure(error);
     }
 
     const controller = new AbortController();
@@ -327,7 +202,6 @@ async function main() {
       run,
       targetIdentity,
       assets: baseAssets,
-      kiosk,
     });
     try {
       const cancellationRun = runVmHostAdapter({
@@ -363,7 +237,6 @@ async function main() {
         run,
         targetIdentity,
         assets: baseAssets,
-        kiosk,
       }),
       workDirectory,
     });
@@ -371,39 +244,12 @@ async function main() {
     evidence.schema = restore.schemaVersion;
     evidence.restore = restore;
 
-    const display = await runVmHostAdapter({
-      request: requestFor({
-        operation: "capture-display",
-        run,
-        targetIdentity,
-        assets: baseAssets,
-        kiosk,
-      }),
-      workDirectory,
-    });
-    assertCaptureEvidence(display, "display-capture");
-    evidence.display = display;
-
-    const audio = await runVmHostAdapter({
-      request: requestFor({
-        operation: "capture-default-audio",
-        run,
-        targetIdentity,
-        assets: baseAssets,
-        kiosk,
-      }),
-      workDirectory,
-    });
-    assertDefaultAudioEvidence(audio);
-    evidence.audio = audio;
-
     const cleanup = await runVmHostAdapter({
       request: requestFor({
         operation: "cleanup",
         run,
         targetIdentity,
         assets: baseAssets,
-        kiosk,
       }),
       workDirectory,
     });
@@ -421,7 +267,6 @@ async function main() {
           run,
           targetIdentity,
           assets: baseAssets,
-          kiosk,
         }),
         workDirectory,
       });

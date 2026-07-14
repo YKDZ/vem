@@ -457,17 +457,109 @@ function runFailedDispenseCommand(commandJson) {
   };
 }
 
+function runBlockedSaleCommand(commandJson, failureMode) {
+  const command = JSON.parse(commandJson);
+  if (!Array.isArray(command) || command.length < 2)
+    throw new Error(`${failureMode} blocked-sale command must be a JSON array`);
+  const result = spawnSync(command[0], command.slice(1), {
+    cwd: process.cwd(),
+    env: process.env,
+    encoding: "utf8",
+  });
+  let output;
+  try {
+    output = JSON.parse(result.stdout || "null");
+  } catch {
+    throw new Error(
+      `${failureMode} blocked-sale command returned invalid JSON`,
+    );
+  }
+  const flow = output?.simulatedHardwareSaleFlow;
+  const sale = flow?.sale;
+  const diagnosticCodes = Array.isArray(flow?.diagnostics)
+    ? flow.diagnostics
+        .map((diagnostic) => diagnostic?.code)
+        .filter((code) => typeof code === "string")
+    : [];
+  if (
+    !Number.isInteger(result.status) ||
+    result.status <= 0 ||
+    output?.ok === true ||
+    flow?.phase !== "prepare" ||
+    flow?.result?.simulatedHardwareReady?.status !== "failed" ||
+    typeof flow?.runtimeState?.bringUpState !== "string" ||
+    flow?.runtimeState?.bringUpState === "simulated_hardware_ready" ||
+    (flow?.daemonHealth?.hardwareOnline !== false &&
+      flow?.daemonHealth?.scannerOnline !== false) ||
+    typeof sale?.orderId === "string" ||
+    typeof sale?.paymentId === "string" ||
+    typeof sale?.vendingCommandId === "string" ||
+    !diagnosticCodes.includes("simulated_sale_flow_error")
+  )
+    throw new Error(
+      `${failureMode} did not fail closed before creating a sale binding`,
+    );
+  return {
+    commandExitStatus: result.status,
+    simulatedHardwareReady: "failed",
+    bringUpState: flow.runtimeState.bringUpState,
+    hardwareOnline: flow.daemonHealth.hardwareOnline,
+    scannerOnline: flow.daemonHealth.scannerOnline,
+    saleBindingCreated: false,
+    diagnosticCodes,
+  };
+}
+
 async function runProductionFailureMatrix(options) {
   const cases = await runFailureMatrix({
     ...options,
     saleBinding: options.successfulSaleBinding,
-    failureModes: [
-      "malformed-frame",
-      "device-disconnected",
-      "swapped-roles",
-      "missing-device",
-    ],
+    failureModes: ["malformed-frame", "device-disconnected"],
   });
+
+  for (const [failureMode, expectedCode] of [
+    ["swapped-roles", "serial_swapped_roles"],
+    ["missing-device", "serial_missing_device"],
+  ]) {
+    let mappingSession;
+    try {
+      const faultEnvironment = {
+        ...options.environment,
+        VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
+      };
+      const start = await runVmHostAdapter({
+        request: requestFor({
+          operation: "start-serial-session",
+          ...options,
+          saleBinding: null,
+        }),
+        workDirectory: options.workDirectory,
+        environment: faultEnvironment,
+      });
+      mappingSession = start.serialSession;
+      const diagnosticCode = assertObservedDeviceFault(
+        start,
+        failureMode,
+        expectedCode,
+        null,
+      );
+      const failClosed = runBlockedSaleCommand(
+        options.salePrepareCommandJson,
+        failureMode,
+      );
+      cases.push({
+        failureMode,
+        operation: "prepare-sale-with-faulted-mapping",
+        result: "observed_failure",
+        adapterResult: start.result,
+        diagnosticCode,
+        daemonFailClosed: failClosed,
+      });
+    } finally {
+      if (mappingSession)
+        await stopFailureSession(options, mappingSession, null);
+    }
+  }
 
   let pendingSale;
   let scannerSession;
@@ -617,7 +709,7 @@ function assertObservedDeviceFault(
     throw new Error(`${failureMode} unexpectedly cleaned the active overlay`);
   if (
     JSON.stringify(report.request.serialSession.saleBindings) !==
-    JSON.stringify([saleBinding])
+    JSON.stringify(saleBinding ? [saleBinding] : [])
   )
     throw new Error(`${failureMode} did not bind the observed device fault`);
   return actualCode;

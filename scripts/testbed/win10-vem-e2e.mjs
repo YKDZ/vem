@@ -6637,6 +6637,10 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       bringUpState = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.state)) { [string]$bringUp.state } else { "unknown" }
       uiDiagnosticsExplicit = $null -ne $bringUp -and [string]$bringUp.hardwareMode -eq "simulated"
     }
+    daemonHealth = [ordered]@{
+      hardwareOnline = [bool]$daemonIpc.healthz.hardwareOnline
+      scannerOnline = [bool]$daemonIpc.healthz.scannerOnline
+    }
     provisioning = [ordered]@{
       provisioned = [bool]$provisioningFacts.provisioned
       usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
@@ -6720,6 +6724,9 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       schemaVersion = "simulated-hardware-sale-flow/v1"
       phase = "prepare"
       sale = $facts.sale
+      runtimeState = $facts.runtimeState
+      daemonHealth = $facts.daemonHealth
+      topology = $facts.topology
       result = [ordered]@{
         simulatedHardwareReady = New-RuntimeAcceptanceAssertion "awaiting_scanner" $false
         sellReady = [ordered]@{ status = "not_asserted"; asserted = $false }

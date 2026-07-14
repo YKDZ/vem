@@ -207,11 +207,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(conformance, /VEM_VM_HOST_FACTORY_ISO_ID/);
     assert.match(conformance, /VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID/);
-    assert.match(workflow, /VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID/);
-    assert.match(
-      conformance,
-      /test -n "\$\{VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID:-\}"/,
-    );
+    assert.doesNotMatch(workflow, /VEM_VM_HOST_CONFORMANCE_KIOSK_/);
     assert.doesNotMatch(conformance, /VEM_VM_HOST_ADAPTER_CONFORMANCE/);
   });
 
@@ -328,7 +324,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       /runtimeAcceptanceReport\s*\?\?\s*value/,
     );
     assert.match(bindAudioSession, /kiosk\?\.sessionUser !== "VEMKiosk"/);
+    assert.match(bindAudioSession, /typeof kiosk\.cdpTargetId !== "string"/);
+    assert.match(bindAudioSession, /A-Za-z0-9\._:-.*8,256/);
+    assert.match(bindAudioSession, /VEM_ACTIVE_KIOSK_CDP_TARGET_ID/);
     assert.match(bindAudioSession, /VEM_ACTIVE_KIOSK_SESSION_ID/);
+    assert.match(
+      display,
+      /--cdp-target-id\s+"\$VEM_ACTIVE_KIOSK_CDP_TARGET_ID"/,
+    );
     assert.match(audio, /--active-kiosk-session-user/);
     assert.match(audio, /--active-kiosk-session-id/);
     assert.match(verifyAudio, /windows-native-audio-evidence\.mjs/);
