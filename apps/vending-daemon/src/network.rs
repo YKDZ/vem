@@ -1485,7 +1485,39 @@ fn deterministic_wlan_profile_name(ssid: &str) -> String {
 }
 
 #[cfg(any(windows, test))]
-fn wlan_profile_xml(profile_name: &str, ssid: &str, password: &str, hidden: bool) -> String {
+const VEM_WLAN_CANDIDATE_PREFIX: &str = "VEM-WIFI-CANDIDATE-";
+
+/// Candidate profiles are intentionally nonce-qualified. They are only ever
+/// used to prove a new credential set before the durable per-SSID profile is
+/// touched, so a crashed provisioning attempt cannot replace the old auto
+/// connect profile with an unverified password.
+#[cfg(any(windows, test))]
+fn candidate_wlan_profile_name(ssid: &str, nonce: &str) -> String {
+    let stable = deterministic_wlan_profile_name(ssid);
+    let suffix = stable.trim_start_matches("VEM-WIFI-");
+    format!("{VEM_WLAN_CANDIDATE_PREFIX}{suffix}-{nonce}")
+}
+
+#[cfg(any(windows, test))]
+fn is_vem_candidate_profile_name(profile_name: &str) -> bool {
+    profile_name.starts_with(VEM_WLAN_CANDIDATE_PREFIX)
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WlanProfileConnectionMode {
+    Manual,
+    Auto,
+}
+
+#[cfg(any(windows, test))]
+fn wlan_profile_xml(
+    profile_name: &str,
+    ssid: &str,
+    password: &str,
+    hidden: bool,
+    connection_mode: WlanProfileConnectionMode,
+) -> String {
     format!(
         r#"<?xml version="1.0"?>
 <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
@@ -1497,7 +1529,7 @@ fn wlan_profile_xml(profile_name: &str, ssid: &str, password: &str, hidden: bool
     <nonBroadcast>{}</nonBroadcast>
   </SSIDConfig>
   <connectionType>ESS</connectionType>
-  <connectionMode>auto</connectionMode>
+  <connectionMode>{}</connectionMode>
   <MSM>
     <security>
       <authEncryption>
@@ -1516,8 +1548,190 @@ fn wlan_profile_xml(profile_name: &str, ssid: &str, password: &str, hidden: bool
         xml_escape(profile_name),
         xml_escape(ssid),
         if hidden { "true" } else { "false" },
+        match connection_mode {
+            WlanProfileConnectionMode::Manual => "manual",
+            WlanProfileConnectionMode::Auto => "auto",
+        },
         xml_escape(password)
     )
+}
+
+/// The journal is deliberately tiny: it is the guard that makes the native
+/// call order auditable. In particular, `StableWritten` cannot be reached
+/// without local candidate association, address and default-route evidence.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum WlanProfileTransactionPhase {
+    Initial,
+    CandidateStaged,
+    CandidateVerified,
+    StableWritten,
+    StableVerified,
+    CandidateDeleted,
+}
+
+#[cfg(any(windows, test))]
+impl WlanProfileTransactionPhase {
+    #[cfg(test)]
+    fn crash_safety_snapshot(self) -> WlanProfileCrashSafetySnapshot {
+        WlanProfileCrashSafetySnapshot {
+            // A candidate is either absent or has <connectionMode>manual>.
+            candidate_autoconnect: false,
+            candidate_may_remain: (Self::CandidateStaged..Self::CandidateDeleted).contains(&self),
+            stable_profile_may_have_been_replaced: self >= Self::StableWritten,
+        }
+    }
+}
+
+#[cfg(test)]
+struct WlanProfileCrashSafetySnapshot {
+    candidate_autoconnect: bool,
+    candidate_may_remain: bool,
+    stable_profile_may_have_been_replaced: bool,
+}
+
+#[cfg(any(windows, test))]
+struct CrashSafeWlanProfileTransaction {
+    phase: WlanProfileTransactionPhase,
+}
+
+#[cfg(any(windows, test))]
+impl CrashSafeWlanProfileTransaction {
+    fn new() -> Self {
+        Self {
+            phase: WlanProfileTransactionPhase::Initial,
+        }
+    }
+
+    fn candidate_staged(&mut self) {
+        debug_assert_eq!(self.phase, WlanProfileTransactionPhase::Initial);
+        self.phase = WlanProfileTransactionPhase::CandidateStaged;
+    }
+
+    fn candidate_verified(&mut self) {
+        debug_assert_eq!(self.phase, WlanProfileTransactionPhase::CandidateStaged);
+        self.phase = WlanProfileTransactionPhase::CandidateVerified;
+    }
+
+    fn stable_profile_write_is_allowed(&self) -> bool {
+        self.phase >= WlanProfileTransactionPhase::CandidateVerified
+    }
+
+    fn stable_written(&mut self) -> Result<(), String> {
+        if !self.stable_profile_write_is_allowed() {
+            return Err(
+                "WLAN stable profile write was attempted before candidate readiness".to_string(),
+            );
+        }
+        self.phase = WlanProfileTransactionPhase::StableWritten;
+        Ok(())
+    }
+
+    fn stable_verified(&mut self) {
+        debug_assert_eq!(self.phase, WlanProfileTransactionPhase::StableWritten);
+        self.phase = WlanProfileTransactionPhase::StableVerified;
+    }
+
+    fn candidate_deleted(&mut self) {
+        debug_assert_eq!(self.phase, WlanProfileTransactionPhase::StableVerified);
+        self.phase = WlanProfileTransactionPhase::CandidateDeleted;
+    }
+}
+
+/// A native WLAN callback must never outlive its context. Windows documents
+/// synchronous teardown only for a successful unregister/handle close. When
+/// both calls fail we retain one context for process lifetime and trip this
+/// fuse, preventing any later WLAN mutation from registering another callback
+/// until the daemon restarts.
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct WlanCallbackMutationRegistry {
+    state: std::sync::Mutex<WlanCallbackMutationRegistryState>,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct WlanCallbackMutationRegistryState {
+    mutation_active: bool,
+    fused: bool,
+    retained_context_count: u8,
+}
+
+#[cfg(any(windows, test))]
+struct WlanCallbackMutationPermit<'a> {
+    registry: &'a WlanCallbackMutationRegistry,
+}
+
+#[cfg(any(windows, test))]
+impl WlanCallbackMutationRegistry {
+    fn acquire(&self) -> Result<WlanCallbackMutationPermit<'_>, String> {
+        let mut state = self.state.lock().expect("WLAN callback fuse lock poisoned");
+        if state.fused {
+            return Err("WLAN mutations are disabled until the daemon restarts because a prior callback could not be safely released".to_string());
+        }
+        if state.mutation_active {
+            return Err("Another WLAN mutation is already in progress".to_string());
+        }
+        state.mutation_active = true;
+        Ok(WlanCallbackMutationPermit { registry: self })
+    }
+
+    /// Returns false only if an impossible second unsafe-retention attempt
+    /// reaches this registry. The mutation permit prevents that state: no
+    /// second notification registration can begin while the first mutation is
+    /// active, and a fused registry rejects every later mutation.
+    fn retain_context_for_safety(&self) -> bool {
+        let mut state = self.state.lock().expect("WLAN callback fuse lock poisoned");
+        if !state.mutation_active || state.fused {
+            return false;
+        }
+        state.fused = true;
+        state.retained_context_count = state.retained_context_count.saturating_add(1);
+        debug_assert_eq!(state.retained_context_count, 1);
+        true
+    }
+
+    #[cfg(test)]
+    fn retained_context_count(&self) -> u8 {
+        self.state
+            .lock()
+            .expect("WLAN callback fuse lock poisoned")
+            .retained_context_count
+    }
+
+    fn is_fused(&self) -> bool {
+        self.state
+            .lock()
+            .expect("WLAN callback fuse lock poisoned")
+            .fused
+    }
+}
+
+#[cfg(test)]
+impl WlanCallbackMutationPermit<'_> {
+    fn retain_context_for_safety(&mut self) {
+        assert!(
+            self.registry.retain_context_for_safety(),
+            "a WLAN callback context may only be retained once per process"
+        );
+    }
+}
+
+#[cfg(windows)]
+fn wlan_callback_mutation_registry() -> &'static WlanCallbackMutationRegistry {
+    static REGISTRY: std::sync::OnceLock<WlanCallbackMutationRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(WlanCallbackMutationRegistry::default)
+}
+
+#[cfg(any(windows, test))]
+impl Drop for WlanCallbackMutationPermit<'_> {
+    fn drop(&mut self) {
+        self.registry
+            .state
+            .lock()
+            .expect("WLAN callback fuse lock poisoned")
+            .mutation_active = false;
+    }
 }
 
 #[cfg(any(windows, test))]
@@ -1558,6 +1772,13 @@ enum NativeWlanEvent {
 struct NativeWlanNotificationContext {
     sender: std::sync::mpsc::Sender<NativeWlanEvent>,
     interface_guid: windows_sys::core::GUID,
+    profile_name: String,
+    ssid: String,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone)]
+struct PreviousWlanConnection {
     profile_name: String,
     ssid: String,
 }
@@ -1699,6 +1920,20 @@ impl<'a> NativeWlanNotificationRegistration<'a> {
     }
 
     fn leak_context(&mut self) {
+        // `release_with` reports an unregister error even if its synchronous
+        // CloseHandle fallback succeeded. In that case it has already freed
+        // the context, so only a true unregister+close double failure trips
+        // the process fuse.
+        if self.context.context.is_none() {
+            return;
+        }
+        // This call can occur only while the process-wide mutation permit is
+        // held. It therefore becomes the sole retained context and fuses all
+        // future WLAN mutations before another callback context is created.
+        assert!(
+            wlan_callback_mutation_registry().retain_context_for_safety(),
+            "a WLAN callback context may only be retained once per process"
+        );
         self.context.leak();
     }
 }
@@ -1715,16 +1950,16 @@ impl Drop for NativeWlanNotificationRegistration<'_> {
 }
 
 #[cfg(windows)]
-struct ManagedWlanProfileTransaction {
+struct StableWlanProfileTransaction {
     interface_guid: windows_sys::core::GUID,
     profile_name: Vec<u16>,
     previous: Option<PreservedWlanProfile>,
-    candidate_applied: bool,
+    stable_applied: bool,
     committed: bool,
 }
 
 #[cfg(windows)]
-impl ManagedWlanProfileTransaction {
+impl StableWlanProfileTransaction {
     unsafe fn begin(
         handle: windows_sys::Win32::Foundation::HANDLE,
         interface_guid: windows_sys::core::GUID,
@@ -1735,51 +1970,35 @@ impl ManagedWlanProfileTransaction {
             interface_guid,
             profile_name,
             previous,
-            candidate_applied: false,
+            stable_applied: false,
             committed: false,
         })
     }
 
-    unsafe fn stage_candidate(
+    unsafe fn stage_stable_profile(
         &mut self,
         handle: windows_sys::Win32::Foundation::HANDLE,
         profile_xml: &[u16],
     ) -> Result<(), String> {
-        use std::ptr;
-        use windows_sys::Win32::NetworkManagement::WiFi::{
-            WlanSetProfile, WLAN_REASON_CODE_SUCCESS,
-        };
-
-        const ERROR_SUCCESS: u32 = 0;
-        let all_user_security = wide_null("D:(A;;GA;;;SY)(A;;GA;;;BA)");
-        let mut profile_reason = WLAN_REASON_CODE_SUCCESS;
-        let set = WlanSetProfile(
-            handle,
-            &self.interface_guid,
-            0,
-            profile_xml.as_ptr(),
-            all_user_security.as_ptr(),
-            1,
-            ptr::null(),
-            &mut profile_reason,
-        );
-        if set != ERROR_SUCCESS {
-            return Err(format!(
-                "Windows rejected the candidate all-user WLAN profile (error {set}, reason code {profile_reason})"
-            ));
-        }
-        self.candidate_applied = true;
+        set_all_user_wlan_profile(handle, &self.interface_guid, profile_xml, "stable")?;
+        self.stable_applied = true;
         Ok(())
     }
 
     fn commit(&mut self) {
         self.committed = true;
-        self.candidate_applied = false;
+        self.stable_applied = false;
     }
 
     unsafe fn rollback(&mut self, client: &mut WlanClientHandle) -> Result<(), String> {
-        if !self.candidate_applied || self.committed {
+        if !self.stable_applied || self.committed {
             return Ok(());
+        }
+        if wlan_callback_mutation_registry().is_fused() {
+            return Err(
+                "WLAN stable profile rollback is deferred until daemon restart because a callback context could not be safely released"
+                    .to_string(),
+            );
         }
         if client.is_open() {
             return self.rollback_on_handle(client.raw());
@@ -1818,7 +2037,7 @@ impl ManagedWlanProfileTransaction {
                 );
                 if restore != ERROR_SUCCESS {
                     return Err(format!(
-                        "Windows could not restore the prior managed WLAN profile (error {restore}, reason code {profile_reason})"
+                        "Windows could not restore the prior stable WLAN profile (error {restore}, reason code {profile_reason})"
                     ));
                 }
                 let reorder = WlanSetProfilePosition(
@@ -1830,7 +2049,7 @@ impl ManagedWlanProfileTransaction {
                 );
                 if reorder != ERROR_SUCCESS {
                     return Err(format!(
-                        "Windows could not restore the prior managed WLAN profile order (error {reorder})"
+                        "Windows could not restore the prior stable WLAN profile order (error {reorder})"
                     ));
                 }
             }
@@ -1843,31 +2062,87 @@ impl ManagedWlanProfileTransaction {
                 );
                 if delete != ERROR_SUCCESS {
                     return Err(format!(
-                        "Windows could not remove the failed candidate WLAN profile (error {delete})"
+                        "Windows could not remove the failed stable WLAN profile (error {delete})"
                     ));
                 }
             }
         }
-        self.candidate_applied = false;
+        self.stable_applied = false;
         Ok(())
     }
 }
 
 #[cfg(windows)]
-impl Drop for ManagedWlanProfileTransaction {
+impl Drop for StableWlanProfileTransaction {
     fn drop(&mut self) {
-        if !self.candidate_applied || self.committed {
+        if !self.stable_applied || self.committed {
+            return;
+        }
+        if wlan_callback_mutation_registry().is_fused() {
             return;
         }
         unsafe {
-            // Covers every early-return path after candidate staging. An
-            // explicit rollback reports its first failure; Drop makes one
-            // final best-effort restoration without exposing prior XML.
+            // Covers every early-return path after the stable profile was
+            // changed. The candidate has already proved local readiness by
+            // this point; rollback nevertheless preserves the exact old
+            // stable XML/order when final verification fails.
             if let Ok(client) = WlanClientHandle::open() {
                 let _ = self.rollback_on_handle(client.raw());
             }
         }
     }
+}
+
+#[cfg(windows)]
+unsafe fn set_all_user_wlan_profile(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    interface_guid: &windows_sys::core::GUID,
+    profile_xml: &[u16],
+    profile_role: &str,
+) -> Result<(), String> {
+    use std::ptr;
+    use windows_sys::Win32::NetworkManagement::WiFi::{WlanSetProfile, WLAN_REASON_CODE_SUCCESS};
+
+    const ERROR_SUCCESS: u32 = 0;
+    let all_user_security = wide_null("D:(A;;GA;;;SY)(A;;GA;;;BA)");
+    let mut profile_reason = WLAN_REASON_CODE_SUCCESS;
+    let set = WlanSetProfile(
+        handle,
+        interface_guid,
+        0,
+        profile_xml.as_ptr(),
+        all_user_security.as_ptr(),
+        1,
+        ptr::null(),
+        &mut profile_reason,
+    );
+    if set != ERROR_SUCCESS {
+        return Err(format!(
+            "Windows rejected the {profile_role} all-user WLAN profile (error {set}, reason code {profile_reason})"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe fn delete_wlan_profile(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    interface_guid: &windows_sys::core::GUID,
+    profile_name: &str,
+    profile_role: &str,
+) -> Result<(), String> {
+    use std::ptr;
+    use windows_sys::Win32::NetworkManagement::WiFi::WlanDeleteProfile;
+
+    const ERROR_SUCCESS: u32 = 0;
+    let profile_name = wide_null(profile_name);
+    let delete = WlanDeleteProfile(handle, interface_guid, profile_name.as_ptr(), ptr::null());
+    if delete != ERROR_SUCCESS {
+        return Err(format!(
+            "Windows could not remove the {profile_role} WLAN profile (error {delete})"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(any(windows, test))]
@@ -1945,12 +2220,10 @@ impl<T> WlanNotificationContextLease<T> {
             return Ok(());
         }
         let unregister = api.unregister_notification();
-        if unregister != 0 {
-            if api.close_handle_synchronously().is_err() {
-                // Leave the context owned so the native RAII guard can leak
-                // it safely instead of freeing memory Windows may still use.
-                return Err(unregister);
-            }
+        if unregister != 0 && api.close_handle_synchronously().is_err() {
+            // Leave the context owned so the native RAII guard can leak it
+            // safely instead of freeing memory Windows may still use.
+            return Err(unregister);
         }
         // The successful unregister and the synchronous close fallback both
         // guarantee no callback can still dereference this context.
@@ -2194,51 +2467,319 @@ fn apply_windows_wlan_profile_native(
         return Err("Wi-Fi password is required".to_string());
     }
 
+    // Hold the process-wide permit for the whole mutation. It serializes
+    // native callback registration and turns a double teardown failure into a
+    // hard fuse before another context can be allocated.
+    let _mutation_permit = wlan_callback_mutation_registry().acquire()?;
+
     unsafe {
         let mut client = WlanClientHandle::open()?;
+        cleanup_stale_vem_candidate_profiles(client.raw())?;
         let interface = select_windows_wlan_interface(client.raw(), ssid, request.hidden)?;
-        let profile_name = deterministic_wlan_profile_name(ssid);
-        let profile_name_wide = wide_null(&profile_name);
-        let mut transaction = ManagedWlanProfileTransaction::begin(
-            client.raw(),
-            interface.InterfaceGuid,
-            profile_name_wide,
-        )?;
+        let previous_connection =
+            windows_wlan_current_connection(client.raw(), &interface.InterfaceGuid);
+        let candidate_name = candidate_wlan_profile_name(ssid, &uuid::Uuid::new_v4().to_string());
         let candidate_profile_xml = wide_null(&wlan_profile_xml(
-            &profile_name,
+            &candidate_name,
             ssid,
             &request.password,
             request.hidden,
+            WlanProfileConnectionMode::Manual,
         ));
-        // The candidate is durable only provisionally. If this attempt does
-        // not establish association, address and default route on this
-        // interface, rollback restores the exact old XML/order or removes a
-        // newly created profile before this process returns.
-        transaction.stage_candidate(client.raw(), &candidate_profile_xml)?;
+        let mut journal = CrashSafeWlanProfileTransaction::new();
+        // This is the only profile write before association, address and
+        // default-route evidence. It has a unique name and manual connection
+        // mode, so a process crash can leave at most an inert candidate while
+        // preserving the old deterministic auto-connect profile intact.
+        if let Err(error) = set_all_user_wlan_profile(
+            client.raw(),
+            &interface.InterfaceGuid,
+            &candidate_profile_xml,
+            "manual candidate",
+        ) {
+            let recovery = recover_after_candidate_failure(
+                &mut client,
+                &interface,
+                &candidate_name,
+                previous_connection.as_ref(),
+            );
+            return combine_wlan_recovery_result(Err(error), Ok(()), recovery);
+        }
+        journal.candidate_staged();
 
-        let connection = attempt_windows_wlan_connection(
+        let candidate_connection = attempt_windows_wlan_connection(
             &mut client,
             &interface,
-            &profile_name,
+            &candidate_name,
             ssid,
             request.hidden,
         );
-        match connection {
+        match candidate_connection {
             Ok(observation) if wlan_local_connection_succeeded(observation) => {
-                transaction.commit();
-                Ok(observation)
+                journal.candidate_verified();
+
+                if let Err(error) = ensure_wlan_client_open(&mut client) {
+                    let recovery = recover_after_candidate_failure(
+                        &mut client,
+                        &interface,
+                        &candidate_name,
+                        previous_connection.as_ref(),
+                    );
+                    return combine_wlan_recovery_result(Err(error), Ok(()), recovery);
+                }
+                let stable_name = deterministic_wlan_profile_name(ssid);
+                let stable_name_wide = wide_null(&stable_name);
+                let stable_profile_xml = wide_null(&wlan_profile_xml(
+                    &stable_name,
+                    ssid,
+                    &request.password,
+                    request.hidden,
+                    WlanProfileConnectionMode::Auto,
+                ));
+                let mut stable_transaction = match StableWlanProfileTransaction::begin(
+                    client.raw(),
+                    interface.InterfaceGuid,
+                    stable_name_wide,
+                ) {
+                    Ok(transaction) => transaction,
+                    Err(error) => {
+                        let recovery = recover_after_candidate_failure(
+                            &mut client,
+                            &interface,
+                            &candidate_name,
+                            previous_connection.as_ref(),
+                        );
+                        return combine_wlan_recovery_result(Err(error), Ok(()), recovery);
+                    }
+                };
+                // The journal makes this ordering a checked invariant rather
+                // than a comment: a future refactor cannot stage the stable
+                // profile until candidate readiness has been observed.
+                if !journal.stable_profile_write_is_allowed() {
+                    return Err(
+                        "WLAN stable profile write was attempted before candidate readiness"
+                            .to_string(),
+                    );
+                }
+                if let Err(error) =
+                    stable_transaction.stage_stable_profile(client.raw(), &stable_profile_xml)
+                {
+                    let stable_rollback = stable_transaction.rollback(&mut client);
+                    let candidate_recovery = recover_after_candidate_failure(
+                        &mut client,
+                        &interface,
+                        &candidate_name,
+                        previous_connection.as_ref(),
+                    );
+                    return combine_wlan_recovery_result(
+                        Err(error),
+                        stable_rollback,
+                        candidate_recovery,
+                    );
+                }
+                if let Err(error) = journal.stable_written() {
+                    let stable_rollback = stable_transaction.rollback(&mut client);
+                    let candidate_recovery = recover_after_candidate_failure(
+                        &mut client,
+                        &interface,
+                        &candidate_name,
+                        previous_connection.as_ref(),
+                    );
+                    return combine_wlan_recovery_result(
+                        Err(error),
+                        stable_rollback,
+                        candidate_recovery,
+                    );
+                }
+
+                let stable_connection = attempt_windows_wlan_connection(
+                    &mut client,
+                    &interface,
+                    &stable_name,
+                    ssid,
+                    request.hidden,
+                );
+                match stable_connection {
+                    Ok(stable_observation)
+                        if wlan_local_connection_succeeded(stable_observation) =>
+                    {
+                        journal.stable_verified();
+                        if let Err(error) = ensure_wlan_client_open(&mut client) {
+                            // A verified stable connection is safer than a
+                            // speculative rollback. Keep it, and let a later
+                            // process clean the manual candidate.
+                            stable_transaction.commit();
+                            return Err(format!(
+                                "WLAN stable profile was verified but manual candidate cleanup is pending: {error}"
+                            ));
+                        }
+                        match delete_wlan_profile(
+                            client.raw(),
+                            &interface.InterfaceGuid,
+                            &candidate_name,
+                            "manual candidate",
+                        ) {
+                            Ok(()) => {
+                                journal.candidate_deleted();
+                                stable_transaction.commit();
+                                Ok(stable_observation)
+                            }
+                            Err(error) => {
+                                // The verified stable profile is now the
+                                // safe live connection. Keep it rather than
+                                // undo a successful handover; the candidate
+                                // remains manual and the next operation will
+                                // retry cleanup before any mutation.
+                                stable_transaction.commit();
+                                Err(format!(
+                                    "WLAN stable profile was verified but manual candidate cleanup is pending: {error}"
+                                ))
+                            }
+                        }
+                    }
+                    Ok(observation) => {
+                        let stable_rollback = stable_transaction.rollback(&mut client);
+                        let candidate_recovery = recover_after_candidate_failure(
+                            &mut client,
+                            &interface,
+                            &candidate_name,
+                            previous_connection.as_ref(),
+                        );
+                        combine_wlan_recovery_result(
+                            Ok(observation),
+                            stable_rollback,
+                            candidate_recovery,
+                        )
+                    }
+                    Err(error) => {
+                        let stable_rollback = stable_transaction.rollback(&mut client);
+                        let candidate_recovery = recover_after_candidate_failure(
+                            &mut client,
+                            &interface,
+                            &candidate_name,
+                            previous_connection.as_ref(),
+                        );
+                        combine_wlan_recovery_result(
+                            Err(error),
+                            stable_rollback,
+                            candidate_recovery,
+                        )
+                    }
+                }
             }
             Ok(observation) => {
-                transaction.rollback(&mut client)?;
-                Ok(observation)
+                let recovery = recover_after_candidate_failure(
+                    &mut client,
+                    &interface,
+                    &candidate_name,
+                    previous_connection.as_ref(),
+                );
+                combine_wlan_recovery_result(Ok(observation), Ok(()), recovery)
             }
-            Err(error) => match transaction.rollback(&mut client) {
-                Ok(()) => Err(error),
-                Err(rollback_error) => Err(format!(
-                    "{error}; failed to restore the prior managed WLAN profile: {rollback_error}"
-                )),
-            },
+            Err(error) => {
+                let recovery = recover_after_candidate_failure(
+                    &mut client,
+                    &interface,
+                    &candidate_name,
+                    previous_connection.as_ref(),
+                );
+                combine_wlan_recovery_result(Err(error), Ok(()), recovery)
+            }
         }
+    }
+}
+
+#[cfg(windows)]
+unsafe fn ensure_wlan_client_open(client: &mut WlanClientHandle) -> Result<(), String> {
+    if !client.is_open() {
+        *client = WlanClientHandle::open()?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe fn recover_after_candidate_failure(
+    client: &mut WlanClientHandle,
+    interface: &windows_sys::Win32::NetworkManagement::WiFi::WLAN_INTERFACE_INFO,
+    candidate_name: &str,
+    previous_connection: Option<&PreviousWlanConnection>,
+) -> Result<(), String> {
+    if wlan_callback_mutation_registry().is_fused() {
+        // A callback may still dereference the retained context. Do not
+        // register another callback or issue a new WLAN mutation in this
+        // process; the candidate is manual and startup/next process will
+        // clean it up before attempting a connection.
+        return Err(
+            "WLAN recovery is deferred until daemon restart because a callback context could not be safely released"
+                .to_string(),
+        );
+    }
+    ensure_wlan_client_open(client)?;
+    let candidate_delete = delete_wlan_profile(
+        client.raw(),
+        &interface.InterfaceGuid,
+        candidate_name,
+        "failed manual candidate",
+    );
+
+    // Do not merely restore an old profile file. The radio was moved to the
+    // candidate, so actively reconnect the exact original profile/interface/
+    // SSID and require the same local address/default-route evidence.
+    let previous_reconnect = match previous_connection {
+        Some(previous) => {
+            ensure_wlan_client_open(client)?;
+            match attempt_windows_wlan_connection(
+                client,
+                interface,
+                &previous.profile_name,
+                &previous.ssid,
+                false,
+            ) {
+                Ok(observation) if wlan_local_connection_succeeded(observation) => Ok(()),
+                Ok(_) => {
+                    Err("Windows could not restore the prior WLAN connection readiness".to_string())
+                }
+                Err(error) => Err(format!(
+                    "Windows could not reconnect the prior WLAN profile: {error}"
+                )),
+            }
+        }
+        None => Ok(()),
+    };
+
+    match (candidate_delete, previous_reconnect) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(delete), Ok(())) => Err(format!("{delete}; prior WLAN connection was restored")),
+        (Ok(()), Err(reconnect)) => Err(reconnect),
+        (Err(delete), Err(reconnect)) => Err(format!("{delete}; {reconnect}")),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn combine_wlan_recovery_result(
+    connection: Result<WlanConnectionObservation, String>,
+    stable_rollback: Result<(), String>,
+    candidate_recovery: Result<(), String>,
+) -> Result<WlanConnectionObservation, String> {
+    match (connection, stable_rollback, candidate_recovery) {
+        (Ok(observation), Ok(()), Ok(())) => Ok(observation),
+        (Ok(_), Ok(()), Err(recovery)) => Err(format!(
+            "WLAN candidate connection did not reach local readiness; recovery failed: {recovery}"
+        )),
+        (Err(error), Ok(()), Ok(())) => Err(error),
+        (Err(error), Ok(()), Err(recovery)) => Err(format!("{error}; recovery failed: {recovery}")),
+        (Ok(_), Err(rollback), Ok(())) => Err(format!(
+            "WLAN candidate connection did not reach local readiness; stable profile rollback failed: {rollback}"
+        )),
+        (Ok(_), Err(rollback), Err(recovery)) => Err(format!(
+            "WLAN candidate connection did not reach local readiness; stable profile rollback failed: {rollback}; recovery failed: {recovery}"
+        )),
+        (Err(error), Err(rollback), Ok(())) => Err(format!(
+            "{error}; stable profile rollback failed: {rollback}"
+        )),
+        (Err(error), Err(rollback), Err(recovery)) => Err(format!(
+            "{error}; stable profile rollback failed: {rollback}; recovery failed: {recovery}"
+        )),
     }
 }
 
@@ -2257,6 +2798,12 @@ unsafe fn attempt_windows_wlan_connection(
     };
 
     const ERROR_SUCCESS: u32 = 0;
+    if wlan_callback_mutation_registry().is_fused() {
+        return Err(
+            "WLAN mutations are disabled until the daemon restarts because a prior callback could not be safely released"
+                .to_string(),
+        );
+    }
     let target_was_connected_before = windows_wlan_is_associated_with_target(
         client.raw(),
         &interface.InterfaceGuid,
@@ -2463,12 +3010,86 @@ fn native_network_ssid(
 }
 
 #[cfg(windows)]
-unsafe fn windows_wlan_is_associated_with_target(
+unsafe fn cleanup_stale_vem_candidate_profiles(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<(), String> {
+    use std::{ptr, slice};
+    use windows_sys::Win32::NetworkManagement::WiFi::{
+        WlanEnumInterfaces, WlanFreeMemory, WLAN_INTERFACE_INFO_LIST,
+    };
+
+    const ERROR_SUCCESS: u32 = 0;
+    let mut list: *mut WLAN_INTERFACE_INFO_LIST = ptr::null_mut();
+    let enumerate = WlanEnumInterfaces(handle, ptr::null(), &mut list);
+    if enumerate != ERROR_SUCCESS || list.is_null() {
+        return Err(format!(
+            "Windows could not enumerate WLAN interfaces for candidate cleanup (error {enumerate})"
+        ));
+    }
+    let interfaces = slice::from_raw_parts(
+        (*list).InterfaceInfo.as_ptr(),
+        (*list).dwNumberOfItems as usize,
+    )
+    .to_vec();
+    WlanFreeMemory(list.cast());
+
+    for interface in interfaces {
+        for profile_name in wlan_profile_names(handle, &interface.InterfaceGuid)? {
+            if is_vem_candidate_profile_name(&profile_name) {
+                delete_wlan_profile(
+                    handle,
+                    &interface.InterfaceGuid,
+                    &profile_name,
+                    "stale manual candidate",
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe fn wlan_profile_names(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    interface_guid: &windows_sys::core::GUID,
+) -> Result<Vec<String>, String> {
+    use std::{ptr, slice};
+    use windows_sys::Win32::NetworkManagement::WiFi::{
+        WlanFreeMemory, WlanGetProfileList, WLAN_PROFILE_INFO, WLAN_PROFILE_INFO_LIST,
+    };
+
+    const ERROR_SUCCESS: u32 = 0;
+    let mut profiles: *mut WLAN_PROFILE_INFO_LIST = ptr::null_mut();
+    let list = WlanGetProfileList(handle, interface_guid, ptr::null(), &mut profiles);
+    if list != ERROR_SUCCESS || profiles.is_null() {
+        return Err(format!(
+            "Windows could not enumerate WLAN profiles for candidate cleanup (error {list})"
+        ));
+    }
+    let entries: &[WLAN_PROFILE_INFO] = slice::from_raw_parts(
+        (*profiles).ProfileInfo.as_ptr(),
+        (*profiles).dwNumberOfItems as usize,
+    );
+    let names = entries
+        .iter()
+        .filter_map(|entry| {
+            let length = entry
+                .strProfileName
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(entry.strProfileName.len());
+            String::from_utf16(&entry.strProfileName[..length]).ok()
+        })
+        .collect();
+    WlanFreeMemory(profiles.cast());
+    Ok(names)
+}
+
+#[cfg(windows)]
+unsafe fn windows_wlan_current_connection(
     handle: windows_sys::Win32::Foundation::HANDLE,
     interface: &windows_sys::core::GUID,
-    expected_profile: &str,
-    expected_ssid: &str,
-) -> bool {
+) -> Option<PreviousWlanConnection> {
     use std::ptr;
     use windows_sys::Win32::NetworkManagement::WiFi::{
         wlan_interface_state_connected, wlan_intf_opcode_current_connection, WlanFreeMemory,
@@ -2492,7 +3113,7 @@ unsafe fn windows_wlan_is_associated_with_target(
         || data.is_null()
         || size < std::mem::size_of::<WLAN_CONNECTION_ATTRIBUTES>() as u32
     {
-        return false;
+        return None;
     }
     let attributes = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
     let profile_length = attributes
@@ -2500,19 +3121,37 @@ unsafe fn windows_wlan_is_associated_with_target(
         .iter()
         .position(|unit| *unit == 0)
         .unwrap_or(attributes.strProfileName.len());
-    let length = usize::try_from(attributes.wlanAssociationAttributes.dot11Ssid.uSSIDLength)
+    let ssid_length = usize::try_from(attributes.wlanAssociationAttributes.dot11Ssid.uSSIDLength)
         .unwrap_or(0)
         .min(32);
-    let associated = attributes.isState == wlan_interface_state_connected
-        && String::from_utf16(&attributes.strProfileName[..profile_length])
-            .ok()
-            .as_deref()
-            == Some(expected_profile)
-        && std::str::from_utf8(&attributes.wlanAssociationAttributes.dot11Ssid.ucSSID[..length])
-            .ok()
-            == Some(expected_ssid);
+    let connection = if attributes.isState == wlan_interface_state_connected {
+        let profile_name = String::from_utf16(&attributes.strProfileName[..profile_length]).ok();
+        let ssid = std::str::from_utf8(
+            &attributes.wlanAssociationAttributes.dot11Ssid.ucSSID[..ssid_length],
+        )
+        .ok()
+        .map(str::to_string);
+        match (profile_name, ssid) {
+            (Some(profile_name), Some(ssid)) => Some(PreviousWlanConnection { profile_name, ssid }),
+            _ => None,
+        }
+    } else {
+        None
+    };
     WlanFreeMemory(data);
-    associated
+    connection
+}
+
+#[cfg(windows)]
+unsafe fn windows_wlan_is_associated_with_target(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    interface: &windows_sys::core::GUID,
+    expected_profile: &str,
+    expected_ssid: &str,
+) -> bool {
+    windows_wlan_current_connection(handle, interface).is_some_and(|connection| {
+        connection.profile_name == expected_profile && connection.ssid == expected_ssid
+    })
 }
 
 #[cfg(windows)]
@@ -3041,10 +3680,145 @@ mod tests {
         let first = deterministic_wlan_profile_name("VEM-Lab");
         assert_eq!(first, deterministic_wlan_profile_name("VEM-Lab"));
         assert_ne!(first, deterministic_wlan_profile_name("Other-WiFi"));
-        let profile = wlan_profile_xml(&first, "VEM-Lab", password, false);
+        let profile = wlan_profile_xml(
+            &first,
+            "VEM-Lab",
+            password,
+            false,
+            WlanProfileConnectionMode::Auto,
+        );
         assert!(profile.contains(password));
         assert!(profile.contains(&first));
         assert!(profile.contains("<connectionMode>auto</connectionMode>"));
+    }
+
+    #[test]
+    fn candidate_profiles_are_unique_manual_and_never_replace_the_stable_profile_early() {
+        let stable = deterministic_wlan_profile_name("VEM-Lab");
+        let first = candidate_wlan_profile_name("VEM-Lab", "first-nonce");
+        let second = candidate_wlan_profile_name("VEM-Lab", "second-nonce");
+        let password = "candidate-password";
+
+        assert_ne!(first, second);
+        assert!(is_vem_candidate_profile_name(&first));
+        assert!(!is_vem_candidate_profile_name(&stable));
+        assert!(wlan_profile_xml(
+            &first,
+            "VEM-Lab",
+            password,
+            false,
+            WlanProfileConnectionMode::Manual
+        )
+        .contains("<connectionMode>manual</connectionMode>"));
+        assert!(wlan_profile_xml(
+            &stable,
+            "VEM-Lab",
+            password,
+            false,
+            WlanProfileConnectionMode::Auto
+        )
+        .contains("<connectionMode>auto</connectionMode>"));
+
+        let mut transaction = CrashSafeWlanProfileTransaction::new();
+        assert!(!transaction.stable_profile_write_is_allowed());
+        transaction.candidate_staged();
+        assert!(!transaction.stable_profile_write_is_allowed());
+        transaction.candidate_verified();
+        assert!(transaction.stable_profile_write_is_allowed());
+        transaction
+            .stable_written()
+            .expect("candidate was verified");
+        transaction.stable_verified();
+        transaction.candidate_deleted();
+    }
+
+    #[test]
+    fn every_crash_phase_keeps_the_old_auto_profile_until_candidate_readiness_is_proven() {
+        for (phase, candidate_may_remain, stable_may_be_replaced) in [
+            (WlanProfileTransactionPhase::Initial, false, false),
+            (WlanProfileTransactionPhase::CandidateStaged, true, false),
+            (WlanProfileTransactionPhase::CandidateVerified, true, false),
+            (WlanProfileTransactionPhase::StableWritten, true, true),
+            (WlanProfileTransactionPhase::StableVerified, true, true),
+            (WlanProfileTransactionPhase::CandidateDeleted, false, true),
+        ] {
+            let snapshot = phase.crash_safety_snapshot();
+            assert!(
+                !snapshot.candidate_autoconnect,
+                "{phase:?} may only leave a manual candidate"
+            );
+            assert_eq!(
+                snapshot.candidate_may_remain, candidate_may_remain,
+                "{phase:?}"
+            );
+            assert_eq!(
+                snapshot.stable_profile_may_have_been_replaced, stable_may_be_replaced,
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn callback_double_failure_blows_a_process_fuse_with_only_one_retained_context() {
+        struct DoubleFailureNotificationApi;
+
+        impl WlanNotificationReleaseApi for DoubleFailureNotificationApi {
+            fn unregister_notification(&mut self) -> u32 {
+                5
+            }
+
+            fn close_handle_synchronously(&mut self) -> Result<(), u32> {
+                Err(6)
+            }
+        }
+
+        let mut release = DoubleFailureNotificationApi;
+        let mut callback_context = WlanNotificationContextLease::new(());
+        assert_eq!(callback_context.release_with(&mut release), Err(5));
+        assert!(
+            callback_context.context.is_some(),
+            "a double failure must keep the context owned until it is retained safely"
+        );
+
+        let registry = WlanCallbackMutationRegistry::default();
+        let mut first = registry.acquire().expect("first WLAN mutation is allowed");
+        first.retain_context_for_safety();
+        drop(first);
+
+        assert_eq!(registry.retained_context_count(), 1);
+        assert!(registry.is_fused());
+        assert!(
+            registry.acquire().is_err(),
+            "fused process must reject a new WLAN mutation"
+        );
+        assert_eq!(
+            registry.retained_context_count(),
+            1,
+            "repeated double failures must not accumulate leaked callback contexts"
+        );
+    }
+
+    #[test]
+    fn candidate_failure_returns_its_observation_only_after_verified_prior_reconnect() {
+        let candidate_failed = WlanConnectionObservation {
+            association: WlanAssociationState::Associated,
+            local_address_ready: true,
+            default_route_ready: false,
+        };
+
+        let recovered = combine_wlan_recovery_result(Ok(candidate_failed), Ok(()), Ok(())).expect(
+            "a deleted candidate and verified prior reconnect preserve the original observation",
+        );
+        assert_eq!(recovered, candidate_failed);
+
+        let reconnect_failed = combine_wlan_recovery_result(
+            Ok(candidate_failed),
+            Ok(()),
+            Err("prior profile did not regain a default route".to_string()),
+        )
+        .expect_err("an unverified prior reconnect must be reported as recovery failure");
+        assert!(reconnect_failed.contains("recovery failed"));
+        assert!(reconnect_failed.contains("prior profile"));
     }
 
     #[test]
