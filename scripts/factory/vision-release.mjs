@@ -554,7 +554,6 @@ export function verifyVisionReleaseSelection({
   if (
     release.descriptorDigest !== selected.identity ||
     release.attestationDigest !== attestationDigest ||
-    release.approvalDigest !== approved.identity ||
     release.conformanceEvidenceDigest !== approved.conformanceEvidenceDigest ||
     approved.releaseVersion !== selected.releaseVersion ||
     approved.bundleDigest !== selected.bundle.digest ||
@@ -674,6 +673,13 @@ export function verifySignedVisionReleaseEvidence({
     );
   }
   if (
+    manifestAsset.release.approvalDigest !== digestBytes(documents.approval)
+  ) {
+    throw new Error(
+      "Factory Manifest approval selection does not match exact bytes",
+    );
+  }
+  if (
     manifestAsset.release.conformanceEvidenceDigest !==
     digestBytes(documents.conformance)
   ) {
@@ -682,6 +688,74 @@ export function verifySignedVisionReleaseEvidence({
     );
   }
   return { ...selection, identities };
+}
+
+/**
+ * Verify the supplier-owned Candidate documents before VEM executes the
+ * bundle. VEM conformance and approval are deliberately produced later.
+ */
+export function verifySignedVisionSupplierCandidate({
+  bundle,
+  documents,
+  signatures,
+  expectedSignerIdentity,
+}) {
+  if (!Buffer.isBuffer(bundle) || bundle.length < 1) {
+    throw new Error("Vision Candidate bundle bytes are required");
+  }
+  if (!/^spki-sha256:[a-f0-9]{64}$/.test(expectedSignerIdentity ?? "")) {
+    throw new Error("Vision Candidate expected supplier identity is invalid");
+  }
+  const required = ["descriptor", "attestation", "sbom", "provenance"];
+  const parsed = {};
+  for (const role of required) {
+    const bytes = documents?.[role];
+    if (
+      !Buffer.isBuffer(bytes) ||
+      bytes.length < 2 ||
+      bytes.length > 16 * 1024 * 1024
+    ) {
+      throw new Error(`Vision Candidate ${role} bytes are invalid`);
+    }
+    verifyDocumentSignature({
+      role,
+      bytes,
+      signature: signatures?.[role],
+      approvedIdentities: { [role]: [expectedSignerIdentity] },
+    });
+    try {
+      parsed[role] = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      throw new Error(`Vision Candidate ${role} bytes are not JSON`);
+    }
+  }
+  const descriptor = validateVisionReleaseDescriptor(parsed.descriptor);
+  validateVisionArtifactAttestation(parsed.attestation, descriptor);
+  if (
+    digestBytes(bundle) !== descriptor.bundle.digest ||
+    bundle.length !== descriptor.bundle.bytes
+  ) {
+    throw new Error("Vision Candidate bundle does not match its descriptor");
+  }
+  if (
+    digestBytes(documents.sbom) !== descriptor.sbom.digest ||
+    digestBytes(documents.provenance) !== descriptor.provenance.digest
+  ) {
+    throw new Error("Vision Candidate evidence does not match its descriptor");
+  }
+  if (parsed.attestation.signerIdentity !== expectedSignerIdentity) {
+    throw new Error(
+      "Vision Candidate attestation does not name the verified supplier identity",
+    );
+  }
+  return {
+    releaseVersion: descriptor.releaseVersion,
+    bundleDigest: descriptor.bundle.digest,
+    bundleBytes: descriptor.bundle.bytes,
+    descriptorDigest: descriptor.identity,
+    supplierIdentity: expectedSignerIdentity,
+    descriptor,
+  };
 }
 
 export function assessVisionReleaseCandidate(candidate) {

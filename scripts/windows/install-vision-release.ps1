@@ -833,12 +833,30 @@ function Ensure-VisionTask {
 }
 
 function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
+  $active = (Read-StrictJson $processPath "Vision process record").value
+  $entrypoint = Join-TrustedRelativePath ([string]$Selection.installDirectory) ([string]$Selection.entrypoint) "Vision selected entrypoint"
+  $process = Get-Process -Id ([int]$active.processId) -ErrorAction Stop
+  if (
+    $active.bundleDigest -cne $Selection.bundleDigest -or
+    $active.selectionRevision -cne $Selection.revision -or
+    $active.executablePath -cne $entrypoint -or
+    $process.StartTime.ToUniversalTime().Ticks -ne $active.creationTimeUtcTicks -or
+    $process.Path -cne $entrypoint -or
+    ("sha256:" + (Get-FileHash -LiteralPath $process.Path -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $active.executableDigest
+  ) { Throw-InstallError "Vision launched process does not bind the selected executable" }
   $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$Descriptor.health.timeoutMs)
   do {
     try {
       $response = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}{1}" -f $Descriptor.health.port, $Descriptor.health.path) -TimeoutSec 2
-      $active = (Read-StrictJson $processPath "Vision process record").value
-      if ($response.pid -eq $active.processId -and $response.bundleDigest -ceq $Selection.bundleDigest -and $response.executableDigest -ceq $active.executableDigest -and $response.protocolVersion -ceq $Descriptor.protocol.version -and $response.schemaVersion -ceq "vem-machine-vision-health/v1") { break }
+      if (
+        $response.status -in @("ok", "degraded") -and
+        $response.protocol -ceq $Descriptor.protocol.version -and
+        $response.version -ceq $Descriptor.releaseVersion -and
+        $response.mockScenario -ceq "off" -and
+        $response.cameraReady -is [bool] -and
+        $response.modelReady -is [bool] -and
+        $response.modelReady -eq $true
+      ) { break }
     } catch {}
     Start-Sleep -Milliseconds 150
   } while ([DateTime]::UtcNow -lt $deadline)
@@ -853,7 +871,7 @@ function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
     $ready = [Text.Encoding]::UTF8.GetString($buffer, 0, $received.Count) | ConvertFrom-Json
     Assert-Keys $ready @("protocol","type","messageId","timestamp","payload") "Vision WebSocket ready envelope"
     Assert-Keys $ready.payload @("serverName","serverVersion","cameraReady","modelReady","capabilities") "Vision WebSocket ready payload"
-    if ($Descriptor.protocol.version -cne "vem.vision.v1" -or $ready.protocol -cne "vem.vision.v1" -or $ready.type -cne "vision.ready" -or [string]::IsNullOrWhiteSpace([string]$ready.messageId) -or [string]::IsNullOrWhiteSpace([string]$ready.timestamp) -or [string]::IsNullOrWhiteSpace([string]$ready.payload.serverName) -or [string]::IsNullOrWhiteSpace([string]$ready.payload.serverVersion) -or $ready.payload.cameraReady -isnot [bool] -or $ready.payload.modelReady -isnot [bool] -or $ready.payload.capabilities -isnot [array]) { Throw-InstallError "Vision WebSocket ready does not satisfy vem.vision.v1" }
+    if ($Descriptor.protocol.version -cne "vem.vision.v1" -or $ready.protocol -cne "vem.vision.v1" -or $ready.type -cne "vision.ready" -or [string]::IsNullOrWhiteSpace([string]$ready.messageId) -or [string]::IsNullOrWhiteSpace([string]$ready.timestamp) -or [string]::IsNullOrWhiteSpace([string]$ready.payload.serverName) -or $ready.payload.serverVersion -cne $Descriptor.releaseVersion -or $ready.payload.cameraReady -isnot [bool] -or $ready.payload.modelReady -isnot [bool] -or $ready.payload.modelReady -ne $true -or $ready.payload.capabilities -isnot [array]) { Throw-InstallError "Vision WebSocket ready does not satisfy vem.vision.v1" }
   } finally { $socket.Dispose(); $cancel.Dispose() }
 }
 

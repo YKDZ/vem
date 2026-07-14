@@ -79,6 +79,10 @@ describe("Vision release installer fixtures", () => {
       "scripts/windows/provision-vision-factory-release.ps1",
     ],
     ["Vision runtime verifier", "scripts/windows/verify-vem-runtime.ps1"],
+    [
+      "Vision Candidate test harness",
+      "scripts/windows/test-vision-candidate.ps1",
+    ],
     ["Windows harness library seam", windowsHarness],
     ["Windows behavior harness", behaviorHarness],
   ]) {
@@ -87,6 +91,32 @@ describe("Vision release installer fixtures", () => {
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     });
   }
+
+  boundedIt(
+    "keeps Candidate testing on the production extraction and runtime contracts",
+    () => {
+      const source = readFileSync(
+        "scripts/windows/test-vision-candidate.ps1",
+        "utf8",
+      );
+      assert.match(
+        source,
+        /\. \$InstallerLibraryPath -BundlePath \$BundlePath -Library/,
+      );
+      assert.match(source, /Get-VerifiedBundleStream \$descriptor/);
+      assert.match(
+        source,
+        /Expand-ZipSafely \$bundleStream \$staging \$descriptor/,
+      );
+      assert.match(
+        source,
+        /Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\\VEM\\"/,
+      );
+      assert.match(source, /modelReady -ne \$true/);
+      assert.match(source, /protocolVersion = "vem\.vision\.v1"/);
+      assert.doesNotMatch(source, /mockScenario\s*=|VEM_VISION_MOCK_SCENARIO/);
+    },
+  );
 
   boundedIt("declares the optional Vision runtime binding result", () => {
     const source = readFileSync(
