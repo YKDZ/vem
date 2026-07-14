@@ -635,6 +635,11 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       const sshArgs = readFileSync(join(root, "ssh-args.txt"), "utf8");
       assert.match(sshArgs, /-p\n2222\n/);
       assert.match(sshArgs, /YKDZ@10\.91\.2\.10/);
+      assert.match(sshArgs, /StrictHostKeyChecking=accept-new/);
+      assert.match(
+        sshArgs,
+        /UserKnownHostsFile=.*vem-factory-preclaim-.*known_hosts/,
+      );
       assert.match(sshArgs, /-EncodedCommand/);
     } finally {
       rmSync(root, { recursive: true, force: true });
