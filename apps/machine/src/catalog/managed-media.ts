@@ -9,7 +9,12 @@ export function resolveManagedMediaReference(
   reference: string | null | undefined,
   provisionedApiBaseUrl: string,
 ): ManagedMediaResolution {
-  if (!reference) return { url: null, diagnostic: null };
+  if (!reference) {
+    return {
+      url: null,
+      diagnostic: "managed media reference is missing",
+    };
+  }
   if (!isManagedMediaReference(reference)) {
     return {
       url: null,

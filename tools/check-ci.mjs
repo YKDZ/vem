@@ -477,6 +477,7 @@ async function runMachineE2eJob() {
     "--",
     "machine-daemon-client.spec.ts",
     "machine-real-daemon.spec.ts",
+    "catalog-recovery-matrix.spec.ts",
   ]);
   await run("pnpm", ["-F", "machine", "test:e2e:touch-smoke"]);
 }

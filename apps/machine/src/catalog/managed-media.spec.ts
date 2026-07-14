@@ -3,6 +3,20 @@ import { describe, expect, it } from "vitest";
 import { resolveManagedMediaReference } from "./managed-media";
 
 describe("Managed Media Resolution", () => {
+  it("turns missing or empty managed media into a placeholder diagnostic", () => {
+    for (const reference of [null, undefined, ""]) {
+      expect(
+        resolveManagedMediaReference(
+          reference,
+          "http://118.25.104.160:26849/api",
+        ),
+      ).toEqual({
+        url: null,
+        diagnostic: "managed media reference is missing",
+      });
+    }
+  });
+
   it("resolves a managed reference against the provisioned API origin including its port", () => {
     expect(
       resolveManagedMediaReference(

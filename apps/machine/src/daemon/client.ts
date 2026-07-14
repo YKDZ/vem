@@ -68,13 +68,15 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
     const normalized = { ...item };
     for (const field of ["coverImageUrl", "tryOnSilhouetteUrl"] as const) {
       const reference = normalized[field];
-      if (reference === null || reference === undefined) continue;
       if (typeof reference === "string" && isManagedMediaReference(reference)) {
         continue;
       }
       mediaDiagnostics.push({
         reference: typeof reference === "string" ? reference : null,
-        message: `daemon sale view contained an invalid ${field} managed media reference`,
+        message:
+          reference === null || reference === undefined
+            ? `daemon sale view contained no ${field} managed media reference`
+            : `daemon sale view contained an invalid ${field} managed media reference`,
       });
       normalized[field] = null;
     }

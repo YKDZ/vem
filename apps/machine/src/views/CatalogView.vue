@@ -43,7 +43,7 @@ const CAROUSEL_AUTO_ADVANCE_INTERVAL_MS = 5000;
 const CAROUSEL_SWIPE_THRESHOLD_PX = 60;
 const RUNTIME_SCREENSHOT_STORAGE_KEY = "vem.machine.runtimeScreenshot";
 
-const selectedTopCategoryKey = ref<CatalogTopCategoryKey | null>(null);
+const selectedTopCategoryKey = ref<CatalogSelectionKey | null>(null);
 const activeGenderFilter = ref<ProductGenderFilter>("all");
 const activeCarouselIndex = ref(0);
 const carouselSwipeStartX = ref<number | null>(null);
@@ -52,11 +52,12 @@ let readinessRefreshInFlight: Promise<void> | null = null;
 let carouselAutoAdvanceTimer: number | null = null;
 
 type ProductGenderFilter = "all" | "male" | "female" | "kids" | "elder";
+type CatalogSelectionKey = CatalogTopCategoryKey | "other";
 
 type DisplayProduct = {
   id: string;
   name: string;
-  categoryKey: CatalogTopCategoryKey;
+  categoryKey: CatalogSelectionKey;
   gender: ProductGenderFilter;
   genderLabel: string;
   colors: number;
@@ -110,13 +111,18 @@ const categoryGroups = computed(() =>
 const fallbackCategoryItems = computed(() =>
   catalogStore.availableItems.filter(usesFallbackTopCategory),
 );
-const displayProducts = computed(() =>
-  categoryGroups.value.flatMap((group) =>
+const displayProducts = computed(() => [
+  ...categoryGroups.value.flatMap((group) =>
     group.items.map((item) => toDisplayProduct(item, group.key)),
   ),
-);
+  ...fallbackCategoryItems.value.map((item) => toDisplayProduct(item, "other")),
+]);
 const availableCategoryKeys = computed(
-  () => new Set(categoryGroups.value.map((group) => group.key)),
+  () =>
+    new Set<CatalogSelectionKey>([
+      ...categoryGroups.value.map((group) => group.key),
+      ...(fallbackCategoryItems.value.length > 0 ? ["other" as const] : []),
+    ]),
 );
 const activeProducts = computed(() =>
   displayProducts.value.filter((product) => {
@@ -148,7 +154,7 @@ watch(
       catalogStore.recordCatalogDiagnostic(
         "category",
         item.catalogKey,
-        "saleable item used fixed socks fallback because its category was missing or unknown",
+        "saleable item is available through the Other products fallback because its category is missing or unknown",
       );
     }
   },
@@ -248,13 +254,13 @@ function isRuntimeScreenshotMode(): boolean {
   );
 }
 
-function selectTopCategory(key: CatalogTopCategoryKey): void {
+function selectTopCategory(key: CatalogSelectionKey): void {
   if (!categoryHasProducts(key)) return;
   selectedTopCategoryKey.value = key;
   activeGenderFilter.value = "all";
 }
 
-function categoryHasProducts(key: CatalogTopCategoryKey): boolean {
+function categoryHasProducts(key: CatalogSelectionKey): boolean {
   return (
     availableCategoryKeys.value.has(key) &&
     displayProducts.value.some(
@@ -289,13 +295,13 @@ function genderLabelForFilter(filter: ProductGenderFilter): string {
   return "通用";
 }
 
-function fallbackImageForCategory(key: CatalogTopCategoryKey): string {
-  return homeCategoryMeta[key].icon;
+function fallbackImageForCategory(key: CatalogSelectionKey): string {
+  return key === "other" ? iconTshirtImage : homeCategoryMeta[key].icon;
 }
 
 function toDisplayProduct(
   item: MachineCatalogItem,
-  categoryKey: CatalogTopCategoryKey,
+  categoryKey: CatalogSelectionKey,
 ): DisplayProduct {
   const gender = genderForItem(item);
   const colorCount = new Set(
@@ -455,6 +461,16 @@ onUnmounted(() => {
         </button>
       </div>
 
+      <button
+        v-if="categoryHasProducts('other')"
+        class="home-other-products-entry kiosk-touch-target relative z-10 mt-3 shrink-0"
+        type="button"
+        @click="selectTopCategory('other')"
+      >
+        其他商品
+        <span>发现更多可售商品</span>
+      </button>
+
       <div
         class="home-quick-grid relative z-30 mt-7 grid shrink-0 grid-cols-4 gap-2 pr-28"
       >
@@ -607,6 +623,20 @@ onUnmounted(() => {
             <span>
               <strong>{{ category.label }}</strong>
               <small>{{ category.english }}</small>
+            </span>
+          </button>
+          <button
+            v-if="categoryHasProducts('other')"
+            class="sidebar-category kiosk-touch-target"
+            :class="{
+              'sidebar-category-active': selectedTopCategoryKey === 'other',
+            }"
+            type="button"
+            @click="selectTopCategory('other')"
+          >
+            <span>
+              <strong>其他商品</strong>
+              <small>OTHER</small>
             </span>
           </button>
         </aside>
@@ -1400,6 +1430,27 @@ onUnmounted(() => {
 
 .home-category-card:disabled {
   cursor: not-allowed;
+}
+
+.home-other-products-entry {
+  display: inline-flex;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  border: 1px solid rgba(126, 145, 104, 0.52);
+  border-radius: 999px;
+  background: rgba(255, 253, 248, 0.88);
+  padding: 0.72rem 1.1rem;
+  color: #4e6242;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.home-other-products-entry span {
+  color: #7b8d67;
+  font-size: 0.82rem;
+  font-weight: 500;
 }
 
 .home-category-card-sold-out {

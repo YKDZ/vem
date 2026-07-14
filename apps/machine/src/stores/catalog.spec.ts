@@ -301,9 +301,13 @@ describe("catalog store sale view", () => {
     expect(store.items).toHaveLength(1);
   });
 
-  it("keeps bounded operator diagnostics for media and fallback categorization", () => {
+  it("keeps one bounded operator diagnostic per media failure", () => {
     const store = useCatalogStore();
 
+    store.recordMediaDiagnostic(
+      "/api/media-assets/bad/content",
+      "managed media failed to load",
+    );
     store.recordMediaDiagnostic(
       "/api/media-assets/bad/content",
       "managed media failed to load",
@@ -325,5 +329,18 @@ describe("catalog store sale view", () => {
       }),
     ]);
     expect(store.mediaDiagnostics).toHaveLength(1);
+
+    for (let index = 0; index < 25; index += 1) {
+      store.recordMediaDiagnostic(
+        `/api/media-assets/${index}/content`,
+        "managed media failed to load",
+      );
+    }
+    store.recordMediaDiagnostic(
+      "/api/media-assets/24/content",
+      "managed media failed to load",
+    );
+    expect(store.operatorDiagnostics).toHaveLength(20);
+    expect(store.mediaDiagnostics).toHaveLength(20);
   });
 });

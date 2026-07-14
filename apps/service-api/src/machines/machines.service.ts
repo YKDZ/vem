@@ -1225,12 +1225,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   ): string | null {
     if (!publicUrl) return null;
     if (isManagedMediaReference(publicUrl)) return publicUrl;
-    try {
-      const reference = new URL(publicUrl).pathname;
-      if (isManagedMediaReference(reference)) return reference;
-    } catch {
-      // The warning below records the same safe failure as a non-URL value.
-    }
     this.logger.warn(
       `catalog managed media reference rejected: ${publicUrl.slice(0, 256)}`,
     );

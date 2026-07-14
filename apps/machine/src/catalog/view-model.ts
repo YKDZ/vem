@@ -46,7 +46,6 @@ export const catalogTopCategories: readonly CatalogTopCategory[] = [
 ];
 
 const FALLBACK_SUBCATEGORY_KEY = "uncategorized";
-const FALLBACK_TOP_CATEGORY_KEY: CatalogTopCategoryKey = "socks";
 
 function sortCatalogItems(items: MachineCatalogItem[]): MachineCatalogItem[] {
   return [...items].sort(
@@ -86,13 +85,8 @@ export function usesFallbackTopCategory(
 
 export function topCategoryForItem(
   item: Pick<MachineCatalogItem, "categoryName" | "productName">,
-): CatalogTopCategory {
-  return (
-    matchingTopCategory(item) ??
-    catalogTopCategories.find(
-      (category) => category.key === FALLBACK_TOP_CATEGORY_KEY,
-    )!
-  );
+): CatalogTopCategory | null {
+  return matchingTopCategory(item);
 }
 
 export function groupItemsByTopCategory(
@@ -100,7 +94,7 @@ export function groupItemsByTopCategory(
 ): CatalogTopCategoryGroup[] {
   return catalogTopCategories.map((category) => {
     const categoryItems = sortCatalogItems(
-      items.filter((item) => topCategoryForItem(item).key === category.key),
+      items.filter((item) => topCategoryForItem(item)?.key === category.key),
     );
     return {
       ...category,

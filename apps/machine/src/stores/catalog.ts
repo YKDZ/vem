@@ -309,10 +309,12 @@ export const useCatalogStore = defineStore("catalog", {
       reference: string | null | undefined,
       message: string,
     ): void {
-      const previous = this.mediaDiagnostics[this.mediaDiagnostics.length - 1];
       if (
-        previous?.reference === (reference ?? null) &&
-        previous.message === message
+        this.mediaDiagnostics.some(
+          (diagnostic) =>
+            diagnostic.reference === (reference ?? null) &&
+            diagnostic.message === message,
+        )
       ) {
         return;
       }
