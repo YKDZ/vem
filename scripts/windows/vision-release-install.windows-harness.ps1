@@ -2093,10 +2093,11 @@ try {
   $blockedStdoutPath = Join-Path $context.root "concurrent-install.stdout.log"
   $blockedStderrPath = Join-Path $context.root "concurrent-install.stderr.log"
   $blockedScript = @(
-    'param([string]$Installer,[string]$Factory,[string]$Configuration,[string]$Evidence,[string]$TaskUser)',
+    'param([string]$Installer,[string]$Factory,[string]$Configuration,[string]$Evidence,[string]$TaskUser,[string]$HarnessScriptRoot)',
     '$ErrorActionPreference = "Stop"',
     '$delivery = Join-Path $Factory "vision-release"',
-    '& $Installer -BundlePath (Join-Path $delivery "bundle.bin") -DescriptorPath (Join-Path $delivery "descriptor.json") -AttestationPath (Join-Path $delivery "attestation.json") -SbomPath (Join-Path $delivery "sbom.json") -ProvenancePath (Join-Path $delivery "provenance.json") -ConformanceEvidencePath (Join-Path $delivery "conformance.json") -ApprovalPath (Join-Path $delivery "approval.json") -FactoryManifestPath (Join-Path $delivery "factory-manifest.json") -ConfigurationPath $Configuration -EvidencePath $Evidence -TaskUser $TaskUser'
+    '& $Installer -BundlePath (Join-Path $delivery "bundle.bin") -DescriptorPath (Join-Path $delivery "descriptor.json") -AttestationPath (Join-Path $delivery "attestation.json") -SbomPath (Join-Path $delivery "sbom.json") -ProvenancePath (Join-Path $delivery "provenance.json") -ConformanceEvidencePath (Join-Path $delivery "conformance.json") -ApprovalPath (Join-Path $delivery "approval.json") -FactoryManifestPath (Join-Path $delivery "factory-manifest.json") -ConfigurationPath $Configuration -EvidencePath $Evidence -TaskUser $TaskUser',
+    '& (Join-Path $HarnessScriptRoot "verify-vem-runtime.ps1") -RequireVisionOnline -VisionOnly'
   ) -join "`r`n"
   Write-Utf8 $blockedScriptPath $blockedScript
   function ConvertTo-HarnessCommandLineArgument([string]$Argument) {
@@ -2104,7 +2105,7 @@ try {
     $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
     return '"' + $escaped + '"'
   }
-  $blockedArguments = (@("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $blockedScriptPath, $context.installerPath, $factoryRoot, (Join-Path $stateRoot "config\fixture.json"), $evidencePath, $env:USERNAME) | ForEach-Object { ConvertTo-HarnessCommandLineArgument ([string]$_) }) -join " "
+  $blockedArguments = (@("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $blockedScriptPath, $context.installerPath, $factoryRoot, (Join-Path $stateRoot "config\fixture.json"), $evidencePath, $env:USERNAME, $context.harnessScriptRoot) | ForEach-Object { ConvertTo-HarnessCommandLineArgument ([string]$_) }) -join " "
   $mutex = [Threading.Mutex]::new($false, "Global\VEMVisionReleaseInstaller")
   $blocked = $null
   $mutexAcquired = $false
@@ -2129,7 +2130,6 @@ try {
       $blocked.Dispose()
     }
   }
-  & (Join-Path $context.harnessScriptRoot "verify-vem-runtime.ps1") -RequireVisionOnline -VisionOnly
 } catch {
   [IO.File]::WriteAllText((Join-Path $context.root "process-mutex-runtime-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
   throw
