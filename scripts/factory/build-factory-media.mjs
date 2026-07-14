@@ -937,6 +937,13 @@ try {
   $kiosk = $media.credentials.kiosk
   if ($null -eq $credential -or [string]$credential.user -cne '${maintenanceUser}' -or $credential.password -isnot [string] -or $credential.password.Length -lt 16 -or $credential.password -notmatch '^[\\x20-\\x7E]+$') { throw 'Factory OOBE maintenance credential is invalid' }
   if ($null -eq $kiosk -or [string]$kiosk.user -cne 'VEMKiosk' -or $kiosk.password -isnot [string] -or $kiosk.password.Length -lt 16 -or $kiosk.password -notmatch '^[\\x20-\\x7E]+$') { throw 'Factory OOBE kiosk credential is invalid' }
+  $stage = 'suppress-oobe-privacy'
+  $oobePolicyPath = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\OOBE'
+  New-Item -Path $oobePolicyPath -Force | Out-Null
+  New-ItemProperty -Path $oobePolicyPath -Name DisablePrivacyExperience -Value 1 -PropertyType DWord -Force | Out-Null
+  $oobeStatePath = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE'
+  New-Item -Path $oobeStatePath -Force | Out-Null
+  New-ItemProperty -Path $oobeStatePath -Name PrivacyConsentStatus -Value 1 -PropertyType DWord -Force | Out-Null
   $stage = 'bootstrap-runtime'
   & (Join-Path $MediaRoot 'bootstrap-factory-runtime.ps1') -MediaRoot $MediaRoot
   $stage = 'register-cleanup'
