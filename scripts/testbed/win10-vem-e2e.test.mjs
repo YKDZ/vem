@@ -28,6 +28,7 @@ import {
   buildInteractiveDesktopDisplayBaseline,
   assertSimulatedSaleFlowPreMutationTarget,
   readEphemeralPlatformSetupEvidence,
+  runTransientSshOperation,
   buildKioskRuntimeEvidence,
   buildPortraitKioskAcceptance,
   buildRuntimeAcceptanceReport,
@@ -51,6 +52,111 @@ import {
   isStrictTauriHashRouteUrl,
   sanitizeFactoryPreclaimReport,
 } from "./win10-vem-e2e.mjs";
+
+describe("transient SSH operation retry", () => {
+  it("retries a startup-window connection reset before an idempotent upload", async () => {
+    const calls = [];
+    const sleeps = [];
+    const results = [
+      {
+        status: 255,
+        stdout: "",
+        stderr:
+          "kex_exchange_identification: read: Connection reset by peer\nConnection reset by 192.0.2.10 port 22",
+      },
+      { status: 0, stdout: "uploaded", stderr: "" },
+    ];
+
+    const result = await runTransientSshOperation("scp", ["source", "target"], {
+      run: async (command, args) => {
+        calls.push({ command, args });
+        return results.shift();
+      },
+      sleep: async (milliseconds) => sleeps.push(milliseconds),
+      maxAttempts: 3,
+      retryDelayMs: 25,
+    });
+
+    assert.equal(result.status, 0);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(sleeps, [25]);
+  });
+
+  it("checks cancellation again after an asynchronous retry delay", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    await assert.rejects(
+      runTransientSshOperation("scp", ["source", "target"], {
+        run: async () => {
+          calls += 1;
+          return {
+            status: 255,
+            stdout: "",
+            stderr: "Connection refused",
+          };
+        },
+        sleep: async () => {
+          controller.abort(new Error("cancelled by SIGTERM"));
+        },
+        signal: controller.signal,
+      }),
+      /cancelled by SIGTERM/,
+    );
+    assert.equal(calls, 1);
+  });
+
+  it("honors cancellation received during a successful upload", async () => {
+    const controller = new AbortController();
+    await assert.rejects(
+      runTransientSshOperation("scp", ["source", "target"], {
+        run: async () => {
+          controller.abort(new Error("cancelled by SIGINT"));
+          return { status: 0, stdout: "uploaded", stderr: "" };
+        },
+        signal: controller.signal,
+      }),
+      /cancelled by SIGINT/,
+    );
+  });
+
+  it("aborts an in-flight SSH child instead of waiting for forced runner cleanup", async () => {
+    const controller = new AbortController();
+    const cancellation = setTimeout(
+      () => controller.abort(new Error("cancelled by SIGTERM")),
+      25,
+    );
+    try {
+      await assert.rejects(
+        runTransientSshOperation(
+          process.execPath,
+          ["-e", "setInterval(() => {}, 1000)"],
+          { signal: controller.signal },
+        ),
+        /cancelled by SIGTERM/,
+      );
+    } finally {
+      clearTimeout(cancellation);
+    }
+  });
+
+  it("does not retry authentication or remote path failures", async () => {
+    let calls = 0;
+    const result = await runTransientSshOperation("scp", ["source", "target"], {
+      run: async () => {
+        calls += 1;
+        return {
+          status: 255,
+          stdout: "",
+          stderr: "Permission denied (publickey).",
+        };
+      },
+      sleep: async () => assert.fail("non-transient failure must not sleep"),
+    });
+
+    assert.equal(result.status, 255);
+    assert.equal(calls, 1);
+  });
+});
 
 describe("factory acceptance cancellation cleanup", () => {
   for (const signal of ["SIGINT", "SIGTERM"]) {

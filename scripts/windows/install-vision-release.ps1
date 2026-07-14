@@ -457,7 +457,11 @@ function Stop-RecordedVision([object]$Selection) {
   [int]$recordedProcessId = 0
   if ($record.bundleDigest -cne $approved.bundleDigest -or $record.selectionRevision -cne $approved.revision -or -not [int]::TryParse([string]$record.processId, [ref]$recordedProcessId) -or $recordedProcessId -lt 1 -or $record.creationTimeUtcTicks -isnot [Int64] -or $record.creationTimeUtcTicks -lt 1) { return }
   $process = Get-Process -Id $recordedProcessId -ErrorAction SilentlyContinue
-  if ($null -eq $process -or $process -isnot [Diagnostics.Process]) { return }
+  if ($null -eq $process) {
+    Remove-Item -LiteralPath $processPath -Force -ErrorAction SilentlyContinue
+    return
+  }
+  if ($process -isnot [Diagnostics.Process]) { return }
   try {
     if ($process.HasExited) {
       Remove-Item -LiteralPath $processPath -Force -ErrorAction SilentlyContinue
@@ -833,6 +837,13 @@ function Ensure-VisionTask {
 }
 
 function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
+  $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$Descriptor.health.timeoutMs)
+  while (-not (Test-Path -LiteralPath $processPath -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 150
+  }
+  if (-not (Test-Path -LiteralPath $processPath -PathType Leaf)) {
+    Throw-InstallError "Vision launcher did not commit its process record"
+  }
   $active = (Read-StrictJson $processPath "Vision process record").value
   $entrypoint = Join-TrustedRelativePath ([string]$Selection.installDirectory) ([string]$Selection.entrypoint) "Vision selected entrypoint"
   $process = Get-Process -Id ([int]$active.processId) -ErrorAction Stop
@@ -844,7 +855,6 @@ function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
     $process.Path -cne $entrypoint -or
     ("sha256:" + (Get-FileHash -LiteralPath $process.Path -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $active.executableDigest
   ) { Throw-InstallError "Vision launched process does not bind the selected executable" }
-  $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$Descriptor.health.timeoutMs)
   do {
     try {
       $response = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}{1}" -f $Descriptor.health.port, $Descriptor.health.path) -TimeoutSec 2

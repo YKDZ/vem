@@ -1796,6 +1796,7 @@ $harnessContext = [ordered]@{
   evidencePath = $evidencePath
   harnessScriptRoot = $PSScriptRoot
   installerPath = [IO.Path]::GetFullPath($InstallerPath)
+  childPowerShellPath = $assetPowerShellPath
   runtimePath = $null
   certificateSubject = $certificateSubject
   certificateThumbprint = $null
@@ -2088,19 +2089,47 @@ try {
 
   # Hold the named mutex from a second process long enough to prove that a
   # concurrent production installation waits rather than racing activation.
-  $mutex = [Threading.Mutex]::new($false, "Global\VEMVisionReleaseInstaller")
-  try {
-    Assert-True ($mutex.WaitOne([TimeSpan]::FromSeconds(5))) "could not acquire installer mutex"
-    $blocked = Start-Job -ScriptBlock { param($script,$factory,$config,$evidence,$user) $delivery=Join-Path $factory "vision-release"; & $script -BundlePath (Join-Path $delivery "bundle.bin") -DescriptorPath (Join-Path $delivery "descriptor.json") -AttestationPath (Join-Path $delivery "attestation.json") -SbomPath (Join-Path $delivery "sbom.json") -ProvenancePath (Join-Path $delivery "provenance.json") -ConformanceEvidencePath (Join-Path $delivery "conformance.json") -ApprovalPath (Join-Path $delivery "approval.json") -FactoryManifestPath (Join-Path $delivery "factory-manifest.json") -ConfigurationPath $config -EvidencePath $evidence -TaskUser $user } -ArgumentList "C:\VEM\bringup\install-vision-release.ps1", $factoryRoot, (Join-Path $stateRoot "config\fixture.json"), $evidencePath, $env:USERNAME
-    Start-Sleep -Seconds 2
-    Assert-True ($blocked.State -eq "Running") "concurrent installer did not wait on mutex"
-  } finally {
-    if ($mutex) { $mutex.ReleaseMutex(); $mutex.Dispose() }
+  $blockedScriptPath = Join-Path $context.root "concurrent-install.ps1"
+  $blockedStdoutPath = Join-Path $context.root "concurrent-install.stdout.log"
+  $blockedStderrPath = Join-Path $context.root "concurrent-install.stderr.log"
+  $blockedScript = @(
+    'param([string]$Installer,[string]$Factory,[string]$Configuration,[string]$Evidence,[string]$TaskUser,[string]$HarnessScriptRoot)',
+    '$ErrorActionPreference = "Stop"',
+    '$delivery = Join-Path $Factory "vision-release"',
+    '& $Installer -BundlePath (Join-Path $delivery "bundle.bin") -DescriptorPath (Join-Path $delivery "descriptor.json") -AttestationPath (Join-Path $delivery "attestation.json") -SbomPath (Join-Path $delivery "sbom.json") -ProvenancePath (Join-Path $delivery "provenance.json") -ConformanceEvidencePath (Join-Path $delivery "conformance.json") -ApprovalPath (Join-Path $delivery "approval.json") -FactoryManifestPath (Join-Path $delivery "factory-manifest.json") -ConfigurationPath $Configuration -EvidencePath $Evidence -TaskUser $TaskUser',
+    '& (Join-Path $HarnessScriptRoot "verify-vem-runtime.ps1") -RequireVisionOnline -VisionOnly'
+  ) -join "`r`n"
+  Write-Utf8 $blockedScriptPath $blockedScript
+  function ConvertTo-HarnessCommandLineArgument([string]$Argument) {
+    $escaped = [regex]::Replace($Argument, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    return '"' + $escaped + '"'
   }
-  Wait-Job -Job $blocked -Timeout 30 | Out-Null
-  Receive-Job -Job $blocked -ErrorAction Stop | Out-Null
-  Remove-Job -Job $blocked -Force
-  & (Join-Path $context.harnessScriptRoot "verify-vem-runtime.ps1") -RequireVisionOnline -VisionOnly
+  $blockedArguments = (@("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $blockedScriptPath, $context.installerPath, $factoryRoot, (Join-Path $stateRoot "config\fixture.json"), $evidencePath, $env:USERNAME, $context.harnessScriptRoot) | ForEach-Object { ConvertTo-HarnessCommandLineArgument ([string]$_) }) -join " "
+  $mutex = [Threading.Mutex]::new($false, "Global\VEMVisionReleaseInstaller")
+  $blocked = $null
+  $mutexAcquired = $false
+  try {
+    try {
+      $mutexAcquired = $mutex.WaitOne([TimeSpan]::FromSeconds(5))
+      Assert-True $mutexAcquired "could not acquire installer mutex"
+      $blocked = Start-Process -FilePath ([string]$context.childPowerShellPath) -ArgumentList $blockedArguments -RedirectStandardOutput $blockedStdoutPath -RedirectStandardError $blockedStderrPath -PassThru
+      Start-Sleep -Seconds 2
+      Assert-True (-not $blocked.HasExited) "concurrent installer did not wait on mutex"
+    } finally {
+      if ($mutexAcquired) { $mutex.ReleaseMutex() }
+      $mutex.Dispose()
+    }
+    Assert-True ($blocked.WaitForExit(30000)) "concurrent installer did not complete after mutex release"
+    if ($blocked.ExitCode -ne 0) {
+      throw "concurrent installer failed with exit code $($blocked.ExitCode): stdout=$(Get-Content -LiteralPath $blockedStdoutPath -Raw -ErrorAction SilentlyContinue) stderr=$(Get-Content -LiteralPath $blockedStderrPath -Raw -ErrorAction SilentlyContinue)"
+    }
+  } finally {
+    if ($null -ne $blocked) {
+      if (-not $blocked.HasExited) { $blocked.Kill(); $blocked.WaitForExit(5000) | Out-Null }
+      $blocked.Dispose()
+    }
+  }
 } catch {
   [IO.File]::WriteAllText((Join-Path $context.root "process-mutex-runtime-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
   throw

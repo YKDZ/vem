@@ -791,7 +791,7 @@ try {
   Write-HarnessStage "behavior.hard-watchdog" "run-signal-creating"
   New-Item -ItemType File -Path $hardWatchdogRunSignalPath -ErrorAction Stop | Out-Null
   Write-HarnessStage "behavior.hard-watchdog" "run-signal-created"
-  Wait-ForSignal -Path $hardWatchdogFaultSignalPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3)) -FailureMessage "hard watchdog host did not validate its unconfirmed cleanup telemetry"
+  Wait-ForSignal -Path $hardWatchdogFaultSignalPath -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(15)) -FailureMessage "hard watchdog host did not validate its unconfirmed cleanup telemetry"
   Write-HarnessStage "behavior.hard-watchdog" "fault-observed"
   Write-HarnessStage "behavior.hard-watchdog" "fault-signal-reading"
   Assert-True ((Get-Content -LiteralPath $hardWatchdogFaultSignalPath -Raw).Trim() -ceq "fault-observed") "hard watchdog host did not acknowledge the expected cleanup fault"

@@ -93,6 +93,32 @@ describe("Vision release installer fixtures", () => {
   }
 
   boundedIt(
+    "waits for the launcher process record before validating it",
+    () => {
+      const source = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
+      const protocolStart = source.indexOf("function Test-VisionProtocol");
+      const recordWait = source.indexOf(
+        "Test-Path -LiteralPath $processPath -PathType Leaf",
+        protocolStart,
+      );
+      const recordRead = source.indexOf(
+        'Read-StrictJson $processPath "Vision process record"',
+        protocolStart,
+      );
+      assert.ok(protocolStart >= 0);
+      assert.ok(recordWait > protocolStart);
+      assert.ok(recordRead > recordWait);
+      assert.match(
+        source.slice(recordWait, recordRead),
+        /Vision launcher did not commit its process record/,
+      );
+    },
+  );
+
+  boundedIt(
     "keeps Candidate testing on the production extraction and runtime contracts",
     () => {
       const source = readFileSync(

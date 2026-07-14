@@ -107,6 +107,10 @@ try {
     Assert-ThrowsMessage { Stop-RecordedVision $selection } "Vision process record is not valid UTF-8 JSON" "corrupt process record normal diagnostic"
     [IO.File]::WriteAllText($processPath, (@{ bundleDigest=$selection.bundleDigest; processId=4242; creationTimeUtc=$startTime.ToString("o"); executablePath=$victimPath; executableDigest="sha256:" + "b" * 64; selectionRevision=$selection.revision; unknown="unexpected" } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Assert-ThrowsMessage { Stop-RecordedVision $selection } "Vision process record has unknown or missing fields" "unknown-key process record normal diagnostic"
+    [IO.File]::WriteAllText($processPath, (@{ bundleDigest=$selection.bundleDigest; processId=4242; creationTimeUtcTicks=$startTime.Ticks; executablePath=$approvedPath; executableDigest=$approvedDigest; selectionRevision=$selection.revision } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    function Get-Process { return $null }
+    Stop-RecordedVision $selection
+    if (Test-Path -LiteralPath $processPath -PathType Leaf) { throw "stale trusted process record was not removed" }
     if ($env:OS -eq "Windows_NT") {
       $fakeWindir = Join-Path $root "fake-windir"; $fakeSystem32 = Join-Path $fakeWindir "System32"; New-Item -ItemType Directory -Force -Path $fakeSystem32 | Out-Null
       $fakeTaskKill = Join-Path $fakeSystem32 "taskkill.exe"; $fakeTaskKillSource = Join-Path $root "FakeTaskKill.cs"
@@ -144,7 +148,7 @@ try {
         }
       }
     }
-    Test-SourceBoundary @('Resolve-ApprovedVisionExecution $Selection', '$legacyKeys = @("bundleDigest", "processId", "creationTimeUtc", "executablePath", "executableDigest", "selectionRevision")', '$isExpectedLegacyRecord =', 'unsupported legacy creationTimeUtc identity; hard migration requires creationTimeUtcTicks', 'Assert-Keys $record @("bundleDigest", "processId", "creationTimeUtcTicks", "executablePath", "executableDigest", "selectionRevision") "Vision process record"', '$process -isnot [Diagnostics.Process]', '$process.StartTime.ToUniversalTime().Ticks -ne $record.creationTimeUtcTicks', '$actualPath -cne $approved.executablePath', '$approved.executableDigest', 'function Stop-VerifiedProcessTree', 'Stop-VerifiedProcessTree $process', 'taskkill.exe', 'taskkill /T /F exited with code', '$process.WaitForExit(5000)', '$process.Dispose()')
+    Test-SourceBoundary @('Resolve-ApprovedVisionExecution $Selection', '$legacyKeys = @("bundleDigest", "processId", "creationTimeUtc", "executablePath", "executableDigest", "selectionRevision")', '$isExpectedLegacyRecord =', 'unsupported legacy creationTimeUtc identity; hard migration requires creationTimeUtcTicks', 'Assert-Keys $record @("bundleDigest", "processId", "creationTimeUtcTicks", "executablePath", "executableDigest", "selectionRevision") "Vision process record"', 'if ($null -eq $process) {', '$process -isnot [Diagnostics.Process]', '$process.StartTime.ToUniversalTime().Ticks -ne $record.creationTimeUtcTicks', '$actualPath -cne $approved.executablePath', '$approved.executableDigest', 'function Stop-VerifiedProcessTree', 'Stop-VerifiedProcessTree $process', 'taskkill.exe', 'taskkill /T /F exited with code', '$process.WaitForExit(5000)', '$process.Dispose()')
     Write-Output "process-record fixtures passed"
   } elseif ($Case -eq "launcher") {
     $script:launcherPath = Join-Path $root "start_vision.bat"
@@ -625,6 +629,52 @@ Write-Output ("aggregate failure fixture passed parentId={0} descendantId={1}" -
     Write-Output "launcher fixtures passed"
   } elseif ($Case -eq "protocol") {
     Test-SourceBoundary @("vision.hello", "vision.ready", "ClientWebSocket", "mockScenario", "modelReady", "Descriptor.releaseVersion")
+    Add-Type -TypeDefinition @'
+using System.IO;
+using System.Text;
+using System.Threading;
+public static class VisionFixtureDelayedFile {
+  public static Thread Write(string path, string content, int delayMilliseconds) {
+    var thread = new Thread(() => {
+      Thread.Sleep(delayMilliseconds);
+      File.WriteAllText(path, content, new UTF8Encoding(false));
+    });
+    thread.IsBackground = true;
+    thread.Start();
+    return thread;
+  }
+}
+'@
+    $processStateRoot = Join-Path $root "process-state"; New-Item -ItemType Directory -Path $processStateRoot | Out-Null
+    $processPath = Join-Path $processStateRoot "active-process.json"
+    $fixtureProcess = Microsoft.PowerShell.Management\Get-Process -Id $PID
+    try {
+      $entrypoint = [IO.Path]::GetFullPath($fixtureProcess.Path)
+      $selection = [pscustomobject]@{ revision="revision-1"; bundleDigest=("sha256:" + "a" * 64); installDirectory=(Split-Path -Parent $entrypoint); entrypoint=(Split-Path -Leaf $entrypoint) }
+      $descriptor = [pscustomobject]@{ health=[pscustomobject]@{ timeoutMs=1500; port=1; path="/health" }; protocol=[pscustomobject]@{ version="vem.vision.v1"; webSocketPath="/ws" }; releaseVersion="fixture" }
+      $record = @{ bundleDigest=$selection.bundleDigest; processId=$fixtureProcess.Id; creationTimeUtcTicks=$fixtureProcess.StartTime.ToUniversalTime().Ticks; executablePath=$entrypoint; executableDigest=("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()); selectionRevision=$selection.revision } | ConvertTo-Json -Compress
+      function Invoke-RestMethod { throw "fixture health unavailable" }
+      $writer = [VisionFixtureDelayedFile]::Write($processPath, $record, 500)
+      $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+      try {
+        Assert-ThrowsMessage { Test-VisionProtocol $selection $descriptor } "Vision health did not bind to launched approved process" "delayed process record"
+      } finally {
+        $stopwatch.Stop(); $writer.Join()
+      }
+      if ($stopwatch.ElapsedMilliseconds -lt 1250 -or $stopwatch.ElapsedMilliseconds -gt 1800) { throw "Vision protocol did not share one deadline across process-record and health waits: $($stopwatch.ElapsedMilliseconds)ms" }
+
+      Remove-Item -LiteralPath $processPath -Force
+      $descriptor.health.timeoutMs = 300
+      $stopwatch.Restart()
+      try {
+        Assert-ThrowsMessage { Test-VisionProtocol $selection $descriptor } "Vision launcher did not commit its process record" "missing process record"
+      } finally {
+        $stopwatch.Stop()
+      }
+      if ($stopwatch.ElapsedMilliseconds -lt 200 -or $stopwatch.ElapsedMilliseconds -gt 800) { throw "Vision process-record timeout did not honor its deadline: $($stopwatch.ElapsedMilliseconds)ms" }
+    } finally {
+      $fixtureProcess.Dispose()
+    }
     Write-Output "protocol fixtures passed"
   } elseif ($Case -eq "rollback") {
     Test-SourceBoundary @('Rollback-PreviousRelease', 'Assert-InstalledRelease $metadata $Previous', 'Test-VisionProtocol $Previous')
