@@ -1049,11 +1049,24 @@ describe("real deterministic Factory ISO builder", () => {
     );
     assert.match(bios, /<settings pass="specialize">/);
     assert.match(bios, /prepare-oobe-bootstrap\.ps1/);
-    assert.doesNotMatch(
+    assert.match(bios, /<settings pass="oobeSystem">/);
+    assert.match(
       bios,
-      /<settings pass="oobeSystem">|<UserAccounts>|<AutoLogon>|<FirstLogonCommands>/,
+      /<component name="Microsoft-Windows-International-Core"[^>]*>[\s\S]*?<InputLocale>zh-CN<\/InputLocale>[\s\S]*?<SystemLocale>zh-CN<\/SystemLocale>[\s\S]*?<UILanguage>zh-CN<\/UILanguage>[\s\S]*?<UserLocale>zh-CN<\/UserLocale>/,
     );
-    assert.doesNotMatch(bios, /<Password>|YKDZ/);
+    for (const setting of [
+      "HideEULAPage",
+      "HideLocalAccountScreen",
+      "HideOnlineAccountScreens",
+      "HideWirelessSetupInOOBE",
+    ]) {
+      assert.match(bios, new RegExp(`<${setting}>true</${setting}>`));
+    }
+    assert.match(bios, /<UserAccounts>[\s\S]*?<Name>VEMOobeBootstrap<\/Name>/);
+    assert.match(bios, /<Group>Users<\/Group>/);
+    assert.doesNotMatch(bios, /SkipMachineOOBE|SkipUserOOBE/);
+    assert.doesNotMatch(bios, /<AutoLogon>|<FirstLogonCommands>/);
+    assert.doesNotMatch(bios, /YKDZ/);
 
     const production = factoryAutounattendXml(
       "production",
@@ -1064,11 +1077,7 @@ describe("real deterministic Factory ISO builder", () => {
     assert.doesNotMatch(production, /<Name>Admin<\/Name>/);
     assert.doesNotMatch(production, /<Username>Admin<\/Username>/);
     assert.doesNotMatch(production, /YKDZ/);
-    assert.doesNotMatch(
-      production,
-      /<Password><Value>[^<]+<\/Value>/,
-      "deterministic Factory media must not embed a credential",
-    );
+    assert.match(production, /<Name>VEMOobeBootstrap<\/Name>/);
     assert.throws(
       () => factoryAutounattendXml("testbed", 4, "bios", "Enterprise"),
       /unsupported Factory Windows image edition/,
@@ -1383,10 +1392,12 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(unattended, /<PartitionID>3<\/PartitionID>/);
       assert.match(unattended, /\/IMAGE\/INDEX/);
       assert.doesNotMatch(unattended, /private.?key|credential/i);
-      assert.doesNotMatch(
-        unattended,
-        /<Password><Value>[^<]+<\/Value>/,
-        "Factory unattended media must not embed a password value",
+      assert.deepEqual(
+        [...unattended.matchAll(/<Password><Value>([^<]+)<\/Value>/g)].map(
+          (match) => match[1],
+        ),
+        ["VEM-Factory-OOBE-v1!"],
+        "Factory unattended media may embed only the disposable OOBE bootstrap password",
       );
       const baseline = JSON.parse(
         await readFile(
@@ -1554,10 +1565,9 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(prepareOobe, /one-time-personalization\.json/);
       assert.match(prepareOobe, /credentials\.bootstrap/);
       assert.match(prepareOobe, /-cne 'YKDZ'/);
-      assert.match(prepareOobe, /oobe-unattend\.xml/);
-      assert.match(prepareOobe, /HideWirelessSetupInOOBE/);
-      assert.match(prepareOobe, /<Value>\$password<\/Value>/);
-      assert.match(prepareOobe, /<Username>\$user<\/Username>/);
+      assert.doesNotMatch(prepareOobe, /oobe-unattend\.xml/);
+      assert.doesNotMatch(prepareOobe, /<unattend|UnattendFile|Panther/i);
+      assert.doesNotMatch(prepareOobe, /<AutoLogon>|<UserAccounts>/);
       assert.doesNotMatch(
         prepareOobe,
         /<FirstLogonCommands>|RequiresUserInput/,
@@ -1590,8 +1600,6 @@ describe("real deterministic Factory ISO builder", () => {
         prepareOobe,
         /Unregister-ScheduledTask[^\n]+VEMFactoryOobeCleanup/,
       );
-      assert.ok(prepareOobe.includes("HKLM:\\SYSTEM\\Setup"));
-      assert.match(prepareOobe, /New-ItemProperty[^\n]+UnattendFile/);
       const completeOobe = await readFile(
         join(
           directory,
@@ -1605,8 +1613,8 @@ describe("real deterministic Factory ISO builder", () => {
         "utf8",
       );
       assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
-      assert.match(completeOobe, /Remove-ItemProperty[^\n]+UnattendFile/);
-      assert.ok(completeOobe.includes("Panther\\unattend.xml"));
+      assert.match(completeOobe, /Remove-LocalUser[^\n]+VEMOobeBootstrap/);
+      assert.doesNotMatch(completeOobe, /UnattendFile|Panther/i);
       assert.match(completeOobe, /VEM_PERSONALIZATION/);
       assert.match(completeOobe, /InvokeVerb\('Eject'\)/);
       assert.match(completeOobe, /attempt -lt 30/);

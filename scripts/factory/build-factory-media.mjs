@@ -890,6 +890,16 @@ export function factoryAutounattendXml(
       <RunSynchronous><RunSynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><Path>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\prepare-oobe-bootstrap.ps1 -MediaRoot C:\\VEM\\Factory</Path><Description>Prepare installation-unique VEM OOBE bootstrap</Description></RunSynchronousCommand></RunSynchronous>
     </component>
   </settings>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>zh-CN</InputLocale><SystemLocale>zh-CN</SystemLocale><UILanguage>zh-CN</UILanguage><UserLocale>zh-CN</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideLocalAccountScreen>true</HideLocalAccountScreen><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
+      <UserAccounts><LocalAccounts><LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Password><Value>VEM-Factory-OOBE-v1!</Value><PlainText>true</PlainText></Password><Description>Temporary VEM Factory OOBE bootstrap</Description><DisplayName>VEM Factory OOBE Bootstrap</DisplayName><Group>Users</Group><Name>VEMOobeBootstrap</Name></LocalAccount></LocalAccounts></UserAccounts>
+      <RegisteredOwner>VEM Factory</RegisteredOwner><RegisteredOrganization>VEM</RegisteredOrganization><TimeZone>UTC</TimeZone>
+    </component>
+  </settings>
 </unattend>
 `;
 }
@@ -902,7 +912,6 @@ export function factoryOobeBootstrapPreparationScript(profile) {
 $ErrorActionPreference = 'Stop'
 $factoryRoot = 'C:\\ProgramData\\VEM\\factory'
 $personalizationPath = Join-Path $factoryRoot 'one-time-personalization.json'
-$answerPath = Join-Path $factoryRoot 'oobe-unattend.xml'
 $diagnosticPath = Join-Path $factoryRoot 'oobe-bootstrap-status.json'
 $stage = 'initialize'
 function Write-BootstrapStatus([string]$State, [string]$Stage, [string]$ErrorType = '') {
@@ -928,26 +937,6 @@ try {
   $kiosk = $media.credentials.kiosk
   if ($null -eq $credential -or [string]$credential.user -cne '${maintenanceUser}' -or $credential.password -isnot [string] -or $credential.password.Length -lt 16 -or $credential.password -notmatch '^[\\x20-\\x7E]+$') { throw 'Factory OOBE maintenance credential is invalid' }
   if ($null -eq $kiosk -or [string]$kiosk.user -cne 'VEMKiosk' -or $kiosk.password -isnot [string] -or $kiosk.password.Length -lt 16 -or $kiosk.password -notmatch '^[\\x20-\\x7E]+$') { throw 'Factory OOBE kiosk credential is invalid' }
-  $user = [Security.SecurityElement]::Escape([string]$kiosk.user)
-  $password = [Security.SecurityElement]::Escape([string]$kiosk.password)
-  $stage = 'write-oobe-answer'
-  $answer = @"
-<?xml version="1.0" encoding="utf-8"?>
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-  <settings pass="oobeSystem">
-    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <InputLocale>zh-CN</InputLocale><SystemLocale>zh-CN</SystemLocale><UILanguage>zh-CN</UILanguage><UserLocale>zh-CN</UserLocale>
-    </component>
-    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideLocalAccountScreen>true</HideLocalAccountScreen><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
-      <AutoLogon><Password><Value>$password</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>$user</Username></AutoLogon>
-      <RegisteredOwner>VEM Factory</RegisteredOwner><RegisteredOrganization>VEM</RegisteredOrganization><TimeZone>UTC</TimeZone>
-    </component>
-  </settings>
-</unattend>
-"@
-  [IO.File]::WriteAllText($answerPath, $answer, [Text.UTF8Encoding]::new($false))
-  New-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -Value $answerPath -PropertyType String -Force | Out-Null
   $stage = 'bootstrap-runtime'
   & (Join-Path $MediaRoot 'bootstrap-factory-runtime.ps1') -MediaRoot $MediaRoot
   $stage = 'register-cleanup'
@@ -962,9 +951,6 @@ try {
   Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name DefaultPassword -ErrorAction SilentlyContinue
   Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
-  $configuredAnswer = [string](Get-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue).UnattendFile
-  if ($configuredAnswer -ceq $answerPath) { Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue }
-  Remove-Item -LiteralPath $answerPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
   Write-BootstrapStatus 'failed' $stage $failureType
   throw
@@ -974,13 +960,8 @@ try {
 
 export function factoryOobeCompletionScript() {
   return `$ErrorActionPreference = 'Stop'
-$answerPath = 'C:\\ProgramData\\VEM\\factory\\oobe-unattend.xml'
 Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
-$configuredAnswer = [string](Get-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue).UnattendFile
-if ($configuredAnswer -ceq $answerPath) { Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue }
-Remove-Item -LiteralPath $answerPath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath "$env:WINDIR\\Panther\\unattend.xml" -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath "$env:WINDIR\\Panther\\Unattend\\unattend.xml" -Force -ErrorAction SilentlyContinue
+Remove-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
 $shell = New-Object -ComObject Shell.Application
 $personalizationVolumes = @()
 for ($attempt = 0; $attempt -lt 30; $attempt += 1) {

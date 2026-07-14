@@ -3491,6 +3491,10 @@ export function buildFactoryPreclaimVerificationScript(options = {}) {
   const verifierEvidencePath = `C:\\Windows\\Temp\\vem-factory-preclaim-${runId}.json`;
   const machineConfigPath =
     "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json";
+  const oobeStatusPath =
+    "C:\\ProgramData\\VEM\\factory\\oobe-bootstrap-status.json";
+  const deprecatedOobeAnswerPath =
+    "C:\\ProgramData\\VEM\\factory\\oobe-unattend.xml";
   const identityPaths = [
     "C:\\ProgramData\\VEM\\provisioning\\machine-profile.json",
     "C:\\ProgramData\\VEM\\provisioning\\provisioning-profile.json",
@@ -3500,12 +3504,38 @@ $ErrorActionPreference = 'Stop'
 $verifierPath = ${psString(verifierPath)}
 $verifierEvidencePath = ${psString(verifierEvidencePath)}
 $machineConfigPath = ${psString(machineConfigPath)}
+$oobeStatusPath = ${psString(oobeStatusPath)}
+$deprecatedOobeAnswerPath = ${psString(deprecatedOobeAnswerPath)}
 $identityPaths = ${psString(JSON.stringify(identityPaths))} | ConvertFrom-Json
 if (-not (Test-Path -LiteralPath $verifierPath -PathType Leaf)) {
   throw "Factory ISO verifier is missing: $verifierPath"
 }
 
 try {
+  $oobeDeadline = (Get-Date).AddMinutes(30)
+  do {
+    $oobeStatus = if (Test-Path -LiteralPath $oobeStatusPath -PathType Leaf) {
+      Get-Content -LiteralPath $oobeStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    } else { $null }
+    $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
+    $cleanupTask = Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue
+    $personalizationVolumes = @(Get-Volume -FileSystemLabel 'VEM_PERSONALIZATION' -ErrorAction SilentlyContinue)
+    $oobeComplete =
+      $null -ne $oobeStatus -and
+      $oobeStatus.state -eq 'succeeded' -and
+      $oobeStatus.stage -eq 'complete' -and
+      [int]$setupState.OOBEInProgress -eq 0 -and
+      [int]$setupState.SystemSetupInProgress -eq 0 -and
+      [int]$setupState.SetupType -eq 0 -and
+    [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
+    -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
+    $null -eq (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue) -and
+      $null -eq $cleanupTask -and
+      $personalizationVolumes.Count -eq 0
+    if ($oobeComplete) { break }
+    Start-Sleep -Seconds 10
+  } while ((Get-Date) -lt $oobeDeadline)
+
   $factoryVerificationJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifierPath -EvidencePath $verifierEvidencePath
   $factoryVerifierExit = $LASTEXITCODE
   $factoryVerification = $factoryVerificationJson | ConvertFrom-Json
@@ -3577,7 +3607,7 @@ try {
     runId = ${psString(runId)}
     expectedUnclaimedMachineCode = ${psString(machineCode)}
     readOnly = $true
-    ok = $factoryVerifierExit -eq 0 -and [bool]$factoryVerification.ok -and $identityAbsent
+    ok = $factoryVerifierExit -eq 0 -and [bool]$factoryVerification.ok -and $identityAbsent -and $oobeComplete
     checks = [ordered]@{
       factoryRuntime = [ordered]@{
         ok = [bool]$factoryVerification.ok
@@ -3596,6 +3626,19 @@ try {
         machineConfig = $machineConfig
         provisioningFileCount = $provisioningFiles.Count
         protectedSecretFileCount = $secretFiles.Count
+      }
+      oobeComplete = [ordered]@{
+        asserted = $oobeComplete
+        bootstrapState = if ($null -ne $oobeStatus) { $oobeStatus.state } else { $null }
+        bootstrapStage = if ($null -ne $oobeStatus) { $oobeStatus.stage } else { $null }
+        oobeInProgress = $setupState.OOBEInProgress
+        systemSetupInProgress = $setupState.SystemSetupInProgress
+        setupType = $setupState.SetupType
+        unattendOverride = $setupState.UnattendFile
+        deprecatedAnswerPresent = Test-Path -LiteralPath $deprecatedOobeAnswerPath
+        bootstrapAccountPresent = $null -ne (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue)
+        cleanupTaskPresent = $null -ne $cleanupTask
+        personalizationVolumeCount = $personalizationVolumes.Count
       }
     }
   }
