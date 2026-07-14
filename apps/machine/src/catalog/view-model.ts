@@ -46,6 +46,7 @@ export const catalogTopCategories: readonly CatalogTopCategory[] = [
 ];
 
 const FALLBACK_SUBCATEGORY_KEY = "uncategorized";
+const FALLBACK_TOP_CATEGORY_KEY: CatalogTopCategoryKey = "socks";
 
 function sortCatalogItems(items: MachineCatalogItem[]): MachineCatalogItem[] {
   return [...items].sort(
@@ -63,7 +64,7 @@ function includesAny(value: string, keywords: readonly string[]): boolean {
   return keywords.some((keyword) => value.includes(normalizeText(keyword)));
 }
 
-export function topCategoryForItem(
+function matchingTopCategory(
   item: Pick<MachineCatalogItem, "categoryName" | "productName">,
 ): CatalogTopCategory | null {
   const categoryName = normalizeText(item.categoryName);
@@ -77,12 +78,29 @@ export function topCategoryForItem(
   );
 }
 
+export function usesFallbackTopCategory(
+  item: Pick<MachineCatalogItem, "categoryName" | "productName">,
+): boolean {
+  return matchingTopCategory(item) === null;
+}
+
+export function topCategoryForItem(
+  item: Pick<MachineCatalogItem, "categoryName" | "productName">,
+): CatalogTopCategory {
+  return (
+    matchingTopCategory(item) ??
+    catalogTopCategories.find(
+      (category) => category.key === FALLBACK_TOP_CATEGORY_KEY,
+    )!
+  );
+}
+
 export function groupItemsByTopCategory(
   items: readonly MachineCatalogItem[],
 ): CatalogTopCategoryGroup[] {
   return catalogTopCategories.map((category) => {
     const categoryItems = sortCatalogItems(
-      items.filter((item) => topCategoryForItem(item)?.key === category.key),
+      items.filter((item) => topCategoryForItem(item).key === category.key),
     );
     return {
       ...category,

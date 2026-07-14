@@ -75,6 +75,22 @@ describe("machine catalog view model", () => {
     expect(groups.map((group) => group.saleableStock)).toEqual([5, 3, 2]);
   });
 
+  it("keeps an available product with a missing or unknown category in a stable fixed-card fallback", () => {
+    const groups = groupItemsByTopCategory([
+      item("未知品类的可售商品", null, 1, 2),
+      item("另一未知商品", "季节限定", 2, 1),
+    ]);
+
+    expect(groups).toHaveLength(3);
+    expect(groups[0]).toMatchObject({
+      key: "socks",
+      saleableStock: 3,
+    });
+    expect(
+      groups[0].items.map((catalogItem) => catalogItem.productName),
+    ).toEqual(["未知品类的可售商品", "另一未知商品"]);
+  });
+
   it("groups second-level product types by current category snapshot", () => {
     const groups = groupSubcategories([
       item("运动船袜五双装", "袜子", 2),

@@ -47,6 +47,7 @@ import {
   createMachineSchema,
   createMachineSlotSchema,
   environmentControlResultPayloadSchema,
+  isManagedMediaReference,
   machineHeartbeatStatusPayloadSchema,
   machineClaimRequestSchema,
   mqttSignedEnvelopeSchema,
@@ -1223,11 +1224,17 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     publicUrl: string | null,
   ): string | null {
     if (!publicUrl) return null;
+    if (isManagedMediaReference(publicUrl)) return publicUrl;
     try {
-      return new URL(publicUrl).pathname;
+      const reference = new URL(publicUrl).pathname;
+      if (isManagedMediaReference(reference)) return reference;
     } catch {
-      return publicUrl;
+      // The warning below records the same safe failure as a non-URL value.
     }
+    this.logger.warn(
+      `catalog managed media reference rejected: ${publicUrl.slice(0, 256)}`,
+    );
+    return null;
   }
 
   async getMachinePlanogramVersions(machineId: string) {

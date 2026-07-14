@@ -1,3 +1,5 @@
+import { isManagedMediaReference } from "@vem/shared";
+
 import {
   getDaemonConnectionInfo,
   type DaemonConnectionInfo,
@@ -47,6 +49,39 @@ import {
   type VisionStatus,
   type WifiScanResponse,
 } from "./schemas";
+
+function normalizeSaleViewManagedMedia(payload: unknown): {
+  payload: unknown;
+  mediaDiagnostics: SaleViewSnapshot["mediaDiagnostics"];
+} {
+  if (!isRecord(payload) || !isUnknownArray(payload.items)) {
+    return { payload, mediaDiagnostics: [] };
+  }
+
+  const mediaDiagnostics: Array<
+    NonNullable<SaleViewSnapshot["mediaDiagnostics"]>[number]
+  > = [];
+  const items = payload.items.map((item) => {
+    if (!isRecord(item)) {
+      return item;
+    }
+    const normalized = { ...item };
+    for (const field of ["coverImageUrl", "tryOnSilhouetteUrl"] as const) {
+      const reference = normalized[field];
+      if (reference === null || reference === undefined) continue;
+      if (typeof reference === "string" && isManagedMediaReference(reference)) {
+        continue;
+      }
+      mediaDiagnostics.push({
+        reference: typeof reference === "string" ? reference : null,
+        message: `daemon sale view contained an invalid ${field} managed media reference`,
+      });
+      normalized[field] = null;
+    }
+    return normalized;
+  });
+  return { payload: { ...payload, items }, mediaDiagnostics };
+}
 
 export class DaemonUnavailableError extends Error {
   public readonly cause?: unknown;
@@ -142,6 +177,14 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
 }
 
 export class DaemonApiClient {
@@ -473,9 +516,13 @@ export class DaemonApiClient {
   }
 
   async getSaleView(): Promise<SaleViewSnapshot> {
-    return machineSaleViewSnapshotSchema.parse(
+    const normalized = normalizeSaleViewManagedMedia(
       await this.request("/v1/sale-view"),
     );
+    return {
+      ...machineSaleViewSnapshotSchema.parse(normalized.payload),
+      mediaDiagnostics: normalized.mediaDiagnostics,
+    };
   }
 
   async recordStockMovement(body: unknown): Promise<SaleViewSnapshot> {

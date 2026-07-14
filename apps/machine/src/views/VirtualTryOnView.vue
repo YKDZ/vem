@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { resolveManagedMediaReference } from "@/catalog/managed-media";
@@ -23,12 +23,28 @@ const selectedVariant = computed(
       (variant) => variant.variantId === variantId.value,
     ) ?? null,
 );
-const silhouetteUrl = computed(
-  () =>
-    resolveManagedMediaReference(
-      selectedVariant.value?.tryOnSilhouetteUrl,
-      machineStore.config.apiBaseUrl,
-    ).url,
+const silhouetteResolution = computed(() =>
+  resolveManagedMediaReference(
+    selectedVariant.value?.tryOnSilhouetteUrl,
+    machineStore.config.apiBaseUrl,
+  ),
+);
+const silhouetteUrl = computed(() => silhouetteResolution.value.url);
+const silhouetteAvailable = ref(true);
+
+watch(
+  silhouetteResolution,
+  (resolution) => {
+    silhouetteAvailable.value = true;
+    if (resolution.diagnostic) {
+      catalogStore.recordCatalogDiagnostic(
+        "try_on",
+        selectedVariant.value?.tryOnSilhouetteUrl,
+        resolution.diagnostic,
+      );
+    }
+  },
+  { immediate: true },
 );
 
 onMounted(() => {
@@ -51,6 +67,16 @@ async function exitTryOn(): Promise<void> {
     query: { variantId: variantId.value },
   });
 }
+
+function useSilhouettePlaceholder(): void {
+  if (!silhouetteAvailable.value) return;
+  silhouetteAvailable.value = false;
+  catalogStore.recordCatalogDiagnostic(
+    "try_on",
+    selectedVariant.value?.tryOnSilhouetteUrl,
+    "managed try-on silhouette failed to load",
+  );
+}
 </script>
 
 <template>
@@ -69,13 +95,20 @@ async function exitTryOn(): Promise<void> {
       data-test="try-on-preview-placeholder"
     ></div>
     <img
-      v-if="silhouetteUrl"
+      v-if="silhouetteUrl && silhouetteAvailable"
       class="try-on-silhouette try-on-silhouette-fixed"
       :src="silhouetteUrl"
       alt=""
       aria-hidden="true"
       data-test="try-on-silhouette"
+      @error="useSilhouettePlaceholder"
     />
+    <div
+      v-else
+      class="try-on-silhouette try-on-silhouette-placeholder"
+      aria-hidden="true"
+      data-test="try-on-silhouette-placeholder"
+    ></div>
     <section v-if="errorMessage" class="try-on-error" data-test="try-on-error">
       <p>{{ errorMessage }}</p>
     </section>
@@ -123,6 +156,12 @@ async function exitTryOn(): Promise<void> {
   transform: translate(-50%, -50%);
   object-fit: contain;
   pointer-events: none;
+}
+
+.try-on-silhouette-placeholder {
+  border: 2px dashed rgba(255, 255, 255, 0.4);
+  border-radius: 999px 999px 2rem 2rem;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .try-on-error {

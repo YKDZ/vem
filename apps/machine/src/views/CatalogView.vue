@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import type { CatalogTopCategoryKey } from "@/catalog/view-model";
@@ -16,7 +16,10 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import listTitleImage from "@/assets/home/list-title.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
-import { groupItemsByTopCategory } from "@/catalog/view-model";
+import {
+  groupItemsByTopCategory,
+  usesFallbackTopCategory,
+} from "@/catalog/view-model";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
@@ -104,6 +107,9 @@ const genderFilters: {
 const categoryGroups = computed(() =>
   groupItemsByTopCategory(catalogStore.availableItems),
 );
+const fallbackCategoryItems = computed(() =>
+  catalogStore.availableItems.filter(usesFallbackTopCategory),
+);
 const displayProducts = computed(() =>
   categoryGroups.value.flatMap((group) =>
     group.items.map((item) => toDisplayProduct(item, group.key)),
@@ -135,12 +141,19 @@ const homeNotification = computed(
         }),
 );
 
-function shouldEnterMaintenance(): boolean {
-  return (
-    connectivityStore.ready?.canSell === false &&
-    connectivityStore.ready.suggestedRoute === "maintenance"
-  );
-}
+watch(
+  fallbackCategoryItems,
+  (items) => {
+    for (const item of items) {
+      catalogStore.recordCatalogDiagnostic(
+        "category",
+        item.catalogKey,
+        "saleable item used fixed socks fallback because its category was missing or unknown",
+      );
+    }
+  },
+  { immediate: true },
+);
 
 async function refreshReadinessAndRoute(): Promise<void> {
   if (readinessRefreshInFlight) {
@@ -148,11 +161,6 @@ async function refreshReadinessAndRoute(): Promise<void> {
   }
   readinessRefreshInFlight = connectivityStore
     .refresh()
-    .then(async () => {
-      if (shouldEnterMaintenance()) {
-        await router.replace("/maintenance");
-      }
-    })
     .catch(() => undefined)
     .finally(() => {
       readinessRefreshInFlight = null;

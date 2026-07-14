@@ -715,7 +715,14 @@ export type EnvironmentControlResult = z.infer<
 >;
 export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
-export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema>;
+export type SaleViewMediaDiagnostic = {
+  reference: string | null;
+  message: string;
+};
+
+export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema> & {
+  mediaDiagnostics?: readonly SaleViewMediaDiagnostic[];
+};
 export type DaemonEvent = DaemonIpcKnownEventNotification;
 export type UnknownDaemonEvent = DaemonIpcUnknownEventNotification;
 

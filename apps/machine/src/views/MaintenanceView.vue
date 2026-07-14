@@ -97,6 +97,9 @@ const saleCriticalBlockers = computed(() =>
     operatorAction: saleCriticalBlockerAction(reason.code),
   })),
 );
+const catalogOperatorDiagnostics = computed(
+  () => catalogStore.operatorDiagnostics,
+);
 const latestVisionDiagnosticPayloadText = computed(() => {
   if (visionStore.latestDiagnosticPayload === null) {
     return "尚未返回诊断载荷。";
@@ -1862,6 +1865,51 @@ async function submitStockMovement(): Promise<void> {
             </dd>
           </div>
         </dl>
+
+        <section
+          v-if="saleCriticalBlockers.length > 0"
+          class="mt-5 border-t border-white/10 pt-4 text-left"
+        >
+          <h3 class="text-sm font-semibold text-slate-200">销售就绪阻塞项</h3>
+          <ul class="mt-2 grid gap-2 text-sm text-slate-100">
+            <li
+              v-for="blocker in saleCriticalBlockers"
+              :key="`${blocker.component}-${blocker.code}`"
+            >
+              <span class="font-semibold">
+                {{ blocker.operatorLabel }} · {{ blocker.code }}:
+              </span>
+              {{ blocker.message }}
+              <span class="text-slate-300"> {{ blocker.operatorAction }}</span>
+            </li>
+          </ul>
+        </section>
+
+        <section
+          class="mt-5 border-t border-white/10 pt-4 text-left"
+          data-test="catalog-operator-diagnostics"
+        >
+          <h3 class="text-sm font-semibold text-slate-200">
+            目录媒体与分类诊断
+          </h3>
+          <p
+            v-if="catalogOperatorDiagnostics.length === 0"
+            class="mt-2 text-sm text-slate-300"
+          >
+            尚未记录目录诊断。
+          </p>
+          <ul v-else class="mt-2 grid gap-2 text-sm text-slate-100">
+            <li
+              v-for="diagnostic in catalogOperatorDiagnostics"
+              :key="`${diagnostic.kind}-${diagnostic.reference}-${diagnostic.message}`"
+            >
+              {{ diagnostic.kind }} · {{ diagnostic.message }}
+              <span class="text-slate-300">{{
+                diagnostic.reference ?? "无引用"
+              }}</span>
+            </li>
+          </ul>
+        </section>
 
         <section class="mt-5 border-t border-white/10 pt-4 text-left">
           <h3 class="text-sm font-semibold text-slate-200">音频提示设置</h3>

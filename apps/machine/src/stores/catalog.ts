@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 
+import type { SaleViewMediaDiagnostic } from "@/daemon/schemas";
 import type {
   MachineCatalogItem,
   MachineCatalogSlotCandidate,
@@ -17,6 +18,10 @@ export type CatalogMediaDiagnostic = {
   reference: string | null;
   message: string;
   recordedAt: string;
+};
+
+export type CatalogOperatorDiagnostic = CatalogMediaDiagnostic & {
+  kind: "media" | "category" | "try_on";
 };
 
 let refreshInFlight: Promise<void> | null = null;
@@ -238,6 +243,7 @@ export const useCatalogStore = defineStore("catalog", {
     loading: false,
     error: null as string | null,
     mediaDiagnostics: [] as CatalogMediaDiagnostic[],
+    operatorDiagnostics: [] as CatalogOperatorDiagnostic[],
     autoRefreshEnabled: false,
   }),
   getters: {
@@ -287,6 +293,7 @@ export const useCatalogStore = defineStore("catalog", {
       planogramVersion?: string | null;
       lastUpdatedAt: string | null;
       lastError?: string | null;
+      mediaDiagnostics?: readonly SaleViewMediaDiagnostic[];
     }): void {
       this.items = snapshot.items.map((item) => asCatalogItem(item));
       this.cachedOnly = snapshot.cached ?? false;
@@ -294,6 +301,9 @@ export const useCatalogStore = defineStore("catalog", {
       this.planogramVersion = snapshot.planogramVersion ?? null;
       this.lastUpdatedAt = snapshot.lastUpdatedAt;
       this.error = snapshot.lastError ?? null;
+      for (const diagnostic of snapshot.mediaDiagnostics ?? []) {
+        this.recordMediaDiagnostic(diagnostic.reference, diagnostic.message);
+      }
     },
     recordMediaDiagnostic(
       reference: string | null | undefined,
@@ -310,6 +320,33 @@ export const useCatalogStore = defineStore("catalog", {
         ...this.mediaDiagnostics.slice(-19),
         {
           reference: reference ?? null,
+          message,
+          recordedAt: new Date().toISOString(),
+        },
+      ];
+      this.recordCatalogDiagnostic("media", reference, message);
+    },
+    recordCatalogDiagnostic(
+      kind: CatalogOperatorDiagnostic["kind"],
+      reference: string | null | undefined,
+      message: string,
+    ): void {
+      const normalizedReference = reference ?? null;
+      if (
+        this.operatorDiagnostics.some(
+          (diagnostic) =>
+            diagnostic.kind === kind &&
+            diagnostic.reference === normalizedReference &&
+            diagnostic.message === message,
+        )
+      ) {
+        return;
+      }
+      this.operatorDiagnostics = [
+        ...this.operatorDiagnostics.slice(-19),
+        {
+          kind,
+          reference: normalizedReference,
           message,
           recordedAt: new Date().toISOString(),
         },

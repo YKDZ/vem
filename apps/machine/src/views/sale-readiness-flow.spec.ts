@@ -1112,7 +1112,7 @@ describe("sale readiness UI flow", () => {
     expect(useCheckoutStore().customerCheckoutView.stage).toBe("none");
   });
 
-  it("leaves the catalog when readiness refresh requires maintenance", async () => {
+  it("keeps the fixed catalog home through repeated readiness changes", async () => {
     vi.useFakeTimers();
     const item = makeCatalogItem();
     const blockedHealth = {
@@ -1155,8 +1155,41 @@ describe("sale readiness UI flow", () => {
     await mountView(CatalogView);
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+      expect(getReadyMock).toHaveBeenCalled();
     });
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(document.querySelectorAll(".home-category-card")).toHaveLength(3);
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        eventId: "presence-before-refresh",
+        detectedAt: "2026-07-14T00:00:00.000Z",
+        profile: {
+          personPresent: true,
+          heightCm: 170,
+          shoulderWidthCm: 42,
+          ageRange: "adult",
+          gender: "unknown",
+          bodyType: "regular",
+          upperColor: "black",
+          confidence: 0.9,
+        },
+        quality: { overall: "good", warnings: [] },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+    expect(document.querySelector(".presence-present")).toBeTruthy();
+
+    getReadyMock.mockResolvedValue(readySnapshot());
+    await vi.advanceTimersByTimeAsync(5_000);
+    getReadyMock.mockResolvedValue(blockedReady);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(document.querySelectorAll(".home-category-card")).toHaveLength(3);
+    expect(document.querySelector(".presence-present")).toBeTruthy();
   });
 
   it("keeps vision recognition details silent in the catalog", async () => {
@@ -1477,6 +1510,44 @@ describe("sale readiness UI flow", () => {
       `http://localhost:3000${tryOnSilhouetteUrl}`,
     );
     expect(silhouette?.className).toContain("try-on-silhouette-fixed");
+  });
+
+  it("uses a local placeholder and operator diagnostic when the try-on silhouette cannot decode", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyVisionTryOnConfig();
+    mockTryOnSession();
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = item.variantId;
+
+    const host = await mountView(VirtualTryOnView);
+    const silhouette = requireElement<HTMLImageElement>(
+      host,
+      '[data-test="try-on-silhouette"]',
+    );
+    silhouette.dispatchEvent(new Event("error"));
+    await nextTick();
+
+    expect(host.querySelector('[data-test="try-on-silhouette"]')).toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-silhouette-placeholder"]'),
+    ).toBeTruthy();
+    expect(useCatalogStore().operatorDiagnostics).toEqual([
+      expect.objectContaining({
+        kind: "try_on",
+        reference: item.tryOnSilhouetteUrl,
+        message: "managed try-on silhouette failed to load",
+      }),
+    ]);
   });
 
   it("keeps try-on preview local without capture, upload, storage, or diagnostic logging", async () => {

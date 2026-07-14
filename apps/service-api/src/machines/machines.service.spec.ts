@@ -2840,6 +2840,49 @@ describe("MachinesService planogram lifecycle", () => {
     ]);
   });
 
+  it("fails closed for malformed catalog media while preserving the saleable row", async () => {
+    const catalogRow = {
+      machineCode: "M001",
+      slotId: slot.slotId,
+      slotCode: slot.slotCode,
+      layerNo: slot.layerNo,
+      cellNo: slot.cellNo,
+      inventoryId: slot.inventoryId,
+      variantId: slot.variantId,
+      productId: slot.productId,
+      productName: slot.productName,
+      productDescription: slot.productDescription,
+      coverImageUrl:
+        "//untrusted.example/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+      tryOnSilhouetteUrl: "/api/media-assets/../private/content",
+      categoryId: slot.categoryId,
+      categoryName: slot.categoryName,
+      sku: slot.sku,
+      size: slot.size,
+      color: slot.color,
+      priceCents: slot.priceCents,
+      availableQty: 1,
+      productSortOrder: slot.productSortOrder,
+      targetGender: slot.targetGender,
+    };
+    const query = {
+      from: vi.fn(() => query),
+      innerJoin: vi.fn(() => query),
+      leftJoin: vi.fn(() => query),
+      where: vi.fn(() => query),
+      orderBy: vi.fn(async () => [catalogRow]),
+    };
+    mockDb.select.mockReturnValueOnce(query);
+
+    await expect(service.getCatalogByMachineCode("M001")).resolves.toEqual([
+      {
+        ...catalogRow,
+        coverImageUrl: null,
+        tryOnSilhouetteUrl: null,
+      },
+    ]);
+  });
+
   it("reports no active planogram until an acknowledged version is active", async () => {
     const machine = {
       id: "550e8400-e29b-41d4-a716-446655440000",

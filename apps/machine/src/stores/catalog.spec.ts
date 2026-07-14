@@ -300,4 +300,30 @@ describe("catalog store sale view", () => {
 
     expect(store.items).toHaveLength(1);
   });
+
+  it("keeps bounded operator diagnostics for media and fallback categorization", () => {
+    const store = useCatalogStore();
+
+    store.recordMediaDiagnostic(
+      "/api/media-assets/bad/content",
+      "managed media failed to load",
+    );
+    store.recordCatalogDiagnostic(
+      "category",
+      "product:unknown",
+      "saleable item used fixed socks fallback because its category was missing or unknown",
+    );
+
+    expect(store.operatorDiagnostics).toEqual([
+      expect.objectContaining({
+        kind: "media",
+        reference: "/api/media-assets/bad/content",
+      }),
+      expect.objectContaining({
+        kind: "category",
+        reference: "product:unknown",
+      }),
+    ]);
+    expect(store.mediaDiagnostics).toHaveLength(1);
+  });
 });

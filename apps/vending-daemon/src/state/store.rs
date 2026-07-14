@@ -3598,8 +3598,7 @@ impl LocalStateStore {
             "SELECT item_json, updated_at
              FROM sale_view_projection
              WHERE planogram_version = ?1
-             ORDER BY json_extract(item_json, '$.productSortOrder') ASC,
-                      json_extract(item_json, '$.slotCode') ASC",
+             ORDER BY slot_id ASC",
         )
         .bind(&planogram_version)
         .fetch_all(&self.pool)
@@ -3608,11 +3607,22 @@ impl LocalStateStore {
         let mut items = Vec::with_capacity(rows.len());
         let mut last_updated_at = None;
         for (json, updated_at) in rows {
-            let mut item: SaleViewItem = serde_json::from_str(&json)?;
+            let mut item: SaleViewItem = match serde_json::from_str(&json) {
+                Ok(item) => item,
+                Err(error) => {
+                    eprintln!("sale view projection was malformed and has been omitted: {error}");
+                    continue;
+                }
+            };
             item.machine_code = machine_code.clone();
             last_updated_at = Some(updated_at);
             items.push(item);
         }
+        items.sort_by(|left, right| {
+            left.product_sort_order
+                .cmp(&right.product_sort_order)
+                .then_with(|| left.slot_code.cmp(&right.slot_code))
+        });
         let reservations = self.active_order_reservations().await?;
         apply_active_order_reservations(&mut items, &reservations);
 
@@ -5502,6 +5512,80 @@ mod tests {
             persisted.items[0].try_on_silhouette_url.as_deref(),
             Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content")
         );
+    }
+
+    #[tokio::test]
+    async fn sale_view_keeps_saleable_items_when_one_persisted_projection_is_malformed() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let mut tx = store
+            .pool()
+            .begin()
+            .await
+            .expect("begin fixture transaction");
+        sqlx::query(
+            "UPDATE current_stock_projection
+             SET physical_stock = 1, saleable_stock = 1, slot_sales_state = 'sale_ready'
+             WHERE planogram_version = ?1 AND slot_id = ?2",
+        )
+        .bind("PLAN-FAILURE")
+        .bind("550e8400-e29b-41d4-a716-446655440001")
+        .execute(tx.as_mut())
+        .await
+        .expect("make valid item saleable");
+        upsert_sale_view_projection_in_tx(
+            &mut tx,
+            "PLAN-FAILURE",
+            "550e8400-e29b-41d4-a716-446655440001",
+        )
+        .await
+        .expect("refresh valid projection");
+        sqlx::query(
+            "INSERT INTO machine_planogram_slots(
+               planogram_version,slot_id,slot_code,layer_no,cell_no,capacity,par_level,
+               inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
+               try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+               product_sort_order,target_gender
+             ) SELECT
+               planogram_version,?2,'A2',layer_no,2,capacity,par_level,
+               inventory_id,variant_id,product_id,'malformed media item',product_description,cover_image_url,
+               try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+               product_sort_order + 1,target_gender
+             FROM machine_planogram_slots
+             WHERE planogram_version = ?1 AND slot_id = ?3",
+        )
+        .bind("PLAN-FAILURE")
+        .bind("550e8400-e29b-41d4-a716-446655440099")
+        .bind("550e8400-e29b-41d4-a716-446655440001")
+        .execute(tx.as_mut())
+        .await
+        .expect("seed malformed slot metadata");
+        sqlx::query(
+            "INSERT INTO sale_view_projection(planogram_version,slot_id,item_json,slot_sales_state,updated_at)
+             VALUES (?1,?2,?3,?4,?5)",
+        )
+        .bind("PLAN-FAILURE")
+        .bind("550e8400-e29b-41d4-a716-446655440099")
+        .bind("{malformed")
+        .bind("sale_ready")
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await
+        .expect("seed malformed projection");
+        tx.commit().await.expect("commit fixture transaction");
+
+        let sale_view = store
+            .sale_view(Some("M001".to_string()))
+            .await
+            .expect("sale view");
+
+        assert_eq!(sale_view.items.len(), 1);
+        assert_eq!(sale_view.items[0].product_name, "water");
+        assert_eq!(sale_view.items[0].saleable_stock, 1);
     }
 
     fn single_slot_stock_snapshot(
