@@ -1245,7 +1245,11 @@ Disable-LocalUser -Name $manifest.accounts.maintenance -ErrorAction SilentlyCont
 $kiosk = Get-LocalUser -Name $manifest.accounts.kiosk -ErrorAction SilentlyContinue
 if ($null -eq $kiosk) { New-LocalUser -Name $manifest.accounts.kiosk -NoPassword -AccountNeverExpires | Out-Null }
 Disable-LocalUser -Name $manifest.accounts.kiosk -ErrorAction SilentlyContinue
-Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU' -Name NoAutoUpdate -Value 1 -Type DWord -Force
+$windowsUpdatePolicyPath = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU'
+if (-not (Test-Path -LiteralPath $windowsUpdatePolicyPath -PathType Container)) {
+  New-Item -Path $windowsUpdatePolicyPath -ItemType Directory -Force | Out-Null
+}
+Set-ItemProperty -Path $windowsUpdatePolicyPath -Name NoAutoUpdate -Value 1 -Type DWord -Force
 powercfg.exe /hibernate off | Out-Null
   Set-Content -LiteralPath 'C:\\ProgramData\\VEM\\factory\\baseline-complete.json' -Encoding UTF8 -Value (@{ schemaVersion = 'vem-factory-baseline/v1'; profile = $manifest.profile; machineIdentity = $null; completed = $true } | ConvertTo-Json -Compress)
 `;
