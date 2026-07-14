@@ -7719,6 +7719,10 @@ function buildEncodedPowerShellCommand(script) {
   ).toString("base64")}`;
 }
 
+export function buildStdinPowerShellCommand() {
+  return "powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -";
+}
+
 export function buildCleanBaseRemoteIdentityProbeCommand() {
   return buildEncodedPowerShellCommand(`
 $ErrorActionPreference = 'SilentlyContinue'
@@ -7945,7 +7949,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -8279,13 +8283,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
           }
           const sshCommand = buildSshCommand(options);
-          const remoteCommand = buildEncodedPowerShellCommand(
-            buildRemotePowerShellScript(options),
-          );
+          const remoteScript = buildRemotePowerShellScript(options);
+          const remoteCommand = buildStdinPowerShellCommand();
           const result = spawnSync(
             sshCommand[0],
             [...sshCommand.slice(1), remoteCommand],
-            { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+            {
+              encoding: "utf8",
+              input: `${remoteScript}\n`,
+              stdio: ["pipe", "pipe", "pipe"],
+            },
           );
           if (result.stdout) process.stdout.write(result.stdout);
           if (result.stderr) process.stderr.write(result.stderr);

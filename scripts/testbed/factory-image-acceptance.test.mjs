@@ -616,6 +616,7 @@ if (request.operation === "capture-approved-base") {
         ssh,
         `#!/bin/sh
 printf '%s\\n' "$@" > ${join(root, "ssh-args.txt")}
+cat > ${join(root, "ssh-stdin.ps1")}
 printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"factory-preclaim-verification","runId":"RUN-15-LIFECYCLE","expectedUnclaimedMachineCode":"VEM-TESTBED-WINVM-01","readOnly":true,"ok":true,"checks":{"factoryRuntime":{"ok":true},"absentMachineIdentity":{"asserted":true}}}'
 `,
         { mode: 0o700 },
@@ -663,15 +664,23 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       assert.equal(result.status, 0, result.stderr);
       assert.equal(JSON.parse(readFileSync(output, "utf8")).readOnly, true);
       const sshArgs = readFileSync(join(root, "ssh-args.txt"), "utf8");
+      const sshStdin = readFileSync(join(root, "ssh-stdin.ps1"), "utf8");
       assert.match(sshArgs, /-p\n2222\n/);
       assert.match(sshArgs, /YKDZ@10\.91\.2\.10/);
+      assert.match(sshArgs, /powershell -NoLogo -NoProfile -NonInteractive/);
+      assert.match(sshArgs, /-Command -/);
+      assert.doesNotMatch(sshArgs, /-EncodedCommand/);
+      assert.ok(sshArgs.length < 4096);
+      assert.match(sshStdin, /verify-factory-runtime\.ps1/);
+      assert.match(sshStdin, /factory-preclaim-verification\/v1/);
+      assert.match(sshStdin, /absentMachineIdentity/);
+      assert.ok(sshStdin.endsWith("\n\n"));
       assert.match(sshArgs, /StrictHostKeyChecking=accept-new/);
       assert.match(
         sshArgs,
         new RegExp(`UserKnownHostsFile=${lifecycleKnownHosts}`),
       );
       assert.match(sshArgs, /HostKeyAlias=vem-factory-run-15-lifecycle/);
-      assert.match(sshArgs, /-EncodedCommand/);
       assert.equal(
         readFileSync(lifecycleKnownHosts, "utf8"),
         "retained-by-parent\n",
