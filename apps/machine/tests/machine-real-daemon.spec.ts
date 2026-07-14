@@ -18,6 +18,7 @@ let daemon: DaemonProcess | null = null;
 let runtimeRoot = "";
 let dataDir = "";
 let daemonOutput: string[] = [];
+let daemonExit: Promise<void> | null = null;
 
 const DAEMON_START_TIMEOUT_MS = 300_000;
 const DAEMON_HTTP_BASE_URL = "http://127.0.0.1:7891";
@@ -108,6 +109,9 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
       },
     },
   );
+  daemonExit = new Promise((resolve) => {
+    daemon?.on("exit", () => resolve());
+  });
   daemon.stdout.on("data", (chunk) => {
     recordDaemonOutput("stdout", chunk);
   });
@@ -157,7 +161,20 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
 });
 
 test.afterAll(async () => {
-  daemon?.kill("SIGTERM");
+  if (daemon) {
+    daemon.kill("SIGTERM");
+    const stopped = await Promise.race([
+      daemonExit?.then(() => true) ?? Promise.resolve(true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000)),
+    ]);
+    if (!stopped) {
+      daemon.kill("SIGKILL");
+      await Promise.race([
+        daemonExit ?? Promise.resolve(),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+    }
+  }
   if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
 });
 

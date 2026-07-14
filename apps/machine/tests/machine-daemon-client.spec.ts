@@ -69,7 +69,7 @@ const emptyTransaction = {
   paymentNo: null,
   paymentMethod: null,
   paymentProvider: null,
-  paymentUrl: null,
+  paymentUrl: "https://pay.example/qr",
   paymentStatus: null,
   orderStatus: null,
   totalAmountCents: null,
@@ -258,7 +258,7 @@ function transactionSnapshot(
     paymentNo: "PAY-001",
     paymentMethod: nextAction === "wait_payment" ? "qr_code" : "mock",
     paymentProvider: nextAction === "wait_payment" ? "alipay" : "mock",
-    paymentUrl: nextAction === "wait_payment" ? null : "https://pay.example/qr",
+    paymentUrl: "https://pay.example/qr",
     paymentStatus: nextAction === "success" ? "succeeded" : "pending",
     orderStatus: nextAction === "success" ? "fulfilled" : "pending_payment",
     totalAmountCents: 5900,
@@ -688,6 +688,17 @@ async function startMockDaemon() {
   return daemon;
 }
 
+async function freezeMotion(page: import("@playwright/test").Page) {
+  await page.addStyleTag({
+    content: `
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    `,
+  });
+}
+
 test.beforeAll(async () => {
   server = await startMockDaemon();
 });
@@ -731,20 +742,21 @@ test("redesigned catalog home controls remain interactive", async ({
     .poll(async () => await carouselImage.getAttribute("src"))
     .not.toBe(firstCarouselSrc);
 
-  await page.getByRole("button", { name: /T恤/ }).dispatchEvent("click");
+  await freezeMotion(page);
+  await page.getByRole("button", { name: /T恤/ }).click();
   await expect(
     page.getByRole("img", { name: "商品列表，请点击选择您需要的商品" }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: /基础短袖/ }).click({ force: true });
+  await page.getByRole("button", { name: /基础短袖/ }).click();
   await expect(
     page.getByRole("heading", { name: "基础短袖", exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: /立即购买/ }).click({ force: true });
+  await page.getByRole("button", { name: /立即购买/ }).click();
   await expect(page.getByRole("heading", { name: "确认购买" })).toBeVisible();
 
-  await page.getByRole("button", { name: "返回" }).click({ force: true });
+  await page.getByRole("button", { name: "返回" }).click();
   await expect(page.getByRole("button", { name: /立即购买/ })).toBeVisible();
 });
 
@@ -775,6 +787,7 @@ test("restores active payment transaction", async ({ page }) => {
   });
   await expect(page.getByText("应付金额")).toBeVisible();
   await expect(page.getByText("¥59.00")).toBeVisible();
+  await expect(page.getByRole("img", { name: "支付二维码" })).toBeVisible();
 });
 
 test("routes active dispensing transaction", async ({ page }) => {
@@ -831,9 +844,8 @@ test("provisioning UI maps real daemon claim error contract without echoing code
   scenario = "provisioning";
   await page.goto("/");
   await page.getByLabel("领取码").fill("ABCD-2345");
-  await page
-    .getByRole("button", { name: "提交领取码", exact: true })
-    .click({ force: true });
+  await freezeMotion(page);
+  await page.getByRole("button", { name: "提交领取码", exact: true }).click();
 
   await expect(page.getByText("领取码已使用")).toBeVisible();
   await expect(page.getByText("ABCD-2345")).toHaveCount(0);
