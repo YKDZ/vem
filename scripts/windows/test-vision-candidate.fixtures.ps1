@@ -20,7 +20,7 @@ function Assert-Throws([scriptblock]$Action, [string]$Label) {
   throw "expected rejection: $Label"
 }
 
-foreach ($functionName in @("Assert-CandidateNonReparsePath", "Read-StrictJson", "Resolve-CandidateEntrypoint", "Get-VerifiedPreviousVisionRuntime", "Restore-VerifiedPreviousVisionRuntime", "Sanitize", "ConvertTo-CanonicalVisionJson", "Assert-PreapprovalDeliveryManifest")) {
+foreach ($functionName in @("Assert-CandidateNonReparsePath", "Assert-CandidateContainedPath", "Get-CandidateSha256Hex", "Read-StrictJson", "Resolve-CandidateEntrypoint", "Get-VerifiedPreviousVisionRuntime", "Restore-VerifiedPreviousVisionRuntime", "Sanitize", "ConvertTo-CanonicalVisionJson", "Assert-PreapprovalDeliveryManifest")) {
   Import-CandidateFunction $functionName
 }
 
@@ -55,7 +55,7 @@ try {
   foreach ($name in @("bundle.bin", "vision-release-descriptor.json", "test-vision-candidate.ps1", "vision-release-materialization.psm1", "vision-diagnostic-redaction.psm1")) { $deliveryFiles[$name] = "sha256:" + (Get-FileHash -LiteralPath (Join-Path $delivery $name) -Algorithm SHA256).Hash.ToLowerInvariant() }
   $unsigned = [ordered]@{ schemaVersion="vem-vision-preapproval-delivery/v1"; kind="vision-preapproval-delivery"; expectedDigest=$deliveryFiles["bundle.bin"]; descriptorDigest=$deliveryFiles["vision-release-descriptor.json"]; files=$deliveryFiles }
   $identityBytes = [Text.UTF8Encoding]::new($false).GetBytes(((ConvertTo-CanonicalVisionJson $unsigned) + [char]10))
-  $manifest = [ordered]@{ schemaVersion=$unsigned.schemaVersion; kind=$unsigned.kind; expectedDigest=$unsigned.expectedDigest; descriptorDigest=$unsigned.descriptorDigest; files=$deliveryFiles; identity=("sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($identityBytes))).ToLowerInvariant()) }
+  $manifest = [ordered]@{ schemaVersion=$unsigned.schemaVersion; kind=$unsigned.kind; expectedDigest=$unsigned.expectedDigest; descriptorDigest=$unsigned.descriptorDigest; files=$deliveryFiles; identity=("sha256:" + (Get-CandidateSha256Hex $identityBytes)) }
   $manifestPath = Join-Path $delivery "preapproval-manifest.json"; [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 16 -Compress), [Text.UTF8Encoding]::new($false))
   Assert-PreapprovalDeliveryManifest -Path $manifestPath -Expected $unsigned.expectedDigest -Bundle $bundle -Descriptor $descriptor -EntryScriptPath (Join-Path $delivery "test-vision-candidate.ps1") -MaterializerPath (Join-Path $delivery "vision-release-materialization.psm1") -RedactorPath (Join-Path $delivery "vision-diagnostic-redaction.psm1")
   $manifest.expectedDigest = "sha256:" + ("0" * 64); [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 16 -Compress), [Text.UTF8Encoding]::new($false))
@@ -72,10 +72,18 @@ try {
     $runtime = Get-VerifiedPreviousVisionRuntime $selectionPath $processPath
     if ($null -eq $runtime -or -not $runtime.active) { throw "active previous Vision runtime was not identity-bound" }
     function global:Start-ScheduledTask { param($TaskName,$TaskPath) }
+    function global:Stop-ScheduledTask { param($TaskName,$TaskPath) }
     if (-not (Restore-VerifiedPreviousVisionRuntime $runtime $selectionPath $processPath)) { throw "verified previous Vision runtime was not restored" }
+    # The empty Start-ScheduledTask fixture must not falsely report an inactive
+    # recorded release as restored merely because its selection remains valid.
+    $inactiveRecord = [ordered]@{ selectionRevision=$selection.revision; bundleDigest=$selection.bundleDigest; processId=2147483647; creationTimeUtcTicks=$record.creationTimeUtcTicks; executablePath=$activePath; executableDigest=$activeDigest }
+    [IO.File]::WriteAllText($processPath, ($inactiveRecord | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    $inactiveRuntime = Get-VerifiedPreviousVisionRuntime $selectionPath $processPath
+    if ($null -eq $inactiveRuntime -or $inactiveRuntime.active) { throw "inactive previous Vision runtime fixture was not created" }
+    if (Restore-VerifiedPreviousVisionRuntime $inactiveRuntime $selectionPath $processPath -TimeoutSeconds 0) { throw "expected inactive restore failure" }
     $record.executableDigest = "sha256:" + ("b" * 64); [IO.File]::WriteAllText($processPath, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Assert-Throws { Get-VerifiedPreviousVisionRuntime $selectionPath $processPath } "mismatched previous runtime digest"
-  } finally { $active.Dispose(); Remove-Item -LiteralPath Function:global:Start-ScheduledTask -Force -ErrorAction SilentlyContinue }
+  } finally { $active.Dispose(); Remove-Item -LiteralPath Function:global:Start-ScheduledTask,Function:global:Stop-ScheduledTask -Force -ErrorAction SilentlyContinue }
   Write-Output "candidate fixtures passed"
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

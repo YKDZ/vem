@@ -30,12 +30,31 @@ function Assert-CandidateNonReparsePath([string]$Path, [string]$Label) {
   return [IO.Path]::GetFullPath($Path)
 }
 
+function Assert-CandidateContainedPath([string]$Root, [string]$Candidate, [string]$Label) {
+  $trustedRoot = (Assert-CandidateNonReparsePath $Root "$Label root").TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+  $candidatePath = Assert-CandidateNonReparsePath $Candidate $Label
+  $prefix = $trustedRoot + [IO.Path]::DirectorySeparatorChar
+  if ($candidatePath -cne $trustedRoot -and -not $candidatePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label escapes its trusted root"
+  }
+  return $candidatePath
+}
+
+function Get-CandidateSha256Hex([byte[]]$Bytes) {
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha256.ComputeHash($Bytes))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
 function Read-StrictJson([string]$Path, [string]$Label) {
   Assert-CandidateNonReparsePath $Path $Label | Out-Null
   $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
   if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw "$Label must be a regular file" }
   $bytes = [IO.File]::ReadAllBytes($item.FullName)
-  return [pscustomobject]@{ value=([Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json); digest=("sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()) }
+  return [pscustomobject]@{ value=([Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json); digest=("sha256:" + (Get-CandidateSha256Hex $bytes)) }
 }
 function Write-AtomicJson([string]$Path, [object]$Value) {
   $parent = Split-Path -Parent $Path
@@ -51,7 +70,7 @@ function Resolve-CandidateEntrypoint([string]$Root, [string]$Relative) {
   $trustedRoot = Assert-CandidateNonReparsePath $Root "Vision Candidate staging root"
   $path = [IO.Path]::GetFullPath((Join-Path $trustedRoot $Relative)); $prefix = $trustedRoot.TrimEnd([char]92,[char]47) + [IO.Path]::DirectorySeparatorChar
   if (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Vision Candidate entrypoint escapes staging" }
-  Assert-CandidateNonReparsePath $path "Vision Candidate entrypoint" | Out-Null
+  Assert-CandidateContainedPath $trustedRoot $path "Vision Candidate entrypoint" | Out-Null
   if (Test-Path -LiteralPath $path) {
     $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
     if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw "Vision Candidate entrypoint must be a regular file" }
@@ -104,18 +123,28 @@ function Stop-VerifiedPreviousVisionRuntime([object]$Runtime) {
   throw "previous Vision process did not stop"
 }
 
-function Restore-VerifiedPreviousVisionRuntime([object]$Runtime, [string]$SelectionPath, [string]$ProcessPath) {
+function Restore-VerifiedPreviousVisionRuntime([object]$Runtime, [string]$SelectionPath, [string]$ProcessPath, [int]$TimeoutSeconds = 20) {
   if ($null -eq $Runtime) { return $false }
   Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction Stop
-  $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   do {
     try {
       $restored = Get-VerifiedPreviousVisionRuntime $SelectionPath $ProcessPath
-      if ($null -ne $restored -and $restored.selection.revision -ceq $Runtime.selection.revision -and $restored.selection.bundleDigest -ceq $Runtime.selection.bundleDigest -and $restored.executablePath -ceq $Runtime.executablePath -and $restored.executableDigest -ceq $Runtime.executableDigest) { return $true }
+      if (
+        $null -ne $restored -and
+        [bool]$restored.active -and
+        $restored.selection.revision -ceq $Runtime.selection.revision -and
+        $restored.selection.bundleDigest -ceq $Runtime.selection.bundleDigest -and
+        $restored.processId -eq $Runtime.processId -and
+        $restored.creationTimeUtcTicks -eq $Runtime.creationTimeUtcTicks -and
+        $restored.executablePath -ceq $Runtime.executablePath -and
+        $restored.executableDigest -ceq $Runtime.executableDigest
+      ) { return $true }
     } catch {}
     Start-Sleep -Milliseconds 150
   } while ([DateTime]::UtcNow -lt $deadline)
-  throw "previous Vision release did not restore with its verified identity"
+  Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
+  return $false
 }
 
 function ConvertTo-CanonicalVisionJson([object]$Value) {
@@ -141,7 +170,7 @@ function Assert-PreapprovalDeliveryManifest([string]$Path, [string]$Expected, [s
   if ($actualManifestKeys -cne $requiredManifestKeys -or $manifest.schemaVersion -cne "vem-vision-preapproval-delivery/v1" -or $manifest.kind -cne "vision-preapproval-delivery") { throw "Vision preapproval delivery manifest is invalid" }
   $unsigned = [ordered]@{ schemaVersion=$manifest.schemaVersion; kind=$manifest.kind; expectedDigest=$manifest.expectedDigest; descriptorDigest=$manifest.descriptorDigest; files=$manifest.files }
   $unsignedBytes = [Text.UTF8Encoding]::new($false).GetBytes(((ConvertTo-CanonicalVisionJson $unsigned) + [char]10))
-  $unsignedIdentity = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($unsignedBytes))).ToLowerInvariant()
+  $unsignedIdentity = "sha256:" + (Get-CandidateSha256Hex $unsignedBytes)
   if ($manifest.identity -cne $unsignedIdentity -or $manifest.expectedDigest -cne $Expected -or $manifest.files.'bundle.bin' -cne $Expected) { throw "Vision preapproval delivery manifest does not preserve ExpectedDigest" }
   $root = Assert-CandidateNonReparsePath (Split-Path -Parent $Path) "Vision preapproval delivery root"
   $required = [ordered]@{
@@ -225,13 +254,14 @@ try {
   # The shared materializer exclusively creates its fresh destination.  Creating
   # it here changes the security contract from create-new to overwrite-prone.
   Invoke-VisionReleaseMaterialization -CandidatePath $BundlePath -ExpectedDigest $ExpectedDigest -Descriptor $descriptor -Destination $staging -ExtractionPolicy @{ MaxArchiveEntries=4096; MaxExpandedBytes=4GB; MaxExpansionRatio=200 } | Out-Null
+  Assert-CandidateNonReparsePath $staging "Vision Candidate materialization destination" | Out-Null
   $entrypoint = Resolve-CandidateEntrypoint $staging ([string]$descriptor.entrypoint.command)
   if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) {
     throw "Vision Candidate entrypoint was not extracted"
   }
   $entrypointDigest = "sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()
 
-  $configurationPath = Join-Path $staging "vem-testbed-site.json"
+  $configurationPath = Assert-CandidateContainedPath $staging (Join-Path $staging "vem-testbed-site.json") "Vision Candidate configuration"
   $configuration = [ordered]@{
     schemaVersion = "vending-vision-site-config/v1"
     host = "127.0.0.1"
@@ -242,6 +272,7 @@ try {
       front = [ordered]@{ index=1; role="profile_tryon"; rotate=0 }
     }
   }
+  $configurationPath = Assert-CandidateContainedPath $staging $configurationPath "Vision Candidate configuration"
   [IO.File]::WriteAllText(
     $configurationPath,
     ($configuration | ConvertTo-Json -Depth 12 -Compress),
@@ -337,7 +368,15 @@ try {
   }
   try { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop } catch { $cleanupOk = $false }
   if (($previousRuntimeStopped -or $previousTaskWasRunning) -and $null -ne $previousRuntime) {
-    try { $report.previousRuntimeRestored = Restore-VerifiedPreviousVisionRuntime $previousRuntime $selectionPathForPrevious $processPathForPrevious } catch { $cleanupOk = $false }
+    try {
+      $report.previousRuntimeRestored = Restore-VerifiedPreviousVisionRuntime $previousRuntime $selectionPathForPrevious $processPathForPrevious
+      if (-not $report.previousRuntimeRestored) {
+        $cleanupOk = $false
+        if ([string]::IsNullOrWhiteSpace($report.failure)) {
+          $report.failure = "previous Vision release did not restore with its verified active identity"
+        }
+      }
+    } catch { $cleanupOk = $false }
   }
   $report.cleanupOk = $cleanupOk
   if (-not $cleanupOk -and [string]::IsNullOrWhiteSpace($report.failure)) { $report.failure = "Vision Candidate cleanup failed" }

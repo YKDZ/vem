@@ -138,6 +138,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "managed update"],
   },
   {
+    path: "scripts/factory/experimental-vision-candidate.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "managed update"],
+  },
+  {
     path: "scripts/factory/factory-personalization-media.mjs",
     owner: "field-operations",
     category: "public runbook operation",
@@ -459,6 +465,24 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "managed update"],
   },
   {
+    path: "scripts/windows/test-vision-candidate.fixtures.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/windows/test-vision-candidate.windows-harness.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/windows/vision-diagnostic-redaction.psm1",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
+  },
+  {
     path: "scripts/windows/provision-vision-factory-release.ps1",
     owner: "field-operations",
     category: "public runbook operation",
@@ -518,6 +542,12 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/windows/test-wireguard-localsystem-acceptance.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
     path: "scripts/windows/start-lower-controller-sim.ps1",

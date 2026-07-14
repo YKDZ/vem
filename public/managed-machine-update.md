@@ -148,6 +148,8 @@ node scripts/factory/experimental-vision-candidate.mjs prepare-preapproval \
 
 将 `/tmp/vision-preapproval-delivery/VEM-VISION-PREAPPROVAL` 整个目录原样传输到 `C:\VEM\updates\vision-preapproval`；传输前后都验证 `SHA256SUMS`。不得重新压缩 bundle、重命名 manifest 中的文件，或以本机仓库中的脚本替换目录内的测试入口或模块。Windows 入口会再次校验 manifest identity、每个文件 digest、无 reparse traversal，以及 manifest 的 `ExpectedDigest` 与显式参数完全一致。该脚本只暂时停止 Vision 任务和 VEM 已记录且身份验证过的 Vision 进程，不会停止 daemon 或 Machine UI；结束后会验证地恢复旧 release，并输出 conformance JSON：
 
+仓库中受本运行手册约束的规范操作脚本是 `scripts/windows/test-vision-candidate.ps1`；部署后的规范运行时路径是 `C:\VEM\bringup\scripts\test-vision-candidate.ps1`。预批准交付单元仍以其自身相对路径 `test-vision-candidate.ps1` 执行，并由 manifest 钉住同一已审核文件的 digest；不要把 delivery-relative 路径误当成任意本机脚本的替代品。
+
 ```powershell
 $delivery = "C:\VEM\updates\vision-preapproval"
 $manifest = Get-Content -LiteralPath "$delivery\preapproval-manifest.json" -Raw -Encoding UTF8 | ConvertFrom-Json

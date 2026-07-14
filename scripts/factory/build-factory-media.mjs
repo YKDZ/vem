@@ -4015,7 +4015,8 @@ async function stageBuildInputs({
       visionTrustMaterial.verifierBytes,
     "VISION-INSTALLER/install-vision-release.ps1": installerBytes,
     "VISION-INSTALLER/provision-vision-factory-release.ps1": provisionerBytes,
-    "VISION-INSTALLER/vision-release-materialization.psm1": materializationBytes,
+    "VISION-INSTALLER/vision-release-materialization.psm1":
+      materializationBytes,
   });
   await writeFile(
     join(stageDirectory, "VEM", "VISION-FACTORY-PROVISIONING.JSON"),

@@ -2368,6 +2368,25 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
   const runId = normalizeEphemeralRunId(options.runId);
   const cleanBaseSource = requireCleanBaseSource(options.cleanBaseSource);
   const cleanBaseSnapshot = String(options.cleanBaseSnapshot ?? "").trim();
+  const factoryProfile = String(options.factoryProfile ?? "").trim();
+  const visionInputs =
+    factoryProfile === "production"
+      ? {
+          factoryMediaRoot: String(options.factoryMediaRoot ?? "").trim(),
+          visionConfigurationSourcePath: String(
+            options.visionConfigurationSourcePath ?? "",
+          ).trim(),
+        }
+      : null;
+  if (
+    visionInputs &&
+    (!visionInputs.factoryMediaRoot ||
+      !visionInputs.visionConfigurationSourcePath)
+  ) {
+    throw new Error(
+      "production clean-base factory acceptance requires --factory-media-root and --vision-configuration-source-path",
+    );
+  }
   const artifacts = resolveAcceptanceArtifactHashes(
     options,
     "clean-base factory acceptance",
@@ -2385,6 +2404,7 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
       source: cleanBaseSource,
       snapshot: cleanBaseSnapshot || null,
       mustNotReuseDirtyHost: true,
+      ...(visionInputs ? { visionInputs } : {}),
       factoryWindowsBaselinePolicy: structuredClone(
         FACTORY_WINDOWS_BASELINE_POLICY,
       ),
@@ -3859,6 +3879,11 @@ export function buildRemotePowerShellScript(options = {}) {
   const expectedMachineUiArtifactSha256 = options.machineUiArtifactSha256 ?? "";
   const cleanBaseSource = cleanBasePlan?.cleanBase.source ?? "";
   const cleanBaseFactoryProfile = String(options.factoryProfile ?? "");
+  const cleanBaseEnvironmentName = `vps-fresh-${cleanBaseFactoryProfile}-clean-base`;
+  const cleanBaseFactoryMediaRoot = String(options.factoryMediaRoot ?? "");
+  const cleanBaseVisionConfigurationSourcePath = String(
+    options.visionConfigurationSourcePath ?? "",
+  );
   const cleanBaseMaintenanceUser =
     cleanBaseFactoryProfile === "production" ? "Admin" : "YKDZ";
   const cleanBaseHardwareMode =
@@ -6009,7 +6034,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
       DaemonSha256 = [string]$staged.daemonSha256
       MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
       MachineUiSha256 = [string]$staged.machineUiSha256
-      EnvironmentName = ${psString(`factory-${cleanBaseFactoryProfile}`)}
+      EnvironmentName = ${psString(cleanBaseEnvironmentName)}
       DeploymentBatch = ${psString(`clean-base-${cleanBaseFactoryProfile}-v1`)}
       ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
       MqttUrl = ${psString(platform.mqttUrl)}
@@ -6026,6 +6051,8 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
       ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
       TargetLayoutVersion = "win10-runtime-layout/v1"
       FactoryProfile = ${psString(cleanBaseFactoryProfile)}
+      FactoryMediaRoot = ${psString(cleanBaseFactoryMediaRoot)}
+      VisionConfigurationSourcePath = ${psString(cleanBaseVisionConfigurationSourcePath)}
       PersonalizationMediaPath = ${psString(options.remotePersonalizationMediaPath ?? "")}
       ResetExistingVemState = $false
       OpenSshPackagePath = ${psString(options.remoteOpenSshPackagePath ?? "")}
@@ -8260,7 +8287,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-media-root PATH] [--vision-configuration-source-path PATH] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -8279,7 +8306,7 @@ Dirty-host factory acceptance mode stages specified local artifacts and factory 
 SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
-Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
+Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. A production run also requires --factory-media-root and --vision-configuration-source-path, which must already be accessible on the clean Windows base for the child Factory preparation entrypoint. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
 
 Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
 
@@ -8407,6 +8434,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--factory-profile") {
       options.factoryProfile = next;
+      index += 1;
+    } else if (arg === "--factory-media-root") {
+      options.factoryMediaRoot = next;
+      index += 1;
+    } else if (arg === "--vision-configuration-source-path") {
+      options.visionConfigurationSourcePath = next;
       index += 1;
     } else if (arg === "--factory-iso") {
       options.factoryIso = next;

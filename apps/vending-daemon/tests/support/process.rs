@@ -220,8 +220,6 @@ async fn write_layered_runtime_test_config(
         let manifest = json!({
             "layoutVersion": 1,
             "environment": "testbed",
-            "environmentName": "integration-testbed",
-            "deploymentBatch": "test-batch",
             "provisioningEndpoint": api_base_url,
             "hardwareMode": "production",
             "hardwareModel": "test-fixture",

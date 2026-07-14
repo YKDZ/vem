@@ -501,8 +501,6 @@ impl FactoryProfile {
 pub struct FactoryRuntimeManifest {
     pub layout_version: u32,
     pub environment: FactoryProfile,
-    pub environment_name: String,
-    pub deployment_batch: String,
     pub provisioning_endpoint: String,
     pub hardware_mode: RuntimeHardwareMode,
     pub hardware_model: String,
@@ -881,10 +879,6 @@ fn normalize_factory_manifest(
     if manifest.layout_version != 1 {
         return Err("unsupported factory manifest layout version".to_string());
     }
-    manifest.environment_name =
-        normalize_required_string(manifest.environment_name, "environmentName")?;
-    manifest.deployment_batch =
-        normalize_required_string(manifest.deployment_batch, "deploymentBatch")?;
     manifest.provisioning_endpoint =
         normalize_http_endpoint(manifest.provisioning_endpoint, "provisioningEndpoint")?;
     manifest.hardware_model = normalize_required_string(manifest.hardware_model, "hardwareModel")?;
@@ -2915,8 +2909,6 @@ mod tests {
             serde_json::json!({
                 "layoutVersion": 1,
                 "environment": "production",
-                "environmentName": "production-line-a",
-                "deploymentBatch": "2026-07-a",
                 "provisioningEndpoint": "https://factory.example.com/api",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -3342,6 +3334,72 @@ mod tests {
         assert!(error.to_string().contains("unknown field `environment`"));
     }
 
+    #[test]
+    fn daemon_factory_manifest_keeps_batch_like_labels_outside_the_strict_environment() {
+        let manifest: FactoryRuntimeManifest = serde_json::from_value(serde_json::json!({
+            "layoutVersion": 1,
+            "environment": "production",
+            "provisioningEndpoint": "https://factory.example.com/api",
+            "hardwareMode": "production",
+            "hardwareModel": "VEM-PROD-24",
+            "hardwareSlotTopology": {
+                "identity": "vem-prod-24",
+                "version": "2026-07-14"
+            }
+        }))
+        .expect("strict production factory manifest");
+        assert_eq!(manifest.environment, FactoryProfile::Production);
+
+        let label_error = serde_json::from_value::<FactoryRuntimeManifest>(serde_json::json!({
+            "layoutVersion": 1,
+            "environment": "vps-fresh-production-20260714",
+            "provisioningEndpoint": "https://factory.example.com/api",
+            "hardwareMode": "production",
+            "hardwareModel": "VEM-PROD-24",
+            "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-14" }
+        }))
+        .expect_err("deployment labels cannot become a daemon environment");
+        assert!(label_error.to_string().contains("unknown variant"));
+
+        let metadata_error = serde_json::from_value::<FactoryRuntimeManifest>(serde_json::json!({
+            "layoutVersion": 1,
+            "environment": "testbed",
+            "environmentName": "vps-fresh-testbed-20260714",
+            "deploymentBatch": "delivery-batch-20260714",
+            "provisioningEndpoint": "https://factory.example.com/api",
+            "hardwareMode": "simulated",
+            "hardwareModel": "VEM-TESTBED-24",
+            "hardwareSlotTopology": { "identity": "vem-testbed-24", "version": "2026-07-14" }
+        }))
+        .expect_err("trace metadata belongs outside the daemon manifest");
+        assert!(metadata_error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn prepare_projection_from_powershell_deserializes_daemon_factory_manifest() {
+        let raw = match std::env::var("VEM_FACTORY_RUNTIME_PROJECTION") {
+            Ok(raw) => raw,
+            // The Node contract test supplies a real PowerShell projection.  Keeping
+            // this opt-in makes the normal Rust suite hermetic.
+            Err(_) => return,
+        };
+        let projection: serde_json::Value =
+            serde_json::from_str(&raw).expect("PowerShell boundary projection JSON");
+        let expected_profile = projection["factoryProfile"]
+            .as_str()
+            .expect("projection FactoryProfile");
+        let daemon_manifest = projection["daemonFactoryManifest"].clone();
+        let daemon_object = daemon_manifest
+            .as_object()
+            .expect("projection daemon factory manifest object");
+        assert!(!daemon_object.contains_key("environmentName"));
+        assert!(!daemon_object.contains_key("deploymentBatch"));
+
+        let manifest: FactoryRuntimeManifest =
+            serde_json::from_value(daemon_manifest).expect("typed daemon factory manifest");
+        assert_eq!(manifest.environment.as_str(), expected_profile);
+    }
+
     #[tokio::test]
     async fn provisioning_profile_requires_a_typed_factory_manifest() {
         let temp = TempDir::new().expect("temp");
@@ -3382,8 +3440,6 @@ mod tests {
             serde_json::json!({
                 "layoutVersion": 1,
                 "environment": "production",
-                "environmentName": "production-line-a",
-                "deploymentBatch": "2026-07-a",
                 "provisioningEndpoint": "https://factory.example.com/api",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -3564,8 +3620,6 @@ mod tests {
             serde_json::json!({
                 "layoutVersion": 1,
                 "environment": "production",
-                "environmentName": "production-line-a",
-                "deploymentBatch": "2026-07-a",
                 "provisioningEndpoint": "not-a-url",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -3647,8 +3701,6 @@ mod tests {
             serde_json::json!({
                 "layoutVersion": 1,
                 "environment": "production",
-                "environmentName": "production-line-a",
-                "deploymentBatch": "2026-07-a",
                 "provisioningEndpoint": "https://factory.example.com/api",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",

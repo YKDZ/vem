@@ -3,7 +3,10 @@
 [CmdletBinding()]
 param(
   [string]$ManifestPath = "C:\ProgramData\VEM\factory\factory-runtime-manifest.json",
-  [string]$EvidencePath = "C:\ProgramData\VEM\evidence\factory-runtime-verification.json"
+  [string]$EvidencePath = "C:\ProgramData\VEM\evidence\factory-runtime-verification.json",
+  # Validates the non-mutating output from prepare-factory-runtime.ps1
+  # -ProjectionOnly.  It is a contract check, not host verification.
+  [string]$ProjectionPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +39,58 @@ function Read-JsonFile {
     throw "file not found: $Path"
   }
   return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+}
+
+function Test-FactoryRuntimeBoundaryProjection {
+  param(
+    [object]$Projection,
+    [System.Collections.Generic.List[string]]$Failures
+  )
+
+  $checks = [ordered]@{
+    schemaVersion = $Projection.schemaVersion
+    factoryProfile = $Projection.factoryProfile
+    environmentName = $Projection.inputs.environmentName
+    deploymentBatch = $Projection.inputs.deploymentBatch
+    daemonEnvironment = $Projection.daemonFactoryManifest.environment
+  }
+  if ([string]$Projection.schemaVersion -ne "vem-factory-runtime-boundary-projection/v1") {
+    Add-Failure $Failures "unexpected factory runtime boundary projection schema"
+  }
+  $profile = [string]$Projection.factoryProfile
+  if ($profile -notin @("production", "testbed")) {
+    Add-Failure $Failures "projection FactoryProfile must be production or testbed"
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$Projection.inputs.environmentName) -or
+      [string]::IsNullOrWhiteSpace([string]$Projection.inputs.deploymentBatch)) {
+    Add-Failure $Failures "projection must retain non-empty EnvironmentName and DeploymentBatch trace metadata"
+  }
+  if ([string]$Projection.factoryRuntimeManifest.factoryProfile -cne $profile -or
+      [string]$Projection.factoryRuntimeManifest.environmentName -cne [string]$Projection.inputs.environmentName -or
+      [string]$Projection.factoryRuntimeManifest.deploymentBatch -cne [string]$Projection.inputs.deploymentBatch) {
+    Add-Failure $Failures "projection factory runtime trace metadata must match its declared inputs"
+  }
+  if ([string]$Projection.localBringupSettings.environmentName -cne [string]$Projection.inputs.environmentName -or
+      [string]$Projection.localBringupSettings.deploymentBatch -cne [string]$Projection.inputs.deploymentBatch) {
+    Add-Failure $Failures "projection local bring-up trace metadata must match its declared inputs"
+  }
+
+  $daemonManifest = $Projection.daemonFactoryManifest
+  if ($null -eq $daemonManifest -or [string]$daemonManifest.environment -cne $profile) {
+    Add-Failure $Failures "projection daemon factory manifest environment must match FactoryProfile"
+  }
+  foreach ($traceField in @("environmentName", "deploymentBatch")) {
+    if ($null -ne $daemonManifest -and $null -ne $daemonManifest.PSObject.Properties[$traceField]) {
+      Add-Failure $Failures "projection daemon factory manifest must not contain $traceField"
+    }
+  }
+  if ($profile -eq "production" -and
+      ($null -eq $Projection.inputs.visionInputs -or
+       [string]::IsNullOrWhiteSpace([string]$Projection.inputs.visionInputs.factoryMediaRoot) -or
+       [string]::IsNullOrWhiteSpace([string]$Projection.inputs.visionInputs.visionConfigurationSourcePath))) {
+    Add-Failure $Failures "production projection must retain Factory Vision media and configuration inputs"
+  }
+  return $checks
 }
 
 function Write-Evidence {
@@ -1129,6 +1184,29 @@ function Get-FactoryPersonalizationEvidence {
     retainedMediaPresent = $retainedMedia.Count -gt 0
     credentials = $redaction.credentials
   }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ProjectionPath)) {
+  $projectionFailures = [System.Collections.Generic.List[string]]::new()
+  $projectionChecks = [ordered]@{}
+  try {
+    $projection = Read-JsonFile -Path $ProjectionPath
+    $projectionChecks = Test-FactoryRuntimeBoundaryProjection -Projection $projection -Failures $projectionFailures
+  } catch {
+    Add-Failure $projectionFailures $_.Exception.Message
+  }
+  $projectionResult = [ordered]@{
+    ok = $projectionFailures.Count -eq 0
+    kind = "factory-runtime-boundary-projection"
+    projectionPath = $ProjectionPath
+    checks = $projectionChecks
+    failures = @($projectionFailures)
+  }
+  $projectionResult | ConvertTo-Json -Depth 20
+  if ($projectionFailures.Count -gt 0) {
+    exit 1
+  }
+  exit 0
 }
 
 $failures = [System.Collections.Generic.List[string]]::new()

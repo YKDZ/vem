@@ -5280,8 +5280,6 @@ mod tests {
             let factory_manifest = FactoryRuntimeManifest {
                 layout_version: 1,
                 environment: FactoryProfile::Production,
-                environment_name: "vps-fresh-ipc".to_string(),
-                deployment_batch: "ipc-test-batch".to_string(),
                 provisioning_endpoint: backend_base_url.to_string(),
                 hardware_mode: RuntimeHardwareMode::Simulated,
                 hardware_model: "VEM-PROD-24".to_string(),
@@ -5867,8 +5865,6 @@ mod tests {
             serde_json::to_string_pretty(&json!({
                 "layoutVersion": 1,
                 "environment": "testbed",
-                "environmentName": "ipc-testbed",
-                "deploymentBatch": "ipc-test-batch",
                 "provisioningEndpoint": "http://127.0.0.1:0/api",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -6370,8 +6366,6 @@ mod tests {
             json!({
                 "layoutVersion": 1,
                 "environment": "production",
-                "environmentName": "ipc-production",
-                "deploymentBatch": "ipc-test-batch",
                 "provisioningEndpoint": factory_server.uri(),
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",

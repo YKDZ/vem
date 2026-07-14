@@ -96,6 +96,163 @@ function runPowerShellSemanticHarness(functionSource, harness) {
   }
 }
 
+function projectFactoryRuntimeBoundary(profile) {
+  const directory = mkdtempSync(join(tmpdir(), "vem-factory-boundary-"));
+  const projectionPath = join(directory, `${profile}-projection.json`);
+  const daemonSha256 = "a".repeat(64);
+  const machineUiSha256 = "b".repeat(64);
+  const artifactSha256 = "c".repeat(64);
+  const signerThumbprint = "d".repeat(40);
+  const rootThumbprint = "e".repeat(40);
+  const isProduction = profile === "production";
+  const result = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      "scripts/windows/prepare-factory-runtime.ps1",
+      "-ProjectionOnly",
+      "-DaemonArtifactPath",
+      "C:\\input\\vending-daemon.exe",
+      "-DaemonSha256",
+      daemonSha256,
+      "-MachineUiArtifactPath",
+      "C:\\input\\machine.exe",
+      "-MachineUiSha256",
+      machineUiSha256,
+      "-EnvironmentName",
+      `vps-fresh-${profile}-clean-base`,
+      "-DeploymentBatch",
+      `clean-base-${profile}-v1`,
+      "-ProvisioningEndpoint",
+      "https://factory.example.com/api",
+      "-MqttUrl",
+      "mqtt://factory.example.com:1883",
+      "-HardwareMode",
+      isProduction ? "production" : "simulated",
+      "-HardwareModel",
+      isProduction ? "VEM-PROD-24" : "VEM-TESTBED-24",
+      "-TopologyIdentity",
+      `vem-${profile}-24`,
+      "-TopologyVersion",
+      "2026-07-14",
+      "-ExpectedDisplayWidth",
+      "1080",
+      "-ExpectedDisplayHeight",
+      "1920",
+      "-ExpectedDisplayOrientation",
+      "portrait",
+      "-ExpectedKioskUser",
+      "VemKiosk",
+      "-ExpectedMaintenanceUser",
+      isProduction ? "Admin" : "YKDZ",
+      "-ExpectedAutoLogonUser",
+      "VemKiosk",
+      "-ExpectedKioskShell",
+      "C:\\VEM\\bringup\\machine.exe",
+      "-TargetLayoutVersion",
+      "1",
+      "-FactoryProfile",
+      profile,
+      "-OpenSshPackagePath",
+      "C:\\input\\openssh.msi",
+      "-OpenSshPackageSource",
+      "local-pinned",
+      "-OpenSshPackageVersion",
+      "1.0.0",
+      "-OpenSshPackageSha256",
+      artifactSha256,
+      "-OpenSshApprovedSignerThumbprint",
+      signerThumbprint,
+      "-OpenSshApprovedRootThumbprint",
+      rootThumbprint,
+      "-WireGuardPackagePath",
+      "C:\\input\\wireguard.msi",
+      "-WireGuardPackageSource",
+      "local-pinned",
+      "-WireGuardPackageVersion",
+      "1.0.0",
+      "-WireGuardPackageSha256",
+      artifactSha256,
+      "-WireGuardApprovedSignerThumbprint",
+      signerThumbprint,
+      "-WireGuardApprovedRootThumbprint",
+      rootThumbprint,
+      "-MaintenanceSshCaPublicKeyPath",
+      "C:\\input\\maintenance-ca.pub",
+      "-MaintenanceSshCaPublicKeySha256",
+      artifactSha256,
+      "-MaintenanceRunnerSourceAllowlist",
+      "10.0.0.0/8",
+      "-MaintenanceMaintainerSourceAllowlist",
+      "10.0.0.0/8",
+      "-MaintenanceWireGuardListenAddress",
+      "10.66.0.1",
+      ...(isProduction
+        ? [
+            "-FactoryMediaRoot",
+            "C:\\Factory Media\\VEM",
+            "-VisionConfigurationSourcePath",
+            "C:\\Factory Media\\VEM\\vision-site-config.json",
+          ]
+        : []),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    result.status,
+    0,
+    `prepare projection failed:\n${result.stdout}\n${result.stderr}`,
+  );
+  const projection = JSON.parse(result.stdout);
+  writeFileSync(projectionPath, JSON.stringify(projection));
+
+  const verifier = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      "scripts/windows/verify-factory-runtime.ps1",
+      "-ProjectionPath",
+      projectionPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    verifier.status,
+    0,
+    `projection verifier failed:\n${verifier.stdout}\n${verifier.stderr}`,
+  );
+  assert.equal(JSON.parse(verifier.stdout).ok, true);
+
+  const rust = spawnSync(
+    "cargo",
+    [
+      "test",
+      "-p",
+      "vending-daemon",
+      "config::tests::prepare_projection_from_powershell_deserializes_daemon_factory_manifest",
+      "--",
+      "--exact",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        VEM_FACTORY_RUNTIME_PROJECTION: JSON.stringify(projection),
+      },
+    },
+  );
+  assert.equal(
+    rust.status,
+    0,
+    `Rust projection parse failed:\n${rust.stdout}\n${rust.stderr}`,
+  );
+  return { directory, projection };
+}
+
 describe("transient SSH operation retry", () => {
   it("retries a legacy SCP upload after a startup-window connection reset", async () => {
     const calls = [];
@@ -3034,6 +3191,114 @@ try {
     assert.equal(plan.readinessLevels.runtimeReady, "not_asserted");
     assert.equal(plan.readinessLevels.simulatedHardwareReady, "not_asserted");
     assert.equal(plan.readinessLevels.sellReady, "not_asserted");
+  });
+
+  it("projects production Factory Vision media and configuration through the clean-base plan and child prepare entrypoint", () => {
+    const factoryMediaRoot = "C:\\Factory Media\\VEM";
+    const visionConfigurationSourcePath =
+      "C:\\Factory Media\\VEM\\vision-site-config.json";
+    const plan = buildCleanBaseFactoryAcceptancePlan({
+      runId: "RUN-191",
+      cleanBaseSource: "factory-media://clean-windows-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      factoryProfile: "production",
+      factoryMediaRoot,
+      visionConfigurationSourcePath,
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+    assert.deepEqual(plan.cleanBase.visionInputs, {
+      factoryMediaRoot,
+      visionConfigurationSourcePath,
+    });
+
+    const script = buildRemotePowerShellScript({
+      mode: "clean-base-factory-acceptance",
+      runId: "RUN-191",
+      cleanBaseSource: "factory-media://clean-windows-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      factoryProfile: "production",
+      factoryMediaRoot,
+      visionConfigurationSourcePath,
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      remoteSupportScriptRoot: "C:\\Windows\\Temp\\vem-clean-base-support",
+      remoteUploadedArtifactRoot:
+        "C:\\Windows\\Temp\\vem-clean-base-support\\input-artifacts",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+    assert.match(script, /FactoryMediaRoot = 'C:\\Factory Media\\VEM'/);
+    assert.match(
+      script,
+      /VisionConfigurationSourcePath = 'C:\\Factory Media\\VEM\\vision-site-config\.json'/,
+    );
+    assert.match(script, /EnvironmentName = 'vps-fresh-production-clean-base'/);
+    assert.match(script, /DeploymentBatch = 'clean-base-production-v1'/);
+  });
+
+  it("keeps batch-like testbed labels separate from the strict Factory profile", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "clean-base-factory-acceptance",
+      runId: "RUN-192",
+      cleanBaseSource: "factory-media://clean-windows-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      factoryProfile: "testbed",
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      remoteSupportScriptRoot: "C:\\Windows\\Temp\\vem-clean-base-support",
+      remoteUploadedArtifactRoot:
+        "C:\\Windows\\Temp\\vem-clean-base-support\\input-artifacts",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+    assert.match(script, /FactoryProfile = 'testbed'/);
+    assert.match(script, /EnvironmentName = 'vps-fresh-testbed-clean-base'/);
+    assert.match(script, /DeploymentBatch = 'clean-base-testbed-v1'/);
+  });
+
+  it("carries production and testbed clean-base labels through PowerShell, Rust, and the verifier", () => {
+    for (const profile of ["production", "testbed"]) {
+      const result = projectFactoryRuntimeBoundary(profile);
+      try {
+        assert.equal(result.projection.factoryProfile, profile);
+        assert.equal(
+          result.projection.inputs.environmentName,
+          `vps-fresh-${profile}-clean-base`,
+        );
+        assert.equal(
+          result.projection.inputs.deploymentBatch,
+          `clean-base-${profile}-v1`,
+        );
+        assert.equal(
+          result.projection.daemonFactoryManifest.environment,
+          profile,
+        );
+        assert.equal(
+          Object.hasOwn(
+            result.projection.daemonFactoryManifest,
+            "environmentName",
+          ),
+          false,
+        );
+        assert.equal(
+          Object.hasOwn(
+            result.projection.daemonFactoryManifest,
+            "deploymentBatch",
+          ),
+          false,
+        );
+        if (profile === "production") {
+          assert.deepEqual(result.projection.inputs.visionInputs, {
+            factoryMediaRoot: "C:\\Factory Media\\VEM",
+            visionConfigurationSourcePath:
+              "C:\\Factory Media\\VEM\\vision-site-config.json",
+          });
+        }
+      } finally {
+        rmSync(result.directory, { recursive: true, force: true });
+      }
+    }
   });
 
   it("declares the Factory Windows Baseline policy and evidence contract", () => {

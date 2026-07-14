@@ -52,7 +52,11 @@ param(
   [Parameter(Mandatory = $false)][string]$MaintenanceWireGuardListenAddress,
 
   [switch]$ResetExistingVemState,
-  [switch]$DryRun
+  [switch]$DryRun,
+  # Emits only the profile/trace-metadata boundary that this entrypoint would
+  # write.  This is intentionally non-mutating and lets CI exercise the
+  # PowerShell-to-daemon contract without pretending to prepare a Windows host.
+  [switch]$ProjectionOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -121,6 +125,53 @@ function Assert-RequiredInputs {
 
   Normalize-Sha256 -Value $DaemonSha256 | Out-Null
   Normalize-Sha256 -Value $MachineUiSha256 | Out-Null
+}
+
+function New-FactoryRuntimeBoundaryProjection {
+  $daemonFactoryManifest = [ordered]@{
+    layoutVersion = 1
+    # FactoryProfile is the daemon's enum; operational labels stay outside it.
+    environment = $FactoryProfile
+    provisioningEndpoint = $ProvisioningEndpoint
+    hardwareMode = $HardwareMode
+    hardwareModel = $HardwareModel
+    hardwareSlotTopology = [ordered]@{
+      identity = $TopologyIdentity
+      version = $TopologyVersion
+    }
+  }
+  $factoryRuntimeManifest = [ordered]@{
+    schemaVersion = "vem-factory-runtime-manifest/v1"
+    factoryProfile = $FactoryProfile
+    environmentName = $EnvironmentName
+    deploymentBatch = $DeploymentBatch
+  }
+  $localBringupSettings = [ordered]@{
+    schemaVersion = "vem-local-bringup-settings/v1"
+    environmentName = $EnvironmentName
+    deploymentBatch = $DeploymentBatch
+    provisioningEndpoint = $ProvisioningEndpoint
+  }
+  $visionInputs = if ($FactoryProfile -eq "production") {
+    [ordered]@{
+      factoryMediaRoot = $FactoryMediaRoot
+      visionConfigurationSourcePath = $VisionConfigurationSourcePath
+    }
+  } else {
+    $null
+  }
+  return [ordered]@{
+    schemaVersion = "vem-factory-runtime-boundary-projection/v1"
+    factoryProfile = $FactoryProfile
+    inputs = [ordered]@{
+      environmentName = $EnvironmentName
+      deploymentBatch = $DeploymentBatch
+      visionInputs = $visionInputs
+    }
+    factoryRuntimeManifest = $factoryRuntimeManifest
+    localBringupSettings = $localBringupSettings
+    daemonFactoryManifest = $daemonFactoryManifest
+  }
 }
 
 function Get-FactoryMaintenanceProfilePolicy {
@@ -1591,8 +1642,6 @@ function Write-FactoryRuntimeFiles {
     # Merge preservation: FactoryProfile alone defines daemon environment;
     # EnvironmentName and DeploymentBatch are human-readable deployment metadata.
     environment = $Preflight.FactoryProfile
-    environmentName = $EnvironmentName
-    deploymentBatch = $DeploymentBatch
     provisioningEndpoint = $ProvisioningEndpoint
     hardwareMode = $HardwareMode
     hardwareModel = $HardwareModel
@@ -1683,6 +1732,10 @@ function Write-FactoryRuntimeFiles {
 
 try {
   Assert-RequiredInputs
+  if ($ProjectionOnly) {
+    New-FactoryRuntimeBoundaryProjection | ConvertTo-Json -Depth 20
+    exit 0
+  }
   $preflight = Assert-FactoryRuntimePreflight
   if (-not $DryRun) {
     Assert-FactoryPersonalizationNotReused -Preflight $preflight
