@@ -293,16 +293,36 @@ function Normalize-CertificateThumbprint {
   return $normalized
 }
 
+function Test-PinnedAuthenticodeTimeAcceptance {
+  param(
+    $Certificate,
+    [bool]$ChainValid,
+    [string[]]$Statuses
+  )
+  if ($ChainValid) { return $true }
+  # Offline Factory media also pins the package digest, signer, and root. Only
+  # expiry after signing may relax chain time validation; future or mixed
+  # chain failures remain rejected.
+  return (
+    $Statuses.Count -gt 0 -and
+    @($Statuses | Where-Object { $_ -cne "NotTimeValid" }).Count -eq 0 -and
+    $Certificate.NotBefore.ToUniversalTime() -le [DateTime]::UtcNow -and
+    $Certificate.NotAfter.ToUniversalTime() -lt [DateTime]::UtcNow
+  )
+}
+
 function Get-CertificateChainEvidence {
   param($Certificate)
 
   $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
   $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
   $valid = $chain.Build($Certificate)
+  $statuses = @($chain.ChainStatus | ForEach-Object { [string]$_.Status })
+  $accepted = Test-PinnedAuthenticodeTimeAcceptance -Certificate $Certificate -ChainValid $valid -Statuses $statuses
   $elements = @($chain.ChainElements | ForEach-Object { $_.Certificate })
   return [ordered]@{
-    valid = $valid
-    statuses = @($chain.ChainStatus | ForEach-Object { [string]$_.Status })
+    valid = $accepted
+    statuses = $statuses
     thumbprints = @($elements | ForEach-Object { ([string]$_.Thumbprint).ToUpperInvariant() })
     rootThumbprint = if ($elements.Count -gt 0) { ([string]$elements[-1].Thumbprint).ToUpperInvariant() } else { $null }
   }

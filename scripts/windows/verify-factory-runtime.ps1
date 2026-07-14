@@ -817,6 +817,23 @@ function Get-SshdEffectiveConfigEvidence {
   }
 }
 
+function Test-PinnedAuthenticodeTimeAcceptance {
+  param(
+    $Certificate,
+    [bool]$ChainValid,
+    [string[]]$Statuses
+  )
+  if ($ChainValid) { return $true }
+  # Match installation trust: pinned bytes and identities may outlive an
+  # otherwise valid signer certificate, but no other chain failure is allowed.
+  return (
+    $Statuses.Count -gt 0 -and
+    @($Statuses | Where-Object { $_ -cne "NotTimeValid" }).Count -eq 0 -and
+    $Certificate.NotBefore.ToUniversalTime() -le [DateTime]::UtcNow -and
+    $Certificate.NotAfter.ToUniversalTime() -lt [DateTime]::UtcNow
+  )
+}
+
 function Get-FactoryPackageEvidence {
   param($Manifest)
   $result = [ordered]@{}
@@ -836,6 +853,8 @@ function Get-FactoryPackageEvidence {
         $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
         $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
         $chainValid = $chain.Build($authenticode.SignerCertificate)
+        $chainStatuses = @($chain.ChainStatus | ForEach-Object { [string]$_.Status })
+        $chainValid = Test-PinnedAuthenticodeTimeAcceptance -Certificate $authenticode.SignerCertificate -ChainValid $chainValid -Statuses $chainStatuses
         $chainThumbprints = @($chain.ChainElements | ForEach-Object { ([string]$_.Certificate.Thumbprint).ToUpperInvariant() })
         if ($chainThumbprints.Count -gt 0) { $rootThumbprint = $chainThumbprints[-1] }
       }

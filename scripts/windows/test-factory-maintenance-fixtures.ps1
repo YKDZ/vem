@@ -241,6 +241,32 @@ try {
 # Package trust is measured from Authenticode and the certificate chain. No JSON
 # status supplied by the caller participates in acceptance.
 Import-ScriptFunctions -Path $PreparePath
+$expiredSigner = [pscustomobject]@{
+  NotBefore = [DateTime]::UtcNow.AddYears(-2)
+  NotAfter = [DateTime]::UtcNow.AddDays(-1)
+}
+$futureSigner = [pscustomobject]@{
+  NotBefore = [DateTime]::UtcNow.AddDays(1)
+  NotAfter = [DateTime]::UtcNow.AddYears(1)
+}
+Assert-Fixture (
+  Test-PinnedAuthenticodeTimeAcceptance `
+    -Certificate $expiredSigner `
+    -ChainValid $false `
+    -Statuses @("NotTimeValid")
+) "an expired signer may retain trust only through the separately pinned package and certificate identities"
+Assert-Fixture (-not (
+  Test-PinnedAuthenticodeTimeAcceptance `
+    -Certificate $futureSigner `
+    -ChainValid $false `
+    -Statuses @("NotTimeValid")
+)) "a not-yet-valid signer must remain rejected"
+Assert-Fixture (-not (
+  Test-PinnedAuthenticodeTimeAcceptance `
+    -Certificate $expiredSigner `
+    -ChainValid $false `
+    -Statuses @("NotTimeValid", "PartialChain")
+)) "an expired signer with any additional chain failure must remain rejected"
 $packagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("VEM package with spaces " + [guid]::NewGuid().ToString("N") + ".msi")
 try {
   [System.IO.File]::WriteAllBytes($packagePath, [byte[]](1, 2, 3, 4))
