@@ -119,7 +119,7 @@ jobs:
 
           $coffImports = & $llvmReadobj --coff-imports $daemonExe 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) { throw "llvm-readobj.exe failed to inspect ${daemonExe}: $coffImports" }
-          if ($coffImports -match '(?i)\b(?:VCRUNTIME140[^\s"]*\.dll|api-ms-win-crt-[^\s"]*\.dll)\b') {
+          if ($coffImports -match '(?im)^\s*Name:\s*(?:(?:VCRUNTIME|MSVCP|CONCRT)\d+[A-Z0-9_]*|ucrtbase|api-ms-win-crt-[A-Z0-9-]+)\.dll\s*$') {
             throw "vending-daemon.exe imports a dynamic MSVC CRT: $Matches[0]"
           }
 
