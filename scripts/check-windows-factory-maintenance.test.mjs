@@ -171,8 +171,11 @@ test("Factory OOBE cleanup resumes after the bootstrap account was removed", () 
       fixturePath,
       `$ErrorActionPreference = 'Stop'
 $script:TaskRegistered = $true
+$script:Winlogon = @{}
+$env:COMPUTERNAME = 'VEM-TESTBED'
 function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
 function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Set-ItemProperty { param($Path, $Name, $Value, [switch]$Force) $script:Winlogon[$Name] = $Value }
 function Remove-ItemProperty { param($Path, $Name, $ErrorAction) }
 function Remove-LocalUser { param($Name, $ErrorAction) }
 function Get-Volume { param($ErrorAction) @() }
@@ -182,6 +185,10 @@ function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $sc
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
 ${completion}
 if ($script:TaskRegistered) { throw 'cleanup task was not unregistered' }
+if ($script:Winlogon.AutoAdminLogon -cne '1') { throw 'AutoAdminLogon was not restored' }
+if ($script:Winlogon.ForceAutoLogon -cne '1') { throw 'ForceAutoLogon was not restored' }
+if ($script:Winlogon.DefaultUserName -cne 'VEMKiosk') { throw 'DefaultUserName was not restored' }
+if ($script:Winlogon.DefaultDomainName -cne 'VEM-TESTBED') { throw 'DefaultDomainName was not restored' }
 $cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
 if ($cleanupStatus.phase -cne 'complete') { throw 'cleanup did not reach the complete phase' }
 `,

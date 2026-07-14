@@ -1628,6 +1628,11 @@ describe("real deterministic Factory ISO builder", () => {
         "utf8",
       );
       assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
+      assert.match(
+        completeOobe,
+        /DefaultUserName -Value 'VEMKiosk'[\s\S]+DefaultDomainName -Value \$env:COMPUTERNAME/,
+      );
+      assert.match(completeOobe, /Write-CleanupStatus 'autologon-restored'/);
       assert.match(completeOobe, /Remove-LocalUser[^\n]+VEMOobeBootstrap/);
       assert.match(completeOobe, /AddMinutes\(30\)/);
       assert.match(completeOobe, /OOBEInProgress/);
@@ -1636,7 +1641,7 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(completeOobe, /vem-factory-oobe-cleanup-status\/v1/);
       assert.match(
         completeOobe,
-        /Write-CleanupStatus 'ready'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'/,
+        /Write-CleanupStatus 'ready'[\s\S]+Write-CleanupStatus 'autologon-restored'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'/,
       );
       assert.match(completeOobe, /Write-CleanupStatus 'media-ejected'/);
       assert.match(completeOobe, /Write-CleanupStatus 'complete'/);
