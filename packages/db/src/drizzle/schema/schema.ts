@@ -1330,6 +1330,14 @@ export const payments = t.pgTable(
       "intent_creation_lease_expires_at",
       { withTimezone: true },
     ),
+    intentCreationLeaseOwnerToken: t.varchar(
+      "intent_creation_lease_owner_token",
+      { length: 64 },
+    ),
+    intentCreationLeaseFence: t
+      .bigint("intent_creation_lease_fence", { mode: "number" })
+      .default(0)
+      .notNull(),
     expiresAt: t.timestamp("expires_at", { withTimezone: true }),
     paidAt: t.timestamp("paid_at", { withTimezone: true }),
     failedReason: t.text("failed_reason"),

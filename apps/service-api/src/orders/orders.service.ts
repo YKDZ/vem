@@ -11,6 +11,7 @@ import {
   count,
   desc,
   eq,
+  gt,
   inArray,
   inventories,
   inventoryMovements,
@@ -62,6 +63,7 @@ import {
   type OrderRecoveryAction,
   type VendingCommandStatus,
 } from "@vem/shared";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { AuditService } from "../audit/audit.service";
@@ -89,7 +91,11 @@ type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
 const DEFAULT_UNCONFIRMED_QR_DISPLAY_DELAY_MS = 30_000;
-const PAYMENT_INTENT_CREATION_LEASE_MS = 30_000;
+// Provider calls are bounded by their configured client timeouts. Keep a
+// generous lease and renew it while a call is still in progress so a healthy
+// owner cannot be taken over mid-call.
+const PAYMENT_INTENT_CREATION_LEASE_MS = 90_000;
+const PAYMENT_INTENT_CREATION_LEASE_HEARTBEAT_MS = 30_000;
 const RECOVERY_ACTIONS = [
   "confirm_dispensed",
   "confirm_not_dispensed",
@@ -272,6 +278,14 @@ type ExistingPaymentCreation = LocalPaymentDraft & {
   providerConfigId: string | null;
   providerConfigSnapshotJson: unknown;
   intentCreationLeaseExpiresAt: Date | null;
+  intentCreationLeaseOwnerToken: string | null;
+  intentCreationLeaseFence: number;
+};
+
+type PaymentIntentLease = {
+  ownerToken: string;
+  fence: number;
+  expiresAt: Date;
 };
 
 type MachineOrderStatusRow = {
@@ -498,51 +512,6 @@ export class OrdersService {
       throw error;
     }
 
-    if (!input.idempotencyKey) {
-      let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
-      try {
-        intent = await this.createPaymentIntent(
-          draft.providerCode,
-          {
-            paymentNo: draft.paymentNo,
-            orderNo: draft.orderNo,
-            amountCents: draft.totalAmountCents,
-            expiresAt: draft.expiresAt,
-          },
-          resolvedProviderConfig,
-        );
-      } catch (error) {
-        await this.cancelLocalCreatedPayment(
-          draft,
-          "provider_create_failed",
-          error,
-        );
-        throw error;
-      }
-      try {
-        const initialStatus = intent.initialStatus ?? "pending";
-        await this.db
-          .update(payments)
-          .set({
-            status: initialStatus,
-            providerTradeNo: intent.providerTradeNo,
-            paymentUrl: intent.paymentUrl,
-            expiresAt: draft.expiresAt,
-            updatedAt: new Date(),
-          })
-          .where(eq(payments.id, draft.paymentId));
-      } catch (error) {
-        await this.cancelProviderIntentAfterDbFailure(draft);
-        await this.cancelLocalCreatedPayment(
-          draft,
-          "provider_created_db_update_failed",
-          error,
-        );
-        throw error;
-      }
-      return this.toPaymentCreationResponse(draft, intent);
-    }
-
     try {
       const intent = await this.createAndPersistPaymentIntent(
         draft,
@@ -557,15 +526,6 @@ export class OrdersService {
         );
         if (replay) return await this.restorePaymentCreation(replay);
       }
-      if (isIndeterminateProviderError(error)) {
-        await this.markPaymentCreationUncertain(draft, error);
-        throw error;
-      }
-      await this.cancelLocalCreatedPayment(
-        draft,
-        "provider_create_failed",
-        error,
-      );
       throw error;
     }
   }
@@ -821,6 +781,7 @@ export class OrdersService {
     draft: LocalPaymentDraft,
     reason: "provider_create_failed" | "provider_created_db_update_failed",
     error: unknown,
+    lease?: PaymentIntentLease,
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
       const [failedPayment] = await tx
@@ -829,12 +790,22 @@ export class OrdersService {
           status: "failed",
           failedReason: reason,
           intentCreationLeaseExpiresAt: null,
+          intentCreationLeaseOwnerToken: null,
           updatedAt: new Date(),
         })
         .where(
           and(
             eq(payments.id, draft.paymentId),
             inArray(payments.status, ["created", "processing"]),
+            lease
+              ? eq(payments.intentCreationLeaseOwnerToken, lease.ownerToken)
+              : undefined,
+            lease
+              ? eq(payments.intentCreationLeaseFence, lease.fence)
+              : undefined,
+            lease
+              ? gt(payments.intentCreationLeaseExpiresAt, new Date())
+              : undefined,
           ),
         )
         .returning({ id: payments.id });
@@ -2543,6 +2514,8 @@ export class OrdersService {
         providerConfigId: payments.paymentProviderConfigId,
         providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
+        intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
+        intentCreationLeaseFence: payments.intentCreationLeaseFence,
       })
       .from(orders)
       .innerJoin(payments, eq(payments.id, orders.paymentId))
@@ -2555,14 +2528,32 @@ export class OrdersService {
       )
       .limit(1);
 
-    return row
-      ? {
-          ...row,
-          expiresAt: row.expiresAt ?? new Date(),
-          paymentMethod: row.paymentMethod,
-          reservations: [],
-        }
-      : null;
+    if (!row) return null;
+
+    const reservations = await this.loadActiveReservationsForOrder(row.orderId);
+    return {
+      ...row,
+      expiresAt: row.expiresAt ?? new Date(),
+      paymentMethod: row.paymentMethod,
+      reservations,
+    };
+  }
+
+  private async loadActiveReservationsForOrder(
+    orderId: string,
+  ): Promise<Array<{ inventoryId: string; quantity: number }>> {
+    return await this.db
+      .select({
+        inventoryId: inventoryReservations.inventoryId,
+        quantity: inventoryReservations.quantity,
+      })
+      .from(inventoryReservations)
+      .where(
+        and(
+          eq(inventoryReservations.orderId, orderId),
+          eq(inventoryReservations.status, "active"),
+        ),
+      );
   }
 
   private toPaymentCreationResponse(
@@ -2625,15 +2616,8 @@ export class OrdersService {
     }
 
     const config = await this.resolveExistingPaymentConfig(existing);
-    try {
-      const intent = await this.createAndPersistPaymentIntent(existing, config);
-      return this.toPaymentCreationResponse(existing, intent);
-    } catch (error) {
-      if (isIndeterminateProviderError(error)) {
-        await this.markPaymentCreationUncertain(existing, error);
-      }
-      throw error;
-    }
+    const intent = await this.createAndPersistPaymentIntent(existing, config);
+    return this.toPaymentCreationResponse(existing, intent);
   }
 
   private async resolveExistingPaymentConfig(payment: ExistingPaymentCreation) {
@@ -2673,12 +2657,16 @@ export class OrdersService {
       | null,
   ) {
     const now = new Date();
+    const lease: Omit<PaymentIntentLease, "fence"> = {
+      ownerToken: randomUUID(),
+      expiresAt: new Date(now.getTime() + PAYMENT_INTENT_CREATION_LEASE_MS),
+    };
     const [claimed] = await this.db
       .update(payments)
       .set({
-        intentCreationLeaseExpiresAt: new Date(
-          now.getTime() + PAYMENT_INTENT_CREATION_LEASE_MS,
-        ),
+        intentCreationLeaseExpiresAt: lease.expiresAt,
+        intentCreationLeaseOwnerToken: lease.ownerToken,
+        intentCreationLeaseFence: sql`${payments.intentCreationLeaseFence} + 1`,
         updatedAt: now,
       })
       .where(
@@ -2692,7 +2680,10 @@ export class OrdersService {
           ),
         ),
       )
-      .returning({ id: payments.id });
+      .returning({
+        id: payments.id,
+        fence: payments.intentCreationLeaseFence,
+      });
 
     if (!claimed) {
       return {
@@ -2702,16 +2693,41 @@ export class OrdersService {
       };
     }
 
-    const intent = await this.createPaymentIntent(
-      draft.providerCode,
-      {
-        paymentNo: draft.paymentNo,
-        orderNo: draft.orderNo,
-        amountCents: draft.totalAmountCents,
-        expiresAt: draft.expiresAt,
-      },
-      resolvedConfig,
-    );
+    const claimedLease: PaymentIntentLease = {
+      ...lease,
+      fence: claimed.fence,
+    };
+
+    let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
+    const heartbeat = setInterval(() => {
+      void this.renewPaymentIntentLease(draft.paymentId, claimedLease);
+    }, PAYMENT_INTENT_CREATION_LEASE_HEARTBEAT_MS);
+    try {
+      intent = await this.createPaymentIntent(
+        draft.providerCode,
+        {
+          paymentNo: draft.paymentNo,
+          orderNo: draft.orderNo,
+          amountCents: draft.totalAmountCents,
+          expiresAt: draft.expiresAt,
+        },
+        resolvedConfig,
+      );
+    } catch (error) {
+      if (isIndeterminateProviderError(error)) {
+        await this.markPaymentCreationUncertain(draft, error, claimedLease);
+      } else {
+        await this.cancelLocalCreatedPayment(
+          draft,
+          "provider_create_failed",
+          error,
+          claimedLease,
+        );
+      }
+      throw error;
+    } finally {
+      clearInterval(heartbeat);
+    }
     const initialStatus = intent.initialStatus ?? "pending";
     try {
       await this.db
@@ -2722,11 +2738,34 @@ export class OrdersService {
           paymentUrl: intent.paymentUrl,
           expiresAt: draft.expiresAt,
           intentCreationLeaseExpiresAt: null,
+          intentCreationLeaseOwnerToken: null,
           updatedAt: new Date(),
         })
-        .where(eq(payments.id, draft.paymentId));
+        .where(
+          and(
+            eq(payments.id, draft.paymentId),
+            inArray(payments.status, ["created", "processing"]),
+            eq(payments.intentCreationLeaseOwnerToken, claimedLease.ownerToken),
+            eq(payments.intentCreationLeaseFence, claimedLease.fence),
+            gt(payments.intentCreationLeaseExpiresAt, new Date()),
+          ),
+        );
     } catch (error) {
-      await this.cancelProviderIntentAfterDbFailure(draft);
+      // A database write error leaves the provider outcome uncertain. Cancel
+      // only after a fresh, fenced ownership check; an expired or superseded
+      // worker must never cancel a successor's provider trade or release its
+      // inventory reservation.
+      if (
+        await this.hasCurrentPaymentIntentLease(draft.paymentId, claimedLease)
+      ) {
+        await this.cancelProviderIntentAfterDbFailure(draft);
+        await this.cancelLocalCreatedPayment(
+          draft,
+          "provider_created_db_update_failed",
+          error,
+          claimedLease,
+        );
+      }
       throw error;
     }
     return intent;
@@ -2735,6 +2774,7 @@ export class OrdersService {
   private async markPaymentCreationUncertain(
     draft: Pick<LocalPaymentDraft, "paymentId">,
     error: unknown,
+    lease: PaymentIntentLease,
   ): Promise<void> {
     await this.db
       .update(payments)
@@ -2746,9 +2786,62 @@ export class OrdersService {
             500,
           ),
         intentCreationLeaseExpiresAt: null,
+        intentCreationLeaseOwnerToken: null,
         updatedAt: new Date(),
       })
-      .where(eq(payments.id, draft.paymentId));
+      .where(
+        and(
+          eq(payments.id, draft.paymentId),
+          inArray(payments.status, ["created", "processing"]),
+          eq(payments.intentCreationLeaseOwnerToken, lease.ownerToken),
+          eq(payments.intentCreationLeaseFence, lease.fence),
+          gt(payments.intentCreationLeaseExpiresAt, new Date()),
+        ),
+      );
+  }
+
+  private async hasCurrentPaymentIntentLease(
+    paymentId: string,
+    lease: PaymentIntentLease,
+  ): Promise<boolean> {
+    const [current] = await this.db
+      .select({ id: payments.id })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.id, paymentId),
+          eq(payments.intentCreationLeaseOwnerToken, lease.ownerToken),
+          eq(payments.intentCreationLeaseFence, lease.fence),
+          gt(payments.intentCreationLeaseExpiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    return Boolean(current);
+  }
+
+  private async renewPaymentIntentLease(
+    paymentId: string,
+    lease: PaymentIntentLease,
+  ): Promise<void> {
+    await this.db
+      .update(payments)
+      .set({
+        intentCreationLeaseExpiresAt: new Date(
+          Date.now() + PAYMENT_INTENT_CREATION_LEASE_MS,
+        ),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(payments.id, paymentId),
+          inArray(payments.status, ["created", "processing"]),
+          eq(payments.intentCreationLeaseOwnerToken, lease.ownerToken),
+          eq(payments.intentCreationLeaseFence, lease.fence),
+          // A worker cannot revive an already-expired lease in the narrow
+          // window before a successor claims it.
+          gt(payments.intentCreationLeaseExpiresAt, new Date()),
+        ),
+      );
   }
 }
 

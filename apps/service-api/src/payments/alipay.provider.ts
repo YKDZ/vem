@@ -281,19 +281,15 @@ function assertSuccessfulPrecreate(
     );
   }
 
-  const outTradeNo =
-    typeof data["out_trade_no"] === "string" ? data["out_trade_no"] : null;
-  if (outTradeNo && outTradeNo !== paymentNo) {
+  const outTradeNo = readString(data, "out_trade_no");
+  if (outTradeNo !== paymentNo) {
     throw new BadGatewayException(
       `Alipay alipay.trade.precreate out_trade_no mismatch: ${outTradeNo}`,
     );
   }
 
-  const totalAmount = data["total_amount"];
-  if (
-    typeof totalAmount === "string" &&
-    totalAmount !== amountCentsToYuan(amountCents)
-  ) {
+  const totalAmount = readString(data, "total_amount");
+  if (totalAmount !== amountCentsToYuan(amountCents)) {
     throw new BadGatewayException(
       `Alipay alipay.trade.precreate total_amount mismatch: ${totalAmount}`,
     );
@@ -324,6 +320,10 @@ function assertVerifiedSuccessfulAlipayQuery(
   }
 
   return result;
+}
+
+function isTradeNotExistResponse(data: Record<string, unknown>): boolean {
+  return data["code"] === "40004" && data["sub_code"] === "ACQ.TRADE_NOT_EXIST";
 }
 
 function mapAlipayPaymentCodeResponse(
@@ -659,7 +659,9 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         // oxlint-disable-next-line no-await-in-loop -- retry must preserve out_trade_no idempotency.
-        return await sdk.exec("alipay.trade.precreate", request);
+        return await sdk.exec("alipay.trade.precreate", request, {
+          validateSign: true,
+        });
       } catch (error) {
         if (!isIndeterminateAlipayError(error)) {
           throw error;
@@ -668,6 +670,26 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
         this.logger.warn(
           `alipay.trade.precreate attempt ${attempt}/${maxAttempts} unavailable for ${paymentNo}: ${alipayErrorMessage(error)}`,
         );
+
+        // The request may have reached Alipay even though the gateway timed
+        // out. Never repeat a precreate until a signed query proves that the
+        // provider has no trade for this exact payment number.
+        let query: Record<string, unknown>;
+        try {
+          // oxlint-disable-next-line no-await-in-loop -- query decides whether retrying the same payment number is safe.
+          query = await sdk.exec(
+            "alipay.trade.query",
+            { bizContent: { out_trade_no: paymentNo } },
+            { validateSign: true },
+          );
+        } catch (queryError) {
+          lastError = queryError;
+          break;
+        }
+        if (!isTradeNotExistResponse(query)) {
+          break;
+        }
+
         if (attempt >= maxAttempts) break;
         // oxlint-disable-next-line no-await-in-loop -- bounded retry delay for transient Alipay sandbox 5xx.
         await sleep(config.orderCodePrecreateRetryDelayMs * attempt);
@@ -686,9 +708,13 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const sdk = createAlipaySdk(this.sdkFactory, config);
     const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
     if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
-    const data = await sdk.exec("alipay.trade.query", {
-      bizContent: body,
-    });
+    const data = await sdk.exec(
+      "alipay.trade.query",
+      {
+        bizContent: body,
+      },
+      { validateSign: true },
+    );
     // The SDK query is authenticated with the exact persisted app/seller binding.
     // A terminal success must additionally echo this payment number and amount.
     return assertVerifiedSuccessfulAlipayQuery(data, input);
@@ -757,9 +783,13 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
     if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
     try {
-      const data = await sdk.exec("alipay.trade.query", {
-        bizContent: body,
-      });
+      const data = await sdk.exec(
+        "alipay.trade.query",
+        {
+          bizContent: body,
+        },
+        { validateSign: true },
+      );
       return mapAlipayPaymentCodeQueryResponse(data);
     } catch (err) {
       if (isIndeterminateAlipayError(err)) {

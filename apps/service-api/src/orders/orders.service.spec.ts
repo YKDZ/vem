@@ -22,7 +22,9 @@ function makeDb() {
     }),
     update: vi.fn().mockReturnValue({
       set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([]),
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "pay-claim", fence: 1 }]),
+        }),
       }),
     }),
     transaction: vi
@@ -1961,6 +1963,166 @@ describe("OrdersService", () => {
       ]);
     });
 
+    it("allows a processing QR payment to restore its QR after reconciliation reports pending", async () => {
+      const reconcilePendingPaymentOnRead = vi.fn().mockResolvedValue({
+        status: "pending",
+        reconciled: true,
+        reason: "provider_trade_not_exist",
+      });
+      const service = makeService({
+        paymentsService: { reconcilePendingPaymentOnRead },
+        configService: {
+          resolveForExistingPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+        },
+      });
+      const internal = service as unknown as {
+        restorePaymentCreation(input: Record<string, unknown>): Promise<{
+          paymentUrl: string | null;
+        }>;
+        createAndPersistPaymentIntent: ReturnType<typeof vi.fn>;
+      };
+      const restoreIntent = vi
+        .spyOn(internal, "createAndPersistPaymentIntent")
+        .mockResolvedValue({
+          providerTradeNo: null,
+          paymentUrl: "https://qr.alipay.com/recovered",
+          initialStatus: "pending",
+        });
+
+      await expect(
+        internal.restorePaymentCreation({
+          orderId: "550e8400-e29b-41d4-a716-446655440040",
+          orderNo: "ORD-RECOVER-QR",
+          paymentId: "550e8400-e29b-41d4-a716-446655440041",
+          paymentNo: "PAY-RECOVER-QR",
+          providerCode: "alipay",
+          paymentMethod: "qr_code",
+          machineId: "machine-1",
+          totalAmountCents: 100,
+          expiresAt: new Date("2026-07-14T01:00:00.000Z"),
+          reservations: [],
+          paymentStatus: "processing",
+          paymentUrl: null,
+          providerTradeNo: null,
+          providerConfigId: null,
+          providerConfigSnapshotJson: {},
+          intentCreationLeaseExpiresAt: null,
+          intentCreationLeaseOwnerToken: null,
+          intentCreationLeaseFence: 0,
+        }),
+      ).resolves.toMatchObject({
+        paymentUrl: "https://qr.alipay.com/recovered",
+      });
+
+      expect(reconcilePendingPaymentOnRead).toHaveBeenCalledWith(
+        "550e8400-e29b-41d4-a716-446655440041",
+      );
+      expect(restoreIntent).toHaveBeenCalledOnce();
+    });
+
+    it("loads the actual active reservations for a persisted checkout recovery", async () => {
+      const db = makeQueuedDb([
+        [
+          {
+            orderId: "550e8400-e29b-41d4-a716-446655440050",
+            orderNo: "ORD-RESERVATION-RECOVERY",
+            paymentId: "550e8400-e29b-41d4-a716-446655440051",
+            paymentNo: "PAY-RESERVATION-RECOVERY",
+            providerCode: "alipay",
+            paymentMethod: "qr_code",
+            machineId: "machine-1",
+            totalAmountCents: 100,
+            expiresAt: new Date("2026-07-14T01:00:00.000Z"),
+            paymentStatus: "created",
+            paymentUrl: null,
+            providerTradeNo: null,
+            providerConfigId: null,
+            providerConfigSnapshotJson: {},
+            intentCreationLeaseExpiresAt: null,
+            intentCreationLeaseOwnerToken: null,
+            intentCreationLeaseFence: 0,
+          },
+        ],
+        [{ inventoryId: "inventory-1", quantity: 2 }],
+      ]);
+      const service = makeService({ db });
+      const internal = service as unknown as {
+        findPaymentCreationByIdempotencyKey(
+          machineId: string,
+          idempotencyKey: string,
+        ): Promise<{
+          reservations: Array<{ inventoryId: string; quantity: number }>;
+        } | null>;
+      };
+
+      await expect(
+        internal.findPaymentCreationByIdempotencyKey(
+          "machine-1",
+          "checkout:real-reservation",
+        ),
+      ).resolves.toMatchObject({
+        reservations: [{ inventoryId: "inventory-1", quantity: 2 }],
+      });
+    });
+
+    it("does not let a superseded lease cancel or release inventory", async () => {
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        }),
+        insert: vi.fn(),
+        select: vi.fn(),
+      };
+      const db = makeDb();
+      db.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+        fn(tx),
+      );
+      const service = makeService({
+        db,
+        inventoryService: { releaseReservation },
+      });
+      const internal = service as unknown as {
+        cancelLocalCreatedPayment(
+          draft: Record<string, unknown>,
+          reason: "provider_create_failed",
+          error: unknown,
+          lease: { ownerToken: string; fence: number; expiresAt: Date },
+        ): Promise<void>;
+      };
+
+      await internal.cancelLocalCreatedPayment(
+        {
+          orderId: "550e8400-e29b-41d4-a716-446655440060",
+          orderNo: "ORD-LEASE-TAKEOVER",
+          paymentId: "550e8400-e29b-41d4-a716-446655440061",
+          paymentNo: "PAY-LEASE-TAKEOVER",
+          providerCode: "alipay",
+          machineId: "machine-1",
+          reservations: [{ inventoryId: "inventory-1", quantity: 1 }],
+        },
+        "provider_create_failed",
+        new Error("old owner failed after takeover"),
+        {
+          ownerToken: "old-owner-token",
+          fence: 1,
+          expiresAt: new Date(Date.now() + 30_000),
+        },
+      );
+
+      expect(releaseReservation).not.toHaveBeenCalled();
+    });
+
     it("restores the persisted payment instead of allocating another order for the same checkout key", async () => {
       const db = makeQueuedDb([
         [{ id: "machine-1", code: "M001", status: "online" }],
@@ -1981,8 +2143,11 @@ describe("OrdersService", () => {
             providerConfigId: "550e8400-e29b-41d4-a716-446655440012",
             providerConfigSnapshotJson: {},
             intentCreationLeaseExpiresAt: null,
+            intentCreationLeaseOwnerToken: null,
+            intentCreationLeaseFence: 0,
           },
         ],
+        [],
       ]);
       const configService = {
         assertMachinePaymentChannelAvailable: vi.fn(),
@@ -2038,8 +2203,11 @@ describe("OrdersService", () => {
             providerConfigId: "550e8400-e29b-41d4-a716-446655440022",
             providerConfigSnapshotJson: {},
             intentCreationLeaseExpiresAt: null,
+            intentCreationLeaseOwnerToken: null,
+            intentCreationLeaseFence: 0,
           },
         ],
+        [],
       ]);
       const reconcilePendingPaymentOnRead = vi.fn().mockResolvedValue({
         status: "processing",
@@ -2393,13 +2561,13 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
   };
 
   // Machine lookup: returns online machine
+  const machineRows = [{ id: "mach-001", code: "M-001", status: "online" }];
+  const machineWhereResult = Object.assign(Promise.resolve(machineRows), {
+    limit: vi.fn().mockResolvedValue([{ id: "pay-claim" }]),
+  });
   harness.select.mockReturnValue({
     from: vi.fn().mockReturnValue({
-      where: vi
-        .fn()
-        .mockResolvedValue([
-          { id: "mach-001", code: "M-001", status: "online" },
-        ]),
+      where: vi.fn().mockReturnValue(machineWhereResult),
     }),
   });
 
@@ -2426,7 +2594,11 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
       if (typeof vals?.status === "string") {
         harness.updatedPaymentStatus = vals.status;
       }
-      return { where: vi.fn().mockResolvedValue([]) };
+      return {
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "pay-claim", fence: 1 }]),
+        }),
+      };
     }),
   });
 
@@ -2442,10 +2614,23 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
 
 function makeOrdersDbForPaymentUpdateFailure(): OrdersDbHarness {
   const db = makeOrdersDbForSuccessfulLocalDraft();
+  let updateCalls = 0;
   db.update = vi.fn(() => ({
-    set: vi.fn(() => ({
-      where: vi.fn().mockRejectedValue(new Error("payment update failed")),
-    })),
+    set: vi.fn(() => {
+      updateCalls += 1;
+      if (updateCalls === 1) {
+        return {
+          where: vi.fn().mockReturnValue({
+            returning: vi
+              .fn()
+              .mockResolvedValue([{ id: "pay-claim", fence: 1 }]),
+          }),
+        };
+      }
+      return {
+        where: vi.fn().mockRejectedValue(new Error("payment update failed")),
+      };
+    }),
   }));
   return db;
 }

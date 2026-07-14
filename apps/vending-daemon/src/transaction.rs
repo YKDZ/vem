@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin, sync::Arc};
 use uuid::Uuid;
 use vending_core::domain::InternalCheckoutFlowAction;
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::{Duration, Instant};
 
 use crate::backend::BackendClient;
@@ -18,6 +19,17 @@ const PAYMENT_CODE_STATUS_POLL_MAX: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const PAYMENT_CODE_STATUS_POLL_MAX: Duration = Duration::from_secs(45);
 
+const CHECKOUT_CREATION_RECOVERY_KEY: &str = "checkout_creation_recovery";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CheckoutCreationRecovery {
+    payment_method: String,
+    payment_provider_code: Option<String>,
+    items: serde_json::Value,
+    profile_snapshot: Option<serde_json::Value>,
+    idempotency_key: String,
+}
+
 pub(crate) type PaymentCodeSubmitGuard =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
@@ -28,6 +40,10 @@ pub struct TransactionStateMachine {
     events: broadcast::Sender<DaemonEvent>,
     machine_code: Option<String>,
     payment_code_submit_guard: Option<PaymentCodeSubmitGuard>,
+    /// Owns the complete checkout creation critical section.  The local
+    /// session is durable, but two IPC requests can both observe it as empty
+    /// before either has received the platform's order response.
+    checkout_creation_lock: Arc<Mutex<()>>,
 }
 
 impl TransactionStateMachine {
@@ -43,6 +59,7 @@ impl TransactionStateMachine {
             events,
             machine_code,
             payment_code_submit_guard: None,
+            checkout_creation_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -54,7 +71,30 @@ impl TransactionStateMachine {
     pub async fn restore_current(
         &self,
     ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, String> {
-        self.refresh_current_from_backend().await
+        if let Some(current) = self.refresh_current_from_backend().await? {
+            return Ok(Some(current));
+        }
+        let Some(recovery) = self
+            .state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+
+        // The platform's machine-order idempotency key is the durable source
+        // of truth across a daemon restart. Replaying it either returns the
+        // already-created order or creates the order exactly once.
+        self.create_order_with_idempotency(
+            &recovery.payment_method,
+            recovery.payment_provider_code,
+            recovery.items,
+            recovery.profile_snapshot,
+            Some(&recovery.idempotency_key),
+        )
+        .await
+        .map(Some)
     }
 
     async fn refresh_current_from_backend(
@@ -137,6 +177,11 @@ impl TransactionStateMachine {
         profile_snapshot: Option<serde_json::Value>,
         idempotency_key: Option<&str>,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
+        // Keep the existing-session check, platform creation, and local
+        // durable session write as one critical section.  A second caller,
+        // whether it used the same idempotency key or a different one, joins
+        // the active checkout by receiving the persisted current session.
+        let _checkout_creation = self.checkout_creation_lock.lock().await;
         if let Some(current) = self.refresh_current_from_backend().await? {
             if is_active_transaction(&current) {
                 return Ok(current);
@@ -151,6 +196,31 @@ impl TransactionStateMachine {
             .filter(|value| !value.trim().is_empty())
             .map(ToString::to_string)
             .unwrap_or_else(|| format!("checkout:{}", Uuid::new_v4()));
+
+        if let Some(recovery) = self
+            .state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            if recovery.idempotency_key != idempotency_key {
+                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
+            }
+        } else {
+            self.state
+                .put_metadata(
+                    CHECKOUT_CREATION_RECOVERY_KEY,
+                    &CheckoutCreationRecovery {
+                        payment_method: payment_method.to_string(),
+                        payment_provider_code: payment_provider_code.clone(),
+                        items: items.clone(),
+                        profile_snapshot: profile_snapshot.clone(),
+                        idempotency_key: idempotency_key.clone(),
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+        }
 
         let response = match self
             .backend
@@ -168,6 +238,12 @@ impl TransactionStateMachine {
             Err(error) => {
                 self.refresh_platform_stock_after_order_refusal(&machine_code)
                     .await;
+                if is_deterministic_checkout_creation_error(&error) {
+                    self.state
+                        .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
+                        .await
+                        .map_err(|store_error| store_error.to_string())?;
+                }
                 return Err(error);
             }
         };
@@ -206,6 +282,11 @@ impl TransactionStateMachine {
                 last_backend_status_json: Some(backend_status),
                 last_error: None,
             })
+            .await
+            .map_err(|error| error.to_string())?;
+
+        self.state
+            .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
             .await
             .map_err(|error| error.to_string())?;
 
@@ -525,6 +606,16 @@ impl TransactionStateMachine {
                 .unwrap_or_else(|| current.order_status.clone().unwrap_or_default()),
         });
     }
+}
+
+fn is_deterministic_checkout_creation_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    !(lower.contains("timeout")
+        || lower.contains("offline")
+        || lower.contains("network")
+        || lower.contains("connection")
+        || lower.contains("status: 5")
+        || lower.contains("status: 504"))
 }
 
 fn should_follow_payment_code_attempt(
@@ -941,6 +1032,191 @@ mod tests {
             body["idempotencyKey"],
             serde_json::Value::String("checkout:stable-daemon-retry".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_checkout_creation_joins_one_durable_order_even_for_different_keys() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "token-123"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/machine-orders"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_json(json!({
+                        "orderId": "550e8400-e29b-41d4-a716-446655440100",
+                        "orderNo": "ORDER-SINGLEFLIGHT",
+                        "paymentId": "550e8400-e29b-41d4-a716-446655440101",
+                        "paymentNo": "PAY-SINGLEFLIGHT",
+                        "paymentUrl": null,
+                        "expiresAt": "2026-06-10T00:05:00.000Z",
+                        "totalAmountCents": 300,
+                        "paymentProviderCode": "mock"
+                    })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/ORDER-SINGLEFLIGHT/status"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORDER-SINGLEFLIGHT",
+                "machineCode": "M-1",
+                "orderStatus": "pending_payment",
+                "nextAction": "wait_payment",
+                "payment": {
+                    "paymentNo": "PAY-SINGLEFLIGHT",
+                    "method": "mock",
+                    "providerCode": "mock",
+                    "status": "pending",
+                    "paymentUrl": null,
+                    "expiresAt": "2026-06-10T00:05:00.000Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = Arc::new(BackendClient::new(server.uri()));
+        backend.authenticate("M-1", "S-1").await.expect("auth");
+        let (events_tx, _) = broadcast::channel(8);
+        let machine =
+            TransactionStateMachine::new(state, backend, Some("M-1".to_string()), events_tx);
+
+        let first_machine = machine.clone();
+        let second_machine = machine.clone();
+        let (first, second) = tokio::join!(
+            first_machine.create_order_with_idempotency(
+                "mock",
+                Some("mock".to_string()),
+                json!([{ "slotCode": "A1", "quantity": 1 }]),
+                None,
+                Some("checkout:first"),
+            ),
+            second_machine.create_order_with_idempotency(
+                "mock",
+                Some("mock".to_string()),
+                json!([{ "slotCode": "B1", "quantity": 1 }]),
+                None,
+                Some("checkout:different-key"),
+            ),
+        );
+
+        let first = first.expect("first checkout");
+        let second = second.expect("second checkout joins active checkout");
+        assert_eq!(first.order_no.as_deref(), Some("ORDER-SINGLEFLIGHT"));
+        assert_eq!(second.order_no.as_deref(), Some("ORDER-SINGLEFLIGHT"));
+        let creates = server
+            .received_requests()
+            .await
+            .expect("requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/machine-orders")
+            .count();
+        assert_eq!(creates, 1, "only one provider checkout may be active");
+    }
+
+    #[tokio::test]
+    async fn restore_current_replays_the_durable_platform_checkout_key_after_restart() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .put_metadata(
+                CHECKOUT_CREATION_RECOVERY_KEY,
+                &CheckoutCreationRecovery {
+                    payment_method: "mock".to_string(),
+                    payment_provider_code: Some("mock".to_string()),
+                    items: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                    profile_snapshot: None,
+                    idempotency_key: "checkout:restart-durable".to_string(),
+                },
+            )
+            .await
+            .expect("persist crash recovery marker");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "token-123"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderId": "550e8400-e29b-41d4-a716-446655440110",
+                "orderNo": "ORDER-RESTART-RECOVERY",
+                "paymentId": "550e8400-e29b-41d4-a716-446655440111",
+                "paymentNo": "PAY-RESTART-RECOVERY",
+                "paymentUrl": null,
+                "expiresAt": "2026-06-10T00:05:00.000Z",
+                "totalAmountCents": 300,
+                "paymentProviderCode": "mock"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/ORDER-RESTART-RECOVERY/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORDER-RESTART-RECOVERY",
+                "machineCode": "M-1",
+                "orderStatus": "pending_payment",
+                "nextAction": "wait_payment",
+                "payment": {
+                    "paymentNo": "PAY-RESTART-RECOVERY",
+                    "method": "mock",
+                    "providerCode": "mock",
+                    "status": "pending",
+                    "paymentUrl": null,
+                    "expiresAt": "2026-06-10T00:05:00.000Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = Arc::new(BackendClient::new(server.uri()));
+        backend.authenticate("M-1", "S-1").await.expect("auth");
+        let (events_tx, _) = broadcast::channel(8);
+        let restarted = TransactionStateMachine::new(
+            state.clone(),
+            backend,
+            Some("M-1".to_string()),
+            events_tx,
+        );
+
+        let current = restarted
+            .restore_current()
+            .await
+            .expect("restore")
+            .expect("recovered current transaction");
+        assert_eq!(current.order_no.as_deref(), Some("ORDER-RESTART-RECOVERY"));
+        assert!(state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .expect("marker read")
+            .is_none());
+
+        let requests = server.received_requests().await.expect("requests");
+        let create_request = requests
+            .into_iter()
+            .find(|request| request.url.path() == "/machine-orders")
+            .expect("replay API request");
+        let body: serde_json::Value =
+            serde_json::from_slice(&create_request.body).expect("create body");
+        assert_eq!(body["idempotencyKey"], "checkout:restart-durable");
     }
 
     #[tokio::test]

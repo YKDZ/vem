@@ -61,6 +61,7 @@ describe("AlipayProvider", () => {
     vi.mocked(sdk.exec).mockResolvedValueOnce({
       code: "10000",
       out_trade_no: "PAY202605060001",
+      total_amount: "9.99",
       qr_code: "https://qr.alipay.com/bax-sandbox",
     });
     const provider = new AlipayProvider(factory);
@@ -93,6 +94,7 @@ describe("AlipayProvider", () => {
     vi.mocked(sdk.exec).mockResolvedValueOnce({
       code: "10000",
       out_trade_no: "PAY202605060002",
+      total_amount: "12.34",
       qr_code: "https://qr.alipay.com/bax-sandbox",
     });
     const provider = new AlipayProvider(factory);
@@ -118,6 +120,7 @@ describe("AlipayProvider", () => {
           seller_id: "2088123456789012",
         }),
       }),
+      { validateSign: true },
     );
     expect(sdk.exec).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
@@ -132,6 +135,7 @@ describe("AlipayProvider", () => {
     vi.mocked(sdk.exec).mockResolvedValueOnce({
       code: "10000",
       out_trade_no: "PAY202605060098",
+      total_amount: "1.00",
       qr_code: "https://qr.alipay.com/bax-sandbox",
     });
     const provider = new AlipayProvider(factory);
@@ -154,6 +158,7 @@ describe("AlipayProvider", () => {
       .mockResolvedValueOnce({
         code: "10000",
         out_trade_no: "PAY202605060120",
+        total_amount: "1.00",
         qr_code: "https://qr.alipay.com/bax-sandbox",
       })
       .mockResolvedValueOnce({
@@ -232,12 +237,33 @@ describe("AlipayProvider", () => {
     ).rejects.toThrow("Alipay alipay.trade.precreate total_amount mismatch");
   });
 
+  it("rejects a precreate response that omits the payment number", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec).mockResolvedValueOnce({
+      code: "10000",
+      total_amount: "1.00",
+      qr_code: "https://qr.alipay.com/bax-sandbox",
+    });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.createPaymentIntent({
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060123",
+        orderNo: "ORD202605060123",
+        amountCents: 100,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      }),
+    ).rejects.toThrow("Alipay response missing out_trade_no");
+  });
+
   it("presents a matching precreate QR immediately when a pre-scan query cannot find the trade", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockResolvedValueOnce({
         code: "10000",
         out_trade_no: "PAY202605060122",
+        total_amount: "1.00",
         qr_code: "https://qr.alipay.com/bax-sandbox",
       })
       .mockResolvedValue({
@@ -268,13 +294,18 @@ describe("AlipayProvider", () => {
     expect(sdk.exec).toHaveBeenCalledTimes(1);
   });
 
-  it("retries transient order-code precreate failures with the same payment number", async () => {
+  it("queries after an indeterminate precreate and retries only after TRADE_NOT_EXIST", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockRejectedValueOnce(new Error("HTTP 请求错误, status: 504"))
       .mockResolvedValueOnce({
+        code: "40004",
+        sub_code: "ACQ.TRADE_NOT_EXIST",
+      })
+      .mockResolvedValueOnce({
         code: "10000",
         out_trade_no: "PAY202605060099",
+        total_amount: "1.00",
         qr_code: "https://qr.alipay.com/bax-sandbox",
       });
     const provider = new AlipayProvider(factory);
@@ -301,19 +332,66 @@ describe("AlipayProvider", () => {
           out_trade_no: "PAY202605060099",
         }),
       }),
+      { validateSign: true },
     );
     expect(sdk.exec).toHaveBeenNthCalledWith(
       2,
+      "alipay.trade.query",
+      expect.objectContaining({
+        bizContent: { out_trade_no: "PAY202605060099" },
+      }),
+      { validateSign: true },
+    );
+    expect(sdk.exec).toHaveBeenNthCalledWith(
+      3,
       "alipay.trade.precreate",
       expect.objectContaining({
         bizContent: expect.objectContaining({
           out_trade_no: "PAY202605060099",
         }),
       }),
+      { validateSign: true },
     );
   });
 
-  it("fails transient order-code precreate failures after bounded retries", async () => {
+  it("does not repeat precreate when the indeterminate request may already exist", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec)
+      .mockRejectedValueOnce(new Error("HTTP 请求错误, status: 504"))
+      .mockResolvedValueOnce({
+        code: "10000",
+        out_trade_no: "PAY202605060777",
+        total_amount: "1.00",
+        trade_status: "WAIT_BUYER_PAY",
+      });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.createPaymentIntent({
+        config: makeRuntimeConfig({
+          publicConfigJson: {
+            ...makeRuntimeConfig().publicConfigJson,
+            orderCodePrecreateMaxAttempts: 2,
+            orderCodePrecreateRetryDelayMs: 1,
+          },
+        }),
+        paymentNo: "PAY202605060777",
+        orderNo: "ORD202605060777",
+        amountCents: 100,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      }),
+    ).rejects.toThrow("支付宝支付通道暂不可用，请稍后重试");
+
+    expect(sdk.exec).toHaveBeenCalledTimes(2);
+    expect(sdk.exec).toHaveBeenNthCalledWith(
+      2,
+      "alipay.trade.query",
+      expect.any(Object),
+      { validateSign: true },
+    );
+  });
+
+  it("fails closed when an indeterminate precreate cannot be reconciled", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec).mockRejectedValue(
       new Error("HTTP 请求错误, status: 504"),
@@ -341,11 +419,13 @@ describe("AlipayProvider", () => {
       1,
       "alipay.trade.precreate",
       expect.any(Object),
+      { validateSign: true },
     );
     expect(sdk.exec).toHaveBeenNthCalledWith(
       2,
-      "alipay.trade.precreate",
+      "alipay.trade.query",
       expect.any(Object),
+      { validateSign: true },
     );
     expect(sdk.exec).not.toHaveBeenCalledWith(
       "alipay.trade.cancel",
@@ -384,6 +464,7 @@ describe("AlipayProvider", () => {
             out_trade_no: "PAY202605060003",
           }),
         }),
+        { validateSign: true },
       );
       expect(result.status).toBe(status);
       expect(result.providerTradeNo).toBe("2026050622000000001");
@@ -474,6 +555,7 @@ describe("AlipayProvider", () => {
           out_trade_no: "PCA202605240099",
         }),
       }),
+      { validateSign: true },
     );
     expect(result.status).toBe("reversed");
     expect(result.providerTradeNo).toBe("2026050622000000099");
@@ -503,6 +585,7 @@ describe("AlipayProvider", () => {
           out_trade_no: "PCA202605240100",
         }),
       }),
+      { validateSign: true },
     );
     expect(result.status).toBe("succeeded");
     expect(result.providerTradeNo).toBe("2026050622000000100");
