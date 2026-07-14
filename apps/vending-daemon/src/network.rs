@@ -1439,6 +1439,39 @@ struct WlanConnectionObservation {
     default_route_ready: bool,
 }
 
+/// `WlanGetProfile` returns an allocated UTF-16 XML buffer. Keep it opaque so
+/// a protected prior key is neither decoded nor included in diagnostics while
+/// the candidate profile is being tried.
+#[cfg(any(windows, test))]
+#[derive(Clone)]
+struct PreservedWlanProfile {
+    profile_xml: Vec<u16>,
+    profile_position: u32,
+}
+
+#[cfg(test)]
+enum ManagedWlanProfileRollbackPlan {
+    Restore(PreservedWlanProfile),
+    DeleteCandidate,
+}
+
+#[cfg(test)]
+fn managed_wlan_profile_rollback_plan(
+    previous: Option<PreservedWlanProfile>,
+) -> ManagedWlanProfileRollbackPlan {
+    match previous {
+        Some(profile) => ManagedWlanProfileRollbackPlan::Restore(profile),
+        None => ManagedWlanProfileRollbackPlan::DeleteCandidate,
+    }
+}
+
+#[cfg(any(windows, test))]
+fn wlan_local_connection_succeeded(observation: WlanConnectionObservation) -> bool {
+    matches!(observation.association, WlanAssociationState::Associated)
+        && observation.local_address_ready
+        && observation.default_route_ready
+}
+
 #[cfg(any(windows, test))]
 fn deterministic_wlan_profile_name(ssid: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -1529,6 +1562,314 @@ struct NativeWlanNotificationContext {
     ssid: String,
 }
 
+#[cfg(windows)]
+struct WlanClientHandle {
+    raw: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl WlanClientHandle {
+    unsafe fn open() -> Result<Self, String> {
+        use std::ptr;
+        use windows_sys::Win32::{Foundation::HANDLE, NetworkManagement::WiFi::WlanOpenHandle};
+
+        const ERROR_SUCCESS: u32 = 0;
+        let mut negotiated_version = 0;
+        let mut raw: HANDLE = ptr::null_mut();
+        let open = WlanOpenHandle(2, ptr::null(), &mut negotiated_version, &mut raw);
+        if open != ERROR_SUCCESS {
+            return Err(format!("WLAN API open failed with error {open}"));
+        }
+        Ok(Self { raw })
+    }
+
+    fn raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        self.raw
+    }
+
+    fn is_open(&self) -> bool {
+        !self.raw.is_null()
+    }
+
+    unsafe fn close_synchronously(&mut self) -> Result<(), u32> {
+        use std::ptr;
+        use windows_sys::Win32::NetworkManagement::WiFi::WlanCloseHandle;
+
+        if !self.is_open() {
+            return Ok(());
+        }
+        // Closing a WLAN client handle unregisters notifications. It is the
+        // only fallback allowed before a failed unregister frees its callback
+        // context.
+        let close = WlanCloseHandle(self.raw, ptr::null());
+        if close == 0 {
+            self.raw = ptr::null_mut();
+            Ok(())
+        } else {
+            Err(close)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WlanClientHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.close_synchronously();
+        }
+    }
+}
+
+#[cfg(windows)]
+struct NativeWlanNotificationRelease<'a> {
+    handle: &'a mut WlanClientHandle,
+}
+
+#[cfg(windows)]
+impl WlanNotificationReleaseApi for NativeWlanNotificationRelease<'_> {
+    fn unregister_notification(&mut self) -> u32 {
+        use std::ptr;
+        use windows_sys::Win32::NetworkManagement::WiFi::{
+            WlanRegisterNotification, WLAN_NOTIFICATION_SOURCE_NONE,
+        };
+
+        unsafe {
+            WlanRegisterNotification(
+                self.handle.raw(),
+                WLAN_NOTIFICATION_SOURCE_NONE,
+                0,
+                None,
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+            )
+        }
+    }
+
+    fn close_handle_synchronously(&mut self) -> Result<(), u32> {
+        unsafe { self.handle.close_synchronously() }
+    }
+}
+
+#[cfg(windows)]
+struct NativeWlanNotificationRegistration<'a> {
+    handle: &'a mut WlanClientHandle,
+    context: WlanNotificationContextLease<NativeWlanNotificationContext>,
+}
+
+#[cfg(windows)]
+impl<'a> NativeWlanNotificationRegistration<'a> {
+    unsafe fn register(
+        handle: &'a mut WlanClientHandle,
+        context: NativeWlanNotificationContext,
+    ) -> Result<Self, String> {
+        use std::ptr;
+        use windows_sys::Win32::NetworkManagement::WiFi::{
+            WlanRegisterNotification, WLAN_NOTIFICATION_SOURCE_ACM,
+        };
+
+        const ERROR_SUCCESS: u32 = 0;
+        let mut context = WlanNotificationContextLease::new(context);
+        let mut previous_notification_source = 0;
+        let registration = WlanRegisterNotification(
+            handle.raw(),
+            WLAN_NOTIFICATION_SOURCE_ACM,
+            0,
+            Some(native_wlan_notification_callback),
+            context.context_ptr().cast(),
+            ptr::null(),
+            &mut previous_notification_source,
+        );
+        if registration != ERROR_SUCCESS {
+            return Err(format!(
+                "WLAN notification registration failed with error {registration}"
+            ));
+        }
+        Ok(Self { handle, context })
+    }
+
+    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        self.handle.raw()
+    }
+
+    fn release(&mut self) -> Result<(), u32> {
+        let (handle, context) = (&mut *self.handle, &mut self.context);
+        let mut release = NativeWlanNotificationRelease { handle };
+        context.release_with(&mut release)
+    }
+
+    fn leak_context(&mut self) {
+        self.context.leak();
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeWlanNotificationRegistration<'_> {
+    fn drop(&mut self) {
+        if self.release().is_err() {
+            // A failed CloseHandle means Windows has not confirmed that the
+            // callback is gone. Leak rather than leave a dangling pointer.
+            self.leak_context();
+        }
+    }
+}
+
+#[cfg(windows)]
+struct ManagedWlanProfileTransaction {
+    interface_guid: windows_sys::core::GUID,
+    profile_name: Vec<u16>,
+    previous: Option<PreservedWlanProfile>,
+    candidate_applied: bool,
+    committed: bool,
+}
+
+#[cfg(windows)]
+impl ManagedWlanProfileTransaction {
+    unsafe fn begin(
+        handle: windows_sys::Win32::Foundation::HANDLE,
+        interface_guid: windows_sys::core::GUID,
+        profile_name: Vec<u16>,
+    ) -> Result<Self, String> {
+        let previous = capture_existing_wlan_profile(handle, &interface_guid, &profile_name)?;
+        Ok(Self {
+            interface_guid,
+            profile_name,
+            previous,
+            candidate_applied: false,
+            committed: false,
+        })
+    }
+
+    unsafe fn stage_candidate(
+        &mut self,
+        handle: windows_sys::Win32::Foundation::HANDLE,
+        profile_xml: &[u16],
+    ) -> Result<(), String> {
+        use std::ptr;
+        use windows_sys::Win32::NetworkManagement::WiFi::{
+            WlanSetProfile, WLAN_REASON_CODE_SUCCESS,
+        };
+
+        const ERROR_SUCCESS: u32 = 0;
+        let all_user_security = wide_null("D:(A;;GA;;;SY)(A;;GA;;;BA)");
+        let mut profile_reason = WLAN_REASON_CODE_SUCCESS;
+        let set = WlanSetProfile(
+            handle,
+            &self.interface_guid,
+            0,
+            profile_xml.as_ptr(),
+            all_user_security.as_ptr(),
+            1,
+            ptr::null(),
+            &mut profile_reason,
+        );
+        if set != ERROR_SUCCESS {
+            return Err(format!(
+                "Windows rejected the candidate all-user WLAN profile (error {set}, reason code {profile_reason})"
+            ));
+        }
+        self.candidate_applied = true;
+        Ok(())
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+        self.candidate_applied = false;
+    }
+
+    unsafe fn rollback(&mut self, client: &mut WlanClientHandle) -> Result<(), String> {
+        if !self.candidate_applied || self.committed {
+            return Ok(());
+        }
+        if client.is_open() {
+            return self.rollback_on_handle(client.raw());
+        }
+
+        // An unregister failure has synchronously closed the original handle
+        // before freeing its callback context. Reopen only for the rollback;
+        // never keep using the closed handle.
+        let recovery_client = WlanClientHandle::open()?;
+        self.rollback_on_handle(recovery_client.raw())
+    }
+
+    unsafe fn rollback_on_handle(
+        &mut self,
+        handle: windows_sys::Win32::Foundation::HANDLE,
+    ) -> Result<(), String> {
+        use std::ptr;
+        use windows_sys::Win32::NetworkManagement::WiFi::{
+            WlanDeleteProfile, WlanSetProfile, WlanSetProfilePosition, WLAN_REASON_CODE_SUCCESS,
+        };
+
+        const ERROR_SUCCESS: u32 = 0;
+        match self.previous.as_ref() {
+            Some(previous) => {
+                let all_user_security = wide_null("D:(A;;GA;;;SY)(A;;GA;;;BA)");
+                let mut profile_reason = WLAN_REASON_CODE_SUCCESS;
+                let restore = WlanSetProfile(
+                    handle,
+                    &self.interface_guid,
+                    0,
+                    previous.profile_xml.as_ptr(),
+                    all_user_security.as_ptr(),
+                    1,
+                    ptr::null(),
+                    &mut profile_reason,
+                );
+                if restore != ERROR_SUCCESS {
+                    return Err(format!(
+                        "Windows could not restore the prior managed WLAN profile (error {restore}, reason code {profile_reason})"
+                    ));
+                }
+                let reorder = WlanSetProfilePosition(
+                    handle,
+                    &self.interface_guid,
+                    self.profile_name.as_ptr(),
+                    previous.profile_position,
+                    ptr::null(),
+                );
+                if reorder != ERROR_SUCCESS {
+                    return Err(format!(
+                        "Windows could not restore the prior managed WLAN profile order (error {reorder})"
+                    ));
+                }
+            }
+            None => {
+                let delete = WlanDeleteProfile(
+                    handle,
+                    &self.interface_guid,
+                    self.profile_name.as_ptr(),
+                    ptr::null(),
+                );
+                if delete != ERROR_SUCCESS {
+                    return Err(format!(
+                        "Windows could not remove the failed candidate WLAN profile (error {delete})"
+                    ));
+                }
+            }
+        }
+        self.candidate_applied = false;
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ManagedWlanProfileTransaction {
+    fn drop(&mut self) {
+        if !self.candidate_applied || self.committed {
+            return;
+        }
+        unsafe {
+            // Covers every early-return path after candidate staging. An
+            // explicit rollback reports its first failure; Drop makes one
+            // final best-effort restoration without exposing prior XML.
+            if let Ok(client) = WlanClientHandle::open() {
+                let _ = self.rollback_on_handle(client.raw());
+            }
+        }
+    }
+}
+
 #[cfg(any(windows, test))]
 fn wlan_notification_matches_target(
     expected_interface: [u8; 16],
@@ -1543,27 +1884,114 @@ fn wlan_notification_matches_target(
         && expected_ssid == notification_ssid
 }
 
+/// A matching current connection can be evidence for this attempt only when
+/// it was not already the target before `WlanConnect`. If the same profile
+/// and SSID were connected beforehand, require the target's completion
+/// notification so stale association state cannot approve new credentials.
+#[cfg(any(windows, test))]
+fn wlan_attempt_has_target_association(
+    was_target_connected_before: bool,
+    target_connected_now: bool,
+    received_target_completion: bool,
+    failure_reason: Option<u32>,
+) -> bool {
+    failure_reason.is_none()
+        && target_connected_now
+        && (received_target_completion || !was_target_connected_before)
+}
+
+/// `WlanRegisterNotification(..., WLAN_NOTIFICATION_SOURCE_NONE, ...)`
+/// synchronously waits for an in-flight callback only when it succeeds. On
+/// failure, closing the client handle is the synchronous fallback that
+/// unregisters the callback before its context is released.
+#[cfg(any(windows, test))]
+trait WlanNotificationReleaseApi {
+    fn unregister_notification(&mut self) -> u32;
+    fn close_handle_synchronously(&mut self) -> Result<(), u32>;
+}
+
+#[cfg(any(windows, test))]
+struct WlanNotificationContextLease<T> {
+    context: Option<Box<T>>,
+}
+
+#[cfg(any(windows, test))]
+impl<T> WlanNotificationContextLease<T> {
+    fn new(context: T) -> Self {
+        Self {
+            context: Some(Box::new(context)),
+        }
+    }
+
+    #[cfg(windows)]
+    fn context_ptr(&mut self) -> *mut T {
+        self.context
+            .as_deref_mut()
+            .map_or(std::ptr::null_mut(), |context| context as *mut T)
+    }
+
+    #[cfg(windows)]
+    fn leak(&mut self) {
+        if let Some(context) = self.context.take() {
+            // Safety over a dangling callback pointer: if Windows rejected
+            // both unregister and synchronous handle close, its callback
+            // context can no longer be reclaimed in-process.
+            std::mem::forget(context);
+        }
+    }
+
+    fn release_with<A: WlanNotificationReleaseApi>(&mut self, api: &mut A) -> Result<(), u32> {
+        if self.context.is_none() {
+            return Ok(());
+        }
+        let unregister = api.unregister_notification();
+        if unregister != 0 {
+            if api.close_handle_synchronously().is_err() {
+                // Leave the context owned so the native RAII guard can leak
+                // it safely instead of freeing memory Windows may still use.
+                return Err(unregister);
+            }
+        }
+        // The successful unregister and the synchronous close fallback both
+        // guarantee no callback can still dereference this context.
+        self.context.take();
+        if unregister == 0 {
+            Ok(())
+        } else {
+            Err(unregister)
+        }
+    }
+}
+
 #[cfg(any(windows, test))]
 fn wlan_reason_is_authentication_failure(reason: u32) -> bool {
-    // The documented WLAN_REASON_CODE_MSMSEC range is the connection
-    // security/authentication family, including
-    // MSMSEC_PSK_MISMATCH_SUSPECTED (294932).  Treat the whole family as an
-    // authentication result rather than flattening it into association or
-    // timeout; the numeric code remains in the diagnostic for operators.
-    (294_913..=294_939).contains(&reason)
-        || matches!(
-            reason,
-            163_853 // WLAN_REASON_CODE_KEY_MISMATCH
-                | 229_381 // WLAN_REASON_CODE_START_SECURITY_FAILURE
-                | 229_382 // WLAN_REASON_CODE_SECURITY_FAILURE
-                | 229_383 // WLAN_REASON_CODE_SECURITY_TIMEOUT
-                | 229_385 // WLAN_REASON_CODE_ROAMING_SECURITY_FAILURE
-                | 229_386 // WLAN_REASON_CODE_ADHOC_SECURITY_FAILURE
-                | 229_394 // WLAN_REASON_CODE_TOO_MANY_SECURITY_ATTEMPTS
-                | 524_294 // WLAN_REASON_CODE_MSM_SECURITY_MISSING
-                | 524_295 // WLAN_REASON_CODE_IHV_SECURITY_NOT_SUPPORTED
-                | 524_300 // WLAN_REASON_CODE_SECURITY_MISSING
-        )
+    // Keep the security classification table-driven. In particular,
+    // WLAN_REASON_CODE_MSMSEC_MIN..=WLAN_REASON_CODE_MSMSEC_MAX is the full
+    // documented security family, not only the short connect subrange that
+    // happens to contain PSK_MISMATCH_SUSPECTED.
+    const SECURITY_REASON_RANGES: &[(u32, u32)] = &[(262_144, 327_679)]; // WLAN_REASON_CODE_MSMSEC_MIN..=MSMSEC_MAX
+    const SECURITY_REASON_CODES: &[u32] = &[
+        163_853, // WLAN_REASON_CODE_KEY_MISMATCH
+        196_609, // WLAN_REASON_CODE_UNSUPPORTED_SECURITY_SET_BY_OS
+        196_610, // WLAN_REASON_CODE_UNSUPPORTED_SECURITY_SET
+        229_380, // WLAN_REASON_CODE_PRE_SECURITY_FAILURE
+        229_381, // WLAN_REASON_CODE_START_SECURITY_FAILURE
+        229_382, // WLAN_REASON_CODE_SECURITY_FAILURE
+        229_383, // WLAN_REASON_CODE_SECURITY_TIMEOUT
+        229_385, // WLAN_REASON_CODE_ROAMING_SECURITY_FAILURE
+        229_386, // WLAN_REASON_CODE_ADHOC_SECURITY_FAILURE
+        229_394, // WLAN_REASON_CODE_TOO_MANY_SECURITY_ATTEMPTS
+        524_294, // WLAN_REASON_CODE_MSM_SECURITY_MISSING
+        524_295, // WLAN_REASON_CODE_IHV_SECURITY_NOT_SUPPORTED
+        524_299, // WLAN_REASON_CODE_CONFLICT_SECURITY
+        524_300, // WLAN_REASON_CODE_SECURITY_MISSING
+        524_306, // WLAN_REASON_CODE_IHV_SECURITY_ONEX_MISSING
+    ];
+
+    SECURITY_REASON_RANGES
+        .iter()
+        .any(|(start, end)| (*start..=*end).contains(&reason))
+        || SECURITY_REASON_CODES.binary_search(&reason).is_ok()
 }
 
 #[cfg(windows)]
@@ -1594,6 +2022,110 @@ fn wlan_notification_ssid(
 ) -> Option<&str> {
     let length = usize::try_from(payload.dot11Ssid.uSSIDLength).ok()?.min(32);
     std::str::from_utf8(&payload.dot11Ssid.ucSSID[..length]).ok()
+}
+
+#[cfg(windows)]
+unsafe fn capture_existing_wlan_profile(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    interface_guid: &windows_sys::core::GUID,
+    profile_name: &[u16],
+) -> Result<Option<PreservedWlanProfile>, String> {
+    use std::ptr;
+    use windows_sys::Win32::NetworkManagement::WiFi::{WlanFreeMemory, WlanGetProfile};
+
+    const ERROR_SUCCESS: u32 = 0;
+    const ERROR_NOT_FOUND: u32 = 1168;
+    let Some(profile_position) = wlan_profile_position(handle, interface_guid, profile_name)?
+    else {
+        return Ok(None);
+    };
+
+    let mut profile_xml = ptr::null_mut();
+    let mut profile_flags = 0;
+    let mut granted_access = 0;
+    // Do not request WLAN_PROFILE_GET_PLAINTEXT_KEY. Windows returns the
+    // stored protected form, which we retain as opaque UTF-16 for rollback.
+    let get = WlanGetProfile(
+        handle,
+        interface_guid,
+        profile_name.as_ptr(),
+        ptr::null(),
+        &mut profile_xml,
+        &mut profile_flags,
+        &mut granted_access,
+    );
+    if get == ERROR_NOT_FOUND {
+        return Ok(None);
+    }
+    if get != ERROR_SUCCESS || profile_xml.is_null() {
+        return Err(format!(
+            "Windows could not preserve the existing managed WLAN profile (error {get})"
+        ));
+    }
+    let profile_xml_pointer = profile_xml;
+    let copied_profile_xml = copy_wide_null(profile_xml_pointer);
+    WlanFreeMemory(profile_xml_pointer.cast());
+    let profile_xml = copied_profile_xml?;
+    Ok(Some(PreservedWlanProfile {
+        profile_xml,
+        profile_position,
+    }))
+}
+
+#[cfg(windows)]
+unsafe fn wlan_profile_position(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    interface_guid: &windows_sys::core::GUID,
+    profile_name: &[u16],
+) -> Result<Option<u32>, String> {
+    use std::{ptr, slice};
+    use windows_sys::Win32::NetworkManagement::WiFi::{
+        WlanFreeMemory, WlanGetProfileList, WLAN_PROFILE_INFO, WLAN_PROFILE_INFO_LIST,
+    };
+
+    const ERROR_SUCCESS: u32 = 0;
+    let mut profiles: *mut WLAN_PROFILE_INFO_LIST = ptr::null_mut();
+    let list = WlanGetProfileList(handle, interface_guid, ptr::null(), &mut profiles);
+    if list != ERROR_SUCCESS || profiles.is_null() {
+        return Err(format!(
+            "Windows could not preserve the managed WLAN profile order (error {list})"
+        ));
+    }
+    let count = (*profiles).dwNumberOfItems as usize;
+    let entries: &[WLAN_PROFILE_INFO] =
+        slice::from_raw_parts((*profiles).ProfileInfo.as_ptr(), count);
+    let position = entries
+        .iter()
+        .position(|entry| wlan_profile_name_matches(&entry.strProfileName, profile_name))
+        .map(|position| position as u32);
+    WlanFreeMemory(profiles.cast());
+    Ok(position)
+}
+
+#[cfg(windows)]
+fn wlan_profile_name_matches(profile_name: &[u16; 256], expected: &[u16]) -> bool {
+    let actual_length = profile_name
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(profile_name.len());
+    let expected = expected.strip_suffix(&[0]).unwrap_or(expected);
+    profile_name[..actual_length] == expected[..]
+}
+
+#[cfg(windows)]
+unsafe fn copy_wide_null(value: *const u16) -> Result<Vec<u16>, String> {
+    use std::slice;
+
+    const MAX_PROFILE_UTF16_UNITS: usize = 1024 * 1024;
+    if value.is_null() {
+        return Err("Windows returned an empty managed WLAN profile buffer".to_string());
+    }
+    for length in 0..MAX_PROFILE_UTF16_UNITS {
+        if *value.add(length) == 0 {
+            return Ok(slice::from_raw_parts(value, length + 1).to_vec());
+        }
+    }
+    Err("Windows returned an unterminated managed WLAN profile buffer".to_string())
 }
 
 #[cfg(windows)]
@@ -1651,18 +2183,6 @@ unsafe extern "system" fn native_wlan_notification_callback(
 fn apply_windows_wlan_profile_native(
     request: &NetworkSettingsRequest,
 ) -> Result<WlanConnectionObservation, String> {
-    use std::{ptr, sync::mpsc, thread, time::Duration};
-    use windows_sys::Win32::{
-        Foundation::HANDLE,
-        NetworkManagement::WiFi::{
-            dot11_BSS_type_any, wlan_connection_mode_profile, WlanCloseHandle, WlanConnect,
-            WlanOpenHandle, WlanRegisterNotification, WlanSetProfile,
-            WLAN_CONNECTION_HIDDEN_NETWORK, WLAN_CONNECTION_PARAMETERS,
-            WLAN_NOTIFICATION_SOURCE_ACM, WLAN_NOTIFICATION_SOURCE_NONE, WLAN_REASON_CODE_SUCCESS,
-        },
-    };
-
-    const ERROR_SUCCESS: u32 = 0;
     let ssid = request.ssid.trim();
     if ssid.is_empty() {
         return Err("SSID is required".to_string());
@@ -1675,167 +2195,205 @@ fn apply_windows_wlan_profile_native(
     }
 
     unsafe {
-        let mut negotiated_version = 0;
-        let mut handle: HANDLE = ptr::null_mut();
-        let open = WlanOpenHandle(2, ptr::null(), &mut negotiated_version, &mut handle);
-        if open != ERROR_SUCCESS {
-            return Err(format!("WLAN API open failed with error {open}"));
+        let mut client = WlanClientHandle::open()?;
+        let interface = select_windows_wlan_interface(client.raw(), ssid, request.hidden)?;
+        let profile_name = deterministic_wlan_profile_name(ssid);
+        let profile_name_wide = wide_null(&profile_name);
+        let mut transaction = ManagedWlanProfileTransaction::begin(
+            client.raw(),
+            interface.InterfaceGuid,
+            profile_name_wide,
+        )?;
+        let candidate_profile_xml = wide_null(&wlan_profile_xml(
+            &profile_name,
+            ssid,
+            &request.password,
+            request.hidden,
+        ));
+        // The candidate is durable only provisionally. If this attempt does
+        // not establish association, address and default route on this
+        // interface, rollback restores the exact old XML/order or removes a
+        // newly created profile before this process returns.
+        transaction.stage_candidate(client.raw(), &candidate_profile_xml)?;
+
+        let connection = attempt_windows_wlan_connection(
+            &mut client,
+            &interface,
+            &profile_name,
+            ssid,
+            request.hidden,
+        );
+        match connection {
+            Ok(observation) if wlan_local_connection_succeeded(observation) => {
+                transaction.commit();
+                Ok(observation)
+            }
+            Ok(observation) => {
+                transaction.rollback(&mut client)?;
+                Ok(observation)
+            }
+            Err(error) => match transaction.rollback(&mut client) {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(format!(
+                    "{error}; failed to restore the prior managed WLAN profile: {rollback_error}"
+                )),
+            },
         }
+    }
+}
 
-        let result = (|| -> Result<WlanConnectionObservation, String> {
-            let interface = select_windows_wlan_interface(handle, ssid, request.hidden)?;
-            let profile_name = deterministic_wlan_profile_name(ssid);
-            let profile_xml =
-                wlan_profile_xml(&profile_name, ssid, &request.password, request.hidden);
-            let profile_xml = wide_null(&profile_xml);
-            // A stable profile name and overwrite=true atomically replace this
-            // machine-wide profile for the SSID.  The password never leaves
-            // process memory for an argv, environment variable, log, or file.
-            let all_user_security = wide_null("D:(A;;GA;;;SY)(A;;GA;;;BA)");
-            let mut profile_reason = WLAN_REASON_CODE_SUCCESS;
-            let set = WlanSetProfile(
-                handle,
-                &interface.InterfaceGuid,
-                0,
-                profile_xml.as_ptr(),
-                all_user_security.as_ptr(),
-                1,
-                ptr::null(),
-                &mut profile_reason,
-            );
-            if set != ERROR_SUCCESS {
-                return Err(format!(
-                    "Windows rejected the all-user WLAN profile (error {set}, reason code {profile_reason})"
-                ));
+#[cfg(windows)]
+unsafe fn attempt_windows_wlan_connection(
+    client: &mut WlanClientHandle,
+    interface: &windows_sys::Win32::NetworkManagement::WiFi::WLAN_INTERFACE_INFO,
+    profile_name: &str,
+    ssid: &str,
+    hidden: bool,
+) -> Result<WlanConnectionObservation, String> {
+    use std::{ptr, sync::mpsc, thread, time::Duration};
+    use windows_sys::Win32::NetworkManagement::WiFi::{
+        dot11_BSS_type_any, wlan_connection_mode_profile, WlanConnect,
+        WLAN_CONNECTION_HIDDEN_NETWORK, WLAN_CONNECTION_PARAMETERS,
+    };
+
+    const ERROR_SUCCESS: u32 = 0;
+    let target_was_connected_before = windows_wlan_is_associated_with_target(
+        client.raw(),
+        &interface.InterfaceGuid,
+        profile_name,
+        ssid,
+    );
+    let (sender, receiver) = mpsc::channel();
+    let context = NativeWlanNotificationContext {
+        sender,
+        interface_guid: interface.InterfaceGuid,
+        profile_name: profile_name.to_string(),
+        ssid: ssid.to_string(),
+    };
+    let mut registration = NativeWlanNotificationRegistration::register(client, context)?;
+    let handle = registration.raw_handle();
+
+    let mut dot11_ssid = windows_sys::Win32::NetworkManagement::WiFi::DOT11_SSID {
+        uSSIDLength: ssid.len() as u32,
+        ucSSID: [0; 32],
+    };
+    dot11_ssid.ucSSID[..ssid.len()].copy_from_slice(ssid.as_bytes());
+    let profile_name_wide = wide_null(profile_name);
+    let parameters = WLAN_CONNECTION_PARAMETERS {
+        wlanConnectionMode: wlan_connection_mode_profile,
+        strProfile: profile_name_wide.as_ptr(),
+        pDot11Ssid: &mut dot11_ssid,
+        pDesiredBssidList: ptr::null_mut(),
+        dot11BssType: dot11_BSS_type_any,
+        dwFlags: if hidden {
+            WLAN_CONNECTION_HIDDEN_NETWORK
+        } else {
+            0
+        },
+    };
+    let connect = WlanConnect(handle, &interface.InterfaceGuid, &parameters, ptr::null());
+    if connect != ERROR_SUCCESS {
+        let cleanup = registration.release();
+        if cleanup.is_err() {
+            registration.leak_context();
+        }
+        drop(registration);
+        return match cleanup {
+            Ok(()) => Err(format!("WLAN connect request failed with error {connect}")),
+            Err(cleanup) => Err(format!(
+                "WLAN connect request failed with error {connect}; notification cleanup failed with error {cleanup}"
+            )),
+        };
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut received_target_completion = false;
+    let mut failure_reason = None;
+    while std::time::Instant::now() < deadline {
+        match receiver.recv_timeout(Duration::from_millis(500)) {
+            Ok(NativeWlanEvent::Completed) => {
+                received_target_completion = true;
+                break;
             }
-
-            let (sender, receiver) = mpsc::channel();
-            let context = Box::new(NativeWlanNotificationContext {
-                sender,
-                interface_guid: interface.InterfaceGuid,
-                profile_name: profile_name.clone(),
-                ssid: ssid.to_string(),
-            });
-            let context_ptr = Box::into_raw(context);
-            let mut previous_notification_source = 0;
-            let registration = WlanRegisterNotification(
-                handle,
-                WLAN_NOTIFICATION_SOURCE_ACM,
-                0,
-                Some(native_wlan_notification_callback),
-                context_ptr.cast(),
-                ptr::null(),
-                &mut previous_notification_source,
-            );
-            if registration != ERROR_SUCCESS {
-                drop(Box::from_raw(context_ptr));
-                return Err(format!(
-                    "WLAN notification registration failed with error {registration}"
-                ));
+            Ok(NativeWlanEvent::Failed(reason)) => {
+                failure_reason = Some(reason);
+                break;
             }
-
-            let mut dot11_ssid = windows_sys::Win32::NetworkManagement::WiFi::DOT11_SSID {
-                uSSIDLength: ssid.len() as u32,
-                ucSSID: [0; 32],
-            };
-            dot11_ssid.ucSSID[..ssid.len()].copy_from_slice(ssid.as_bytes());
-            let profile_name = wide_null(&profile_name);
-            let parameters = WLAN_CONNECTION_PARAMETERS {
-                wlanConnectionMode: wlan_connection_mode_profile,
-                strProfile: profile_name.as_ptr(),
-                pDot11Ssid: &mut dot11_ssid,
-                pDesiredBssidList: ptr::null_mut(),
-                dot11BssType: dot11_BSS_type_any,
-                dwFlags: if request.hidden {
-                    WLAN_CONNECTION_HIDDEN_NETWORK
-                } else {
-                    0
-                },
-            };
-            let connect = WlanConnect(handle, &interface.InterfaceGuid, &parameters, ptr::null());
-            if connect != ERROR_SUCCESS {
-                let _ = WlanRegisterNotification(
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let target_connected_now = windows_wlan_is_associated_with_target(
                     handle,
-                    WLAN_NOTIFICATION_SOURCE_NONE,
-                    0,
-                    None,
-                    ptr::null(),
-                    ptr::null(),
-                    ptr::null_mut(),
+                    &interface.InterfaceGuid,
+                    profile_name,
+                    ssid,
                 );
-                drop(Box::from_raw(context_ptr));
-                return Err(format!("WLAN connect request failed with error {connect}"));
-            }
-
-            let deadline = std::time::Instant::now() + Duration::from_secs(20);
-            let mut failure_reason = None;
-            while std::time::Instant::now() < deadline {
-                match receiver.recv_timeout(Duration::from_millis(500)) {
-                    Ok(NativeWlanEvent::Completed) => break,
-                    Ok(NativeWlanEvent::Failed(reason)) => {
-                        failure_reason = Some(reason);
-                        break;
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if windows_wlan_is_associated_with_ssid(
-                            handle,
-                            &interface.InterfaceGuid,
-                            ssid,
-                        ) {
-                            break;
-                        }
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            }
-            let _ = WlanRegisterNotification(
-                handle,
-                WLAN_NOTIFICATION_SOURCE_NONE,
-                0,
-                None,
-                ptr::null(),
-                ptr::null(),
-                ptr::null_mut(),
-            );
-            drop(Box::from_raw(context_ptr));
-
-            let association =
-                if windows_wlan_is_associated_with_ssid(handle, &interface.InterfaceGuid, ssid) {
-                    WlanAssociationState::Associated
-                } else if let Some(reason) = failure_reason {
-                    wlan_association_state_from_reason(reason)
-                } else {
-                    WlanAssociationState::TimedOut
-                };
-            if association != WlanAssociationState::Associated {
-                return Ok(WlanConnectionObservation {
-                    association,
-                    local_address_ready: false,
-                    default_route_ready: false,
-                });
-            }
-
-            let mut observation = LocalInterfaceObservation {
-                adapter_ready: true,
-                local_address_ready: false,
-                default_route_ready: false,
-            };
-            for _ in 0..20 {
-                observation = inspect_windows_local_interface(Some(&interface.InterfaceGuid))?;
-                if observation.local_address_ready && observation.default_route_ready {
+                if wlan_attempt_has_target_association(
+                    target_was_connected_before,
+                    target_connected_now,
+                    received_target_completion,
+                    failure_reason,
+                ) {
                     break;
                 }
-                thread::sleep(Duration::from_millis(500));
             }
-            Ok(WlanConnectionObservation {
-                association,
-                local_address_ready: observation.local_address_ready,
-                default_route_ready: observation.default_route_ready,
-            })
-        })();
-        WlanCloseHandle(handle, ptr::null());
-        result
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
     }
+    let target_connected_now = windows_wlan_is_associated_with_target(
+        handle,
+        &interface.InterfaceGuid,
+        profile_name,
+        ssid,
+    );
+    let association = if wlan_attempt_has_target_association(
+        target_was_connected_before,
+        target_connected_now,
+        received_target_completion,
+        failure_reason,
+    ) {
+        WlanAssociationState::Associated
+    } else if let Some(reason) = failure_reason {
+        // A matched target failure always beats stale state, including a
+        // prior association to the same SSID/profile.
+        wlan_association_state_from_reason(reason)
+    } else {
+        WlanAssociationState::TimedOut
+    };
+    let cleanup = registration.release();
+    if cleanup.is_err() {
+        registration.leak_context();
+    }
+    drop(registration);
+    if let Err(cleanup) = cleanup {
+        return Err(format!(
+            "WLAN notification cleanup failed with error {cleanup}"
+        ));
+    }
+
+    if association != WlanAssociationState::Associated {
+        return Ok(WlanConnectionObservation {
+            association,
+            local_address_ready: false,
+            default_route_ready: false,
+        });
+    }
+
+    let mut observation = LocalInterfaceObservation {
+        adapter_ready: true,
+        local_address_ready: false,
+        default_route_ready: false,
+    };
+    for _ in 0..20 {
+        observation = inspect_windows_local_interface(Some(&interface.InterfaceGuid))?;
+        if observation.local_address_ready && observation.default_route_ready {
+            break;
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    Ok(WlanConnectionObservation {
+        association,
+        local_address_ready: observation.local_address_ready,
+        default_route_ready: observation.default_route_ready,
+    })
 }
 
 #[cfg(windows)]
@@ -1905,9 +2463,10 @@ fn native_network_ssid(
 }
 
 #[cfg(windows)]
-unsafe fn windows_wlan_is_associated_with_ssid(
+unsafe fn windows_wlan_is_associated_with_target(
     handle: windows_sys::Win32::Foundation::HANDLE,
     interface: &windows_sys::core::GUID,
+    expected_profile: &str,
     expected_ssid: &str,
 ) -> bool {
     use std::ptr;
@@ -1936,10 +2495,19 @@ unsafe fn windows_wlan_is_associated_with_ssid(
         return false;
     }
     let attributes = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
+    let profile_length = attributes
+        .strProfileName
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(attributes.strProfileName.len());
     let length = usize::try_from(attributes.wlanAssociationAttributes.dot11Ssid.uSSIDLength)
         .unwrap_or(0)
         .min(32);
     let associated = attributes.isState == wlan_interface_state_connected
+        && String::from_utf16(&attributes.strProfileName[..profile_length])
+            .ok()
+            .as_deref()
+            == Some(expected_profile)
         && std::str::from_utf8(&attributes.wlanAssociationAttributes.dot11Ssid.ucSSID[..length])
             .ok()
             == Some(expected_ssid);
@@ -2560,11 +3128,212 @@ mod tests {
     }
 
     #[test]
+    fn wlan_attempt_requires_fresh_target_association_evidence() {
+        // The same managed profile and SSID can already be connected before
+        // this request. A later state query alone must not rebrand that old
+        // connection as success for newly supplied credentials.
+        assert!(!wlan_attempt_has_target_association(
+            true, true, false, None,
+        ));
+        assert!(wlan_attempt_has_target_association(true, true, true, None,));
+        assert!(wlan_attempt_has_target_association(
+            false, true, false, None,
+        ));
+        assert!(!wlan_attempt_has_target_association(
+            false,
+            true,
+            true,
+            Some(229_380),
+        ));
+    }
+
+    #[test]
+    fn callback_context_waits_for_synchronous_handle_close_when_unregister_fails() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        };
+
+        struct DropProbe {
+            callback_in_flight: Arc<AtomicBool>,
+            events: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                assert!(
+                    !self.callback_in_flight.load(Ordering::SeqCst),
+                    "callback context was freed while a callback was in flight"
+                );
+                self.events.lock().expect("events lock").push("freed");
+            }
+        }
+
+        struct MockNotificationApi {
+            unregister_result: u32,
+            callback_in_flight: Arc<AtomicBool>,
+            events: Arc<Mutex<Vec<&'static str>>>,
+            close_calls: usize,
+        }
+
+        impl WlanNotificationReleaseApi for MockNotificationApi {
+            fn unregister_notification(&mut self) -> u32 {
+                self.events.lock().expect("events lock").push("unregister");
+                if self.unregister_result == 0 {
+                    self.callback_in_flight.store(false, Ordering::SeqCst);
+                }
+                self.unregister_result
+            }
+
+            fn close_handle_synchronously(&mut self) -> Result<(), u32> {
+                self.events.lock().expect("events lock").push("close");
+                self.close_calls += 1;
+                self.callback_in_flight.store(false, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let callback_in_flight = Arc::new(AtomicBool::new(true));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut api = MockNotificationApi {
+            unregister_result: 5,
+            callback_in_flight: callback_in_flight.clone(),
+            events: events.clone(),
+            close_calls: 0,
+        };
+        let mut lease = WlanNotificationContextLease::new(DropProbe {
+            callback_in_flight,
+            events: events.clone(),
+        });
+
+        assert_eq!(lease.release_with(&mut api), Err(5));
+        assert_eq!(api.close_calls, 1);
+        assert_eq!(
+            events.lock().expect("events lock").as_slice(),
+            ["unregister", "close", "freed"],
+        );
+        drop(lease);
+        assert_eq!(api.close_calls, 1, "release must not double-close");
+    }
+
+    #[test]
+    fn callback_context_is_freed_after_successful_unregister_without_closing_handle() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        };
+
+        struct DropProbe {
+            callback_in_flight: Arc<AtomicBool>,
+            events: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                assert!(!self.callback_in_flight.load(Ordering::SeqCst));
+                self.events.lock().expect("events lock").push("freed");
+            }
+        }
+
+        struct MockNotificationApi {
+            callback_in_flight: Arc<AtomicBool>,
+            events: Arc<Mutex<Vec<&'static str>>>,
+            close_calls: usize,
+        }
+
+        impl WlanNotificationReleaseApi for MockNotificationApi {
+            fn unregister_notification(&mut self) -> u32 {
+                self.events.lock().expect("events lock").push("unregister");
+                self.callback_in_flight.store(false, Ordering::SeqCst);
+                0
+            }
+
+            fn close_handle_synchronously(&mut self) -> Result<(), u32> {
+                self.close_calls += 1;
+                Ok(())
+            }
+        }
+
+        let callback_in_flight = Arc::new(AtomicBool::new(true));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut api = MockNotificationApi {
+            callback_in_flight: callback_in_flight.clone(),
+            events: events.clone(),
+            close_calls: 0,
+        };
+        let mut lease = WlanNotificationContextLease::new(DropProbe {
+            callback_in_flight,
+            events: events.clone(),
+        });
+
+        assert_eq!(lease.release_with(&mut api), Ok(()));
+        assert_eq!(api.close_calls, 0);
+        assert_eq!(
+            events.lock().expect("events lock").as_slice(),
+            ["unregister", "freed"],
+        );
+    }
+
+    #[test]
+    fn managed_profile_rolls_back_exact_old_bytes_and_order_until_local_connection_succeeds() {
+        let old_profile = PreservedWlanProfile {
+            // This stays an opaque UTF-16 buffer: rollback must not parse,
+            // normalize, log, or otherwise expose an old protected key.
+            profile_xml: vec![b'<'.into(), b'x'.into(), 0x4e2d, b'>'.into(), 0],
+            profile_position: 3,
+        };
+        let rollback = managed_wlan_profile_rollback_plan(Some(old_profile.clone()));
+        match rollback {
+            ManagedWlanProfileRollbackPlan::Restore(profile) => {
+                assert_eq!(profile.profile_xml, old_profile.profile_xml);
+                assert_eq!(profile.profile_position, 3);
+            }
+            ManagedWlanProfileRollbackPlan::DeleteCandidate => {
+                panic!("an existing managed profile must be restored")
+            }
+        }
+        assert!(matches!(
+            managed_wlan_profile_rollback_plan(None),
+            ManagedWlanProfileRollbackPlan::DeleteCandidate
+        ));
+
+        assert!(wlan_local_connection_succeeded(WlanConnectionObservation {
+            association: WlanAssociationState::Associated,
+            local_address_ready: true,
+            default_route_ready: true,
+        }));
+        assert!(!wlan_local_connection_succeeded(
+            WlanConnectionObservation {
+                association: WlanAssociationState::Associated,
+                local_address_ready: true,
+                default_route_ready: false,
+            }
+        ));
+        assert!(!wlan_local_connection_succeeded(
+            WlanConnectionObservation {
+                association: WlanAssociationState::AuthenticationFailed(229_380),
+                local_address_ready: true,
+                default_route_ready: true,
+            }
+        ));
+    }
+
+    #[test]
     fn wlan_psk_mismatch_reason_is_an_authentication_failure() {
         // WLAN_REASON_CODE_MSMSEC_PSK_MISMATCH_SUSPECTED
         assert!(wlan_reason_is_authentication_failure(294_932));
         assert!(wlan_reason_is_authentication_failure(163_853)); // KEY_MISMATCH
         assert!(!wlan_reason_is_authentication_failure(229_378)); // association failure
+    }
+
+    #[test]
+    fn wlan_authentication_reason_table_covers_pre_security_and_full_msmsec_range() {
+        // WLAN_REASON_CODE_PRE_SECURITY_FAILURE and the documented MSMSEC
+        // range are all security/authentication evidence, not generic
+        // association failures.
+        assert!(wlan_reason_is_authentication_failure(229_380));
+        assert!(wlan_reason_is_authentication_failure(262_144));
+        assert!(wlan_reason_is_authentication_failure(327_679));
     }
 
     #[test]
