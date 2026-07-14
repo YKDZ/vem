@@ -79,8 +79,9 @@ function completeFacts(): SimulatedHardwareSaleFlowFacts {
       orderId: "ORDER-ID-180",
       orderNo: "MO-180",
       orderStatus: "fulfilled",
-      paymentMethod: "mock",
+      paymentMethod: "payment_code",
       paymentProviderCode: "mock",
+      paymentId: "PAYMENT-ID-180",
       paymentNo: "PAY-180",
       paymentStatus: "paid",
       paymentSucceeded: true,
@@ -205,6 +206,7 @@ describe("Simulated Hardware Sale Flow Report contract", () => {
     expect(report.planogram.acknowledgmentId).toBe("PLANOGRAM-ACK-RUN-180");
     expect(report.stock.platformMovementId).toBe("STOCK-MOVE-RUN-180");
     expect(report.sale.orderId).toBe("ORDER-ID-180");
+    expect(report.sale.paymentId).toBe("PAYMENT-ID-180");
     expect(report.sale.paymentNo).toBe("PAY-180");
     expect(report.sale.vendingCommandId).toBe("VEND-CMD-180");
     expect(simulatedHardwareSaleFlowReportSchema.parse(report)).toEqual(report);

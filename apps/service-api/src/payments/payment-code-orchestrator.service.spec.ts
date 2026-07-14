@@ -142,6 +142,7 @@ function makeHarness(overrides?: {
     registry as never,
     configService as never,
     paymentsService as never,
+    { paymentMockEnabled: true } as never,
   );
 
   return {

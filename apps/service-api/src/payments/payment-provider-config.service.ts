@@ -435,6 +435,16 @@ export class PaymentProviderConfigService {
     const mockAvailable = await this.isMockOptionAvailable();
     if (mockAvailable) {
       options.push({
+        optionKey: "payment_code:mock",
+        providerCode: "mock",
+        method: "payment_code",
+        displayName: "测试付款码",
+        description: "测试环境扫码器付款码支付",
+        icon: "mock",
+        disabled: false,
+        disabledReason: null,
+      });
+      options.push({
         optionKey: "mock:mock",
         providerCode: "mock",
         method: "mock",

@@ -272,14 +272,14 @@ function serialSessionForOperation(operation, scannerCode) {
     deviceRoles: ["lower-controller", "scanner"],
     scannerInjection: scannerInjectionFromOptions(operation, scannerCode),
     saleCorrelationIds: readOptions("--sale-correlation-id"),
-    saleBindings: readOptions("--sale-correlation-id").map(
-      (saleCorrelationId) => ({
-        saleCorrelationId,
-        orderId: readOption("--order-id"),
-        paymentId: readOption("--payment-id"),
-        vendingCommandId: readOption("--vending-command-id"),
-      }),
-    ),
+    saleBindings: isStart
+      ? []
+      : readOptions("--sale-correlation-id").map((saleCorrelationId) => ({
+          saleCorrelationId,
+          orderId: readOption("--order-id"),
+          paymentId: readOption("--payment-id"),
+          vendingCommandId: readOption("--vending-command-id"),
+        })),
     idempotencyCheck:
       operation === "stop-serial-session" &&
       process.argv.includes("--idempotency-check"),

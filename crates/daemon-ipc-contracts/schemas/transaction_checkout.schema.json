@@ -31,6 +31,16 @@
         }
       ]
     },
+    "paymentId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "paymentNo": {
       "anyOf": [
         {
@@ -138,6 +148,16 @@
         {
           "type": "object",
           "properties": {
+            "commandId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "commandNo": {
               "anyOf": [
                 {
@@ -235,7 +255,7 @@
               ]
             }
           },
-          "required": ["commandNo", "status", "lastError"],
+          "required": ["commandId", "commandNo", "status", "lastError"],
           "additionalProperties": false
         },
         {
@@ -452,6 +472,7 @@
     "orderId",
     "orderNo",
     "productSummary",
+    "paymentId",
     "paymentNo",
     "paymentMethod",
     "paymentProvider",
@@ -671,6 +692,16 @@
     "VendingSummary": {
       "type": "object",
       "properties": {
+        "commandId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "commandNo": {
           "anyOf": [
             {
@@ -768,7 +799,7 @@
           ]
         }
       },
-      "required": ["commandNo", "status", "lastError"],
+      "required": ["commandId", "commandNo", "status", "lastError"],
       "additionalProperties": false
     }
   }

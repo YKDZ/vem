@@ -352,6 +352,7 @@ export const daemonIpcPickupReminderSchema = z
 
 export const daemonIpcVendingSummarySchema = z
   .object({
+    commandId: z.string().nullable(),
     commandNo: z.string().nullable(),
     status: vendingCommandStatusSchema.nullable(),
     lastError: z.string().nullable(),
@@ -378,6 +379,7 @@ export const daemonIpcTransactionSnapshotSchema = z
     orderId: z.string().nullable(),
     orderNo: z.string().nullable(),
     productSummary: z.unknown().nullable(),
+    paymentId: z.string().nullable(),
     paymentNo: z.string().nullable(),
     paymentMethod: paymentMethodSchema.nullable(),
     paymentProvider: daemonIpcMachinePaymentProviderSchema.nullable(),

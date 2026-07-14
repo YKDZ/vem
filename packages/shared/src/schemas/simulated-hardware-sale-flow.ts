@@ -87,6 +87,7 @@ export const simulatedHardwareSaleFlowFactsSchema = z.strictObject({
     orderStatus: z.string().min(1),
     paymentMethod: z.string().min(1),
     paymentProviderCode: z.string().min(1).nullable(),
+    paymentId: z.string().min(1).nullable(),
     paymentNo: z.string().min(1).nullable(),
     paymentStatus: z.string().min(1),
     paymentSucceeded: z.boolean(),
@@ -290,8 +291,9 @@ export function classifySimulatedHardwareSaleFlowReport(
     facts.sale.orderId === null ||
     facts.sale.orderNo === null ||
     facts.sale.orderStatus !== "fulfilled" ||
-    facts.sale.paymentMethod !== "mock" ||
+    facts.sale.paymentMethod !== "payment_code" ||
     facts.sale.paymentProviderCode !== "mock" ||
+    facts.sale.paymentId === null ||
     facts.sale.paymentNo === null ||
     facts.sale.paymentStatus !== "paid" ||
     !facts.sale.paymentSucceeded ||

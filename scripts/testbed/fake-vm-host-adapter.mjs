@@ -48,6 +48,8 @@ function defaultAudioCapture(request, evidenceEntry) {
       emittedAt: "2026-07-11T00:00:00.500Z",
     },
     capture: {
+      source: "contract-test-generated-wav",
+      adapterIdentity: "vm-host-adapter://deterministic-fake@1.0.0",
       artifact: evidenceEntry.identity,
       format: "wav_pcm",
       encoding: "pcm_s16le",
@@ -82,13 +84,16 @@ function displayCapture(request, evidenceEntry) {
       domNodeCount: 3,
     },
     capture: {
+      source: "contract-test-generated-png",
+      adapterIdentity: "vm-host-adapter://deterministic-fake@1.0.0",
       artifact: evidenceEntry.identity,
       format: "png",
       widthPx: 1080,
       heightPx: 1920,
       pixelCount: 2_073_600,
       nonTransparentPixelCount: 2_073_600,
-      distinctPixelCount: 4,
+      nonTransparentPixelRatio: 1,
+      distinctPixelCount: 513,
     },
   };
 }
@@ -118,9 +123,14 @@ function materializeDisplayEvidence() {
     for (let column = 0; column < width; column += 1)
       pixels.writeUInt32BE(0x101820ff, start + 1 + column * 4);
   }
-  pixels.writeUInt32BE(0xff4040ff, 1);
-  pixels.writeUInt32BE(0x40ff40ff, 5);
-  pixels.writeUInt32BE(0x4040ffff, 9);
+  for (let index = 0; index < 512; index += 1) {
+    const color =
+      (((index >> 8) & 0xff) << 24) |
+      ((index & 0xff) << 16) |
+      (0x80 << 8) |
+      0xff;
+    pixels.writeUInt32BE(color >>> 0, 1 + index * 4);
+  }
   const bytes = Buffer.concat([
     signature,
     chunk("IHDR", ihdr),
@@ -345,6 +355,12 @@ function fakeReport(request, scenario, state) {
     isV2 &&
     (request.operation === "start-serial-session" || serialRequest !== null) &&
     result === "succeeded";
+  const serialFaultCode = {
+    "malformed-frame": "serial_malformed_frame",
+    "device-disconnected": "serial_device_disconnected",
+    "scanner-timeout": "serial_scanner_timeout",
+    "dispense-failed": "serial_dispense_failed",
+  }[String(process.env.VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT ?? "").trim()];
   return {
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-report/v2",
@@ -444,7 +460,9 @@ function fakeReport(request, scenario, state) {
     diagnostics: [
       {
         code:
-          result === "succeeded" ? "adapter_completed" : `adapter_${result}`,
+          result === "succeeded"
+            ? "adapter_completed"
+            : serialFaultCode ?? `adapter_${result}`,
       },
     ],
     ...(isV2
@@ -588,8 +606,12 @@ let scenarioForOperation =
 const serialFault = String(
   process.env.VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT ?? "",
 ).trim();
+const serialFaultOperation =
+  serialFault === "scanner-timeout"
+    ? "inject-scanner-code"
+    : "collect-serial-evidence";
 if (
-  request.operation === "collect-serial-evidence" &&
+  request.operation === serialFaultOperation &&
   new Set([
     "malformed-frame",
     "device-disconnected",

@@ -589,6 +589,7 @@ mod tests {
             order_id: None,
             order_no: Some("ORDER-STATUS".to_string()),
             product_summary: None,
+            payment_id: None,
             payment_no: None,
             payment_method: Some("payment_code".to_string()),
             payment_provider: Some("alipay".to_string()),

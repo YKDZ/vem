@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   mkdirSync,
@@ -151,7 +152,7 @@ function requestFor({
           deviceRoles: ["lower-controller", "scanner"],
           scannerInjection: null,
           saleCorrelationIds: [saleCorrelationId],
-          saleBindings: [saleBinding],
+          saleBindings: [],
           idempotencyCheck: false,
         }
       : {
@@ -167,7 +168,7 @@ function requestFor({
                 ? scannerDescriptor
                 : null,
           saleCorrelationIds: [saleCorrelationId],
-          saleBindings: [saleBinding],
+          saleBindings: saleBinding ? [saleBinding] : [],
           idempotencyCheck,
         };
   return createVmHostAdapterRequest(request);
@@ -182,12 +183,8 @@ async function main() {
   const approvedRuntimeBase = readOption("--approved-runtime-base");
   const lifecycleReference = readOption("--lifecycle-reference");
   const saleCorrelationId = readOption("--sale-correlation-id");
-  const saleBinding = {
-    saleCorrelationId,
-    orderId: readOption("--order-id"),
-    paymentId: readOption("--payment-id"),
-    vendingCommandId: readOption("--vending-command-id"),
-  };
+  const contractTest =
+    process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY === "1";
   const workDirectory = join(
     dirname(out),
     "vm-host-adapter-serial-conformance",
@@ -203,6 +200,8 @@ async function main() {
   let recoveryStop;
   let failureMatrix;
   let session;
+  let preparedSale;
+  let completedSale;
   let primaryError;
   try {
     start = await runVmHostAdapter({
@@ -213,12 +212,20 @@ async function main() {
         lifecycleReference,
         approvedRuntimeBase,
         saleCorrelationId,
-        saleBinding,
+        saleBinding: null,
       }),
       workDirectory,
       environment,
     });
     session = start.serialSession;
+    preparedSale = contractTest
+      ? {
+          saleCorrelationId,
+          orderId: readOption("--order-id"),
+          paymentId: readOption("--payment-id"),
+          vendingCommandId: null,
+        }
+      : runSaleCommand(readOption("--sale-prepare-command-json"), "prepare");
     const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
     inject = await runVmHostAdapter({
       request: requestFor({
@@ -230,12 +237,25 @@ async function main() {
         session,
         scannerDescriptor,
         saleCorrelationId,
-        saleBinding,
+        saleBinding: preparedSale,
       }),
       workDirectory,
       environment,
       scannerCode,
     });
+    completedSale = contractTest
+      ? {
+          ...preparedSale,
+          vendingCommandId: readOption("--vending-command-id"),
+        }
+      : runSaleCommand(readOption("--sale-complete-command-json"), "complete");
+    if (
+      completedSale.orderId !== preparedSale.orderId ||
+      completedSale.paymentId !== preparedSale.paymentId
+    )
+      throw new Error(
+        "completed scanner sale does not bind the prepared order and payment IDs",
+      );
     collect = await runVmHostAdapter({
       request: requestFor({
         operation: "collect-serial-evidence",
@@ -249,7 +269,7 @@ async function main() {
           ...scannerDescriptor,
         },
         saleCorrelationId,
-        saleBinding,
+        saleBinding: completedSale,
       }),
       workDirectory,
       environment,
@@ -263,7 +283,7 @@ async function main() {
         approvedRuntimeBase,
         session,
         saleCorrelationId,
-        saleBinding,
+        saleBinding: completedSale,
       }),
       workDirectory,
       environment,
@@ -277,7 +297,7 @@ async function main() {
         approvedRuntimeBase,
         session,
         saleCorrelationId,
-        saleBinding,
+        saleBinding: completedSale,
         idempotencyCheck: true,
       }),
       workDirectory,
@@ -291,7 +311,7 @@ async function main() {
       lifecycleReference,
       approvedRuntimeBase,
       saleCorrelationId,
-      saleBinding,
+      saleBinding: completedSale,
       scannerCode,
       workDirectory,
       environment,
@@ -310,7 +330,7 @@ async function main() {
             approvedRuntimeBase,
             session,
             saleCorrelationId,
-            saleBinding,
+            saleBinding: completedSale ?? preparedSale ?? null,
             idempotencyCheck: true,
           }),
           workDirectory,
@@ -353,6 +373,47 @@ async function main() {
   if (primaryError) throw primaryError;
 }
 
+function runSaleCommand(commandJson, expectedPhase) {
+  let command;
+  try {
+    command = JSON.parse(commandJson);
+  } catch {
+    throw new Error(`${expectedPhase} sale command must be a JSON array`);
+  }
+  if (!Array.isArray(command) || command.length < 2)
+    throw new Error(`${expectedPhase} sale command must be a JSON array`);
+  const result = spawnSync(command[0], command.slice(1), {
+    cwd: process.cwd(),
+    env: process.env,
+    encoding: "utf8",
+  });
+  if (result.status !== 0)
+    throw new Error(
+      `${expectedPhase} scanner sale failed: ${result.stderr || result.stdout}`,
+    );
+  const output = JSON.parse(result.stdout || "null");
+  const sale = output?.simulatedHardwareSaleFlow?.sale;
+  if (
+    output?.ok !== true ||
+    output?.simulatedHardwareSaleFlow?.phase !== expectedPhase ||
+    typeof sale?.orderId !== "string" ||
+    typeof sale?.paymentId !== "string"
+  )
+    throw new Error(`${expectedPhase} scanner sale did not return actual IDs`);
+  if (
+    expectedPhase === "complete" &&
+    typeof sale?.vendingCommandId !== "string"
+  )
+    throw new Error("completed scanner sale has no vending command ID");
+  return {
+    saleCorrelationId: readOption("--sale-correlation-id"),
+    orderId: sale.orderId,
+    paymentId: sale.paymentId,
+    vendingCommandId:
+      expectedPhase === "complete" ? sale.vendingCommandId : null,
+  };
+}
+
 async function runFailureMatrix({
   runId,
   targetIdentity,
@@ -371,6 +432,12 @@ async function runFailureMatrix({
     "scanner-timeout",
     "dispense-failed",
   ]) {
+    const expectedCode = {
+      "malformed-frame": "serial_malformed_frame",
+      "device-disconnected": "serial_device_disconnected",
+      "scanner-timeout": "serial_scanner_timeout",
+      "dispense-failed": "serial_dispense_failed",
+    }[failureMode];
     let session;
     let stop;
     try {
@@ -389,50 +456,70 @@ async function runFailureMatrix({
       });
       session = start.serialSession;
       const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
-      const inject = await runVmHostAdapter({
-        request: requestFor({
-          operation: "inject-scanner-code",
-          runId,
-          targetIdentity,
-          lifecycleReference,
-          approvedRuntimeBase,
-          session,
-          scannerDescriptor,
-          saleCorrelationId,
-          saleBinding,
-        }),
-        workDirectory,
-        environment,
-        scannerCode,
-      });
       try {
-        await runVmHostAdapter({
+        const inject = await runVmHostAdapter({
           request: requestFor({
-            operation: "collect-serial-evidence",
+            operation: "inject-scanner-code",
             runId,
             targetIdentity,
             lifecycleReference,
             approvedRuntimeBase,
             session,
-            scannerDescriptor: {
-              operationNonce: inject.request.operationNonce,
-              ...scannerDescriptor,
-            },
+            scannerDescriptor,
             saleCorrelationId,
             saleBinding,
           }),
           workDirectory,
-          environment: {
-            ...environment,
-            VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
-          },
+          environment:
+            failureMode === "scanner-timeout"
+              ? {
+                  ...environment,
+                  VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
+                }
+              : environment,
+          scannerCode,
         });
+        if (failureMode !== "scanner-timeout")
+          await runVmHostAdapter({
+            request: requestFor({
+              operation: "collect-serial-evidence",
+              runId,
+              targetIdentity,
+              lifecycleReference,
+              approvedRuntimeBase,
+              session,
+              scannerDescriptor: {
+                operationNonce: inject.request.operationNonce,
+                ...scannerDescriptor,
+              },
+              saleCorrelationId,
+              saleBinding,
+            }),
+            workDirectory,
+            environment: {
+              ...environment,
+              VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
+            },
+          });
         throw new Error(`${failureMode} unexpectedly produced sale evidence`);
       } catch (error) {
         if (!(error instanceof VmHostAdapterExecutionError)) throw error;
         if (error.diagnostic.result !== "failed")
           throw new Error(`${failureMode} did not fail the serial session`);
-        cases.push({ failureMode, result: error.diagnostic.result });
+        const actualCode = error.diagnostic.diagnostics?.[0]?.code;
+        if (actualCode !== expectedCode)
+          throw new Error(
+            `${failureMode} returned ${actualCode ?? "no diagnostic"}, expected ${expectedCode}`,
+          );
+        cases.push({
+          failureMode,
+          operation:
+            failureMode === "scanner-timeout"
+              ? "inject-scanner-code"
+              : "collect-serial-evidence",
+          result: error.diagnostic.result,
+          diagnosticCode: actualCode,
+        });
       }
     } finally {
       if (session) {

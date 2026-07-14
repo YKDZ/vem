@@ -139,6 +139,10 @@ const SANITIZED_DIAGNOSTIC_CODES = new Set([
   "guest_unreachable",
   "evidence_invalid",
   "cleanup_failed",
+  "serial_malformed_frame",
+  "serial_device_disconnected",
+  "serial_scanner_timeout",
+  "serial_dispense_failed",
 ]);
 
 const TERMINAL_RESULTS = new Set([
@@ -566,11 +570,27 @@ function assertSerialSessionRequest(session, request, issues) {
       "must bind concrete observed business identifiers",
     );
   else {
-    if (session.saleBindings.length !== session.saleCorrelationIds?.length)
+    const bindingsRequired = [
+      "inject-scanner-code",
+      "collect-serial-evidence",
+    ].includes(request.operation);
+    if (
+      bindingsRequired &&
+      session.saleBindings.length !== session.saleCorrelationIds?.length
+    )
       issue(
         issues,
         "request.serialSession.saleBindings",
         "must bind every requested sale correlation identity",
+      );
+    if (
+      request.operation === "start-serial-session" &&
+      session.saleBindings.length !== 0
+    )
+      issue(
+        issues,
+        "request.serialSession.saleBindings",
+        "must be empty before the scanner sale creates business identifiers",
       );
     session.saleBindings.forEach((binding, index) => {
       const path = `request.serialSession.saleBindings[${index}]`;
@@ -591,8 +611,13 @@ function assertSerialSessionRequest(session, request, issues) {
         );
       for (const key of ["orderId", "paymentId", "vendingCommandId"])
         if (
-          typeof binding[key] !== "string" ||
-          !BUSINESS_IDENTIFIER.test(binding[key])
+          !(
+            request.operation !== "collect-serial-evidence" &&
+            key === "vendingCommandId" &&
+            binding[key] === null
+          ) &&
+          (typeof binding[key] !== "string" ||
+            !BUSINESS_IDENTIFIER.test(binding[key]))
         )
           issue(
             issues,
@@ -1458,6 +1483,8 @@ function assertAudioCaptureResult(value, request, report, issues) {
     !assertExactKeys(
       value.capture,
       [
+        "source",
+        "adapterIdentity",
         "artifact",
         "format",
         "encoding",
@@ -1477,6 +1504,22 @@ function assertAudioCaptureResult(value, request, report, issues) {
     )
   )
     return;
+  const expectedAudioSource =
+    report.adapter?.identity === "vm-host-adapter://deterministic-fake@1.0.0"
+      ? "contract-test-generated-wav"
+      : "qemu-default-audio-wav";
+  if (value.capture.source !== expectedAudioSource)
+    issue(
+      issues,
+      `${path}.capture.source`,
+      `must be ${expectedAudioSource} for this adapter`,
+    );
+  if (value.capture.adapterIdentity !== report.adapter?.identity)
+    issue(
+      issues,
+      `${path}.capture.adapterIdentity`,
+      "must bind the capture to the reporting host adapter",
+    );
   if (value.capture.artifact !== report.evidence?.[0]?.identity)
     issue(
       issues,
@@ -1674,12 +1717,15 @@ function assertDisplayCaptureResult(value, request, report, issues) {
     !assertExactKeys(
       value.capture,
       [
+        "source",
+        "adapterIdentity",
         "artifact",
         "format",
         "widthPx",
         "heightPx",
         "pixelCount",
         "nonTransparentPixelCount",
+        "nonTransparentPixelRatio",
         "distinctPixelCount",
       ],
       `${path}.capture`,
@@ -1687,6 +1733,22 @@ function assertDisplayCaptureResult(value, request, report, issues) {
     )
   )
     return;
+  const expectedDisplaySource =
+    report.adapter?.identity === "vm-host-adapter://deterministic-fake@1.0.0"
+      ? "contract-test-generated-png"
+      : "platform-framebuffer";
+  if (value.capture.source !== expectedDisplaySource)
+    issue(
+      issues,
+      `${path}.capture.source`,
+      `must be ${expectedDisplaySource} for this adapter`,
+    );
+  if (value.capture.adapterIdentity !== report.adapter?.identity)
+    issue(
+      issues,
+      `${path}.capture.adapterIdentity`,
+      "must bind the capture to the reporting host adapter",
+    );
   if (value.capture.artifact !== report.evidence?.[0]?.identity)
     issue(
       issues,
@@ -1714,6 +1776,24 @@ function assertDisplayCaptureResult(value, request, report, issues) {
       issues,
       `${path}.capture`,
       "must be an exact 1080x1920 kiosk framebuffer capture",
+    );
+  if (
+    !Number.isFinite(value.capture.nonTransparentPixelRatio) ||
+    value.capture.nonTransparentPixelRatio < 0.95 ||
+    value.capture.nonTransparentPixelRatio > 1 ||
+    value.capture.nonTransparentPixelRatio !==
+      value.capture.nonTransparentPixelCount / value.capture.pixelCount
+  )
+    issue(
+      issues,
+      `${path}.capture.nonTransparentPixelRatio`,
+      "must prove at least 95% decoded non-transparent framebuffer content",
+    );
+  if (value.capture.distinctPixelCount < 256)
+    issue(
+      issues,
+      `${path}.capture.distinctPixelCount`,
+      "must prove non-trivial framebuffer visual complexity",
     );
 }
 

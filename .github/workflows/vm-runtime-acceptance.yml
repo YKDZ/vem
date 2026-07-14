@@ -576,6 +576,9 @@ jobs:
       - name: Run VM Runtime Acceptance
         run: |
           set -euo pipefail
+          test -n "${VEM_VM_HOST_SCANNER_CODE_FILE:-}"
+          test -f "$VEM_VM_HOST_SCANNER_CODE_FILE"
+          test "$(stat -c '%a' "$VEM_VM_HOST_SCANNER_CODE_FILE")" = "600"
           node scripts/testbed/win10-vem-e2e.mjs \
             --mode vm-runtime-acceptance \
             --run-id "$RUN_ID" \
@@ -590,52 +593,9 @@ jobs:
             --maintenance-ingress-source-allowlist "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP" \
             --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
             --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
+            --scanner-code-file "$VEM_VM_HOST_SCANNER_CODE_FILE" \
+            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
-
-      - name: Bind Actual Sale IDs For Serial Conformance
-        if: success()
-        run: |
-          set -euo pipefail
-          report="artifacts/vm-runtime-acceptance/${RUN_ID}/simulated-hardware-sale-flow-response.json"
-          node - "$report" >> "$GITHUB_ENV" <<'NODE'
-          const fs = require("node:fs");
-          const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-          const sale = value.simulatedHardwareSaleFlow?.sale;
-          if (
-            value.ok !== true ||
-            value.simulatedHardwareSaleFlow?.result?.simulatedHardwareReady?.status !== "passed" ||
-            typeof sale?.orderId !== "string" || !sale.orderId ||
-            typeof sale?.paymentNo !== "string" || !sale.paymentNo ||
-            typeof sale?.vendingCommandId !== "string" || !sale.vendingCommandId ||
-            sale.paymentStatus !== "paid" ||
-            sale.dispenseResult !== "dispensed"
-          ) throw new Error("sale flow did not produce bound order, payment, and vending-command identifiers");
-          process.stdout.write(`VEM_SERIAL_ORDER_ID=${sale.orderId}\n`);
-          process.stdout.write(`VEM_SERIAL_PAYMENT_ID=${sale.paymentNo}\n`);
-          process.stdout.write(`VEM_SERIAL_VENDING_COMMAND_ID=${sale.vendingCommandId}\n`);
-          NODE
-
-      - name: Run Production Serial COM And Scanner Sale Conformance
-        if: success()
-        run: |
-          set -euo pipefail
-          test -n "${VEM_VM_HOST_ADAPTER:-}"
-          test -n "${VEM_VM_HOST_SCANNER_CODE_FILE:-}"
-          test -f "$VEM_VM_HOST_SCANNER_CODE_FILE"
-          test "$(stat -c '%a' "$VEM_VM_HOST_SCANNER_CODE_FILE")" = "600"
-          sale_correlation_id="sale-correlation://vm-runtime-$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
-          node scripts/testbed/vm-host-adapter-serial-conformance.mjs \
-              --adapter "$VEM_VM_HOST_ADAPTER" \
-              --scanner-code-file "$VEM_VM_HOST_SCANNER_CODE_FILE" \
-              --run-id "$RUN_ID" \
-              --target-identity "$VEM_VM_HOST_TARGET_ID" \
-              --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
-              --lifecycle-reference "vm-lifecycle://$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]').runtime-acceptance" \
-              --sale-correlation-id "$sale_correlation_id" \
-              --order-id "$VEM_SERIAL_ORDER_ID" \
-              --payment-id "$VEM_SERIAL_PAYMENT_ID" \
-              --vending-command-id "$VEM_SERIAL_VENDING_COMMAND_ID" \
-              --out "artifacts/vm-runtime-acceptance/${RUN_ID}/serial-com-scanner-sale-conformance.json"
 
       - name: Bind Active Kiosk Session For Native Audio Capture
         if: success()

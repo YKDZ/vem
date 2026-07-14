@@ -56,6 +56,8 @@ const RUNTIME_ACCEPTANCE_REPORT_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json";
 const SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json";
+const SIMULATED_HARDWARE_SALE_CONTEXT_FILE =
+  "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-context.json";
 const DIRTY_HOST_FACTORY_ACCEPTANCE_FILE_NAME =
   "dirty-host-factory-acceptance.json";
 const CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME =
@@ -2554,16 +2556,59 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     { ...options, runId, machineCode, platformTarget },
     ["--out", runtimeAcceptanceReport],
   );
-  const saleFlowCommand = buildAcceptanceScriptCommand(
+  const salePrepareCommand = buildAcceptanceScriptCommand(
     "simulated-hardware-sale-flow",
     { ...options, runId, machineCode, platformTarget },
     [
       "--ephemeral-platform-evidence",
       ephemeralPlatformEvidence,
+      "--sale-phase",
+      "prepare",
+      "--out",
+      `${evidenceRoot}/simulated-hardware-sale-prepare-response.json`,
+    ],
+  );
+  const saleCompleteCommand = buildAcceptanceScriptCommand(
+    "simulated-hardware-sale-flow",
+    { ...options, runId, machineCode, platformTarget },
+    [
+      "--ephemeral-platform-evidence",
+      ephemeralPlatformEvidence,
+      "--sale-phase",
+      "complete",
       "--out",
       saleFlowReport,
     ],
   );
+  const saleCorrelationId = `sale-correlation://vm-runtime-${runId.toLowerCase()}`;
+  const saleFlowCommand = [
+    process.execPath,
+    "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+    "--adapter",
+    process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
+    "--scanner-code-file",
+    options.scannerCodeFile ?? "runner-owned-scanner-code-file-required",
+    "--run-id",
+    runId,
+    "--target-identity",
+    process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
+    "--approved-runtime-base",
+    options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
+    "--lifecycle-reference",
+    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`,
+    "--sale-correlation-id",
+    saleCorrelationId,
+    "--machine-code",
+    machineCode,
+    "--ephemeral-platform-evidence",
+    ephemeralPlatformEvidence,
+    "--sale-prepare-command-json",
+    JSON.stringify(salePrepareCommand),
+    "--sale-complete-command-json",
+    JSON.stringify(saleCompleteCommand),
+    "--out",
+    `${evidenceRoot}/serial-com-scanner-sale-conformance.json`,
+  ];
 
   const cleanBaseStep = cleanBaseFactoryAcceptance
     ? [
@@ -3372,6 +3417,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
 }
 
 function runVmRuntimeAcceptance(options) {
+  if (!options.scannerCodeFile || !options.approvedRuntimeBase)
+    throw new Error(
+      "VM runtime acceptance requires --scanner-code-file and --approved-runtime-base",
+    );
   const plan = buildVmRuntimeAcceptancePlan(options);
   mkdirSync(plan.evidenceRoot, { recursive: true });
   mkdirSync(plan.artifacts.logsRoot, { recursive: true });
@@ -6181,8 +6230,9 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     [string]::IsNullOrWhiteSpace($Facts.sale.orderId) -or
     [string]::IsNullOrWhiteSpace($Facts.sale.orderNo) -or
     [string]$Facts.sale.orderStatus -ne "fulfilled" -or
-    [string]$Facts.sale.paymentMethod -ne "mock" -or
+    [string]$Facts.sale.paymentMethod -ne "payment_code" -or
     [string]$Facts.sale.paymentProviderCode -ne "mock" -or
+    [string]::IsNullOrWhiteSpace($Facts.sale.paymentId) -or
     [string]::IsNullOrWhiteSpace($Facts.sale.paymentNo) -or
     [string]$Facts.sale.paymentStatus -ne "paid" -or
     -not [bool]$Facts.sale.paymentSucceeded -or
@@ -6259,6 +6309,8 @@ function Assert-SimulatedSaleFlowPreMutationTarget($Target, $DaemonMachineCode, 
 
 function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $reportPath = ${psString(SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE)}
+  $contextPath = ${psString(SIMULATED_HARDWARE_SALE_CONTEXT_FILE)}
+  $salePhase = ${psString(options.salePhase ?? "single")}
   $ready = $null
   $baseUrl = $null
   $headers = $null
@@ -6271,10 +6323,10 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $saleView = $null
   $paymentOptions = $null
   $createOrder = $null
-  $mockPayment = $null
   $currentTransaction = $null
   $selectedItem = $null
   $flowError = $null
+  $effectiveProvisioningActions = @($ProvisioningActions)
 
   try {
     $ready = Read-JsonFile ${psString(bringUpPlan.arguments.DaemonReadyFile)}
@@ -6284,6 +6336,23 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     $baseUrl = Get-IpcBaseUrl $ready
     $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
 
+    if ($salePhase -eq "complete") {
+      if (-not (Test-Path -LiteralPath $contextPath -PathType Leaf)) {
+        throw "scanner sale context is missing"
+      }
+      $context = Read-JsonFile $contextPath
+      $bringUp = $context.bringUp
+      $configSummary = $context.configSummary
+      $daemonIpcBeforeMutation = $context.daemonIpcBeforeMutation
+      $syncPlanogram = $context.syncPlanogram
+      $saleViewBeforeStock = $context.saleViewBeforeStock
+      $attestation = $context.attestation
+      $saleView = $context.saleView
+      $paymentOptions = $context.paymentOptions
+      $createOrder = $context.createOrder
+      $selectedItem = $context.selectedItem
+      $effectiveProvisioningActions = @($context.provisioningActions)
+    } else {
     $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
     $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
     $daemonIpcBeforeMutation = Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)}
@@ -6343,7 +6412,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       planogramVersion = [string]$saleView.planogramVersion
       slotId = [string]$selectedItem.slotId
       slotCode = [string]$selectedItem.slotCode
-      paymentMethod = "mock"
+      paymentMethod = "payment_code"
       paymentProviderCode = "mock"
       profileSnapshot = [ordered]@{
         source = "testbed_simulated_hardware_sale_flow"
@@ -6351,18 +6420,38 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       }
     }
     $createOrder = Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order" $headers $orderPayload
-    $mockPayment = Invoke-IpcJson "POST" "$baseUrl/v1/intents/mock-payment" $headers ([ordered]@{
-      orderNo = [string]$createOrder.orderNo
-      succeed = $true
+    Write-JsonFile $contextPath ([ordered]@{
+      bringUp = $bringUp
+      configSummary = $configSummary
+      daemonIpcBeforeMutation = $daemonIpcBeforeMutation
+      syncPlanogram = $syncPlanogram
+      saleViewBeforeStock = $saleViewBeforeStock
+      attestation = $attestation
+      saleView = $saleView
+      paymentOptions = $paymentOptions
+      createOrder = $createOrder
+      selectedItem = $selectedItem
+      provisioningActions = @($ProvisioningActions)
     })
-    Start-Sleep -Seconds 2
-    $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
+    }
+    if ($salePhase -ne "prepare") {
+      $deadline = [DateTime]::UtcNow.AddSeconds(120)
+      do {
+        $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
+        if (
+          [string]$currentTransaction.fulfillmentStatus -eq "dispensed" -or
+          [string]$currentTransaction.fulfillmentStatus -eq "dispense_failed" -or
+          [string]$currentTransaction.paymentStatus -eq "failed"
+        ) { break }
+        Start-Sleep -Milliseconds 500
+      } while ([DateTime]::UtcNow -lt $deadline)
+    }
   } catch {
     $flowError = [string]$_
   }
 
   $daemonIpc = if ($null -ne $daemonIpcBeforeMutation) { $daemonIpcBeforeMutation } else { Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)} }
-  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc @($ProvisioningActions)
+  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc @($effectiveProvisioningActions)
   $activePlanogramVersion = if ($null -ne $saleView -and -not [string]::IsNullOrWhiteSpace($saleView.planogramVersion)) {
     [string]$saleView.planogramVersion
   } elseif ($null -ne $saleViewBeforeStock -and -not [string]::IsNullOrWhiteSpace($saleViewBeforeStock.planogramVersion)) {
@@ -6383,29 +6472,27 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   }
   $orderNo = if ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.orderNo)) {
     [string]$createOrder.orderNo
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.orderNo)) {
-    [string]$mockPayment.orderNo
   } else {
     $null
   }
   $paymentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentStatus)) {
     [string]$currentTransaction.paymentStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentStatus)) {
-    [string]$mockPayment.paymentStatus
+  } elseif ($salePhase -eq "prepare") {
+    "pending"
   } else {
     "unknown"
   }
   $fulfillmentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.fulfillmentStatus)) {
     [string]$currentTransaction.fulfillmentStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.fulfillmentStatus)) {
-    [string]$mockPayment.fulfillmentStatus
+  } elseif ($salePhase -eq "prepare") {
+    "pending"
   } else {
     "unknown"
   }
   $orderStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderStatus)) {
     [string]$currentTransaction.orderStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.orderStatus)) {
-    [string]$mockPayment.orderStatus
+  } elseif ($salePhase -eq "prepare") {
+    "pending"
   } else {
     "unknown"
   }
@@ -6475,17 +6562,22 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $null
   }
-  $paymentNo = if ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentNo)) {
-    [string]$mockPayment.paymentNo
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentNumber)) {
-    [string]$mockPayment.paymentNumber
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.providerTradeNo)) {
-    [string]$mockPayment.providerTradeNo
+  $paymentNo = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentNo)) {
+    [string]$currentTransaction.paymentNo
+  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.paymentNo)) {
+    [string]$createOrder.paymentNo
   } else {
     $null
   }
-  $vendingCommandId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.vendingCommandId)) {
-    [string]$currentTransaction.vendingCommandId
+  $paymentId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentId)) {
+    [string]$currentTransaction.paymentId
+  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.paymentId)) {
+    [string]$createOrder.paymentId
+  } else {
+    $null
+  }
+  $vendingCommandId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.vending.commandId)) {
+    [string]$currentTransaction.vending.commandId
   } elseif ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.dispenseCommandId)) {
     [string]$currentTransaction.dispenseCommandId
   } else {
@@ -6529,7 +6621,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       mqttUrl = ${psString(ephemeralPlatformSetup?.mqttUrl ?? "")}
       evidenceStatus = "prepared"
       claimPath = ${psString(ephemeralPlatformSetup?.claimPath ?? "/api/machines/claim")}
-      mockPaymentReady = ${ephemeralPlatformSetup?.mockPaymentReady ? "$true" : "$false"} -and $null -ne $paymentOptions -and @($paymentOptions.options | Where-Object { [string]$_.method -eq "mock" -and [string]$_.providerCode -eq "mock" }).Count -gt 0
+      mockPaymentReady = ${ephemeralPlatformSetup?.mockPaymentReady ? "$true" : "$false"} -and $null -ne $paymentOptions -and @($paymentOptions.options | Where-Object { [string]$_.method -eq "payment_code" -and [string]$_.providerCode -eq "mock" }).Count -gt 0
     }
     topology = [ordered]@{
       expectedIdentity = ${psString(ephemeralPlatformSetup?.hardwareTopologyIdentity ?? "unknown")}
@@ -6560,8 +6652,9 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       orderId = $orderId
       orderNo = $orderNo
       orderStatus = $orderStatus
-      paymentMethod = "mock"
+      paymentMethod = "payment_code"
       paymentProviderCode = "mock"
+      paymentId = $paymentId
       paymentNo = $paymentNo
       paymentStatus = $paymentStatus
       paymentSucceeded = $paymentStatus -eq "paid"
@@ -6579,7 +6672,22 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     }
   }
 
-  $report = Classify-SimulatedHardwareSaleFlowReport $facts
+  $report = if ($salePhase -eq "prepare") {
+    [ordered]@{
+      schemaVersion = "simulated-hardware-sale-flow/v1"
+      phase = "prepare"
+      sale = $facts.sale
+      result = [ordered]@{
+        simulatedHardwareReady = New-RuntimeAcceptanceAssertion "awaiting_scanner" $false
+        sellReady = [ordered]@{ status = "not_asserted"; asserted = $false }
+      }
+      diagnostics = @()
+    }
+  } else {
+    $classified = Classify-SimulatedHardwareSaleFlowReport $facts
+    $classified["phase"] = "complete"
+    $classified
+  }
   if ($null -ne $flowError) {
     $diagnostics = [System.Collections.Generic.List[object]]::new()
     foreach ($diagnostic in @($report.diagnostics)) {
@@ -6842,7 +6950,9 @@ if ($mode -eq "clean-base-factory-acceptance") {
 }
 
 if ($mode -eq "simulated-hardware-sale-flow") {
-  Invoke-TestbedProvisioningClaim $provisioningActions
+  if (${psString(options.salePhase ?? "single")} -ne "complete") {
+    Invoke-TestbedProvisioningClaim $provisioningActions
+  }
   $simulatedHardwareSaleFlowResult = Invoke-SimulatedHardwareSaleFlow $provisioningActions
 }
 
@@ -6871,7 +6981,10 @@ $cleanBaseFactoryAcceptanceOk = if ($mode -eq "clean-base-factory-acceptance") {
   $true
 }
 $simulatedHardwareSaleFlowOk = if ($mode -eq "simulated-hardware-sale-flow") {
-  $null -ne $simulatedHardwareSaleFlowReport -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "passed"
+  $null -ne $simulatedHardwareSaleFlowReport -and (
+    ([string]$simulatedHardwareSaleFlowReport.phase -eq "prepare" -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "awaiting_scanner") -or
+    ([string]$simulatedHardwareSaleFlowReport.phase -eq "complete" -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "passed")
+  )
 } else {
   $true
 }
@@ -7380,7 +7493,15 @@ export function getRuntimeAcceptanceExitStatus({
       const simulatedHardwareReady =
         output?.simulatedHardwareSaleFlow?.result?.simulatedHardwareReady
           ?.status;
-      return output?.ok === true && simulatedHardwareReady === "passed" ? 0 : 1;
+      const phase =
+        output?.simulatedHardwareSaleFlow?.phase ??
+        (simulatedHardwareReady === "passed" ? "complete" : null);
+      return output?.ok === true &&
+        ((phase === "prepare" &&
+          simulatedHardwareReady === "awaiting_scanner") ||
+          (phase === "complete" && simulatedHardwareReady === "passed"))
+        ? 0
+        : 1;
     } catch {
       return 1;
     }
@@ -7470,6 +7591,11 @@ function parseArgs(argv) {
     } else if (arg === "--ephemeral-platform-evidence") {
       options.ephemeralPlatformEvidence = next;
       index += 1;
+    } else if (arg === "--sale-phase") {
+      if (!new Set(["prepare", "complete"]).has(next))
+        throw new Error("--sale-phase must be prepare or complete");
+      options.salePhase = next;
+      index += 1;
     } else if (arg === "--ephemeral-database-url") {
       options.ephemeralDatabaseUrl = next;
       index += 1;
@@ -7478,6 +7604,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--ephemeral-mqtt-url") {
       options.ephemeralMqttUrl = next;
+      index += 1;
+    } else if (arg === "--scanner-code-file") {
+      options.scannerCodeFile = next;
+      index += 1;
+    } else if (arg === "--approved-runtime-base") {
+      options.approvedRuntimeBase = next;
       index += 1;
     } else if (arg === "--machine-code-prefix") {
       options.machineCodePrefix = next;

@@ -2081,10 +2081,10 @@ describe("win10-vem-e2e reset planning", () => {
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/create-order"/,
     );
-    assert.match(
-      script,
-      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/mock-payment"/,
-    );
+    assert.doesNotMatch(script, /\/v1\/intents\/mock-payment/);
+    assert.match(script, /paymentMethod = "payment_code"/);
+    assert.match(script, /\$salePhase -eq "prepare"/);
+    assert.match(script, /\$salePhase -eq "complete"/);
     assert.match(
       script,
       /Invoke-TestbedProvisioningClaim \$provisioningActions/,
@@ -2160,7 +2160,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /VEM-WIN10-REAL-01/);
   });
 
-  it("factory preparation maps simulated hardware to daemon mock adapter", () => {
+  it("factory preparation uses production serial adapters for simulated hardware", () => {
     const script = readFileSync(
       join(process.cwd(), "scripts/windows/prepare-factory-runtime.ps1"),
       "utf8",
@@ -2168,11 +2168,10 @@ describe("win10-vem-e2e reset planning", () => {
 
     assert.match(script, /apiBaseUrl = \$ProvisioningEndpoint/);
     assert.match(script, /mqttUrl = \$MqttUrl/);
-    assert.match(
-      script,
-      /hardwareAdapter = if \(\$HardwareMode -eq "simulated"\) \{ "mock" \} else \{ "serial" \}/,
-    );
-    assert.match(script, /scannerAdapter = "disabled"/);
+    assert.match(script, /hardwareAdapter = "serial"/);
+    assert.match(script, /serialPortPath = \$LowerControllerSerialPortPath/);
+    assert.match(script, /scannerAdapter = "serial_text"/);
+    assert.match(script, /scannerSerialPortPath = \$ScannerSerialPortPath/);
     assert.match(script, /visionEnabled = \$false/);
     assert.match(script, /kioskMode = \$true/);
     assert.match(
@@ -3403,10 +3402,20 @@ describe("win10-vem-e2e reset planning", () => {
       [
         "dirty-host factory reset acceptance",
         "runtime acceptance",
-        "simulated hardware sale flow",
       ].includes(step.name),
     )) {
       assert.equal(commandArg(step.command, "--ssh-port"), "22022");
+    }
+    const saleStep = plan.steps.find(
+      (step) => step.name === "simulated hardware sale flow",
+    );
+    assert.ok(saleStep);
+    for (const option of [
+      "--sale-prepare-command-json",
+      "--sale-complete-command-json",
+    ]) {
+      const childCommand = JSON.parse(commandArg(saleStep.command, option));
+      assert.equal(commandArg(childCommand, "--ssh-port"), "22022");
     }
   });
 

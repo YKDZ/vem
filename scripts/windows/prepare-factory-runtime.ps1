@@ -17,6 +17,8 @@ param(
   [Parameter(Mandatory = $false)][string]$HardwareModel,
   [Parameter(Mandatory = $false)][string]$TopologyIdentity,
   [Parameter(Mandatory = $false)][string]$TopologyVersion,
+  [Parameter(Mandatory = $false)][string]$LowerControllerSerialPortPath = "COM5",
+  [Parameter(Mandatory = $false)][string]$ScannerSerialPortPath = "COM3",
   [Parameter(Mandatory = $false)][int]$ExpectedDisplayWidth,
   [Parameter(Mandatory = $false)][int]$ExpectedDisplayHeight,
   [Parameter(Mandatory = $false)][ValidateSet("portrait", "landscape")][string]$ExpectedDisplayOrientation,
@@ -1535,11 +1537,11 @@ function Write-FactoryRuntimeFiles {
     apiBaseUrl = $ProvisioningEndpoint
     mqttUrl = $MqttUrl
     mqttUsername = $null
-    hardwareAdapter = if ($HardwareMode -eq "simulated") { "mock" } else { "serial" }
-    serialPortPath = $null
+    hardwareAdapter = "serial"
+    serialPortPath = $LowerControllerSerialPortPath
     lowerControllerUsbIdentity = $null
-    scannerAdapter = "disabled"
-    scannerSerialPortPath = $null
+    scannerAdapter = "serial_text"
+    scannerSerialPortPath = $ScannerSerialPortPath
     scannerUsbIdentity = $null
     scannerBaudRate = 9600
     scannerFrameSuffix = "crlf"

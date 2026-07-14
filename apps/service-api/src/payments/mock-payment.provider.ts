@@ -15,6 +15,12 @@ import type {
   ProviderRefundQueryResult,
   ProviderWebhookInput,
   ProviderWebhookResult,
+  ProviderPaymentCodeChargeInput,
+  ProviderPaymentCodeChargeResult,
+  ProviderPaymentCodeQueryInput,
+  ProviderPaymentCodeQueryResult,
+  ProviderPaymentCodeReverseInput,
+  ProviderPaymentCodeReverseResult,
 } from "./payment-provider.interface";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -34,6 +40,47 @@ export class MockPaymentProvider implements PaymentProvider {
     return {
       providerTradeNo: `MOCK-${input.paymentNo}`,
       paymentUrl: `${this.config.paymentWebhookBaseUrl.replace(/\/payments\/webhooks$/, "")}/payments/mock/${input.paymentNo}`,
+    };
+  }
+
+  async chargePaymentCode(
+    input: ProviderPaymentCodeChargeInput,
+  ): Promise<ProviderPaymentCodeChargeResult> {
+    if (!this.config.paymentMockEnabled)
+      throw new Error("mock payment code is disabled");
+    return {
+      status: "succeeded",
+      providerTradeNo: `MOCK-CODE-${input.paymentNo}`,
+      paidAt: new Date(),
+      providerStatus: "TESTBED_SCANNER_ACCEPTED",
+      rawPayload: {
+        provider: "mock",
+        source: "payment_code",
+        authCodeLength: input.authCode.length,
+      },
+    };
+  }
+
+  async queryPaymentCode(
+    input: ProviderPaymentCodeQueryInput,
+  ): Promise<ProviderPaymentCodeQueryResult> {
+    return {
+      status: "succeeded",
+      providerTradeNo: input.providerTradeNo,
+      paidAt: new Date(),
+      providerStatus: "TESTBED_SCANNER_ACCEPTED",
+      rawPayload: { provider: "mock", source: "payment_code" },
+    };
+  }
+
+  async reversePaymentCode(
+    _input: ProviderPaymentCodeReverseInput,
+  ): Promise<ProviderPaymentCodeReverseResult> {
+    return {
+      status: "reversed",
+      recall: true,
+      providerStatus: "TESTBED_REVERSED",
+      rawPayload: { provider: "mock", source: "payment_code" },
     };
   }
 

@@ -104,7 +104,7 @@ type RecoveryActionRow = {
   status: string;
 };
 type MachinePaymentSelection =
-  | { providerCode: "mock"; method: "mock" }
+  | { providerCode: "mock"; method: "mock" | "payment_code" }
   | {
       providerCode: "wechat_pay" | "alipay";
       method: "qr_code" | "payment_code";
@@ -236,7 +236,8 @@ function resolvePaymentSelection(
 
   if (
     input.paymentMethod === "payment_code" &&
-    (input.paymentProviderCode === "wechat_pay" ||
+    (input.paymentProviderCode === "mock" ||
+      input.paymentProviderCode === "wechat_pay" ||
       input.paymentProviderCode === "alipay")
   ) {
     return { providerCode: input.paymentProviderCode, method: "payment_code" };
@@ -2252,6 +2253,7 @@ export class OrdersService {
 
     const [command] = await this.db
       .select({
+        commandId: vendingCommands.id,
         commandNo: vendingCommands.commandNo,
         status: vendingCommands.status,
         sentAt: vendingCommands.sentAt,
@@ -2328,6 +2330,7 @@ export class OrdersService {
       fulfillmentState: row.fulfillmentState,
       totalAmountCents: row.totalAmountCents,
       payment: {
+        paymentId: row.paymentId,
         paymentNo: row.paymentNo,
         method: row.paymentMethod,
         status: row.paymentStatus,
@@ -2378,6 +2381,7 @@ export class OrdersService {
         : null,
       vending: command
         ? {
+            commandId: command.commandId,
             commandNo: command.commandNo,
             status: command.status,
             sentAt: toIsoStringOrNull(command.sentAt),

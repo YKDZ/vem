@@ -3332,6 +3332,7 @@ fn empty_current_transaction_snapshot() -> vending_core::domain::InternalCurrent
         order_id: None,
         order_no: None,
         product_summary: None,
+        payment_id: None,
         payment_no: None,
         payment_method: None,
         payment_provider: None,

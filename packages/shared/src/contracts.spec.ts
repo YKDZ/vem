@@ -2987,8 +2987,8 @@ describe("shared API contract", () => {
       expect(result.profileSnapshot).toEqual({ personPresent: true });
     });
 
-    it("rejects payment_code with mock provider", () => {
-      expect(() =>
+    it("accepts payment_code with mock provider for testbed scanner flow", () => {
+      expect(
         createMachineOrderSchema.parse({
           machineCode: "M001",
           items: [
@@ -3002,10 +3002,8 @@ describe("shared API contract", () => {
           ],
           paymentMethod: "payment_code",
           paymentProviderCode: "mock",
-        }),
-      ).toThrow(
-        /payment_code payment method requires alipay or wechat_pay provider/,
-      );
+        }).paymentProviderCode,
+      ).toBe("mock");
     });
 
     it("parses payment_code submit and response schemas without leaking auth code", () => {

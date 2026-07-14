@@ -211,14 +211,17 @@ function serialSessionRequest(operation, overrides = {}) {
         ? scannerInjection
         : null,
       saleCorrelationIds: ["sale-correlation://sale-001"],
-      saleBindings: [
-        {
-          saleCorrelationId: "sale-correlation://sale-001",
-          orderId: "order-001",
-          paymentId: "payment-001",
-          vendingCommandId: "vending-command-001",
-        },
-      ],
+      saleBindings:
+        operation === "start-serial-session"
+          ? []
+          : [
+              {
+                saleCorrelationId: "sale-correlation://sale-001",
+                orderId: "order-001",
+                paymentId: "payment-001",
+                vendingCommandId: "vending-command-001",
+              },
+            ],
       idempotencyCheck: false,
     },
     ...overrides,
@@ -470,13 +473,17 @@ function reportFor(request, overrides = {}) {
               domNodeCount: 3,
             },
             capture: {
+              source: "contract-test-generated-png",
+              adapterIdentity:
+                "vm-host-adapter://deterministic-fake@1.0.0",
               artifact: evidence[0].identity,
               format: "png",
               widthPx: 1080,
               heightPx: 1920,
               pixelCount: 2_073_600,
               nonTransparentPixelCount: 2_073_600,
-              distinctPixelCount: 4,
+              nonTransparentPixelRatio: 1,
+              distinctPixelCount: 513,
             },
           }
         : null,
@@ -500,6 +507,9 @@ function reportFor(request, overrides = {}) {
               emittedAt: "2026-07-11T00:00:00.500Z",
             },
             capture: {
+              source: "contract-test-generated-wav",
+              adapterIdentity:
+                "vm-host-adapter://deterministic-fake@1.0.0",
               artifact: evidence[0].identity,
               format: "wav_pcm",
               encoding: "pcm_s16le",
@@ -1493,6 +1503,28 @@ describe("VM Host Adapter contract", () => {
           heightPx: 1080,
         },
       },
+      {
+        ...report.displayCapture,
+        capture: {
+          ...report.displayCapture.capture,
+          source: "platform-framebuffer",
+        },
+      },
+      {
+        ...report.displayCapture,
+        capture: {
+          ...report.displayCapture.capture,
+          nonTransparentPixelCount: 1_000,
+          nonTransparentPixelRatio: 1_000 / 2_073_600,
+        },
+      },
+      {
+        ...report.displayCapture,
+        capture: {
+          ...report.displayCapture.capture,
+          distinctPixelCount: 255,
+        },
+      },
     ])
       assert.throws(() =>
         validateVmHostAdapterReport(
@@ -1541,6 +1573,15 @@ describe("VM Host Adapter contract", () => {
           capture: {
             ...report.defaultAudioCapture.capture,
             nonSilentFrameCount: 0,
+          },
+        },
+      },
+      {
+        defaultAudioCapture: {
+          ...report.defaultAudioCapture,
+          capture: {
+            ...report.defaultAudioCapture.capture,
+            source: "qemu-default-audio-wav",
           },
         },
       },
@@ -2353,10 +2394,30 @@ describe("VM Host Adapter contract", () => {
     );
     assert.equal(report.reports.collect.serialEvidence.records.length, 9);
     assert.deepEqual(report.failureMatrix, [
-      { failureMode: "malformed-frame", result: "failed" },
-      { failureMode: "device-disconnected", result: "failed" },
-      { failureMode: "scanner-timeout", result: "failed" },
-      { failureMode: "dispense-failed", result: "failed" },
+      {
+        failureMode: "malformed-frame",
+        operation: "collect-serial-evidence",
+        result: "failed",
+        diagnosticCode: "serial_malformed_frame",
+      },
+      {
+        failureMode: "device-disconnected",
+        operation: "collect-serial-evidence",
+        result: "failed",
+        diagnosticCode: "serial_device_disconnected",
+      },
+      {
+        failureMode: "scanner-timeout",
+        operation: "inject-scanner-code",
+        result: "failed",
+        diagnosticCode: "serial_scanner_timeout",
+      },
+      {
+        failureMode: "dispense-failed",
+        operation: "collect-serial-evidence",
+        result: "failed",
+        diagnosticCode: "serial_dispense_failed",
+      },
     ]);
     assert.doesNotMatch(
       JSON.stringify(report),

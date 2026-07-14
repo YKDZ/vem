@@ -118,6 +118,7 @@ export function inspectPng(bytes) {
     heightPx: height,
     pixelCount: width * height,
     nonTransparentPixelCount,
+    nonTransparentPixelRatio: nonTransparentPixelCount / (width * height),
     distinctPixelCount: pixels.size,
   };
 }
@@ -151,6 +152,7 @@ export function inspectExportedDisplayCapture({
     "heightPx",
     "pixelCount",
     "nonTransparentPixelCount",
+    "nonTransparentPixelRatio",
     "distinctPixelCount",
   ])
     if (capture[key] !== inspected[key])

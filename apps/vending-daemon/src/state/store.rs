@@ -4004,6 +4004,11 @@ fn to_current_transaction_snapshot(
             .map(ToString::to_string),
         order_no: Some(row.order_no),
         product_summary: serde_json::from_str::<serde_json::Value>(&row.items_json).ok(),
+        payment_id: backend
+            .as_ref()
+            .and_then(|v| v.pointer("/payment/paymentId"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
         payment_no: backend
             .as_ref()
             .and_then(|v| v.pointer("/payment/paymentNo"))
@@ -4082,6 +4087,10 @@ fn map_vending_summary(
 ) -> Option<vending_core::domain::InternalVendingCommandSummary> {
     let vending = value.get("vending")?;
     Some(vending_core::domain::InternalVendingCommandSummary {
+        command_id: vending
+            .get("commandId")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
         command_no: vending
             .get("commandNo")
             .and_then(|v| v.as_str())

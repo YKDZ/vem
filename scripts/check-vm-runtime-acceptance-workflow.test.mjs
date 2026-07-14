@@ -343,43 +343,17 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
   it("runs the production serial COM and scanner sale conformance with protected scanner input", () => {
     const workflow = readWorkflow();
     const runtime = stepBlock(workflow, "Run VM Runtime Acceptance");
-    const serialSale = stepBlock(
-      workflow,
-      "Run Production Serial COM And Scanner Sale Conformance",
-    );
-    const saleBinding = stepBlock(
-      workflow,
-      "Bind Actual Sale IDs For Serial Conformance",
-    );
     const display = stepBlock(
       workflow,
       "Capture Windows Display Evidence Through Host Adapter",
     );
 
-    assert.match(serialSale, /if:\s+success\(\)/);
-    assert.match(serialSale, /VEM_VM_HOST_SCANNER_CODE_FILE/);
-    assert.match(
-      serialSale,
-      /scripts\/testbed\/vm-host-adapter-serial-conformance\.mjs/,
-    );
-    assert.match(serialSale, /--scanner-code-file/);
-    assert.match(serialSale, /stat -c '%a'/);
-    assert.doesNotMatch(serialSale, /VEM_VM_HOST_SCANNER_CODE(?:[^_]|$)/);
-    assert.match(serialSale, /--sale-correlation-id/);
-    assert.match(serialSale, /--order-id "\$VEM_SERIAL_ORDER_ID"/);
-    assert.match(serialSale, /--payment-id "\$VEM_SERIAL_PAYMENT_ID"/);
-    assert.match(
-      serialSale,
-      /--vending-command-id "\$VEM_SERIAL_VENDING_COMMAND_ID"/,
-    );
-    assert.match(serialSale, /serial-com-scanner-sale-conformance\.json/);
-    assert.doesNotMatch(serialSale, /mock-payment/);
-    assert.match(saleBinding, /simulated-hardware-sale-flow-response\.json/);
-    assert.match(saleBinding, /sale\.orderId/);
-    assert.match(saleBinding, /sale\.paymentNo/);
-    assert.match(saleBinding, /sale\.vendingCommandId/);
-    assert.ok(workflow.indexOf(runtime) < workflow.indexOf(serialSale));
-    assert.ok(workflow.indexOf(saleBinding) < workflow.indexOf(serialSale));
-    assert.ok(workflow.indexOf(serialSale) < workflow.indexOf(display));
+    assert.match(runtime, /VEM_VM_HOST_SCANNER_CODE_FILE/);
+    assert.match(runtime, /--scanner-code-file/);
+    assert.match(runtime, /--approved-runtime-base/);
+    assert.match(runtime, /stat -c '%a'/);
+    assert.doesNotMatch(runtime, /VEM_VM_HOST_SCANNER_CODE(?:[^_]|$)/);
+    assert.doesNotMatch(runtime, /mock-payment/);
+    assert.ok(workflow.indexOf(runtime) < workflow.indexOf(display));
   });
 });
