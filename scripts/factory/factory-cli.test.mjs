@@ -346,8 +346,8 @@ async function fixture() {
     descriptorDigest: descriptor.identity,
     attestationIdentity: evidenceIdentity(sha256(attestationBytes)),
     attestationDigest: sha256(attestationBytes),
-    approvalIdentity: evidenceIdentity(approval.identity),
-    approvalDigest: approval.identity,
+    approvalIdentity: evidenceIdentity(sha256(approvalBytes)),
+    approvalDigest: sha256(approvalBytes),
     conformanceEvidenceIdentity: evidenceIdentity(sha256(conformanceBytes)),
     conformanceEvidenceDigest: sha256(conformanceBytes),
   };
