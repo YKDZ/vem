@@ -1059,16 +1059,14 @@ describe("real deterministic Factory ISO builder", () => {
       "HideLocalAccountScreen",
       "HideOnlineAccountScreens",
       "HideWirelessSetupInOOBE",
-      "SkipMachineOOBE",
-      "SkipUserOOBE",
     ]) {
       assert.match(bios, new RegExp(`<${setting}>true</${setting}>`));
     }
-    assert.doesNotMatch(
-      bios,
-      /<UserAccounts>|<AutoLogon>|<FirstLogonCommands>/,
-    );
-    assert.doesNotMatch(bios, /<Password>|YKDZ/);
+    assert.match(bios, /<UserAccounts>[\s\S]*?<Name>VEMOobeBootstrap<\/Name>/);
+    assert.match(bios, /<Group>Users<\/Group>/);
+    assert.doesNotMatch(bios, /SkipMachineOOBE|SkipUserOOBE/);
+    assert.doesNotMatch(bios, /<AutoLogon>|<FirstLogonCommands>/);
+    assert.doesNotMatch(bios, /YKDZ/);
 
     const production = factoryAutounattendXml(
       "production",
@@ -1079,11 +1077,7 @@ describe("real deterministic Factory ISO builder", () => {
     assert.doesNotMatch(production, /<Name>Admin<\/Name>/);
     assert.doesNotMatch(production, /<Username>Admin<\/Username>/);
     assert.doesNotMatch(production, /YKDZ/);
-    assert.doesNotMatch(
-      production,
-      /<Password><Value>[^<]+<\/Value>/,
-      "deterministic Factory media must not embed a credential",
-    );
+    assert.match(production, /<Name>VEMOobeBootstrap<\/Name>/);
     assert.throws(
       () => factoryAutounattendXml("testbed", 4, "bios", "Enterprise"),
       /unsupported Factory Windows image edition/,
@@ -1398,10 +1392,12 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(unattended, /<PartitionID>3<\/PartitionID>/);
       assert.match(unattended, /\/IMAGE\/INDEX/);
       assert.doesNotMatch(unattended, /private.?key|credential/i);
-      assert.doesNotMatch(
-        unattended,
-        /<Password><Value>[^<]+<\/Value>/,
-        "Factory unattended media must not embed a password value",
+      assert.deepEqual(
+        [...unattended.matchAll(/<Password><Value>([^<]+)<\/Value>/g)].map(
+          (match) => match[1],
+        ),
+        ["VEM-Factory-OOBE-v1!"],
+        "Factory unattended media may embed only the disposable OOBE bootstrap password",
       );
       const baseline = JSON.parse(
         await readFile(
@@ -1617,6 +1613,7 @@ describe("real deterministic Factory ISO builder", () => {
         "utf8",
       );
       assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
+      assert.match(completeOobe, /Remove-LocalUser[^\n]+VEMOobeBootstrap/);
       assert.doesNotMatch(completeOobe, /UnattendFile|Panther/i);
       assert.match(completeOobe, /VEM_PERSONALIZATION/);
       assert.match(completeOobe, /InvokeVerb\('Eject'\)/);

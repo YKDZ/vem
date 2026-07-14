@@ -3527,8 +3527,9 @@ try {
       [int]$setupState.OOBEInProgress -eq 0 -and
       [int]$setupState.SystemSetupInProgress -eq 0 -and
       [int]$setupState.SetupType -eq 0 -and
-      [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
-      -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
+    [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
+    -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
+    $null -eq (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue) -and
       $null -eq $cleanupTask -and
       $personalizationVolumes.Count -eq 0
     if ($oobeComplete) { break }
@@ -3635,6 +3636,7 @@ try {
         setupType = $setupState.SetupType
         unattendOverride = $setupState.UnattendFile
         deprecatedAnswerPresent = Test-Path -LiteralPath $deprecatedOobeAnswerPath
+        bootstrapAccountPresent = $null -ne (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue)
         cleanupTaskPresent = $null -ne $cleanupTask
         personalizationVolumeCount = $personalizationVolumes.Count
       }

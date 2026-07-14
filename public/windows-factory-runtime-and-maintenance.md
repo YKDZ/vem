@@ -100,8 +100,12 @@ partition, Windows partition, and MBR recovery partition. The ISO remains
 BIOS+UEFI bootable in either case, but acceptance must boot it using the
 firmware mode declared by the manifest. The deterministic Factory ISO owns a
 non-secret `oobeSystem` pass that fixes locale and suppresses interactive OOBE
-pages, including the Win10 machine and user OOBE phases, but contains neither an
-account password nor machine-specific OOBE state. During `specialize`, the installer consumes the restricted one-time
+pages and declares a restricted temporary `VEMOobeBootstrap` local account so
+Win10 Pro can complete its supported account-creation phase. Its fixed bootstrap
+password is a v1 prototype concession: the account has no maintenance ingress
+and the first kiosk logon deletes it. Preclaim verification rejects any image in
+which it remains. The ISO contains no machine-specific OOBE state. During
+`specialize`, the installer consumes the restricted one-time
 personalization media and configures the profile accounts, runtime, and kiosk
 Winlogon state directly. No password-bearing answer file or Setup registry
 override is generated.
@@ -124,7 +128,8 @@ runs the baseline installer, `prepare-factory-runtime`, and
 `verify-factory-runtime` before OOBE can expose any interactive desktop. The
 configured Winlogon state then performs one automatic login directly to the
 restricted kiosk account. A one-shot SYSTEM task triggered by that login removes
-the OOBE login counter and personalization medium before deleting itself. Medium removal has bounded
+the OOBE login counter, temporary bootstrap account, and personalization medium
+before deleting itself. Medium removal has bounded
 retries and a verified-absent postcondition; a failed removal retains the logon
 trigger for retry without introducing a pre-OOBE startup trigger. A preparation
 failure stops Windows Setup before OOBE rather than exposing a partially
