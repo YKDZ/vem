@@ -85,6 +85,7 @@ enum BringUpTaskMutation {
         password: String,
         hidden: bool,
     },
+    ProbeNetwork,
     ClaimMachine {
         #[serde(rename = "claimCode")]
         claim_code: String,
@@ -1233,6 +1234,9 @@ async fn execute_bring_up_task(
         )
         .await
         .into_response(),
+        (crate::bring_up::BringUpTaskKind::ConfigureNetwork, BringUpTaskMutation::ProbeNetwork) => {
+            probe_existing_network_mutation(&ctx).await.into_response()
+        }
         (
             crate::bring_up::BringUpTaskKind::ClaimMachine
             | crate::bring_up::BringUpTaskKind::ReclaimMachine,
@@ -1305,6 +1309,39 @@ async fn execute_bring_up_task(
         )
             .into_response(),
     }
+}
+
+async fn probe_existing_network_mutation(ctx: &IpcContext) -> axum::response::Response {
+    // The Factory pre-claim script writes only this endpoint. It is probe
+    // input, never Bring-Up state evidence on its own.
+    let api_base_url = match ctx.config_store.load_public_config().await {
+        Ok(public) => public.api_base_url,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "preclaim_platform_endpoint_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let response = ctx
+        .network_adapter
+        .probe_preclaim_platform_endpoint(&api_base_url)
+        .await;
+    let proven = network_reached_platform(&response);
+    *ctx.ui.status_cache.network.write().await = Some(response.clone());
+    (
+        if proven {
+            StatusCode::OK
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        },
+        Json(response),
+    )
+        .into_response()
 }
 
 async fn request_machine_reclaim(
@@ -4951,6 +4988,26 @@ mod tests {
                 updated_at: crate::state::store::now_iso(),
             }
         }
+
+        async fn probe_preclaim_platform_endpoint(
+            &self,
+            _api_base_url: &str,
+        ) -> crate::network::NetworkSettingsResponse {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            crate::network::NetworkSettingsResponse {
+                status: crate::network::NetworkSetupStatus::Connected,
+                ssid: "existing-network".to_string(),
+                hidden: false,
+                diagnostics: vec![crate::network::NetworkDiagnostic {
+                    component: "provisioning_endpoint".to_string(),
+                    level: "ok".to_string(),
+                    code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
+                    message: "fixture endpoint reachable".to_string(),
+                }],
+                operator_guidance: "fixture endpoint reachable".to_string(),
+                updated_at: crate::state::store::now_iso(),
+            }
+        }
     }
 
     #[tokio::test]
@@ -4961,6 +5018,7 @@ mod tests {
         ctx.network_adapter = Arc::new(CountingNetworkAdapter {
             calls: calls.clone(),
         });
+        *ctx.ui.status_cache.network.write().await = None;
         let app = build_router(ctx);
         let valid_password = ["valid", "network", "credential"].join("-");
         let short_password = ["short"].join("");
@@ -6292,7 +6350,9 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_without_default_api_base_url_fails_closed_before_backend_claim() {
         let temp_dir = tempdir().expect("tmp");
-        let app = build_router(test_ipc_context(temp_dir.path(), "token-1", None, "").await);
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "").await;
+        *ctx.ui.status_cache.network.write().await = None;
+        let app = build_router(ctx);
 
         let response = post_json(
             &app,
@@ -8823,7 +8883,73 @@ mod tests {
             snapshot["currentTask"]["taskId"],
             "bring_up.configure_network"
         );
-        assert_eq!(snapshot["currentTask"]["taskVersion"], 1);
+        assert_eq!(snapshot["currentTask"]["taskVersion"], 2);
+        assert_eq!(snapshot["currentTask"]["intent"], "refresh_network");
+
+        let response = post_json(
+            &app,
+            "/v1/bring-up/tasks/execute",
+            "token-1",
+            json!({
+                "contractVersion": snapshot["currentTask"]["contractVersion"],
+                "taskId": snapshot["currentTask"]["taskId"],
+                "taskVersion": snapshot["currentTask"]["taskVersion"],
+                "kind": snapshot["currentTask"]["kind"],
+                "intent": snapshot["currentTask"]["intent"],
+                "mutation": { "type": "probe_network" }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("network probe response");
+        let result: serde_json::Value = serde_json::from_slice(&body).expect("network probe json");
+        assert_ne!(result["status"], "connected");
+        assert!(!result["operatorGuidance"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty());
+
+        let after = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(after["state"], "network_required");
+        assert_eq!(after["currentTask"]["kind"], "configure_network");
+    }
+
+    #[tokio::test]
+    async fn preclaim_network_probe_advances_the_same_cursor_only_after_endpoint_evidence() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx =
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        *ctx.ui.status_cache.network.write().await = None;
+        ctx.network_adapter = Arc::new(CountingNetworkAdapter {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let app = build_router(ctx);
+
+        let before = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(before["state"], "network_required");
+        assert_eq!(before["currentTask"]["kind"], "configure_network");
+
+        let response = post_json(
+            &app,
+            "/v1/bring-up/tasks/execute",
+            "token-1",
+            json!({
+                "contractVersion": before["currentTask"]["contractVersion"],
+                "taskId": before["currentTask"]["taskId"],
+                "taskVersion": before["currentTask"]["taskVersion"],
+                "kind": before["currentTask"]["kind"],
+                "intent": before["currentTask"]["intent"],
+                "mutation": { "type": "probe_network" }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let after = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(after["state"], "claim_required");
+        assert_eq!(after["currentTask"]["kind"], "claim_machine");
     }
 
     #[tokio::test]

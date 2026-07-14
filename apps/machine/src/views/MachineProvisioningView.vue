@@ -94,7 +94,7 @@ async function loadWifiNetworks(): Promise<void> {
 
 async function submitNetworkSettings(): Promise<void> {
   if (
-    currentTask.value?.intent !== "configure_network" ||
+    currentTask.value?.kind !== "configure_network" ||
     !networkForm.ssid.trim() ||
     submitting.value
   ) {
@@ -117,6 +117,31 @@ async function submitNetworkSettings(): Promise<void> {
     statusMessage.value = "网络设置提交失败，请检查现场网络后重试";
   } finally {
     networkForm.password = "";
+    submitting.value = false;
+  }
+}
+
+async function probeExistingNetwork(): Promise<void> {
+  const task = currentTask.value;
+  if (
+    !task ||
+    task.kind !== "configure_network" ||
+    task.projection.type !== "network_settings" ||
+    !task.projection.supportsExistingNetworkProbe ||
+    submitting.value
+  ) {
+    return;
+  }
+  submitting.value = true;
+  try {
+    networkResult.value = networkSettingsResponseSchema.parse(
+      await daemonClient.executeBringUpTask(task, { type: "probe_network" }),
+    );
+    statusMessage.value = networkResult.value.operatorGuidance;
+    await refreshBringUp();
+  } catch {
+    statusMessage.value = "现有网络尚未验证可访问平台，请检查网络后重试";
+  } finally {
     submitting.value = false;
   }
 }
@@ -175,7 +200,7 @@ async function submitCurrentTask(): Promise<void> {
 
 onMounted(async () => {
   await refreshBringUp();
-  if (currentTask.value?.intent === "configure_network") {
+  if (currentTask.value?.kind === "configure_network") {
     await loadWifiNetworks();
   }
 });
@@ -197,7 +222,7 @@ onMounted(async () => {
           <p>当前任务：{{ currentTaskLabel }}</p>
 
           <form
-            v-if="currentTask?.intent === 'configure_network'"
+            v-if="currentTask?.kind === 'configure_network'"
             @submit.prevent="submitNetworkSettings"
           >
             <label>
@@ -223,6 +248,18 @@ onMounted(async () => {
             </label>
             <button class="kiosk-touch-target primary-action" type="submit">
               {{ submitting ? "正在提交网络" : "提交网络设置" }}
+            </button>
+            <button
+              v-if="
+                currentTask.projection.type === 'network_settings' &&
+                currentTask.projection.supportsExistingNetworkProbe
+              "
+              class="kiosk-touch-target secondary-action"
+              type="button"
+              :disabled="submitting"
+              @click="probeExistingNetwork"
+            >
+              验证现有网络
             </button>
           </form>
 

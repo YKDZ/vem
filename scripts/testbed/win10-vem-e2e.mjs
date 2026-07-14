@@ -4489,6 +4489,11 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     apiBaseUrl = ${psString(platform.apiBaseUrl)}
     mqttUrl = ${psString(platform.mqttUrl)}
     preClaimConfigApplied = $false
+    networkProbe = [ordered]@{
+      endpoint = $null
+      status = "not_attempted"
+      httpStatus = $null
+    }
     claimStatus = "not_attempted"
     claimFailureCode = $null
     claimHttpStatus = $null
@@ -4544,17 +4549,55 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
     $currentTask = $bringUp.currentTask
     if ($null -eq $currentTask) {
-      throw "daemon did not project a current Factory claim task"
+      throw "daemon did not project a current Factory network task"
     }
-    if ([string]$currentTask.kind -ne "claim_machine" -or [string]$currentTask.intent -ne "claim_machine") {
-      throw "daemon projected unexpected Factory claim task: $($currentTask.kind)/$($currentTask.intent)"
+    if ([string]$currentTask.kind -ne "configure_network" -or [string]$currentTask.intent -ne "refresh_network") {
+      throw "daemon projected unexpected Factory network task: $($currentTask.kind)/$($currentTask.intent)"
     }
     if (
       [int]$currentTask.contractVersion -ne 1 -or
       [string]::IsNullOrWhiteSpace([string]$currentTask.taskId) -or
       [uint64]$currentTask.taskVersion -lt 1
     ) {
-      throw "daemon projected an invalid Factory claim task cursor"
+      throw "daemon projected an invalid Factory network task cursor"
+    }
+    $probePayload = [ordered]@{
+      contractVersion = [int]$currentTask.contractVersion
+      taskId = [string]$currentTask.taskId
+      taskVersion = [uint64]$currentTask.taskVersion
+      kind = [string]$currentTask.kind
+      intent = [string]$currentTask.intent
+      mutation = [ordered]@{ type = "probe_network" }
+    }
+    $evidence.networkProbe.endpoint = "$baseUrl/v1/bring-up/tasks/execute"
+    try {
+      $probeResult = Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $probePayload
+      if ([string]$probeResult.status -ne "connected") {
+        throw "daemon did not verify existing local network and Platform endpoint"
+      }
+      $evidence.networkProbe.status = "connected"
+      $evidence.networkProbe.httpStatus = 200
+    } catch {
+      $probeError = Get-HttpErrorInfo $_
+      $evidence.networkProbe.status = "failed"
+      $evidence.networkProbe.httpStatus = $probeError.statusCode
+      throw "daemon IPC existing-network probe failed"
+    }
+
+    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
+    $currentTask = $bringUp.currentTask
+    if ($null -eq $currentTask) {
+      throw "daemon did not project a Factory claim task after network probe"
+    }
+    if ([string]$currentTask.kind -ne "claim_machine" -or [string]$currentTask.intent -ne "claim_machine") {
+      throw "daemon projected unexpected Factory claim task after network probe: $($currentTask.kind)/$($currentTask.intent)"
+    }
+    if (
+      [int]$currentTask.contractVersion -ne 1 -or
+      [string]::IsNullOrWhiteSpace([string]$currentTask.taskId) -or
+      [uint64]$currentTask.taskVersion -lt 1
+    ) {
+      throw "daemon projected an invalid Factory claim task cursor after network probe"
     }
     $claimPayload = [ordered]@{
       contractVersion = [int]$currentTask.contractVersion

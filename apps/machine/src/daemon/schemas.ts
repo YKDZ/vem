@@ -179,6 +179,7 @@ const bringUpTaskSchema = z.object({
   ]),
   intent: z.enum([
     "configure_network",
+    "refresh_network",
     "claim_machine",
     "reclaim_machine",
     "refresh_profile",
@@ -191,6 +192,7 @@ const bringUpTaskSchema = z.object({
     z.object({
       type: z.literal("network_settings"),
       supportsHiddenNetwork: z.boolean(),
+      supportsExistingNetworkProbe: z.boolean(),
     }),
     z.object({
       type: z.literal("claim_code"),

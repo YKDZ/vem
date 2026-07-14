@@ -30,15 +30,16 @@ async fn execute_network_task(
     password: &str,
     hidden: bool,
 ) -> reqwest::Response {
+    let task = daemon.get_json("/v1/bring-up").await;
     reqwest::Client::new()
         .post(format!("{base}/v1/bring-up/tasks/execute"))
         .header("Authorization", daemon.bearer())
         .json(&serde_json::json!({
-            "contractVersion": 1,
-            "taskId": "bring_up.configure_network",
-            "taskVersion": 1,
-            "kind": "configure_network",
-            "intent": "configure_network",
+            "contractVersion": task["currentTask"]["contractVersion"],
+            "taskId": task["currentTask"]["taskId"],
+            "taskVersion": task["currentTask"]["taskVersion"],
+            "kind": task["currentTask"]["kind"],
+            "intent": task["currentTask"]["intent"],
             "mutation": {
                 "type": "configure_network",
                 "ssid": ssid,
@@ -49,6 +50,27 @@ async fn execute_network_task(
         .send()
         .await
         .expect("network settings response")
+}
+
+async fn execute_existing_network_probe_task(
+    daemon: &DaemonHarness,
+    base: &str,
+) -> reqwest::Response {
+    let task = daemon.get_json("/v1/bring-up").await;
+    reqwest::Client::new()
+        .post(format!("{base}/v1/bring-up/tasks/execute"))
+        .header("Authorization", daemon.bearer())
+        .json(&serde_json::json!({
+            "contractVersion": task["currentTask"]["contractVersion"],
+            "taskId": task["currentTask"]["taskId"],
+            "taskVersion": task["currentTask"]["taskVersion"],
+            "kind": task["currentTask"]["kind"],
+            "intent": task["currentTask"]["intent"],
+            "mutation": { "type": "probe_network" }
+        }))
+        .send()
+        .await
+        .expect("existing network probe response")
 }
 
 #[tokio::test]
@@ -163,6 +185,42 @@ async fn bring_up_snapshot_exposes_safe_network_required_state() {
     assert!(!text.contains("mqttSigningSecret"));
     assert!(!text.contains("mqttPassword"));
 
+    daemon.terminate().await;
+}
+
+#[tokio::test]
+async fn preclaim_endpoint_configuration_requires_daemon_probe_before_claim_cursor() {
+    let mut config = configured_daemon();
+    config["machineCode"] = serde_json::Value::Null;
+    let mut daemon = DaemonHarness::start(
+        config,
+        &[
+            ("VEM_NETWORK_ADAPTER", "fake"),
+            ("VEM_FAKE_NETWORK_OUTCOME", "success"),
+        ],
+    )
+    .await
+    .expect("start");
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+
+    let before = daemon.get_json("/v1/bring-up").await;
+    assert_eq!(before["state"], "network_required");
+    assert_eq!(before["currentTask"]["kind"], "configure_network");
+    assert_eq!(before["currentTask"]["intent"], "refresh_network");
+
+    let response = execute_existing_network_probe_task(&daemon, base).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let probe: serde_json::Value = response.json().await.expect("probe json");
+    assert_eq!(probe["status"], "connected");
+    assert!(probe["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .any(|item| item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+
+    let after = daemon.get_json("/v1/bring-up").await;
+    assert_eq!(after["state"], "claim_required");
+    assert_eq!(after["currentTask"]["kind"], "claim_machine");
     daemon.terminate().await;
 }
 

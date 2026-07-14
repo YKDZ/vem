@@ -1682,6 +1682,9 @@ describe("win10-vem-e2e reset planning", () => {
       script,
       /Invoke-IpcJson "GET" "\$baseUrl\/v1\/bring-up" \$headers/,
     );
+    assert.match(script, /mutation = \[ordered\]@\{ type = "probe_network" \}/);
+    assert.match(script, /networkProbe = \[ordered\]@\{/);
+    assert.match(script, /daemon IPC existing-network probe failed/);
     assert.match(script, /taskId = \[string\]\$currentTask\.taskId/);
     assert.match(script, /taskVersion = \[uint64\]\$currentTask\.taskVersion/);
     assert.match(script, /kind = \[string\]\$currentTask\.kind/);
@@ -1710,7 +1713,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /vms_local/);
   });
 
-  it("waits for daemon IPC before the first provisioning config read and claim", () => {
+  it("uses the daemon cursor to probe the existing network before obtaining the claim cursor", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
@@ -1733,8 +1736,16 @@ describe("win10-vem-e2e reset planning", () => {
       'Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers',
       provisioningStart,
     );
+    const networkProbe = script.indexOf(
+      'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $probePayload',
+      provisioningStart,
+    );
+    const claimTaskSnapshot = script.indexOf(
+      'Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers',
+      taskSnapshot + 1,
+    );
     const claim = script.indexOf(
-      'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute"',
+      'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $claimPayload',
       provisioningStart,
     );
     const restart = script.indexOf(
@@ -1758,7 +1769,9 @@ describe("win10-vem-e2e reset planning", () => {
     assert.ok(daemonIpcWait >= provisioningStart);
     assert.ok(daemonIpcWait < configRead);
     assert.ok(configRead < taskSnapshot);
-    assert.ok(taskSnapshot < claim);
+    assert.ok(taskSnapshot < networkProbe);
+    assert.ok(networkProbe < claimTaskSnapshot);
+    assert.ok(claimTaskSnapshot < claim);
     assert.ok(claim < claimHttpCatch);
     assert.ok(claimHttpCatch < restart);
     assert.match(script, /restartAttempted = \$true/);

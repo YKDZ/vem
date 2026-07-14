@@ -48,6 +48,7 @@ pub enum BringUpTaskKind {
 #[serde(rename_all = "snake_case")]
 pub enum BringUpTaskIntent {
     ConfigureNetwork,
+    RefreshNetwork,
     ClaimMachine,
     ReclaimMachine,
     RefreshProfile,
@@ -78,12 +79,23 @@ pub struct BringUpTask {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BringUpTaskProjection {
-    NetworkSettings { supports_hidden_network: bool },
-    ClaimCode { rotate_maintenance_identity: bool },
+    NetworkSettings {
+        supports_hidden_network: bool,
+        supports_existing_network_probe: bool,
+    },
+    ClaimCode {
+        rotate_maintenance_identity: bool,
+    },
     ProfileSync,
-    TopologyResolution { component: String },
-    HardwareAcceptance { component: String },
-    StockAttestation { entry_mode: String },
+    TopologyResolution {
+        component: String,
+    },
+    HardwareAcceptance {
+        component: String,
+    },
+    StockAttestation {
+        entry_mode: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,10 +207,6 @@ pub struct BringUpEvaluationInput {
 
 pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
     let hardware_mode = input.hardware_mode.clone();
-    let public = input.config.as_ref().map(|config| &config.public);
-    let network_configured = public
-        .map(|public| !public.api_base_url.trim().is_empty())
-        .unwrap_or(false);
     let provisioned = input
         .config
         .as_ref()
@@ -228,15 +236,11 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
         ));
     }
 
-    let state = if !input.platform_reachable || (input.config.is_some() && !network_configured) {
+    let state = if !input.platform_reachable {
         blocking_reasons.push(reason(
             "NETWORK_REQUIRED",
             "platform",
-            if network_configured {
-                "platform endpoint is not reachable"
-            } else {
-                "platform endpoint is not configured"
-            },
+            "local network and pre-claim platform endpoint have not been verified",
         ));
         BringUpState::NetworkRequired
     } else if input.config.is_none() {
@@ -366,7 +370,7 @@ fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringU
     let (kind, intent) = match state {
         BringUpState::NetworkRequired => (
             BringUpTaskKind::ConfigureNetwork,
-            BringUpTaskIntent::ConfigureNetwork,
+            BringUpTaskIntent::RefreshNetwork,
         ),
         BringUpState::PlatformReachable | BringUpState::ProfileApplied => (
             BringUpTaskKind::SyncProfile,
@@ -405,7 +409,7 @@ fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringU
     Some(BringUpTask {
         contract_version: 1,
         task_id: task_id(&kind).to_string(),
-        task_version: 1,
+        task_version: task_version(&kind),
         kind,
         intent,
         rotate_maintenance_identity: reclaim_required
@@ -415,6 +419,15 @@ fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringU
             ),
         projection,
     })
+}
+
+fn task_version(kind: &BringUpTaskKind) -> u64 {
+    match kind {
+        // v2 adds the password-free existing-network probe. Clients must
+        // obtain this cursor rather than infer readiness from apiBaseUrl.
+        BringUpTaskKind::ConfigureNetwork => 2,
+        _ => 1,
+    }
 }
 
 fn task_id(kind: &BringUpTaskKind) -> &'static str {
@@ -434,6 +447,7 @@ fn task_projection(kind: &BringUpTaskKind, reclaim_required: bool) -> BringUpTas
     match kind {
         BringUpTaskKind::ConfigureNetwork => BringUpTaskProjection::NetworkSettings {
             supports_hidden_network: true,
+            supports_existing_network_probe: true,
         },
         BringUpTaskKind::ClaimMachine | BringUpTaskKind::ReclaimMachine => {
             BringUpTaskProjection::ClaimCode {
@@ -649,12 +663,13 @@ mod tests {
             Some(BringUpTask {
                 contract_version: 1,
                 task_id: "bring_up.configure_network".to_string(),
-                task_version: 1,
+                task_version: 2,
                 kind: BringUpTaskKind::ConfigureNetwork,
-                intent: BringUpTaskIntent::ConfigureNetwork,
+                intent: BringUpTaskIntent::RefreshNetwork,
                 rotate_maintenance_identity: false,
                 projection: BringUpTaskProjection::NetworkSettings {
                     supports_hidden_network: true,
+                    supports_existing_network_probe: true,
                 },
             })
         );

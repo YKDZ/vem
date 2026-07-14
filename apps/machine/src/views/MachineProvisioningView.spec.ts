@@ -57,9 +57,13 @@ function snapshot(overrides = {}) {
     currentTask: {
       contractVersion: 1,
       kind: "configure_network",
-      intent: "configure_network",
+      intent: "refresh_network",
       rotateMaintenanceIdentity: false,
-      projection: { type: "network_settings", supportsHiddenNetwork: true },
+      projection: {
+        type: "network_settings",
+        supportsHiddenNetwork: true,
+        supportsExistingNetworkProbe: true,
+      },
     },
     progress: [
       { kind: "network", status: "current", evidence: "volatile" },
@@ -173,7 +177,7 @@ describe("Bring-Up Console", () => {
     buttonByText(host, "提交网络设置").click();
     await vi.waitFor(() => {
       expect(executeBringUpTaskMock).toHaveBeenCalledWith(
-        expect.objectContaining({ intent: "configure_network" }),
+        expect.objectContaining({ intent: "refresh_network" }),
         {
           type: "configure_network",
           ssid: "Store-WiFi",
@@ -186,6 +190,30 @@ describe("Bring-Up Console", () => {
       expect(password.value).toBe("");
     });
     expect(host.innerHTML).not.toContain("secret-pass");
+  });
+
+  it("probes an existing wired or connected Wi-Fi network through the daemon cursor", async () => {
+    const host = await mountView();
+    executeBringUpTaskMock.mockResolvedValueOnce({
+      status: "connected",
+      ssid: "existing-network",
+      hidden: false,
+      diagnostics: [],
+      operatorGuidance: "已验证现有网络",
+      updatedAt: "2026-07-04T00:00:00Z",
+    });
+
+    buttonByText(host, "验证现有网络").click();
+
+    await vi.waitFor(() => {
+      expect(executeBringUpTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "configure_network",
+          intent: "refresh_network",
+        }),
+        { type: "probe_network" },
+      );
+    });
   });
 
   it("renders only the claim form when the daemon advances to machine claim", async () => {

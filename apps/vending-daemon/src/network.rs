@@ -90,6 +90,99 @@ pub trait NetworkAdapter: Send + Sync {
 
     async fn apply_wifi_settings(&self, request: NetworkSettingsRequest)
         -> NetworkSettingsResponse;
+
+    /// Checks the connection Windows already has (wired or an existing WLAN
+    /// profile) against the pre-claim Platform endpoint. This deliberately
+    /// does not accept a Wi-Fi password: endpoint configuration is not
+    /// connectivity evidence, and an already-connected machine must be able
+    /// to progress without creating a new WLAN profile.
+    async fn probe_preclaim_platform_endpoint(
+        &self,
+        api_base_url: &str,
+    ) -> NetworkSettingsResponse {
+        probe_preclaim_platform_endpoint(api_base_url).await
+    }
+}
+
+async fn probe_preclaim_platform_endpoint(api_base_url: &str) -> NetworkSettingsResponse {
+    let endpoint = format!("{}/health", api_base_url.trim().trim_end_matches('/'));
+    if api_base_url.trim().is_empty() {
+        return failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_ENDPOINT_MISSING",
+            "Platform endpoint is not configured for the pre-claim network probe",
+        );
+    }
+
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return failed_preclaim_probe_response(
+                "PRECLAIM_NETWORK_PROBE_UNAVAILABLE",
+                "Local network probe could not start",
+            );
+        }
+    };
+
+    match client.get(endpoint).send().await {
+        Ok(response) if response.status().is_success() => NetworkSettingsResponse {
+            status: NetworkSetupStatus::Connected,
+            ssid: "existing-network".to_string(),
+            hidden: false,
+            diagnostics: vec![
+                diagnostic(
+                    "local_network",
+                    "ok",
+                    "LOCAL_NETWORK_ROUTE_READY",
+                    "An existing local network route reached the Platform endpoint",
+                ),
+                diagnostic(
+                    "provisioning_endpoint",
+                    "ok",
+                    "PROVISIONING_ENDPOINT_REACHABLE",
+                    "Pre-claim Platform endpoint is reachable",
+                ),
+            ],
+            operator_guidance: "已验证现有有线或已连接无线网络可访问平台，可以继续领取机器。"
+                .to_string(),
+            updated_at: crate::state::store::now_iso(),
+        },
+        Ok(response) => failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+            &format!(
+                "Pre-claim Platform endpoint returned HTTP {}",
+                response.status().as_u16()
+            ),
+        ),
+        Err(_) => failed_preclaim_probe_response(
+            "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+            "Existing local network could not reach the pre-claim Platform endpoint",
+        ),
+    }
+}
+
+fn failed_preclaim_probe_response(code: &str, message: &str) -> NetworkSettingsResponse {
+    NetworkSettingsResponse {
+        status: NetworkSetupStatus::Failed,
+        ssid: "existing-network".to_string(),
+        hidden: false,
+        diagnostics: vec![
+            diagnostic(
+                "local_network",
+                "warn",
+                "LOCAL_NETWORK_OR_PLATFORM_UNVERIFIED",
+                "No verified local route to the pre-claim Platform endpoint",
+            ),
+            diagnostic("provisioning_endpoint", "error", code, message),
+        ],
+        operator_guidance:
+            "尚未验证现有有线或已连接无线网络可访问平台；请检查现场网络，或配置 Wi-Fi 后重试。"
+                .to_string(),
+        updated_at: crate::state::store::now_iso(),
+    }
 }
 
 pub fn adapter_from_env() -> Arc<dyn NetworkAdapter> {
@@ -288,6 +381,18 @@ impl NetworkAdapter for FakeNetworkAdapter {
             operator_guidance: guidance,
             updated_at: crate::state::store::now_iso(),
         }
+    }
+
+    async fn probe_preclaim_platform_endpoint(
+        &self,
+        _api_base_url: &str,
+    ) -> NetworkSettingsResponse {
+        self.apply_wifi_settings(NetworkSettingsRequest {
+            ssid: "existing-network".to_string(),
+            password: "test-only-network-probe".to_string(),
+            hidden: false,
+        })
+        .await
     }
 }
 
@@ -842,6 +947,31 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    #[tokio::test]
+    async fn existing_network_probe_requires_a_real_preclaim_platform_health_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let response = probe_preclaim_platform_endpoint(&format!("{}/api", server.uri())).await;
+
+        assert_eq!(response.status, NetworkSetupStatus::Connected);
+        assert!(response.diagnostics.iter().any(|item| {
+            item.component == "local_network" && item.code == "LOCAL_NETWORK_ROUTE_READY"
+        }));
+        assert!(response.diagnostics.iter().any(|item| {
+            item.component == "provisioning_endpoint"
+                && item.code == "PROVISIONING_ENDPOINT_REACHABLE"
+        }));
+    }
 
     #[derive(Clone)]
     struct FakeWlanCommandRunner {
