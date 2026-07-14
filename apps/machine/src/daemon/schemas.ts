@@ -271,6 +271,21 @@ const networkDiagnosticSchema = z.object({
   level: z.string(),
   code: z.string(),
   message: z.string(),
+  evidence: z
+    .object({
+      source: z.enum([
+        "local_adapter",
+        "local_address",
+        "local_default_route",
+        "platform_api",
+        "mqtt_broker",
+      ]),
+      status: z.enum(["ready", "failed", "pending", "not_configured"]),
+      reasonCode: z.string(),
+      reason: z.string(),
+      recoveryAction: z.string(),
+    })
+    .optional(),
 });
 
 export const networkSettingsResponseSchema = z.object({

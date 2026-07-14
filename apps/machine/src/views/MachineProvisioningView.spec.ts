@@ -230,7 +230,10 @@ describe("Bring-Up Console", () => {
     password.value = "replacement-pass";
     password.dispatchEvent(new Event("input"));
     await nextTick();
-    executeBringUpTaskMock.mockResolvedValueOnce({
+    executeBringUpTaskMock.mockRejectedValueOnce(
+      Object.assign(new DaemonUnavailableErrorMock("network rejected"), {
+        statusCode: 422,
+        responseBody: JSON.stringify({
       status: "failed",
       ssid: "Store-WiFi",
       hidden: false,
@@ -256,7 +259,9 @@ describe("Bring-Up Console", () => {
       ],
       operatorGuidance: "平台不可达，请检查平台服务。",
       updatedAt: "2026-07-04T00:01:00Z",
-    });
+        }),
+      }),
+    );
 
     buttonByText(host, "提交网络设置").click();
 

@@ -35,6 +35,34 @@ const currentTaskLabel = computed(() =>
 );
 const progress = computed(() => bringUp.value?.progress ?? []);
 
+function rejectedNetworkResult(error: unknown): NetworkSettingsResponse | null {
+  if (!(error instanceof DaemonUnavailableError) || !error.responseBody) {
+    return null;
+  }
+  try {
+    const result = networkSettingsResponseSchema.safeParse(
+      JSON.parse(error.responseBody),
+    );
+    if (
+      !result.success ||
+      (result.data.status !== "failed" && result.data.status !== "unsupported")
+    ) {
+      return null;
+    }
+    return result.data;
+  } catch {
+    return null;
+  }
+}
+
+function showRejectedNetworkResult(error: unknown): boolean {
+  const result = rejectedNetworkResult(error);
+  if (!result) return false;
+  networkResult.value = result;
+  statusMessage.value = result.operatorGuidance;
+  return true;
+}
+
 function taskLabel(
   kind: NonNullable<BringUpSnapshot["currentTask"]>["kind"],
 ): string {
@@ -113,8 +141,10 @@ async function submitNetworkSettings(): Promise<void> {
     );
     statusMessage.value = networkResult.value.operatorGuidance;
     await refreshBringUp();
-  } catch {
-    statusMessage.value = "网络设置提交失败，请检查现场网络后重试";
+  } catch (error) {
+    if (!showRejectedNetworkResult(error)) {
+      statusMessage.value = "网络设置提交失败，请检查现场网络后重试";
+    }
   } finally {
     networkForm.password = "";
     submitting.value = false;
@@ -139,8 +169,10 @@ async function probeExistingNetwork(): Promise<void> {
     );
     statusMessage.value = networkResult.value.operatorGuidance;
     await refreshBringUp();
-  } catch {
-    statusMessage.value = "现有网络尚未验证可访问平台，请检查网络后重试";
+  } catch (error) {
+    if (!showRejectedNetworkResult(error)) {
+      statusMessage.value = "现有网络尚未验证可访问平台，请检查网络后重试";
+    }
   } finally {
     submitting.value = false;
   }
@@ -306,9 +338,19 @@ onMounted(async () => {
               v-for="diagnostic in networkResult.diagnostics"
               :key="diagnostic.code"
             >
-              {{ diagnostic.component }} · {{ diagnostic.code }}：{{
-                diagnostic.message
-              }}
+              <template v-if="diagnostic.evidence">
+                {{ diagnostic.evidence.source }} ·
+                {{ diagnostic.evidence.status }} ·
+                {{ diagnostic.evidence.reasonCode }}：{{
+                  diagnostic.evidence.reason
+                }}
+                （处理：{{ diagnostic.evidence.recoveryAction }}）
+              </template>
+              <template v-else>
+                {{ diagnostic.component }} · {{ diagnostic.code }}：{{
+                  diagnostic.message
+                }}
+              </template>
             </li>
           </ul>
           <p v-if="statusMessage">{{ statusMessage }}</p>

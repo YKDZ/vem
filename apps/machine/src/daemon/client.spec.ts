@@ -478,6 +478,100 @@ describe("DaemonApiClient", () => {
     expect(JSON.stringify(result)).not.toContain(submittedPassword);
   });
 
+  it("preserves a rejected cursor network response instead of resolving a failed mock", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "failed",
+          ssid: "Store-WiFi",
+          hidden: false,
+          diagnostics: [
+            {
+              component: "local_default_route",
+              level: "error",
+              code: "LOCAL_DEFAULT_ROUTE_UNAVAILABLE",
+              message: "No default route on the selected Wi-Fi adapter",
+              evidence: {
+                source: "local_default_route",
+                status: "failed",
+                reasonCode: "LOCAL_DEFAULT_ROUTE_UNAVAILABLE",
+                reason: "No default route on the selected Wi-Fi adapter",
+                recoveryAction: "Check the DHCP gateway option.",
+              },
+            },
+            {
+              component: "provisioning_endpoint",
+              level: "error",
+              code: "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+              message: "Platform API unavailable",
+              evidence: {
+                source: "platform_api",
+                status: "failed",
+                reasonCode: "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+                reason: "Platform API unavailable",
+                recoveryAction: "Check Platform API availability.",
+              },
+            },
+            {
+              component: "mqtt",
+              level: "unknown",
+              code: "MQTT_BROKER_NOT_PROVISIONED",
+              message: "No machine MQTT broker before claim",
+              evidence: {
+                source: "mqtt_broker",
+                status: "not_configured",
+                reasonCode: "MQTT_BROKER_NOT_PROVISIONED",
+                reason: "No machine MQTT broker before claim",
+                recoveryAction: "Complete claim first.",
+              },
+            },
+          ],
+          operatorGuidance: "请检查本机路由和平台 API。",
+          updatedAt: "2026-07-04T00:00:00Z",
+        }),
+        { status: 422 },
+      ),
+    );
+
+    const result = await daemonClient.executeBringUpTask(
+      {
+        contractVersion: 1,
+        taskId: "configure-network",
+        taskVersion: 1,
+        kind: "configure_network",
+        intent: "refresh_network",
+        rotateMaintenanceIdentity: false,
+        projection: {
+          type: "network_settings",
+          supportsHiddenNetwork: true,
+          supportsExistingNetworkProbe: true,
+        },
+      },
+      { type: "probe_network" },
+    );
+
+    expect(result).toMatchObject({
+      status: "failed",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          evidence: expect.objectContaining({ source: "local_default_route" }),
+        }),
+        expect.objectContaining({
+          evidence: expect.objectContaining({ source: "platform_api" }),
+        }),
+        expect.objectContaining({
+          evidence: expect.objectContaining({ source: "mqtt_broker" }),
+        }),
+      ]),
+    });
+  });
+
   it("parses structured unsupported Protected Network Settings responses", async () => {
     const submittedPassword = ["guest", "secret"].join("-");
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({

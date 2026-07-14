@@ -193,17 +193,26 @@ export class DaemonApiClient {
     task: NonNullable<BringUpSnapshot["currentTask"]>,
     mutation: unknown,
   ): Promise<unknown> {
-    return this.request("/v1/bring-up/tasks/execute", {
-      method: "POST",
-      body: {
-        contractVersion: task.contractVersion,
-        taskId: task.taskId,
-        taskVersion: task.taskVersion,
-        kind: task.kind,
-        intent: task.intent,
-        mutation,
-      },
-    });
+    try {
+      return await this.request("/v1/bring-up/tasks/execute", {
+        method: "POST",
+        body: {
+          contractVersion: task.contractVersion,
+          taskId: task.taskId,
+          taskVersion: task.taskVersion,
+          kind: task.kind,
+          intent: task.intent,
+          mutation,
+        },
+      });
+    } catch (error: unknown) {
+      // The cursor uses 400/422 for a completed network attempt whose
+      // diagnostics are meaningful to the operator. Keep those typed facts
+      // instead of replacing them with a generic transport failure.
+      const structured = parseNetworkSettingsRejection(error);
+      if (structured) return structured;
+      throw error;
+    }
   }
 
   async applyNetworkSettings(
@@ -485,7 +494,7 @@ export class DaemonApiClient {
 
 export const daemonClient = new DaemonApiClient();
 
-function parseNetworkSettingsRejection(
+export function parseNetworkSettingsRejection(
   error: unknown,
 ): NetworkSettingsResponse | null {
   if (!(error instanceof DaemonUnavailableError)) return null;

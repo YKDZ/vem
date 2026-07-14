@@ -84,6 +84,12 @@ enum BringUpTaskMutation {
         ssid: String,
         password: String,
         hidden: bool,
+        /// The ordered first-run cursor intentionally does not require this
+        /// capability.  Keeping the field typed now makes a future protected
+        /// maintenance ConfigureNetwork action explicit rather than adding an
+        /// untyped side channel later.
+        #[serde(default, rename = "maintenanceAuthorization")]
+        maintenance_authorization: Option<MaintenanceAuthorizationContext>,
     },
     ProbeNetwork,
     ClaimMachine {
@@ -1222,18 +1228,25 @@ async fn execute_bring_up_task(
                 ssid,
                 password,
                 hidden,
+                maintenance_authorization,
             },
-        ) => apply_network_settings_mutation(
-            State(ctx.clone()),
-            headers,
-            Json(serde_json::json!({
-                "ssid": ssid,
-                "password": password,
-                "hidden": hidden,
-            })),
-        )
-        .await
-        .into_response(),
+        ) => {
+            // First-run network setup is deliberately automatic.  Preserve
+            // this typed field so a future maintenance-only route can require
+            // it without changing the cursor payload shape.
+            let _ = maintenance_authorization;
+            apply_network_settings_mutation(
+                State(ctx.clone()),
+                headers,
+                Json(serde_json::json!({
+                    "ssid": ssid,
+                    "password": password,
+                    "hidden": hidden,
+                })),
+            )
+            .await
+            .into_response()
+        }
         (crate::bring_up::BringUpTaskKind::ConfigureNetwork, BringUpTaskMutation::ProbeNetwork) => {
             probe_existing_network_mutation(&ctx).await.into_response()
         }
@@ -1327,10 +1340,34 @@ async fn probe_existing_network_mutation(ctx: &IpcContext) -> axum::response::Re
                 .into_response();
         }
     };
-    let response = ctx
+    let mut response = ctx
         .network_adapter
         .probe_preclaim_platform_endpoint(&api_base_url)
         .await;
+    let broker_is_provisioned = ctx
+        .config_store
+        .load_provisioning_profile_cache_summary()
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    let sync = ctx.ui.status_cache.sync.read().await;
+    // A fresh pre-claim probe has no per-machine broker. After claim, retain
+    // only the daemon's actual ConnAck state; never copy Platform /health's
+    // broker state into machine diagnostics.
+    response.diagnostics.retain(|diagnostic| {
+        diagnostic.evidence.as_ref().is_none_or(|evidence| {
+            evidence.source != crate::network::NetworkEvidenceSource::MqttBroker
+        })
+    });
+    response
+        .diagnostics
+        .push(crate::network::mqtt_connack_diagnostic(
+            broker_is_provisioned,
+            sync.mqtt_connected,
+            sync.last_error.as_deref(),
+        ));
+    drop(sync);
     let proven = network_reached_platform(&response);
     *ctx.ui.status_cache.network.write().await = Some(response.clone());
     (
@@ -1561,6 +1598,7 @@ fn invalid_network_settings_response(
             level: "error".to_string(),
             code: "NETWORK_SETTINGS_INVALID_PAYLOAD".to_string(),
             message: message.into(),
+            evidence: None,
         }],
         operator_guidance:
             "Wi-Fi 信息格式无效。请重新输入 1-32 字节 SSID 和 8-63 位 WPA/WPA2 密码。".to_string(),
@@ -1603,8 +1641,11 @@ fn sale_component_ready(snapshot: Option<&serde_json::Value>, component: &str) -
 fn network_reached_platform(network: &NetworkSettingsResponse) -> bool {
     matches!(network.status, NetworkSetupStatus::Connected)
         && network.diagnostics.iter().any(|item| {
-            item.component == "provisioning_endpoint"
-                && item.code == "PROVISIONING_ENDPOINT_REACHABLE"
+            item.evidence.as_ref().is_some_and(|evidence| {
+                evidence.source == crate::network::NetworkEvidenceSource::PlatformApi
+                    && evidence.status == crate::network::NetworkEvidenceStatus::Ready
+            }) || (item.component == "provisioning_endpoint"
+                && item.code == "PROVISIONING_ENDPOINT_REACHABLE")
         })
 }
 
@@ -4641,6 +4682,7 @@ mod tests {
                 level: "info".to_string(),
                 code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
                 message: "reachable".to_string(),
+                evidence: None,
             }],
             operator_guidance: "reachable".to_string(),
             updated_at: crate::state::store::now_iso(),
@@ -5022,6 +5064,7 @@ mod tests {
                     level: "ok".to_string(),
                     code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
                     message: "fixture endpoint reachable".to_string(),
+                    evidence: None,
                 }],
                 operator_guidance: "fixture endpoint reachable".to_string(),
                 updated_at: crate::state::store::now_iso(),
@@ -8972,13 +9015,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preclaim_network_probe_keeps_bring_up_network_required_when_platform_health_is_invalid(
-    ) {
+    async fn preclaim_network_probe_keeps_bring_up_network_required_when_platform_api_is_unhealthy()
+    {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/health"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "database": "ok",
+                "database": "unavailable",
                 "mqtt": "disconnected"
             })))
             .mount(&server)
@@ -9020,7 +9063,7 @@ mod tests {
             .as_array()
             .expect("diagnostics")
             .iter()
-            .any(|item| item["code"] == "PRECLAIM_PLATFORM_MQTT_UNAVAILABLE"));
+            .any(|item| item["code"] == "PRECLAIM_PLATFORM_DATABASE_UNHEALTHY"));
         assert!(!result["diagnostics"]
             .as_array()
             .expect("diagnostics")
@@ -9100,6 +9143,7 @@ mod tests {
                 level: "info".to_string(),
                 code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
                 message: "reachable".to_string(),
+                evidence: None,
             }],
             operator_guidance: "reachable".to_string(),
             updated_at: crate::state::store::now_iso(),
@@ -9264,6 +9308,7 @@ mod tests {
                 level: "info".to_string(),
                 code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
                 message: "reachable".to_string(),
+                evidence: None,
             }],
             operator_guidance: "reachable".to_string(),
             updated_at: crate::state::store::now_iso(),
@@ -9326,6 +9371,7 @@ mod tests {
                     level: "info".to_string(),
                     code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
                     message: "reachable".to_string(),
+                    evidence: None,
                 }],
                 operator_guidance: "reachable".to_string(),
                 updated_at: crate::state::store::now_iso(),
@@ -9378,6 +9424,7 @@ mod tests {
                 level: "info".to_string(),
                 code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
                 message: "reachable".to_string(),
+                evidence: None,
             }],
             operator_guidance: "reachable".to_string(),
             updated_at: crate::state::store::now_iso(),
@@ -9407,6 +9454,7 @@ mod tests {
                 level: "info".to_string(),
                 code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
                 message: "reachable".to_string(),
+                evidence: None,
             }],
             operator_guidance: "reachable".to_string(),
             updated_at: crate::state::store::now_iso(),
