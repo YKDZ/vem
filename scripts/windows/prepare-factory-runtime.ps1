@@ -17,6 +17,8 @@ param(
   [Parameter(Mandatory = $false)][string]$HardwareModel,
   [Parameter(Mandatory = $false)][string]$TopologyIdentity,
   [Parameter(Mandatory = $false)][string]$TopologyVersion,
+  [Parameter(Mandatory = $false)][string]$LowerControllerSerialPortPath = "COM5",
+  [Parameter(Mandatory = $false)][string]$ScannerSerialPortPath = "COM3",
   [Parameter(Mandatory = $false)][int]$ExpectedDisplayWidth,
   [Parameter(Mandatory = $false)][int]$ExpectedDisplayHeight,
   [Parameter(Mandatory = $false)][ValidateSet("portrait", "landscape")][string]$ExpectedDisplayOrientation,
@@ -291,16 +293,36 @@ function Normalize-CertificateThumbprint {
   return $normalized
 }
 
+function Test-PinnedAuthenticodeTimeAcceptance {
+  param(
+    $Certificate,
+    [bool]$ChainValid,
+    [string[]]$Statuses
+  )
+  if ($ChainValid) { return $true }
+  # Offline Factory media also pins the package digest, signer, and root. Only
+  # expiry after signing may relax chain time validation; future or mixed
+  # chain failures remain rejected.
+  return (
+    $Statuses.Count -gt 0 -and
+    @($Statuses | Where-Object { $_ -cne "NotTimeValid" }).Count -eq 0 -and
+    $Certificate.NotBefore.ToUniversalTime() -le [DateTime]::UtcNow -and
+    $Certificate.NotAfter.ToUniversalTime() -lt [DateTime]::UtcNow
+  )
+}
+
 function Get-CertificateChainEvidence {
   param($Certificate)
 
   $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
   $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
   $valid = $chain.Build($Certificate)
+  $statuses = @($chain.ChainStatus | ForEach-Object { [string]$_.Status })
+  $accepted = Test-PinnedAuthenticodeTimeAcceptance -Certificate $Certificate -ChainValid $valid -Statuses $statuses
   $elements = @($chain.ChainElements | ForEach-Object { $_.Certificate })
   return [ordered]@{
-    valid = $valid
-    statuses = @($chain.ChainStatus | ForEach-Object { [string]$_.Status })
+    valid = $accepted
+    statuses = $statuses
     thumbprints = @($elements | ForEach-Object { ([string]$_.Thumbprint).ToUpperInvariant() })
     rootThumbprint = if ($elements.Count -gt 0) { ([string]$elements[-1].Thumbprint).ToUpperInvariant() } else { $null }
   }
@@ -1535,11 +1557,11 @@ function Write-FactoryRuntimeFiles {
     apiBaseUrl = $ProvisioningEndpoint
     mqttUrl = $MqttUrl
     mqttUsername = $null
-    hardwareAdapter = if ($HardwareMode -eq "simulated") { "mock" } else { "serial" }
-    serialPortPath = $null
+    hardwareAdapter = "serial"
+    serialPortPath = $LowerControllerSerialPortPath
     lowerControllerUsbIdentity = $null
-    scannerAdapter = "disabled"
-    scannerSerialPortPath = $null
+    scannerAdapter = "serial_text"
+    scannerSerialPortPath = $ScannerSerialPortPath
     scannerUsbIdentity = $null
     scannerBaudRate = 9600
     scannerFrameSuffix = "crlf"

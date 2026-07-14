@@ -104,7 +104,7 @@ type RecoveryActionRow = {
   status: string;
 };
 type MachinePaymentSelection =
-  | { providerCode: "mock"; method: "mock" }
+  | { providerCode: "mock"; method: "mock" | "payment_code" }
   | {
       providerCode: "wechat_pay" | "alipay";
       method: "qr_code" | "payment_code";
@@ -236,7 +236,8 @@ function resolvePaymentSelection(
 
   if (
     input.paymentMethod === "payment_code" &&
-    (input.paymentProviderCode === "wechat_pay" ||
+    (input.paymentProviderCode === "mock" ||
+      input.paymentProviderCode === "wechat_pay" ||
       input.paymentProviderCode === "alipay")
   ) {
     return { providerCode: input.paymentProviderCode, method: "payment_code" };
@@ -375,7 +376,10 @@ export class OrdersService {
     let resolvedProviderConfig:
       | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
       | null = null;
-    if (paymentSelection.providerCode !== "mock") {
+    if (
+      paymentSelection.providerCode !== "mock" ||
+      paymentSelection.method === "payment_code"
+    ) {
       await this.paymentProviderConfigService.assertMachinePaymentChannelAvailable(
         {
           providerCode: paymentSelection.providerCode,
@@ -383,11 +387,13 @@ export class OrdersService {
           machineId: machine.id,
         },
       );
-      resolvedProviderConfig =
-        await this.paymentProviderConfigService.resolveForPayment({
-          providerCode: paymentSelection.providerCode,
-          machineId: machine.id,
-        });
+      if (paymentSelection.providerCode !== "mock") {
+        resolvedProviderConfig =
+          await this.paymentProviderConfigService.resolveForPayment({
+            providerCode: paymentSelection.providerCode,
+            machineId: machine.id,
+          });
+      }
     }
 
     const qrExpiresMinutes = resolvedProviderConfig
@@ -416,6 +422,7 @@ export class OrdersService {
       return {
         orderId: draft.orderId,
         orderNo: draft.orderNo,
+        paymentId: draft.paymentId,
         paymentNo: draft.paymentNo,
         paymentUrl: null,
         expiresAt: draft.expiresAt,
@@ -478,6 +485,7 @@ export class OrdersService {
     return {
       orderId: draft.orderId,
       orderNo: draft.orderNo,
+      paymentId: draft.paymentId,
       paymentNo: draft.paymentNo,
       paymentUrl:
         (intent.initialStatus ?? "pending") === "pending"
@@ -2252,6 +2260,7 @@ export class OrdersService {
 
     const [command] = await this.db
       .select({
+        commandId: vendingCommands.id,
         commandNo: vendingCommands.commandNo,
         status: vendingCommands.status,
         sentAt: vendingCommands.sentAt,
@@ -2328,6 +2337,7 @@ export class OrdersService {
       fulfillmentState: row.fulfillmentState,
       totalAmountCents: row.totalAmountCents,
       payment: {
+        paymentId: row.paymentId,
         paymentNo: row.paymentNo,
         method: row.paymentMethod,
         status: row.paymentStatus,
@@ -2378,6 +2388,7 @@ export class OrdersService {
         : null,
       vending: command
         ? {
+            commandId: command.commandId,
             commandNo: command.commandNo,
             status: command.status,
             sentAt: toIsoStringOrNull(command.sentAt),

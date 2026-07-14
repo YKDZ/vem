@@ -38,6 +38,7 @@ function dispensingTransaction(
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-DISPENSING-CUE-001",
     productSummary: null,
+    paymentId: null,
     paymentNo: "PAY-DISPENSING-CUE-001",
     paymentMethod: "payment_code",
     paymentProvider: "alipay",
@@ -46,6 +47,7 @@ function dispensingTransaction(
     orderStatus: "dispensing",
     totalAmountCents: 4900,
     vending: {
+      commandId: null,
       commandNo: "CMD-DISPENSING-CUE-001",
       status: "sent",
       lastError: null,
@@ -69,6 +71,7 @@ function awaitingPaymentTransaction(
     orderId: "550e8400-e29b-41d4-a716-446655440020",
     orderNo: "ORD-PAYMENT-RECOVERY-001",
     productSummary: null,
+    paymentId: null,
     paymentNo: "PAY-PAYMENT-RECOVERY-001",
     paymentMethod: "payment_code",
     paymentProvider: "alipay",
@@ -126,6 +129,7 @@ describe("DispensingView", () => {
       orderId: "550e8400-e29b-41d4-a716-446655440010",
       orderNo: "ORD-UNKNOWN-001",
       productSummary: null,
+      paymentId: null,
       paymentNo: "PAY-UNKNOWN-001",
       paymentMethod: "payment_code",
       paymentProvider: "alipay",
@@ -134,6 +138,7 @@ describe("DispensingView", () => {
       orderStatus: "manual_handling",
       totalAmountCents: 5900,
       vending: {
+        commandId: null,
         commandNo: "CMD-UNKNOWN",
         status: "result_unknown",
         lastError: "dispense result unknown after daemon restart",
@@ -168,6 +173,7 @@ describe("DispensingView", () => {
       orderStatus: "manual_handling",
       nextAction: "manual_handling",
       vending: {
+        commandId: null,
         commandNo: "CMD-UNKNOWN",
         status: "result_unknown",
         lastError: "dispense result unknown after daemon restart",
@@ -222,6 +228,7 @@ describe("DispensingView", () => {
   it("shows projected pickup reminder urgency and countdown without raw reminder message", async () => {
     const transaction = dispensingTransaction({
       vending: {
+        commandId: null,
         commandNo: "CMD-PICKUP-WARNING-001",
         status: "succeeded",
         lastError: null,
@@ -252,6 +259,7 @@ describe("DispensingView", () => {
   it("shows customer-visible dispensing error from projection without raw daemon error", async () => {
     const transaction = dispensingTransaction({
       vending: {
+        commandId: null,
         commandNo: "CMD-DISPENSE-FAILED-001",
         status: "failed",
         lastError: "lower controller reported motor jam on COM5",

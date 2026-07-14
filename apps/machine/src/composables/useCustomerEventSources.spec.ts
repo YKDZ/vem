@@ -78,6 +78,7 @@ function transactionSnapshot(
     orderId: "order-197",
     orderNo: "VEM-ORDER-197",
     productSummary: null,
+    paymentId: null,
     paymentNo: "PAY-197",
     paymentMethod: "qr_code",
     paymentProvider: "mock",
@@ -607,6 +608,7 @@ describe("customer event sources", () => {
         orderStatus: "dispensing",
         nextAction: "dispensing",
         vending: {
+          commandId: null,
           commandNo: "VEND-197",
           status: "sent",
           lastError: null,
@@ -633,6 +635,7 @@ describe("customer event sources", () => {
       orderStatus: "dispensing",
       nextAction: "dispensing",
       vending: {
+        commandId: null,
         commandNo: "VEND-197",
         status: "acknowledged",
         lastError: null,
@@ -690,6 +693,7 @@ describe("customer event sources", () => {
           orderStatus,
           nextAction,
           vending: {
+            commandId: null,
             commandNo: `VEND-197-RESTORED-${nextAction}`,
             status: vendingStatus,
             lastError: vendingStatus === "failed" ? "slot jammed" : null,
@@ -738,6 +742,7 @@ describe("customer event sources", () => {
         orderStatus,
         nextAction,
         vending: {
+          commandId: null,
           commandNo: `VEND-197-REFRESH-${nextAction}`,
           status: vendingStatus,
           lastError: vendingStatus === "failed" ? "slot jammed" : null,
@@ -771,6 +776,7 @@ describe("customer event sources", () => {
         orderStatus: "dispensing",
         nextAction: "dispensing",
         vending: {
+          commandId: null,
           commandNo: "VEND-197",
           status: "sent",
           lastError: null,
@@ -785,6 +791,7 @@ describe("customer event sources", () => {
         orderStatus: "dispensing",
         nextAction: "dispensing",
         vending: {
+          commandId: null,
           commandNo: "VEND-197",
           status: "acknowledged",
           lastError: null,
@@ -828,6 +835,7 @@ describe("customer event sources", () => {
         orderStatus: "dispensing",
         nextAction: "dispensing",
         vending: {
+          commandId: null,
           commandNo: "VEND-197",
           status: "sent",
           lastError: null,
@@ -865,6 +873,7 @@ describe("customer event sources", () => {
         orderStatus: "dispensing",
         nextAction: "dispensing",
         vending: {
+          commandId: null,
           commandNo: "VEND-197",
           status: "acknowledged",
           lastError: null,
@@ -885,6 +894,7 @@ describe("customer event sources", () => {
         orderStatus: "dispensing",
         nextAction: "dispensing",
         vending: {
+          commandId: null,
           commandNo: "VEND-197",
           status: "acknowledged",
           lastError: null,
@@ -905,6 +915,7 @@ describe("customer event sources", () => {
         orderStatus: "dispensing",
         nextAction: "dispensing",
         vending: {
+          commandId: null,
           commandNo: "VEND-197",
           status: "acknowledged",
           lastError: null,
@@ -925,6 +936,7 @@ describe("customer event sources", () => {
         orderStatus: "dispensing",
         nextAction: "dispensing",
         vending: {
+          commandId: null,
           commandNo: "VEND-197",
           status: "acknowledged",
           lastError: null,
@@ -1015,6 +1027,7 @@ describe("customer event sources", () => {
           orderStatus,
           nextAction,
           vending: {
+            commandId: null,
             commandNo: `VEND-197-${nextAction}`,
             status: vendingStatus,
             lastError: vendingStatus === "failed" ? "slot jammed" : null,
@@ -1075,6 +1088,7 @@ describe("customer event sources", () => {
           orderStatus: "fulfilled",
           nextAction: "success",
           vending: {
+            commandId: null,
             commandNo: `VEND-${orderNo}`,
             status: "succeeded",
             lastError: null,

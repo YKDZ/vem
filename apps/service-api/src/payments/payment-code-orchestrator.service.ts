@@ -10,6 +10,7 @@ import type {
   PaymentProviderRuntimeConfig,
 } from "./payment-provider.interface";
 
+import { AppConfigService } from "../config/app-config.service";
 import {
   PaymentCodeAttemptsService,
   type PaymentCodeAttemptRow,
@@ -19,10 +20,14 @@ import { PaymentProviderRegistry } from "./payment-provider.registry";
 import { buildStoredEventPayload } from "./payment-redaction.util";
 import { PaymentsService } from "./payments.service";
 
-function assertRealPaymentCodeProvider(
+function assertPaymentCodeProvider(
   providerCode: string,
-): asserts providerCode is "alipay" | "wechat_pay" {
-  if (providerCode !== "alipay" && providerCode !== "wechat_pay") {
+): asserts providerCode is "alipay" | "wechat_pay" | "mock" {
+  if (
+    providerCode !== "alipay" &&
+    providerCode !== "wechat_pay" &&
+    providerCode !== "mock"
+  ) {
     throw new ConflictException(
       `Payment provider ${providerCode} does not support payment_code`,
     );
@@ -65,6 +70,7 @@ export class PaymentCodeOrchestratorService {
     private readonly registry: PaymentProviderRegistry,
     private readonly configService: PaymentProviderConfigService,
     private readonly paymentsService: PaymentsService,
+    private readonly appConfig: AppConfigService,
   ) {}
 
   async submit(
@@ -80,26 +86,37 @@ export class PaymentCodeOrchestratorService {
       idempotencyKey: input.idempotencyKey,
       source: input.source,
       scannerHealthJson: input.scannerHealth ?? null,
+      mockPaymentEnabled: this.appConfig.paymentMockEnabled,
     });
 
     if (replayed) {
       return this.toSubmitResponse(input.orderNo, payment.paymentNo, attempt);
     }
 
-    assertRealPaymentCodeProvider(payment.providerCode);
-    await this.configService.assertMachinePaymentChannelAvailable({
-      providerCode: payment.providerCode,
-      method: "payment_code",
-      machineId: payment.machineId,
-    });
+    assertPaymentCodeProvider(payment.providerCode);
+    if (payment.providerCode !== "mock")
+      await this.configService.assertMachinePaymentChannelAvailable({
+        providerCode: payment.providerCode,
+        method: "payment_code",
+        machineId: payment.machineId,
+      });
 
     const provider = this.registry.getPaymentCodeProvider(payment.providerCode);
-    const config = await this.configService.resolveForExistingPayment({
-      providerCode: payment.providerCode,
-      providerConfigId: payment.providerConfigId,
-      machineId: payment.machineId,
-      providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
-    });
+    const config =
+      payment.providerCode === "mock"
+        ? {
+            providerCode: "mock",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }
+        : await this.configService.resolveForExistingPayment({
+            providerCode: payment.providerCode,
+            providerConfigId: payment.providerConfigId,
+            machineId: payment.machineId,
+            providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
+          });
 
     await this.attempts.markStatus(attempt.id, "submitting", {
       submittedAt: new Date(),

@@ -87,6 +87,7 @@ export const simulatedHardwareSaleFlowFactsSchema = z.strictObject({
     orderStatus: z.string().min(1),
     paymentMethod: z.string().min(1),
     paymentProviderCode: z.string().min(1).nullable(),
+    paymentId: z.string().min(1).nullable(),
     paymentNo: z.string().min(1).nullable(),
     paymentStatus: z.string().min(1),
     paymentSucceeded: z.boolean(),
@@ -101,6 +102,16 @@ export const simulatedHardwareSaleFlowFactsSchema = z.strictObject({
     paymentStatus: z.string().min(1),
     fulfillmentStatus: z.string().min(1),
     stockMovementAccepted: z.boolean(),
+    postSaleDispenseMovement: z.strictObject({
+      movementId: z.string().min(1).nullable(),
+      orderId: z.string().min(1).nullable(),
+      vendingCommandId: z.string().min(1).nullable(),
+      quantity: z.int().positive().nullable(),
+      beforeQuantity: z.int().nonnegative().nullable(),
+      afterQuantity: z.int().nonnegative().nullable(),
+      deltaQuantity: z.int().negative().nullable(),
+      status: z.enum(["accepted", "missing", "rejected"]),
+    }),
   }),
 });
 
@@ -290,10 +301,11 @@ export function classifySimulatedHardwareSaleFlowReport(
     facts.sale.orderId === null ||
     facts.sale.orderNo === null ||
     facts.sale.orderStatus !== "fulfilled" ||
-    facts.sale.paymentMethod !== "mock" ||
+    facts.sale.paymentMethod !== "payment_code" ||
     facts.sale.paymentProviderCode !== "mock" ||
+    facts.sale.paymentId === null ||
     facts.sale.paymentNo === null ||
-    facts.sale.paymentStatus !== "paid" ||
+    facts.sale.paymentStatus !== "succeeded" ||
     !facts.sale.paymentSucceeded ||
     facts.sale.vendingCommandId === null ||
     !facts.sale.dispenseSimulated ||
@@ -307,13 +319,26 @@ export function classifySimulatedHardwareSaleFlowReport(
     );
   }
   if (
-    facts.platformState.paymentStatus !== "paid" ||
+    facts.platformState.paymentStatus !== "succeeded" ||
     facts.platformState.fulfillmentStatus !== "dispensed" ||
-    !facts.platformState.stockMovementAccepted
+    !facts.platformState.stockMovementAccepted ||
+    facts.platformState.postSaleDispenseMovement.status !== "accepted" ||
+    facts.platformState.postSaleDispenseMovement.movementId === null ||
+    facts.platformState.postSaleDispenseMovement.orderId !==
+      facts.sale.orderId ||
+    facts.platformState.postSaleDispenseMovement.vendingCommandId !==
+      facts.sale.vendingCommandId ||
+    facts.platformState.postSaleDispenseMovement.quantity !== 1 ||
+    facts.platformState.postSaleDispenseMovement.deltaQuantity !== -1 ||
+    facts.platformState.postSaleDispenseMovement.beforeQuantity === null ||
+    facts.platformState.postSaleDispenseMovement.afterQuantity === null ||
+    facts.platformState.postSaleDispenseMovement.beforeQuantity -
+      facts.platformState.postSaleDispenseMovement.afterQuantity !==
+      facts.platformState.postSaleDispenseMovement.quantity
   ) {
     addDiagnostic(
       "platform_sale_state_not_updated",
-      "Platform/testbed state must reflect paid, dispensed, and accepted stock movement results.",
+      "Platform/testbed state must bind this fulfilled sale to an accepted post-sale dispense movement and its inventory delta.",
     );
   }
 

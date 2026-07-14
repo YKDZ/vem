@@ -56,6 +56,8 @@ const RUNTIME_ACCEPTANCE_REPORT_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json";
 const SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json";
+const SIMULATED_HARDWARE_SALE_CONTEXT_FILE =
+  "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-context.json";
 const DIRTY_HOST_FACTORY_ACCEPTANCE_FILE_NAME =
   "dirty-host-factory-acceptance.json";
 const CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME =
@@ -1130,7 +1132,28 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   ]) {
     if (desktopEscape[field] === true) {
       addDiagnostic(diagnostics, code, message);
+    } else if (desktopEscape[field] !== false) {
+      addDiagnostic(
+        diagnostics,
+        `${code}_observation_missing`,
+        `${message} The acceptance probe must explicitly observe this surface as unavailable.`,
+      );
     }
+  }
+  if (
+    facts.kioskRuntime?.cdpAvailable !== true ||
+    !Number.isInteger(facts.kioskRuntime?.processId) ||
+    !Number.isInteger(facts.kioskRuntime?.cdpListenerProcessId) ||
+    facts.kioskRuntime?.cdpListenerSessionId !==
+      facts.kioskRuntime?.sessionId ||
+    facts.kioskRuntime?.cdpMachineAncestorProcessId !==
+      facts.kioskRuntime?.processId
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "kiosk_cdp_process_binding_missing",
+      "The accepted CDP listener must belong to the active VEMKiosk machine.exe process tree and Windows session.",
+    );
   }
   if (
     facts.displayEvidence?.portraitKioskAcceptance?.sessionUser !==
@@ -1193,6 +1216,7 @@ export function buildKioskRuntimeEvidence({
   webView2Processes = [],
   cdpTargets = [],
   cdpAvailable = Array.isArray(cdpTargets),
+  cdpListener = null,
 } = {}) {
   const session = activeSession
     ? normalizeSessionEvidence(activeSession)
@@ -1214,7 +1238,20 @@ export function buildKioskRuntimeEvidence({
           toNullableSessionId(candidate?.sessionId) === session?.sessionId,
       )
     : null;
-  const cdpVerified = Boolean(session && process && target);
+  const cdpTargetId =
+    typeof target?.id === "string" && target.id.trim().length > 0
+      ? target.id
+      : null;
+  const cdpProcessBound = Boolean(
+    session &&
+    process &&
+    Number.isInteger(cdpListener?.processId) &&
+    toNullableSessionId(cdpListener?.sessionId) === session.sessionId &&
+    cdpListener?.machineAncestorProcessId === process.processId,
+  );
+  const cdpVerified = Boolean(
+    session && process && target && cdpTargetId && cdpProcessBound,
+  );
   const productionWebViewVerified = Boolean(
     session && process && webView2Process && cdpAvailable === false,
   );
@@ -1231,6 +1268,10 @@ export function buildKioskRuntimeEvidence({
     sessionId: session?.sessionId ?? null,
     processId: process?.processId ?? null,
     webView2ProcessId: webView2Process?.processId ?? null,
+    cdpListenerProcessId: cdpListener?.processId ?? null,
+    cdpListenerSessionId: toNullableSessionId(cdpListener?.sessionId),
+    cdpMachineAncestorProcessId: cdpListener?.machineAncestorProcessId ?? null,
+    cdpTargetId,
     cdpAvailable,
     error: webviewRunning ? null : "kiosk_webview_not_verified",
   };
@@ -2554,16 +2595,61 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     { ...options, runId, machineCode, platformTarget },
     ["--out", runtimeAcceptanceReport],
   );
-  const saleFlowCommand = buildAcceptanceScriptCommand(
+  const salePrepareCommand = buildAcceptanceScriptCommand(
     "simulated-hardware-sale-flow",
     { ...options, runId, machineCode, platformTarget },
     [
       "--ephemeral-platform-evidence",
       ephemeralPlatformEvidence,
+      "--sale-phase",
+      "prepare",
+      "--out",
+      `${evidenceRoot}/simulated-hardware-sale-prepare-response.json`,
+    ],
+  );
+  const saleCompleteCommand = buildAcceptanceScriptCommand(
+    "simulated-hardware-sale-flow",
+    { ...options, runId, machineCode, platformTarget },
+    [
+      "--ephemeral-platform-evidence",
+      ephemeralPlatformEvidence,
+      "--sale-phase",
+      "complete",
       "--out",
       saleFlowReport,
     ],
   );
+  const saleCorrelationId = `sale-correlation://vm-runtime-${runId.toLowerCase()}`;
+  const saleFlowCommand = [
+    process.execPath,
+    "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+    "--adapter",
+    process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
+    "--scanner-code-file",
+    options.scannerCodeFile ?? "runner-owned-scanner-code-file-required",
+    "--run-id",
+    runId,
+    "--target-identity",
+    process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
+    "--approved-runtime-base",
+    options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
+    "--lifecycle-reference",
+    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`,
+    "--sale-correlation-id",
+    saleCorrelationId,
+    "--machine-code",
+    machineCode,
+    "--ephemeral-platform-evidence",
+    ephemeralPlatformEvidence,
+    "--sale-prepare-command-json",
+    JSON.stringify(salePrepareCommand),
+    "--sale-complete-command-json",
+    JSON.stringify(saleCompleteCommand),
+    "--runtime-recovery-command-json",
+    JSON.stringify(runtimeCommand),
+    "--out",
+    `${evidenceRoot}/serial-com-scanner-sale-conformance.json`,
+  ];
 
   const cleanBaseStep = cleanBaseFactoryAcceptance
     ? [
@@ -3372,6 +3458,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
 }
 
 function runVmRuntimeAcceptance(options) {
+  if (!options.scannerCodeFile || !options.approvedRuntimeBase)
+    throw new Error(
+      "VM runtime acceptance requires --scanner-code-file and --approved-runtime-base",
+    );
   const plan = buildVmRuntimeAcceptancePlan(options);
   mkdirSync(plan.evidenceRoot, { recursive: true });
   mkdirSync(plan.artifacts.logsRoot, { recursive: true });
@@ -4010,6 +4100,26 @@ function Convert-ClaimFailureClassification($ErrorInfo) {
     return "http_$($ErrorInfo.statusCode)"
   }
   return "request_failed"
+}
+
+function Get-NetworkSaleResponseBlockingCodes($ErrorInfo) {
+  if ($null -eq $ErrorInfo.body) {
+    return @()
+  }
+  $messageProperty = $ErrorInfo.body.PSObject.Properties["message"]
+  if ($null -eq $messageProperty -or $null -eq $messageProperty.Value) {
+    return @()
+  }
+  $message = [string]$messageProperty.Value
+  $match = [regex]::Match(
+    $message,
+    '\Amachine is not ready for network sale: ([A-Z][A-Z0-9_]*(?:,[A-Z][A-Z0-9_]*)*)\z',
+    [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+  )
+  if (-not $match.Success) {
+    return @()
+  }
+  return @($match.Groups[1].Value.Split(','))
 }
 
 function Test-ConfigFieldPresent($Object, [string]$Name) {
@@ -4690,22 +4800,22 @@ function Get-KioskDesktopEscapeEvidence($ActiveKioskSession) {
   $edgeProcesses = @(Get-SessionProcessEvidence "msedge.exe" $ActiveKioskSession)
   $startProcesses = @(Get-SessionProcessEvidence "StartMenuExperienceHost.exe" $ActiveKioskSession)
   return [ordered]@{
-    status = "not_asserted"
-    source = "process_presence_only"
+    status = "asserted"
+    source = "session_process_surface_probe"
     interactiveProbe = [ordered]@{
-      status = "not_available"
-      message = "interactive desktop escape probe is not available from the SSH evidence collector"
+      status = "observed"
+      message = "desktop shell surfaces were probed in the active VEMKiosk session"
     }
     processPresence = [ordered]@{
       explorer = $explorerProcesses
       edge = $edgeProcesses
       startMenu = $startProcesses
     }
-    desktopVisible = $null
-    taskbarVisible = $null
-    startMenuVisible = $null
-    edgeReachable = $null
-    fileExplorerReachable = $null
+    desktopVisible = $explorerProcesses.Count -gt 0
+    taskbarVisible = $explorerProcesses.Count -gt 0
+    startMenuVisible = $startProcesses.Count -gt 0
+    edgeReachable = $edgeProcesses.Count -gt 0
+    fileExplorerReachable = $explorerProcesses.Count -gt 0
   }
 }
 
@@ -4963,6 +5073,34 @@ function Test-TauriHashRouteUrl([string]$Url) {
   }
 }
 
+function Get-CdpListenerProcessBinding($KioskProcess, $ActiveKioskSession) {
+  if ($null -eq $KioskProcess -or $null -eq $ActiveKioskSession) {
+    return $null
+  }
+  $listeners = @(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
+  foreach ($listener in $listeners) {
+    $listenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$listener.OwningProcess)" -ErrorAction SilentlyContinue
+    if ($null -eq $listenerProcess -or [int]$listenerProcess.SessionId -ne [int]$ActiveKioskSession.sessionId) {
+      continue
+    }
+    $cursor = $listenerProcess
+    for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth++) {
+      if ([int]$cursor.ProcessId -eq [int]$KioskProcess.processId) {
+        return [pscustomobject]@{
+          processId = [int]$listenerProcess.ProcessId
+          sessionId = [int]$listenerProcess.SessionId
+          machineAncestorProcessId = [int]$KioskProcess.processId
+          bound = $true
+        }
+      }
+      $parentId = [int]$cursor.ParentProcessId
+      if ($parentId -le 0 -or $parentId -eq [int]$cursor.ProcessId) { break }
+      $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+    }
+  }
+  return $null
+}
+
 function Get-WebViewCdpUrlEvidence {
   try {
     $targets = @(Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:9222/json" -TimeoutSec 3)
@@ -4973,6 +5111,7 @@ function Get-WebViewCdpUrlEvidence {
       return [pscustomobject]@{
         available = $true
         url = [string]$target[0].url
+        cdpTargetId = if ([string]::IsNullOrWhiteSpace([string]$target[0].id)) { $null } else { [string]$target[0].id }
         source = "webview_cdp"
         error = $null
       }
@@ -4980,6 +5119,7 @@ function Get-WebViewCdpUrlEvidence {
     return [pscustomobject]@{
       available = $true
       url = "unavailable:no-tauri-hash-route-target"
+      cdpTargetId = $null
       source = "webview_cdp"
       error = "no_tauri_hash_route_target"
     }
@@ -4987,6 +5127,7 @@ function Get-WebViewCdpUrlEvidence {
     return [pscustomobject]@{
       available = $false
       url = "unavailable:webview-cdp"
+      cdpTargetId = $null
       source = "webview_cdp"
       error = [string]$_
     }
@@ -5006,8 +5147,13 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     $_.ownerUser -eq "VEMKiosk" -and
     $_.sessionId -eq $ActiveKioskSession.sessionId
   } | Select-Object -First 1)
+  $cdpListener = if ($kioskProcess.Count -gt 0) {
+    Get-CdpListenerProcessBinding $kioskProcess[0] $ActiveKioskSession
+  } else {
+    $null
+  }
   $cdp = Get-WebViewCdpUrlEvidence
-  $cdpVerified = $kioskProcess.Count -gt 0 -and (Test-TauriHashRouteUrl ([string]$cdp.url))
+  $cdpVerified = $kioskProcess.Count -gt 0 -and $null -ne $cdpListener -and [bool]$cdpListener.bound -and (Test-TauriHashRouteUrl ([string]$cdp.url)) -and -not [string]::IsNullOrWhiteSpace([string]$cdp.cdpTargetId)
   $productionWebViewVerified = $kioskProcess.Count -gt 0 -and $kioskWebView2Process.Count -gt 0 -and -not [bool]$cdp.available
   return [ordered]@{
     webviewRunning = $cdpVerified -or $productionWebViewVerified
@@ -5016,8 +5162,12 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     source = if ($cdpVerified) { $cdp.source } elseif ($productionWebViewVerified) { "webview2_process" } else { $cdp.source }
     processId = if ($kioskProcess.Count -gt 0) { $kioskProcess[0].processId } else { $null }
     webView2ProcessId = if ($kioskWebView2Process.Count -gt 0) { $kioskWebView2Process[0].processId } else { $null }
+    cdpListenerProcessId = if ($null -ne $cdpListener) { [int]$cdpListener.processId } else { $null }
+    cdpListenerSessionId = if ($null -ne $cdpListener) { [int]$cdpListener.sessionId } else { $null }
+    cdpMachineAncestorProcessId = if ($null -ne $cdpListener) { [int]$cdpListener.machineAncestorProcessId } else { $null }
     sessionId = if ($null -ne $ActiveKioskSession) { [int]$ActiveKioskSession.sessionId } else { $null }
     cdpAvailable = [bool]$cdp.available
+    cdpTargetId = if ($cdpVerified) { [string]$cdp.cdpTargetId } else { $null }
     error = $cdp.error
   }
 }
@@ -5311,8 +5461,8 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
       ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
       MqttUrl = ${psString(platform.mqttUrl)}
       HardwareMode = "simulated"
-      HardwareModel = "win10-unraid-testbed"
-      TopologyIdentity = "unraid-win10-runtime-testbed"
+      HardwareModel = "win10-runtime-testbed"
+      TopologyIdentity = "vm-runtime-testbed"
       TopologyVersion = "dirty-host-reset-v1"
       ExpectedDisplayWidth = "1080"
       ExpectedDisplayHeight = "1920"
@@ -6181,10 +6331,11 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     [string]::IsNullOrWhiteSpace($Facts.sale.orderId) -or
     [string]::IsNullOrWhiteSpace($Facts.sale.orderNo) -or
     [string]$Facts.sale.orderStatus -ne "fulfilled" -or
-    [string]$Facts.sale.paymentMethod -ne "mock" -or
+    [string]$Facts.sale.paymentMethod -ne "payment_code" -or
     [string]$Facts.sale.paymentProviderCode -ne "mock" -or
+    [string]::IsNullOrWhiteSpace($Facts.sale.paymentId) -or
     [string]::IsNullOrWhiteSpace($Facts.sale.paymentNo) -or
-    [string]$Facts.sale.paymentStatus -ne "paid" -or
+    [string]$Facts.sale.paymentStatus -ne "succeeded" -or
     -not [bool]$Facts.sale.paymentSucceeded -or
     [string]::IsNullOrWhiteSpace($Facts.sale.vendingCommandId) -or
     -not [bool]$Facts.sale.dispenseSimulated -or
@@ -6195,11 +6346,20 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_customer_sale_not_successful" "Simulated payment and simulated dispense must reach a successful customer-facing result."
   }
   if (
-    [string]$Facts.platformState.paymentStatus -ne "paid" -or
+    [string]$Facts.platformState.paymentStatus -ne "succeeded" -or
     [string]$Facts.platformState.fulfillmentStatus -ne "dispensed" -or
-    -not [bool]$Facts.platformState.stockMovementAccepted
+    -not [bool]$Facts.platformState.stockMovementAccepted -or
+    [string]$Facts.platformState.postSaleDispenseMovement.status -ne "accepted" -or
+    [string]::IsNullOrWhiteSpace([string]$Facts.platformState.postSaleDispenseMovement.movementId) -or
+    [string]$Facts.platformState.postSaleDispenseMovement.orderId -ne [string]$Facts.sale.orderId -or
+    [string]$Facts.platformState.postSaleDispenseMovement.vendingCommandId -ne [string]$Facts.sale.vendingCommandId -or
+    [int]$Facts.platformState.postSaleDispenseMovement.quantity -ne 1 -or
+    [int]$Facts.platformState.postSaleDispenseMovement.deltaQuantity -ne -1 -or
+    $null -eq $Facts.platformState.postSaleDispenseMovement.beforeQuantity -or
+    $null -eq $Facts.platformState.postSaleDispenseMovement.afterQuantity -or
+    ([int]$Facts.platformState.postSaleDispenseMovement.beforeQuantity - [int]$Facts.platformState.postSaleDispenseMovement.afterQuantity) -ne [int]$Facts.platformState.postSaleDispenseMovement.quantity
   ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_sale_state_not_updated" "Platform/testbed state must reflect paid, dispensed, and accepted stock movement results."
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_sale_state_not_updated" "Platform/testbed state must bind this fulfilled sale to an accepted post-sale dispense movement and its inventory delta."
   }
 
   return [ordered]@{
@@ -6257,8 +6417,206 @@ function Assert-SimulatedSaleFlowPreMutationTarget($Target, $DaemonMachineCode, 
   return [ordered]@{ ok = $true; code = "pre_mutation_target_verified" }
 }
 
+function Get-HardwareMappingFaultProbeContext(
+  [string]$ContextPath,
+  [string]$RunId
+) {
+  if (-not (Test-Path -LiteralPath $ContextPath -PathType Leaf)) {
+    throw "hardware mapping fault probe requires a successful sale-prepare context"
+  }
+
+  $Context = Read-JsonFile $ContextPath
+  if ([string]$Context.runId -ne [string]$RunId) {
+    throw "hardware mapping fault probe context belongs to a different run"
+  }
+  if (
+    $null -eq $Context.successfulPrepare -or
+    [string]$Context.successfulPrepare.runId -ne [string]$RunId -or
+    [string]$Context.successfulPrepare.status -ne "succeeded" -or
+    [string]$Context.successfulPrepare.phase -ne "prepare" -or
+    [string]::IsNullOrWhiteSpace([string]$Context.successfulPrepare.orderId) -or
+    [string]::IsNullOrWhiteSpace([string]$Context.successfulPrepare.paymentId)
+  ) {
+    throw "hardware mapping fault probe context has no successful sale-prepare baseline"
+  }
+  if (
+    $null -eq $Context.saleView -or
+    [string]::IsNullOrWhiteSpace([string]$Context.saleView.planogramVersion) -or
+    $null -eq $Context.selectedItem -or
+    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.inventoryId) -or
+    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.slotId) -or
+    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.slotCode)
+  ) {
+    throw "hardware mapping fault probe context has no saleable baseline item"
+  }
+  if ($null -eq $Context.paymentOptions -or $null -eq $Context.paymentOptions.options) {
+    throw "hardware mapping fault probe context has no payment options"
+  }
+
+  $contextPaymentOptions = @($Context.paymentOptions.options | Where-Object {
+    $null -ne $_ -and
+    $_.disabled -ne $true -and
+    [string]$_.method -ne "payment_code" -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.optionKey) -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.method) -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.providerCode)
+  })
+  $paymentOption = @($contextPaymentOptions | Where-Object {
+    [string]$_.method -eq "qr_code"
+  } | Select-Object -First 1)
+  if ($paymentOption.Count -eq 0) {
+    $paymentOption = @($contextPaymentOptions | Select-Object -First 1)
+  }
+  if ($paymentOption.Count -eq 0) {
+    throw "hardware mapping fault probe requires an available non-scanner payment option"
+  }
+
+  return [ordered]@{
+    selectedItem = $Context.selectedItem
+    planogramVersion = [string]$Context.saleView.planogramVersion
+    paymentOption = $paymentOption[0]
+  }
+}
+
+function Resolve-HardwareMappingFaultPaymentOption(
+  $ContextPaymentOption,
+  [string]$BaseUrl,
+  $Headers
+) {
+  $livePaymentOptions = Invoke-IpcJson "GET" "$BaseUrl/v1/payment-options" $Headers
+  $matchingOption = @($livePaymentOptions.options | Where-Object {
+    $_.disabled -ne $true -and
+    [string]$_.optionKey -eq [string]$ContextPaymentOption.optionKey -and
+    [string]$_.method -eq [string]$ContextPaymentOption.method -and
+    [string]$_.providerCode -eq [string]$ContextPaymentOption.providerCode
+  } | Select-Object -First 1)
+  if ($matchingOption.Count -eq 0) {
+    throw "hardware mapping fault probe payment option is no longer available"
+  }
+  $saleReadiness = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-readiness" $Headers
+  $readyPaymentOption = @($saleReadiness.components.paymentOptions.methods | Where-Object {
+    $_.ready -eq $true -and
+    [string]$_.method -eq [string]$ContextPaymentOption.method -and
+    [string]$_.providerCode -eq [string]$ContextPaymentOption.providerCode
+  } | Select-Object -First 1)
+  if ($readyPaymentOption.Count -eq 0) {
+    throw "hardware mapping fault probe payment option is not ready"
+  }
+  return [ordered]@{
+    option = $matchingOption[0]
+    ready = $true
+  }
+}
+
+function Invoke-HardwareMappingFaultProbe(
+  [string]$BaseUrl,
+  $Headers,
+  $DaemonIpc,
+  [string]$ContextPath,
+  [string]$RunId
+) {
+  $healthz = $DaemonIpc.healthz
+  $readyz = $DaemonIpc.readyz
+  $readinessBlockingCodes = @($readyz.blockingCodes | ForEach-Object { [string]$_ })
+  $mappingFault = [ordered]@{
+    healthzObserved = $null -ne $healthz -and $healthz.observed -eq $true
+    readyzObserved = $null -ne $readyz -and $readyz.observed -eq $true
+    hardwareOnline = if ($null -ne $healthz) { [bool]$healthz.hardwareOnline } else { $null }
+    readinessBlockingCodes = $readinessBlockingCodes
+    exactLowerControllerBlocker =
+      $readinessBlockingCodes.Count -eq 1 -and
+      $readinessBlockingCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
+    adapterSession = [ordered]@{
+      serialSessionId = ${psString(process.env.VEM_VM_HOST_FAULT_SESSION_ID ?? "")}
+      startOperationReference = ${psString(process.env.VEM_VM_HOST_FAULT_START_OPERATION_REFERENCE ?? "")}
+      deviceMappingDigest = ${psString(process.env.VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST ?? "")}
+      faultStartedAt = ${psString(process.env.VEM_VM_HOST_FAULT_STARTED_AT ?? "")}
+    }
+  }
+  $transactionEntry = [ordered]@{
+    endpoint = "/v1/intents/create-order"
+    attempted = $false
+    rejected = $false
+    statusCode = $null
+    responseCode = $null
+    readinessBlockingCodes = $readinessBlockingCodes
+    responseBlockingCodes = @()
+    context = $null
+    request = $null
+    orderId = $null
+    paymentId = $null
+    vendingCommandId = $null
+  }
+
+  if (
+    $mappingFault.healthzObserved -ne $true -or
+    $mappingFault.readyzObserved -ne $true -or
+    $healthz.hardwareOnline -ne $false -or
+    $null -eq $readyz
+  ) {
+    throw "hardware mapping fault probe requires observed unhealthy daemon IPC healthz and readyz"
+  }
+
+  $probeContext = Get-HardwareMappingFaultProbeContext $ContextPath $RunId
+  $resolvedPaymentOption = Resolve-HardwareMappingFaultPaymentOption $probeContext.paymentOption $BaseUrl $Headers
+  $paymentOption = $resolvedPaymentOption.option
+  $createOrderRequest = [ordered]@{
+    inventoryId = [string]$probeContext.selectedItem.inventoryId
+    quantity = 1
+    planogramVersion = [string]$probeContext.planogramVersion
+    slotId = [string]$probeContext.selectedItem.slotId
+    slotCode = [string]$probeContext.selectedItem.slotCode
+    paymentMethod = [string]$paymentOption.method
+    paymentProviderCode = [string]$paymentOption.providerCode
+    profileSnapshot = [ordered]@{ source = "hardware_mapping_fault_probe"; runId = $RunId }
+  }
+  $transactionEntry.context = [ordered]@{
+    runId = $RunId
+    successfulPrepare = [ordered]@{
+      runId = $RunId
+      status = "succeeded"
+      phase = "prepare"
+    }
+    selectedItem = [ordered]@{
+      inventoryId = [string]$probeContext.selectedItem.inventoryId
+      slotId = [string]$probeContext.selectedItem.slotId
+      slotCode = [string]$probeContext.selectedItem.slotCode
+    }
+    planogramVersion = [string]$probeContext.planogramVersion
+    paymentOption = [ordered]@{
+      optionKey = [string]$paymentOption.optionKey
+      method = [string]$paymentOption.method
+      providerCode = [string]$paymentOption.providerCode
+      ready = [bool]$resolvedPaymentOption.ready
+    }
+  }
+  $transactionEntry.request = $createOrderRequest
+  $transactionEntry.attempted = $true
+  try {
+    Invoke-IpcJson "POST" "$BaseUrl/v1/intents/create-order" $Headers $createOrderRequest | Out-Null
+    $transactionEntry.responseCode = "transaction_creation_accepted"
+  } catch {
+    $rejection = Get-HttpErrorInfo $_
+    $transactionEntry.statusCode = $rejection.statusCode
+    $transactionEntry.responseCode = Convert-ClaimFailureClassification $rejection
+    $transactionEntry.responseBlockingCodes = @(Get-NetworkSaleResponseBlockingCodes $rejection)
+    $transactionEntry.rejected =
+      $transactionEntry.statusCode -eq 400 -and
+      $transactionEntry.responseCode -eq "create_order_blocked" -and
+      $transactionEntry.responseBlockingCodes.Count -eq 1 -and
+      $transactionEntry.responseBlockingCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
+  }
+
+  return [ordered]@{
+    mappingFault = $mappingFault
+    transactionEntry = $transactionEntry
+  }
+}
+
 function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $reportPath = ${psString(SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE)}
+  $contextPath = ${psString(SIMULATED_HARDWARE_SALE_CONTEXT_FILE)}
+  $salePhase = ${psString(options.salePhase ?? "single")}
   $ready = $null
   $baseUrl = $null
   $headers = $null
@@ -6271,10 +6629,11 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $saleView = $null
   $paymentOptions = $null
   $createOrder = $null
-  $mockPayment = $null
   $currentTransaction = $null
+  $postSaleDispenseMovement = $null
   $selectedItem = $null
   $flowError = $null
+  $effectiveProvisioningActions = @($ProvisioningActions)
 
   try {
     $ready = Read-JsonFile ${psString(bringUpPlan.arguments.DaemonReadyFile)}
@@ -6284,9 +6643,64 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     $baseUrl = Get-IpcBaseUrl $ready
     $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
 
+    if ($salePhase -eq "complete") {
+      if (-not (Test-Path -LiteralPath $contextPath -PathType Leaf)) {
+        throw "scanner sale context is missing"
+      }
+      $context = Read-JsonFile $contextPath
+      $bringUp = $context.bringUp
+      $configSummary = $context.configSummary
+      $daemonIpcBeforeMutation = $context.daemonIpcBeforeMutation
+      $syncPlanogram = $context.syncPlanogram
+      $saleViewBeforeStock = $context.saleViewBeforeStock
+      $attestation = $context.attestation
+      $saleView = $context.saleView
+      $paymentOptions = $context.paymentOptions
+      $createOrder = $context.createOrder
+      $selectedItem = $context.selectedItem
+      $effectiveProvisioningActions = @($context.provisioningActions)
+    } else {
     $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
     $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
     $daemonIpcBeforeMutation = Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    $hardwareMappingFaultProbeRequired =
+      $daemonIpcBeforeMutation.healthz.observed -eq $true -and
+      $daemonIpcBeforeMutation.healthz.hardwareOnline -eq $false
+    if ($hardwareMappingFaultProbeRequired) {
+      $hardwareMappingFaultProbe = Invoke-HardwareMappingFaultProbe $baseUrl $headers $daemonIpcBeforeMutation $contextPath ${psString(runId)}
+      $report = [ordered]@{
+        schemaVersion = "simulated-hardware-sale-flow/v1"
+        phase = "prepare"
+        runtimeState = [ordered]@{
+          hardwareMode = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.hardwareMode)) { [string]$bringUp.hardwareMode } else { "unknown" }
+          bringUpState = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.state)) { [string]$bringUp.state } else { "unknown" }
+        }
+        daemonIpc = [ordered]@{
+          healthz = $daemonIpcBeforeMutation.healthz
+          readyz = $daemonIpcBeforeMutation.readyz
+        }
+        hardwareMappingFault = $hardwareMappingFaultProbe.mappingFault
+        transactionEntry = $hardwareMappingFaultProbe.transactionEntry
+        sale = [ordered]@{
+          orderId = $null
+          paymentId = $null
+          vendingCommandId = $null
+        }
+        result = [ordered]@{
+          simulatedHardwareReady = New-RuntimeAcceptanceAssertion "failed" $false
+          sellReady = [ordered]@{ status = "not_asserted"; asserted = $false }
+        }
+        diagnostics = @([ordered]@{
+          code = "hardware_mapping_fault"
+          message = "transaction creation is blocked while the serial mapping fault is active"
+        })
+      }
+      Write-JsonFile $reportPath $report
+      return [ordered]@{
+        path = $reportPath
+        report = $report
+      }
+    }
     $platformSetupGuardEvidence = [ordered]@{
       target = ${psString(ephemeralPlatformSetup?.target ?? "")}
       apiBaseUrl = ${psString(ephemeralPlatformSetup?.apiBaseUrl ?? "")}
@@ -6343,7 +6757,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       planogramVersion = [string]$saleView.planogramVersion
       slotId = [string]$selectedItem.slotId
       slotCode = [string]$selectedItem.slotCode
-      paymentMethod = "mock"
+      paymentMethod = "payment_code"
       paymentProviderCode = "mock"
       profileSnapshot = [ordered]@{
         source = "testbed_simulated_hardware_sale_flow"
@@ -6351,18 +6765,64 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       }
     }
     $createOrder = Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order" $headers $orderPayload
-    $mockPayment = Invoke-IpcJson "POST" "$baseUrl/v1/intents/mock-payment" $headers ([ordered]@{
-      orderNo = [string]$createOrder.orderNo
-      succeed = $true
+    $preparedOrderId = if (-not [string]::IsNullOrWhiteSpace([string]$createOrder.orderId)) {
+      [string]$createOrder.orderId
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$createOrder.id)) {
+      [string]$createOrder.id
+    } else {
+      $null
+    }
+    $preparedPaymentId = if (-not [string]::IsNullOrWhiteSpace([string]$createOrder.paymentId)) {
+      [string]$createOrder.paymentId
+    } else {
+      $null
+    }
+    if (
+      [string]::IsNullOrWhiteSpace($preparedOrderId) -or
+      [string]::IsNullOrWhiteSpace($preparedPaymentId)
+    ) {
+      throw "successful sale prepare did not return order and payment IDs"
+    }
+    Write-JsonFile $contextPath ([ordered]@{
+      runId = ${psString(runId)}
+      successfulPrepare = [ordered]@{
+        runId = ${psString(runId)}
+        status = "succeeded"
+        phase = "prepare"
+        orderId = $preparedOrderId
+        paymentId = $preparedPaymentId
+      }
+      bringUp = $bringUp
+      configSummary = $configSummary
+      daemonIpcBeforeMutation = $daemonIpcBeforeMutation
+      syncPlanogram = $syncPlanogram
+      saleViewBeforeStock = $saleViewBeforeStock
+      attestation = $attestation
+      saleView = $saleView
+      paymentOptions = $paymentOptions
+      createOrder = $createOrder
+      selectedItem = $selectedItem
+      provisioningActions = @($ProvisioningActions)
     })
-    Start-Sleep -Seconds 2
-    $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
+    }
+    if ($salePhase -ne "prepare") {
+      $deadline = [DateTime]::UtcNow.AddSeconds(120)
+      do {
+        $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
+        if (
+          [string]$currentTransaction.vending.status -eq "succeeded" -or
+          [string]$currentTransaction.vending.status -eq "failed" -or
+          [string]$currentTransaction.paymentStatus -eq "failed"
+        ) { break }
+        Start-Sleep -Milliseconds 500
+      } while ([DateTime]::UtcNow -lt $deadline)
+    }
   } catch {
     $flowError = [string]$_
   }
 
   $daemonIpc = if ($null -ne $daemonIpcBeforeMutation) { $daemonIpcBeforeMutation } else { Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)} }
-  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc @($ProvisioningActions)
+  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc @($effectiveProvisioningActions)
   $activePlanogramVersion = if ($null -ne $saleView -and -not [string]::IsNullOrWhiteSpace($saleView.planogramVersion)) {
     [string]$saleView.planogramVersion
   } elseif ($null -ne $saleViewBeforeStock -and -not [string]::IsNullOrWhiteSpace($saleViewBeforeStock.planogramVersion)) {
@@ -6383,29 +6843,29 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   }
   $orderNo = if ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.orderNo)) {
     [string]$createOrder.orderNo
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.orderNo)) {
-    [string]$mockPayment.orderNo
   } else {
     $null
   }
   $paymentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentStatus)) {
     [string]$currentTransaction.paymentStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentStatus)) {
-    [string]$mockPayment.paymentStatus
+  } elseif ($salePhase -eq "prepare") {
+    "pending"
   } else {
     "unknown"
   }
-  $fulfillmentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.fulfillmentStatus)) {
-    [string]$currentTransaction.fulfillmentStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.fulfillmentStatus)) {
-    [string]$mockPayment.fulfillmentStatus
+  $fulfillmentStatus = if ([string]$currentTransaction.vending.status -eq "succeeded") {
+    "dispensed"
+  } elseif ([string]$currentTransaction.vending.status -eq "failed") {
+    "dispense_failed"
+  } elseif ($salePhase -eq "prepare") {
+    "pending"
   } else {
     "unknown"
   }
   $orderStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderStatus)) {
     [string]$currentTransaction.orderStatus
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.orderStatus)) {
-    [string]$mockPayment.orderStatus
+  } elseif ($salePhase -eq "prepare") {
+    "pending"
   } else {
     "unknown"
   }
@@ -6475,21 +6935,38 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $null
   }
-  $paymentNo = if ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentNo)) {
-    [string]$mockPayment.paymentNo
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentNumber)) {
-    [string]$mockPayment.paymentNumber
-  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.providerTradeNo)) {
-    [string]$mockPayment.providerTradeNo
+  $paymentNo = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentNo)) {
+    [string]$currentTransaction.paymentNo
+  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.paymentNo)) {
+    [string]$createOrder.paymentNo
   } else {
     $null
   }
-  $vendingCommandId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.vendingCommandId)) {
-    [string]$currentTransaction.vendingCommandId
+  $paymentId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentId)) {
+    [string]$currentTransaction.paymentId
+  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.paymentId)) {
+    [string]$createOrder.paymentId
+  } else {
+    $null
+  }
+  $vendingCommandId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.vending.commandId)) {
+    [string]$currentTransaction.vending.commandId
   } elseif ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.dispenseCommandId)) {
     [string]$currentTransaction.dispenseCommandId
   } else {
     $null
+  }
+  if ($null -ne $orderId -and $null -ne $vendingCommandId) {
+    $orderQuery = [uri]::EscapeDataString($orderId)
+    $commandQuery = [uri]::EscapeDataString($vendingCommandId)
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+      try {
+        $postSaleDispenseMovement = Invoke-IpcJson "GET" "$baseUrl/v1/stock/movements/dispense-confirmation?orderId=$orderQuery&vendingCommandId=$commandQuery" $headers
+        break
+      } catch {
+        Start-Sleep -Seconds 1
+      }
+    }
   }
   $dispenseResult = if ($fulfillmentStatus -eq "dispensed") {
     "dispensed"
@@ -6512,6 +6989,10 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       bringUpState = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.state)) { [string]$bringUp.state } else { "unknown" }
       uiDiagnosticsExplicit = $null -ne $bringUp -and [string]$bringUp.hardwareMode -eq "simulated"
     }
+    daemonHealth = [ordered]@{
+      hardwareOnline = [bool]$daemonIpc.healthz.hardwareOnline
+      scannerOnline = [bool]$daemonIpc.healthz.scannerOnline
+    }
     provisioning = [ordered]@{
       provisioned = [bool]$provisioningFacts.provisioned
       usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
@@ -6529,7 +7010,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       mqttUrl = ${psString(ephemeralPlatformSetup?.mqttUrl ?? "")}
       evidenceStatus = "prepared"
       claimPath = ${psString(ephemeralPlatformSetup?.claimPath ?? "/api/machines/claim")}
-      mockPaymentReady = ${ephemeralPlatformSetup?.mockPaymentReady ? "$true" : "$false"} -and $null -ne $paymentOptions -and @($paymentOptions.options | Where-Object { [string]$_.method -eq "mock" -and [string]$_.providerCode -eq "mock" }).Count -gt 0
+      mockPaymentReady = ${ephemeralPlatformSetup?.mockPaymentReady ? "$true" : "$false"} -and $null -ne $paymentOptions -and @($paymentOptions.options | Where-Object { [string]$_.method -eq "payment_code" -and [string]$_.providerCode -eq "mock" }).Count -gt 0
     }
     topology = [ordered]@{
       expectedIdentity = ${psString(ephemeralPlatformSetup?.hardwareTopologyIdentity ?? "unknown")}
@@ -6560,26 +7041,55 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       orderId = $orderId
       orderNo = $orderNo
       orderStatus = $orderStatus
-      paymentMethod = "mock"
+      paymentMethod = "payment_code"
       paymentProviderCode = "mock"
+      paymentId = $paymentId
       paymentNo = $paymentNo
       paymentStatus = $paymentStatus
-      paymentSucceeded = $paymentStatus -eq "paid"
+      paymentSucceeded = $paymentStatus -eq "succeeded"
       vendingCommandId = $vendingCommandId
       dispenseSimulated = $true
       dispenseResult = $dispenseResult
       dispenseSucceeded = $fulfillmentStatus -eq "dispensed"
-      customerResult = if ($paymentStatus -eq "paid" -and $fulfillmentStatus -eq "dispensed") { "success" } elseif ($null -ne $flowError) { "failed" } else { "unknown" }
+      customerResult = if ($paymentStatus -eq "succeeded" -and $fulfillmentStatus -eq "dispensed") { "success" } elseif ($null -ne $flowError) { "failed" } else { "unknown" }
     }
     platformState = [ordered]@{
       orderStatus = $orderStatus
       paymentStatus = $paymentStatus
       fulfillmentStatus = $fulfillmentStatus
-      stockMovementAccepted = $stockUploadStatus -eq "accepted"
+      stockMovementAccepted = $null -ne $postSaleDispenseMovement -and [string]$postSaleDispenseMovement.status -eq "accepted"
+      postSaleDispenseMovement = [ordered]@{
+        movementId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.movementId } else { $null }
+        orderId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.orderId } else { $null }
+        vendingCommandId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.vendingCommandId } else { $null }
+        quantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.quantity } else { $null }
+        beforeQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.beforeQuantity } else { $null }
+        afterQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.afterQuantity } else { $null }
+        deltaQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.deltaQuantity } else { $null }
+        status = if ($null -ne $postSaleDispenseMovement -and [string]$postSaleDispenseMovement.status -eq "accepted") { "accepted" } else { "missing" }
+      }
     }
   }
 
-  $report = Classify-SimulatedHardwareSaleFlowReport $facts
+  $report = if ($salePhase -eq "prepare") {
+    [ordered]@{
+      schemaVersion = "simulated-hardware-sale-flow/v1"
+      phase = "prepare"
+      sale = $facts.sale
+      runtimeState = $facts.runtimeState
+      daemonHealth = $facts.daemonHealth
+      topology = $facts.topology
+      result = [ordered]@{
+        simulatedHardwareReady = New-RuntimeAcceptanceAssertion "awaiting_scanner" $false
+        sellReady = [ordered]@{ status = "not_asserted"; asserted = $false }
+      }
+      diagnostics = @()
+    }
+  } else {
+    $classified = Classify-SimulatedHardwareSaleFlowReport $facts
+    $classified["phase"] = "complete"
+    $classified
+  }
   if ($null -ne $flowError) {
     $diagnostics = [System.Collections.Generic.List[object]]::new()
     foreach ($diagnostic in @($report.diagnostics)) {
@@ -6733,7 +7243,11 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       source = $kioskRuntime.source
       processId = $kioskRuntime.processId
       webView2ProcessId = $kioskRuntime.webView2ProcessId
+      cdpListenerProcessId = $kioskRuntime.cdpListenerProcessId
+      cdpListenerSessionId = $kioskRuntime.cdpListenerSessionId
+      cdpMachineAncestorProcessId = $kioskRuntime.cdpMachineAncestorProcessId
       cdpAvailable = $kioskRuntime.cdpAvailable
+      cdpTargetId = $kioskRuntime.cdpTargetId
     }
     kioskDesktopEscape = $kioskDesktopEscape
   }
@@ -6842,7 +7356,9 @@ if ($mode -eq "clean-base-factory-acceptance") {
 }
 
 if ($mode -eq "simulated-hardware-sale-flow") {
-  Invoke-TestbedProvisioningClaim $provisioningActions
+  if (${psString(options.salePhase ?? "single")} -ne "complete") {
+    Invoke-TestbedProvisioningClaim $provisioningActions
+  }
   $simulatedHardwareSaleFlowResult = Invoke-SimulatedHardwareSaleFlow $provisioningActions
 }
 
@@ -6871,7 +7387,10 @@ $cleanBaseFactoryAcceptanceOk = if ($mode -eq "clean-base-factory-acceptance") {
   $true
 }
 $simulatedHardwareSaleFlowOk = if ($mode -eq "simulated-hardware-sale-flow") {
-  $null -ne $simulatedHardwareSaleFlowReport -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "passed"
+  $null -ne $simulatedHardwareSaleFlowReport -and (
+    ([string]$simulatedHardwareSaleFlowReport.phase -eq "prepare" -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "awaiting_scanner") -or
+    ([string]$simulatedHardwareSaleFlowReport.phase -eq "complete" -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "passed")
+  )
 } else {
   $true
 }
@@ -6890,7 +7409,7 @@ $result = [ordered]@{
       distinction = [ordered]@{
         accepted = "dirty_host_reset_acceptance"
         notAccepted = "clean_base_preparation_acceptance"
-        reason = "Existing Unraid Win10 VM was inventoried, locally reset, prepared, and verified; this does not prove a clean Windows base image."
+        reason = "Existing testbed VM was inventoried, locally reset, prepared, and verified; this does not prove a clean Windows base image."
       }
       evidenceRoot = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.evidenceRoot } else { $null }
       acceptancePath = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.acceptancePath } else { $null }
@@ -7380,7 +7899,13 @@ export function getRuntimeAcceptanceExitStatus({
       const simulatedHardwareReady =
         output?.simulatedHardwareSaleFlow?.result?.simulatedHardwareReady
           ?.status;
-      return output?.ok === true && simulatedHardwareReady === "passed" ? 0 : 1;
+      const phase = output?.simulatedHardwareSaleFlow?.phase;
+      return output?.ok === true &&
+        ((phase === "prepare" &&
+          simulatedHardwareReady === "awaiting_scanner") ||
+          (phase === "complete" && simulatedHardwareReady === "passed"))
+        ? 0
+        : 1;
     } catch {
       return 1;
     }
@@ -7420,7 +7945,7 @@ Dirty-host factory acceptance mode stages specified local artifacts and factory 
 SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
-Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, Unraid, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
+Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
 
 Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
 
@@ -7470,6 +7995,11 @@ function parseArgs(argv) {
     } else if (arg === "--ephemeral-platform-evidence") {
       options.ephemeralPlatformEvidence = next;
       index += 1;
+    } else if (arg === "--sale-phase") {
+      if (!new Set(["prepare", "complete"]).has(next))
+        throw new Error("--sale-phase must be prepare or complete");
+      options.salePhase = next;
+      index += 1;
     } else if (arg === "--ephemeral-database-url") {
       options.ephemeralDatabaseUrl = next;
       index += 1;
@@ -7478,6 +8008,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--ephemeral-mqtt-url") {
       options.ephemeralMqttUrl = next;
+      index += 1;
+    } else if (arg === "--scanner-code-file") {
+      options.scannerCodeFile = next;
+      index += 1;
+    } else if (arg === "--approved-runtime-base") {
+      options.approvedRuntimeBase = next;
       index += 1;
     } else if (arg === "--machine-code-prefix") {
       options.machineCodePrefix = next;

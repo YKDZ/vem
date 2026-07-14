@@ -695,7 +695,7 @@ describe("PaymentProviderConfigService", () => {
       ).rejects.toThrow(ConflictException);
     });
 
-    it("keeps mock option governed by test environment configuration", async () => {
+    it("keeps mock and mock payment-code options governed by test configuration", async () => {
       const service = makeListOptionsService(
         [[], [], [{ status: "enabled" }]],
         { paymentMockEnabled: true },
@@ -705,6 +705,7 @@ describe("PaymentProviderConfigService", () => {
         await service.listMachinePaymentOptionsForMachine("machine-1");
 
       expect(result.options.map((option) => option.optionKey)).toEqual([
+        "payment_code:mock",
         "mock:mock",
       ]);
       expect(result.defaultProviderCode).toBe("mock");

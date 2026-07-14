@@ -193,6 +193,38 @@ describe("MachineStockMovementsController", () => {
     );
   });
 
+  it("returns only the accepted order-bound dispense movement for the authenticated machine", async () => {
+    const service = {
+      getAcceptedOrderBoundDispenseMovement: vi.fn().mockResolvedValue({
+        movementId: "MOVE-DISPENSE-1",
+        orderId: "order-1",
+        vendingCommandId: "command-1",
+        quantity: 1,
+        beforeQuantity: 3,
+        afterQuantity: 2,
+        deltaQuantity: -1,
+        status: "accepted",
+      }),
+    };
+    const controller = new MachineStockMovementsController(service as never);
+
+    await expect(
+      controller.getDispenseConfirmation(
+        machine as never,
+        "order-1",
+        "command-1",
+      ),
+    ).resolves.toMatchObject({
+      movementId: "MOVE-DISPENSE-1",
+      deltaQuantity: -1,
+    });
+    expect(service.getAcceptedOrderBoundDispenseMovement).toHaveBeenCalledWith(
+      machine,
+      "order-1",
+      "command-1",
+    );
+  });
+
   it("returns reconciliation shape and keeps the conflicting raw payload separate", async () => {
     const repo = new ControllerMovementRepository();
     const service = new MachineStockMovementsService(repo as never);

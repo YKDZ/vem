@@ -330,7 +330,7 @@ describe("repository script inventory guard", () => {
             {
               schemaVersion: "clean-base-source-contract/v1",
               iso: {
-                uriPrefix: "unraid://192.168.2.23/isos/",
+                uriPrefix: "vm-host://factory/isos/",
               },
             },
             null,
@@ -374,7 +374,7 @@ describe("repository script inventory guard", () => {
     withFixture(
       {
         "public/clean-base.md":
-          "ISO source: `unraid://192.168.2.23/isos/<win10.iso>`",
+          "ISO source: `vm-host://factory/isos/<win10.iso>`",
       },
       (root) => {
         const result = checkRepositoryScriptInventory({
@@ -433,6 +433,58 @@ describe("repository script inventory guard", () => {
         assert.match(
           result.failures.join("\n"),
           /scripts\/testbed\/runtime\.mjs:1 contains stale integration text/,
+        );
+      },
+    );
+  });
+
+  it("rejects retired public contracts and runbooks even when they are not registered", () => {
+    withFixture(
+      {
+        "public/vm-runtime-acceptance.md": "retired runbook",
+        "public/legacy.md":
+          "Run the static relay planner on the unraid host with iptables.",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /retired public runbook present: public\/vm-runtime-acceptance\.md/,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /public\/legacy\.md:1 contains retired public contract \(static relay planner\)/,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /public\/legacy\.md:1 contains retired public contract \(platform-specific host identity\)/,
+        );
+      },
+    );
+  });
+
+  it("scans unregistered public documents for Tailscale compatibility text", () => {
+    withFixture(
+      {
+        "public/legacy.md": "Use Tailscale SSH for emergency access.",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /public\/legacy\.md:1 contains stale integration text/,
         );
       },
     );

@@ -63,6 +63,17 @@ export type MachineStockMovementIngestionResponse = {
   };
 };
 
+export type OrderBoundDispenseMovementEvidence = {
+  movementId: string;
+  orderId: string;
+  vendingCommandId: string;
+  quantity: number;
+  beforeQuantity: number | null;
+  afterQuantity: number | null;
+  deltaQuantity: number;
+  status: "accepted";
+};
+
 @Injectable()
 export class MachineStockMovementsService {
   constructor(
@@ -245,6 +256,30 @@ export class MachineStockMovementsService {
         payloadHash,
       );
     }
+  }
+
+  async getAcceptedOrderBoundDispenseMovement(
+    machine: AuthenticatedMachine,
+    orderId: string,
+    vendingCommandId: string,
+  ): Promise<OrderBoundDispenseMovementEvidence | null> {
+    const movement =
+      await this.repository.findAcceptedOrderBoundDispenseMovement(
+        machine.id,
+        orderId,
+        vendingCommandId,
+      );
+    if (
+      !movement ||
+      movement.quantity <= 0 ||
+      movement.deltaQuantity !== -movement.quantity ||
+      movement.beforeQuantity === null ||
+      movement.afterQuantity === null ||
+      movement.beforeQuantity - movement.afterQuantity !== movement.quantity
+    ) {
+      return null;
+    }
+    return { ...movement, status: "accepted" };
   }
 
   private async requestPartialRefundForPendingFailedLines(

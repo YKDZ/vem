@@ -21,7 +21,8 @@ watch(
       return;
     }
     try {
-      dataUrl.value = await QRCode.toDataURL(value, {
+      const svg = await QRCode.toString(value, {
+        type: "svg",
         width: 360,
         margin: 1,
         errorCorrectionLevel: "M",
@@ -30,6 +31,7 @@ watch(
           light: "#ffffff",
         },
       });
+      dataUrl.value = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
     } catch (err) {
       dataUrl.value = "";
       error.value = err instanceof Error ? err.message : String(err);

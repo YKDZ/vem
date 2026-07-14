@@ -1,8 +1,8 @@
 # Windows Factory Runtime And Controlled Maintenance
 
-Status: accepted target architecture. The existing Unraid-backed testbed is the
-first implementation target, but Unraid paths, VM names, and disk operations are
-not part of the repository contract. A gate may claim conformance only after the
+Status: accepted target architecture. The existing testbed is the first
+implementation target, but host paths, VM names, and disk operations are not
+part of the repository contract. A gate may claim conformance only after the
 implementation and evidence listed here are present.
 
 ## Stable Language
@@ -68,8 +68,8 @@ The Vision repository owns:
   metadata, SBOM, build provenance, and its self-tests.
 - An immutable release bundle whose internal runtime technology may change.
 
-The VEM repository must not contain Unraid-only VM scripts, `/mnt/user` paths,
-libvirt disk allowlists, or another platform's deployment adapter. Platform
+The VEM repository must not contain platform-specific VM scripts, host
+filesystem paths, destructive disk allowlists, or deployment adapters. Platform
 implementations live on their hosts. The repository may contain only the
 request/report schemas and platform-neutral fake adapters used by tests.
 
@@ -358,7 +358,10 @@ Repository workflows invoke the executable configured by the runner service as
 `VEM_VM_HOST_ADAPTER`. A dispatch input cannot choose the executable or pass
 host filesystem paths.
 
-The adapter accepts a strict `vem-vm-host-adapter-request/v1` JSON request with
+The adapter accepts a strict `vem-vm-host-adapter-request/v2` JSON request with
+`contractVersion: vem-vm-host-adapter-contract/v2`; its report and adapter
+declaration must repeat that exact contract version. This is a hard migration:
+v1 requests and reports are rejected rather than translated.
 only `runId`, `operation`, `operationNonce`, `operationReference`,
 `lifecycleReference`, an optional cancel-operation reference, logical target
 identity, content-addressed assets, and requested capabilities. Requests have
@@ -374,7 +377,7 @@ vocabulary covers:
 - two role-addressed virtual serial devices;
 - a virtual default audio output with host-side capture.
 
-The adapter returns a strict `vem-vm-host-adapter-report/v1` report with its
+The adapter returns a strict `vem-vm-host-adapter-report/v2` report with its
 identity and semantic version, echoed request binding, an `operationReference`,
 a `lifecycleReference`, observed VM/base/overlay identities, consumed asset
 hashes, guest maintenance endpoint identity, role-addressed device mappings,
@@ -400,7 +403,7 @@ Assets, consumed assets, serial mapping roles, evidence roles, request and
 report objects all reject unknown keys and duplicates. Evidence is canonical
 `factory-evidence://sha256/<digest>` and must bind exactly to its lowercase
 digest. On failed, timed-out, or cancelled execution, the client writes a
-validated, sanitized `vem-vm-host-adapter-diagnostic/v1` artifact for upload.
+validated, sanitized `vem-vm-host-adapter-diagnostic/v2` artifact for upload.
 On `SIGINT` or `SIGTERM`, it aborts the active request, waits for the adapter
 process group after `SIGTERM` and `SIGKILL` escalation, and completes recovery
 cleanup before exiting; workflow `always()` cleanup remains the lifecycle
@@ -412,9 +415,8 @@ input selects an executable. Repository workflows invoke
 `scripts/testbed/run-vm-host-adapter.mjs`, which writes only the sanitized
 report for upload. `scripts/testbed/fake-vm-host-adapter.mjs` is the
 platform-neutral deterministic contract fixture for success, failure, timeout,
-cancellation, and evidence-mismatch tests. The retained legacy libvirt adapter
-is not part of this workflow contract and remains only until Issue 13 proves
-the host replacement.
+cancellation, and evidence-mismatch tests. No platform adapter implementation
+is part of this workflow contract.
 
 ## Maintenance Control Plane
 
@@ -511,8 +513,8 @@ repository identity, workflow identity, ref, event, SHA, run ID, and configured
 trust policy before issuing a run-bound automation token. OIDC trust policy is
 deployment configuration, not an Admin UI setting. It allowlists both the
 registered runner peer UUIDs and target Platform Machine codes; an active peer
-outside that list is not an automation identity. `sshpass`, `SSHPASS`, and
-`VEM_TESTBED_WINDOWS_PASSWORD` are not part of the accepted workflow.
+outside that list is not an automation identity. Password SSH helpers and the
+testbed Windows password secret are not part of the accepted workflow.
 
 VM Runtime Acceptance exchanges OIDC only with an independently deployed
 Maintenance control-plane. The ephemeral business Service API used by a test
@@ -643,9 +645,19 @@ The Windows acceptance requires:
 - a virtual Windows default audio endpoint and host-side PCM/WAV capture;
 - real Tauri native audio playback with non-silent captured frames;
 - an active kiosk console session, `machine.exe` as the foreground window,
-  WebView route/DOM evidence, and a platform framebuffer screenshot;
+  an exact `http://tauri.localhost/#/` WebView route, a same-session CDP
+  `#app` visibility/non-empty-DOM probe, and a valid 1080x1920 platform
+  framebuffer PNG screenshot;
 - daemon `sell_ready`, real Admin API and MQTT interaction, simulated payment,
-  and a successful dispense flow.
+  and a successful dispense flow driven by scanner and lower-controller frames
+  from one serial session. The serial capture binds each sale to its concrete
+  order, payment, and vending-command identifiers. It records frame digests,
+  lengths, and sequence numbers from the guest serial session, never a host
+  semantic sidecar. Malformed-frame, device-disconnect, scanner-timeout, and
+  dispense-failure paths are acceptance cases and must fail without inventing
+  successful sale evidence. Scanner plaintext is an injection-only protected
+  input and must not appear in reports, evidence uploads, adapter work roots,
+  or sidecars.
 
 Application-level audio device selection is not added. VEM uses the Windows
 default output; physical 3.5 mm speaker wiring, direction, audibility, and
@@ -674,15 +686,16 @@ SBOM, provenance, clean-Windows conformance evidence, and VEM approval.
 
 ## Required Hard Migration
 
-Acceptance of this architecture requires deleting, not retaining, the old paths:
+Acceptance of this architecture requires deleting, not retaining, superseded
+paths:
 
-- repository-owned Unraid/libvirt VM host adapters and allowlists;
-- `/mnt/user` and `unraid://` values in workflow contracts and normative source
-  schemas;
-- static Service API relay plans and iptables command rendering;
-- Windows Capability or online OpenSSH installation, optional WireGuard installation, and floating package sources;
+- repository-owned platform adapters, host filesystem paths, and destructive
+  allowlists;
+- static control-plane renderers or host command generation;
+- optional or online remote-access package installation and floating package
+  sources;
 - per-session `/32` route generation on machine configs;
-- password SSH, `sshpass`, and the Windows testbed password secret;
+- password SSH and the Windows testbed password secret;
 - daemon mock/TCP hardware paths as evidence for Windows simulated-hardware
   readiness;
 - VEM-side repackaging of the production Vision implementation.

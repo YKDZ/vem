@@ -159,7 +159,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
 
     for (const forbidden of [
       /inputs\.(?:base_image|overlay_disk|target_vm)/,
-      /\/mnt\/user|unraid:\/\/|qcow2|libvirt/i,
+      /host filesystem path|platform-specific adapter|qcow2|libvirt/i,
       /VEM_VM_HOST_ADAPTER:\s*\$\{\{/,
     ]) {
       assert.doesNotMatch(workflow, forbidden);
@@ -195,6 +195,15 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       acceptanceBlock,
       /--certificate\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519-cert\.pub"/,
     );
+    assert.match(acceptanceBlock, /kiosk\.cdpListenerProcessId/);
+    assert.match(
+      acceptanceBlock,
+      /kiosk\.cdpListenerSessionId !== kiosk\.sessionId/,
+    );
+    assert.match(
+      acceptanceBlock,
+      /kiosk\.cdpMachineAncestorProcessId !== kiosk\.processId/,
+    );
     assert.doesNotMatch(acceptanceBlock, /sshpass|SSHPASS/);
     assert.doesNotMatch(acceptanceBlock, /MAINTENANCE_RELAY_WINDOWS_SSH_HOST/);
     assert.doesNotMatch(workflow, /vm_wireguard_ip/);
@@ -207,6 +216,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(conformance, /VEM_VM_HOST_FACTORY_ISO_ID/);
     assert.match(conformance, /VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID/);
+    assert.match(conformance, /test -x "\$VEM_VM_HOST_ADAPTER"/);
+    assert.match(conformance, /sha256sum "\$VEM_VM_HOST_ADAPTER"/);
+    assert.match(conformance, /VEM_VM_HOST_EXPECTED_ADAPTER_SHA256/);
+    assert.match(
+      restoreBlock,
+      /report\.adapter\?\.identity !== process\.env\.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY/,
+    );
+    assert.doesNotMatch(workflow, /VEM_VM_HOST_CONFORMANCE_KIOSK_/);
     assert.doesNotMatch(conformance, /VEM_VM_HOST_ADAPTER_CONFORMANCE/);
   });
 
@@ -302,16 +319,80 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       workflow,
       "Capture Windows Default Audio Evidence Through Host Adapter",
     );
+    const bindAudioSession = stepBlock(
+      workflow,
+      "Bind Active Kiosk Session For Native Audio Capture",
+    );
+    const verifyAudio = stepBlock(
+      workflow,
+      "Verify Windows Native Audio Evidence",
+    );
     const cleanup = stepBlock(workflow, "Cleanup VM Host Adapter Overlay");
 
     assert.doesNotMatch(restore, /windowsSshReadiness=failed/);
     assert.match(display, /if:\s+success\(\)/);
+    assert.match(display, /--tauri-route\s+"\$VEM_ACTIVE_KIOSK_TAURI_ROUTE"/);
     assert.match(audio, /if:\s+success\(\)/);
+    assert.match(bindAudioSession, /win10-runtime-acceptance-report\.json/);
+    assert.match(bindAudioSession, /value\.runtimeAcceptanceReport/);
+    assert.doesNotMatch(
+      bindAudioSession,
+      /runtimeAcceptanceReport\s*\?\?\s*value/,
+    );
+    assert.match(bindAudioSession, /kiosk\?\.sessionUser !== "VEMKiosk"/);
+    assert.match(bindAudioSession, /typeof kiosk\.cdpTargetId !== "string"/);
+    assert.match(bindAudioSession, /A-Za-z0-9\._:-.*8,256/);
+    assert.match(bindAudioSession, /VEM_ACTIVE_KIOSK_CDP_TARGET_ID/);
+    assert.match(bindAudioSession, /VEM_ACTIVE_KIOSK_SESSION_ID/);
+    assert.match(
+      display,
+      /--cdp-target-id\s+"\$VEM_ACTIVE_KIOSK_CDP_TARGET_ID"/,
+    );
+    assert.match(audio, /--active-kiosk-session-user/);
+    assert.match(audio, /--active-kiosk-session-id/);
+    assert.match(verifyAudio, /windows-native-audio-evidence\.mjs/);
+    assert.match(verifyAudio, /windows-native-audio-evidence\.json/);
     assert.match(cleanup, /if:\s+always\(\)/);
     assert.match(cleanup, /--operation cleanup/);
     assert.ok(workflow.indexOf(restore) < workflow.indexOf(acceptance));
-    assert.ok(workflow.indexOf(acceptance) < workflow.indexOf(display));
+    assert.ok(
+      workflow.indexOf(acceptance) < workflow.indexOf(bindAudioSession),
+    );
+    assert.ok(workflow.indexOf(bindAudioSession) < workflow.indexOf(display));
     assert.ok(workflow.indexOf(display) < workflow.indexOf(audio));
-    assert.ok(workflow.indexOf(audio) < workflow.indexOf(cleanup));
+    assert.ok(workflow.indexOf(audio) < workflow.indexOf(verifyAudio));
+    assert.ok(workflow.indexOf(verifyAudio) < workflow.indexOf(cleanup));
+  });
+
+  it("runs the production serial COM and scanner sale conformance with protected scanner input", () => {
+    const workflow = readWorkflow();
+    const prepareScanner = stepBlock(
+      workflow,
+      "Prepare Protected Simulated Scanner Code",
+    );
+    const runtime = stepBlock(workflow, "Run VM Runtime Acceptance");
+    const removeScanner = stepBlock(
+      workflow,
+      "Remove Protected Simulated Scanner Code",
+    );
+    const display = stepBlock(
+      workflow,
+      "Capture Windows Display Evidence Through Host Adapter",
+    );
+
+    assert.match(runtime, /VEM_VM_HOST_SCANNER_CODE_FILE/);
+    assert.match(runtime, /--scanner-code-file/);
+    assert.match(runtime, /--approved-runtime-base/);
+    assert.match(runtime, /stat -c '%a'/);
+    assert.doesNotMatch(runtime, /VEM_VM_HOST_SCANNER_CODE(?:[^_]|$)/);
+    assert.doesNotMatch(runtime, /mock-payment/);
+    assert.match(prepareScanner, /umask 077/);
+    assert.match(prepareScanner, /RUNNER_TEMP/);
+    assert.match(prepareScanner, /chmod 600/);
+    assert.match(prepareScanner, /randomInt/);
+    assert.match(removeScanner, /if: always\(\)/);
+    assert.ok(workflow.indexOf(prepareScanner) < workflow.indexOf(runtime));
+    assert.ok(workflow.indexOf(runtime) < workflow.indexOf(removeScanner));
+    assert.ok(workflow.indexOf(runtime) < workflow.indexOf(display));
   });
 });

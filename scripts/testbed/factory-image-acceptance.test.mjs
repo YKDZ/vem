@@ -222,14 +222,18 @@ describe("Factory Image Acceptance lifecycle", () => {
   it("materializes only the digest-verified display export without a host path", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-factory-image-display-"));
     const input = typedInput(root);
-    const exportDirectory = join(root, "runner-export");
+    const exportDirectory = join(root, "evidence", "adapter-export");
     const bytes = Buffer.from("display screenshot evidence\n");
     const hash = createHash("sha256").update(bytes).digest("hex");
     const fileName = `${hash}.png`;
-    const prior = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
-    mkdirSync(exportDirectory, { recursive: true });
-    writeFileSync(join(exportDirectory, fileName), bytes);
-    process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR = exportDirectory;
+    const operationReference = "vm-operation://op-0123456789abcdef";
+    const operationDirectory = join(
+      exportDirectory,
+      input.runId,
+      "op-0123456789abcdef",
+    );
+    mkdirSync(operationDirectory, { recursive: true });
+    writeFileSync(join(operationDirectory, fileName), bytes);
     try {
       assert.deepEqual(
         materializeFactoryDisplayEvidence(input, {
@@ -241,6 +245,7 @@ describe("Factory Image Acceptance lifecycle", () => {
               fileName,
             },
           ],
+          request: { runId: input.runId, operationReference },
         }),
         {
           status: "copied",
@@ -254,7 +259,7 @@ describe("Factory Image Acceptance lifecycle", () => {
         readFileSync(join(input.evidence.root, "screenshots", fileName)),
         bytes,
       );
-      writeFileSync(join(exportDirectory, fileName), "tampered");
+      writeFileSync(join(operationDirectory, fileName), "tampered");
       assert.throws(
         () =>
           materializeFactoryDisplayEvidence(input, {
@@ -266,13 +271,11 @@ describe("Factory Image Acceptance lifecycle", () => {
                 fileName,
               },
             ],
+            request: { runId: input.runId, operationReference },
           }),
         /does not match adapter digest/,
       );
     } finally {
-      if (prior === undefined)
-        delete process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
-      else process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR = prior;
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -288,12 +291,15 @@ describe("Factory Image Acceptance lifecycle", () => {
         process.env.VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID,
       VEM_VM_HOST_ADAPTER_FAIL_OPERATION:
         process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION,
+      VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY:
+        process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY,
     };
     try {
       process.env.RUNNER_TEMP = root;
       process.env.VEM_VM_HOST_ADAPTER = adapter;
       process.env.VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID = `factory-cas://sha256/${"d".repeat(64)}`;
       process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION = "clean-install";
+      process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
       await assert.rejects(() =>
         runAdmittedFactoryImageAcceptanceLifecycle(input, {
           manifestIdentity: input.factory.manifestIdentity,
@@ -315,6 +321,7 @@ describe("Factory Image Acceptance lifecycle", () => {
         report.reports.cleanup.observed.baseIdentity,
         `factory-cas://sha256/${"a".repeat(64)}`,
       );
+      assert.equal(report.reports.cleanup.request.factoryMedia, null);
     } finally {
       for (const [key, value] of Object.entries(environment)) {
         if (value === undefined) delete process.env[key];
@@ -350,6 +357,8 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
         process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION,
       VEM_VM_HOST_ADAPTER_OPERATION_LOG:
         process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG,
+      VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY:
+        process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY,
     };
     try {
       process.env.PATH = `${bin}:${process.env.PATH}`;
@@ -359,6 +368,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION =
         "create-disposable-overlay";
       process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG = adapterLog;
+      process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
       await assert.rejects(() =>
         runAdmittedFactoryImageAcceptanceLifecycle(input, {
           manifestIdentity: input.factory.manifestIdentity,
@@ -375,13 +385,131 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
         report.reports.postCleanup.captureApprovedBase.observed.baseIdentity,
         `factory-cas://sha256/${"f".repeat(64)}`,
       );
+      assert.equal(
+        report.reports.postCleanup.captureApprovedBase.request.factoryMedia
+          .outputIdentity,
+        input.factory.isoIdentity,
+      );
       assert.equal(report.reports.postCleanup.preclaimEvidence.unchanged, true);
+      assert.equal(
+        report.reports.postCleanup.finalCleanup.cleanup.overlayDisposition,
+        "removed",
+      );
+      assert.equal(
+        report.reports.postCleanup.finalCleanup.observed.baseIdentity,
+        `factory-cas://sha256/${"f".repeat(64)}`,
+      );
       assert.equal(
         readFileSync(adapterLog, "utf8")
           .trim()
           .split("\n")
           .filter((operation) => operation === "capture-approved-base").length,
         2,
+      );
+      const operations = readFileSync(adapterLog, "utf8").trim().split("\n");
+      assert.equal(operations.at(-1), "cleanup");
+      assert.ok(
+        operations.lastIndexOf("cleanup") >
+          operations.lastIndexOf("capture-approved-base"),
+      );
+    } finally {
+      for (const [key, value] of Object.entries(environment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs terminal cleanup when post-cleanup base verification fails", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-factory-image-final-cleanup-"),
+    );
+    const input = typedInput(root);
+    const bin = join(root, "bin");
+    const ssh = join(bin, "ssh");
+    const adapterLog = join(root, "adapter-operations.log");
+    const recaptureAdapter = join(root, "recapture-mismatch-adapter.mjs");
+    const captureCount = join(root, "capture-count");
+    mkdirSync(bin);
+    writeFileSync(
+      ssh,
+      `#!/bin/sh
+printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"factory-preclaim-verification","runId":"RUN-15-LIFECYCLE","expectedUnclaimedMachineCode":"VEM-TESTBED-WINVM-01","readOnly":true,"ok":true,"checks":{"factoryRuntime":{"ok":true},"absentMachineIdentity":{"asserted":true}}}'
+`,
+      { mode: 0o700 },
+    );
+    writeFileSync(
+      recaptureAdapter,
+      `import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const args = process.argv.slice(2);
+const requestPath = args[args.indexOf("--request") + 1];
+const reportPath = args[args.indexOf("--report") + 1];
+const request = JSON.parse(readFileSync(requestPath, "utf8"));
+const result = spawnSync(process.execPath, [${JSON.stringify(adapter)}, ...args], {
+  env: process.env,
+  encoding: "utf8",
+});
+process.stdout.write(result.stdout ?? "");
+process.stderr.write(result.stderr ?? "");
+if (result.status !== 0) process.exit(result.status ?? 1);
+if (request.operation === "capture-approved-base") {
+  const count = existsSync(${JSON.stringify(captureCount)})
+    ? Number(readFileSync(${JSON.stringify(captureCount)}, "utf8")) + 1
+    : 1;
+  writeFileSync(${JSON.stringify(captureCount)}, String(count));
+  if (count === 2) {
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    report.observed.baseIdentity = "factory-cas://sha256/${"0".repeat(64)}";
+    writeFileSync(reportPath, JSON.stringify(report));
+  }
+}
+`,
+      { mode: 0o700 },
+    );
+    chmodSync(ssh, 0o700);
+    chmodSync(recaptureAdapter, 0o700);
+    writeFileSync(input.ephemeralPlatform.evidencePath, "{}\n");
+    const environment = {
+      PATH: process.env.PATH,
+      RUNNER_TEMP: process.env.RUNNER_TEMP,
+      VEM_VM_HOST_ADAPTER: process.env.VEM_VM_HOST_ADAPTER,
+      VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID:
+        process.env.VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID,
+      VEM_VM_HOST_ADAPTER_FAIL_OPERATION:
+        process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION,
+      VEM_VM_HOST_ADAPTER_OPERATION_LOG:
+        process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG,
+      VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY:
+        process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY,
+    };
+    try {
+      process.env.PATH = `${bin}:${process.env.PATH}`;
+      process.env.RUNNER_TEMP = root;
+      process.env.VEM_VM_HOST_ADAPTER = recaptureAdapter;
+      process.env.VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID = `factory-cas://sha256/${"d".repeat(64)}`;
+      process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION =
+        "create-disposable-overlay";
+      process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG = adapterLog;
+      process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
+      await assert.rejects(
+        () =>
+          runAdmittedFactoryImageAcceptanceLifecycle(input, {
+            manifestIdentity: input.factory.manifestIdentity,
+            provenanceDigest: input.factory.provenanceDigest,
+            outputIdentity: input.factory.isoIdentity,
+            outputDigest: `sha256:${"a".repeat(64)}`,
+            effectiveInputsDigest: `sha256:${"e".repeat(64)}`,
+          }),
+        /post-cleanup approved base identity or digest changed/,
+      );
+      const operations = readFileSync(adapterLog, "utf8").trim().split("\n");
+      assert.equal(operations.at(-1), "cleanup");
+      assert.ok(
+        operations.lastIndexOf("cleanup") >
+          operations.lastIndexOf("capture-approved-base"),
       );
     } finally {
       for (const [key, value] of Object.entries(environment)) {
@@ -409,6 +537,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
           RUNNER_TEMP: root,
           VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH: inputPath,
           VEM_VM_HOST_ADAPTER: adapter,
+          VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY: "1",
           VEM_VM_HOST_ADAPTER_OPERATION_LOG: adapterLog,
           VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID: `factory-cas://sha256/${"d".repeat(64)}`,
         },
@@ -436,6 +565,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
           RUNNER_TEMP: root,
           VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH: inputPath,
           VEM_VM_HOST_ADAPTER: adapter,
+          VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY: "1",
         },
       });
       assert.equal(result.status, 0, result.stderr);

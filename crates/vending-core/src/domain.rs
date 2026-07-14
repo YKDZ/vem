@@ -127,6 +127,7 @@ pub struct InternalCurrentTransactionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalVendingCommandSummary {
+    pub command_id: Option<String>,
     pub command_no: Option<String>,
     pub status: Option<String>,
     pub last_error: Option<String>,
@@ -166,6 +167,7 @@ pub struct InternalCurrentTransactionSnapshot {
     pub order_id: Option<String>,
     pub order_no: Option<String>,
     pub product_summary: Option<serde_json::Value>,
+    pub payment_id: Option<String>,
     pub payment_no: Option<String>,
     pub payment_method: Option<String>,
     pub payment_provider: Option<String>,
@@ -267,6 +269,7 @@ mod tests {
             order_id: Some("ORDER-ID".to_string()),
             order_no: Some("ORDER-001".to_string()),
             product_summary: Some(serde_json::json!({"name":"cola"})),
+            payment_id: Some("PAYMENT-ID".to_string()),
             payment_no: Some("PAY-1".to_string()),
             payment_method: Some("payment_code".to_string()),
             payment_provider: Some("mock".to_string()),
@@ -275,6 +278,7 @@ mod tests {
             order_status: Some("waiting_payment".to_string()),
             total_amount_cents: Some(1000),
             vending: Some(InternalVendingCommandSummary {
+                command_id: Some("COMMAND-ID".to_string()),
                 command_no: Some("CMD-1".to_string()),
                 status: Some("created".to_string()),
                 last_error: None,
@@ -301,6 +305,7 @@ mod tests {
         };
         let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
         assert!(value.contains("\"paymentUrl\""));
+        assert!(value.contains("\"paymentId\":\"PAYMENT-ID\""));
         assert!(value.contains("\"paymentStatus\""));
         assert!(value.contains("\"paymentCodeAttempt\""));
         assert!(value.contains("\"maskedAuthCode\":\"6212****3456\""));

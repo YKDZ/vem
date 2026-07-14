@@ -221,6 +221,7 @@ describe("Daemon IPC Contract Area", () => {
         ...awaitingPaymentTransaction,
         nextAction: "dispensing",
         vending: {
+          commandId: "550e8400-e29b-41d4-a716-446655440201",
           commandNo: "CMD-IPC-001",
           status: "pending",
           lastError: null,
@@ -235,6 +236,7 @@ describe("Daemon IPC Contract Area", () => {
         ...awaitingPaymentTransaction,
         nextAction: "dispensing",
         vending: {
+          commandId: "550e8400-e29b-41d4-a716-446655440201",
           commandNo: "CMD-IPC-001",
           status: "pending",
           lastError: null,

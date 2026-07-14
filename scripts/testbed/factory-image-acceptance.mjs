@@ -22,6 +22,7 @@ import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.
 import {
   createVmHostAdapterRequest,
   runVmHostAdapter,
+  VM_HOST_ADAPTER_CONTRACT_VERSION,
 } from "./vm-host-adapter-contract.mjs";
 
 const INPUT_SCHEMA_VERSION = "vem-factory-image-acceptance-input/v1";
@@ -280,7 +281,13 @@ function lifecycleReference(input) {
   return `vm-lifecycle://${input.runId.toLowerCase()}.${seed}`;
 }
 
-function adapterRequest(input, operation, assets, factoryMedia = null) {
+function adapterRequest(
+  input,
+  operation,
+  assets,
+  factoryMedia = null,
+  displayBinding = null,
+) {
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   const capabilities = {
     "clean-install": [
@@ -307,8 +314,22 @@ function adapterRequest(input, operation, assets, factoryMedia = null) {
     "capture-display": ["display-capture", "cancellation", "cleanup"],
     cleanup: ["cleanup", "cancellation"],
   }[operation];
+  const visualChallenge =
+    operation === "capture-display"
+      ? {
+          token: randomBytes(32).toString("hex"),
+          colorRgb: [...randomBytes(3)].map((component) => component || 1),
+          region: {
+            x: randomBytes(1)[0] % 1033,
+            y: randomBytes(1)[0] % 1897,
+            width: 48,
+            height: 24,
+          },
+        }
+      : null;
   return createVmHostAdapterRequest({
-    schemaVersion: "vem-vm-host-adapter-request/v1",
+    contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
+    schemaVersion: "vem-vm-host-adapter-request/v2",
     kind: "vm-host-adapter-request",
     operation,
     runId: input.runId,
@@ -318,8 +339,19 @@ function adapterRequest(input, operation, assets, factoryMedia = null) {
     cancelOperationReference: null,
     target: { identity: input.targetIdentity },
     factoryMedia,
+    displayCapture:
+      operation === "capture-display"
+        ? {
+            activeKioskSession: displayBinding.activeKioskSession,
+            tauriRoute: displayBinding.tauriRoute,
+            cdpTargetId: displayBinding.cdpTargetId,
+            visualChallenge,
+          }
+        : null,
+    audioCapture: null,
     assets,
     requestedCapabilities: capabilities,
+    serialSession: null,
   });
 }
 
@@ -496,7 +528,13 @@ function verifyRuntimeResult(path) {
   if (
     report.ok !== true ||
     runtime?.schemaVersion !== "runtime-acceptance-report/v1" ||
-    runtime.result?.runtimeReady?.asserted !== true
+    runtime.result?.runtimeReady?.asserted !== true ||
+    runtime.kioskRuntime?.sessionUser !== "VEMKiosk" ||
+    !Number.isInteger(runtime.kioskRuntime?.sessionId) ||
+    runtime.kioskRuntime.sessionId < 1 ||
+    !/^http:\/\/tauri\.localhost\/#\//.test(runtime.kioskRuntime?.url ?? "") ||
+    typeof runtime.kioskRuntime?.cdpTargetId !== "string" ||
+    runtime.kioskRuntime.cdpTargetId.length === 0
   ) {
     throw new Error(
       "runtime acceptance did not produce a runtime-ready assertion",
@@ -507,6 +545,14 @@ function verifyRuntimeResult(path) {
     runtimeReady: {
       status: runtime.result.runtimeReady.status,
       asserted: true,
+    },
+    displayBinding: {
+      activeKioskSession: {
+        sessionUser: runtime.kioskRuntime.sessionUser,
+        sessionId: runtime.kioskRuntime.sessionId,
+      },
+      tauriRoute: runtime.kioskRuntime.url,
+      cdpTargetId: runtime.kioskRuntime.cdpTargetId,
     },
   };
 }
@@ -635,12 +681,14 @@ export function materializeFactoryDisplayEvidence(input, report) {
       "display capture report did not name materialized evidence",
     );
   }
-  const exportDirectory = absolutePath(
-    process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR,
-    "VEM_VM_HOST_EVIDENCE_EXPORT_DIR",
+  const exportDirectory = join(input.evidence.root, "adapter-export");
+  const operationDirectory = join(
+    exportDirectory,
+    report.request.runId,
+    report.request.operationReference.slice("vm-operation://".length),
   );
-  const source = resolve(exportDirectory, evidence.fileName);
-  if (!source.startsWith(`${resolve(exportDirectory)}${sep}`)) {
+  const source = resolve(operationDirectory, evidence.fileName);
+  if (!source.startsWith(`${resolve(operationDirectory)}${sep}`)) {
     throw new Error(
       "display evidence fileName escapes runner export directory",
     );
@@ -689,14 +737,21 @@ export function adapterEnvironment(operation, environment = process.env) {
   return { ...environment, VEM_VM_HOST_ADAPTER_TIMEOUT_MS: timeout };
 }
 
-async function runAdapter(input, operation, assets, media = null) {
+async function runAdapter(
+  input,
+  operation,
+  assets,
+  media = null,
+  displayBinding = null,
+) {
   return runVmHostAdapter({
-    request: adapterRequest(input, operation, assets, media),
+    request: adapterRequest(input, operation, assets, media, displayBinding),
     workDirectory: join(
       process.env.RUNNER_TEMP ?? ".",
       "factory-image-acceptance",
     ),
     environment: adapterEnvironment(operation),
+    evidenceDirectory: join(input.evidence.root, "adapter-export"),
   });
 }
 
@@ -792,7 +847,13 @@ export async function runAdmittedFactoryImageAcceptanceLifecycle(
     reports.runtimeAcceptance = verifyRuntimeResult(
       verifierOutput(input, "runtime-acceptance.json"),
     );
-    const display = await runAdapter(input, "capture-display", [base]);
+    const display = await runAdapter(
+      input,
+      "capture-display",
+      [base],
+      null,
+      reports.runtimeAcceptance.displayBinding,
+    );
     reports.display = {
       ...display,
       materializedEvidence: materializeFactoryDisplayEvidence(input, display),
@@ -805,29 +866,39 @@ export async function runAdmittedFactoryImageAcceptanceLifecycle(
       assertCleanup(reports.cleanup);
     } finally {
       if (capturedBase && preclaimEvidence) {
-        const recapture = await runAdapter(
-          input,
-          "capture-approved-base",
-          [iso],
-          factoryMedia(input),
-        );
-        assertSameBase(capturedBase, recapture);
-        const rehashedPreclaimEvidence = readAndHashRegularFile(
-          verifierOutput(input, "factory-preclaim-verify.json"),
-          "Factory preclaim verifier evidence",
-        );
-        if (rehashedPreclaimEvidence.digest !== preclaimEvidence.digest) {
-          throw new Error(
-            "Factory preclaim verifier evidence changed after cleanup",
+        try {
+          const recapture = await runAdapter(
+            input,
+            "capture-approved-base",
+            [iso],
+            factoryMedia(input),
           );
+          assertSameBase(capturedBase, recapture);
+          const rehashedPreclaimEvidence = readAndHashRegularFile(
+            verifierOutput(input, "factory-preclaim-verify.json"),
+            "Factory preclaim verifier evidence",
+          );
+          if (rehashedPreclaimEvidence.digest !== preclaimEvidence.digest) {
+            throw new Error(
+              "Factory preclaim verifier evidence changed after cleanup",
+            );
+          }
+          reports.postCleanup = {
+            captureApprovedBase: recapture,
+            preclaimEvidence: {
+              digest: rehashedPreclaimEvidence.digest,
+              unchanged: true,
+            },
+          };
+        } finally {
+          reports.postCleanup ??= {};
+          reports.postCleanup.finalCleanup = await runAdapter(
+            input,
+            "cleanup",
+            [capturedBase],
+          );
+          assertCleanup(reports.postCleanup.finalCleanup);
         }
-        reports.postCleanup = {
-          captureApprovedBase: recapture,
-          preclaimEvidence: {
-            digest: rehashedPreclaimEvidence.digest,
-            unchanged: true,
-          },
-        };
       }
       mkdirSync(dirname(input.evidence.lifecycleReport), {
         recursive: true,

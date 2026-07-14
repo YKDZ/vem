@@ -488,12 +488,19 @@ export const createMachineOrderSchema = z
     ) {
       if (
         value.paymentProviderCode === undefined ||
-        !realPaymentProviderCodes.has(value.paymentProviderCode)
+        (!realPaymentProviderCodes.has(value.paymentProviderCode) &&
+          !(
+            value.paymentMethod === "payment_code" &&
+            value.paymentProviderCode === "mock"
+          ))
       ) {
         ctx.addIssue({
           code: "custom",
           path: ["paymentProviderCode"],
-          message: `${value.paymentMethod} payment method requires alipay or wechat_pay provider`,
+          message:
+            value.paymentMethod === "qr_code"
+              ? "qr_code payment method requires alipay or wechat_pay provider"
+              : "payment_code payment method requires alipay, wechat_pay, or mock provider",
         });
       }
       return;
@@ -506,6 +513,17 @@ export const createMachineOrderSchema = z
     });
   });
 
+export const createMachineOrderResponseSchema = z.object({
+  orderId: z.uuid(),
+  orderNo: z.string().min(1).max(64),
+  paymentId: z.uuid(),
+  paymentNo: z.string().min(1).max(64),
+  paymentUrl: z.string().nullable(),
+  expiresAt: z.iso.datetime(),
+  totalAmountCents: z.int().nonnegative(),
+  paymentProviderCode: machinePaymentProviderCodeSchema.nullable().optional(),
+});
+
 export const machineOrderStatusQuerySchema = z.object({
   machineCode: z.string().min(1).max(64),
 });
@@ -516,7 +534,7 @@ export const machineOrderStatusNextActionSchema =
 export const machinePaymentOptionKeySchema = z
   .string()
   .regex(
-    /^(mock:mock|qr_code:(wechat_pay|alipay)|payment_code:(wechat_pay|alipay))$/,
+    /^(mock:mock|qr_code:(wechat_pay|alipay)|payment_code:(mock|wechat_pay|alipay))$/,
   );
 
 export const paymentCodeSourceSchema = z.enum([
@@ -574,6 +592,9 @@ export const machinePaymentOptionsResponseSchema = z.object({
 export type MachinePaymentProviderCode = z.infer<
   typeof machinePaymentProviderCodeSchema
 >;
+export type CreateMachineOrderResponse = z.infer<
+  typeof createMachineOrderResponseSchema
+>;
 export type MachinePaymentOptionKey = z.infer<
   typeof machinePaymentOptionKeySchema
 >;
@@ -591,6 +612,7 @@ export const machineOrderStatusResponseSchema = z.object({
   fulfillmentState: orderFulfillmentStateSchema,
   totalAmountCents: z.int().nonnegative(),
   payment: z.object({
+    paymentId: z.string().min(1).max(128),
     paymentNo: z.string().min(1).max(64),
     method: paymentMethodSchema,
     status: paymentStatusSchema,
@@ -628,6 +650,7 @@ export const machineOrderStatusResponseSchema = z.object({
     .nullable(),
   vending: z
     .object({
+      commandId: z.string().min(1).max(128),
       commandNo: z.string().min(1).max(64),
       status: vendingCommandStatusSchema,
       sentAt: z.iso.datetime().nullable(),

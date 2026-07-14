@@ -13,21 +13,25 @@ describe("Maintenance Relay public runbook", () => {
   it("documents the pull-based relay migration contract", () => {
     const runbook = readRunbook();
     for (const text of [
-      "static relay planner",
+      "legacy Service API renderer",
       "apps/maintenance-relay",
       "MAINTENANCE_RELAY_CREDENTIAL",
       "maintenance_relay",
       "wg syncconf",
       "ListenPort = 51820",
       "relay runtime tmpfs",
-      "spawn argument array",
+      "spawn argument\\s+array",
       "inet vem_maintenance_relay",
       "kernel timeouts",
       "source, target, protocol, and port tuples",
     ]) {
       assert.match(
         runbook,
-        new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        new RegExp(
+          text.includes("\\s+")
+            ? text
+            : text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        ),
       );
     }
     assert.match(runbook, /never accepts\s+API-provided shell text/);

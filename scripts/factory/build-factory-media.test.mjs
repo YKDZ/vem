@@ -1581,6 +1581,9 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(prepareOobe, /VEMFactoryOobeCleanup/);
       assert.match(prepareOobe, /oobe-bootstrap-status\.json/);
       assert.match(prepareOobe, /'ingest-personalization'/);
+      assert.match(prepareOobe, /'suppress-oobe-privacy'/);
+      assert.match(prepareOobe, /DisablePrivacyExperience/);
+      assert.match(prepareOobe, /PrivacyConsentStatus/);
       assert.match(prepareOobe, /'bootstrap-runtime'/);
       assert.match(prepareOobe, /Write-BootstrapStatus 'failed'/);
       assert.doesNotMatch(

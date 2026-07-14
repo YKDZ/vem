@@ -907,6 +907,7 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
         status: "enabled",
         capabilities: {
           createPaymentIntent: true,
+          paymentCode: true,
           webhook: true,
           refund: true,
         },
@@ -919,6 +920,7 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
           status: "enabled",
           capabilities: {
             createPaymentIntent: true,
+            paymentCode: true,
             webhook: true,
             refund: true,
           },

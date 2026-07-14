@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-
-import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
 import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+
+import {
+  createScannerCodeDescriptor,
   createVmHostAdapterRequest,
   runVmHostAdapter,
+  VM_HOST_ADAPTER_CONTRACT_VERSION,
   VmHostAdapterExecutionError,
 } from "./vm-host-adapter-contract.mjs";
 
@@ -43,6 +50,36 @@ const CAPABILITIES_BY_OPERATION = {
   ],
   "capture-display": ["display-capture", "cancellation", "cleanup"],
   "capture-default-audio": ["default-audio-capture", "cancellation", "cleanup"],
+  "start-serial-session": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "cancellation",
+    "cleanup",
+  ],
+  "inject-scanner-code": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "serial:scanner-injection",
+    "cancellation",
+    "cleanup",
+  ],
+  "collect-serial-evidence": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "serial:evidence",
+    "cancellation",
+    "cleanup",
+  ],
+  "stop-serial-session": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "cleanup",
+    "cancellation",
+  ],
   cleanup: ["cleanup", "cancellation"],
   cancel: ["cancellation", "cleanup"],
 };
@@ -54,6 +91,12 @@ function readOption(name, { optional = false } = {}) {
     throw new Error(`${name} is required`);
   }
   return process.argv[index + 1];
+}
+
+function readOptions(name) {
+  return process.argv.flatMap((value, index) =>
+    value === name && process.argv[index + 1] ? [process.argv[index + 1]] : [],
+  );
 }
 
 function assetFromIdentity(role, identity) {
@@ -101,6 +144,173 @@ function factoryMediaForOperation(operation) {
   };
 }
 
+function audioCaptureForOperation(operation) {
+  if (operation !== "capture-default-audio") return null;
+  const sessionId = Number(readOption("--active-kiosk-session-id"));
+  if (!Number.isInteger(sessionId) || sessionId < 1)
+    throw new Error("--active-kiosk-session-id must be a positive integer");
+  return {
+    schemaVersion: "vm-default-audio-capture-request/v1",
+    activeKioskSession: {
+      sessionUser: readOption("--active-kiosk-session-user"),
+      sessionId,
+    },
+    nativeCue: {
+      source: "tauri_native_audio",
+      command: "play_machine_audio",
+      challenge: randomBytes(32).toString("hex"),
+    },
+    threshold: {
+      minimumPeakAbsoluteSample: 512,
+      minimumNonSilentFrames: 24_000,
+      minimumDurationMs: 500,
+      minimumDistinctNonSilentSampleMagnitudes: 2,
+    },
+  };
+}
+
+function displayCaptureForOperation(operation) {
+  if (operation !== "capture-display") return null;
+  const sessionId = Number(readOption("--active-kiosk-session-id"));
+  if (!Number.isInteger(sessionId) || sessionId < 1)
+    throw new Error("--active-kiosk-session-id must be a positive integer");
+  const tauriRoute = readOption("--tauri-route");
+  if (!/^http:\/\/tauri\.localhost\/#\/(?:[^?#].*)?$/.test(tauriRoute))
+    throw new Error(
+      "--tauri-route must be a strict tauri.localhost hash route",
+    );
+  const rawChallenge = readOption("--visual-challenge-json", {
+    optional: true,
+  });
+  let visualChallenge;
+  if (rawChallenge) {
+    try {
+      visualChallenge = JSON.parse(rawChallenge);
+    } catch {
+      throw new Error("--visual-challenge-json must be valid JSON");
+    }
+  } else {
+    const bytes = randomBytes(8);
+    visualChallenge = {
+      token: randomBytes(32).toString("hex"),
+      colorRgb: [...randomBytes(3)].map((component) => component || 1),
+      region: {
+        x: bytes[0] % 1033,
+        y: bytes[1] % 1897,
+        width: 48,
+        height: 24,
+      },
+    };
+  }
+  return {
+    activeKioskSession: {
+      sessionUser: readOption("--active-kiosk-session-user"),
+      sessionId,
+    },
+    tauriRoute,
+    cdpTargetId: readOption("--cdp-target-id"),
+    visualChallenge,
+  };
+}
+
+function protectedScannerCode(operation) {
+  if (operation !== "inject-scanner-code") return undefined;
+  const fromFile = readOption("--scanner-code-file", { optional: true });
+  if (!fromFile || process.argv.includes("--scanner-code-stdin"))
+    throw new Error(
+      "inject-scanner-code requires exactly one protected scanner input: --scanner-code-file",
+    );
+  if (!isAbsolute(fromFile))
+    throw new Error(
+      "--scanner-code-file must be an absolute runner-owned path",
+    );
+  const runnerScope = resolve(process.env.RUNNER_TEMP ?? "");
+  const inputPath = resolve(fromFile);
+  if (
+    !runnerScope ||
+    (inputPath !== runnerScope && !inputPath.startsWith(`${runnerScope}${sep}`))
+  )
+    throw new Error("--scanner-code-file must be inside RUNNER_TEMP");
+  const inputStat = statSync(inputPath);
+  if (!inputStat.isFile() || (inputStat.mode & 0o777) !== 0o600)
+    throw new Error("--scanner-code-file must be a regular 0600 file");
+  if (
+    typeof process.getuid === "function" &&
+    typeof inputStat.uid === "number" &&
+    inputStat.uid !== process.getuid()
+  )
+    throw new Error("--scanner-code-file must be owned by the runner user");
+  try {
+    return readFileSync(inputPath, "utf8");
+  } finally {
+    rmSync(inputPath, { force: true });
+  }
+}
+
+function sessionBindingFromOptions() {
+  return {
+    serialSessionId: readOption("--serial-session-id"),
+    sessionBindingToken: readOption("--session-binding-token"),
+    startOperationReference: readOption("--start-operation-reference"),
+    deviceMappingDigest: readOption("--device-mapping-digest"),
+  };
+}
+
+function scannerInjectionFromOptions(operation, scannerCode) {
+  if (operation === "inject-scanner-code")
+    return {
+      operationNonce: null,
+      ...createScannerCodeDescriptor(scannerCode),
+    };
+  if (operation !== "collect-serial-evidence") return null;
+  return {
+    operationNonce: readOption("--scanner-injection-operation-nonce"),
+    scannerCodeDigest: readOption("--scanner-code-digest"),
+    scannerCodeByteLength: Number.parseInt(
+      readOption("--scanner-code-byte-length"),
+      10,
+    ),
+    scannerCodeSuffix: readOption("--scanner-code-suffix"),
+  };
+}
+
+function serialSessionForOperation(operation, scannerCode) {
+  if (
+    ![
+      "start-serial-session",
+      "inject-scanner-code",
+      "collect-serial-evidence",
+      "stop-serial-session",
+    ].includes(operation)
+  )
+    return null;
+  const isStart = operation === "start-serial-session";
+  return {
+    ...(isStart
+      ? {
+          serialSessionId: null,
+          sessionBindingToken: null,
+          startOperationReference: null,
+          deviceMappingDigest: null,
+        }
+      : sessionBindingFromOptions()),
+    deviceRoles: ["lower-controller", "scanner"],
+    scannerInjection: scannerInjectionFromOptions(operation, scannerCode),
+    saleCorrelationIds: readOptions("--sale-correlation-id"),
+    saleBindings: isStart
+      ? []
+      : readOptions("--sale-correlation-id").map((saleCorrelationId) => ({
+          saleCorrelationId,
+          orderId: readOption("--order-id"),
+          paymentId: readOption("--payment-id"),
+          vendingCommandId: readOption("--vending-command-id"),
+        })),
+    idempotencyCheck:
+      operation === "stop-serial-session" &&
+      process.argv.includes("--idempotency-check"),
+  };
+}
+
 async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
   if (!["clean-install", "capture-approved-base"].includes(operation))
     return null;
@@ -130,6 +340,8 @@ async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
     throw new Error(
       "Factory acceptance requires host-owned manifest, provenance, and ISO paths before adapter mutation",
     );
+  const { admitFactoryAcceptance } =
+    await import("../factory/factory-acceptance-admission.mjs");
   return admitFactoryAcceptance({
     manifestPath,
     provenancePath,
@@ -159,9 +371,16 @@ async function main() {
     .digest("hex")
     .slice(0, 32);
   const factoryMedia = factoryMediaForOperation(operation);
+  const displayCapture = displayCaptureForOperation(operation);
+  const audioCapture = audioCaptureForOperation(operation);
+  const scannerCode = protectedScannerCode(operation);
+  const serialSession = serialSessionForOperation(operation, scannerCode);
+  if (serialSession?.scannerInjection?.operationNonce === null)
+    serialSession.scannerInjection.operationNonce = nonce;
   const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
   const request = createVmHostAdapterRequest({
-    schemaVersion: "vem-vm-host-adapter-request/v1",
+    contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
+    schemaVersion: "vem-vm-host-adapter-request/v2",
     kind: "vm-host-adapter-request",
     operation,
     runId,
@@ -174,8 +393,11 @@ async function main() {
         : null,
     target: { identity: targetIdentity },
     factoryMedia,
+    displayCapture,
+    audioCapture,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
+    serialSession,
   });
   mkdirSync(dirname(out), { recursive: true });
   try {
@@ -183,7 +405,9 @@ async function main() {
       const report = await runVmHostAdapter({
         request,
         workDirectory: process.env.RUNNER_TEMP ?? ".vm-host-adapter-tmp",
+        evidenceDirectory: join(dirname(out), "evidence"),
         signal: cancellation.signal,
+        scannerCode,
       });
       if (
         admission &&

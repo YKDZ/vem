@@ -65,10 +65,11 @@ const emptyTransaction = {
   orderId: null,
   orderNo: null,
   productSummary: null,
+  paymentId: null,
   paymentNo: null,
   paymentMethod: null,
   paymentProvider: null,
-  paymentUrl: null,
+  paymentUrl: "https://pay.example/qr",
   paymentStatus: null,
   orderStatus: null,
   totalAmountCents: null,
@@ -253,6 +254,7 @@ function transactionSnapshot(
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-001",
     productSummary: { productName: "基础短袖" },
+    paymentId: "550e8400-e29b-41d4-a716-446655440011",
     paymentNo: "PAY-001",
     paymentMethod: nextAction === "wait_payment" ? "qr_code" : "mock",
     paymentProvider: nextAction === "wait_payment" ? "alipay" : "mock",
@@ -263,6 +265,7 @@ function transactionSnapshot(
     vending:
       nextAction === "dispensing" || nextAction === "success"
         ? {
+            commandId: "550e8400-e29b-41d4-a716-446655440012",
             commandNo: "CMD-001",
             status: nextAction === "success" ? "succeeded" : "pending",
             lastError: null,
@@ -271,7 +274,7 @@ function transactionSnapshot(
     nextAction,
     maskedAuthCode: null,
     paymentCodeAttempt: null,
-    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    expiresAt: "2030-01-01T00:00:00.000Z",
     errorCode: null,
     errorMessage: null,
     operatorHint: null,
@@ -685,6 +688,17 @@ async function startMockDaemon() {
   return daemon;
 }
 
+async function freezeMotion(page: import("@playwright/test").Page) {
+  await page.addStyleTag({
+    content: `
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    `,
+  });
+}
+
 test.beforeAll(async () => {
   server = await startMockDaemon();
 });
@@ -728,6 +742,7 @@ test("redesigned catalog home controls remain interactive", async ({
     .poll(async () => await carouselImage.getAttribute("src"))
     .not.toBe(firstCarouselSrc);
 
+  await freezeMotion(page);
   await page.getByRole("button", { name: /T恤/ }).click();
   await expect(
     page.getByRole("img", { name: "商品列表，请点击选择您需要的商品" }),
@@ -767,9 +782,12 @@ test("routes not-ready daemon to offline", async ({ page }) => {
 test("restores active payment transaction", async ({ page }) => {
   scenario = "payment";
   await page.goto("/");
-  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByText("应付金额")).toBeVisible();
   await expect(page.getByText("¥59.00")).toBeVisible();
+  await expect(page.getByRole("img", { name: "支付二维码" })).toBeVisible();
 });
 
 test("routes active dispensing transaction", async ({ page }) => {
@@ -787,10 +805,12 @@ test("routes finished transaction to result", async ({ page }) => {
 test("page reload keeps current transaction route", async ({ page }) => {
   scenario = "payment";
   await page.goto("/");
-  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible({
+    timeout: 15_000,
+  });
   await page.goto("/#/boot");
   await expect(page).toHaveURL(/#\/payment$/);
-  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible();
 });
 
 test("daemon snapshots never expose secret fields to browser storage", async ({
@@ -824,6 +844,7 @@ test("provisioning UI maps real daemon claim error contract without echoing code
   scenario = "provisioning";
   await page.goto("/");
   await page.getByLabel("领取码").fill("ABCD-2345");
+  await freezeMotion(page);
   await page.getByRole("button", { name: "提交领取码", exact: true }).click();
 
   await expect(page.getByText("领取码已使用")).toBeVisible();

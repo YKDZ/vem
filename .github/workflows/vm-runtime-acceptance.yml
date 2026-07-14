@@ -56,6 +56,8 @@ jobs:
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
       VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
+      VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY }}
+      VEM_VM_HOST_EXPECTED_ADAPTER_SHA256: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_SHA256 }}
     steps:
       - name: Checkout Trusted Commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -172,10 +174,13 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${VEM_VM_HOST_ADAPTER:-}"
+          test -x "$VEM_VM_HOST_ADAPTER"
           test -n "${VEM_VM_HOST_TARGET_ID:-}"
           test -n "${VEM_VM_HOST_APPROVED_BASE_ID:-}"
           test -n "${VEM_VM_HOST_FACTORY_ISO_ID:-}"
           test -n "${VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID:-}"
+          observed_adapter_sha256="$(sha256sum "$VEM_VM_HOST_ADAPTER" | awk '{print $1}')"
+          test "$observed_adapter_sha256" = "$VEM_VM_HOST_EXPECTED_ADAPTER_SHA256"
           node scripts/testbed/vm-host-adapter-conformance.mjs \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-conformance.json"
 
@@ -540,6 +545,13 @@ jobs:
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
+          node - "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json" <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (report.adapter?.identity !== process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY) {
+            throw new Error(`VM Host Adapter identity mismatch: ${report.adapter?.identity ?? "missing"}`);
+          }
+          NODE
 
       - name: Consume Discovered Guest Maintenance Endpoint
         run: |
@@ -560,9 +572,22 @@ jobs:
           process.stdout.write(`VM_GUEST_MAINTENANCE_HOST=${endpoint.host}\nVM_GUEST_MAINTENANCE_PORT=${endpoint.port}\n`);
           NODE
 
+      - name: Prepare Protected Simulated Scanner Code
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          scanner_code_file="$RUNNER_TEMP/vem-scanner-code-$RUN_ID"
+          node -e 'const { randomInt } = require("node:crypto"); let value = "28"; while (value.length < 18) value += randomInt(10); process.stdout.write(value)' > "$scanner_code_file"
+          chmod 600 "$scanner_code_file"
+          echo "VEM_VM_HOST_SCANNER_CODE_FILE=$scanner_code_file" >> "$GITHUB_ENV"
+
       - name: Run VM Runtime Acceptance
         run: |
           set -euo pipefail
+          test -n "${VEM_VM_HOST_SCANNER_CODE_FILE:-}"
+          test -f "$VEM_VM_HOST_SCANNER_CODE_FILE"
+          test "$(stat -c '%a' "$VEM_VM_HOST_SCANNER_CODE_FILE")" = "600"
           node scripts/testbed/win10-vem-e2e.mjs \
             --mode vm-runtime-acceptance \
             --run-id "$RUN_ID" \
@@ -576,7 +601,46 @@ jobs:
             --ssh-port "$VM_GUEST_MAINTENANCE_PORT" \
             --maintenance-ingress-source-allowlist "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP" \
             --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
-            --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
+            --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
+            --scanner-code-file "$VEM_VM_HOST_SCANNER_CODE_FILE" \
+            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
+
+      - name: Remove Protected Simulated Scanner Code
+        if: always()
+        shell: bash
+        run: rm -f -- "${VEM_VM_HOST_SCANNER_CODE_FILE:-}"
+
+      - name: Bind Active Kiosk Session For Native Audio Capture
+        if: success()
+        run: |
+          set -euo pipefail
+          report="artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
+          node - "$report" >> "$GITHUB_ENV" <<'NODE'
+          const fs = require("node:fs");
+          const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const runtime = value.runtimeAcceptanceReport;
+          const kiosk = runtime.kioskRuntime;
+          if (
+            value.ok !== true ||
+            runtime.result?.runtimeReady?.status !== "passed" ||
+            kiosk?.sessionUser !== "VEMKiosk" ||
+            !Number.isInteger(kiosk.sessionId) ||
+            kiosk.sessionId < 1 ||
+            typeof kiosk.url !== "string" ||
+            kiosk.url !== "http://tauri.localhost/#/" ||
+            typeof kiosk.cdpTargetId !== "string" ||
+            !/^[A-Za-z0-9._:-]{8,256}$/.test(kiosk.cdpTargetId) ||
+            !Number.isInteger(kiosk.processId) ||
+            !Number.isInteger(kiosk.cdpListenerProcessId) ||
+            kiosk.cdpListenerSessionId !== kiosk.sessionId ||
+            kiosk.cdpMachineAncestorProcessId !== kiosk.processId
+          ) throw new Error("runtime acceptance did not observe an active VEMKiosk session");
+          process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_USER=${kiosk.sessionUser}\n`);
+          process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_ID=${kiosk.sessionId}\n`);
+          process.stdout.write(`VEM_ACTIVE_KIOSK_TAURI_ROUTE=${kiosk.url}\n`);
+          process.stdout.write(`VEM_ACTIVE_KIOSK_CDP_TARGET_ID=${kiosk.cdpTargetId}\n`);
+          NODE
 
       - name: Capture Windows Display Evidence Through Host Adapter
         if: success()
@@ -587,6 +651,10 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
+            --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
+            --tauri-route "$VEM_ACTIVE_KIOSK_TAURI_ROUTE" \
+            --cdp-target-id "$VEM_ACTIVE_KIOSK_CDP_TARGET_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-display-capture-report.json"
 
       - name: Capture Windows Default Audio Evidence Through Host Adapter
@@ -598,7 +666,19 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
+            --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-audio-capture-report.json"
+
+      - name: Verify Windows Native Audio Evidence
+        if: success()
+        run: |
+          set -euo pipefail
+          node scripts/testbed/windows-native-audio-evidence.mjs \
+            --run-id "$RUN_ID" \
+            --runtime-report "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json" \
+            --adapter-report "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-audio-capture-report.json" \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/windows-native-audio-evidence.json"
 
       - name: Cleanup VM Host Adapter Overlay
         if: always()

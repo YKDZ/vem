@@ -11,6 +11,14 @@ use vending_core::serial::SerialPortUsbIdentity;
 
 use crate::{secret::SecretStore, state::LocalStateStore};
 
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HardwareAdapterKind {
@@ -350,14 +358,22 @@ pub struct LocalBringUpSettings {
     pub hardware_adapter: Option<HardwareAdapterKind>,
     #[serde(default)]
     pub serial_port_path: Option<String>,
-    #[serde(default)]
-    pub lower_controller_usb_identity: Option<SerialPortUsbIdentity>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub lower_controller_usb_identity: Option<Option<SerialPortUsbIdentity>>,
     #[serde(default)]
     pub scanner_adapter: Option<ScannerAdapterKind>,
     #[serde(default)]
     pub scanner_serial_port_path: Option<String>,
-    #[serde(default)]
-    pub scanner_usb_identity: Option<SerialPortUsbIdentity>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub scanner_usb_identity: Option<Option<SerialPortUsbIdentity>>,
     #[serde(default)]
     pub scanner_baud_rate: Option<u32>,
     #[serde(default)]
@@ -741,8 +757,8 @@ fn apply_local_bring_up_settings_to_public(
     if settings.serial_port_path.is_some() {
         public.serial_port_path = settings.serial_port_path.clone();
     }
-    if settings.lower_controller_usb_identity.is_some() {
-        public.lower_controller_usb_identity = settings.lower_controller_usb_identity.clone();
+    if let Some(value) = settings.lower_controller_usb_identity.as_ref() {
+        public.lower_controller_usb_identity = value.clone();
     }
     if let Some(value) = settings.scanner_adapter.clone() {
         public.scanner_adapter = value;
@@ -750,8 +766,8 @@ fn apply_local_bring_up_settings_to_public(
     if settings.scanner_serial_port_path.is_some() {
         public.scanner_serial_port_path = settings.scanner_serial_port_path.clone();
     }
-    if settings.scanner_usb_identity.is_some() {
-        public.scanner_usb_identity = settings.scanner_usb_identity.clone();
+    if let Some(value) = settings.scanner_usb_identity.as_ref() {
+        public.scanner_usb_identity = value.clone();
     }
     if let Some(value) = settings.scanner_baud_rate {
         public.scanner_baud_rate = value;
@@ -1823,10 +1839,10 @@ impl ConfigStore {
             normalize_optional_string(Some(public.api_base_url.clone()));
         settings.hardware_adapter = Some(public.hardware_adapter.clone());
         settings.serial_port_path = public.serial_port_path.clone();
-        settings.lower_controller_usb_identity = public.lower_controller_usb_identity.clone();
+        settings.lower_controller_usb_identity = Some(public.lower_controller_usb_identity.clone());
         settings.scanner_adapter = Some(public.scanner_adapter.clone());
         settings.scanner_serial_port_path = public.scanner_serial_port_path.clone();
-        settings.scanner_usb_identity = public.scanner_usb_identity.clone();
+        settings.scanner_usb_identity = Some(public.scanner_usb_identity.clone());
         settings.scanner_baud_rate = Some(public.scanner_baud_rate);
         settings.scanner_frame_suffix = Some(public.scanner_frame_suffix);
         settings.vision_enabled = Some(public.vision_enabled);
@@ -2842,6 +2858,71 @@ mod tests {
             runtime.public.api_base_url,
             "https://production-api.example.com/api"
         );
+    }
+
+    #[tokio::test]
+    async fn local_bring_up_explicit_null_disables_default_usb_identities() {
+        let temp = TempDir::new().expect("temp");
+        let root = temp.path();
+        let data_dir = root.join("vending-daemon");
+        tokio::fs::create_dir_all(root.join("bringup"))
+            .await
+            .expect("bringup dir");
+        tokio::fs::write(
+            local_bring_up_settings_path(&data_dir),
+            serde_json::json!({
+                "hardwareAdapter": "serial",
+                "serialPortPath": "COM1",
+                "lowerControllerUsbIdentity": null,
+                "scannerAdapter": "serial_text",
+                "scannerSerialPortPath": "COM2",
+                "scannerUsbIdentity": null,
+                "scannerBaudRate": 9600,
+                "scannerFrameSuffix": "crlf"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write bring-up settings");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+
+        let runtime = store.load_runtime_config().await.expect("load config");
+
+        assert_eq!(runtime.public.hardware_adapter, HardwareAdapterKind::Serial);
+        assert_eq!(runtime.public.serial_port_path.as_deref(), Some("COM1"));
+        assert_eq!(runtime.public.lower_controller_usb_identity, None);
+        assert_eq!(
+            runtime.public.scanner_adapter,
+            ScannerAdapterKind::SerialText
+        );
+        assert_eq!(
+            runtime.public.scanner_serial_port_path.as_deref(),
+            Some("COM2")
+        );
+        assert_eq!(runtime.public.scanner_usb_identity, None);
+    }
+
+    #[test]
+    fn local_bring_up_omission_and_explicit_null_have_distinct_usb_semantics() {
+        let omitted: LocalBringUpSettings =
+            serde_json::from_value(serde_json::json!({})).expect("omitted settings");
+        let disabled: LocalBringUpSettings = serde_json::from_value(serde_json::json!({
+            "lowerControllerUsbIdentity": null,
+            "scannerUsbIdentity": null
+        }))
+        .expect("disabled settings");
+
+        assert_eq!(omitted.lower_controller_usb_identity, None);
+        assert_eq!(omitted.scanner_usb_identity, None);
+        assert_eq!(disabled.lower_controller_usb_identity, Some(None));
+        assert_eq!(disabled.scanner_usb_identity, Some(None));
+        let serialized = serde_json::to_value(omitted).expect("serialize omitted");
+        let object = serialized.as_object().expect("settings object");
+        assert!(!object.contains_key("lowerControllerUsbIdentity"));
+        assert!(!object.contains_key("scannerUsbIdentity"));
     }
 
     #[tokio::test]

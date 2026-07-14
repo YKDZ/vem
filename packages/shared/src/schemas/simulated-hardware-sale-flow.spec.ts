@@ -16,7 +16,7 @@ function completeFacts(): SimulatedHardwareSaleFlowFacts {
     },
     runtimeState: {
       hardwareMode: "simulated",
-      hardwareModel: "win10-unraid-testbed",
+      hardwareModel: "win10-runtime-testbed",
       bringUpState: "simulated_hardware_ready",
       uiDiagnosticsExplicit: true,
     },
@@ -79,10 +79,11 @@ function completeFacts(): SimulatedHardwareSaleFlowFacts {
       orderId: "ORDER-ID-180",
       orderNo: "MO-180",
       orderStatus: "fulfilled",
-      paymentMethod: "mock",
+      paymentMethod: "payment_code",
       paymentProviderCode: "mock",
+      paymentId: "PAYMENT-ID-180",
       paymentNo: "PAY-180",
-      paymentStatus: "paid",
+      paymentStatus: "succeeded",
       paymentSucceeded: true,
       vendingCommandId: "VEND-CMD-180",
       dispenseSimulated: true,
@@ -92,9 +93,19 @@ function completeFacts(): SimulatedHardwareSaleFlowFacts {
     },
     platformState: {
       orderStatus: "fulfilled",
-      paymentStatus: "paid",
+      paymentStatus: "succeeded",
       fulfillmentStatus: "dispensed",
       stockMovementAccepted: true,
+      postSaleDispenseMovement: {
+        movementId: "DISPENSE-MOVE-180",
+        orderId: "ORDER-ID-180",
+        vendingCommandId: "VEND-CMD-180",
+        quantity: 1,
+        beforeQuantity: 6,
+        afterQuantity: 5,
+        deltaQuantity: -1,
+        status: "accepted",
+      },
     },
   };
 }
@@ -205,6 +216,7 @@ describe("Simulated Hardware Sale Flow Report contract", () => {
     expect(report.planogram.acknowledgmentId).toBe("PLANOGRAM-ACK-RUN-180");
     expect(report.stock.platformMovementId).toBe("STOCK-MOVE-RUN-180");
     expect(report.sale.orderId).toBe("ORDER-ID-180");
+    expect(report.sale.paymentId).toBe("PAYMENT-ID-180");
     expect(report.sale.paymentNo).toBe("PAY-180");
     expect(report.sale.vendingCommandId).toBe("VEND-CMD-180");
     expect(simulatedHardwareSaleFlowReportSchema.parse(report)).toEqual(report);
@@ -225,5 +237,26 @@ describe("Simulated Hardware Sale Flow Report contract", () => {
     expect(
       missingStockUploadReport.diagnostics.map((diagnostic) => diagnostic.code),
     ).toContain("stock_upload_not_accepted");
+  });
+
+  it("requires canonical succeeded payment status and a post-sale movement bound to this order and command", () => {
+    const paid = completeFacts();
+    paid.sale.paymentStatus = "paid";
+    paid.platformState.paymentStatus = "paid";
+    expect(
+      classifySimulatedHardwareSaleFlowReport(paid).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("simulated_customer_sale_not_successful");
+
+    const attestationOnly = completeFacts();
+    attestationOnly.platformState.postSaleDispenseMovement.movementId =
+      "STOCK-ATTEST-RUN-180";
+    attestationOnly.platformState.postSaleDispenseMovement.orderId = null;
+    expect(
+      classifySimulatedHardwareSaleFlowReport(attestationOnly).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("platform_sale_state_not_updated");
   });
 });

@@ -283,6 +283,11 @@ function runtimeAcceptanceFacts(overrides = {}) {
       url: "http://tauri.localhost/#/",
       sessionUser: "VEMKiosk",
       sessionId: 3,
+      processId: 500,
+      cdpAvailable: true,
+      cdpListenerProcessId: 600,
+      cdpListenerSessionId: 3,
+      cdpMachineAncestorProcessId: 500,
     },
     kioskDesktopEscape: {
       desktopVisible: false,
@@ -366,11 +371,11 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
     factoryProfile: "testbed",
     source: {
       kind: "clean-windows-base",
-      uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      uri: "factory-media://clean-windows-base",
       snapshot: "vem-clean-base-before-factory-prep",
       identity: {
         hostName: "WIN10-VEM-CLEAN",
-        unraidVmName: "win10-vem-clean-base",
+        adapterTargetId: "win10-vem-clean-base",
       },
     },
     factoryWindowsBaselinePolicy: {
@@ -900,6 +905,10 @@ describe("win10-vem-e2e reset planning", () => {
         sessionId: 3,
         processId: 500,
         webView2ProcessId: null,
+        cdpListenerProcessId: null,
+        cdpListenerSessionId: null,
+        cdpMachineAncestorProcessId: null,
+        cdpTargetId: null,
         cdpAvailable: true,
         error: "kiosk_webview_not_verified",
       },
@@ -920,7 +929,9 @@ describe("win10-vem-e2e reset planning", () => {
         machineProcesses: [
           { processId: 501, ownerUser: "VEMKiosk", sessionId: 7 },
         ],
-        cdpTargets: [{ url: "http://tauri.localhost/#/" }],
+        cdpTargets: [
+          { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
+        ],
       }).webviewRunning,
       false,
     );
@@ -929,10 +940,35 @@ describe("win10-vem-e2e reset planning", () => {
       buildKioskRuntimeEvidence({
         activeSession,
         machineProcesses,
-        cdpTargets: [{ url: "http://tauri.localhost/#/" }],
+        cdpListener: {
+          processId: 600,
+          sessionId: 3,
+          machineAncestorProcessId: 500,
+        },
+        cdpTargets: [
+          { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
+        ],
       }).webviewRunning,
       true,
     );
+
+    for (const cdpListener of [
+      null,
+      { processId: 600, sessionId: 7, machineAncestorProcessId: 500 },
+      { processId: 600, sessionId: 3, machineAncestorProcessId: 999 },
+    ]) {
+      assert.equal(
+        buildKioskRuntimeEvidence({
+          activeSession,
+          machineProcesses,
+          cdpListener,
+          cdpTargets: [
+            { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
+          ],
+        }).webviewRunning,
+        false,
+      );
+    }
 
     assert.deepEqual(
       buildKioskRuntimeEvidence({
@@ -951,6 +987,10 @@ describe("win10-vem-e2e reset planning", () => {
         sessionId: 3,
         processId: 500,
         webView2ProcessId: 600,
+        cdpListenerProcessId: null,
+        cdpListenerSessionId: null,
+        cdpMachineAncestorProcessId: null,
+        cdpTargetId: null,
         cdpAvailable: false,
         error: null,
       },
@@ -1356,6 +1396,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /\$_\.sessionId -eq \$ActiveKioskSession\.sessionId/);
     assert.match(script, /webviewRunning = \$kioskRuntime.webviewRunning/);
     assert.match(script, /url = \$kioskRuntime.url/);
+    assert.match(script, /cdpTargetId = \$kioskRuntime.cdpTargetId/);
     assert.match(
       script,
       /webView2ProcessId = \$kioskRuntime.webView2ProcessId/,
@@ -2067,6 +2108,45 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /bringUpState = if \(\$null -ne \$bringUp/);
     assert.match(
       script,
+      /hardwareOnline = \[bool\]\$daemonIpc\.healthz\.hardwareOnline/,
+    );
+    assert.match(
+      script,
+      /scannerOnline = \[bool\]\$daemonIpc\.healthz\.scannerOnline/,
+    );
+    assert.match(script, /daemonHealth = \$facts\.daemonHealth/);
+    assert.match(script, /function Invoke-HardwareMappingFaultProbe/);
+    assert.match(script, /LOWER_CONTROLLER_UNAVAILABLE/);
+    assert.match(
+      script,
+      /hardwareMappingFault = \$hardwareMappingFaultProbe\.mappingFault/,
+    );
+    assert.match(
+      script,
+      /transactionEntry = \$hardwareMappingFaultProbe\.transactionEntry/,
+    );
+    assert.match(script, /successfulPrepare = \[ordered\]@\{/);
+    assert.match(script, /\[string\]\$Context\.runId -ne \[string\]\$RunId/);
+    assert.match(script, /successfulPrepare\.status -ne "succeeded"/);
+    assert.match(script, /successfulPrepare\.phase -ne "prepare"/);
+    assert.match(script, /\[string\]\$Context\.saleView\.planogramVersion/);
+    assert.match(script, /\[string\]\$Context\.selectedItem\.inventoryId/);
+    assert.match(script, /\[string\]\$_\.method -ne "payment_code"/);
+    assert.match(script, /\[string\]\$_\.method -eq "qr_code"/);
+    assert.match(script, /\/v1\/sale-readiness/);
+    assert.match(script, /\$_.ready -eq \$true/);
+    assert.match(script, /readyzObserved/);
+    assert.match(script, /statusCode = \$rejection\.statusCode/);
+    assert.match(
+      script,
+      /responseCode = Convert-ClaimFailureClassification \$rejection/,
+    );
+    assert.match(script, /hardwareMappingFaultProbeRequired/);
+    assert.doesNotMatch(script, /hardwareMappingFaultCode/);
+    assert.doesNotMatch(script, /hardware-mapping-fault-code/);
+    assert.doesNotMatch(script, /hardware-mapping-fault-probe/);
+    assert.match(
+      script,
       /\$Facts\.runtimeState\.bringUpState -ne "simulated_hardware_ready"/,
     );
     assert.match(
@@ -2083,8 +2163,26 @@ describe("win10-vem-e2e reset planning", () => {
     );
     assert.match(
       script,
-      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/mock-payment"/,
+      /\$preparedPaymentId = if \(-not \[string\]::IsNullOrWhiteSpace\(\[string\]\$createOrder\.paymentId\)\)/,
     );
+    assert.match(
+      script,
+      /throw "successful sale prepare did not return order and payment IDs"/,
+    );
+    assert.match(
+      script,
+      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/stock\/movements\/dispense-confirmation\?orderId=\$orderQuery&vendingCommandId=\$commandQuery" \$headers/,
+    );
+    assert.match(script, /\$attempt -lt 30/);
+    assert.doesNotMatch(script, /VEM_TESTBED_MACHINE_AUTH_TOKEN/);
+    assert.doesNotMatch(
+      script,
+      /machine-stock-movements\/dispense-confirmation/,
+    );
+    assert.doesNotMatch(script, /\/v1\/intents\/mock-payment/);
+    assert.match(script, /paymentMethod = "payment_code"/);
+    assert.match(script, /\$salePhase -eq "prepare"/);
+    assert.match(script, /\$salePhase -eq "complete"/);
     assert.match(
       script,
       /Invoke-TestbedProvisioningClaim \$provisioningActions/,
@@ -2160,7 +2258,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /VEM-WIN10-REAL-01/);
   });
 
-  it("factory preparation maps simulated hardware to daemon mock adapter", () => {
+  it("factory preparation uses production serial adapters for simulated hardware", () => {
     const script = readFileSync(
       join(process.cwd(), "scripts/windows/prepare-factory-runtime.ps1"),
       "utf8",
@@ -2168,11 +2266,10 @@ describe("win10-vem-e2e reset planning", () => {
 
     assert.match(script, /apiBaseUrl = \$ProvisioningEndpoint/);
     assert.match(script, /mqttUrl = \$MqttUrl/);
-    assert.match(
-      script,
-      /hardwareAdapter = if \(\$HardwareMode -eq "simulated"\) \{ "mock" \} else \{ "serial" \}/,
-    );
-    assert.match(script, /scannerAdapter = "disabled"/);
+    assert.match(script, /hardwareAdapter = "serial"/);
+    assert.match(script, /serialPortPath = \$LowerControllerSerialPortPath/);
+    assert.match(script, /scannerAdapter = "serial_text"/);
+    assert.match(script, /scannerSerialPortPath = \$ScannerSerialPortPath/);
     assert.match(script, /visionEnabled = \$false/);
     assert.match(script, /kioskMode = \$true/);
     assert.match(
@@ -2310,7 +2407,7 @@ describe("win10-vem-e2e reset planning", () => {
   it("plans clean-base factory acceptance with explicit clean-source evidence and destructive gates", () => {
     const plan = buildCleanBaseFactoryAcceptancePlan({
       runId: "RUN-182",
-      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
@@ -2319,10 +2416,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.equal(plan.schemaVersion, "clean-base-factory-acceptance-plan/v1");
     assert.equal(plan.mode, "clean-base-factory-acceptance");
     assert.equal(plan.runId, "RUN-182");
-    assert.equal(
-      plan.cleanBase.source,
-      "unraid://192.168.2.23/vms/win10-vem-clean-base",
-    );
+    assert.equal(plan.cleanBase.source, "factory-media://clean-windows-base");
     assert.equal(plan.cleanBase.snapshot, "vem-clean-base-before-factory-prep");
     assert.equal(plan.cleanBase.mustNotReuseDirtyHost, true);
     assert.deepEqual(plan.cleanBase.requiredBaseline, {
@@ -2393,7 +2487,7 @@ describe("win10-vem-e2e reset planning", () => {
   it("declares the Factory Windows Baseline policy and evidence contract", () => {
     const plan = buildCleanBaseFactoryAcceptancePlan({
       runId: "RUN-184",
-      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
@@ -2484,7 +2578,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "RUN-182",
         "--clean-base-source",
-        "unraid://192.168.2.23/vms/win10-vem-clean-base",
+        "factory-media://clean-windows-base",
         "--clean-base-snapshot",
         "vem-clean-base-before-factory-prep",
         "--daemon-artifact-sha256",
@@ -2518,7 +2612,7 @@ describe("win10-vem-e2e reset planning", () => {
           "--run-id",
           "RUN-190",
           "--clean-base-source",
-          "unraid://192.168.2.23/vms/win10-vem-clean-base",
+          "factory-media://clean-windows-base",
           "--clean-base-snapshot",
           "vem-clean-base-before-factory-prep",
           "--daemon-artifact-sha256",
@@ -2553,7 +2647,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "RUN-185",
         "--clean-base-source",
-        "unraid://192.168.2.23/vms/win10-vem-clean-base",
+        "factory-media://clean-windows-base",
         "--clean-base-snapshot",
         "vem-clean-base-before-factory-prep",
         "--daemon-artifact-sha256",
@@ -2582,7 +2676,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "RUN-185",
         "--clean-base-source",
-        "unraid://192.168.2.23/vms/win10-vem-clean-base",
+        "factory-media://clean-windows-base",
         "--clean-base-snapshot",
         "vem-clean-base-before-factory-prep",
         "--use-existing-remote-artifacts",
@@ -2609,7 +2703,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "RUN-185",
         "--clean-base-source",
-        "unraid://192.168.2.23/vms/win10-vem-clean-base",
+        "factory-media://clean-windows-base",
         "--clean-base-snapshot",
         "vem-clean-base-before-factory-prep",
         "--daemon-artifact-sha256",
@@ -2635,7 +2729,7 @@ describe("win10-vem-e2e reset planning", () => {
     const script = buildRemotePowerShellScript({
       mode: "clean-base-factory-acceptance",
       runId: "RUN-185",
-      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
       platformTarget: "vem-vps",
       machineCode: "VEM-TESTBED-WINVM-01",
@@ -2663,10 +2757,7 @@ describe("win10-vem-e2e reset planning", () => {
     );
     assert.match(script, /kind = "clean-base-factory-acceptance"/);
     assert.match(script, /source = \[ordered\]@{/);
-    assert.match(
-      script,
-      /uri = 'unraid:\/\/192\.168\.2\.23\/vms\/win10-vem-clean-base'/,
-    );
+    assert.match(script, /uri = 'factory-media:\/\/clean-windows-base'/);
     assert.match(
       script,
       /factoryWindowsBaselinePolicy = \$factoryWindowsBaselinePolicy/,
@@ -2698,7 +2789,7 @@ describe("win10-vem-e2e reset planning", () => {
     const script = buildRemotePowerShellScript({
       mode: "clean-base-factory-acceptance",
       runId: "RUN-185",
-      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       platformTarget: "vem-vps",
       machineCode: "VEM-TESTBED-WINVM-01",
       daemonArtifactSha256: "a".repeat(64),
@@ -2754,7 +2845,7 @@ describe("win10-vem-e2e reset planning", () => {
   it("rejects dirty or production clean-base sources and malformed artifact hashes", () => {
     const baseOptions = {
       runId: "RUN-182",
-      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      cleanBaseSource: "factory-media://clean-windows-base",
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
     };
@@ -2763,7 +2854,7 @@ describe("win10-vem-e2e reset planning", () => {
       () =>
         buildCleanBaseFactoryAcceptancePlan({
           ...baseOptions,
-          cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-e2e",
+          cleanBaseSource: "factory-media://dirty-windows-base",
         }),
       /known dirty-host source/,
     );
@@ -2803,7 +2894,7 @@ describe("win10-vem-e2e reset planning", () => {
           cleanBaseFactoryAcceptanceEvidence({
             source: {
               kind: "clean-windows-base",
-              uri: "unraid://192.168.2.23/vms/win10-vem-e2e",
+              uri: "factory-media://other-windows-base",
               identity: {
                 hostName: "DESKTOP-2STVS5B",
               },
@@ -2936,7 +3027,7 @@ describe("win10-vem-e2e reset planning", () => {
         runId: "RUN-186",
         source: {
           kind: "clean-windows-base",
-          uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+          uri: "factory-media://clean-windows-base",
           snapshot: "vem-clean-base-before-factory-prep",
           identity: {
             hostName: "WIN10-VEM-CLEAN",
@@ -2998,7 +3089,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.equal(report.runId, "RUN-186");
     assert.deepEqual(report.imageSource, {
       kind: "clean-windows-base",
-      uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      uri: "factory-media://clean-windows-base",
       snapshot: "vem-clean-base-before-factory-prep",
       identity: {
         hostName: "WIN10-VEM-CLEAN",
@@ -3406,13 +3497,22 @@ describe("win10-vem-e2e reset planning", () => {
       sshPort: 22022,
     });
     for (const step of plan.steps.filter((step) =>
-      [
-        "dirty-host factory reset acceptance",
-        "runtime acceptance",
-        "simulated hardware sale flow",
-      ].includes(step.name),
+      ["dirty-host factory reset acceptance", "runtime acceptance"].includes(
+        step.name,
+      ),
     )) {
       assert.equal(commandArg(step.command, "--ssh-port"), "22022");
+    }
+    const saleStep = plan.steps.find(
+      (step) => step.name === "simulated hardware sale flow",
+    );
+    assert.ok(saleStep);
+    for (const option of [
+      "--sale-prepare-command-json",
+      "--sale-complete-command-json",
+    ]) {
+      const childCommand = JSON.parse(commandArg(saleStep.command, option));
+      assert.equal(commandArg(childCommand, "--ssh-port"), "22022");
     }
   });
 
@@ -3884,7 +3984,7 @@ describe("win10-vem-e2e reset planning", () => {
     }
   });
 
-  it("does not fail runtime-ready from missing or process-only desktop escape evidence", () => {
+  it("fails runtime-ready when desktop escape surfaces are not explicitly observed", () => {
     for (const kioskDesktopEscape of [
       undefined,
       {
@@ -3906,12 +4006,34 @@ describe("win10-vem-e2e reset planning", () => {
       );
 
       assert.deepEqual(report.result.runtimeReady, {
-        status: "passed",
-        asserted: true,
+        status: "failed",
+        asserted: false,
       });
       assert.ok(
-        !report.diagnostics.some((diagnostic) =>
-          diagnostic.code.startsWith("kiosk_"),
+        report.diagnostics.some((diagnostic) =>
+          diagnostic.code.endsWith("_observation_missing"),
+        ),
+      );
+    }
+  });
+
+  it("fails runtime-ready when CDP listener is not bound to machine.exe", () => {
+    for (const kioskRuntime of [
+      { ...runtimeAcceptanceFacts().kioskRuntime, cdpListenerProcessId: null },
+      { ...runtimeAcceptanceFacts().kioskRuntime, cdpListenerSessionId: 7 },
+      {
+        ...runtimeAcceptanceFacts().kioskRuntime,
+        cdpMachineAncestorProcessId: 999,
+      },
+    ]) {
+      const report = buildRuntimeAcceptanceReport(
+        runtimeAcceptanceFacts({ kioskRuntime }),
+      );
+      assert.equal(report.result.runtimeReady.status, "failed");
+      assert.ok(
+        report.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === "kiosk_cdp_process_binding_missing",
         ),
       );
     }
@@ -3977,7 +4099,7 @@ describe("win10-vem-e2e reset planning", () => {
           },
         }),
       }),
-      0,
+      1,
     );
     assert.equal(
       getRuntimeAcceptanceExitStatus({

@@ -36,6 +36,7 @@ function createMockClient(overrides?: {
         fulfillmentState: "awaiting_fulfillment",
         totalAmountCents: 599,
         payment: {
+          paymentId: "550e8400-e29b-41d4-a716-446655440011",
           paymentNo: "PAY-1",
           method: "mock",
           status: "pending",
@@ -60,6 +61,7 @@ function createMockClient(overrides?: {
       return {
         orderId: "00000000-0000-4000-8000-000000000001",
         orderNo: "ORD-1",
+        paymentId: "550e8400-e29b-41d4-a716-446655440011",
         paymentNo: "PAY-1",
         paymentUrl: "https://pay.example/mock/PAY-1",
         expiresAt: "2026-05-04T12:00:00.000Z",
@@ -88,6 +90,7 @@ describe("machine order api", () => {
     });
 
     expect(result.paymentNo).toBe("PAY-1");
+    expect(result.paymentId).toBe("550e8400-e29b-41d4-a716-446655440011");
     expect(client.lastPostBody).toEqual({
       machineCode: "M001",
       items: [
@@ -108,6 +111,7 @@ describe("machine order api", () => {
       postResponse: {
         orderId: "00000000-0000-4000-8000-000000000002",
         orderNo: "ORD-2",
+        paymentId: "550e8400-e29b-41d4-a716-446655440012",
         paymentNo: "PAY-2",
         paymentUrl: "https://qr.alipay.com/abc123",
         expiresAt: "2026-05-04T12:00:00.000Z",

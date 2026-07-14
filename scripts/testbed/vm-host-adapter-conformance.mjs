@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import {
   createVmHostAdapterRequest,
   runVmHostAdapter,
+  VM_HOST_ADAPTER_CONTRACT_VERSION,
   VmHostAdapterExecutionError,
 } from "./vm-host-adapter-contract.mjs";
 
@@ -27,8 +28,6 @@ const CAPABILITIES = {
     "cancellation",
     "cleanup",
   ],
-  "capture-display": ["display-capture", "cancellation", "cleanup"],
-  "capture-default-audio": ["default-audio-capture", "cancellation", "cleanup"],
   cleanup: ["cleanup", "cancellation"],
 };
 
@@ -74,7 +73,8 @@ function requestFor({ operation, run, targetIdentity, assets }) {
     .digest("hex")
     .slice(0, 32);
   return createVmHostAdapterRequest({
-    schemaVersion: "vem-vm-host-adapter-request/v1",
+    contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
+    schemaVersion: "vem-vm-host-adapter-request/v2",
     kind: "vm-host-adapter-request",
     operation,
     runId: run,
@@ -84,8 +84,11 @@ function requestFor({ operation, run, targetIdentity, assets }) {
     cancelOperationReference: null,
     target: { identity: targetIdentity },
     factoryMedia: null,
+    displayCapture: null,
+    audioCapture: null,
     assets,
     requestedCapabilities: CAPABILITIES[operation],
+    serialSession: null,
   });
 }
 
@@ -104,11 +107,6 @@ function assertActiveRuntimeEvidence(report) {
     throw new Error(
       "adapter did not preserve the active overlay for evidence capture",
     );
-}
-
-function assertCaptureEvidence(report, role) {
-  if (report.evidence.length !== 1 || report.evidence[0].role !== role)
-    throw new Error(`adapter did not produce ${role} evidence`);
 }
 
 function assertRemoved(report) {
@@ -163,11 +161,9 @@ async function main() {
     schema: null,
     cleanInstall: null,
     restore: null,
-    display: null,
-    audio: null,
     cancellation: null,
-    failure: null,
     cleanup: null,
+    cleanupFinalizer: null,
   };
   try {
     if (status === "ready") {
@@ -194,21 +190,6 @@ async function main() {
       assertRemoved(cleanCleanup);
     } else {
       evidence.cleanInstall = { status: "blocked-issue15" };
-    }
-
-    try {
-      await runVmHostAdapter({
-        request: requestFor({
-          operation: "capture-display",
-          run,
-          targetIdentity,
-          assets: baseAssets,
-        }),
-        workDirectory,
-      });
-      throw new Error("adapter accepted capture without a restored overlay");
-    } catch (error) {
-      evidence.failure = sanitizedFailure(error);
     }
 
     const controller = new AbortController();
@@ -263,30 +244,6 @@ async function main() {
     evidence.schema = restore.schemaVersion;
     evidence.restore = restore;
 
-    const display = await runVmHostAdapter({
-      request: requestFor({
-        operation: "capture-display",
-        run,
-        targetIdentity,
-        assets: baseAssets,
-      }),
-      workDirectory,
-    });
-    assertCaptureEvidence(display, "display-capture");
-    evidence.display = display;
-
-    const audio = await runVmHostAdapter({
-      request: requestFor({
-        operation: "capture-default-audio",
-        run,
-        targetIdentity,
-        assets: baseAssets,
-      }),
-      workDirectory,
-    });
-    assertCaptureEvidence(audio, "default-audio-capture");
-    evidence.audio = audio;
-
     const cleanup = await runVmHostAdapter({
       request: requestFor({
         operation: "cleanup",
@@ -303,6 +260,27 @@ async function main() {
         "clean-install conformance is blocked by missing Issue15 base evidence",
       );
   } finally {
+    try {
+      const cleanup = await runVmHostAdapter({
+        request: requestFor({
+          operation: "cleanup",
+          run,
+          targetIdentity,
+          assets: baseAssets,
+        }),
+        workDirectory,
+      });
+      assertRemoved(cleanup);
+      evidence.cleanupFinalizer = cleanup;
+    } catch (error) {
+      evidence.cleanupFinalizer = {
+        status: "failed",
+        code:
+          error instanceof VmHostAdapterExecutionError
+            ? error.diagnostic.diagnostics[0]?.code
+            : "cleanup_failed",
+      };
+    }
     writeFileSync(
       out,
       `${JSON.stringify({ schemaVersion: "vem-vm-host-adapter-conformance/v1", runId: run, evidence }, null, 2)}\n`,

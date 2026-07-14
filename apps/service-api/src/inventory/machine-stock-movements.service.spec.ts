@@ -250,6 +250,28 @@ class InMemoryMovementRepository {
     return null;
   }
 
+  acceptedOrderBoundDispenseMovement: {
+    movementId: string;
+    orderId: string;
+    vendingCommandId: string;
+    quantity: number;
+    beforeQuantity: number | null;
+    afterQuantity: number | null;
+    deltaQuantity: number;
+  } | null = {
+    movementId: "MOVE-DISPENSE-1",
+    orderId: "ord-001",
+    vendingCommandId: "vcmd-001",
+    quantity: 1,
+    beforeQuantity: 3,
+    afterQuantity: 2,
+    deltaQuantity: -1,
+  };
+
+  async findAcceptedOrderBoundDispenseMovement() {
+    return this.acceptedOrderBoundDispenseMovement;
+  }
+
   get size(): number {
     return this.rows.size;
   }
@@ -300,6 +322,35 @@ describe("MachineStockMovementsService", () => {
     code: "MACHINE-1",
     status: "online",
   };
+
+  it("returns only a quantity-conserving accepted movement bound to the requested order and command", async () => {
+    const repository = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repository as never);
+
+    await expect(
+      service.getAcceptedOrderBoundDispenseMovement(
+        machine,
+        "ord-001",
+        "vcmd-001",
+      ),
+    ).resolves.toMatchObject({
+      movementId: "MOVE-DISPENSE-1",
+      deltaQuantity: -1,
+      status: "accepted",
+    });
+
+    repository.acceptedOrderBoundDispenseMovement = {
+      ...repository.acceptedOrderBoundDispenseMovement!,
+      deltaQuantity: 0,
+    };
+    await expect(
+      service.getAcceptedOrderBoundDispenseMovement(
+        machine,
+        "ord-001",
+        "vcmd-001",
+      ),
+    ).resolves.toBeNull();
+  });
   const movement: RawMachineStockMovement = {
     machineCode: "MACHINE-1",
     movementId: "MOVE-1",

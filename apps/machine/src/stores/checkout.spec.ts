@@ -134,6 +134,7 @@ function makeTransactionSnapshot(
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-001",
     productSummary: null,
+    paymentId: null,
     paymentNo: "PAY-001",
     paymentMethod: "payment_code",
     paymentProvider: "alipay",
@@ -142,6 +143,7 @@ function makeTransactionSnapshot(
     orderStatus: "pending_payment",
     totalAmountCents: 100,
     vending: {
+      commandId: null,
       commandNo: "CMD-001",
       status: "pending",
       lastError: null,
@@ -1074,6 +1076,7 @@ describe("checkout store", () => {
         orderStatus: "manual_handling",
         nextAction: "manual_handling",
         vending: {
+          commandId: null,
           commandNo: "CMD-UNKNOWN",
           status: "result_unknown",
           lastError: "dispense result unknown after daemon restart",
@@ -1207,6 +1210,7 @@ describe("checkout store", () => {
       paymentStatus: "succeeded",
       orderStatus: "fulfilled",
       vending: {
+        commandId: null,
         commandNo: "CMD-SUCCESS",
         status: "succeeded",
         lastError: null,

@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::Path, path::PathBuf, sync::Arc};
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{Path as AxumPath, State, WebSocketUpgrade},
+    extract::{Path as AxumPath, Query, State, WebSocketUpgrade},
     http::{
         header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
         HeaderMap, Method, StatusCode,
@@ -224,6 +224,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
             post(record_physical_stock_attestation),
         )
         .route("/v1/stock/movements", post(record_stock_movement))
+        .route(
+            "/v1/stock/movements/dispense-confirmation",
+            get(dispense_confirmation),
+        )
         .route("/v1/stock/slot-sales-state", post(update_slot_sales_state))
         .route(
             "/v1/maintenance/whole-machine-lock/clear",
@@ -402,6 +406,13 @@ struct CancelOrder {
 struct MockPayment {
     order_no: String,
     succeed: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DispenseConfirmationQuery {
+    order_id: String,
+    vending_command_id: String,
 }
 
 struct VerifiedCreateOrderLine {
@@ -3039,6 +3050,43 @@ async fn record_stock_movement(
     }
 }
 
+async fn dispense_confirmation(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Query(query): Query<DispenseConfirmationQuery>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if query.order_id.trim().is_empty() || query.vending_command_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "dispense_confirmation_query_invalid",
+                message: "orderId and vendingCommandId are required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    match ctx
+        .ui
+        .backend
+        .get_dispense_confirmation(&query.order_id, &query.vending_command_id)
+        .await
+    {
+        Ok(confirmation) => (StatusCode::OK, Json(confirmation)).into_response(),
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage {
+                code: "dispense_confirmation_unavailable",
+                message: "dispense confirmation is unavailable".to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn update_slot_sales_state(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -3332,6 +3380,7 @@ fn empty_current_transaction_snapshot() -> vending_core::domain::InternalCurrent
         order_id: None,
         order_no: None,
         product_summary: None,
+        payment_id: None,
         payment_no: None,
         payment_method: None,
         payment_provider: None,
@@ -4162,6 +4211,186 @@ mod tests {
             .await
             .expect("response")
             .status()
+    }
+
+    #[tokio::test]
+    async fn dispense_confirmation_requires_ipc_token() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:9",
+            )
+            .await,
+        );
+
+        let status = call_status_request(
+            Method::GET,
+            "/v1/stock/movements/dispense-confirmation?orderId=order-1&vendingCommandId=command-1",
+            None,
+            &app,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn dispense_confirmation_rejects_blank_query_values() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:9",
+            )
+            .await,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/stock/movements/dispense-confirmation?orderId=%20%20&vendingCommandId=command-1")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["code"], "dispense_confirmation_query_invalid");
+    }
+
+    #[tokio::test]
+    async fn dispense_confirmation_proxies_authenticated_backend_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path(
+                "/machine-stock-movements/dispense-confirmation",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "movementId": "MOVE-1",
+                "orderId": "order /?&=1",
+                "vendingCommandId": "command /?&=2",
+                "quantity": 1,
+                "beforeQuantity": 3,
+                "afterQuantity": 2,
+                "deltaQuantity": -1,
+                "status": "accepted",
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                &server.uri(),
+            )
+            .await,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/stock/movements/dispense-confirmation?orderId=order%20%2F%3F%26%3D1&vendingCommandId=command%20%2F%3F%26%3D2")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["movementId"], "MOVE-1");
+        assert_eq!(payload["status"], "accepted");
+        assert!(!serde_json::to_string(&payload)
+            .expect("payload text")
+            .contains("test-backend-token"));
+
+        let requests = server.received_requests().await.expect("requests");
+        let request = requests
+            .iter()
+            .find(|request| {
+                request.method.as_str() == "GET"
+                    && request.url.path() == "/machine-stock-movements/dispense-confirmation"
+            })
+            .expect("backend dispense confirmation request");
+        assert_eq!(
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer test-backend-token")
+        );
+        let query = request.url.query_pairs().collect::<Vec<_>>();
+        assert!(query
+            .iter()
+            .any(|(key, value)| key == "orderId" && value == "order /?&=1"));
+        assert!(query
+            .iter()
+            .any(|(key, value)| key == "vendingCommandId" && value == "command /?&=2"));
+    }
+
+    #[tokio::test]
+    async fn dispense_confirmation_failure_does_not_expose_backend_credential() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path(
+                "/machine-stock-movements/dispense-confirmation",
+            ))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "machine secret vms_local-machine-shared-secret-change-before-prod",
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                &server.uri(),
+            )
+            .await,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/stock/movements/dispense-confirmation?orderId=order-1&vendingCommandId=command-1")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["code"], "dispense_confirmation_unavailable");
+        let text = serde_json::to_string(&payload).expect("payload text");
+        assert!(!text.contains("test-backend-token"));
+        assert!(!text.contains("vms_local-machine"));
     }
 
     #[tokio::test]

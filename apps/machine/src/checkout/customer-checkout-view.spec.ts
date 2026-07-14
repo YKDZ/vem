@@ -14,6 +14,7 @@ function awaitingPaymentTransaction(
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-PAYMENT-001",
     productSummary: null,
+    paymentId: "550e8400-e29b-41d4-a716-446655440011",
     paymentNo: "PAY-PAYMENT-001",
     paymentMethod: "qr_code",
     paymentProvider: "alipay",
@@ -41,6 +42,7 @@ function dispensingTransaction(
     orderId: "550e8400-e29b-41d4-a716-446655440020",
     orderNo: "ORD-DISPENSING-001",
     productSummary: null,
+    paymentId: "550e8400-e29b-41d4-a716-446655440021",
     paymentNo: "PAY-DISPENSING-001",
     paymentMethod: "payment_code",
     paymentProvider: "alipay",
@@ -49,6 +51,7 @@ function dispensingTransaction(
     orderStatus: "paid",
     totalAmountCents: 1200,
     vending: {
+      commandId: "550e8400-e29b-41d4-a716-446655440022",
       commandNo: "CMD-DISPENSING-001",
       status: "sent",
       lastError: null,
@@ -83,6 +86,7 @@ function successfulTransaction(
     paymentStatus: "succeeded",
     orderStatus: "fulfilled",
     vending: {
+      commandId: "550e8400-e29b-41d4-a716-446655440023",
       commandNo: "CMD-SUCCESS-001",
       status: "succeeded",
       lastError: null,
@@ -152,6 +156,7 @@ describe("Customer Checkout View Projection", () => {
         orderStatus: "refunded",
         paymentStatus: "refunded",
         vending: {
+          commandId: "550e8400-e29b-41d4-a716-446655440024",
           commandNo: "CMD-REFUNDED-001",
           status: "failed",
           lastError: "slot jammed",
@@ -342,6 +347,7 @@ describe("Customer Checkout View Projection", () => {
     const resetCompletedReminderSnapshot = {
       ...dispensingTransaction(),
       vending: {
+        commandId: "550e8400-e29b-41d4-a716-446655440025",
         commandNo: "CMD-DISPENSING-001",
         status: "sent",
         lastError: null,
@@ -364,6 +370,7 @@ describe("Customer Checkout View Projection", () => {
     const view = projectCustomerCheckoutView({
       transaction: dispensingTransaction({
         vending: {
+          commandId: "550e8400-e29b-41d4-a716-446655440026",
           commandNo: "CMD-DISPENSING-001",
           status: "sent",
           lastError: null,
@@ -565,6 +572,7 @@ describe("Customer Checkout View Projection", () => {
           testCase.nextAction === "closed"
             ? null
             : {
+                commandId: "550e8400-e29b-41d4-a716-446655440027",
                 commandNo: `CMD-${testCase.nextAction}`,
                 status:
                   testCase.nextAction === "refunded"
