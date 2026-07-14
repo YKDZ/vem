@@ -457,7 +457,11 @@ function Stop-RecordedVision([object]$Selection) {
   [int]$recordedProcessId = 0
   if ($record.bundleDigest -cne $approved.bundleDigest -or $record.selectionRevision -cne $approved.revision -or -not [int]::TryParse([string]$record.processId, [ref]$recordedProcessId) -or $recordedProcessId -lt 1 -or $record.creationTimeUtcTicks -isnot [Int64] -or $record.creationTimeUtcTicks -lt 1) { return }
   $process = Get-Process -Id $recordedProcessId -ErrorAction SilentlyContinue
-  if ($null -eq $process -or $process -isnot [Diagnostics.Process]) { return }
+  if ($null -eq $process) {
+    Remove-Item -LiteralPath $processPath -Force -ErrorAction SilentlyContinue
+    return
+  }
+  if ($process -isnot [Diagnostics.Process]) { return }
   try {
     if ($process.HasExited) {
       Remove-Item -LiteralPath $processPath -Force -ErrorAction SilentlyContinue

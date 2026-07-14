@@ -107,6 +107,10 @@ try {
     Assert-ThrowsMessage { Stop-RecordedVision $selection } "Vision process record is not valid UTF-8 JSON" "corrupt process record normal diagnostic"
     [IO.File]::WriteAllText($processPath, (@{ bundleDigest=$selection.bundleDigest; processId=4242; creationTimeUtc=$startTime.ToString("o"); executablePath=$victimPath; executableDigest="sha256:" + "b" * 64; selectionRevision=$selection.revision; unknown="unexpected" } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Assert-ThrowsMessage { Stop-RecordedVision $selection } "Vision process record has unknown or missing fields" "unknown-key process record normal diagnostic"
+    [IO.File]::WriteAllText($processPath, (@{ bundleDigest=$selection.bundleDigest; processId=4242; creationTimeUtcTicks=$startTime.Ticks; executablePath=$approvedPath; executableDigest=$approvedDigest; selectionRevision=$selection.revision } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    function Get-Process { return $null }
+    Stop-RecordedVision $selection
+    if (Test-Path -LiteralPath $processPath -PathType Leaf) { throw "stale trusted process record was not removed" }
     if ($env:OS -eq "Windows_NT") {
       $fakeWindir = Join-Path $root "fake-windir"; $fakeSystem32 = Join-Path $fakeWindir "System32"; New-Item -ItemType Directory -Force -Path $fakeSystem32 | Out-Null
       $fakeTaskKill = Join-Path $fakeSystem32 "taskkill.exe"; $fakeTaskKillSource = Join-Path $root "FakeTaskKill.cs"
@@ -144,7 +148,7 @@ try {
         }
       }
     }
-    Test-SourceBoundary @('Resolve-ApprovedVisionExecution $Selection', '$legacyKeys = @("bundleDigest", "processId", "creationTimeUtc", "executablePath", "executableDigest", "selectionRevision")', '$isExpectedLegacyRecord =', 'unsupported legacy creationTimeUtc identity; hard migration requires creationTimeUtcTicks', 'Assert-Keys $record @("bundleDigest", "processId", "creationTimeUtcTicks", "executablePath", "executableDigest", "selectionRevision") "Vision process record"', '$process -isnot [Diagnostics.Process]', '$process.StartTime.ToUniversalTime().Ticks -ne $record.creationTimeUtcTicks', '$actualPath -cne $approved.executablePath', '$approved.executableDigest', 'function Stop-VerifiedProcessTree', 'Stop-VerifiedProcessTree $process', 'taskkill.exe', 'taskkill /T /F exited with code', '$process.WaitForExit(5000)', '$process.Dispose()')
+    Test-SourceBoundary @('Resolve-ApprovedVisionExecution $Selection', '$legacyKeys = @("bundleDigest", "processId", "creationTimeUtc", "executablePath", "executableDigest", "selectionRevision")', '$isExpectedLegacyRecord =', 'unsupported legacy creationTimeUtc identity; hard migration requires creationTimeUtcTicks', 'Assert-Keys $record @("bundleDigest", "processId", "creationTimeUtcTicks", "executablePath", "executableDigest", "selectionRevision") "Vision process record"', 'if ($null -eq $process) {', '$process -isnot [Diagnostics.Process]', '$process.StartTime.ToUniversalTime().Ticks -ne $record.creationTimeUtcTicks', '$actualPath -cne $approved.executablePath', '$approved.executableDigest', 'function Stop-VerifiedProcessTree', 'Stop-VerifiedProcessTree $process', 'taskkill.exe', 'taskkill /T /F exited with code', '$process.WaitForExit(5000)', '$process.Dispose()')
     Write-Output "process-record fixtures passed"
   } elseif ($Case -eq "launcher") {
     $script:launcherPath = Join-Path $root "start_vision.bat"
