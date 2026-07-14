@@ -17,6 +17,7 @@ import listTitleImage from "@/assets/home/list-title.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
 import { groupItemsByTopCategory } from "@/catalog/view-model";
+import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
 import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
@@ -24,11 +25,13 @@ import { useVisionRecommendations } from "@/composables/useVisionRecommendations
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
+import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
 const router = useRouter();
 const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
+const machineStore = useMachineStore();
 useVisionRecommendations();
 const { presenceClass } = usePresenceInteraction();
 const { primaryNotification } = useCatalogNotifications();
@@ -120,6 +123,17 @@ const activeProducts = computed(() =>
   }),
 );
 const hasAnySaleableProduct = computed(() => displayProducts.value.length > 0);
+const homeNotification = computed(
+  () =>
+    primaryNotification.value ??
+    (hasAnySaleableProduct.value
+      ? null
+      : {
+          id: "catalog-sold-out",
+          message: "暂无可售商品，请稍后再来或联系工作人员。",
+          tone: "warning" as const,
+        }),
+);
 
 function shouldEnterMaintenance(): boolean {
   return (
@@ -367,9 +381,9 @@ onUnmounted(() => {
       </div>
 
       <div
-        v-if="primaryNotification"
+        v-if="homeNotification"
         class="catalog-notification home-readiness-message"
-        :class="`catalog-notification-${primaryNotification.tone}`"
+        :class="`catalog-notification-${homeNotification.tone}`"
         role="status"
       >
         <span class="catalog-notification-icon" aria-hidden="true">
@@ -390,7 +404,7 @@ onUnmounted(() => {
             />
           </svg>
         </span>
-        <span>{{ primaryNotification.message }}</span>
+        <span>{{ homeNotification.message }}</span>
       </div>
 
       <div
@@ -408,6 +422,9 @@ onUnmounted(() => {
           v-for="category in homeCategoryEntries"
           :key="category.key"
           class="home-category-card kiosk-touch-target"
+          :class="{
+            'home-category-card-sold-out': !categoryHasProducts(category.key),
+          }"
           :disabled="!categoryHasProducts(category.key)"
           type="button"
           @click="selectTopCategory(category.key)"
@@ -429,13 +446,6 @@ onUnmounted(() => {
           </span>
         </button>
       </div>
-
-      <p
-        v-if="!hasAnySaleableProduct"
-        class="home-empty-message relative z-10 mt-5 shrink-0 rounded-2xl border border-[#d8cfb9] bg-white/82 p-4 text-center text-base font-semibold text-[#5f644f]"
-      >
-        暂无可售商品，请稍后再来或联系工作人员。
-      </p>
 
       <div
         class="home-quick-grid relative z-30 mt-7 grid shrink-0 grid-cols-4 gap-2 pr-28"
@@ -619,12 +629,20 @@ onUnmounted(() => {
                 @click="openProductDetail(product)"
               >
                 <div class="product-image-panel">
-                  <img
-                    :src="product.image"
+                  <ManagedMediaImage
+                    :reference="product.item.coverImageUrl"
+                    :api-base-url="machineStore.config.apiBaseUrl"
+                    :fallback="fallbackImageForCategory(product.categoryKey)"
                     :alt="product.name"
                     :class="{
                       'product-image-fallback': !product.hasProductImage,
                     }"
+                    @diagnostic="
+                      catalogStore.recordMediaDiagnostic(
+                        product.item.coverImageUrl,
+                        $event,
+                      )
+                    "
                   />
                   <span class="product-bamboo" aria-hidden="true"></span>
                 </div>
@@ -675,11 +693,6 @@ onUnmounted(() => {
 .catalog-home,
 .catalog-list {
   container-type: inline-size;
-}
-
-.catalog-home.presence-present,
-.catalog-list.presence-present {
-  filter: saturate(1.03) brightness(1.01);
 }
 
 .catalog-home {
@@ -1379,7 +1392,18 @@ onUnmounted(() => {
 
 .home-category-card:disabled {
   cursor: not-allowed;
-  opacity: 0.52;
+}
+
+.home-category-card-sold-out {
+  border-color: #c7c7c7;
+  background: linear-gradient(180deg, #f4f4f4, #e5e5e5);
+  color: #707070;
+  filter: grayscale(1);
+  opacity: 0.72;
+}
+
+.home-category-card-sold-out .home-category-action {
+  background: linear-gradient(180deg, #a2a2a2, #858585);
 }
 
 .product-empty-message {

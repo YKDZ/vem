@@ -2363,7 +2363,7 @@ describe("shared API contract", () => {
       productName: "矿泉水",
       productDescription: null,
       coverImageUrl:
-        "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
       categoryId: null,
       categoryName: null,
       sku: "WATER-001",
@@ -2382,6 +2382,18 @@ describe("shared API contract", () => {
         slots: [slot],
       }).slots[0]?.coverImageUrl,
     ).toBe(slot.coverImageUrl);
+    expect(() =>
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [
+          {
+            ...slot,
+            coverImageUrl:
+              "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+          },
+        ],
+      }),
+    ).toThrow();
     expect(() =>
       publishMachinePlanogramVersionSchema.parse({
         planogramVersion: "PLAN-2026-06-04",

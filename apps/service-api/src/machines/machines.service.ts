@@ -1189,13 +1189,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const coverImageUrls = new Map(
       rows.map((row) => [
         row.productId,
-        this.machineRenderableMediaAssetUrl(row.displayImagePublicUrl),
+        this.machineManagedMediaReference(row.displayImagePublicUrl),
       ]),
     );
     const tryOnSilhouetteUrls = new Map(
       rows.map((row) => [
         row.variantId,
-        this.machineRenderableMediaAssetUrl(row.tryOnSilhouettePublicUrl),
+        this.machineManagedMediaReference(row.tryOnSilhouettePublicUrl),
       ]),
     );
 
@@ -1212,28 +1212,19 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const snapshot = planogramSlotSnapshot(row);
     return {
       ...snapshot,
-      coverImageUrl: this.machineRenderableMediaAssetUrl(
-        snapshot.coverImageUrl,
-      ),
-      tryOnSilhouetteUrl: this.machineRenderableMediaAssetUrl(
+      coverImageUrl: this.machineManagedMediaReference(snapshot.coverImageUrl),
+      tryOnSilhouetteUrl: this.machineManagedMediaReference(
         snapshot.tryOnSilhouetteUrl ?? null,
       ),
     };
   }
 
-  private machineRenderableMediaAssetUrl(
+  private machineManagedMediaReference(
     publicUrl: string | null,
   ): string | null {
     if (!publicUrl) return null;
-    if (/^https?:\/\//i.test(publicUrl)) return publicUrl;
-    if (!publicUrl.startsWith("/api/media-assets/")) return publicUrl;
-
-    const baseUrl =
-      this.config.mediaAssetPublicBaseUrl ?? this.config.paymentWebhookBaseUrl;
-    if (!baseUrl) return publicUrl;
-
     try {
-      return new URL(publicUrl, baseUrl).toString();
+      return new URL(publicUrl).pathname;
     } catch {
       return publicUrl;
     }
@@ -1640,8 +1631,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .orderBy(products.sortOrder, machineSlots.layerNo, machineSlots.cellNo);
     return rows.map((row) => ({
       ...row,
-      coverImageUrl: this.machineRenderableMediaAssetUrl(row.coverImageUrl),
-      tryOnSilhouetteUrl: this.machineRenderableMediaAssetUrl(
+      coverImageUrl: this.machineManagedMediaReference(row.coverImageUrl),
+      tryOnSilhouetteUrl: this.machineManagedMediaReference(
         row.tryOnSilhouetteUrl,
       ),
     }));

@@ -2674,10 +2674,10 @@ describe("MachinesService planogram lifecycle", () => {
     capacity: 8,
     parLevel: 6,
   };
-  const canonicalCoverImageUrl =
-    "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content";
-  const canonicalTryOnSilhouetteUrl =
-    "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content";
+  const managedCoverImageReference =
+    "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content";
+  const managedTryOnSilhouetteReference =
+    "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content";
 
   it("publishes a machine planogram version without making it active", async () => {
     const machine = {
@@ -2758,13 +2758,13 @@ describe("MachinesService planogram lifecycle", () => {
     );
     expect(insertSlotsValues).toHaveBeenCalledWith([
       expect.objectContaining({
-        coverImageUrl: canonicalCoverImageUrl,
-        tryOnSilhouetteUrl: canonicalTryOnSilhouetteUrl,
+        coverImageUrl: managedCoverImageReference,
+        tryOnSilhouetteUrl: managedTryOnSilhouetteReference,
       }),
     ]);
-    expect(result.slots[0]?.coverImageUrl).toBe(canonicalCoverImageUrl);
+    expect(result.slots[0]?.coverImageUrl).toBe(managedCoverImageReference);
     expect(result.slots[0]?.tryOnSilhouetteUrl).toBe(
-      canonicalTryOnSilhouetteUrl,
+      managedTryOnSilhouetteReference,
     );
     expect(auditRecord).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2796,7 +2796,7 @@ describe("MachinesService planogram lifecycle", () => {
     expect(mockDb.transaction).not.toHaveBeenCalled();
   });
 
-  it("returns machine-renderable absolute managed image URLs in catalog rows", async () => {
+  it("returns managed media references in catalog rows", async () => {
     const catalogRow = {
       machineCode: "M001",
       slotId: slot.slotId,
@@ -2834,8 +2834,8 @@ describe("MachinesService planogram lifecycle", () => {
     await expect(service.getCatalogByMachineCode("M001")).resolves.toEqual([
       {
         ...catalogRow,
-        coverImageUrl: canonicalCoverImageUrl,
-        tryOnSilhouetteUrl: canonicalTryOnSilhouetteUrl,
+        coverImageUrl: managedCoverImageReference,
+        tryOnSilhouetteUrl: managedTryOnSilhouetteReference,
       },
     ]);
   });

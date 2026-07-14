@@ -13,6 +13,12 @@ const DEFAULT_AUTO_REFRESH_INTERVAL_MS = 5_000;
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL"] as const;
 type KnownSize = (typeof SIZE_ORDER)[number];
 
+export type CatalogMediaDiagnostic = {
+  reference: string | null;
+  message: string;
+  recordedAt: string;
+};
+
 let refreshInFlight: Promise<void> | null = null;
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let autoRefreshConsumers = 0;
@@ -231,6 +237,7 @@ export const useCatalogStore = defineStore("catalog", {
     lastUpdatedAt: null as string | null,
     loading: false,
     error: null as string | null,
+    mediaDiagnostics: [] as CatalogMediaDiagnostic[],
     autoRefreshEnabled: false,
   }),
   getters: {
@@ -287,6 +294,26 @@ export const useCatalogStore = defineStore("catalog", {
       this.planogramVersion = snapshot.planogramVersion ?? null;
       this.lastUpdatedAt = snapshot.lastUpdatedAt;
       this.error = snapshot.lastError ?? null;
+    },
+    recordMediaDiagnostic(
+      reference: string | null | undefined,
+      message: string,
+    ): void {
+      const previous = this.mediaDiagnostics[this.mediaDiagnostics.length - 1];
+      if (
+        previous?.reference === (reference ?? null) &&
+        previous.message === message
+      ) {
+        return;
+      }
+      this.mediaDiagnostics = [
+        ...this.mediaDiagnostics.slice(-19),
+        {
+          reference: reference ?? null,
+          message,
+          recordedAt: new Date().toISOString(),
+        },
+      ];
     },
     async load(): Promise<void> {
       await this.refresh();

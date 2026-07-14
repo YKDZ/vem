@@ -2,12 +2,15 @@
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import { resolveManagedMediaReference } from "@/catalog/managed-media";
 import { useTryOnPreview } from "@/composables/useTryOnPreview";
 import { useCatalogStore } from "@/stores/catalog";
+import { useMachineStore } from "@/stores/machine";
 
 const route = useRoute();
 const router = useRouter();
 const catalogStore = useCatalogStore();
+const machineStore = useMachineStore();
 const { previewUrl, errorMessage, isStarting, startPreview, stopPreview } =
   useTryOnPreview();
 
@@ -21,7 +24,11 @@ const selectedVariant = computed(
     ) ?? null,
 );
 const silhouetteUrl = computed(
-  () => selectedVariant.value?.tryOnSilhouetteUrl ?? null,
+  () =>
+    resolveManagedMediaReference(
+      selectedVariant.value?.tryOnSilhouetteUrl,
+      machineStore.config.apiBaseUrl,
+    ).url,
 );
 
 onMounted(() => {
