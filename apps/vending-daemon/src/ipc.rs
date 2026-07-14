@@ -21,6 +21,7 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
@@ -143,6 +144,17 @@ struct MaintenanceSessionResponse {
 const MAINTENANCE_SCOPE_MUTATE: &str = "maintenance.mutate";
 const MAINTENANCE_SCOPE_RECLAIM: &str = "maintenance.reclaim";
 const MAINTENANCE_SCOPE_DESKTOP_EXIT: &str = "maintenance.desktop_exit";
+
+/// Logs need to tie issuance and mutations together without turning the log
+/// export into a bearer-token recovery channel.  A short SHA-256 prefix is
+/// deterministic for the daemon lifetime but cannot be replayed as a session.
+fn maintenance_session_correlation_id(session_id: &str) -> String {
+    Sha256::digest(session_id.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 struct ActiveMaintenanceSession {
@@ -406,7 +418,7 @@ async fn require_non_bring_up_maintenance_authorization(
         "protected maintenance mutation authorized",
         Some(serde_json::json!({
             "action": action,
-            "sessionId": context.session_id,
+            "sessionCorrelationId": maintenance_session_correlation_id(&context.session_id),
             "operatorId": ctx.maintenance_authorization.operator_id(&context).await,
         })),
     )
@@ -722,7 +734,7 @@ async fn create_maintenance_session(
                 "maintenance_audit",
                 "protected maintenance session issued",
                 Some(serde_json::json!({
-                    "sessionId": session.session_id.clone(),
+                    "sessionCorrelationId": maintenance_session_correlation_id(&session.session_id),
                     "operatorId": authority.operator_id(&MaintenanceAuthorizationContext {
                         session_id: session.session_id.clone(),
                     }).await,
@@ -1732,7 +1744,7 @@ async fn request_machine_reclaim(
         "protected maintenance mutation authorized",
         Some(serde_json::json!({
             "action": "bring_up.request_reclaim",
-            "sessionId": session_id,
+            "sessionCorrelationId": maintenance_session_correlation_id(session_id),
             "operatorId": ctx.maintenance_authorization.operator_id(&MaintenanceAuthorizationContext {
                 session_id: session_id.to_string(),
             }).await,
@@ -9707,7 +9719,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maintenance_session_and_mutation_audits_identify_the_operator_without_the_pin() {
+    async fn maintenance_session_and_mutation_audits_correlate_without_recording_a_replayable_session(
+    ) {
         let temp_dir = tempdir().expect("tmp");
         let mut ctx = test_ipc_context(
             temp_dir.path(),
@@ -9756,7 +9769,11 @@ mod tests {
             .expect("maintenance audit log");
         assert!(logs.contains("maintenance_audit"));
         assert!(logs.contains("field-tech-17"));
-        assert!(logs.contains(session_id));
+        assert!(
+            !logs.contains(session_id),
+            "diagnostic export must not contain a bearer maintenance session"
+        );
+        assert!(logs.contains("sessionCorrelationId"));
         assert!(logs.contains("hardware.self_check"));
         assert!(!logs.contains("\"pin\""));
         assert!(!logs.contains("2468"));
