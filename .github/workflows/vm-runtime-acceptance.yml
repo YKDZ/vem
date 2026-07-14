@@ -585,6 +585,24 @@ jobs:
             --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
 
+      - name: Run Production Serial COM And Scanner Sale Conformance
+        if: success()
+        run: |
+          set -euo pipefail
+          test -n "${VEM_VM_HOST_ADAPTER:-}"
+          test -n "${VEM_VM_HOST_SCANNER_CODE:-}"
+          sale_correlation_id="sale-correlation://vm-runtime-$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
+          printf '%s' "$VEM_VM_HOST_SCANNER_CODE" | env -u VEM_VM_HOST_SCANNER_CODE \
+            node scripts/testbed/vm-host-adapter-serial-conformance.mjs \
+              --adapter "$VEM_VM_HOST_ADAPTER" \
+              --scanner-code-stdin \
+              --run-id "$RUN_ID" \
+              --target-identity "$VEM_VM_HOST_TARGET_ID" \
+              --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+              --lifecycle-reference "vm-lifecycle://$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]').runtime-acceptance" \
+              --sale-correlation-id "$sale_correlation_id" \
+              --out "artifacts/vm-runtime-acceptance/${RUN_ID}/serial-com-scanner-sale-conformance.json"
+
       - name: Bind Active Kiosk Session For Native Audio Capture
         if: success()
         run: |

@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 
 import {
+  createScannerCodeDescriptor,
+  deriveSerialDeviceMappingDigest,
+  deriveSerialSessionBinding,
   validateVmHostAdapterRequest,
   VM_HOST_ADAPTER_CONTRACT_VERSION,
 } from "./vm-host-adapter-contract.mjs";
@@ -147,7 +150,118 @@ function materializeDefaultAudioEvidence() {
   return { ...evidence("default-audio-capture", hash), fileName };
 }
 
-function fakeReport(request, scenario) {
+function readState(path) {
+  if (!path || !existsSync(path)) return { sessions: {} };
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function writeState(path, state) {
+  if (!path) return;
+  writeFileSync(path, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+}
+
+function serialMappings(state) {
+  return [
+    {
+      role: "lower-controller",
+      guestDeviceIdentity: "guest-device://fake-lower-controller-001",
+      simulatorProcessIdentity: "simulator-process://fake-lower-controller-001",
+      simulatorSocketIdentity: "simulator-socket://fake-lower-controller-001",
+      connectionState: state,
+    },
+    {
+      role: "scanner",
+      guestDeviceIdentity: "guest-device://fake-scanner-001",
+      simulatorProcessIdentity: "simulator-process://fake-scanner-001",
+      simulatorSocketIdentity: "simulator-socket://fake-scanner-001",
+      connectionState: state,
+    },
+  ];
+}
+
+function serialBinding(request) {
+  if (request.operation === "start-serial-session")
+    return deriveSerialSessionBinding({
+      runId: request.runId,
+      lifecycleReference: request.lifecycleReference,
+      targetIdentity: request.target.identity,
+      startOperationReference: request.operationReference,
+    });
+  return request.serialSession;
+}
+
+function mutateSerialState(request, state) {
+  const binding = serialBinding(request);
+  if (!binding?.serialSessionId) return null;
+  const session = state.sessions[binding.serialSessionId] ?? {
+    cleanupAttemptCount: 0,
+    active: true,
+  };
+  if (request.operation === "start-serial-session") {
+    session.active = true;
+    session.cleanupAttemptCount = 0;
+  }
+  if (
+    ["stop-serial-session", "cleanup", "cancel"].includes(request.operation)
+  ) {
+    session.active = false;
+    session.cleanupAttemptCount += 1;
+  }
+  state.sessions[binding.serialSessionId] = session;
+  return { ...binding, ...session };
+}
+
+function semanticRecords(request) {
+  const session = request.serialSession;
+  const saleCorrelationId = session.saleCorrelationIds[0];
+  const lower = [
+    "handshake",
+    "health",
+    "dispense-request",
+    "dispense-ack",
+    "dispense-result",
+  ].map((event) => ({
+    role: "lower-controller",
+    event,
+    operationNonce: request.operationNonce,
+    sessionBindingToken: session.sessionBindingToken,
+    deviceMappingDigest: session.deviceMappingDigest,
+    scannerCodeDigest: null,
+    scannerCodeByteLength: null,
+    scannerCodeSuffix: null,
+    saleCorrelationId:
+      event.startsWith("dispense-") && session.saleCorrelationIds.length > 0
+        ? session.saleCorrelationIds[0]
+        : null,
+  }));
+  return [
+    ...lower,
+    {
+      role: "scanner",
+      event: "scanner-injection",
+      operationNonce: session.scannerInjection.operationNonce,
+      sessionBindingToken: session.sessionBindingToken,
+      deviceMappingDigest: session.deviceMappingDigest,
+      scannerCodeDigest: session.scannerInjection.scannerCodeDigest,
+      scannerCodeByteLength: session.scannerInjection.scannerCodeByteLength,
+      scannerCodeSuffix: session.scannerInjection.scannerCodeSuffix,
+      saleCorrelationId,
+    },
+    ...["payment-request", "payment-ack", "payment-result"].map((event) => ({
+      role: "payment",
+      event,
+      operationNonce: request.operationNonce,
+      sessionBindingToken: session.sessionBindingToken,
+      deviceMappingDigest: session.deviceMappingDigest,
+      scannerCodeDigest: null,
+      scannerCodeByteLength: null,
+      scannerCodeSuffix: null,
+      saleCorrelationId,
+    })),
+  ];
+}
+
+function fakeReport(request, scenario, state) {
   const resultByScenario = {
     success: "succeeded",
     failure: "failed",
@@ -158,26 +272,46 @@ function fakeReport(request, scenario) {
   const result = resultByScenario[scenario];
   if (!result)
     throw new Error("unsupported deterministic fake adapter scenario");
-  const completed = result === "succeeded" ? [request.operation] : [];
+  const isV2 = Object.hasOwn(request, "serialSession");
+  const binding = isV2 ? serialBinding(request) : null;
+  const statefulSession = isV2 ? mutateSerialState(request, state) : null;
+  const serialState = ["stop-serial-session", "cleanup", "cancel"].includes(
+    request.operation,
+  )
+    ? "disconnected"
+    : "connected";
+  const mappings = serialMappings(serialState);
+  const mappingDigest = deriveSerialDeviceMappingDigest(mappings);
   const negotiatedCapabilities =
     result === "succeeded" ? request.requestedCapabilities : [];
+  const deviceMappings = [];
+  if (
+    negotiatedCapabilities.includes("serial:lower-controller") ||
+    (isV2 && request.serialSession !== null)
+  )
+    deviceMappings.push({
+      role: "lower-controller",
+      guestDeviceIdentity: mappings[0].guestDeviceIdentity,
+    });
+  if (
+    negotiatedCapabilities.includes("serial:scanner") ||
+    (isV2 && request.serialSession !== null)
+  )
+    deviceMappings.push({
+      role: "scanner",
+      guestDeviceIdentity: mappings[1].guestDeviceIdentity,
+    });
   const evidenceEntries =
     request.operation === "capture-display"
       ? [materializeDisplayEvidence()]
       : request.operation === "capture-default-audio"
         ? [materializeDefaultAudioEvidence()]
         : [];
-  const deviceMappings = [];
-  if (negotiatedCapabilities.includes("serial:lower-controller"))
-    deviceMappings.push({
-      role: "lower-controller",
-      guestDeviceIdentity: "guest-device://fake-lower-controller-001",
-    });
-  if (negotiatedCapabilities.includes("serial:scanner"))
-    deviceMappings.push({
-      role: "scanner",
-      guestDeviceIdentity: "guest-device://fake-scanner-001",
-    });
+  const serialRequest = request.serialSession;
+  const needsSerialReport =
+    isV2 &&
+    (request.operation === "start-serial-session" || serialRequest !== null) &&
+    result === "succeeded";
   return {
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-report/v2",
@@ -203,10 +337,11 @@ function fakeReport(request, scenario) {
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
+      ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result,
     negotiatedCapabilities,
-    completedOperations: completed,
+    completedOperations: result === "succeeded" ? [request.operation] : [],
     observed: {
       vmIdentity: "vm-observed://fake-runtime-testbed-001",
       targetBinding: {
@@ -279,6 +414,64 @@ function fakeReport(request, scenario) {
           result === "succeeded" ? "adapter_completed" : `adapter_${result}`,
       },
     ],
+    ...(isV2
+      ? {
+          serialSession: needsSerialReport
+            ? {
+                serialSessionId: binding.serialSessionId,
+                sessionBindingToken: binding.sessionBindingToken,
+                startOperationReference:
+                  request.operation === "start-serial-session"
+                    ? request.operationReference
+                    : serialRequest.startOperationReference,
+                deviceMappingDigest: mappingDigest,
+                state:
+                  request.operation === "stop-serial-session"
+                    ? "stopped"
+                    : ["cleanup", "cancel"].includes(request.operation)
+                      ? "cleaned"
+                      : "active",
+                deviceMappings: mappings,
+                scannerAcknowledgement:
+                  request.operation === "inject-scanner-code"
+                    ? {
+                        scannerCodeDigest:
+                          serialRequest.scannerInjection.scannerCodeDigest,
+                        scannerCodeByteLength:
+                          serialRequest.scannerInjection.scannerCodeByteLength,
+                        scannerCodeSuffix:
+                          serialRequest.scannerInjection.scannerCodeSuffix,
+                        accepted: true,
+                      }
+                    : null,
+                simulatorCleanup: [
+                  "stop-serial-session",
+                  "cleanup",
+                  "cancel",
+                ].includes(request.operation)
+                  ? {
+                      cleanupAttemptCount: statefulSession.cleanupAttemptCount,
+                      idempotencyVerified:
+                        request.operation === "stop-serial-session" &&
+                        serialRequest.idempotencyCheck,
+                      survivingProcessCount: 0,
+                      survivingSocketCount: 0,
+                    }
+                  : null,
+              }
+            : null,
+          serialEvidence:
+            request.operation === "collect-serial-evidence" &&
+            result === "succeeded"
+              ? {
+                  serialSessionId: serialRequest.serialSessionId,
+                  sessionBindingToken: serialRequest.sessionBindingToken,
+                  deviceMappingDigest: serialRequest.deviceMappingDigest,
+                  records: semanticRecords(request),
+                }
+              : null,
+        }
+      : {}),
   };
 }
 
@@ -287,6 +480,30 @@ const reportPath = readOption("--report");
 const request = validateVmHostAdapterRequest(
   JSON.parse(readFileSync(requestPath, "utf8")),
 );
+if (
+  request.operation !== "inject-scanner-code" &&
+  process.env.VEM_VM_HOST_SCANNER_CODE !== undefined
+)
+  throw new Error("protected scanner input leaked outside injection");
+if (request.operation === "inject-scanner-code") {
+  const protectedCode = process.env.VEM_VM_HOST_SCANNER_CODE;
+  if (typeof protectedCode !== "string")
+    throw new Error("missing protected scanner input");
+  if (
+    JSON.stringify(createScannerCodeDescriptor(protectedCode)) !==
+    JSON.stringify({
+      scannerCodeDigest:
+        request.serialSession.scannerInjection.scannerCodeDigest,
+      scannerCodeByteLength:
+        request.serialSession.scannerInjection.scannerCodeByteLength,
+      scannerCodeSuffix:
+        request.serialSession.scannerInjection.scannerCodeSuffix,
+    })
+  )
+    throw new Error(
+      "protected scanner input does not match request descriptor",
+    );
+}
 if (process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG) {
   writeFileSync(
     process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG,
@@ -355,9 +572,9 @@ if (
       : scenarioForOperation === "hang"
         ? "success"
         : scenarioForOperation;
-  writeFileSync(
-    reportPath,
-    `${JSON.stringify(fakeReport(request, scenario))}\n`,
-    { mode: 0o600 },
-  );
+  const statePath = process.env.VEM_VM_HOST_ADAPTER_STATE_FILE;
+  const state = readState(statePath);
+  const report = fakeReport(request, scenario, state);
+  writeState(statePath, state);
+  writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { mode: 0o600 });
 }

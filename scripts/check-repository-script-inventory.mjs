@@ -315,18 +315,6 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/testbed/vm-host-adapter.mjs",
-    owner: "field-operations",
-    category: "canonical entrypoint",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/vm-host-adapter.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
     path: "scripts/testbed/vm-host-adapter-contract.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
@@ -334,6 +322,42 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/testbed/vm-host-adapter-contract.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/default-audio-evidence.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/default-audio-evidence.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/display-evidence.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/display-evidence.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/windows-native-audio-evidence.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/windows-native-audio-evidence.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["runtime acceptance", "testbed workflows"],
@@ -351,15 +375,15 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/testbed/run-vm-host-adapter.mjs",
+    path: "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
     owner: "field-operations",
-    category: "canonical entrypoint",
+    category: "verifier-test guard",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json",
+    path: "scripts/testbed/run-vm-host-adapter.mjs",
     owner: "field-operations",
-    category: "public runbook operation",
+    category: "canonical entrypoint",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {

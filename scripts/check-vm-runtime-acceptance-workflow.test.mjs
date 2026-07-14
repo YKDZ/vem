@@ -339,4 +339,30 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.ok(workflow.indexOf(audio) < workflow.indexOf(verifyAudio));
     assert.ok(workflow.indexOf(verifyAudio) < workflow.indexOf(cleanup));
   });
+
+  it("runs the production serial COM and scanner sale conformance with protected scanner input", () => {
+    const workflow = readWorkflow();
+    const runtime = stepBlock(workflow, "Run VM Runtime Acceptance");
+    const serialSale = stepBlock(
+      workflow,
+      "Run Production Serial COM And Scanner Sale Conformance",
+    );
+    const display = stepBlock(
+      workflow,
+      "Capture Windows Display Evidence Through Host Adapter",
+    );
+
+    assert.match(serialSale, /if:\s+success\(\)/);
+    assert.match(serialSale, /VEM_VM_HOST_SCANNER_CODE/);
+    assert.match(
+      serialSale,
+      /scripts\/testbed\/vm-host-adapter-serial-conformance\.mjs/,
+    );
+    assert.match(serialSale, /--scanner-code-stdin/);
+    assert.match(serialSale, /--sale-correlation-id/);
+    assert.match(serialSale, /serial-com-scanner-sale-conformance\.json/);
+    assert.doesNotMatch(serialSale, /mock-payment/);
+    assert.ok(workflow.indexOf(runtime) < workflow.indexOf(serialSale));
+    assert.ok(workflow.indexOf(serialSale) < workflow.indexOf(display));
+  });
 });

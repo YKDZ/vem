@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  createScannerCodeDescriptor,
   createVmHostAdapterRequest,
+  deriveSerialDeviceMappingDigest,
+  deriveSerialSessionBinding,
+  redactScannerCode,
   runVmHostAdapter,
   validateVmHostAdapterReport,
   validateVmHostAdapterRequest,
@@ -16,11 +20,16 @@ import {
 } from "./vm-host-adapter-contract.mjs";
 
 const HASH = "a".repeat(64);
+const PROTECTED_SCANNER_INPUT = "test-scanner-secret";
 const FAKE_ADAPTER = new URL("./fake-vm-host-adapter.mjs", import.meta.url)
   .pathname;
 const CLIENT = new URL("./run-vm-host-adapter.mjs", import.meta.url).pathname;
 const CONFORMANCE = new URL(
   "./vm-host-adapter-conformance.mjs",
+  import.meta.url,
+).pathname;
+const SERIAL_CONFORMANCE = new URL(
+  "./vm-host-adapter-serial-conformance.mjs",
   import.meta.url,
 ).pathname;
 
@@ -67,6 +76,36 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
       "default-audio-capture",
       "cancellation",
       "cleanup",
+    ],
+    "start-serial-session": [
+      "serial-session",
+      "serial:lower-controller",
+      "serial:scanner",
+      "cancellation",
+      "cleanup",
+    ],
+    "inject-scanner-code": [
+      "serial-session",
+      "serial:lower-controller",
+      "serial:scanner",
+      "serial:scanner-injection",
+      "cancellation",
+      "cleanup",
+    ],
+    "collect-serial-evidence": [
+      "serial-session",
+      "serial:lower-controller",
+      "serial:scanner",
+      "serial:evidence",
+      "cancellation",
+      "cleanup",
+    ],
+    "stop-serial-session": [
+      "serial-session",
+      "serial:lower-controller",
+      "serial:scanner",
+      "cleanup",
+      "cancellation",
     ],
     cleanup: ["cleanup", "cancellation"],
     cancel: ["cancellation", "cleanup"],
@@ -121,6 +160,124 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
   };
 }
 
+function serialSessionRequest(operation, overrides = {}) {
+  const base = requestFor(operation);
+  const startOperationReference = base.operationReference;
+  const binding = deriveSerialSessionBinding({
+    runId: base.runId,
+    lifecycleReference: base.lifecycleReference,
+    targetIdentity: base.target.identity,
+    startOperationReference,
+  });
+  const mappings = serialDeviceMappings(
+    operation === "stop-serial-session" ? "disconnected" : "connected",
+  );
+  const scannerInjection = {
+    operationNonce:
+      operation === "inject-scanner-code"
+        ? base.operationNonce
+        : "op-fedcba9876543210",
+    ...createScannerCodeDescriptor(PROTECTED_SCANNER_INPUT),
+  };
+  return requestFor(operation, {
+    schemaVersion: "vem-vm-host-adapter-request/v2",
+    serialSession: {
+      serialSessionId:
+        operation === "start-serial-session" ? null : binding.serialSessionId,
+      sessionBindingToken:
+        operation === "start-serial-session"
+          ? null
+          : binding.sessionBindingToken,
+      startOperationReference:
+        operation === "start-serial-session" ? null : startOperationReference,
+      deviceMappingDigest:
+        operation === "start-serial-session"
+          ? null
+          : deriveSerialDeviceMappingDigest(mappings),
+      deviceRoles: ["lower-controller", "scanner"],
+      scannerInjection: [
+        "inject-scanner-code",
+        "collect-serial-evidence",
+      ].includes(operation)
+        ? scannerInjection
+        : null,
+      saleCorrelationIds: ["sale-correlation://sale-001"],
+      idempotencyCheck: false,
+    },
+    ...overrides,
+  });
+}
+
+function serialDeviceMappings(connectionState) {
+  return [
+    {
+      role: "lower-controller",
+      guestDeviceIdentity: "guest-device://lower-controller-001",
+      simulatorProcessIdentity: "simulator-process://lower-controller-001",
+      simulatorSocketIdentity: "simulator-socket://lower-controller-001",
+      connectionState,
+    },
+    {
+      role: "scanner",
+      guestDeviceIdentity: "guest-device://scanner-001",
+      simulatorProcessIdentity: "simulator-process://scanner-001",
+      simulatorSocketIdentity: "simulator-socket://scanner-001",
+      connectionState,
+    },
+  ];
+}
+
+function serialEvidenceRecords(request) {
+  const saleCorrelationId = request.serialSession.saleCorrelationIds[0];
+  const lower = [
+    "handshake",
+    "health",
+    "dispense-request",
+    "dispense-ack",
+    "dispense-result",
+  ].map((event) => ({
+    role: "lower-controller",
+    event,
+    operationNonce: request.operationNonce,
+    sessionBindingToken: request.serialSession.sessionBindingToken,
+    deviceMappingDigest: request.serialSession.deviceMappingDigest,
+    scannerCodeDigest: null,
+    scannerCodeByteLength: null,
+    scannerCodeSuffix: null,
+    saleCorrelationId: event.startsWith("dispense-")
+      ? (request.serialSession.saleCorrelationIds[0] ?? null)
+      : null,
+  }));
+  return [
+    ...lower,
+    {
+      role: "scanner",
+      event: "scanner-injection",
+      operationNonce: request.serialSession.scannerInjection.operationNonce,
+      sessionBindingToken: request.serialSession.sessionBindingToken,
+      deviceMappingDigest: request.serialSession.deviceMappingDigest,
+      scannerCodeDigest:
+        request.serialSession.scannerInjection.scannerCodeDigest,
+      scannerCodeByteLength:
+        request.serialSession.scannerInjection.scannerCodeByteLength,
+      scannerCodeSuffix:
+        request.serialSession.scannerInjection.scannerCodeSuffix,
+      saleCorrelationId,
+    },
+    ...["payment-request", "payment-ack", "payment-result"].map((event) => ({
+      role: "payment",
+      event,
+      operationNonce: request.operationNonce,
+      sessionBindingToken: request.serialSession.sessionBindingToken,
+      deviceMappingDigest: request.serialSession.deviceMappingDigest,
+      scannerCodeDigest: null,
+      scannerCodeByteLength: null,
+      scannerCodeSuffix: null,
+      saleCorrelationId,
+    })),
+  ];
+}
+
 function cleanInstallRequest() {
   const isoHash = "d".repeat(64);
   const personalizationHash = "e".repeat(64);
@@ -172,6 +329,27 @@ function reportFor(request, overrides = {}) {
             },
           ]
         : [];
+  const isV2 = Object.hasOwn(request, "serialSession");
+  const isSerialCleanup = ["stop-serial-session", "cleanup", "cancel"].includes(
+    request.operation,
+  );
+  const serialMappings = serialDeviceMappings(
+    isSerialCleanup ? "disconnected" : "connected",
+  );
+  const startBinding = deriveSerialSessionBinding({
+    runId: request.runId,
+    lifecycleReference: request.lifecycleReference,
+    targetIdentity: request.target.identity,
+    startOperationReference: request.operationReference,
+  });
+  const serialBinding =
+    request.operation === "start-serial-session"
+      ? {
+          ...startBinding,
+          startOperationReference: request.operationReference,
+          deviceMappingDigest: deriveSerialDeviceMappingDigest(serialMappings),
+        }
+      : request.serialSession;
   return {
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-report/v2",
@@ -194,6 +372,7 @@ function reportFor(request, overrides = {}) {
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
+      ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result: "succeeded",
     negotiatedCapabilities: request.requestedCapabilities,
@@ -222,20 +401,20 @@ function reportFor(request, overrides = {}) {
         port: 22,
         reachability: "discovered",
       },
-      deviceMappings: request.requestedCapabilities.includes(
-        "serial:lower-controller",
-      )
-        ? [
-            {
-              role: "lower-controller",
-              guestDeviceIdentity: "guest-device://lower-controller-001",
-            },
-            {
-              role: "scanner",
-              guestDeviceIdentity: "guest-device://scanner-001",
-            },
-          ]
-        : [],
+      deviceMappings:
+        request.requestedCapabilities.includes("serial:lower-controller") ||
+        (isV2 && request.serialSession !== null)
+          ? [
+              {
+                role: "lower-controller",
+                guestDeviceIdentity: "guest-device://lower-controller-001",
+              },
+              {
+                role: "scanner",
+                guestDeviceIdentity: "guest-device://scanner-001",
+              },
+            ]
+          : [],
       defaultAudioIdentity: "guest-audio://runtime-testbed-001",
     },
     evidence,
@@ -320,6 +499,67 @@ function reportFor(request, overrides = {}) {
             },
           },
     diagnostics: [{ code: "adapter_completed" }],
+    ...(isV2
+      ? {
+          serialSession:
+            request.serialSession === null &&
+            request.operation !== "start-serial-session"
+              ? null
+              : {
+                  serialSessionId: serialBinding.serialSessionId,
+                  sessionBindingToken: serialBinding.sessionBindingToken,
+                  startOperationReference:
+                    serialBinding.startOperationReference,
+                  deviceMappingDigest: serialBinding.deviceMappingDigest,
+                  state:
+                    request.operation === "stop-serial-session"
+                      ? "stopped"
+                      : ["cleanup", "cancel"].includes(request.operation)
+                        ? "cleaned"
+                        : "active",
+                  deviceMappings: serialMappings,
+                  scannerAcknowledgement:
+                    request.operation === "inject-scanner-code"
+                      ? {
+                          scannerCodeDigest:
+                            request.serialSession.scannerInjection
+                              .scannerCodeDigest,
+                          scannerCodeByteLength:
+                            request.serialSession.scannerInjection
+                              .scannerCodeByteLength,
+                          scannerCodeSuffix:
+                            request.serialSession.scannerInjection
+                              .scannerCodeSuffix,
+                          accepted: true,
+                        }
+                      : null,
+                  simulatorCleanup: isSerialCleanup
+                    ? {
+                        cleanupAttemptCount: request.serialSession
+                          ?.idempotencyCheck
+                          ? 2
+                          : 1,
+                        idempotencyVerified:
+                          request.operation === "stop-serial-session" &&
+                          request.serialSession?.idempotencyCheck === true,
+                        survivingProcessCount: 0,
+                        survivingSocketCount: 0,
+                      }
+                    : null,
+                },
+          serialEvidence:
+            request.operation === "collect-serial-evidence"
+              ? {
+                  serialSessionId: request.serialSession.serialSessionId,
+                  sessionBindingToken:
+                    request.serialSession.sessionBindingToken,
+                  deviceMappingDigest:
+                    request.serialSession.deviceMappingDigest,
+                  records: serialEvidenceRecords(request),
+                }
+              : null,
+        }
+      : {}),
     ...overrides,
   };
 }
@@ -378,6 +618,277 @@ describe("VM Host Adapter contract", () => {
         ),
       /contractVersion/,
     );
+  });
+
+  it("extends the existing lifecycle with v2 serial-session operations", () => {
+    const start = createVmHostAdapterRequest(
+      serialSessionRequest("start-serial-session"),
+    );
+    const started = validateVmHostAdapterReport(reportFor(start), start);
+    const sessionId = started.serialSession.serialSessionId;
+    assert.match(sessionId, /^serial-session:\/\/sha256-/);
+
+    for (const operation of [
+      "inject-scanner-code",
+      "collect-serial-evidence",
+      "stop-serial-session",
+    ]) {
+      const request = createVmHostAdapterRequest(
+        serialSessionRequest(operation),
+      );
+      const report = validateVmHostAdapterReport(reportFor(request), request);
+      assert.equal(report.request.runId, start.runId);
+      assert.equal(report.request.lifecycleReference, start.lifecycleReference);
+      assert.equal(report.serialSession.serialSessionId, sessionId);
+      if (operation === "inject-scanner-code")
+        assert.deepEqual(report.serialSession.scannerAcknowledgement, {
+          ...createScannerCodeDescriptor(PROTECTED_SCANNER_INPUT),
+          accepted: true,
+        });
+      if (operation === "collect-serial-evidence")
+        assert.equal(report.serialEvidence.records.length, 9);
+      if (operation === "stop-serial-session")
+        assert.deepEqual(report.serialSession.simulatorCleanup, {
+          cleanupAttemptCount: 1,
+          idempotencyVerified: false,
+          survivingProcessCount: 0,
+          survivingSocketCount: 0,
+        });
+    }
+  });
+
+  it("rejects serial-session requests that weaken the v2 session binding", () => {
+    assert.throws(
+      () => createVmHostAdapterRequest(requestFor("start-serial-session")),
+      /must bind serial-session operations/,
+    );
+    assert.throws(
+      () =>
+        createVmHostAdapterRequest(
+          serialSessionRequest("inject-scanner-code", {
+            serialSession: {
+              serialSessionId: null,
+              sessionBindingToken: null,
+              startOperationReference: null,
+              deviceMappingDigest: null,
+              deviceRoles: ["lower-controller", "scanner"],
+              scannerInjection: {
+                operationNonce: "op-0123456789abcdef",
+                ...createScannerCodeDescriptor(PROTECTED_SCANNER_INPUT),
+              },
+              saleCorrelationIds: ["sale-correlation://sale-001"],
+              idempotencyCheck: false,
+            },
+          }),
+        ),
+      /derived from this run lifecycle target/,
+    );
+    assert.throws(
+      () =>
+        createVmHostAdapterRequest(
+          serialSessionRequest("collect-serial-evidence", {
+            requestedCapabilities: ["serial-session", "serial:evidence"],
+          }),
+        ),
+      /serial:lower-controller/,
+    );
+    assert.throws(
+      () =>
+        createVmHostAdapterRequest(
+          serialSessionRequest("inject-scanner-code", {
+            serialSession: {
+              ...serialSessionRequest("inject-scanner-code").serialSession,
+              deviceRoles: ["scanner", "lower-controller"],
+            },
+          }),
+        ),
+      /deviceRoles/,
+    );
+    assert.throws(
+      () =>
+        createVmHostAdapterRequest(
+          serialSessionRequest("collect-serial-evidence", {
+            runId: "OTHER-RUN-12",
+          }),
+        ),
+      /derived from this run lifecycle target/,
+    );
+    assert.throws(
+      () =>
+        createVmHostAdapterRequest(
+          serialSessionRequest("collect-serial-evidence", {
+            serialSession: {
+              ...serialSessionRequest("collect-serial-evidence").serialSession,
+              saleCorrelationIds: [],
+            },
+          }),
+        ),
+      /must bind at least one logical sale correlation identity/,
+    );
+  });
+
+  it("requires connected mapped simulators, exact scanner acknowledgement, and sanitized serial evidence", () => {
+    const inject = createVmHostAdapterRequest(
+      serialSessionRequest("inject-scanner-code"),
+    );
+    assert.throws(
+      () =>
+        validateVmHostAdapterReport(
+          reportFor(inject, {
+            serialSession: {
+              ...reportFor(inject).serialSession,
+              scannerAcknowledgement: {
+                ...reportFor(inject).serialSession.scannerAcknowledgement,
+                scannerCodeDigest: `sha256:${"0".repeat(64)}`,
+              },
+            },
+          }),
+          inject,
+        ),
+      /must bind protected scanner input/,
+    );
+    assert.throws(
+      () =>
+        validateVmHostAdapterReport(
+          reportFor(inject, {
+            serialSession: {
+              ...reportFor(inject).serialSession,
+              deviceMappings: [
+                {
+                  ...reportFor(inject).serialSession.deviceMappings[0],
+                  simulatorSocketIdentity: "not-a-logical-identity",
+                },
+                reportFor(inject).serialSession.deviceMappings[1],
+              ],
+            },
+          }),
+          inject,
+        ),
+      /logical identity/,
+    );
+    assert.throws(
+      () =>
+        validateVmHostAdapterReport(
+          reportFor(inject, {
+            request: {
+              ...reportFor(inject).request,
+              lifecycleReference: "vm-lifecycle://other-run.runtime-testbed",
+            },
+          }),
+          inject,
+        ),
+      /lifecycleReference/,
+    );
+
+    const collect = createVmHostAdapterRequest(
+      serialSessionRequest("collect-serial-evidence"),
+    );
+    for (const serialEvidence of [
+      {
+        ...reportFor(collect).serialEvidence,
+        records: reportFor(collect).serialEvidence.records.slice(0, 5),
+      },
+      {
+        ...reportFor(collect).serialEvidence,
+        records: reportFor(collect).serialEvidence.records.map((record) =>
+          record.role === "scanner"
+            ? { ...record, operationNonce: "op-ffffffffffffffff" }
+            : record,
+        ),
+      },
+      {
+        ...reportFor(collect).serialEvidence,
+        sessionBindingToken:
+          "serial-session-binding://sha256-" + "0".repeat(64),
+      },
+    ])
+      assert.throws(() =>
+        validateVmHostAdapterReport(
+          reportFor(collect, { serialEvidence }),
+          collect,
+        ),
+      );
+  });
+
+  it("requires stopped sessions to prove idempotent simulator cleanup with no survivors", () => {
+    const stop = createVmHostAdapterRequest(
+      serialSessionRequest("stop-serial-session", {
+        serialSession: {
+          ...serialSessionRequest("stop-serial-session").serialSession,
+          idempotencyCheck: true,
+        },
+      }),
+    );
+    for (const simulatorCleanup of [
+      {
+        cleanupAttemptCount: 1,
+        idempotencyVerified: false,
+        survivingProcessCount: 0,
+        survivingSocketCount: 0,
+      },
+      {
+        cleanupAttemptCount: 2,
+        idempotencyVerified: true,
+        survivingProcessCount: 1,
+        survivingSocketCount: 0,
+      },
+      {
+        cleanupAttemptCount: 2,
+        idempotencyVerified: true,
+        survivingProcessCount: 0,
+        survivingSocketCount: 1,
+      },
+    ])
+      assert.throws(
+        () =>
+          validateVmHostAdapterReport(
+            reportFor(stop, {
+              serialSession: {
+                ...reportFor(stop).serialSession,
+                simulatorCleanup,
+              },
+            }),
+            stop,
+          ),
+        /repeated stop was idempotent|no simulator resources survive/,
+      );
+  });
+
+  it("allows a failed serial operation to report no invented session or traffic evidence", () => {
+    const request = createVmHostAdapterRequest(
+      serialSessionRequest("collect-serial-evidence"),
+    );
+    const report = validateVmHostAdapterReport(
+      reportFor(request, {
+        result: "failed",
+        negotiatedCapabilities: [],
+        completedOperations: [],
+        serialSession: null,
+        serialEvidence: null,
+        cleanup: {
+          status: "completed",
+          overlayDisposition: "removed",
+          observed: {
+            overlay: "removed",
+            runDirectory: "removed",
+            personalizationMedia: "removed",
+          },
+        },
+        diagnostics: [{ code: "adapter_failed" }],
+      }),
+      request,
+    );
+    assert.equal(report.result, "failed");
+  });
+
+  it("redacts protected scanner input from sanitized diagnostics", () => {
+    const diagnostic = redactScannerCode(
+      { message: `adapter rejected ${PROTECTED_SCANNER_INPUT}` },
+      PROTECTED_SCANNER_INPUT,
+    );
+    assert.deepEqual(diagnostic, {
+      message: "adapter rejected [redacted-scanner-code]",
+    });
   });
 
   it("requires Factory Personalization Media for a logical clean install", () => {
@@ -1093,6 +1604,180 @@ describe("VM Host Adapter contract", () => {
     assert.equal(report.cleanup.overlayDisposition, "active");
   });
 
+  it("runs a v2 serial session through the existing adapter runner lifecycle", async () => {
+    const workDirectory = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-"));
+    const environment = {
+      VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+      VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+      VEM_VM_HOST_ADAPTER_STATE_FILE: join(workDirectory, "state.json"),
+    };
+    const start = await runVmHostAdapter({
+      request: createVmHostAdapterRequest(
+        serialSessionRequest("start-serial-session"),
+      ),
+      workDirectory,
+      environment,
+    });
+    let stopAttempts = 0;
+    for (const operation of [
+      "inject-scanner-code",
+      "collect-serial-evidence",
+      "stop-serial-session",
+      "stop-serial-session",
+    ]) {
+      const retryStop =
+        operation === "stop-serial-session" && stopAttempts++ > 0;
+      const input = serialSessionRequest(operation);
+      const report = await runVmHostAdapter({
+        request: createVmHostAdapterRequest({
+          ...input,
+          serialSession: {
+            ...input.serialSession,
+            serialSessionId: start.serialSession.serialSessionId,
+            sessionBindingToken: start.serialSession.sessionBindingToken,
+            startOperationReference:
+              start.serialSession.startOperationReference,
+            deviceMappingDigest: start.serialSession.deviceMappingDigest,
+            idempotencyCheck: retryStop,
+          },
+        }),
+        workDirectory,
+        environment,
+        ...(operation === "inject-scanner-code"
+          ? { scannerCode: PROTECTED_SCANNER_INPUT }
+          : {}),
+      });
+      assert.equal(
+        report.serialSession.serialSessionId,
+        start.serialSession.serialSessionId,
+      );
+      if (retryStop)
+        assert.equal(
+          report.serialSession.simulatorCleanup.idempotencyVerified,
+          true,
+        );
+    }
+  });
+
+  it("retains known serial session binding during failed-operation recovery cleanup", async () => {
+    const workDirectory = mkdtempSync(
+      join(tmpdir(), "vem-vm-host-serial-recovery-"),
+    );
+    const statePath = join(workDirectory, "state.json");
+    const environment = {
+      VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+      VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
+      VEM_VM_HOST_ADAPTER_STATE_FILE: statePath,
+    };
+    const start = await runVmHostAdapter({
+      request: createVmHostAdapterRequest(
+        serialSessionRequest("start-serial-session"),
+      ),
+      workDirectory,
+      environment: {
+        ...environment,
+        VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+      },
+    });
+    const input = serialSessionRequest("inject-scanner-code");
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request: createVmHostAdapterRequest({
+            ...input,
+            serialSession: {
+              ...input.serialSession,
+              serialSessionId: start.serialSession.serialSessionId,
+              sessionBindingToken: start.serialSession.sessionBindingToken,
+              startOperationReference:
+                start.serialSession.startOperationReference,
+              deviceMappingDigest: start.serialSession.deviceMappingDigest,
+            },
+          }),
+          workDirectory,
+          environment,
+          scannerCode: PROTECTED_SCANNER_INPUT,
+        }),
+      VmHostAdapterExecutionError,
+    );
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.equal(
+      state.sessions[start.serialSession.serialSessionId].cleanupAttemptCount,
+      1,
+    );
+  });
+
+  it("derives a cleanable serial binding when start fails before a mapping receipt", async () => {
+    const workDirectory = mkdtempSync(
+      join(tmpdir(), "vem-vm-host-start-recovery-"),
+    );
+    const statePath = join(workDirectory, "state.json");
+    const request = createVmHostAdapterRequest(
+      serialSessionRequest("start-serial-session"),
+    );
+    const expected = deriveSerialSessionBinding({
+      runId: request.runId,
+      lifecycleReference: request.lifecycleReference,
+      targetIdentity: request.target.identity,
+      startOperationReference: request.operationReference,
+    });
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request,
+          workDirectory,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
+            VEM_VM_HOST_ADAPTER_STATE_FILE: statePath,
+          },
+        }),
+      VmHostAdapterExecutionError,
+    );
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.equal(state.sessions[expected.serialSessionId].active, false);
+    assert.equal(
+      state.sessions[expected.serialSessionId].cleanupAttemptCount,
+      1,
+    );
+  });
+
+  it("retains the serial binding when a start times out before a mapping receipt", async () => {
+    const workDirectory = mkdtempSync(
+      join(tmpdir(), "vem-vm-host-start-timeout-recovery-"),
+    );
+    const statePath = join(workDirectory, "state.json");
+    const request = createVmHostAdapterRequest(
+      serialSessionRequest("start-serial-session"),
+    );
+    const expected = deriveSerialSessionBinding({
+      runId: request.runId,
+      lifecycleReference: request.lifecycleReference,
+      targetIdentity: request.target.identity,
+      startOperationReference: request.operationReference,
+    });
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request,
+          workDirectory,
+          timeoutMs: 80,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
+            VEM_VM_HOST_ADAPTER_STATE_FILE: statePath,
+          },
+        }),
+      VmHostAdapterExecutionError,
+    );
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.equal(state.sessions[expected.serialSessionId].active, false);
+    assert.equal(
+      state.sessions[expected.serialSessionId].cleanupAttemptCount,
+      2,
+    );
+  });
+
   it("terminates a genuinely hanging child with SIGTERM, invokes cleanup, and persists a sanitized timeout diagnostic", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-timeout-"));
     const signalFile = join(root, "adapter.signal");
@@ -1325,6 +2010,173 @@ describe("VM Host Adapter contract", () => {
       ["factory-iso", "factory-personalization-media"],
     );
     assert.equal(report.observed.firmwareMode, "bios");
+  });
+
+  it("builds v2 serial-session requests from logical CLI options", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-cli-"));
+    const startOut = join(root, "start.json");
+    const shared = [
+      "--run-id",
+      "RUN-12-CONTRACT",
+      "--target-identity",
+      "vm-target://runtime-testbed",
+      "--approved-runtime-base",
+      `factory-cas://sha256/${HASH}`,
+      "--sale-correlation-id",
+      "sale-correlation://sale-001",
+    ];
+    const environment = {
+      ...process.env,
+      RUNNER_TEMP: root,
+      VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+      VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+    };
+    execFileSync(
+      process.execPath,
+      [
+        CLIENT,
+        "--operation",
+        "start-serial-session",
+        ...shared,
+        "--out",
+        startOut,
+      ],
+      { env: environment },
+    );
+    const start = JSON.parse(readFileSync(startOut, "utf8"));
+    assert.equal(start.schemaVersion, "vem-vm-host-adapter-report/v2");
+    const injectOut = join(root, "inject.json");
+    const protectedScannerCodePath = join(root, "scanner-code.txt");
+    writeFileSync(protectedScannerCodePath, PROTECTED_SCANNER_INPUT, {
+      mode: 0o600,
+    });
+    execFileSync(
+      process.execPath,
+      [
+        CLIENT,
+        "--operation",
+        "inject-scanner-code",
+        ...shared,
+        "--serial-session-id",
+        start.serialSession.serialSessionId,
+        "--session-binding-token",
+        start.serialSession.sessionBindingToken,
+        "--start-operation-reference",
+        start.serialSession.startOperationReference,
+        "--device-mapping-digest",
+        start.serialSession.deviceMappingDigest,
+        "--scanner-code-file",
+        protectedScannerCodePath,
+        "--out",
+        injectOut,
+      ],
+      { env: environment },
+    );
+    const inject = JSON.parse(readFileSync(injectOut, "utf8"));
+    assert.deepEqual(inject.serialSession.scannerAcknowledgement, {
+      ...createScannerCodeDescriptor(PROTECTED_SCANNER_INPUT),
+      accepted: true,
+    });
+    assert.doesNotMatch(
+      JSON.stringify(inject),
+      new RegExp(PROTECTED_SCANNER_INPUT),
+    );
+  });
+
+  it("drives an external adapter executable through serial conformance without scanner persistence", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-conformance-"));
+    const scannerCodePath = join(root, "protected-scanner-code.txt");
+    const out = join(root, "conformance.json");
+    writeFileSync(scannerCodePath, PROTECTED_SCANNER_INPUT, { mode: 0o600 });
+    execFileSync(
+      process.execPath,
+      [
+        SERIAL_CONFORMANCE,
+        "--adapter",
+        FAKE_ADAPTER,
+        "--out",
+        out,
+        "--scanner-code-file",
+        scannerCodePath,
+        "--run-id",
+        "RUN-12-CONTRACT",
+        "--target-identity",
+        "vm-target://runtime-testbed",
+        "--approved-runtime-base",
+        `factory-cas://sha256/${HASH}`,
+        "--lifecycle-reference",
+        "vm-lifecycle://run-12-contract.runtime-testbed",
+        "--sale-correlation-id",
+        "sale-correlation://sale-001",
+      ],
+      {
+        env: {
+          ...process.env,
+          VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
+        },
+      },
+    );
+    const report = JSON.parse(readFileSync(out, "utf8"));
+    assert.equal(
+      report.reports.repeatedStop.serialSession.simulatorCleanup
+        .idempotencyVerified,
+      true,
+    );
+    assert.equal(report.reports.collect.serialEvidence.records.length, 9);
+    assert.doesNotMatch(
+      JSON.stringify(report),
+      new RegExp(PROTECTED_SCANNER_INPUT),
+    );
+  });
+
+  it("stops the serial session from finally when evidence collection fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-finally-"));
+    const scannerCodePath = join(root, "protected-scanner-code.txt");
+    const out = join(root, "conformance.json");
+    writeFileSync(scannerCodePath, PROTECTED_SCANNER_INPUT, { mode: 0o600 });
+    assert.throws(() =>
+      execFileSync(
+        process.execPath,
+        [
+          SERIAL_CONFORMANCE,
+          "--adapter",
+          FAKE_ADAPTER,
+          "--out",
+          out,
+          "--scanner-code-file",
+          scannerCodePath,
+          "--run-id",
+          "RUN-12-CONTRACT",
+          "--target-identity",
+          "vm-target://runtime-testbed",
+          "--approved-runtime-base",
+          `factory-cas://sha256/${HASH}`,
+          "--lifecycle-reference",
+          "vm-lifecycle://run-12-contract.runtime-testbed",
+          "--sale-correlation-id",
+          "sale-correlation://sale-001",
+        ],
+        {
+          env: {
+            ...process.env,
+            VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
+            VEM_VM_HOST_ADAPTER_FAIL_OPERATION: "collect-serial-evidence",
+          },
+        },
+      ),
+    );
+    const report = JSON.parse(readFileSync(out, "utf8"));
+    assert.equal(report.reports.recoveryStop.serialSession.state, "stopped");
+    assert.equal(
+      report.reports.recoveryStop.serialSession.simulatorCleanup
+        .survivingProcessCount,
+      0,
+    );
+    assert.equal(
+      report.reports.recoveryStop.serialSession.simulatorCleanup
+        .survivingSocketCount,
+      0,
+    );
   });
 
   it("does not let an adapter claim conformance while clean install is blocked by Issue15", () => {

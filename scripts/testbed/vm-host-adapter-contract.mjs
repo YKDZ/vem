@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -16,6 +16,10 @@ const TARGET_IDENTITY = /^vm-target:\/\/[a-z0-9][a-z0-9.-]{0,127}$/;
 const OPERATION_NONCE = /^op-[a-f0-9]{16,64}$/;
 const OPERATION_REFERENCE = /^vm-operation:\/\/op-[a-f0-9]{16,64}$/;
 const LIFECYCLE_REFERENCE = /^vm-lifecycle:\/\/[a-z0-9][a-z0-9.-]{2,127}$/;
+const SERIAL_SESSION_ID = /^serial-session:\/\/sha256-[a-f0-9]{64}$/;
+const SERIAL_SESSION_BINDING_TOKEN =
+  /^serial-session-binding:\/\/sha256-[a-f0-9]{64}$/;
+const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const LOGICAL_IDENTITY =
   /^[a-z][a-z0-9-]{0,31}:\/\/[a-z0-9][a-z0-9._:@-]{0,191}$/;
 const SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
@@ -38,6 +42,10 @@ export const VM_HOST_ADAPTER_OPERATIONS = new Set([
   "create-disposable-overlay",
   "capture-display",
   "capture-default-audio",
+  "start-serial-session",
+  "inject-scanner-code",
+  "collect-serial-evidence",
+  "stop-serial-session",
   "cleanup",
   "cancel",
 ]);
@@ -50,6 +58,9 @@ export const VM_HOST_ADAPTER_CAPABILITIES = new Set([
   "display-capture",
   "serial:lower-controller",
   "serial:scanner",
+  "serial-session",
+  "serial:scanner-injection",
+  "serial:evidence",
   "default-audio-capture",
   "cancellation",
   "cleanup",
@@ -62,6 +73,10 @@ const REQUIRED_CAPABILITY_BY_OPERATION = {
   "create-disposable-overlay": "disposable-overlay",
   "capture-display": "display-capture",
   "capture-default-audio": "default-audio-capture",
+  "start-serial-session": "serial-session",
+  "inject-scanner-code": "serial:scanner-injection",
+  "collect-serial-evidence": "serial:evidence",
+  "stop-serial-session": "serial-session",
   cleanup: "cleanup",
   cancel: "cancellation",
 };
@@ -73,8 +88,38 @@ const REQUIRED_ASSET_ROLES_BY_OPERATION = {
   "create-disposable-overlay": ["approved-runtime-base"],
   "capture-display": ["approved-runtime-base"],
   "capture-default-audio": ["approved-runtime-base"],
+  "start-serial-session": ["approved-runtime-base"],
+  "inject-scanner-code": ["approved-runtime-base"],
+  "collect-serial-evidence": ["approved-runtime-base"],
+  "stop-serial-session": ["approved-runtime-base"],
   cleanup: ["approved-runtime-base", "factory-iso"],
   cancel: ["approved-runtime-base", "factory-iso"],
+};
+
+const REQUIRED_CAPABILITIES_BY_SERIAL_OPERATION = {
+  "start-serial-session": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+  ],
+  "inject-scanner-code": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "serial:scanner-injection",
+  ],
+  "collect-serial-evidence": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "serial:evidence",
+  ],
+  "stop-serial-session": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "cleanup",
+  ],
 };
 
 const SANITIZED_DIAGNOSTIC_CODES = new Set([
@@ -95,6 +140,18 @@ const TERMINAL_RESULTS = new Set([
   "timed_out",
   "cancelled",
 ]);
+
+const SERIAL_SESSION_OPERATIONS = new Set([
+  "start-serial-session",
+  "inject-scanner-code",
+  "collect-serial-evidence",
+  "stop-serial-session",
+]);
+const SERIAL_DEVICE_ROLES = ["lower-controller", "scanner"];
+const SALE_EVIDENCE_ROLES = new Set([...SERIAL_DEVICE_ROLES, "payment"]);
+const SCANNER_CODE_SUFFIX = /^[a-f0-9]{8}$/;
+const SALE_CORRELATION_ID =
+  /^sale-correlation:\/\/[a-z0-9][a-z0-9._:@-]{2,191}$/;
 
 export class VmHostAdapterContractError extends Error {
   constructor(issues) {
@@ -224,6 +281,820 @@ function sameAssets(left, right) {
         asset?.digest === right[index]?.digest,
     )
   );
+}
+
+function isV2Request(request) {
+  return Object.hasOwn(request ?? {}, "serialSession");
+}
+
+function isSerialSessionOperation(operation) {
+  return SERIAL_SESSION_OPERATIONS.has(operation);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export function createScannerCodeDescriptor(scannerCode) {
+  const bytes = Buffer.isBuffer(scannerCode)
+    ? Buffer.from(scannerCode)
+    : Buffer.from(String(scannerCode ?? ""), "utf8");
+  if (bytes.length < 1 || bytes.length > 256)
+    throw new Error("scanner input must contain 1 through 256 bytes");
+  const digest = sha256(bytes);
+  return {
+    scannerCodeDigest: `sha256:${digest}`,
+    scannerCodeByteLength: bytes.length,
+    scannerCodeSuffix: digest.slice(-8),
+  };
+}
+
+export function deriveSerialSessionBinding({
+  runId,
+  lifecycleReference,
+  targetIdentity,
+  startOperationReference,
+}) {
+  const input = [
+    "vem-vm-host-adapter-serial-session/v2",
+    runId,
+    lifecycleReference,
+    targetIdentity,
+    startOperationReference,
+  ].join("\n");
+  return {
+    serialSessionId: `serial-session://sha256-${sha256(`id\n${input}`)}`,
+    sessionBindingToken: `serial-session-binding://sha256-${sha256(`binding\n${input}`)}`,
+  };
+}
+
+export function deriveSerialDeviceMappingDigest(deviceMappings) {
+  const canonical = deviceMappings.map((mapping) => ({
+    role: mapping?.role,
+    guestDeviceIdentity: mapping?.guestDeviceIdentity,
+    simulatorProcessIdentity: mapping?.simulatorProcessIdentity,
+    simulatorSocketIdentity: mapping?.simulatorSocketIdentity,
+  }));
+  return `sha256:${sha256(JSON.stringify(canonical))}`;
+}
+
+function expectedSerialBinding(request, session) {
+  return deriveSerialSessionBinding({
+    runId: request.runId,
+    lifecycleReference: request.lifecycleReference,
+    targetIdentity: request.target.identity,
+    startOperationReference:
+      request.operation === "start-serial-session"
+        ? request.operationReference
+        : session.startOperationReference,
+  });
+}
+
+function assertScannerInjection(injection, path, request, issues) {
+  if (
+    !assertExactKeys(
+      injection,
+      [
+        "operationNonce",
+        "scannerCodeDigest",
+        "scannerCodeByteLength",
+        "scannerCodeSuffix",
+      ],
+      path,
+      issues,
+    )
+  )
+    return;
+  if (
+    typeof injection.operationNonce !== "string" ||
+    !OPERATION_NONCE.test(injection.operationNonce)
+  )
+    issue(issues, `${path}.operationNonce`, "must be an operation nonce");
+  if (!SHA256_DIGEST.test(injection.scannerCodeDigest ?? ""))
+    issue(issues, `${path}.scannerCodeDigest`, "must be a SHA-256 digest");
+  if (
+    !Number.isInteger(injection.scannerCodeByteLength) ||
+    injection.scannerCodeByteLength < 1 ||
+    injection.scannerCodeByteLength > 256
+  )
+    issue(
+      issues,
+      `${path}.scannerCodeByteLength`,
+      "must be a bounded scanner input byte length",
+    );
+  if (!SCANNER_CODE_SUFFIX.test(injection.scannerCodeSuffix ?? ""))
+    issue(
+      issues,
+      `${path}.scannerCodeSuffix`,
+      "must be an eight-character redacted digest suffix",
+    );
+  if (
+    request.operation === "inject-scanner-code" &&
+    injection.operationNonce !== request.operationNonce
+  )
+    issue(
+      issues,
+      `${path}.operationNonce`,
+      "must bind the scanner injection to this operation nonce",
+    );
+}
+
+function assertSerialSessionRequest(session, request, issues) {
+  if (!isV2Request(request)) return;
+  const carriesSession =
+    isSerialSessionOperation(request.operation) ||
+    ["cleanup", "cancel"].includes(request.operation);
+  if (!carriesSession) {
+    if (session !== null)
+      issue(
+        issues,
+        "request.serialSession",
+        "must be null outside serial lifecycle operations",
+      );
+    return;
+  }
+  if (session === null) {
+    if (isSerialSessionOperation(request.operation))
+      issue(
+        issues,
+        "request.serialSession",
+        "must bind serial-session operations",
+      );
+    return;
+  }
+  if (
+    !assertExactKeys(
+      session,
+      [
+        "serialSessionId",
+        "sessionBindingToken",
+        "startOperationReference",
+        "deviceMappingDigest",
+        "deviceRoles",
+        "scannerInjection",
+        "saleCorrelationIds",
+        "idempotencyCheck",
+      ],
+      "request.serialSession",
+      issues,
+    )
+  )
+    return;
+  if (!sameValues(session.deviceRoles, SERIAL_DEVICE_ROLES))
+    issue(
+      issues,
+      "request.serialSession.deviceRoles",
+      "must require canonical serial roles",
+    );
+  const isStart = request.operation === "start-serial-session";
+  if (isStart) {
+    for (const key of [
+      "serialSessionId",
+      "sessionBindingToken",
+      "startOperationReference",
+      "deviceMappingDigest",
+    ])
+      if (session[key] !== null)
+        issue(
+          issues,
+          `request.serialSession.${key}`,
+          "must be null when starting a serial session",
+        );
+  } else {
+    const isRecoveryCleanup =
+      ["cleanup", "cancel"].includes(request.operation) &&
+      session.deviceMappingDigest === null;
+    const expected = expectedSerialBinding(request, session);
+    if (
+      typeof session.startOperationReference !== "string" ||
+      !OPERATION_REFERENCE.test(session.startOperationReference)
+    )
+      issue(
+        issues,
+        "request.serialSession.startOperationReference",
+        "must identify the start operation",
+      );
+    if (session.serialSessionId !== expected.serialSessionId)
+      issue(
+        issues,
+        "request.serialSession.serialSessionId",
+        "must be derived from this run lifecycle target and start operation",
+      );
+    if (session.sessionBindingToken !== expected.sessionBindingToken)
+      issue(
+        issues,
+        "request.serialSession.sessionBindingToken",
+        "must bind the derived serial session",
+      );
+    if (
+      !isRecoveryCleanup &&
+      !SHA256_DIGEST.test(session.deviceMappingDigest ?? "")
+    )
+      issue(
+        issues,
+        "request.serialSession.deviceMappingDigest",
+        "must bind serial device mappings",
+      );
+  }
+  const usesInjection = [
+    "inject-scanner-code",
+    "collect-serial-evidence",
+  ].includes(request.operation);
+  if (usesInjection) {
+    if (session.scannerInjection === null)
+      issue(
+        issues,
+        "request.serialSession.scannerInjection",
+        "must bind protected scanner input",
+      );
+    else
+      assertScannerInjection(
+        session.scannerInjection,
+        "request.serialSession.scannerInjection",
+        request,
+        issues,
+      );
+  } else if (session.scannerInjection !== null)
+    issue(
+      issues,
+      "request.serialSession.scannerInjection",
+      "must be null for this operation",
+    );
+  if (!Array.isArray(session.saleCorrelationIds))
+    issue(
+      issues,
+      "request.serialSession.saleCorrelationIds",
+      "must be an array",
+    );
+  else {
+    const seen = new Set();
+    session.saleCorrelationIds.forEach((value, index) => {
+      if (typeof value !== "string" || !SALE_CORRELATION_ID.test(value))
+        issue(
+          issues,
+          `request.serialSession.saleCorrelationIds[${index}]`,
+          "must be a logical sale correlation identity",
+        );
+      if (seen.has(value))
+        issue(
+          issues,
+          `request.serialSession.saleCorrelationIds[${index}]`,
+          "must not be duplicated",
+        );
+      seen.add(value);
+    });
+    if (session.saleCorrelationIds.length === 0)
+      issue(
+        issues,
+        "request.serialSession.saleCorrelationIds",
+        "must bind at least one logical sale correlation identity",
+      );
+  }
+  if (typeof session.idempotencyCheck !== "boolean")
+    issue(
+      issues,
+      "request.serialSession.idempotencyCheck",
+      "must be a boolean",
+    );
+  else if (
+    request.operation !== "stop-serial-session" &&
+    session.idempotencyCheck
+  )
+    issue(
+      issues,
+      "request.serialSession.idempotencyCheck",
+      "must be false outside stop-serial-session",
+    );
+}
+
+function assertSerialSessionMapping(mapping, index, guestMappings, issues) {
+  const path = `report.serialSession.deviceMappings[${index}]`;
+  if (
+    !assertExactKeys(
+      mapping,
+      [
+        "role",
+        "guestDeviceIdentity",
+        "simulatorProcessIdentity",
+        "simulatorSocketIdentity",
+        "connectionState",
+      ],
+      path,
+      issues,
+    )
+  )
+    return;
+  if (!SERIAL_DEVICE_ROLES.includes(mapping.role))
+    issue(issues, `${path}.role`, "must be a supported serial role");
+  for (const key of [
+    "guestDeviceIdentity",
+    "simulatorProcessIdentity",
+    "simulatorSocketIdentity",
+  ])
+    assertLogicalIdentity(mapping[key], `${path}.${key}`, issues);
+  if (!new Set(["connected", "disconnected"]).has(mapping.connectionState))
+    issue(
+      issues,
+      `${path}.connectionState`,
+      "must be connected or disconnected",
+    );
+  const guestMapping = guestMappings.find(
+    (entry) => entry?.role === mapping.role,
+  );
+  if (
+    !guestMapping ||
+    guestMapping.guestDeviceIdentity !== mapping.guestDeviceIdentity
+  )
+    issue(
+      issues,
+      `${path}.guestDeviceIdentity`,
+      "must bind the reported guest device mapping",
+    );
+}
+
+function assertSemanticRecord(record, index, request, issues) {
+  const path = `report.serialEvidence.records[${index}]`;
+  if (
+    !assertExactKeys(
+      record,
+      [
+        "role",
+        "event",
+        "operationNonce",
+        "sessionBindingToken",
+        "deviceMappingDigest",
+        "scannerCodeDigest",
+        "scannerCodeByteLength",
+        "scannerCodeSuffix",
+        "saleCorrelationId",
+      ],
+      path,
+      issues,
+    )
+  )
+    return;
+  if (!SALE_EVIDENCE_ROLES.has(record.role))
+    issue(issues, `${path}.role`, "must be a supported serial evidence role");
+  if (record.sessionBindingToken !== request.serialSession.sessionBindingToken)
+    issue(
+      issues,
+      `${path}.sessionBindingToken`,
+      "must bind the serial session token",
+    );
+  if (record.deviceMappingDigest !== request.serialSession.deviceMappingDigest)
+    issue(
+      issues,
+      `${path}.deviceMappingDigest`,
+      "must bind the serial device mappings",
+    );
+  const lowerEvents = new Set([
+    "handshake",
+    "health",
+    "dispense-request",
+    "dispense-ack",
+    "dispense-result",
+  ]);
+  if (record.role === "lower-controller") {
+    if (!lowerEvents.has(record.event))
+      issue(
+        issues,
+        `${path}.event`,
+        "must be a required lower-controller semantic event",
+      );
+    if (record.operationNonce !== request.operationNonce)
+      issue(
+        issues,
+        `${path}.operationNonce`,
+        "must bind this evidence operation nonce",
+      );
+    for (const key of [
+      "scannerCodeDigest",
+      "scannerCodeByteLength",
+      "scannerCodeSuffix",
+    ])
+      if (record[key] !== null)
+        issue(
+          issues,
+          `${path}.${key}`,
+          "must be null for lower-controller evidence",
+        );
+    const isDispense = record.event.startsWith("dispense-");
+    if (isDispense) {
+      if (
+        !request.serialSession.saleCorrelationIds.includes(
+          record.saleCorrelationId,
+        )
+      )
+        issue(
+          issues,
+          `${path}.saleCorrelationId`,
+          "must bind a requested sale correlation identity",
+        );
+    } else if (record.saleCorrelationId !== null)
+      issue(
+        issues,
+        `${path}.saleCorrelationId`,
+        "must be null when no sale correlation applies",
+      );
+  } else if (record.role === "scanner") {
+    if (record.event !== "scanner-injection")
+      issue(issues, `${path}.event`, "must be scanner-injection");
+    const injection = request.serialSession.scannerInjection;
+    if (record.operationNonce !== injection?.operationNonce)
+      issue(
+        issues,
+        `${path}.operationNonce`,
+        "must bind the scanner injection operation nonce",
+      );
+    for (const key of [
+      "scannerCodeDigest",
+      "scannerCodeByteLength",
+      "scannerCodeSuffix",
+    ])
+      if (record[key] !== injection?.[key])
+        issue(
+          issues,
+          `${path}.${key}`,
+          "must bind the protected scanner input descriptor",
+        );
+    if (
+      !request.serialSession.saleCorrelationIds.includes(
+        record.saleCorrelationId,
+      )
+    )
+      issue(
+        issues,
+        `${path}.saleCorrelationId`,
+        "must bind the scanner injection to a requested sale correlation identity",
+      );
+  } else {
+    if (
+      !new Set(["payment-request", "payment-ack", "payment-result"]).has(
+        record.event,
+      )
+    )
+      issue(
+        issues,
+        `${path}.event`,
+        "must be a required payment semantic event",
+      );
+    if (record.operationNonce !== request.operationNonce)
+      issue(
+        issues,
+        `${path}.operationNonce`,
+        "must bind this evidence operation nonce",
+      );
+    for (const key of [
+      "scannerCodeDigest",
+      "scannerCodeByteLength",
+      "scannerCodeSuffix",
+    ])
+      if (record[key] !== null)
+        issue(issues, `${path}.${key}`, "must be null for payment evidence");
+    if (
+      !request.serialSession.saleCorrelationIds.includes(
+        record.saleCorrelationId,
+      )
+    )
+      issue(
+        issues,
+        `${path}.saleCorrelationId`,
+        "must bind a requested sale correlation identity",
+      );
+  }
+}
+
+function assertSerialEvidence(report, request, issues) {
+  if (!isV2Request(request)) return;
+  const evidence = report.serialEvidence;
+  if (request.operation !== "collect-serial-evidence") {
+    if (evidence !== null)
+      issue(
+        issues,
+        "report.serialEvidence",
+        "must be null outside collect-serial-evidence",
+      );
+    return;
+  }
+  if (report.result !== "succeeded") {
+    if (evidence !== null)
+      issue(
+        issues,
+        "report.serialEvidence",
+        "must be null when collection fails",
+      );
+    return;
+  }
+  if (
+    !assertExactKeys(
+      evidence,
+      [
+        "serialSessionId",
+        "sessionBindingToken",
+        "deviceMappingDigest",
+        "records",
+      ],
+      "report.serialEvidence",
+      issues,
+    )
+  )
+    return;
+  for (const key of [
+    "serialSessionId",
+    "sessionBindingToken",
+    "deviceMappingDigest",
+  ])
+    if (evidence[key] !== request.serialSession[key])
+      issue(
+        issues,
+        `report.serialEvidence.${key}`,
+        "must bind the requested serial session",
+      );
+  if (!Array.isArray(evidence.records)) {
+    issue(issues, "report.serialEvidence.records", "must be an array");
+    return;
+  }
+  evidence.records.forEach((record, index) =>
+    assertSemanticRecord(record, index, request, issues),
+  );
+  const lowerEvents = new Set(
+    evidence.records
+      .filter((record) => record?.role === "lower-controller")
+      .map((record) => record?.event),
+  );
+  for (const event of [
+    "handshake",
+    "health",
+    "dispense-request",
+    "dispense-ack",
+    "dispense-result",
+  ])
+    if (!lowerEvents.has(event))
+      issue(
+        issues,
+        "report.serialEvidence.records",
+        `must include lower-controller ${event}`,
+      );
+  if (
+    !evidence.records.some(
+      (record) =>
+        record?.role === "scanner" && record?.event === "scanner-injection",
+    )
+  )
+    issue(
+      issues,
+      "report.serialEvidence.records",
+      "must include scanner injection evidence",
+    );
+  for (const saleCorrelationId of request.serialSession.saleCorrelationIds) {
+    const eventsForSale = new Set(
+      evidence.records
+        .filter((record) => record?.saleCorrelationId === saleCorrelationId)
+        .map((record) => `${record.role}:${record.event}`),
+    );
+    for (const event of [
+      "scanner:scanner-injection",
+      "payment:payment-request",
+      "payment:payment-ack",
+      "payment:payment-result",
+      "lower-controller:dispense-request",
+      "lower-controller:dispense-ack",
+      "lower-controller:dispense-result",
+    ])
+      if (!eventsForSale.has(event))
+        issue(
+          issues,
+          "report.serialEvidence.records",
+          `must bind ${event} to every requested sale correlation identity`,
+        );
+  }
+}
+
+function assertSerialSessionReport(report, request, issues) {
+  if (!isV2Request(request)) return;
+  const expectsSession =
+    isSerialSessionOperation(request.operation) ||
+    request.serialSession !== null;
+  if (!expectsSession) {
+    if (report.serialSession !== null)
+      issue(
+        issues,
+        "report.serialSession",
+        "must be null without a serial session request",
+      );
+    return;
+  }
+  const session = report.serialSession;
+  if (report.result !== "succeeded" && session === null) return;
+  if (
+    !assertExactKeys(
+      session,
+      [
+        "serialSessionId",
+        "sessionBindingToken",
+        "startOperationReference",
+        "deviceMappingDigest",
+        "state",
+        "deviceMappings",
+        "scannerAcknowledgement",
+        "simulatorCleanup",
+      ],
+      "report.serialSession",
+      issues,
+    )
+  )
+    return;
+  const expected = expectedSerialBinding(
+    request,
+    request.serialSession ?? session,
+  );
+  for (const key of ["serialSessionId", "sessionBindingToken"])
+    if (session[key] !== expected[key])
+      issue(
+        issues,
+        `report.serialSession.${key}`,
+        "must be derived from the requested session binding",
+      );
+  const expectedStartReference =
+    request.operation === "start-serial-session"
+      ? request.operationReference
+      : request.serialSession?.startOperationReference;
+  if (session.startOperationReference !== expectedStartReference)
+    issue(
+      issues,
+      "report.serialSession.startOperationReference",
+      "must bind the initiating operation",
+    );
+  const expectedState =
+    request.operation === "stop-serial-session"
+      ? "stopped"
+      : ["cleanup", "cancel"].includes(request.operation)
+        ? "cleaned"
+        : "active";
+  if (session.state !== expectedState)
+    issue(
+      issues,
+      "report.serialSession.state",
+      `must be ${expectedState} for this operation`,
+    );
+  if (!Array.isArray(session.deviceMappings))
+    issue(issues, "report.serialSession.deviceMappings", "must be an array");
+  else {
+    session.deviceMappings.forEach((mapping, index) =>
+      assertSerialSessionMapping(
+        mapping,
+        index,
+        report.guest?.deviceMappings ?? [],
+        issues,
+      ),
+    );
+    if (
+      !sameValues(
+        session.deviceMappings.map((mapping) => mapping?.role),
+        SERIAL_DEVICE_ROLES,
+      )
+    )
+      issue(
+        issues,
+        "report.serialSession.deviceMappings",
+        "must provide canonical serial mappings",
+      );
+    const expectedConnection =
+      expectedState === "active" ? "connected" : "disconnected";
+    for (const mapping of session.deviceMappings)
+      if (mapping?.connectionState !== expectedConnection)
+        issue(
+          issues,
+          "report.serialSession.deviceMappings",
+          `must be ${expectedConnection} for this state`,
+        );
+    const derivedDigest = deriveSerialDeviceMappingDigest(
+      session.deviceMappings,
+    );
+    if (session.deviceMappingDigest !== derivedDigest)
+      issue(
+        issues,
+        "report.serialSession.deviceMappingDigest",
+        "must bind the reported simulator mappings",
+      );
+    if (
+      request.operation !== "start-serial-session" &&
+      request.serialSession?.deviceMappingDigest !== null &&
+      session.deviceMappingDigest !== request.serialSession?.deviceMappingDigest
+    )
+      issue(
+        issues,
+        "report.serialSession.deviceMappingDigest",
+        "must match the requested session mapping digest",
+      );
+  }
+  if (request.operation === "inject-scanner-code") {
+    const acknowledgement = session.scannerAcknowledgement;
+    if (
+      !assertExactKeys(
+        acknowledgement,
+        [
+          "scannerCodeDigest",
+          "scannerCodeByteLength",
+          "scannerCodeSuffix",
+          "accepted",
+        ],
+        "report.serialSession.scannerAcknowledgement",
+        issues,
+      )
+    ) {
+      // Exact-key diagnostics are sufficient when this object is malformed.
+    } else {
+      for (const key of [
+        "scannerCodeDigest",
+        "scannerCodeByteLength",
+        "scannerCodeSuffix",
+      ])
+        if (
+          acknowledgement[key] !== request.serialSession.scannerInjection?.[key]
+        )
+          issue(
+            issues,
+            `report.serialSession.scannerAcknowledgement.${key}`,
+            "must bind protected scanner input",
+          );
+      if (acknowledgement.accepted !== true)
+        issue(
+          issues,
+          "report.serialSession.scannerAcknowledgement.accepted",
+          "must be true",
+        );
+    }
+  } else if (session.scannerAcknowledgement !== null)
+    issue(
+      issues,
+      "report.serialSession.scannerAcknowledgement",
+      "must be null outside scanner injection",
+    );
+  const needsCleanup = ["stop-serial-session", "cleanup", "cancel"].includes(
+    request.operation,
+  );
+  if (needsCleanup) {
+    const cleanup = session.simulatorCleanup;
+    if (
+      !assertExactKeys(
+        cleanup,
+        [
+          "cleanupAttemptCount",
+          "idempotencyVerified",
+          "survivingProcessCount",
+          "survivingSocketCount",
+        ],
+        "report.serialSession.simulatorCleanup",
+        issues,
+      )
+    ) {
+      // Exact-key diagnostics are sufficient when this object is malformed.
+    } else {
+      if (
+        !Number.isInteger(cleanup.cleanupAttemptCount) ||
+        cleanup.cleanupAttemptCount < 1
+      )
+        issue(
+          issues,
+          "report.serialSession.simulatorCleanup.cleanupAttemptCount",
+          "must count cleanup attempts",
+        );
+      if (
+        cleanup.survivingProcessCount !== 0 ||
+        cleanup.survivingSocketCount !== 0
+      )
+        issue(
+          issues,
+          "report.serialSession.simulatorCleanup",
+          "must prove no simulator resources survive",
+        );
+      const requiresIdempotencyProof =
+        request.operation === "stop-serial-session" &&
+        request.serialSession.idempotencyCheck;
+      if (
+        requiresIdempotencyProof &&
+        (cleanup.cleanupAttemptCount < 2 ||
+          cleanup.idempotencyVerified !== true)
+      )
+        issue(
+          issues,
+          "report.serialSession.simulatorCleanup",
+          "must prove a repeated stop was idempotent",
+        );
+      if (!requiresIdempotencyProof && cleanup.idempotencyVerified !== false)
+        issue(
+          issues,
+          "report.serialSession.simulatorCleanup.idempotencyVerified",
+          "must be false until a repeated stop is checked",
+        );
+    }
+  } else if (session.simulatorCleanup !== null)
+    issue(
+      issues,
+      "report.serialSession.simulatorCleanup",
+      "must be null outside serial cleanup",
+    );
 }
 
 function assertTimestamp(value, path, issues) {
@@ -786,6 +1657,7 @@ function requestEcho(request) {
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     requestedCapabilities: [...request.requestedCapabilities],
+    ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
 
@@ -810,6 +1682,7 @@ function reconstructRequest(request) {
       digest: asset?.digest,
     })),
     requestedCapabilities: [...(request.requestedCapabilities ?? [])],
+    ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
 
@@ -848,6 +1721,7 @@ export function validateVmHostAdapterRequest(input) {
       "audioCapture",
       "assets",
       "requestedCapabilities",
+      ...(isV2Request(request) ? ["serialSession"] : []),
     ],
     "request",
     issues,
@@ -860,6 +1734,12 @@ export function validateVmHostAdapterRequest(input) {
     issue(issues, "request.kind", "must be vm-host-adapter-request");
   if (!VM_HOST_ADAPTER_OPERATIONS.has(request.operation))
     issue(issues, "request.operation", "must be a supported operation");
+  if (isSerialSessionOperation(request.operation) && !isV2Request(request))
+    issue(
+      issues,
+      "request.serialSession",
+      "must bind serial-session operations",
+    );
   if (
     typeof request.runId !== "string" ||
     !/^[A-Z0-9][A-Z0-9-]{2,63}$/.test(request.runId)
@@ -910,6 +1790,8 @@ export function validateVmHostAdapterRequest(input) {
       "must be null outside cancel",
     );
   }
+  if (isV2Request(request) || isSerialSessionOperation(request.operation))
+    assertSerialSessionRequest(request.serialSession, request, issues);
   if (assertExactKeys(request.target, ["identity"], "request.target", issues)) {
     if (
       typeof request.target.identity !== "string" ||
@@ -1106,6 +1988,15 @@ export function validateVmHostAdapterRequest(input) {
         "request.requestedCapabilities",
         `must include ${requiredCapability}`,
       );
+    for (const capability of REQUIRED_CAPABILITIES_BY_SERIAL_OPERATION[
+      request.operation
+    ] ?? [])
+      if (!seen.has(capability))
+        issue(
+          issues,
+          "request.requestedCapabilities",
+          `must include ${capability}`,
+        );
   }
   const requiredRoles =
     REQUIRED_ASSET_ROLES_BY_OPERATION[request.operation] ?? [];
@@ -1157,6 +2048,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
       "diagnostics",
       "displayCapture",
       "defaultAudioCapture",
+      ...(isV2Request(request) ? ["serialSession", "serialEvidence"] : []),
     ],
     "report",
     issues,
@@ -1212,6 +2104,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "displayCapture",
         "audioCapture",
         "requestedCapabilities",
+        ...(isV2Request(request) ? ["serialSession"] : []),
       ],
       "report.request",
       issues,
@@ -1468,6 +2361,8 @@ export function validateVmHostAdapterReport(input, requestInput) {
       }
     }
   }
+  assertSerialSessionReport(report, request, issues);
+  assertSerialEvidence(report, request, issues);
   if (!Array.isArray(report.evidence))
     issue(issues, "report.evidence", "must be an array");
   else {
@@ -1705,6 +2600,86 @@ export function validateVmHostAdapterReport(input, requestInput) {
     diagnostics: report.diagnostics.map((diagnostic) => ({
       code: diagnostic.code,
     })),
+    ...(isV2Request(request)
+      ? {
+          serialSession:
+            report.serialSession === null
+              ? null
+              : {
+                  serialSessionId: report.serialSession.serialSessionId,
+                  sessionBindingToken: report.serialSession.sessionBindingToken,
+                  startOperationReference:
+                    report.serialSession.startOperationReference,
+                  deviceMappingDigest: report.serialSession.deviceMappingDigest,
+                  state: report.serialSession.state,
+                  deviceMappings: report.serialSession.deviceMappings.map(
+                    (mapping) => ({
+                      role: mapping.role,
+                      guestDeviceIdentity: mapping.guestDeviceIdentity,
+                      simulatorProcessIdentity:
+                        mapping.simulatorProcessIdentity,
+                      simulatorSocketIdentity: mapping.simulatorSocketIdentity,
+                      connectionState: mapping.connectionState,
+                    }),
+                  ),
+                  scannerAcknowledgement:
+                    report.serialSession.scannerAcknowledgement === null
+                      ? null
+                      : {
+                          scannerCodeDigest:
+                            report.serialSession.scannerAcknowledgement
+                              .scannerCodeDigest,
+                          scannerCodeByteLength:
+                            report.serialSession.scannerAcknowledgement
+                              .scannerCodeByteLength,
+                          scannerCodeSuffix:
+                            report.serialSession.scannerAcknowledgement
+                              .scannerCodeSuffix,
+                          accepted:
+                            report.serialSession.scannerAcknowledgement
+                              .accepted,
+                        },
+                  simulatorCleanup:
+                    report.serialSession.simulatorCleanup === null
+                      ? null
+                      : {
+                          cleanupAttemptCount:
+                            report.serialSession.simulatorCleanup
+                              .cleanupAttemptCount,
+                          idempotencyVerified:
+                            report.serialSession.simulatorCleanup
+                              .idempotencyVerified,
+                          survivingProcessCount:
+                            report.serialSession.simulatorCleanup
+                              .survivingProcessCount,
+                          survivingSocketCount:
+                            report.serialSession.simulatorCleanup
+                              .survivingSocketCount,
+                        },
+                },
+          serialEvidence:
+            report.serialEvidence === null
+              ? null
+              : {
+                  serialSessionId: report.serialEvidence.serialSessionId,
+                  sessionBindingToken:
+                    report.serialEvidence.sessionBindingToken,
+                  deviceMappingDigest:
+                    report.serialEvidence.deviceMappingDigest,
+                  records: report.serialEvidence.records.map((record) => ({
+                    role: record.role,
+                    event: record.event,
+                    operationNonce: record.operationNonce,
+                    sessionBindingToken: record.sessionBindingToken,
+                    deviceMappingDigest: record.deviceMappingDigest,
+                    scannerCodeDigest: record.scannerCodeDigest,
+                    scannerCodeByteLength: record.scannerCodeByteLength,
+                    scannerCodeSuffix: record.scannerCodeSuffix,
+                    saleCorrelationId: record.saleCorrelationId,
+                  })),
+                },
+        }
+      : {}),
   };
 }
 
@@ -1715,6 +2690,7 @@ export function createVmHostAdapterDiagnostic({
   startedAt,
   completedAt,
   cleanup,
+  scannerCode,
 }) {
   const request = validateVmHostAdapterRequest(requestInput);
   const diagnostic = {
@@ -1766,7 +2742,22 @@ export function createVmHostAdapterDiagnostic({
       "must truthfully bind its status to observed cleanup state",
     );
   if (issues.length > 0) throw new VmHostAdapterContractError(issues);
-  return structuredClone(diagnostic);
+  return redactScannerCode(diagnostic, scannerCode);
+}
+
+export function redactScannerCode(value, scannerCode) {
+  if (typeof scannerCode !== "string" || scannerCode.length === 0)
+    return structuredClone(value);
+  const redact = (entry) => {
+    if (typeof entry === "string")
+      return entry.replaceAll(scannerCode, "[redacted-scanner-code]");
+    if (Array.isArray(entry)) return entry.map(redact);
+    if (!isRecord(entry)) return entry;
+    return Object.fromEntries(
+      Object.entries(entry).map(([key, item]) => [key, redact(item)]),
+    );
+  };
+  return redact(value);
 }
 
 function adapterExecutable(environment) {
@@ -1855,6 +2846,7 @@ async function invokeAdapter({
   signal,
   onInterrupted,
   onStarted,
+  scannerCode,
 }) {
   const executable = adapterExecutable(environment);
   const requestPath = join(
@@ -1875,10 +2867,24 @@ async function invokeAdapter({
       const args = executable.endsWith(".mjs")
         ? [executable, "--request", requestPath, "--report", reportPath]
         : ["--request", requestPath, "--report", reportPath];
+      const {
+        VEM_VM_HOST_SCANNER_CODE: _inheritedProtectedScannerCode,
+        ...processEnvironment
+      } = process.env;
+      const {
+        VEM_VM_HOST_SCANNER_CODE: _configuredProtectedScannerCode,
+        ...configuredEnvironment
+      } = environment;
       const child = spawn(command, args, {
         detached: process.platform !== "win32",
         stdio: "ignore",
-        env: { ...process.env, ...environment },
+        env: {
+          ...processEnvironment,
+          ...configuredEnvironment,
+          ...(scannerCode === undefined
+            ? {}
+            : { VEM_VM_HOST_SCANNER_CODE: scannerCode }),
+        },
       });
       onStarted?.(request);
       let reason = null;
@@ -1971,6 +2977,34 @@ async function invokeAdapter({
   }
 }
 
+function serialSessionForRecovery(request) {
+  if (request.serialSession === null) return null;
+  if (request.operation !== "start-serial-session") {
+    return {
+      ...request.serialSession,
+      scannerInjection: null,
+      idempotencyCheck: false,
+    };
+  }
+  const binding = deriveSerialSessionBinding({
+    runId: request.runId,
+    lifecycleReference: request.lifecycleReference,
+    targetIdentity: request.target.identity,
+    startOperationReference: request.operationReference,
+  });
+  return {
+    serialSessionId: binding.serialSessionId,
+    sessionBindingToken: binding.sessionBindingToken,
+    startOperationReference: request.operationReference,
+    // A timed out start has a stable session identity but no mapping receipt yet.
+    deviceMappingDigest: null,
+    deviceRoles: [...SERIAL_DEVICE_ROLES],
+    scannerInjection: null,
+    saleCorrelationIds: [...request.serialSession.saleCorrelationIds],
+    idempotencyCheck: false,
+  };
+}
+
 function cleanupRequestFor(request) {
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   return createVmHostAdapterRequest({
@@ -1983,6 +3017,11 @@ function cleanupRequestFor(request) {
     displayCapture: null,
     audioCapture: null,
     requestedCapabilities: ["cleanup", "cancellation"],
+    ...(isV2Request(request)
+      ? {
+          serialSession: serialSessionForRecovery(request),
+        }
+      : {}),
   });
 }
 
@@ -1998,6 +3037,11 @@ function cancelRequestFor(request) {
     displayCapture: null,
     audioCapture: null,
     requestedCapabilities: ["cancellation", "cleanup"],
+    ...(isV2Request(request)
+      ? {
+          serialSession: serialSessionForRecovery(request),
+        }
+      : {}),
   });
 }
 
@@ -2009,8 +3053,32 @@ export async function runVmHostAdapter({
   timeoutMs = Number(environment.VEM_VM_HOST_ADAPTER_TIMEOUT_MS ?? 600000),
   signal,
   onOperationStarted,
+  scannerCode,
 }) {
   const request = validateVmHostAdapterRequest(requestInput);
+  if (request.operation === "inject-scanner-code") {
+    if (typeof scannerCode !== "string")
+      throw new Error("inject-scanner-code requires protected scanner input");
+    const descriptor = createScannerCodeDescriptor(scannerCode);
+    if (
+      JSON.stringify(descriptor) !==
+      JSON.stringify({
+        scannerCodeDigest:
+          request.serialSession.scannerInjection.scannerCodeDigest,
+        scannerCodeByteLength:
+          request.serialSession.scannerInjection.scannerCodeByteLength,
+        scannerCodeSuffix:
+          request.serialSession.scannerInjection.scannerCodeSuffix,
+      })
+    )
+      throw new Error(
+        "protected scanner input does not match the request digest",
+      );
+  } else if (scannerCode !== undefined) {
+    throw new Error(
+      "protected scanner input is permitted only for inject-scanner-code",
+    );
+  }
   if (typeof workDirectory !== "string" || !workDirectory)
     throw new Error(
       "VM Host Adapter client requires a runner-local work directory",
@@ -2049,6 +3117,7 @@ export async function runVmHostAdapter({
       environment: adapterEnvironment,
       timeoutMs: Math.min(timeoutMs, 30000),
       signal: undefined,
+      scannerCode: undefined,
     });
     return cancellation;
   };
@@ -2060,6 +3129,7 @@ export async function runVmHostAdapter({
     signal,
     onInterrupted: cancelInFlightOperation,
     onStarted: onOperationStarted,
+    scannerCode,
   });
   if (
     outcome.result === "succeeded" &&
@@ -2116,6 +3186,7 @@ export async function runVmHostAdapter({
       environment: adapterEnvironment,
       timeoutMs: Math.min(timeoutMs, 30000),
       signal: undefined,
+      scannerCode: undefined,
     });
   } catch {
     recovery = { result: "failed", report: null };
@@ -2144,6 +3215,7 @@ export async function runVmHostAdapter({
     startedAt: outcome.startedAt,
     completedAt: new Date().toISOString(),
     cleanup,
+    scannerCode,
   });
   throw new VmHostAdapterExecutionError(
     `VM Host Adapter reported ${outcome.result}`,

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
 import {
+  createScannerCodeDescriptor,
   createVmHostAdapterRequest,
   runVmHostAdapter,
   VM_HOST_ADAPTER_CONTRACT_VERSION,
@@ -44,6 +44,36 @@ const CAPABILITIES_BY_OPERATION = {
   ],
   "capture-display": ["display-capture", "cancellation", "cleanup"],
   "capture-default-audio": ["default-audio-capture", "cancellation", "cleanup"],
+  "start-serial-session": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "cancellation",
+    "cleanup",
+  ],
+  "inject-scanner-code": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "serial:scanner-injection",
+    "cancellation",
+    "cleanup",
+  ],
+  "collect-serial-evidence": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "serial:evidence",
+    "cancellation",
+    "cleanup",
+  ],
+  "stop-serial-session": [
+    "serial-session",
+    "serial:lower-controller",
+    "serial:scanner",
+    "cleanup",
+    "cancellation",
+  ],
   cleanup: ["cleanup", "cancellation"],
   cancel: ["cancellation", "cleanup"],
 };
@@ -55,6 +85,12 @@ function readOption(name, { optional = false } = {}) {
     throw new Error(`${name} is required`);
   }
   return process.argv[index + 1];
+}
+
+function readOptions(name) {
+  return process.argv.flatMap((value, index) =>
+    value === name && process.argv[index + 1] ? [process.argv[index + 1]] : [],
+  );
 }
 
 function assetFromIdentity(role, identity) {
@@ -146,6 +182,81 @@ function displayCaptureForOperation(operation) {
   };
 }
 
+function protectedScannerCode(operation) {
+  if (operation !== "inject-scanner-code") return undefined;
+  const fromFile = readOption("--scanner-code-file", { optional: true });
+  const fromEnvironment = process.env.VEM_VM_HOST_SCANNER_CODE;
+  const fromStdin = process.argv.includes("--scanner-code-stdin");
+  const sources = [
+    fromFile ? "file" : null,
+    fromEnvironment === undefined ? null : "environment",
+    fromStdin ? "stdin" : null,
+  ].filter(Boolean);
+  if (sources.length !== 1)
+    throw new Error(
+      "inject-scanner-code requires exactly one protected scanner input: --scanner-code-file, --scanner-code-stdin, or VEM_VM_HOST_SCANNER_CODE",
+    );
+  if (fromFile) return readFileSync(fromFile, "utf8");
+  if (fromStdin) return readFileSync(0, "utf8");
+  return fromEnvironment;
+}
+
+function sessionBindingFromOptions() {
+  return {
+    serialSessionId: readOption("--serial-session-id"),
+    sessionBindingToken: readOption("--session-binding-token"),
+    startOperationReference: readOption("--start-operation-reference"),
+    deviceMappingDigest: readOption("--device-mapping-digest"),
+  };
+}
+
+function scannerInjectionFromOptions(operation, scannerCode) {
+  if (operation === "inject-scanner-code")
+    return {
+      operationNonce: null,
+      ...createScannerCodeDescriptor(scannerCode),
+    };
+  if (operation !== "collect-serial-evidence") return null;
+  return {
+    operationNonce: readOption("--scanner-injection-operation-nonce"),
+    scannerCodeDigest: readOption("--scanner-code-digest"),
+    scannerCodeByteLength: Number.parseInt(
+      readOption("--scanner-code-byte-length"),
+      10,
+    ),
+    scannerCodeSuffix: readOption("--scanner-code-suffix"),
+  };
+}
+
+function serialSessionForOperation(operation, scannerCode) {
+  if (
+    ![
+      "start-serial-session",
+      "inject-scanner-code",
+      "collect-serial-evidence",
+      "stop-serial-session",
+    ].includes(operation)
+  )
+    return null;
+  const isStart = operation === "start-serial-session";
+  return {
+    ...(isStart
+      ? {
+          serialSessionId: null,
+          sessionBindingToken: null,
+          startOperationReference: null,
+          deviceMappingDigest: null,
+        }
+      : sessionBindingFromOptions()),
+    deviceRoles: ["lower-controller", "scanner"],
+    scannerInjection: scannerInjectionFromOptions(operation, scannerCode),
+    saleCorrelationIds: readOptions("--sale-correlation-id"),
+    idempotencyCheck:
+      operation === "stop-serial-session" &&
+      process.argv.includes("--idempotency-check"),
+  };
+}
+
 async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
   if (!["clean-install", "capture-approved-base"].includes(operation))
     return null;
@@ -175,6 +286,8 @@ async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
     throw new Error(
       "Factory acceptance requires host-owned manifest, provenance, and ISO paths before adapter mutation",
     );
+  const { admitFactoryAcceptance } =
+    await import("../factory/factory-acceptance-admission.mjs");
   return admitFactoryAcceptance({
     manifestPath,
     provenancePath,
@@ -206,6 +319,10 @@ async function main() {
   const factoryMedia = factoryMediaForOperation(operation);
   const displayCapture = displayCaptureForOperation(operation);
   const audioCapture = audioCaptureForOperation(operation);
+  const scannerCode = protectedScannerCode(operation);
+  const serialSession = serialSessionForOperation(operation, scannerCode);
+  if (serialSession?.scannerInjection?.operationNonce === null)
+    serialSession.scannerInjection.operationNonce = nonce;
   const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
   const request = createVmHostAdapterRequest({
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
@@ -226,6 +343,7 @@ async function main() {
     audioCapture,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
+    serialSession,
   });
   mkdirSync(dirname(out), { recursive: true });
   try {
@@ -235,6 +353,7 @@ async function main() {
         workDirectory: process.env.RUNNER_TEMP ?? ".vm-host-adapter-tmp",
         evidenceDirectory: join(dirname(out), "evidence"),
         signal: cancellation.signal,
+        scannerCode,
       });
       if (
         admission &&
