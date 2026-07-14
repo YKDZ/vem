@@ -99,11 +99,51 @@ describe("repository script inventory guard", () => {
     );
   });
 
+  it("rejects a commented sibling Join-Path when the entrypoint does not import its closure member", () => {
+    withFixture(
+      {
+        "scripts/windows/test-vision-candidate.ps1":
+          '# Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1")',
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/windows/test-vision-candidate.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["runtime acceptance"],
+              deliveryClosure: [
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["runtime acceptance"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /test-vision-candidate\.ps1 delivery closure is not imported from its sibling path: scripts\/windows\/vision-release-materialization\.psm1/,
+        );
+      },
+    );
+  });
+
   it("fails when a delivery producer omits a classified assembly member", () => {
     withFixture(
       {
         "scripts/factory/finalize.mjs":
-          'const files = ["install-vision-release.ps1", "vision-release-materialization.psm1"];',
+          'for (const script of ["install-vision-release.ps1", "vision-release-materialization.psm1"]) { stage(`VISION-INSTALLER/${script}`); }',
         "scripts/windows/install-vision-release.ps1": "Write-Host install",
         "scripts/windows/vision-release-materialization.psm1":
           "Export-ModuleMember",
@@ -119,6 +159,7 @@ describe("repository script inventory guard", () => {
               owner: "field-operations",
               category: "public runbook operation",
               workflows: ["factory preparation"],
+              deliveryAssemblyAction: "javascript-stage",
               deliveryAssembly: [
                 "scripts/windows/install-vision-release.ps1",
                 "scripts/windows/vision-release-materialization.psm1",
@@ -150,7 +191,160 @@ describe("repository script inventory guard", () => {
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /finalize\.mjs delivery assembly omits classified member: scripts\/windows\/vision-diagnostic-redaction\.psm1/,
+          /finalize\.mjs delivery assembly does not stage classified member: scripts\/windows\/vision-diagnostic-redaction\.psm1/,
+        );
+      },
+    );
+  });
+
+  it("rejects an experimental finalizer file list when its members are not staged", () => {
+    withFixture(
+      {
+        "scripts/factory/experimental-vision-candidate.mjs": [
+          'const installers = ["install-vision-release.ps1", "vision-release-materialization.psm1"];',
+          "// stage every installer into VISION-INSTALLER",
+        ].join("\n"),
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/factory/experimental-vision-candidate.mjs",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "javascript-stage",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /experimental-vision-candidate\.mjs delivery assembly does not stage classified member: scripts\/windows\/install-vision-release\.ps1/,
+        );
+      },
+    );
+  });
+
+  it("rejects win10 dirty and clean factory support names when they are not uploaded", () => {
+    withFixture(
+      {
+        "scripts/testbed/win10-vem-e2e.mjs": [
+          'const FACTORY_SUPPORT_SCRIPT_NAMES = ["install-vision-release.ps1", "vision-release-materialization.psm1"];',
+          "// for (const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES) upload(scriptName)",
+        ].join("\n"),
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/testbed/win10-vem-e2e.mjs",
+              owner: "field-operations",
+              category: "canonical entrypoint",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "javascript-upload",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /win10-vem-e2e\.mjs delivery assembly does not upload classified member: scripts\/windows\/install-vision-release\.ps1/,
+        );
+      },
+    );
+  });
+
+  it("rejects Windows harness filenames that are not copied into its delivery media", () => {
+    withFixture(
+      {
+        "scripts/windows/vision-release-install.windows-harness.ps1": [
+          '$installer = "install-vision-release.ps1"',
+          '# Copy-Item -LiteralPath "vision-release-materialization.psm1"',
+        ].join("\n"),
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/windows/vision-release-install.windows-harness.ps1",
+              owner: "field-operations",
+              category: "verifier-test guard",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "powershell-copy",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /vision-release-install\.windows-harness\.ps1 delivery assembly does not copy classified member: scripts\/windows\/install-vision-release\.ps1/,
         );
       },
     );

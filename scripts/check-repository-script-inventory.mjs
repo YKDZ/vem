@@ -136,6 +136,7 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["runtime acceptance", "managed update"],
+    deliveryAssemblyAction: "javascript-stage",
     deliveryAssembly: [
       "scripts/windows/install-vision-release.ps1",
       "scripts/windows/provision-vision-factory-release.ps1",
@@ -329,6 +330,7 @@ const DEFAULT_INVENTORY = [
       "runtime acceptance",
       "testbed workflows",
     ],
+    deliveryAssemblyAction: "javascript-upload",
     deliveryAssembly: [
       "scripts/windows/install-vision-release.ps1",
       "scripts/windows/provision-vision-factory-release.ps1",
@@ -525,6 +527,7 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation", "managed update"],
+    deliveryAssemblyAction: "powershell-copy",
     deliveryAssembly: [
       "scripts/windows/install-vision-release.ps1",
       "scripts/windows/provision-vision-factory-release.ps1",
@@ -867,14 +870,139 @@ function validateDeliveryClosure(entry, entriesByPath, source) {
       continue;
     }
     const closureName = closurePath.split("/").at(-1);
-    const siblingImport = `Join-Path $PSScriptRoot "${closureName}"`;
-    if (!source.includes(siblingImport)) {
+    if (!importsPowerShellSiblingModule(source, closureName)) {
       failures.push(
         `${entry.path} delivery closure is not imported from its sibling path: ${closurePath}`,
       );
     }
   }
   return failures;
+}
+
+const DELIVERY_ASSEMBLY_ACTIONS = new Set([
+  "javascript-stage",
+  "javascript-upload",
+  "powershell-copy",
+]);
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function removeJavaScriptComments(source) {
+  let result = "";
+  let quote = null;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (quote) {
+      result += character;
+      if (character === "\\") {
+        result += next ?? "";
+        index += 1;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      result += character;
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      while (index < source.length && source[index] !== "\n") {
+        result += " ";
+        index += 1;
+      }
+      result += source[index] ?? "";
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      result += "  ";
+      index += 2;
+      while (
+        index < source.length &&
+        !(source[index] === "*" && source[index + 1] === "/")
+      ) {
+        result += source[index] === "\n" ? "\n" : " ";
+        index += 1;
+      }
+      if (index < source.length) {
+        result += "  ";
+        index += 1;
+      }
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
+function executablePowerShell(source) {
+  return source
+    .replace(/<#[\s\S]*?#>/g, "")
+    .split(/\r?\n/)
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+}
+
+function importsPowerShellSiblingModule(source, moduleName) {
+  const name = escapeRegex(moduleName);
+  return new RegExp(
+    `^\\s*Import-Module\\s+\\(?\\s*Join-Path\\s+\\$PSScriptRoot\\s+["']${name}["']`,
+    "m",
+  ).test(executablePowerShell(source));
+}
+
+function javascriptStagedMember(source, memberName) {
+  const name = escapeRegex(memberName);
+  const literal = `(?:["']${name}["'])`;
+  return new RegExp(
+    `for\\s*\\(\\s*const\\s+(\\w+)\\s+of\\s*\\[[\\s\\S]*?${literal}[\\s\\S]*?\\]\\s*\\)\\s*\\{[\\s\\S]*?\\bstage\\s*\\([\\s\\S]*?\\$\\{\\1\\}`,
+  ).test(removeJavaScriptComments(source));
+}
+
+function javascriptUploadedMember(source, memberName) {
+  const name = escapeRegex(memberName);
+  const cleaned = removeJavaScriptComments(source);
+  const listed = new RegExp(
+    `const\\s+FACTORY_SUPPORT_SCRIPT_NAMES\\s*=\\s*\\[[\\s\\S]*?["']${name}["'][\\s\\S]*?\\]`,
+  ).test(cleaned);
+  const uploaded =
+    /for\s*\(\s*const\s+scriptName\s+of\s+FACTORY_SUPPORT_SCRIPT_NAMES\s*\)\s*\{[\s\S]*?buildScpCommand\s*\(\s*`scripts\/windows\/\$\{scriptName\}`[\s\S]*?runTransientSshOperation\s*\(/.test(
+      cleaned,
+    );
+  return listed && uploaded;
+}
+
+function powerShellCopiedMember(source, memberName) {
+  const name = escapeRegex(memberName);
+  return new RegExp(
+    `^\\s*Copy-Item\\b[^\\r\\n]*["']${name}["'][^\\r\\n]*$`,
+    "m",
+  ).test(executablePowerShell(source));
+}
+
+function hasDeliveryAssemblyAction(source, action, memberName) {
+  switch (action) {
+    case "javascript-stage":
+      return javascriptStagedMember(source, memberName);
+    case "javascript-upload":
+      return javascriptUploadedMember(source, memberName);
+    case "powershell-copy":
+      return powerShellCopiedMember(source, memberName);
+    default:
+      return false;
+  }
+}
+
+function deliveryAssemblyVerb(action) {
+  return {
+    "javascript-stage": "stage",
+    "javascript-upload": "upload",
+    "powershell-copy": "copy",
+  }[action];
 }
 
 function validateDeliveryAssembly(entry, entriesByPath, source) {
@@ -887,6 +1015,11 @@ function validateDeliveryAssembly(entry, entriesByPath, source) {
       `${entry.path} deliveryAssembly must name one or more assembled members`,
     ];
   }
+  if (!DELIVERY_ASSEMBLY_ACTIONS.has(entry.deliveryAssemblyAction)) {
+    return [
+      `${entry.path} deliveryAssembly must declare a supported deliveryAssemblyAction`,
+    ];
+  }
   const failures = [];
   for (const assemblyPath of entry.deliveryAssembly) {
     if (typeof assemblyPath !== "string" || !entriesByPath.has(assemblyPath)) {
@@ -896,9 +1029,15 @@ function validateDeliveryAssembly(entry, entriesByPath, source) {
       continue;
     }
     const assemblyName = assemblyPath.split("/").at(-1);
-    if (!source.includes(assemblyName)) {
+    if (
+      !hasDeliveryAssemblyAction(
+        source,
+        entry.deliveryAssemblyAction,
+        assemblyName,
+      )
+    ) {
       failures.push(
-        `${entry.path} delivery assembly omits classified member: ${assemblyPath}`,
+        `${entry.path} delivery assembly does not ${deliveryAssemblyVerb(entry.deliveryAssemblyAction)} classified member: ${assemblyPath}`,
       );
     }
   }
