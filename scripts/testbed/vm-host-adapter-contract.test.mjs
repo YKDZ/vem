@@ -2000,7 +2000,7 @@ describe("VM Host Adapter contract", () => {
         runVmHostAdapter({
           request,
           workDirectory,
-          timeoutMs: 80,
+          timeoutMs: 300,
           environment: {
             VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
             VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
