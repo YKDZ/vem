@@ -45,6 +45,7 @@ jobs:
         shell: bash
     env:
       RUN_ID: ${{ inputs.run_id || format('RUN-{0}', github.run_number) }}
+      WINDOWS_SSH_USER: ${{ inputs.windows_ssh_user }}
       DATABASE_URL: postgresql://vem:vem_password@localhost:55432/vem_runtime
       EPHEMERAL_API_BASE_URL: http://127.0.0.1:26849/api
       EPHEMERAL_MQTT_URL: mqtt://127.0.0.1:18883
@@ -65,6 +66,7 @@ jobs:
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
           test "$OBSERVED_WORKFLOW_REF" = "$EXPECTED_WORKFLOW_REF"
+          node scripts/testbed/validate-vm-runtime-acceptance-inputs.mjs >> "$GITHUB_ENV"
           node -e '
             const labels = JSON.parse(process.env.RUNNER_LABELS_JSON);
             for (const required of ["self-hosted", "Linux", "X64", "vem-runtime"]) {
@@ -180,28 +182,6 @@ jobs:
           MAINTENANCE_SSH_DIR="$RUNNER_TEMP/vem-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export MAINTENANCE_SSH_DIR
           printf 'MAINTENANCE_SSH_DIR=%s\n' "$MAINTENANCE_SSH_DIR" >> "$GITHUB_ENV"
-          node -e '
-            const required = [
-              "MAINTENANCE_CONTROL_PLANE_URL",
-              "MAINTENANCE_RUNNER_PEER_ID",
-              "MAINTENANCE_TARGET_MACHINE_ID",
-            ];
-            for (const name of required) {
-              if (!process.env[name]) throw new Error(`protected environment variable is required: ${name}`);
-            }
-            const url = new URL(process.env.MAINTENANCE_CONTROL_PLANE_URL);
-            const transportAllowed =
-              url.protocol === "https:" ||
-              (url.protocol === "http:" && process.env.MAINTENANCE_ALLOW_INSECURE_HTTP === "true");
-            if (!transportAllowed || url.username || url.password || url.search || url.hash) {
-              throw new Error("MAINTENANCE_CONTROL_PLANE_URL must be credential-free HTTPS unless protected testbed HTTP is explicitly enabled");
-            }
-            const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-            for (const name of ["MAINTENANCE_RUNNER_PEER_ID", "MAINTENANCE_TARGET_MACHINE_ID"]) {
-              if (!uuid.test(process.env[name])) throw new Error(`protected environment variable must be a UUID: ${name}`);
-            }
-          '
-          MAINTENANCE_CONTROL_PLANE_URL="${MAINTENANCE_CONTROL_PLANE_URL%/}"
           oidc_response_path="$RUNNER_TEMP/maintenance-oidc-response.json"
           oidc_token_path="$RUNNER_TEMP/maintenance-oidc-token.jwt"
           exchange_request_path="$RUNNER_TEMP/maintenance-exchange-request.json"
@@ -266,7 +246,7 @@ jobs:
             --header 'Content-Type: application/json' \
             --data-binary @"$exchange_request_path" \
             --output "$exchange_response_path" \
-            "$MAINTENANCE_CONTROL_PLANE_URL/maintenance-automation/exchange"
+            "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/exchange"
           chmod 600 "$exchange_response_path"
           node - "$exchange_response_path" "$automation_token_path" <<'NODE'
           const fs = require("node:fs");
@@ -309,7 +289,7 @@ jobs:
             --silent \
             --show-error \
             --output "$session_create_path" \
-            "$MAINTENANCE_CONTROL_PLANE_URL/maintenance-automation/session"
+            "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session"
           unset automation_token
           chmod 600 "$session_create_path"
 
@@ -322,7 +302,7 @@ jobs:
             --silent \
             --show-error \
             --output "$session_verify_path" \
-            "$MAINTENANCE_CONTROL_PLANE_URL/maintenance-automation/session"
+            "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session"
           unset automation_token
           chmod 600 "$session_verify_path"
           node - "$session_create_path" "$session_verify_path" <<'NODE'
@@ -358,7 +338,7 @@ jobs:
           fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID() }), { mode: 0o600 });
           NODE
           IFS= read -r automation_token < "$automation_token_path"
-          { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$MAINTENANCE_CONTROL_PLANE_URL/maintenance-automation/session/ssh-certificate"
+          { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session/ssh-certificate"
           unset automation_token
           node - "$ssh_response_path" "$ssh_certificate_path" <<'NODE'
           const fs = require("node:fs");
@@ -588,7 +568,7 @@ jobs:
             --ephemeral-mqtt-url "$EPHEMERAL_MQTT_URL" \
             --daemon-artifact artifacts/vm-runtime-inputs/vending-daemon.exe \
             --machine-ui-artifact artifacts/vm-runtime-inputs/machine.exe \
-            --remote "${{ inputs.windows_ssh_user }}@$VM_GUEST_MAINTENANCE_HOST" \
+            --remote "$WINDOWS_SSH_USER@$VM_GUEST_MAINTENANCE_HOST" \
             --ssh-port "$VM_GUEST_MAINTENANCE_PORT" \
             --maintenance-ingress-source-allowlist "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP" \
             --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
@@ -648,7 +628,7 @@ jobs:
               --silent \
               --show-error \
               --output "$revoke_response_path" \
-              "${MAINTENANCE_CONTROL_PLANE_URL%/}/maintenance-automation/session/revoke"
+              "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session/revoke"
             revoke_status="$?"
             unset automation_token
             if [ "$revoke_status" -eq 0 ]; then

@@ -158,7 +158,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(
       acceptanceBlock,
-      /--remote\s+"\$\{\{\s*inputs\.windows_ssh_user\s*\}\}@\$VM_GUEST_MAINTENANCE_HOST"/,
+      /--remote\s+"\$WINDOWS_SSH_USER@\$VM_GUEST_MAINTENANCE_HOST"/,
     );
     assert.match(
       acceptanceBlock,
