@@ -22,7 +22,6 @@ import {
   assertWimMagic,
   createWindowsFactoryFirstBootMedia,
   factoryAutounattendXml,
-  factoryOobeCompletionScript,
   factoryProfileImplementationScript,
   expectedFactoryEffectiveInputRoles,
   factoryPreparationSplat,
@@ -1107,44 +1106,6 @@ describe("real deterministic Factory ISO builder", () => {
         assertWimMagic(join(root, "not-a-wim.bin"), "invalid WIM"),
         /not a WIM image/,
       );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("resumes OOBE cleanup after the bootstrap account was already removed", async () => {
-    const root = await mkdtemp(join(tmpdir(), "vem-oobe-cleanup-reentry-"));
-    const fixturePath = join(root, "fixture.ps1");
-    const escapedRoot = root.replaceAll("'", "''");
-    const script = `$ErrorActionPreference = 'Stop'
-New-PSDrive -Name C -PSProvider FileSystem -Root '${escapedRoot}' | Out-Null
-New-Item -ItemType Directory -Force -Path 'C:\\ProgramData\\VEM\\factory' | Out-Null
-Set-Content -LiteralPath 'C:\\ProgramData\\VEM\\factory\\oobe-bootstrap-status.json' -NoNewline -Encoding UTF8 -Value '{"schemaVersion":"vem-factory-oobe-bootstrap-status/v1","state":"succeeded","stage":"complete","errorType":""}'
-Set-Content -LiteralPath 'C:\\ProgramData\\VEM\\factory\\oobe-cleanup-status.json' -NoNewline -Encoding UTF8 -Value '{"schemaVersion":"vem-factory-oobe-cleanup-status/v1","phase":"ready"}'
-$script:TaskRegistered = $true
-function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
-function Get-LocalUser { param($Name, $ErrorAction) $null }
-function Remove-ItemProperty { param($Path, $Name, $ErrorAction) }
-function Remove-LocalUser { param($Name, $ErrorAction) }
-function Get-Volume { param($ErrorAction) @() }
-function New-Object { param($ComObject) [pscustomobject]@{} }
-function Start-Sleep { param($Seconds) throw "unexpected cleanup retry: resuming=$resumingCleanup bootstrap=$($bootstrapStatus.state)/$($bootstrapStatus.stage) setup=$($setupState.OOBEInProgress)/$($setupState.SystemSetupInProgress)/$($setupState.SetupType)" }
-function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
-function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
-${factoryOobeCompletionScript()}
-if ($script:TaskRegistered) { throw 'cleanup task was not unregistered' }
-$cleanupStatus = Get-Content -LiteralPath 'C:\\ProgramData\\VEM\\factory\\oobe-cleanup-status.json' -Raw | ConvertFrom-Json
-if ($cleanupStatus.phase -cne 'complete') { throw 'cleanup did not reach the complete phase' }
-`;
-    try {
-      await writeFile(fixturePath, script, "utf8");
-      execFileSync("pwsh", [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-File",
-        fixturePath,
-      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

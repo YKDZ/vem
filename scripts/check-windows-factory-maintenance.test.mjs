@@ -139,6 +139,66 @@ test("PowerShell behavior fixtures execute through the real binder", () => {
   assert.match(result.stdout, /executable PowerShell probes passed/);
 });
 
+test("Factory OOBE cleanup resumes after the bootstrap account was removed", () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-oobe-cleanup-reentry-"));
+  const fixturePath = join(root, "fixture.ps1");
+  const bootstrapStatusPath = join(root, "oobe-bootstrap-status.json");
+  const cleanupStatusPath = join(root, "oobe-cleanup-status.json");
+  try {
+    writeFileSync(
+      bootstrapStatusPath,
+      JSON.stringify({
+        schemaVersion: "vem-factory-oobe-bootstrap-status/v1",
+        state: "succeeded",
+        stage: "complete",
+        errorType: "",
+      }),
+    );
+    writeFileSync(
+      cleanupStatusPath,
+      JSON.stringify({
+        schemaVersion: "vem-factory-oobe-cleanup-status/v1",
+        phase: "ready",
+      }),
+    );
+    const escapedRoot = root.replaceAll("'", "''");
+    const completion = factoryOobeCompletionScript().replace(
+      "$factoryRoot = 'C:\\ProgramData\\VEM\\factory'",
+      `$factoryRoot = '${escapedRoot}'`,
+    );
+    assert.doesNotMatch(completion, /C:\\ProgramData\\VEM\\factory/);
+    writeFileSync(
+      fixturePath,
+      `$ErrorActionPreference = 'Stop'
+$script:TaskRegistered = $true
+function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
+function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Remove-ItemProperty { param($Path, $Name, $ErrorAction) }
+function Remove-LocalUser { param($Name, $ErrorAction) }
+function Get-Volume { param($ErrorAction) @() }
+function New-Object { param($ComObject) [pscustomobject]@{} }
+function Start-Sleep { param($Seconds) throw "unexpected cleanup retry: resuming=$resumingCleanup bootstrap=$($bootstrapStatus.state)/$($bootstrapStatus.stage)" }
+function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
+function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
+${completion}
+if ($script:TaskRegistered) { throw 'cleanup task was not unregistered' }
+$cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
+if ($cleanupStatus.phase -cne 'complete') { throw 'cleanup did not reach the complete phase' }
+`,
+    );
+    const result = run("pwsh", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      fixturePath,
+    ]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("all factory maintenance PowerShell entrypoints parse", () => {
   for (const path of [
     "scripts/windows/prepare-factory-runtime.ps1",
