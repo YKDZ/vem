@@ -1573,10 +1573,18 @@ async fn execute_bring_up_task(
                 maintenance_authorization,
             },
         ) => {
-            // First-run network setup is deliberately automatic.  Preserve
-            // this typed field so a future maintenance-only route can require
-            // it without changing the cursor payload shape.
+            // Keep the typed body field for contract compatibility while the
+            // daemon authorizes the mutation through the session header.
             let _ = maintenance_authorization;
+            if let Err(response) = require_non_bring_up_maintenance_authorization(
+                &ctx,
+                &headers,
+                "bring_up.configure_network",
+            )
+            .await
+            {
+                return response;
+            }
             apply_network_settings_mutation(
                 State(ctx.clone()),
                 headers,
@@ -1600,6 +1608,17 @@ async fn execute_bring_up_task(
                 maintenance_authorization,
             },
         ) => {
+            if task.kind == crate::bring_up::BringUpTaskKind::ClaimMachine {
+                if let Err(response) = require_non_bring_up_maintenance_authorization(
+                    &ctx,
+                    &headers,
+                    "bring_up.first_claim",
+                )
+                .await
+                {
+                    return response;
+                }
+            }
             let execution = if task.kind == crate::bring_up::BringUpTaskKind::ReclaimMachine {
                 let Some(maintenance_authorization) = maintenance_authorization.as_ref() else {
                     return (
@@ -1645,13 +1664,24 @@ async fn execute_bring_up_task(
         (
             crate::bring_up::BringUpTaskKind::AttestStock,
             BringUpTaskMutation::RecordStock { attestation },
-        ) => record_physical_stock_attestation_mutation(
-            State(ctx.clone()),
-            headers,
-            Json(attestation),
-        )
-        .await
-        .into_response(),
+        ) => {
+            if let Err(response) = require_non_bring_up_maintenance_authorization(
+                &ctx,
+                &headers,
+                "bring_up.inventory_attestation",
+            )
+            .await
+            {
+                return response;
+            }
+            record_physical_stock_attestation_mutation(
+                State(ctx.clone()),
+                headers,
+                Json(attestation),
+            )
+            .await
+            .into_response()
+        }
         (crate::bring_up::BringUpTaskKind::SyncProfile, BringUpTaskMutation::RefreshProfile) => {
             (StatusCode::OK, Json(snapshot)).into_response()
         }
@@ -6008,7 +6038,6 @@ mod tests {
                     .method(Method::POST)
                     .uri(uri)
                     .header(AUTHORIZATION, format!("Bearer {token}"))
-                    .header("x-vem-maintenance-session", "protected-session-1")
                     .header(CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(payload.to_string()))
                     .unwrap(),
