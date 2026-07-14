@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import {
   createScannerCodeDescriptor,
@@ -169,7 +175,7 @@ function displayCaptureForOperation(operation) {
   if (!Number.isInteger(sessionId) || sessionId < 1)
     throw new Error("--active-kiosk-session-id must be a positive integer");
   const tauriRoute = readOption("--tauri-route");
-  if (!/^http:\/\/tauri\.localhost\/#\/.+/.test(tauriRoute))
+  if (!/^http:\/\/tauri\.localhost\/#\/(?:[^?#].*)?$/.test(tauriRoute))
     throw new Error(
       "--tauri-route must be a strict tauri.localhost hash route",
     );
@@ -185,20 +191,35 @@ function displayCaptureForOperation(operation) {
 function protectedScannerCode(operation) {
   if (operation !== "inject-scanner-code") return undefined;
   const fromFile = readOption("--scanner-code-file", { optional: true });
-  const fromEnvironment = process.env.VEM_VM_HOST_SCANNER_CODE;
-  const fromStdin = process.argv.includes("--scanner-code-stdin");
-  const sources = [
-    fromFile ? "file" : null,
-    fromEnvironment === undefined ? null : "environment",
-    fromStdin ? "stdin" : null,
-  ].filter(Boolean);
-  if (sources.length !== 1)
+  if (!fromFile || process.argv.includes("--scanner-code-stdin"))
     throw new Error(
-      "inject-scanner-code requires exactly one protected scanner input: --scanner-code-file, --scanner-code-stdin, or VEM_VM_HOST_SCANNER_CODE",
+      "inject-scanner-code requires exactly one protected scanner input: --scanner-code-file",
     );
-  if (fromFile) return readFileSync(fromFile, "utf8");
-  if (fromStdin) return readFileSync(0, "utf8");
-  return fromEnvironment;
+  if (!isAbsolute(fromFile))
+    throw new Error(
+      "--scanner-code-file must be an absolute runner-owned path",
+    );
+  const runnerScope = resolve(process.env.RUNNER_TEMP ?? "");
+  const inputPath = resolve(fromFile);
+  if (
+    !runnerScope ||
+    (inputPath !== runnerScope && !inputPath.startsWith(`${runnerScope}${sep}`))
+  )
+    throw new Error("--scanner-code-file must be inside RUNNER_TEMP");
+  const inputStat = statSync(inputPath);
+  if (!inputStat.isFile() || (inputStat.mode & 0o777) !== 0o600)
+    throw new Error("--scanner-code-file must be a regular 0600 file");
+  if (
+    typeof process.getuid === "function" &&
+    typeof inputStat.uid === "number" &&
+    inputStat.uid !== process.getuid()
+  )
+    throw new Error("--scanner-code-file must be owned by the runner user");
+  try {
+    return readFileSync(inputPath, "utf8");
+  } finally {
+    rmSync(inputPath, { force: true });
+  }
 }
 
 function sessionBindingFromOptions() {

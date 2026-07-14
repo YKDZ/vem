@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import {
   createScannerCodeDescriptor,
@@ -23,12 +29,35 @@ function readProtectedScannerCode() {
   const fromFile = process.argv.includes("--scanner-code-file")
     ? readOption("--scanner-code-file")
     : null;
-  const fromStdin = process.argv.includes("--scanner-code-stdin");
-  if (Number(Boolean(fromFile)) + Number(fromStdin) !== 1)
+  if (!fromFile || process.argv.includes("--scanner-code-stdin"))
     throw new Error(
-      "provide exactly one protected scanner input: --scanner-code-file or --scanner-code-stdin",
+      "provide exactly one protected scanner input: --scanner-code-file",
     );
-  return fromFile ? readFileSync(fromFile, "utf8") : readFileSync(0, "utf8");
+  if (!isAbsolute(fromFile))
+    throw new Error(
+      "--scanner-code-file must be an absolute runner-owned path",
+    );
+  const runnerScope = resolve(process.env.RUNNER_TEMP ?? "");
+  const inputPath = resolve(fromFile);
+  if (
+    !runnerScope ||
+    (inputPath !== runnerScope && !inputPath.startsWith(`${runnerScope}${sep}`))
+  )
+    throw new Error("--scanner-code-file must be inside RUNNER_TEMP");
+  const inputStat = statSync(inputPath);
+  if (!inputStat.isFile() || (inputStat.mode & 0o777) !== 0o600)
+    throw new Error("--scanner-code-file must be a regular 0600 file");
+  if (
+    typeof process.getuid === "function" &&
+    typeof inputStat.uid === "number" &&
+    inputStat.uid !== process.getuid()
+  )
+    throw new Error("--scanner-code-file must be owned by the runner user");
+  try {
+    return readFileSync(inputPath, "utf8");
+  } finally {
+    rmSync(inputPath, { force: true });
+  }
 }
 
 function nonce() {

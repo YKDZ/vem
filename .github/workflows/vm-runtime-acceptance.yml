@@ -546,6 +546,13 @@ jobs:
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
+          node - "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json" <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (report.adapter?.identity === "vm-host-adapter://deterministic-fake@1.0.0") {
+            throw new Error("deterministic fake adapter is forbidden in VM runtime acceptance");
+          }
+          NODE
 
       - name: Consume Discovered Guest Maintenance Endpoint
         run: |
@@ -613,12 +620,13 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${VEM_VM_HOST_ADAPTER:-}"
-          test -n "${VEM_VM_HOST_SCANNER_CODE:-}"
+          test -n "${VEM_VM_HOST_SCANNER_CODE_FILE:-}"
+          test -f "$VEM_VM_HOST_SCANNER_CODE_FILE"
+          test "$(stat -c '%a' "$VEM_VM_HOST_SCANNER_CODE_FILE")" = "600"
           sale_correlation_id="sale-correlation://vm-runtime-$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
-          printf '%s' "$VEM_VM_HOST_SCANNER_CODE" | env -u VEM_VM_HOST_SCANNER_CODE \
-            node scripts/testbed/vm-host-adapter-serial-conformance.mjs \
+          node scripts/testbed/vm-host-adapter-serial-conformance.mjs \
               --adapter "$VEM_VM_HOST_ADAPTER" \
-              --scanner-code-stdin \
+              --scanner-code-file "$VEM_VM_HOST_SCANNER_CODE_FILE" \
               --run-id "$RUN_ID" \
               --target-identity "$VEM_VM_HOST_TARGET_ID" \
               --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \

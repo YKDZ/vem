@@ -357,12 +357,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
 
     assert.match(serialSale, /if:\s+success\(\)/);
-    assert.match(serialSale, /VEM_VM_HOST_SCANNER_CODE/);
+    assert.match(serialSale, /VEM_VM_HOST_SCANNER_CODE_FILE/);
     assert.match(
       serialSale,
       /scripts\/testbed\/vm-host-adapter-serial-conformance\.mjs/,
     );
-    assert.match(serialSale, /--scanner-code-stdin/);
+    assert.match(serialSale, /--scanner-code-file/);
+    assert.match(serialSale, /stat -c '%a'/);
+    assert.doesNotMatch(serialSale, /VEM_VM_HOST_SCANNER_CODE(?:[^_]|$)/);
     assert.match(serialSale, /--sale-correlation-id/);
     assert.match(serialSale, /--order-id "\$VEM_SERIAL_ORDER_ID"/);
     assert.match(serialSale, /--payment-id "\$VEM_SERIAL_PAYMENT_ID"/);

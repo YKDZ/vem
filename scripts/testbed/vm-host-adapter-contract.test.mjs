@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -32,6 +38,8 @@ const SERIAL_CONFORMANCE = new URL(
   "./vm-host-adapter-serial-conformance.mjs",
   import.meta.url,
 ).pathname;
+
+process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -882,7 +890,7 @@ describe("VM Host Adapter contract", () => {
       );
   });
 
-  it("rejects plaintext scanner input persisted by an adapter sidecar", async () => {
+  it("rejects plaintext scanner input persisted outside adapter-work but inside the run scope", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-scanner-leak-"));
     const start = await runVmHostAdapter({
       request: createVmHostAdapterRequest(
@@ -906,11 +914,7 @@ describe("VM Host Adapter contract", () => {
           workDirectory: root,
           environment: {
             VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-            VEM_VM_HOST_ADAPTER_SCANNER_LEAK_FILE: join(
-              root,
-              "adapter-work",
-              "sidecar.txt",
-            ),
+            VEM_VM_HOST_ADAPTER_SCANNER_LEAK_FILE: join(root, "sidecar.txt"),
           },
           scannerCode: PROTECTED_SCANNER_INPUT,
         }),
@@ -918,7 +922,8 @@ describe("VM Host Adapter contract", () => {
         error instanceof VmHostAdapterExecutionError &&
         error.diagnostic.diagnostics[0].code === "evidence_invalid",
     );
-    assert.equal(existsSync(join(root, "adapter-work", "sidecar.txt")), false);
+    assert.equal(existsSync(join(root, "sidecar.txt")), true);
+    rmSync(join(root, "sidecar.txt"), { force: true });
   });
 
   it("requires stopped sessions to prove idempotent simulator cleanup with no survivors", () => {
@@ -2016,6 +2021,79 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("rejects the deterministic fake adapter from the production CLI", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-fake-guard-"));
+    const out = join(root, "report.json");
+    const {
+      VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY: _testOnly,
+      ...productionEnvironment
+    } = process.env;
+    assert.throws(() =>
+      execFileSync(
+        process.execPath,
+        [
+          CLIENT,
+          "--operation",
+          "restore-approved-base",
+          "--run-id",
+          "RUN-12-CONTRACT",
+          "--target-identity",
+          "vm-target://runtime-testbed",
+          "--approved-runtime-base",
+          `factory-cas://sha256/${HASH}`,
+          "--out",
+          out,
+        ],
+        {
+          env: {
+            ...productionEnvironment,
+            RUNNER_TEMP: root,
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+          },
+        },
+      ),
+    );
+    const diagnostic = JSON.parse(readFileSync(out, "utf8"));
+    assert.equal(diagnostic.diagnostics[0].code, "evidence_invalid");
+  });
+
+  it("accepts the exact customer #/ route through the actual CLI", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-display-cli-"));
+    const out = join(root, "display.json");
+    execFileSync(
+      process.execPath,
+      [
+        CLIENT,
+        "--operation",
+        "capture-display",
+        "--run-id",
+        "RUN-12-CONTRACT",
+        "--target-identity",
+        "vm-target://runtime-testbed",
+        "--approved-runtime-base",
+        `factory-cas://sha256/${HASH}`,
+        "--active-kiosk-session-user",
+        "VEMKiosk",
+        "--active-kiosk-session-id",
+        "3",
+        "--tauri-route",
+        "http://tauri.localhost/#/",
+        "--out",
+        out,
+      ],
+      {
+        env: {
+          ...process.env,
+          RUNNER_TEMP: root,
+          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+          VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence"),
+        },
+      },
+    );
+    const report = JSON.parse(readFileSync(out, "utf8"));
+    assert.equal(report.displayCapture.tauriRoute, "http://tauri.localhost/#/");
+  });
+
   it("runs validated recovery cleanup after an ordinary adapter failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-failure-"));
     const cleanupFile = join(root, "cleanup.txt");
@@ -2216,6 +2294,7 @@ describe("VM Host Adapter contract", () => {
       { env: environment },
     );
     const inject = JSON.parse(readFileSync(injectOut, "utf8"));
+    assert.equal(existsSync(protectedScannerCodePath), false);
     assert.deepEqual(inject.serialSession.scannerAcknowledgement, {
       ...createScannerCodeDescriptor(PROTECTED_SCANNER_INPUT),
       accepted: true,
@@ -2261,6 +2340,7 @@ describe("VM Host Adapter contract", () => {
       {
         env: {
           ...process.env,
+          RUNNER_TEMP: root,
           VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
         },
       },
@@ -2320,6 +2400,7 @@ describe("VM Host Adapter contract", () => {
         {
           env: {
             ...process.env,
+            RUNNER_TEMP: root,
             VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
             VEM_VM_HOST_ADAPTER_FAIL_OPERATION: "collect-serial-evidence",
           },

@@ -3035,6 +3035,7 @@ async function invokeAdapter({
   onInterrupted,
   onStarted,
   scannerCode,
+  allowTestAdapter,
 }) {
   const executable = adapterExecutable(environment);
   const requestPath = join(
@@ -3045,16 +3046,42 @@ async function invokeAdapter({
     workDirectory,
     `${request.operationReference.slice("vm-operation://".length)}.report.json`,
   );
+  const scannerInputPath =
+    scannerCode === undefined
+      ? null
+      : join(
+          workDirectory,
+          `${request.operationReference.slice("vm-operation://".length)}.scanner-input`,
+        );
   const startedAt = new Date().toISOString();
   writeFileSync(requestPath, `${JSON.stringify(request)}\n`, { mode: 0o600 });
+  if (scannerInputPath)
+    writeFileSync(scannerInputPath, scannerCode, { mode: 0o600, flag: "wx" });
   try {
     const outcome = await new Promise((resolve) => {
       const command = executable.endsWith(".mjs")
         ? process.execPath
         : executable;
       const args = executable.endsWith(".mjs")
-        ? [executable, "--request", requestPath, "--report", reportPath]
-        : ["--request", requestPath, "--report", reportPath];
+        ? [
+            executable,
+            "--request",
+            requestPath,
+            "--report",
+            reportPath,
+            ...(scannerInputPath
+              ? ["--scanner-code-file", scannerInputPath]
+              : []),
+          ]
+        : [
+            "--request",
+            requestPath,
+            "--report",
+            reportPath,
+            ...(scannerInputPath
+              ? ["--scanner-code-file", scannerInputPath]
+              : []),
+          ];
       const {
         VEM_VM_HOST_SCANNER_CODE: _inheritedProtectedScannerCode,
         ...processEnvironment
@@ -3066,12 +3093,10 @@ async function invokeAdapter({
       const child = spawn(command, args, {
         detached: process.platform !== "win32",
         stdio: "ignore",
+        cwd: workDirectory,
         env: {
           ...processEnvironment,
           ...configuredEnvironment,
-          ...(scannerCode === undefined
-            ? {}
-            : { VEM_VM_HOST_SCANNER_CODE: scannerCode }),
         },
       });
       onStarted?.(request);
@@ -3139,6 +3164,13 @@ async function invokeAdapter({
         JSON.parse(readFileSync(reportPath, "utf8")),
         request,
       );
+      if (
+        !allowTestAdapter &&
+        report.adapter.identity === "vm-host-adapter://deterministic-fake@1.0.0"
+      )
+        throw new Error(
+          "deterministic fake adapter is restricted to contract unit tests",
+        );
     } catch {
       return {
         result: "failed",
@@ -3160,6 +3192,7 @@ async function invokeAdapter({
       report,
     };
   } finally {
+    if (scannerInputPath) rmSync(scannerInputPath, { force: true });
     rmSync(requestPath, { force: true });
     rmSync(reportPath, { force: true });
   }
@@ -3243,7 +3276,11 @@ export async function runVmHostAdapter({
   signal,
   onOperationStarted,
   scannerCode,
+  allowTestAdapter = false,
 }) {
+  const testAdapterAllowed =
+    allowTestAdapter ||
+    process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY === "1";
   const request = validateVmHostAdapterRequest(requestInput);
   if (request.operation === "inject-scanner-code") {
     if (typeof scannerCode !== "string")
@@ -3308,6 +3345,7 @@ export async function runVmHostAdapter({
       timeoutMs: Math.min(timeoutMs, 30000),
       signal: undefined,
       scannerCode: undefined,
+      allowTestAdapter: testAdapterAllowed,
     });
     return cancellation;
   };
@@ -3320,11 +3358,10 @@ export async function runVmHostAdapter({
     onInterrupted: cancelInFlightOperation,
     onStarted: onOperationStarted,
     scannerCode,
+    allowTestAdapter: testAdapterAllowed,
   });
   try {
-    assertScannerCodeNotPersisted(adapterWorkDirectory, scannerCode);
-    if (scopedEvidenceDirectory)
-      assertScannerCodeNotPersisted(scopedEvidenceDirectory, scannerCode);
+    assertScannerCodeNotPersisted(resolve(workDirectory), scannerCode);
   } catch {
     outcome = {
       ...outcome,
@@ -3389,6 +3426,7 @@ export async function runVmHostAdapter({
       timeoutMs: Math.min(timeoutMs, 30000),
       signal: undefined,
       scannerCode: undefined,
+      allowTestAdapter: testAdapterAllowed,
     });
   } catch {
     recovery = { result: "failed", report: null };

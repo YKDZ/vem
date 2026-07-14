@@ -513,15 +513,10 @@ const reportPath = readOption("--report");
 const request = validateVmHostAdapterRequest(
   JSON.parse(readFileSync(requestPath, "utf8")),
 );
-if (
-  request.operation !== "inject-scanner-code" &&
-  process.env.VEM_VM_HOST_SCANNER_CODE !== undefined
-)
-  throw new Error("protected scanner input leaked outside injection");
 if (request.operation === "inject-scanner-code") {
-  const protectedCode = process.env.VEM_VM_HOST_SCANNER_CODE;
-  if (typeof protectedCode !== "string")
-    throw new Error("missing protected scanner input");
+  const scannerCodePath = readOption("--scanner-code-file");
+  const protectedCode = readFileSync(scannerCodePath, "utf8");
+  if (!protectedCode) throw new Error("missing protected scanner input");
   if (
     JSON.stringify(createScannerCodeDescriptor(protectedCode)) !==
     JSON.stringify({
