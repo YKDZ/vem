@@ -29,7 +29,10 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
   it("checks out the dispatched commit before using repository validation code", () => {
     const workflow = readWorkflow();
     const checkout = stepBlock(workflow, "Checkout Trusted Commit");
-    const guard = stepBlock(workflow, "Guard Protected Maintenance Trust Boundary");
+    const guard = stepBlock(
+      workflow,
+      "Guard Protected Maintenance Trust Boundary",
+    );
 
     assert.ok(
       workflow.indexOf("- name: Checkout Trusted Commit") <

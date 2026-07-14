@@ -18,10 +18,7 @@ function validateInput(name, pattern) {
 
 function canonicalControlPlaneUrl() {
   const rawUrl = requiredEnvironmentVariable("MAINTENANCE_CONTROL_PLANE_URL");
-  if (
-    AMBIGUOUS_URL_DELIMITER_PATTERN.test(rawUrl) ||
-    /%5c/i.test(rawUrl)
-  ) {
+  if (AMBIGUOUS_URL_DELIMITER_PATTERN.test(rawUrl) || /%5c/i.test(rawUrl)) {
     throw new Error(
       "MAINTENANCE_CONTROL_PLANE_URL contains an ambiguous delimiter",
     );
