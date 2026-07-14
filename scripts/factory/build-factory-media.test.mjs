@@ -1598,11 +1598,11 @@ describe("real deterministic Factory ISO builder", () => {
         prepareOobe,
         /Exception\.Message|ScriptStackTrace|FullyQualifiedErrorId|errorId/,
       );
+      assert.match(prepareOobe, /New-ScheduledTaskTrigger -AtStartup/);
       assert.match(
         prepareOobe,
-        /New-ScheduledTaskTrigger -AtLogOn -User 'VEMKiosk'/,
+        /Write-BootstrapStatus 'succeeded' 'complete'[\s\S]+Start-ScheduledTask -TaskName 'VEMFactoryOobeCleanup'/,
       );
-      assert.doesNotMatch(prepareOobe, /New-ScheduledTaskTrigger -AtStartup/);
       assert.match(
         prepareOobe,
         /catch \{[\s\S]+Remove-Item[^\n]+\$personalizationPath/,
@@ -1629,6 +1629,14 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
       assert.match(completeOobe, /Remove-LocalUser[^\n]+VEMOobeBootstrap/);
+      assert.match(completeOobe, /AddMinutes\(30\)/);
+      assert.match(completeOobe, /OOBEInProgress/);
+      assert.match(completeOobe, /SystemSetupInProgress/);
+      assert.match(completeOobe, /Get-LocalUser -Name 'VEMOobeBootstrap'/);
+      assert.match(
+        completeOobe,
+        /if \(-not \$oobeComplete\) \{ throw 'VEM Factory OOBE did not complete before cleanup deadline' \}[\s\S]+Remove-LocalUser/,
+      );
       assert.doesNotMatch(completeOobe, /UnattendFile|Panther/i);
       assert.match(completeOobe, /VEM_PERSONALIZATION/);
       assert.match(completeOobe, /InvokeVerb\('Eject'\)/);

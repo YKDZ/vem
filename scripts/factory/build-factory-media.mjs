@@ -945,9 +945,10 @@ try {
   & (Join-Path $MediaRoot 'bootstrap-factory-runtime.ps1') -MediaRoot $MediaRoot
   $stage = 'register-cleanup'
   $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\complete-oobe-bootstrap.ps1'
-  $cleanupTrigger = New-ScheduledTaskTrigger -AtLogOn -User 'VEMKiosk'
+  $cleanupTrigger = New-ScheduledTaskTrigger -AtStartup
   Register-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Action $cleanupAction -Trigger $cleanupTrigger -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
   Write-BootstrapStatus 'succeeded' 'complete'
+  Start-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction Stop
 } catch {
   $failureType = [string]$_.Exception.GetType().FullName
   Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoAdminLogon -Value '0' -Force -ErrorAction SilentlyContinue
@@ -964,6 +965,30 @@ try {
 
 export function factoryOobeCompletionScript() {
   return `$ErrorActionPreference = 'Stop'
+$factoryRoot = 'C:\\ProgramData\\VEM\\factory'
+$diagnosticPath = Join-Path $factoryRoot 'oobe-bootstrap-status.json'
+$oobeDeadline = (Get-Date).AddMinutes(30)
+$oobeComplete = $false
+do {
+  $bootstrapStatus = if (Test-Path -LiteralPath $diagnosticPath -PathType Leaf) {
+    Get-Content -LiteralPath $diagnosticPath -Raw | ConvertFrom-Json -ErrorAction Stop
+  } else { $null }
+  if ($null -ne $bootstrapStatus -and $bootstrapStatus.state -eq 'failed') {
+    throw 'VEM Factory OOBE bootstrap failed before cleanup'
+  }
+  $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
+  $bootstrapUser = Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
+  $oobeComplete =
+    $null -ne $bootstrapStatus -and
+    $bootstrapStatus.state -eq 'succeeded' -and
+    $bootstrapStatus.stage -eq 'complete' -and
+    [int]$setupState.OOBEInProgress -eq 0 -and
+    [int]$setupState.SystemSetupInProgress -eq 0 -and
+    [int]$setupState.SetupType -eq 0 -and
+    $null -ne $bootstrapUser
+  if (-not $oobeComplete) { Start-Sleep -Seconds 5 }
+} while ((Get-Date) -lt $oobeDeadline)
+if (-not $oobeComplete) { throw 'VEM Factory OOBE did not complete before cleanup deadline' }
 Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
 Remove-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
 $shell = New-Object -ComObject Shell.Application
