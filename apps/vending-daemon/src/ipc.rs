@@ -1113,22 +1113,12 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
     let network_bootstrap_reached_platform = network_status
         .as_ref()
         .is_some_and(network_reached_platform);
-    // Factory/testbed preparation writes only the platform endpoints before
-    // first claim. An unclaimed daemon has no machine credential with which
-    // to produce the ordinary sale-readiness platform probe, so that durable
-    // pre-claim configuration is the bounded evidence that exposes the claim
-    // cursor. The typed claim itself still validates the code with Platform.
-    let preclaim_platform_endpoint_configured = config
-        .as_ref()
-        .is_some_and(|config| !config.provisioned && !config.public.api_base_url.trim().is_empty());
-
     let snapshot = crate::bring_up::evaluate_bring_up(crate::bring_up::BringUpEvaluationInput {
         config,
         config_error,
         hardware_mode,
         platform_reachable: sale_component_ready(sale_readiness.as_ref(), "platformReachability")
-            || network_bootstrap_reached_platform
-            || preclaim_platform_endpoint_configured,
+            || network_bootstrap_reached_platform,
         topology_ready,
         topology_code,
         topology_message,
@@ -4602,6 +4592,22 @@ mod tests {
             .set_access_token_for_tests("test-backend-token")
             .await;
         let status_cache = RuntimeStatusCache::new(&public, state.clone()).await;
+        // The IPC unit harness represents a daemon that has completed its
+        // Local Network/Platform probe. Individual tests that exercise a
+        // fresh, offline runtime clear this volatile evidence explicitly.
+        *status_cache.network.write().await = Some(NetworkSettingsResponse {
+            status: NetworkSetupStatus::Connected,
+            ssid: "test-network".to_string(),
+            hidden: false,
+            diagnostics: vec![crate::network::NetworkDiagnostic {
+                component: "provisioning_endpoint".to_string(),
+                level: "info".to_string(),
+                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
+                message: "reachable".to_string(),
+            }],
+            operator_guidance: "reachable".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        });
         let transaction = TransactionStateMachine::new(
             state.clone(),
             backend.clone(),
@@ -8805,15 +8811,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_preclaim_endpoint_projects_the_claim_task_for_factory_execution() {
+    async fn fresh_preclaim_endpoint_requires_network_evidence_before_factory_claim() {
         let temp_dir = tempdir().expect("tmp");
-        let app = build_router(
-            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await,
-        );
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        *ctx.ui.status_cache.network.write().await = None;
+        let app = build_router(ctx);
 
         let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
-        assert_eq!(snapshot["state"], "claim_required");
-        assert_eq!(snapshot["currentTask"]["taskId"], "bring_up.claim_machine");
+        assert_eq!(snapshot["state"], "network_required");
+        assert_eq!(
+            snapshot["currentTask"]["taskId"],
+            "bring_up.configure_network"
+        );
         assert_eq!(snapshot["currentTask"]["taskVersion"], 1);
     }
 
