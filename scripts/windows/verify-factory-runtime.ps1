@@ -908,7 +908,7 @@ function Get-MaintenanceCaEvidence {
   $ca = $Manifest.maintenanceSsh
   $exists = Test-Path -LiteralPath ([string]$ca.caPath) -PathType Leaf
   $hash = if ($exists) { (Get-FileHash -LiteralPath ([string]$ca.caPath) -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
-  $keyLines = if ($exists) { @([System.IO.File]::ReadAllLines([string]$ca.caPath, [System.Text.Encoding]::UTF8) | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 -and -not $_.StartsWith("#") }) } else { @() }
+  $keyLines = @(if ($exists) { [System.IO.File]::ReadAllLines([string]$ca.caPath, [System.Text.Encoding]::UTF8) | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 -and -not $_.StartsWith("#") } })
   $keyType = $null
   $profile = $null
   if ($keyLines.Count -eq 1) {
