@@ -3593,7 +3593,7 @@ function splitTaskName(taskName) {
 export function buildFactoryPreclaimVerificationScript(options = {}) {
   const runId = sanitizeRunId(options.runId);
   const machineCode = assertTestbedMachineCode(options.machineCode);
-  const verifierPath = "C:\\VEM\\bringup\\verify-factory-runtime.ps1";
+  const verifierPath = "C:\\VEM\\bringup\\scripts\\verify-factory-runtime.ps1";
   const verifierEvidencePath = `C:\\Windows\\Temp\\vem-factory-preclaim-${runId}.json`;
   const machineConfigPath =
     "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json";

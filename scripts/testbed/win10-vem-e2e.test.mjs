@@ -1767,7 +1767,10 @@ describe("win10-vem-e2e reset planning", () => {
       runId: "RUN-180",
       machineCode: "VEM-TESTBED-WINVM-01",
     });
-    assert.match(script, /C:\\VEM\\bringup\\verify-factory-runtime\.ps1/);
+    assert.match(
+      script,
+      /C:\\VEM\\bringup\\scripts\\verify-factory-runtime\.ps1/,
+    );
     assert.match(script, /factory-preclaim-verification\/v1/);
     assert.match(script, /absentMachineIdentity/);
     assert.match(script, /oobe-bootstrap-status\.json/);
