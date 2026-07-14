@@ -61,6 +61,10 @@ export function routeForStartup(input: {
     return startupRouteFromProjectionTarget(transactionView.routeTarget);
   }
 
+  // The daemon's current task is the authoritative Bring-Up cursor.  Do not
+  // let a legacy readiness summary make the console skip an unfinished task.
+  if (input.bringUp?.currentTask) return "/bring-up";
+
   const bringUpReady =
     input.bringUp?.state === "sell_ready" ||
     input.bringUp?.state === "runtime_ready" ||

@@ -344,6 +344,22 @@ describe("DaemonApiClient", () => {
             attestStock: false,
             startSales: false,
           },
+          currentTask: {
+            kind: "claim_machine",
+            intent: "claim_machine",
+          },
+          progress: [
+            {
+              kind: "network",
+              status: "revalidate",
+              evidence: "volatile",
+            },
+            {
+              kind: "provisioning",
+              status: "current",
+              evidence: "durable",
+            },
+          ],
           updatedAt: "2026-07-04T00:00:00Z",
         }),
         { status: 200 },

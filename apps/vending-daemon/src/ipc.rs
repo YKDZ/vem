@@ -8228,7 +8228,14 @@ mod tests {
         let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
 
         assert_eq!(snapshot["state"], "topology_mismatch");
+        assert_eq!(snapshot["currentTask"]["kind"], "resolve_topology");
+        assert_eq!(snapshot["currentTask"]["intent"], "open_maintenance");
         assert_eq!(snapshot["allowedActions"]["resolveTopology"], true);
+        assert!(snapshot["progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["kind"] == "topology" && step["status"] == "current"));
         assert!(snapshot["blockingReasons"]
             .as_array()
             .unwrap()

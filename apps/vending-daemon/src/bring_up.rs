@@ -27,6 +27,74 @@ pub enum BringUpReadinessLevel {
     SellReady,
 }
 
+/// The single action that the Machine Runtime Console may render for the
+/// current Bring-Up state.  Keeping this separate from diagnostic progress
+/// prevents the UI from reconstructing a second state machine from booleans.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BringUpTaskKind {
+    ConfigureNetwork,
+    ClaimMachine,
+    SyncProfile,
+    ResolveTopology,
+    RunHardwareAcceptance,
+    AttestStock,
+    StartSales,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BringUpTaskIntent {
+    ConfigureNetwork,
+    ClaimMachine,
+    RefreshProfile,
+    OpenMaintenance,
+    RecordStock,
+    StartSales,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BringUpTask {
+    pub kind: BringUpTaskKind,
+    pub intent: BringUpTaskIntent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BringUpStepKind {
+    Network,
+    Provisioning,
+    Topology,
+    Hardware,
+    Stock,
+    SaleReadiness,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BringUpStepStatus {
+    Completed,
+    Current,
+    Upcoming,
+    Revalidate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BringUpEvidenceKind {
+    Durable,
+    Volatile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BringUpProgressStep {
+    pub kind: BringUpStepKind,
+    pub status: BringUpStepStatus,
+    pub evidence: BringUpEvidenceKind,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BringUpHardwareMode {
@@ -66,6 +134,8 @@ pub struct BringUpSnapshot {
     pub readiness_level: BringUpReadinessLevel,
     pub hardware_mode: BringUpHardwareMode,
     pub allowed_actions: BringUpAllowedActions,
+    pub current_task: Option<BringUpTask>,
+    pub progress: Vec<BringUpProgressStep>,
     pub updated_at: String,
 }
 
@@ -231,6 +301,9 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
         start_sales: state == BringUpState::SellReady,
     };
 
+    let current_task = task_for_state(&state);
+    let progress = progress_for_state(&state, &input, provisioned);
+
     BringUpSnapshot {
         state,
         blocking_reasons,
@@ -238,7 +311,120 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
         readiness_level,
         hardware_mode,
         allowed_actions,
+        current_task,
+        progress,
         updated_at: input.updated_at,
+    }
+}
+
+fn task_for_state(state: &BringUpState) -> Option<BringUpTask> {
+    let (kind, intent) = match state {
+        BringUpState::NetworkRequired => (
+            BringUpTaskKind::ConfigureNetwork,
+            BringUpTaskIntent::ConfigureNetwork,
+        ),
+        BringUpState::PlatformReachable | BringUpState::ProfileApplied => (
+            BringUpTaskKind::SyncProfile,
+            BringUpTaskIntent::RefreshProfile,
+        ),
+        BringUpState::ClaimRequired => (
+            BringUpTaskKind::ClaimMachine,
+            BringUpTaskIntent::ClaimMachine,
+        ),
+        BringUpState::TopologyMismatch => (
+            BringUpTaskKind::ResolveTopology,
+            BringUpTaskIntent::OpenMaintenance,
+        ),
+        BringUpState::HardwareAcceptanceRequired
+        | BringUpState::RuntimeReady
+        | BringUpState::SimulatedHardwareReady => (
+            BringUpTaskKind::RunHardwareAcceptance,
+            BringUpTaskIntent::OpenMaintenance,
+        ),
+        BringUpState::StockAttestationRequired => {
+            (BringUpTaskKind::AttestStock, BringUpTaskIntent::RecordStock)
+        }
+        BringUpState::SellReady => return None,
+    };
+    Some(BringUpTask { kind, intent })
+}
+
+fn progress_for_state(
+    state: &BringUpState,
+    input: &BringUpEvaluationInput,
+    provisioned: bool,
+) -> Vec<BringUpProgressStep> {
+    let current = match state {
+        BringUpState::NetworkRequired => 0,
+        BringUpState::PlatformReachable | BringUpState::ClaimRequired => 1,
+        BringUpState::ProfileApplied | BringUpState::TopologyMismatch => 2,
+        BringUpState::HardwareAcceptanceRequired
+        | BringUpState::RuntimeReady
+        | BringUpState::SimulatedHardwareReady => 3,
+        BringUpState::StockAttestationRequired => 4,
+        BringUpState::SellReady => 6,
+    };
+    let kinds = [
+        (BringUpStepKind::Network, BringUpEvidenceKind::Volatile),
+        (BringUpStepKind::Provisioning, BringUpEvidenceKind::Durable),
+        (BringUpStepKind::Topology, BringUpEvidenceKind::Durable),
+        (BringUpStepKind::Hardware, BringUpEvidenceKind::Volatile),
+        (BringUpStepKind::Stock, BringUpEvidenceKind::Durable),
+        (
+            BringUpStepKind::SaleReadiness,
+            BringUpEvidenceKind::Volatile,
+        ),
+    ];
+    kinds
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, evidence))| {
+            let status = progress_status(index, current, &kind, &evidence, input, provisioned);
+            BringUpProgressStep {
+                kind,
+                evidence,
+                status,
+            }
+        })
+        .collect()
+}
+
+fn progress_status(
+    index: usize,
+    current: usize,
+    kind: &BringUpStepKind,
+    evidence: &BringUpEvidenceKind,
+    input: &BringUpEvaluationInput,
+    provisioned: bool,
+) -> BringUpStepStatus {
+    match kind {
+        BringUpStepKind::Network => {
+            if index == current {
+                BringUpStepStatus::Current
+            } else {
+                BringUpStepStatus::Revalidate
+            }
+        }
+        BringUpStepKind::Provisioning if provisioned => BringUpStepStatus::Completed,
+        BringUpStepKind::Topology if provisioned && input.topology_ready == Some(true) => {
+            BringUpStepStatus::Completed
+        }
+        BringUpStepKind::Hardware
+            if input.hardware_mode == BringUpHardwareMode::Production && input.hardware_online =>
+        {
+            BringUpStepStatus::Revalidate
+        }
+        BringUpStepKind::Stock
+            if !input.stock_attestation_required || input.stock_attestation_ready =>
+        {
+            BringUpStepStatus::Completed
+        }
+        BringUpStepKind::SaleReadiness if input.sale_ready => BringUpStepStatus::Revalidate,
+        _ if index == current => BringUpStepStatus::Current,
+        _ if matches!(evidence, BringUpEvidenceKind::Volatile) && index < current => {
+            BringUpStepStatus::Revalidate
+        }
+        _ => BringUpStepStatus::Upcoming,
     }
 }
 
@@ -350,6 +536,29 @@ mod tests {
     }
 
     #[test]
+    fn network_blocker_projects_one_current_task_and_compact_remaining_progress() {
+        let snapshot = evaluate_bring_up(input());
+
+        assert_eq!(
+            snapshot.current_task,
+            Some(BringUpTask {
+                kind: BringUpTaskKind::ConfigureNetwork,
+                intent: BringUpTaskIntent::ConfigureNetwork,
+            })
+        );
+        assert!(snapshot
+            .progress
+            .iter()
+            .any(|step| step.kind == BringUpStepKind::Network
+                && step.status == BringUpStepStatus::Current));
+        assert!(snapshot
+            .progress
+            .iter()
+            .any(|step| step.kind == BringUpStepKind::Provisioning
+                && step.status == BringUpStepStatus::Upcoming));
+    }
+
+    #[test]
     fn platform_reachable_is_distinct_from_claim_required_when_config_summary_is_missing() {
         let snapshot = evaluate_bring_up(BringUpEvaluationInput {
             config: None,
@@ -380,6 +589,28 @@ mod tests {
         assert!(snapshot.allowed_actions.claim_machine);
         assert!(snapshot.allowed_actions.retry_claim);
         assert!(!snapshot.allowed_actions.start_sales);
+    }
+
+    #[test]
+    fn restart_revalidates_volatile_network_evidence_without_losing_durable_provisioning() {
+        let snapshot = evaluate_bring_up(BringUpEvaluationInput {
+            config: Some(provisioned_config()),
+            platform_reachable: false,
+            updated_at: "2026-07-04T00:00:00Z".to_string(),
+            ..BringUpEvaluationInput::default()
+        });
+
+        assert_eq!(snapshot.state, BringUpState::NetworkRequired);
+        assert!(snapshot.progress.iter().any(|step| {
+            step.kind == BringUpStepKind::Network
+                && step.status == BringUpStepStatus::Current
+                && step.evidence == BringUpEvidenceKind::Volatile
+        }));
+        assert!(snapshot.progress.iter().any(|step| {
+            step.kind == BringUpStepKind::Provisioning
+                && step.status == BringUpStepStatus::Completed
+                && step.evidence == BringUpEvidenceKind::Durable
+        }));
     }
 
     #[test]

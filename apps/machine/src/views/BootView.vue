@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 
 import type { DaemonEvent, UnknownDaemonEvent } from "@/daemon/schemas";
 
+import { runBoundedBootCheck } from "@/daemon/boot-check";
 import { daemonClient } from "@/daemon/client";
 import { routeForStartup } from "@/daemon/startup";
 import KioskLayout from "@/layouts/KioskLayout.vue";
@@ -95,94 +96,106 @@ function recordUnknownDaemonEvent(event: UnknownDaemonEvent): void {
   connectivityStore.recordUnknownEvent(event);
 }
 
-onMounted(async () => {
-  try {
-    pushStep("连接本机 daemon IPC");
-    await daemonClient.initialize();
-
-    pushStep("读取 daemon 健康与交易快照");
-    const [health, ready, bringUp, saleReadiness, transaction] =
-      await Promise.all([
-        daemonClient.getHealth(),
-        daemonClient.getReady(),
-        daemonClient.getBringUp(),
-        daemonClient.getSaleReadiness(),
-        daemonClient.getCurrentTransaction(),
-      ]);
-    machineStore.applyHealth(health);
-    connectivityStore.applyHealth(health);
-    connectivityStore.applyReady(ready);
-    connectivityStore.applySaleReadiness(saleReadiness);
-    const startupTransaction = checkoutStore.shouldIgnoreTransaction(
-      transaction,
-    )
-      ? null
-      : transaction;
-    if (startupTransaction) {
-      checkoutStore.applyTransaction(startupTransaction, { restored: true });
-    }
-
-    pushStep("同步配置");
+async function runBootCheck(): Promise<void> {
+  await runBoundedBootCheck(async () => {
     try {
-      await machineStore.loadConfig();
+      pushStep("连接本机 daemon IPC");
+      await daemonClient.initialize();
+
+      pushStep("读取 daemon 健康与交易快照");
+      const [health, ready, bringUp, saleReadiness, transaction] =
+        await Promise.all([
+          daemonClient.getHealth(),
+          daemonClient.getReady(),
+          daemonClient.getBringUp(),
+          daemonClient.getSaleReadiness(),
+          daemonClient.getCurrentTransaction(),
+        ]);
+      machineStore.applyHealth(health);
+      connectivityStore.applyHealth(health);
+      connectivityStore.applyReady(ready);
+      connectivityStore.applySaleReadiness(saleReadiness);
+      const startupTransaction = checkoutStore.shouldIgnoreTransaction(
+        transaction,
+      )
+        ? null
+        : transaction;
+      if (startupTransaction) {
+        checkoutStore.applyTransaction(startupTransaction, { restored: true });
+      }
+
+      pushStep("同步配置");
+      try {
+        await machineStore.loadConfig();
+      } catch (error) {
+        connectivityStore.markStale(error);
+        pushStep("daemon 配置读取失败，进入领取页确认配置");
+      }
+
+      pushStep("同步目录和展示状态");
+      await Promise.allSettled([
+        mqttStore.refresh(),
+        catalogStore.load(),
+        scannerStore.refresh(),
+        visionStore.refresh(),
+        remoteOpsStore.refresh(),
+        naturalContextStore.refresh(),
+      ]);
+
+      if (!eventSubscription) {
+        pushStep("订阅 daemon 事件流");
+        eventSubscription = daemonClient.subscribeEvents({
+          onEvent: dispatchDaemonEvent,
+          onUnknownEvent: recordUnknownDaemonEvent,
+          onError: (error) => {
+            connectivityStore.markStale(error);
+          },
+          onStale: () => {
+            void Promise.allSettled([
+              connectivityStore.refresh(),
+              catalogStore.refresh(),
+              mqttStore.refresh(),
+              checkoutStore.refreshCurrentTransaction(),
+            ]);
+          },
+        });
+      }
+
+      pushStep("根据 daemon 状态选择页面");
+      await router.replace(
+        routeForStartup({
+          daemonAvailable: true,
+          health,
+          config: machineStore.configSummary,
+          bringUp,
+          ready,
+          restoredTransaction: startupTransaction,
+        }),
+      );
     } catch (error) {
       connectivityStore.markStale(error);
-      pushStep("daemon 配置读取失败，进入领取页确认配置");
+      pushStep("daemon 不可用，进入维护页");
+      await router.replace(
+        routeForStartup({
+          daemonAvailable: false,
+          health: null,
+          config: null,
+          bringUp: null,
+          ready: null,
+          restoredTransaction: null,
+        }),
+      );
     }
+  }, 10_000);
+}
 
-    pushStep("同步目录和展示状态");
-    await Promise.allSettled([
-      mqttStore.refresh(),
-      catalogStore.load(),
-      scannerStore.refresh(),
-      visionStore.refresh(),
-      remoteOpsStore.refresh(),
-      naturalContextStore.refresh(),
-    ]);
-
-    if (!eventSubscription) {
-      pushStep("订阅 daemon 事件流");
-      eventSubscription = daemonClient.subscribeEvents({
-        onEvent: dispatchDaemonEvent,
-        onUnknownEvent: recordUnknownDaemonEvent,
-        onError: (error) => {
-          connectivityStore.markStale(error);
-        },
-        onStale: () => {
-          void Promise.allSettled([
-            connectivityStore.refresh(),
-            catalogStore.refresh(),
-            mqttStore.refresh(),
-            checkoutStore.refreshCurrentTransaction(),
-          ]);
-        },
-      });
-    }
-
-    pushStep("根据 daemon 状态选择页面");
-    await router.replace(
-      routeForStartup({
-        daemonAvailable: true,
-        health,
-        config: machineStore.configSummary,
-        bringUp,
-        ready,
-        restoredTransaction: startupTransaction,
-      }),
-    );
+onMounted(async () => {
+  try {
+    await runBootCheck();
   } catch (error) {
     connectivityStore.markStale(error);
-    pushStep("daemon 不可用，进入维护页");
-    await router.replace(
-      routeForStartup({
-        daemonAvailable: false,
-        health: null,
-        config: null,
-        bringUp: null,
-        ready: null,
-        restoredTransaction: null,
-      }),
-    );
+    pushStep("启动检查超时，进入维护页");
+    await router.replace("/maintenance");
   }
 });
 

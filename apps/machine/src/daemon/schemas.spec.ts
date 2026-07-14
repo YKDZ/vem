@@ -200,10 +200,35 @@ describe("daemon schemas", () => {
         attestStock: true,
         startSales: false,
       },
+      currentTask: {
+        kind: "attest_stock",
+        intent: "record_stock",
+      },
+      progress: [
+        {
+          kind: "provisioning",
+          status: "completed",
+          evidence: "durable",
+        },
+        {
+          kind: "stock",
+          status: "current",
+          evidence: "durable",
+        },
+      ],
       updatedAt: "2026-07-04T00:00:00Z",
     });
 
     expect(parsed.state).toBe("stock_attestation_required");
+    expect(parsed.currentTask).toEqual({
+      kind: "attest_stock",
+      intent: "record_stock",
+    });
+    expect(parsed.progress?.[0]).toMatchObject({
+      kind: "provisioning",
+      status: "completed",
+      evidence: "durable",
+    });
     expect(JSON.stringify(parsed)).not.toContain("secret");
   });
 

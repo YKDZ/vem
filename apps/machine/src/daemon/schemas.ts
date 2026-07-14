@@ -163,6 +163,39 @@ const bringUpReasonSchema = z.object({
   message: z.string(),
 });
 
+const bringUpTaskSchema = z.object({
+  kind: z.enum([
+    "configure_network",
+    "claim_machine",
+    "sync_profile",
+    "resolve_topology",
+    "run_hardware_acceptance",
+    "attest_stock",
+    "start_sales",
+  ]),
+  intent: z.enum([
+    "configure_network",
+    "claim_machine",
+    "refresh_profile",
+    "open_maintenance",
+    "record_stock",
+    "start_sales",
+  ]),
+});
+
+const bringUpProgressStepSchema = z.object({
+  kind: z.enum([
+    "network",
+    "provisioning",
+    "topology",
+    "hardware",
+    "stock",
+    "sale_readiness",
+  ]),
+  status: z.enum(["completed", "current", "upcoming", "revalidate"]),
+  evidence: z.enum(["durable", "volatile"]),
+});
+
 export const bringUpSnapshotSchema = z.object({
   state: z.enum([
     "network_required",
@@ -196,6 +229,8 @@ export const bringUpSnapshotSchema = z.object({
     attestStock: z.boolean(),
     startSales: z.boolean(),
   }),
+  currentTask: bringUpTaskSchema.nullable().optional(),
+  progress: z.array(bringUpProgressStepSchema).optional(),
   updatedAt: z.string(),
 });
 

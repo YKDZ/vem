@@ -142,6 +142,53 @@ describe("routeForStartup", () => {
     ).toBe("/bring-up");
   });
 
+  it("keeps a daemon-projected current task on the bring-up route even when legacy state is runtime-ready", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: healthBase,
+        config: configBase,
+        bringUp: {
+          state: "runtime_ready",
+          blockingReasons: [],
+          diagnostics: [],
+          readinessLevel: "runtime_ready",
+          hardwareMode: "production",
+          allowedActions: {
+            configureNetwork: false,
+            claimMachine: false,
+            retryClaim: false,
+            syncProfile: false,
+            resolveTopology: false,
+            runRuntimeAcceptance: true,
+            runHardwareAcceptance: false,
+            attestStock: false,
+            startSales: false,
+          },
+          currentTask: {
+            kind: "run_hardware_acceptance",
+            intent: "open_maintenance",
+          },
+          progress: [
+            { kind: "hardware", status: "current", evidence: "volatile" },
+          ],
+          updatedAt: "2026-07-14T00:00:00Z",
+        },
+        ready: {
+          ready: true,
+          canSell: true,
+          mode: "daemon",
+          blockingCodes: [],
+          blockingReasons: [],
+          degradedReasons: [],
+          suggestedRoute: "catalog",
+          updatedAt: "2026-07-14T00:00:00Z",
+        },
+        restoredTransaction: null,
+      }),
+    ).toBe("/bring-up");
+  });
+
   it("uses daemon bring-up snapshot instead of local config-error inference", () => {
     expect(
       routeForStartup({
