@@ -57,6 +57,12 @@ jobs:
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
       VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
     steps:
+      - name: Checkout Trusted Commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Guard Protected Maintenance Trust Boundary
         env:
           EXPECTED_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main
@@ -66,6 +72,7 @@ jobs:
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
           test "$OBSERVED_WORKFLOW_REF" = "$EXPECTED_WORKFLOW_REF"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           node scripts/testbed/validate-vm-runtime-acceptance-inputs.mjs >> "$GITHUB_ENV"
           node -e '
             const labels = JSON.parse(process.env.RUNNER_LABELS_JSON);
@@ -73,9 +80,6 @@ jobs:
               if (!labels.includes(required)) throw new Error(`missing trusted runner label: ${required}`);
             }
           '
-
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
       - name: Install pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
@@ -109,7 +113,7 @@ jobs:
           rm -rf artifacts/vm-runtime-inputs/*
           artifacts_json="$RUNNER_TEMP/vm-runtime-artifacts.json"
           artifact_zip="$RUNNER_TEMP/vm-runtime-artifacts.zip"
-          curl --fail --silent --show-error --location \
+          curl --globoff --fail --silent --show-error --location \
             --connect-timeout 20 \
             --max-time 120 \
             --retry 3 \
@@ -141,7 +145,7 @@ jobs:
             cp "$cache_zip" "$artifact_zip"
           else
             rm -f "$cache_zip"
-            curl --fail --silent --show-error --location \
+            curl --globoff --fail --silent --show-error --location \
               --connect-timeout 20 \
               --max-time 1200 \
               --retry 3 \
@@ -201,7 +205,7 @@ jobs:
           {
             printf 'url = "%s&audience=vem-maintenance"\n' "$ACTIONS_ID_TOKEN_REQUEST_URL"
             printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
-          } | curl --config - \
+          } | curl --globoff --config - \
             --fail-with-body \
             --silent \
             --show-error \
@@ -240,7 +244,7 @@ jobs:
             mode: 0o600,
           });
           NODE
-          curl --fail-with-body \
+          curl --globoff --fail-with-body \
             --silent \
             --show-error \
             --header 'Content-Type: application/json' \
@@ -284,7 +288,7 @@ jobs:
           {
             printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
             printf 'request = "POST"\n'
-          } | curl --config - \
+          } | curl --globoff --config - \
             --fail-with-body \
             --silent \
             --show-error \
@@ -297,7 +301,7 @@ jobs:
           {
             printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
             printf 'request = "GET"\n'
-          } | curl --config - \
+          } | curl --globoff --config - \
             --fail-with-body \
             --silent \
             --show-error \
@@ -338,7 +342,7 @@ jobs:
           fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID() }), { mode: 0o600 });
           NODE
           IFS= read -r automation_token < "$automation_token_path"
-          { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session/ssh-certificate"
+          { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --globoff --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session/ssh-certificate"
           unset automation_token
           node - "$ssh_response_path" "$ssh_certificate_path" <<'NODE'
           const fs = require("node:fs");
@@ -506,7 +510,7 @@ jobs:
           node apps/service-api/dist/main.js > service-api.log 2>&1 &
           echo "$!" > service-api.pid
           for attempt in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:26849/api/health >/dev/null 2>&1; then
+            if curl --globoff -fsS http://127.0.0.1:26849/api/health >/dev/null 2>&1; then
               exit 0
             fi
             sleep 2
@@ -623,7 +627,7 @@ jobs:
             {
               printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
               printf 'request = "POST"\n'
-            } | curl --config - \
+            } | curl --globoff --config - \
               --fail-with-body \
               --silent \
               --show-error \

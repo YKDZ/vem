@@ -2,6 +2,7 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const WINDOWS_SSH_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const AMBIGUOUS_URL_DELIMITER_PATTERN = /[\u0000-\u0020\u007f\\\\?#[\[\]]/;
 
 function requiredEnvironmentVariable(name) {
   const value = process.env[name];
@@ -17,7 +18,10 @@ function validateInput(name, pattern) {
 
 function canonicalControlPlaneUrl() {
   const rawUrl = requiredEnvironmentVariable("MAINTENANCE_CONTROL_PLANE_URL");
-  if (/[\u0000-\u0020\u007f\\\\?#]/.test(rawUrl) || /%5c/i.test(rawUrl)) {
+  if (
+    AMBIGUOUS_URL_DELIMITER_PATTERN.test(rawUrl) ||
+    /%5c/i.test(rawUrl)
+  ) {
     throw new Error(
       "MAINTENANCE_CONTROL_PLANE_URL contains an ambiguous delimiter",
     );

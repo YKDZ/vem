@@ -116,6 +116,14 @@ describe("GitHub OIDC maintenance automation workflow guard", () => {
     );
   });
 
+  it("disables curl URL globbing for every workflow request", () => {
+    const curlInvocations = workflow.match(/\bcurl\s+[^\n]*/g) ?? [];
+    assert.ok(curlInvocations.length > 0, "workflow should make curl requests");
+    for (const invocation of curlInvocations) {
+      assert.match(invocation, /\bcurl\s+--globoff\b/, invocation);
+    }
+  });
+
   it("validates workflow inputs outside Bash and uses only the canonical control-plane URL", () => {
     const job = parsedWorkflow.jobs["vm-runtime-acceptance"];
     assert.equal(job.env.WINDOWS_SSH_USER, "${{ inputs.windows_ssh_user }}");
@@ -170,6 +178,7 @@ describe("GitHub OIDC maintenance automation workflow guard", () => {
     for (const url of [
       "https://control-plane.example/api?",
       "https://control-plane.example/api#",
+      "https://control-plane.example/api[]",
     ]) {
       assert.notEqual(
         runInputGuard({ MAINTENANCE_CONTROL_PLANE_URL: url }).status,
