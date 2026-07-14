@@ -66,7 +66,13 @@ function runId() {
   return `CONFORMANCE-${value}`.slice(0, 63);
 }
 
-function requestFor({ operation, run, targetIdentity, assets }) {
+function requestFor({
+  operation,
+  run,
+  targetIdentity,
+  assets,
+  factoryMedia = null,
+}) {
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   const lifecycleSeed = createHash("sha256")
     .update(`${run}\n${targetIdentity}`)
@@ -83,13 +89,26 @@ function requestFor({ operation, run, targetIdentity, assets }) {
     lifecycleReference: `vm-lifecycle://${run.toLowerCase()}.${lifecycleSeed}`,
     cancelOperationReference: null,
     target: { identity: targetIdentity },
-    factoryMedia: null,
+    factoryMedia,
     displayCapture: null,
     audioCapture: null,
     assets,
     requestedCapabilities: CAPABILITIES[operation],
     serialSession: null,
   });
+}
+
+function factoryMedia(factoryIsoIdentity) {
+  const factoryIso = asset("factory-iso", factoryIsoIdentity);
+  return {
+    assemblyMode: "windows-serviced-iso",
+    targetFirmware: "bios",
+    manifestIdentity: factoryIso.digest,
+    provenanceIdentity: `factory-evidence://${factoryIso.digest.replace(":", "/")}`,
+    provenanceDigest: factoryIso.digest,
+    outputIdentity: factoryIso.identity,
+    outputDigest: factoryIso.digest,
+  };
 }
 
 function assertActiveRuntimeEvidence(report) {
@@ -173,6 +192,7 @@ async function main() {
           run,
           targetIdentity,
           assets: installAssets,
+          factoryMedia: factoryMedia(factoryIsoIdentity),
         }),
         workDirectory,
       });
