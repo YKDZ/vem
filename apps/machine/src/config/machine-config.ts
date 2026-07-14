@@ -65,6 +65,7 @@ export const machineConfigSchema = z
     mqttUsername: z.string().trim().min(1).max(128).nullable().default(null),
     mqttPassword: z.string().trim().min(1).max(256).nullable().default(null),
     mqttPasswordConfigured: z.boolean().default(false),
+    maintenancePinConfigured: z.boolean().default(false),
     apiBaseUrl: z
       .string()
       .trim()

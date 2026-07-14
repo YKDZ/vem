@@ -160,13 +160,14 @@ export class DaemonApiClient {
     options: RequestOptions = {},
   ): Promise<unknown> {
     const connection = await this.initialize();
+    const maintenanceSession = this.currentMaintenanceSession;
     const response = await fetch(`${connection.baseUrl}${path}`, {
       method: options.method ?? "GET",
       headers: {
         Authorization: `Bearer ${connection.token}`,
         "Content-Type": "application/json",
-        ...(this.maintenanceSession
-          ? { "x-vem-maintenance-session": this.maintenanceSession.sessionId }
+        ...(maintenanceSession
+          ? { "x-vem-maintenance-session": maintenanceSession.sessionId }
           : {}),
       },
       body:
@@ -194,6 +195,11 @@ export class DaemonApiClient {
     const statusMessage = `${path} returned HTTP ${response.status}`;
 
     if (!response.ok) {
+      if (response.status === 403 && maintenanceSession) {
+        // The daemon owns session state. A restart or scope denial must not
+        // leave a stale browser-side capability displayed as authorized.
+        this.clearMaintenanceSession();
+      }
       if (body.exceeded) {
         throw new DaemonUnavailableError(
           `${statusMessage}; response body exceeds the safe read limit`,
@@ -263,6 +269,16 @@ export class DaemonApiClient {
 
   get currentConnection(): DaemonConnectionInfo | null {
     return this.connection;
+  }
+
+  get currentMaintenanceSession(): MaintenanceSession | null {
+    if (
+      this.maintenanceSession &&
+      Date.parse(this.maintenanceSession.expiresAt) <= Date.now()
+    ) {
+      this.clearMaintenanceSession();
+    }
+    return this.maintenanceSession;
   }
 
   async getHealth(): Promise<HealthSnapshot> {
@@ -369,11 +385,12 @@ export class DaemonApiClient {
   async beginMaintenanceSession(
     pin: string,
     scopes: string[] = [],
+    operatorId = "front-panel",
   ): Promise<MaintenanceSession> {
     const session = maintenanceSessionSchema.parse(
       await this.request("/v1/maintenance/sessions", {
         method: "POST",
-        body: { pin, scopes },
+        body: { pin, scopes, operatorId },
       }),
     );
     this.maintenanceSession = session;

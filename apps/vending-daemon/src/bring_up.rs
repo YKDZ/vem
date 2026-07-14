@@ -591,6 +591,7 @@ mod tests {
             machine_secret_configured: false,
             mqtt_signing_secret_configured: false,
             mqtt_password_configured: false,
+            maintenance_pin_configured: false,
             provisioned: false,
             provisioning_issues: vec!["machine_code_missing".to_string()],
         }
@@ -610,6 +611,7 @@ mod tests {
         });
         config.machine_secret_configured = true;
         config.mqtt_signing_secret_configured = true;
+        config.maintenance_pin_configured = true;
         config.provisioned = true;
         config.provisioning_issues = vec![];
         config

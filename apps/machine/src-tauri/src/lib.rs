@@ -86,7 +86,32 @@ fn get_daemon_connection() -> Result<DaemonConnectionInfo, String> {
 }
 
 #[tauri::command]
-fn return_to_desktop() -> Result<(), String> {
+async fn return_to_desktop(session_id: String) -> Result<(), String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() || session_id.len() > 128 {
+        return Err("protected desktop exit authorization is invalid".to_string());
+    }
+    let connection = get_daemon_connection()?;
+    let url = format!("{}/v1/maintenance/desktop-exit", connection.base_url);
+    let parsed = reqwest::Url::parse(&url)
+        .map_err(|_| "protected desktop exit authorization is unavailable".to_string())?;
+    if !matches!(
+        parsed.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    ) {
+        return Err("protected desktop exit authorization is unavailable".to_string());
+    }
+    let response = reqwest::Client::new()
+        .post(parsed)
+        .bearer_auth(connection.token)
+        .header("x-vem-maintenance-session", session_id)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .map_err(|_| "protected desktop exit authorization is unavailable".to_string())?;
+    if !response.status().is_success() {
+        return Err("protected desktop exit authorization was denied".to_string());
+    }
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(100));
         std::process::exit(0);

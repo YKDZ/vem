@@ -79,6 +79,55 @@ function assertCredential(value, path, expectedUser, issues) {
   }
 }
 
+function assertMaintenancePinVerifier(value, issues) {
+  if (
+    !assertExactKeys(
+      value,
+      ["version", "algorithm", "iterations", "salt", "digest"],
+      "maintenancePinVerifier",
+      issues,
+    )
+  ) {
+    return;
+  }
+  if (value.version !== 1)
+    issues.push(issue("maintenancePinVerifier.version", "must be 1"));
+  if (value.algorithm !== "pbkdf2_hmac_sha256") {
+    issues.push(
+      issue("maintenancePinVerifier.algorithm", "must be pbkdf2_hmac_sha256"),
+    );
+  }
+  if (
+    !Number.isInteger(value.iterations) ||
+    value.iterations < 120000 ||
+    value.iterations > 1000000
+  ) {
+    issues.push(
+      issue(
+        "maintenancePinVerifier.iterations",
+        "must be between 120000 and 1000000",
+      ),
+    );
+  }
+  for (const [field, length] of [
+    ["salt", 16],
+    ["digest", 32],
+  ]) {
+    if (
+      typeof value[field] !== "string" ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(value[field]) ||
+      Buffer.from(value[field], "base64").length !== length
+    ) {
+      issues.push(
+        issue(
+          `maintenancePinVerifier.${field}`,
+          `must be a ${length}-byte base64 value`,
+        ),
+      );
+    }
+  }
+}
+
 function assertNoPrivateNetworkMaterial(value, path, issues) {
   if (typeof value === "string") {
     if (FORBIDDEN_PRIVATE_NETWORK_MATERIAL_PATTERN.test(value)) {
@@ -123,6 +172,7 @@ export function validateFactoryPersonalizationMedia(media) {
       "profile",
       "protection",
       "credentials",
+      "maintenancePinVerifier",
     ],
     "media",
     issues,
@@ -145,6 +195,7 @@ export function validateFactoryPersonalizationMedia(media) {
       issue("mediaId", "must be an opaque lowercase installation identifier"),
     );
   }
+  assertMaintenancePinVerifier(candidate.maintenancePinVerifier, issues);
   const hasSupportedProfile = Object.hasOwn(
     PROFILE_CREDENTIAL_KEYS,
     typeof candidate.profile === "string" ? candidate.profile : "",
@@ -265,6 +316,7 @@ export function redactFactoryPersonalizationMedia(
     credentials: Object.fromEntries(
       credentialKeys.map((key) => [key, "configured"]),
     ),
+    maintenancePinVerifier: "configured",
     wireGuardPrivateKey: "not-supplied; generated-locally",
     mediaConsumed: true,
     stagingRetained: false,
@@ -293,6 +345,7 @@ export function previewFactoryPersonalizationMedia(profile) {
     credentials: Object.fromEntries(
       PROFILE_CREDENTIAL_KEYS[profile].map((key) => [key, "not-configured"]),
     ),
+    maintenancePinVerifier: "not-configured",
     wireGuardPrivateKey: "not-supplied; generated-locally",
     mediaConsumed: false,
     stagingRetained: false,

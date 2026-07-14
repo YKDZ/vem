@@ -38,6 +38,7 @@ export const useMachineStore = defineStore("machine", {
           mqttSigningSecretConfigured: false,
           mqttPassword: null,
           mqttPasswordConfigured: false,
+          maintenancePinConfigured: false,
         };
       }
       return {
@@ -51,6 +52,8 @@ export const useMachineStore = defineStore("machine", {
           configSummary?.mqttSigningSecretConfigured ?? false,
         mqttPassword: null,
         mqttPasswordConfigured: configSummary?.mqttPasswordConfigured ?? false,
+        maintenancePinConfigured:
+          configSummary?.maintenancePinConfigured ?? false,
       };
     },
     machineCode: (state): string | null =>

@@ -46,10 +46,45 @@ impl DaemonHarness {
         Ok(harness)
     }
 
+    /// Start a harness with explicit test-only file secrets.  This is for
+    /// integration cases that must obtain a daemon-issued maintenance session;
+    /// the default harness deliberately continues to use the read-only env
+    /// store so ordinary tests cannot accidentally persist credentials.
+    pub async fn start_with_file_secrets(
+        public_config: serde_json::Value,
+        secrets: &[(&str, &str)],
+    ) -> Result<Self, String> {
+        let temp_dir = TempDir::new().map_err(|error| error.to_string())?;
+        let data_dir = temp_dir.path().join("vending-daemon");
+        let secret_dir = data_dir.join("secrets");
+        tokio::fs::create_dir_all(&secret_dir)
+            .await
+            .map_err(|error| error.to_string())?;
+        for (account, value) in secrets {
+            tokio::fs::write(secret_dir.join(account), value)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+
+        let mut harness =
+            Self::start_at_with_secret_store(data_dir, public_config, &[], "file").await?;
+        harness._temp_dir = Some(temp_dir);
+        Ok(harness)
+    }
+
     pub async fn start_at(
         data_dir: PathBuf,
         public_config: serde_json::Value,
         extra_env: &[(&str, &str)],
+    ) -> Result<Self, String> {
+        Self::start_at_with_secret_store(data_dir, public_config, extra_env, "env").await
+    }
+
+    async fn start_at_with_secret_store(
+        data_dir: PathBuf,
+        public_config: serde_json::Value,
+        extra_env: &[(&str, &str)],
+        secret_store: &str,
     ) -> Result<Self, String> {
         tokio::fs::create_dir_all(&data_dir)
             .await
@@ -74,7 +109,7 @@ impl DaemonHarness {
             .arg("127.0.0.1:0")
             .arg("--print-ready-file")
             .arg(&ready_file)
-            .env("VEM_DAEMON_SECRET_STORE", "env")
+            .env("VEM_DAEMON_SECRET_STORE", secret_store)
             .env("VEM_DISK_PRESSURE_MIN_AVAILABLE_BYTES", "0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -115,6 +150,36 @@ impl DaemonHarness {
 
     pub fn bearer(&self) -> String {
         format!("Bearer {}", self.ready.ipc_token)
+    }
+
+    pub async fn create_maintenance_session(&self, pin: &str) -> String {
+        let base = self.ready.healthz_url.trim_end_matches("/healthz");
+        let response = self
+            .client
+            .post(format!("{base}/v1/maintenance/sessions"))
+            .header("Authorization", self.bearer())
+            .json(&json!({
+                "pin": pin,
+                "operatorId": "integration-test"
+            }))
+            .send()
+            .await
+            .expect("create maintenance session request");
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .expect("create maintenance session response");
+        assert_eq!(
+            status,
+            reqwest::StatusCode::CREATED,
+            "session response: {body}"
+        );
+        body["sessionId"]
+            .as_str()
+            .filter(|session_id| !session_id.is_empty())
+            .expect("maintenance session id")
+            .to_string()
     }
 
     pub fn state_db_path(&self) -> PathBuf {

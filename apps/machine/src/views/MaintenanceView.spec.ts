@@ -24,6 +24,7 @@ const {
   saveConfigMock,
   downloadLogExportMock,
   beginMaintenanceSessionMock,
+  clearMaintenanceSessionMock,
   callTauriCommandMock,
   openVisionTryOnSessionMock,
   machineAudioPlaybackFactoryOverride,
@@ -46,6 +47,7 @@ const {
   saveConfigMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
   beginMaintenanceSessionMock: vi.fn(),
+  clearMaintenanceSessionMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
   machineAudioPlaybackFactoryOverride: {
@@ -84,6 +86,7 @@ vi.mock("@/daemon/client", () => ({
     saveConfig: saveConfigMock,
     downloadLogExport: downloadLogExportMock,
     beginMaintenanceSession: beginMaintenanceSessionMock,
+    clearMaintenanceSession: clearMaintenanceSessionMock,
   },
 }));
 
@@ -381,7 +384,7 @@ beforeEach(() => {
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
   beginMaintenanceSessionMock.mockResolvedValue({
     sessionId: "maintenance-session-1",
-    expiresAt: "2026-07-14T12:00:00.000Z",
+    expiresAt: "2030-07-14T12:00:00.000Z",
     scopes: ["maintenance.mutate"],
   });
   callTauriCommandMock.mockResolvedValue(undefined);
@@ -416,6 +419,21 @@ async function mountView(): Promise<HTMLElement> {
   return host;
 }
 
+async function unlockMaintenance(host: HTMLElement): Promise<void> {
+  const input = host.querySelector('input[aria-label="维护 PIN"]');
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error("maintenance PIN input not found");
+  }
+  input.value = "2468";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input
+    .closest("form")
+    ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await vi.waitFor(() => {
+    expect(host.textContent).toContain("已授权");
+  });
+}
+
 it("keeps automatic maintenance diagnostics readable while mutations remain PIN-gated", async () => {
   routeMock.query = {};
   getReadyMock.mockResolvedValue(maintenanceReadyFixture());
@@ -432,21 +450,13 @@ it("keeps automatic maintenance diagnostics readable while mutations remain PIN-
 
 it("verifies the PIN through daemon IPC before enabling protected maintenance actions", async () => {
   const host = await mountView();
-  const input = host.querySelector('input[aria-label="维护 PIN"]');
-  expect(input).toBeInstanceOf(HTMLInputElement);
-  (input as HTMLInputElement).value = "2468";
-  input?.dispatchEvent(new Event("input", { bubbles: true }));
-  await nextTick();
-  input
-    ?.closest("form")
-    ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await unlockMaintenance(host);
   await vi.waitFor(() => {
-    expect(beginMaintenanceSessionMock).toHaveBeenCalledWith("2468", [
-      "maintenance.reclaim",
-    ]);
-  });
-  await vi.waitFor(() => {
-    expect(host.textContent).toContain("已授权");
+    expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
+      "2468",
+      ["maintenance.reclaim"],
+      "operator-console",
+    );
   });
 });
 
@@ -635,6 +645,7 @@ describe("MaintenanceView hardware config", () => {
       },
     });
     const host = await mountView();
+    await unlockMaintenance(host);
     buttonByText(host, "保存配置并重新自检").click();
     await vi.waitFor(() => {
       expect(saveConfigMock).toHaveBeenCalled();
@@ -755,6 +766,7 @@ describe("MaintenanceView hardware config", () => {
 
   it("runs production diagnostics and log export from standard maintenance", async () => {
     const host = await mountView();
+    await unlockMaintenance(host);
 
     buttonByText(host, "硬件自检").click();
     buttonByText(host, "视觉状态").click();
@@ -923,6 +935,7 @@ describe("MaintenanceView hardware config", () => {
       configLoaded: true,
     });
     const host = await mountView();
+    await unlockMaintenance(host);
     const input = inputByTest(host, "machine-audio-volume-percent");
 
     expect(input.value).toBe("35");
@@ -1202,6 +1215,7 @@ describe("MaintenanceView hardware config", () => {
     });
 
     const host = await mountView();
+    await unlockMaintenance(host);
 
     buttonByText(host, "刷新诊断").click();
     buttonByText(host, "硬件自检").click();
@@ -1325,11 +1339,19 @@ describe("MaintenanceView hardware config", () => {
       },
     });
     const host = await mountView();
+    await unlockMaintenance(host);
 
     buttonByText(host, "回到 Windows 桌面").click();
 
     await vi.waitFor(() => {
-      expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop");
+      expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
+        "2468",
+        ["maintenance.reclaim", "maintenance.desktop_exit"],
+        "operator-console",
+      );
+      expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop", {
+        sessionId: "maintenance-session-1",
+      });
     });
   });
 
@@ -1424,6 +1446,7 @@ describe("MaintenanceView hardware config", () => {
       ),
     );
     const host = await mountView();
+    await unlockMaintenance(host);
     const clearButton = buttonByText(host, "确认解除整机锁");
 
     expect(host.textContent).toContain("整机维护锁");
@@ -1460,6 +1483,16 @@ describe("MaintenanceView hardware config", () => {
 });
 
 describe("MaintenanceView stock maintenance", () => {
+  it("keeps inventory mutation controls disabled until the daemon session is authorized", async () => {
+    const host = await mountView();
+
+    expect(submitButton(host).disabled).toBe(true);
+    const movementType = movementTypeSelect(host);
+    expect(movementType.disabled).toBe(true);
+    submitButton(host).click();
+    expect(recordStockMovementMock).not.toHaveBeenCalled();
+  });
+
   it("does not expose trusted stock movement sources", async () => {
     const host = await mountView();
 
@@ -1469,6 +1502,7 @@ describe("MaintenanceView stock maintenance", () => {
 
   it("records no-login planned refill as local maintenance with attribution", async () => {
     const host = await mountView();
+    await unlockMaintenance(host);
     const updatedSaleView = {
       ...saleViewFixture(),
       items: [
@@ -1502,6 +1536,7 @@ describe("MaintenanceView stock maintenance", () => {
 
   it("records no-login stock count as local maintenance with attribution", async () => {
     const host = await mountView();
+    await unlockMaintenance(host);
     const select = movementTypeSelect(host);
     select.value = "stock_count_correction";
     select.dispatchEvent(new Event("change"));

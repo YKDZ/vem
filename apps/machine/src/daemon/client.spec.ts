@@ -95,7 +95,7 @@ describe("DaemonApiClient", () => {
         new Response(
           JSON.stringify({
             sessionId: "opaque-session",
-            expiresAt: "2026-07-14T12:00:00.000Z",
+            expiresAt: "2030-07-14T12:00:00.000Z",
             scopes: ["maintenance.mutate"],
           }),
           { status: 201 },
@@ -113,7 +113,11 @@ describe("DaemonApiClient", () => {
       "http://127.0.0.1:7891/v1/maintenance/sessions",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ pin: "2468", scopes: [] }),
+        body: JSON.stringify({
+          pin: "2468",
+          scopes: [],
+          operatorId: "front-panel",
+        }),
       }),
     );
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
@@ -125,6 +129,78 @@ describe("DaemonApiClient", () => {
         }),
       }),
     );
+  });
+
+  it("drops an expired maintenance session before a later IPC request", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "expired-session",
+            expiresAt: "2020-01-01T00:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(healthFixture()), { status: 200 }),
+      );
+
+    await daemonClient.beginMaintenanceSession("2468");
+    await daemonClient.getHealth();
+
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(
+      "http://127.0.0.1:7891/healthz",
+      expect.objectContaining({
+        headers: {
+          Authorization: "Bearer token-1",
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+    expect(daemonClient.currentMaintenanceSession).toBeNull();
+  });
+
+  it("clears a maintenance session when the daemon rejects it", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "rejected-session",
+            expiresAt: "2030-01-01T00:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: "protected_maintenance_authorization_denied",
+          }),
+          {
+            status: 403,
+          },
+        ),
+      );
+
+    await daemonClient.beginMaintenanceSession("2468");
+    await expect(daemonClient.getHealth()).rejects.toThrow("HTTP 403");
+
+    expect(daemonClient.currentMaintenanceSession).toBeNull();
   });
 
   it("passes the daemon-issued reclaim capability inside the typed bring-up mutation", async () => {
@@ -139,7 +215,7 @@ describe("DaemonApiClient", () => {
         new Response(
           JSON.stringify({
             sessionId: "reclaim-session",
-            expiresAt: "2026-07-14T12:00:00.000Z",
+            expiresAt: "2030-07-14T12:00:00.000Z",
             scopes: ["maintenance.mutate", "maintenance.reclaim"],
           }),
           { status: 201 },

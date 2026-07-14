@@ -5,11 +5,94 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use hmac::{Hmac, Mac};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::Sha256;
 use tokio::fs;
 use vending_core::serial::SerialPortUsbIdentity;
 
 use crate::{secret::SecretStore, state::LocalStateStore};
+
+const MAINTENANCE_PIN_KDF_ALGORITHM: &str = "pbkdf2_hmac_sha256";
+const MAINTENANCE_PIN_KDF_MIN_ITERATIONS: u32 = 120_000;
+const MAINTENANCE_PIN_KDF_MAX_ITERATIONS: u32 = 1_000_000;
+const MAINTENANCE_PIN_KDF_SALT_BYTES: usize = 16;
+const MAINTENANCE_PIN_KDF_DIGEST_BYTES: usize = 32;
+
+/// A Factory-provisioned verifier. The protected secret store holds this
+/// salted derivation record, never the operator's original maintenance PIN.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MaintenancePinVerifier {
+    version: u8,
+    algorithm: String,
+    iterations: u32,
+    salt: String,
+    digest: String,
+}
+
+impl MaintenancePinVerifier {
+    fn decode(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        if self.version != 1
+            || self.algorithm != MAINTENANCE_PIN_KDF_ALGORITHM
+            || !(MAINTENANCE_PIN_KDF_MIN_ITERATIONS..=MAINTENANCE_PIN_KDF_MAX_ITERATIONS)
+                .contains(&self.iterations)
+        {
+            return None;
+        }
+        let salt = STANDARD.decode(self.salt.as_bytes()).ok()?;
+        let digest = STANDARD.decode(self.digest.as_bytes()).ok()?;
+        if salt.len() != MAINTENANCE_PIN_KDF_SALT_BYTES
+            || digest.len() != MAINTENANCE_PIN_KDF_DIGEST_BYTES
+        {
+            return None;
+        }
+        Some((salt, digest))
+    }
+
+    fn verify(&self, supplied: &str) -> bool {
+        if supplied.is_empty() || supplied.len() > 128 {
+            return false;
+        }
+        let Some((salt, expected)) = self.decode() else {
+            return false;
+        };
+        let actual = pbkdf2_hmac_sha256(supplied.as_bytes(), &salt, self.iterations);
+        constant_time_bytes_equal(&actual, &expected)
+    }
+}
+
+fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    // PBKDF2 block 1 is sufficient for the fixed 256-bit verifier digest.
+    let mut initial = Vec::with_capacity(salt.len() + 4);
+    initial.extend_from_slice(salt);
+    initial.extend_from_slice(&1u32.to_be_bytes());
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(password).expect("HMAC-SHA-256 accepts any key length");
+    mac.update(&initial);
+    let mut previous = mac.finalize().into_bytes().to_vec();
+    let mut derived = previous.clone();
+    for _ in 1..iterations {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(password).expect("HMAC-SHA-256 accepts any key length");
+        mac.update(&previous);
+        previous = mac.finalize().into_bytes().to_vec();
+        for (left, right) in derived.iter_mut().zip(&previous) {
+            *left ^= *right;
+        }
+    }
+    let mut output = [0u8; MAINTENANCE_PIN_KDF_DIGEST_BYTES];
+    output.copy_from_slice(&derived);
+    output
+}
+
+fn constant_time_bytes_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = (left.len() ^ right.len()) as u8;
+    for index in 0..left.len().min(right.len()) {
+        difference |= left[index] ^ right[index];
+    }
+    difference == 0
+}
 
 fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
@@ -444,6 +527,7 @@ pub struct RuntimeConfigurationState {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub maintenance_pin_configured: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -464,6 +548,7 @@ pub struct MachineRuntimeConfig {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub maintenance_pin_configured: bool,
     pub machine_secret: Option<String>,
     pub mqtt_signing_secret: Option<String>,
     pub mqtt_password: Option<String>,
@@ -513,12 +598,14 @@ impl MachineRuntimeConfig {
             self.machine_secret_configured,
             self.mqtt_signing_secret_configured,
             self.mqtt_password_configured,
+            self.maintenance_pin_configured,
         );
         MachinePublicRuntimeConfig {
             public: self.public.clone(),
             machine_secret_configured: self.machine_secret_configured,
             mqtt_signing_secret_configured: self.mqtt_signing_secret_configured,
             mqtt_password_configured: self.mqtt_password_configured,
+            maintenance_pin_configured: self.maintenance_pin_configured,
             provisioned: provisioning_issues.is_empty(),
             provisioning_issues,
         }
@@ -532,6 +619,7 @@ pub struct MachinePublicRuntimeConfig {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub maintenance_pin_configured: bool,
     pub provisioned: bool,
     pub provisioning_issues: Vec<String>,
 }
@@ -543,6 +631,7 @@ impl MachinePublicRuntimeConfig {
             self.machine_secret_configured,
             self.mqtt_signing_secret_configured,
             self.mqtt_password_configured,
+            self.maintenance_pin_configured,
         );
         self.provisioned = self.provisioning_issues.is_empty();
         self
@@ -565,6 +654,7 @@ fn provisioning_issues(
     machine_secret_configured: bool,
     mqtt_signing_secret_configured: bool,
     mqtt_password_configured: bool,
+    maintenance_pin_configured: bool,
 ) -> Vec<String> {
     let mut issues = Vec::new();
     if public
@@ -605,6 +695,9 @@ fn provisioning_issues(
     }
     if public.mqtt_username.is_some() && !mqtt_password_configured {
         issues.push("mqtt_password_missing".to_string());
+    }
+    if !maintenance_pin_configured {
+        issues.push("maintenance_pin_not_configured".to_string());
     }
     issues
 }
@@ -1456,26 +1549,81 @@ impl ConfigStore {
         provisioning_profile_cache_summary_path(&self.data_dir)
     }
 
-    /// Compares the supplied field PIN inside the daemon boundary.  The PIN
-    /// itself never crosses into a persisted UI setting or diagnostic.
-    pub async fn verify_maintenance_pin(&self, supplied: &str) -> Result<bool, String> {
-        let Some(expected) = self
+    /// Factory writes only a salted PIN verifier to this one-shot protected
+    /// staging location. The daemon validates and imports it into the selected
+    /// SecretStore before any Bring-Up or claim work observes configuration.
+    pub fn factory_maintenance_pin_verifier_path(&self) -> PathBuf {
+        self.data_dir
+            .join("factory")
+            .join("maintenance-pin-verifier.json")
+    }
+
+    pub async fn import_factory_maintenance_pin_verifier(&self) -> Result<bool, String> {
+        let path = self.factory_maintenance_pin_verifier_path();
+        let serialized = match fs::read_to_string(&path).await {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "read factory maintenance PIN verifier staging failed: {error}"
+                ));
+            }
+        };
+        let verifier = serde_json::from_str::<MaintenancePinVerifier>(&serialized)
+            .map_err(|_| "factory maintenance PIN verifier is invalid".to_string())?;
+        if verifier.decode().is_none() {
+            return Err("factory maintenance PIN verifier is invalid".to_string());
+        }
+        if let Some(existing) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await?
+        {
+            if existing != serialized {
+                return Err(
+                    "factory maintenance PIN verifier conflicts with the protected verifier"
+                        .to_string(),
+                );
+            }
+        } else {
+            self.secrets
+                .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, &serialized)
+                .await?;
+        }
+        fs::remove_file(&path).await.map_err(|error| {
+            format!("remove factory maintenance PIN verifier staging failed: {error}")
+        })?;
+        Ok(true)
+    }
+
+    async fn maintenance_pin_verifier_configured(&self) -> Result<bool, String> {
+        let Some(serialized) = self
             .secrets
             .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
             .await?
         else {
             return Ok(false);
         };
-        let supplied = supplied.trim().as_bytes();
-        let expected = expected.trim().as_bytes();
-        if supplied.len() != expected.len() {
+        Ok(serde_json::from_str::<MaintenancePinVerifier>(&serialized)
+            .ok()
+            .is_some_and(|verifier| verifier.decode().is_some()))
+    }
+
+    /// Verifies a supplied field PIN inside the daemon boundary. The protected
+    /// secret is a salted KDF verifier, never the PIN itself, and malformed
+    /// or missing records deliberately look identical to a wrong PIN.
+    pub async fn verify_maintenance_pin(&self, supplied: &str) -> Result<bool, String> {
+        let Some(serialized) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await?
+        else {
             return Ok(false);
-        }
-        let mut difference = 0u8;
-        for (left, right) in supplied.iter().zip(expected.iter()) {
-            difference |= left ^ right;
-        }
-        Ok(difference == 0)
+        };
+        let Ok(verifier) = serde_json::from_str::<MaintenancePinVerifier>(&serialized) else {
+            return Ok(false);
+        };
+        Ok(verifier.verify(supplied))
     }
 
     pub async fn ensure_maintenance_public_key(&self) -> Result<String, String> {
@@ -1992,6 +2140,7 @@ impl ConfigStore {
                 .read_secret(crate::secret::MQTT_PASSWORD_ACCOUNT)
                 .await?
                 .is_some(),
+            maintenance_pin_configured: self.maintenance_pin_verifier_configured().await?,
             provisioned: false,
             provisioning_issues: Vec::new(),
         }
@@ -2058,6 +2207,10 @@ impl ConfigStore {
             crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
             crate::secret::MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
             crate::secret::MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+            // Factory imports this verifier into the protected local secret
+            // store before first claim. Claim and reclaim rotate platform
+            // credentials but must never remove the field-maintenance path.
+            crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT,
         ] {
             if let Some(value) = self
                 .secrets
@@ -2242,6 +2395,7 @@ impl ConfigStore {
                 machine_secret_configured: secret_store.machine_secret_configured,
                 mqtt_signing_secret_configured: secret_store.mqtt_signing_secret_configured,
                 mqtt_password_configured: secret_store.mqtt_password_configured,
+                maintenance_pin_configured: self.maintenance_pin_verifier_configured().await?,
             },
             secret_store,
             factory_manifest,
@@ -2260,6 +2414,7 @@ impl ConfigStore {
             machine_secret_configured: secrets.machine_secret.as_deref().is_some(),
             mqtt_signing_secret_configured: secrets.mqtt_signing_secret.as_deref().is_some(),
             mqtt_password_configured: secrets.mqtt_password.as_deref().is_some(),
+            maintenance_pin_configured: self.maintenance_pin_verifier_configured().await?,
             machine_secret: None,
             mqtt_signing_secret: None,
             mqtt_password: None,
@@ -3666,6 +3821,110 @@ mod tests {
             .await
             .expect("read signing")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_preserves_the_salted_maintenance_pin_verifier_across_claim_and_reclaim(
+    ) {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        // PBKDF2-HMAC-SHA-256(2468, 00112233445566778899aabbccddeeff, 120000).
+        // Factory delivery carries this verifier, never the PIN itself.
+        let verifier = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
+        secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, verifier)
+            .await
+            .expect("seed protected verifier");
+        let store = ConfigStore::new(data_dir, state, secrets.clone());
+
+        store
+            .apply_provisioning_profile(valid_provisioning_profile_for_test())
+            .await
+            .expect("claim profile");
+        assert!(store.verify_maintenance_pin("2468").await.expect("verify"));
+        assert!(!store
+            .verify_maintenance_pin("9999")
+            .await
+            .expect("reject wrong pin"));
+
+        let mut reclaim_profile = valid_provisioning_profile_for_test();
+        reclaim_profile.credentials.mqtt_connection.password = None;
+        store
+            .apply_provisioning_profile(reclaim_profile)
+            .await
+            .expect("reclaim profile");
+
+        let stored = secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await
+            .expect("read verifier")
+            .expect("verifier retained");
+        assert_eq!(stored, verifier);
+        assert!(!stored.contains("2468"));
+    }
+
+    #[tokio::test]
+    async fn factory_maintenance_pin_verifier_is_imported_once_into_the_secret_store() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let store = ConfigStore::new(data_dir.clone(), state, secrets.clone());
+        let verifier = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
+        let staging_path = store.factory_maintenance_pin_verifier_path();
+        tokio::fs::create_dir_all(staging_path.parent().expect("parent"))
+            .await
+            .expect("staging dir");
+        tokio::fs::write(&staging_path, verifier)
+            .await
+            .expect("stage verifier");
+
+        assert!(store
+            .import_factory_maintenance_pin_verifier()
+            .await
+            .expect("import verifier"));
+        assert!(!staging_path.exists());
+        assert_eq!(
+            secrets
+                .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+                .await
+                .expect("read verifier"),
+            Some(verifier.to_string())
+        );
+        assert!(store.verify_maintenance_pin("2468").await.expect("verify"));
+        assert!(!store
+            .import_factory_maintenance_pin_verifier()
+            .await
+            .expect("one shot"));
+    }
+
+    #[tokio::test]
+    async fn raw_or_malformed_maintenance_pin_is_a_provisioning_blocker() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, "2468")
+            .await
+            .expect("seed legacy raw PIN");
+        let store = ConfigStore::new(data_dir, state, secrets);
+
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
+
+        assert!(summary.secret_store.maintenance_pin_configured);
+        assert!(!summary.configured_state.maintenance_pin_configured);
     }
 
     #[tokio::test]

@@ -153,6 +153,7 @@ export const configSummarySchema = z.object({
   machineSecretConfigured: z.boolean(),
   mqttSigningSecretConfigured: z.boolean(),
   mqttPasswordConfigured: z.boolean(),
+  maintenancePinConfigured: z.boolean().default(false),
   provisioned: z.boolean().default(false),
   provisioningIssues: z.array(z.string()).default([]),
 });

@@ -22,6 +22,9 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 static SCANNER_VISION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+const TEST_MAINTENANCE_PIN: &str = "2468";
+const TEST_MAINTENANCE_PIN_VERIFIER: &str = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
+
 fn scanner_config(scanner_path: String) -> serde_json::Value {
     serde_json::json!({
         "machineCode": "MACHINE-SCAN",
@@ -239,14 +242,12 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
     let mut config = production_scanner_config(scanner_path, lower_controller_path);
     config["apiBaseUrl"] = json!(server.uri());
     config["mqttUrl"] = json!(mqtt.url());
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = DaemonHarness::start_with_file_secrets(
         config,
         &[
-            ("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET),
-            (
-                "VEM_MQTT_SIGNING_SECRET",
-                sensitive::TEST_MQTT_SIGNING_SECRET,
-            ),
+            ("machine_secret", sensitive::TEST_MACHINE_SECRET),
+            ("mqtt_signing_secret", sensitive::TEST_MQTT_SIGNING_SECRET),
+            ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
         ],
     )
     .await
@@ -389,14 +390,12 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
     let mut config = production_scanner_config(scanner_path, lower_controller_path);
     config["apiBaseUrl"] = json!(server.uri());
     config["mqttUrl"] = json!(mqtt.url());
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = DaemonHarness::start_with_file_secrets(
         config,
         &[
-            ("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET),
-            (
-                "VEM_MQTT_SIGNING_SECRET",
-                sensitive::TEST_MQTT_SIGNING_SECRET,
-            ),
+            ("machine_secret", sensitive::TEST_MACHINE_SECRET),
+            ("mqtt_signing_secret", sensitive::TEST_MQTT_SIGNING_SECRET),
+            ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
         ],
     )
     .await
@@ -574,9 +573,13 @@ async fn mock_payment_code_options(server: &MockServer) {
 async fn prepare_local_sale_view(daemon: &DaemonHarness) {
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
     let client = Client::new();
+    let session_id = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
     let planogram = client
         .post(format!("{base}/v1/stock/planogram"))
         .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
         .json(&json!({
             "planogramVersion": "PLAN-SCAN",
             "source": "local_seed",

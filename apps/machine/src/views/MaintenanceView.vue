@@ -3,6 +3,8 @@ import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import type { MaintenanceSession } from "@/daemon/schemas";
+
 import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
@@ -57,7 +59,13 @@ const maintenanceAuthentication = reactive({
   loading: false,
   message: null as string | null,
 });
-const maintenanceSessionActive = ref(false);
+const maintenanceSession = ref<MaintenanceSession | null>(null);
+const maintenanceSessionAuthorized = computed(
+  () =>
+    maintenanceSession.value !== null &&
+    Date.parse(maintenanceSession.value.expiresAt) > Date.now(),
+);
+let maintenanceSessionExpiryTimer: number | null = null;
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
 const DIAGNOSTIC_DISPLAY_MAX_CHARS = 12_000;
 const DIAGNOSTIC_DISPLAY_MAX_DEPTH = 8;
@@ -154,6 +162,7 @@ const naturalContextDiagnosticMessage = computed(() =>
 const clearWholeMachineLockDisabled = computed(
   () =>
     wholeMachineLockMaintenance.loading ||
+    !maintenanceSessionAuthorized.value ||
     !wholeMachineMaintenanceLock.value ||
     !wholeMachineLockMaintenance.selfCheckEvidence?.online ||
     wholeMachineLockMaintenance.operatorNote.trim().length === 0,
@@ -182,19 +191,62 @@ async function beginProtectedMaintenance(): Promise<void> {
   maintenanceAuthentication.loading = true;
   maintenanceAuthentication.message = null;
   try {
+    const scopes = [
+      ...(operatorEnteredMaintenance.value ? ["maintenance.reclaim"] : []),
+      ...(showProtectedDesktopExit.value ? ["maintenance.desktop_exit"] : []),
+    ];
     const session = await daemonClient.beginMaintenanceSession(
       maintenanceAuthentication.pin,
-      operatorEnteredMaintenance.value ? ["maintenance.reclaim"] : [],
+      scopes,
+      operatorEnteredMaintenance.value ? "operator-console" : "front-panel",
     );
-    maintenanceSessionActive.value = true;
+    setMaintenanceSession(session);
     maintenanceAuthentication.pin = "";
     maintenanceAuthentication.message = `已验证维护会话，${new Date(session.expiresAt).toLocaleTimeString("zh-CN")} 前有效。`;
   } catch (error) {
-    maintenanceSessionActive.value = false;
+    clearMaintenanceSession();
     maintenanceAuthentication.message =
       error instanceof Error ? error.message : "维护 PIN 验证失败";
   } finally {
     maintenanceAuthentication.loading = false;
+  }
+}
+
+function setMaintenanceSession(session: MaintenanceSession): void {
+  clearMaintenanceSession();
+  maintenanceSession.value = session;
+  const delayMs = Date.parse(session.expiresAt) - Date.now();
+  if (delayMs <= 0) {
+    clearMaintenanceSession();
+    return;
+  }
+  maintenanceSessionExpiryTimer = window.setTimeout(
+    () => {
+      clearMaintenanceSession();
+      maintenanceAuthentication.message = "维护会话已过期，请重新验证 PIN。";
+    },
+    Math.min(delayMs, 2_147_483_647),
+  );
+}
+
+function clearMaintenanceSession(): void {
+  if (maintenanceSessionExpiryTimer !== null) {
+    window.clearTimeout(maintenanceSessionExpiryTimer);
+    maintenanceSessionExpiryTimer = null;
+  }
+  maintenanceSession.value = null;
+  daemonClient.clearMaintenanceSession();
+}
+
+function clearMaintenanceSessionAfterAuthorizationFailure(
+  error: unknown,
+): void {
+  if (
+    error instanceof Error &&
+    /HTTP 403|authorization_denied/i.test(error.message)
+  ) {
+    clearMaintenanceSession();
+    maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
   }
 }
 
@@ -456,6 +508,7 @@ onUnmounted(() => {
   maintenanceViewMounted = false;
   stopDiagnosticsAutoRefresh();
   activeMachineAudioPlayback?.stop();
+  clearMaintenanceSession();
   void stopTryOnPreviewDiagnostic();
 });
 
@@ -692,7 +745,10 @@ async function stopTryOnPreviewDiagnostic(): Promise<void> {
 }
 
 async function saveAndReboot(): Promise<void> {
-  if (!runtimeFlags.advancedMaintenanceConfig) {
+  if (
+    !runtimeFlags.advancedMaintenanceConfig ||
+    !maintenanceSessionAuthorized.value
+  ) {
     return;
   }
   try {
@@ -707,6 +763,7 @@ async function saveAndReboot(): Promise<void> {
     syncFormFromStore();
     await router.replace("/boot");
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     machineStore.error = error instanceof Error ? error.message : String(error);
   } finally {
     form.machineSecretInput = "";
@@ -716,6 +773,7 @@ async function saveAndReboot(): Promise<void> {
 }
 
 async function runHardwareCheck(): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) return;
   hardwareMaintenance.loading = true;
   hardwareMaintenance.message = null;
   try {
@@ -751,6 +809,7 @@ async function runHardwareCheck(): Promise<void> {
       result.online ? "硬件就绪" : "硬件告警"
     }：${result.message}${details.length > 0 ? `（${details.join("；")}）` : ""}`;
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     hardwareMaintenance.message =
       error instanceof Error ? error.message : String(error);
   } finally {
@@ -839,6 +898,7 @@ async function returnToCatalogAfterSystemRecovery(): Promise<void> {
 }
 
 async function clearWholeMachineLock(): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) return;
   wholeMachineLockMaintenance.loading = true;
   wholeMachineLockMaintenance.message = null;
   try {
@@ -849,6 +909,7 @@ async function clearWholeMachineLock(): Promise<void> {
     wholeMachineLockMaintenance.operatorNote = "";
     await refreshDiagnostics();
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     const message = error instanceof Error ? error.message : String(error);
     wholeMachineLockMaintenance.message = message.includes(
       "must be healthy before clearing whole-machine lock",
@@ -893,6 +954,52 @@ function saleCriticalBlockerAction(code: string): string {
     NO_SALEABLE_SLOTS: "补货、盘点或处理货道冻结后恢复可售库存。",
   };
   return actions[code] ?? "按现场 SOP 排查该阻塞项。";
+}
+
+function blockerRecoveryLabel(code: string): string {
+  if (
+    code === "LOWER_CONTROLLER_UNAVAILABLE" ||
+    code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
+    code.startsWith("PRODUCTION_DISPENSE_PATH_")
+  ) {
+    return "执行硬件自检";
+  }
+  if (code === "NO_SALEABLE_SLOTS") return "打开库存维护";
+  if (code === "MACHINE_AUTH_MISSING") return "打开首次部署控制台";
+  return "刷新关联诊断";
+}
+
+function blockerRecoveryRequiresSession(code: string): boolean {
+  return (
+    code === "LOWER_CONTROLLER_UNAVAILABLE" ||
+    code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
+    code.startsWith("PRODUCTION_DISPENSE_PATH_")
+  );
+}
+
+function blockerRecoveryDisabled(code: string): boolean {
+  return (
+    (blockerRecoveryRequiresSession(code) &&
+      !maintenanceSessionAuthorized.value) ||
+    hardwareMaintenance.loading ||
+    diagnostics.loading
+  );
+}
+
+async function runBlockerRecovery(code: string): Promise<void> {
+  if (blockerRecoveryRequiresSession(code)) {
+    await runHardwareCheck();
+    return;
+  }
+  if (code === "NO_SALEABLE_SLOTS") {
+    stockMaintenance.message = "请使用下方库存维护完成补货或盘点修正。";
+    return;
+  }
+  if (code === "MACHINE_AUTH_MISSING") {
+    await openProtectedBringUpConsole();
+    return;
+  }
+  await refreshDiagnostics();
 }
 
 function audioCueMeaningLabel(cueKey: string): string {
@@ -1007,7 +1114,12 @@ async function returnToCatalog(): Promise<void> {
 }
 
 async function returnToDesktop(): Promise<void> {
-  if (!showProtectedDesktopExit.value) {
+  const session = maintenanceSession.value;
+  if (
+    !showProtectedDesktopExit.value ||
+    !session ||
+    !maintenanceSessionAuthorized.value
+  ) {
     return;
   }
   desktopMaintenance.loading = true;
@@ -1017,8 +1129,11 @@ async function returnToDesktop(): Promise<void> {
       desktopMaintenance.message = "当前不是 Tauri 运行环境，无法退出全屏应用";
       return;
     }
-    await callTauriCommand<void>("return_to_desktop");
+    await callTauriCommand<void>("return_to_desktop", {
+      sessionId: session.sessionId,
+    });
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     desktopMaintenance.message =
       error instanceof Error ? error.message : String(error);
     desktopMaintenance.loading = false;
@@ -1096,6 +1211,7 @@ async function submitStockMovement(): Promise<void> {
     stockMaintenance.message = "库存动作已记录";
     await refreshStockMaintenanceView();
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     stockMaintenance.message =
       error instanceof Error ? error.message : String(error);
   } finally {
@@ -1131,14 +1247,16 @@ async function submitStockMovement(): Promise<void> {
           <span
             class="text-sm font-semibold"
             :class="
-              maintenanceSessionActive ? 'text-emerald-200' : 'text-amber-200'
+              maintenanceSessionAuthorized
+                ? 'text-emerald-200'
+                : 'text-amber-200'
             "
           >
-            {{ maintenanceSessionActive ? "已授权" : "只读" }}
+            {{ maintenanceSessionAuthorized ? "已授权" : "只读" }}
           </span>
         </div>
         <form
-          v-if="!maintenanceSessionActive"
+          v-if="!maintenanceSessionAuthorized"
           class="mt-3 flex flex-wrap gap-3"
           @submit.prevent="beginProtectedMaintenance"
         >
@@ -1172,7 +1290,7 @@ async function submitStockMovement(): Promise<void> {
       </section>
 
       <section
-        v-if="!operatorEnteredMaintenance && saleCriticalBlockers.length > 0"
+        v-if="saleCriticalBlockers.length > 0"
         class="mt-4 grid gap-3"
         aria-label="当前阻塞项"
       >
@@ -1191,10 +1309,15 @@ async function submitStockMovement(): Promise<void> {
           <button
             class="kiosk-touch-target mt-3 rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
             type="button"
-            :disabled="!maintenanceSessionActive || hardwareMaintenance.loading"
-            @click="runHardwareCheck"
+            :disabled="blockerRecoveryDisabled(blocker.code)"
+            @click="runBlockerRecovery(blocker.code)"
           >
-            {{ maintenanceSessionActive ? "执行恢复自检" : "先验证 PIN" }}
+            {{
+              blockerRecoveryRequiresSession(blocker.code) &&
+              !maintenanceSessionAuthorized
+                ? "先验证 PIN"
+                : blockerRecoveryLabel(blocker.code)
+            }}
           </button>
           <details class="mt-3 text-sm text-rose-100/80">
             <summary>技术证据</summary>
@@ -1240,7 +1363,9 @@ async function submitStockMovement(): Promise<void> {
           <button
             class="kiosk-touch-target mt-3 rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
             type="button"
-            :disabled="!maintenanceSessionActive || hardwareMaintenance.loading"
+            :disabled="
+              !maintenanceSessionAuthorized || hardwareMaintenance.loading
+            "
             @click="runHardwareCheck"
           >
             执行设备检查
@@ -1265,86 +1390,97 @@ async function submitStockMovement(): Promise<void> {
           库存维护
         </p>
         <form class="mt-4 grid gap-4" @submit.prevent="submitStockMovement">
-          <div class="grid gap-4 md:grid-cols-2">
+          <fieldset :disabled="!maintenanceSessionAuthorized" class="contents">
+            <div class="grid gap-4 md:grid-cols-2">
+              <label class="grid gap-2 text-left">
+                <span class="text-sm font-semibold text-slate-200"
+                  >动作类型</span
+                >
+                <select
+                  v-model="stockForm.movementType"
+                  :disabled="!maintenanceSessionAuthorized"
+                  class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+                >
+                  <option value="planned_refill">计划补货</option>
+                  <option value="stock_count_correction">盘点修正</option>
+                </select>
+              </label>
+              <label class="grid gap-2 text-left">
+                <span class="text-sm font-semibold text-slate-200">数量</span>
+                <input
+                  v-model.number="stockForm.quantity"
+                  :disabled="!maintenanceSessionAuthorized"
+                  class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+                  min="0"
+                  step="1"
+                  type="number"
+                />
+              </label>
+            </div>
+
             <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">动作类型</span>
-              <select
-                v-model="stockForm.movementType"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+              <span class="text-sm font-semibold text-slate-200"
+                >货道图版本</span
               >
-                <option value="planned_refill">计划补货</option>
-                <option value="stock_count_correction">盘点修正</option>
-              </select>
-            </label>
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">数量</span>
               <input
-                v-model.number="stockForm.quantity"
+                v-model="stockForm.planogramVersion"
+                :disabled="!maintenanceSessionAuthorized"
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-                min="0"
-                step="1"
-                type="number"
               />
             </label>
-          </div>
 
-          <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200">货道图版本</span>
-            <input
-              v-model="stockForm.planogramVersion"
-              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-            />
-          </label>
-
-          <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200">货道</span>
-            <select
-              v-model="stockForm.slotId"
-              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-            >
-              <option
-                v-for="slot in stockMaintenance.slots"
-                :key="slot.slotId"
-                :value="slot.slotId"
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200">货道</span>
+              <select
+                v-model="stockForm.slotId"
+                :disabled="!maintenanceSessionAuthorized"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
               >
-                {{ formatMachineSlotCoordinate(slot) }} ·
-                {{ slot.productName }} · {{ slot.physicalStock }}/{{
-                  slot.capacity
-                }}
-              </option>
-            </select>
-          </label>
+                <option
+                  v-for="slot in stockMaintenance.slots"
+                  :key="slot.slotId"
+                  :value="slot.slotId"
+                >
+                  {{ formatMachineSlotCoordinate(slot) }} ·
+                  {{ slot.productName }} · {{ slot.physicalStock }}/{{
+                    slot.capacity
+                  }}
+                </option>
+              </select>
+            </label>
 
-          <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200">记录人</span>
-            <input
-              v-model="stockForm.attributedTo"
-              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-            />
-          </label>
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200">记录人</span>
+              <input
+                v-model="stockForm.attributedTo"
+                :disabled="!maintenanceSessionAuthorized"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+              />
+            </label>
 
-          <div class="grid gap-3 md:grid-cols-2">
-            <button
-              class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
-              type="button"
-              :disabled="stockMaintenance.loading"
-              @click="refreshStockMaintenanceView"
-            >
-              刷新库存
-            </button>
-            <button
-              class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
-              type="submit"
-              :disabled="
-                stockMaintenance.loading ||
-                !stockForm.planogramVersion ||
-                !stockForm.slotId
-              "
-            >
-              记录库存动作
-            </button>
-          </div>
-
+            <div class="grid gap-3 md:grid-cols-2">
+              <button
+                class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
+                type="button"
+                :disabled="stockMaintenance.loading"
+                @click="refreshStockMaintenanceView"
+              >
+                刷新库存
+              </button>
+              <button
+                class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                type="submit"
+                :disabled="
+                  !maintenanceSessionAuthorized ||
+                  stockMaintenance.loading ||
+                  !stockForm.planogramVersion ||
+                  !stockForm.slotId
+                "
+              >
+                记录库存动作
+              </button>
+            </div>
+          </fieldset>
           <p
             v-if="stockMaintenance.message"
             class="rounded-2xl bg-emerald-500/15 p-4 text-emerald-100"
@@ -1371,7 +1507,7 @@ async function submitStockMovement(): Promise<void> {
               回到目录
             </button>
             <button
-              v-if="showProtectedDesktopExit"
+              v-if="showProtectedDesktopExit && maintenanceSessionAuthorized"
               class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
               type="button"
               :disabled="desktopMaintenance.loading"
@@ -1405,7 +1541,9 @@ async function submitStockMovement(): Promise<void> {
             <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
-              :disabled="hardwareMaintenance.loading"
+              :disabled="
+                !maintenanceSessionAuthorized || hardwareMaintenance.loading
+              "
               @click="runHardwareCheck"
             >
               硬件自检
@@ -1455,26 +1593,6 @@ async function submitStockMovement(): Promise<void> {
               >
                 {{ wholeMachineLockMaintenance.message }}
               </p>
-            </div>
-            <div
-              v-if="saleCriticalBlockers.length > 0"
-              class="grid gap-2 text-left"
-            >
-              <div
-                v-for="blocker in saleCriticalBlockers"
-                :key="`${blocker.component}-${blocker.code}`"
-                class="rounded-xl bg-slate-950/35 p-3 text-sm text-rose-50/90"
-              >
-                <div class="font-semibold text-rose-50">
-                  {{ blocker.operatorLabel }} · {{ blocker.code }}
-                </div>
-                <div class="mt-1">
-                  {{ operatorMessageLabel(blocker.message) }}
-                </div>
-                <div class="mt-1 text-rose-100/80">
-                  {{ blocker.operatorAction }}
-                </div>
-              </div>
             </div>
             <div
               v-if="wholeMachineLockMaintenance.selfCheckEvidence"
@@ -1621,25 +1739,6 @@ async function submitStockMovement(): Promise<void> {
           </div>
         </dl>
 
-        <section
-          v-if="saleCriticalBlockers.length > 0"
-          class="mt-5 border-t border-white/10 pt-4 text-left"
-        >
-          <h3 class="text-sm font-semibold text-slate-200">销售就绪阻塞项</h3>
-          <ul class="mt-2 grid gap-2 text-sm text-slate-100">
-            <li
-              v-for="blocker in saleCriticalBlockers"
-              :key="`${blocker.component}-${blocker.code}`"
-            >
-              <span class="font-semibold">
-                {{ blocker.operatorLabel }} · {{ blocker.code }}:
-              </span>
-              {{ blocker.message }}
-              <span class="text-slate-300"> {{ blocker.operatorAction }}</span>
-            </li>
-          </ul>
-        </section>
-
         <section class="mt-5 border-t border-white/10 pt-4 text-left">
           <h3 class="text-sm font-semibold text-slate-200">音频提示设置</h3>
           <p class="mt-1 text-sm text-slate-300">
@@ -1779,6 +1878,18 @@ async function submitStockMovement(): Promise<void> {
             type="password"
           />
         </div>
+
+        <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
+          维护 PIN 验证器状态：
+          <span class="font-semibold text-emerald-200">
+            {{
+              machineStore.config.maintenancePinConfigured ? "已配置" : "未配置"
+            }}
+          </span>
+          <span class="ml-2 text-slate-400"
+            >仅显示是否已受保护预置，不显示 PIN。</span
+          >
+        </p>
 
         <div class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200"
@@ -2210,7 +2321,9 @@ async function submitStockMovement(): Promise<void> {
               <button
                 class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
                 type="button"
-                :disabled="hardwareMaintenance.loading"
+                :disabled="
+                  !maintenanceSessionAuthorized || hardwareMaintenance.loading
+                "
                 @click="runHardwareCheck"
               >
                 硬件自检
@@ -2243,6 +2356,7 @@ async function submitStockMovement(): Promise<void> {
         <button
           class="kiosk-touch-target rounded-2xl bg-sky-400 px-6 py-4 text-lg font-bold text-slate-950 shadow-lg shadow-sky-950/40"
           type="submit"
+          :disabled="!maintenanceSessionAuthorized || machineStore.loading"
         >
           保存配置并重新自检
         </button>

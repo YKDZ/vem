@@ -5,7 +5,7 @@ use std::{
     path::Path,
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -128,6 +128,8 @@ struct CreateMaintenanceSessionRequest {
     pin: String,
     #[serde(default)]
     scopes: Vec<String>,
+    #[serde(default)]
+    operator_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -140,11 +142,40 @@ struct MaintenanceSessionResponse {
 
 const MAINTENANCE_SCOPE_MUTATE: &str = "maintenance.mutate";
 const MAINTENANCE_SCOPE_RECLAIM: &str = "maintenance.reclaim";
+const MAINTENANCE_SCOPE_DESKTOP_EXIT: &str = "maintenance.desktop_exit";
 
 #[derive(Debug, Clone)]
 struct ActiveMaintenanceSession {
     scopes: HashSet<String>,
     expires_at: chrono::DateTime<chrono::Utc>,
+    operator_id: String,
+}
+
+#[derive(Debug, Default)]
+struct PinVerificationThrottle {
+    consecutive_failures: u8,
+    denied_until: Option<Instant>,
+}
+
+impl PinVerificationThrottle {
+    fn blocks_now(&self, now: Instant) -> bool {
+        self.denied_until.is_some_and(|until| until > now)
+    }
+
+    fn record_failure(&mut self, now: Instant) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1).min(12);
+        // Permit a small number of honest entry mistakes, then make offline
+        // guessing progressively slower while capping the operator impact.
+        if self.consecutive_failures >= 3 {
+            let multiplier = 1u64 << u32::from((self.consecutive_failures - 3).min(7));
+            self.denied_until = Some(now + Duration::from_millis((250 * multiplier).min(30_000)));
+        }
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.denied_until = None;
+    }
 }
 
 /// A small daemon-owned session issuer/verifier. Session ids are opaque and
@@ -153,6 +184,7 @@ struct ActiveMaintenanceSession {
 pub struct DaemonMaintenanceAuthorization {
     config_store: Arc<ConfigStore>,
     sessions: Mutex<HashMap<String, ActiveMaintenanceSession>>,
+    pin_verification_throttle: Mutex<PinVerificationThrottle>,
     ttl: Duration,
 }
 
@@ -165,6 +197,7 @@ impl DaemonMaintenanceAuthorization {
         Self {
             config_store,
             sessions: Mutex::new(HashMap::new()),
+            pin_verification_throttle: Mutex::new(PinVerificationThrottle::default()),
             ttl,
         }
     }
@@ -173,17 +206,29 @@ impl DaemonMaintenanceAuthorization {
         &self,
         request: CreateMaintenanceSessionRequest,
     ) -> Result<MaintenanceSessionResponse, String> {
-        if request.pin.trim().is_empty()
-            || !self
-                .config_store
-                .verify_maintenance_pin(&request.pin)
-                .await?
-        {
+        let now = Instant::now();
+        if self.pin_verification_throttle.lock().await.blocks_now(now) {
             return Err("maintenance PIN verification failed".to_string());
         }
+        let verified = !request.pin.is_empty()
+            && self
+                .config_store
+                .verify_maintenance_pin(&request.pin)
+                .await?;
+        let mut throttle = self.pin_verification_throttle.lock().await;
+        if !verified {
+            throttle.record_failure(Instant::now());
+            return Err("maintenance PIN verification failed".to_string());
+        }
+        throttle.record_success();
+        drop(throttle);
+        let operator_id = normalize_maintenance_operator_id(request.operator_id)?;
         let mut scopes = HashSet::from([MAINTENANCE_SCOPE_MUTATE.to_string()]);
         for scope in request.scopes {
-            if scope == MAINTENANCE_SCOPE_RECLAIM {
+            if matches!(
+                scope.as_str(),
+                MAINTENANCE_SCOPE_RECLAIM | MAINTENANCE_SCOPE_DESKTOP_EXIT
+            ) {
                 scopes.insert(scope);
             }
         }
@@ -196,6 +241,7 @@ impl DaemonMaintenanceAuthorization {
             ActiveMaintenanceSession {
                 scopes: scopes.clone(),
                 expires_at,
+                operator_id,
             },
         );
         let mut scopes = scopes.into_iter().collect::<Vec<_>>();
@@ -224,6 +270,29 @@ impl DaemonMaintenanceAuthorization {
         }
         Ok(())
     }
+
+    async fn operator_id(&self, context: &MaintenanceAuthorizationContext) -> Option<String> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(&context.session_id).and_then(|session| {
+            (session.expires_at > chrono::Utc::now()).then(|| session.operator_id.clone())
+        })
+    }
+}
+
+fn normalize_maintenance_operator_id(operator_id: Option<String>) -> Result<String, String> {
+    let operator_id = operator_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("local-operator");
+    if operator_id.len() > 64
+        || !operator_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("maintenance operator identity is invalid".to_string());
+    }
+    Ok(operator_id.to_string())
 }
 
 #[async_trait]
@@ -240,6 +309,17 @@ pub trait MaintenanceAuthorization: Send + Sync {
         _context: &MaintenanceAuthorizationContext,
     ) -> Result<(), String> {
         Err("protected maintenance authorization is unavailable".to_string())
+    }
+
+    async fn authorize_desktop_exit(
+        &self,
+        _context: &MaintenanceAuthorizationContext,
+    ) -> Result<(), String> {
+        Err("protected maintenance authorization is unavailable".to_string())
+    }
+
+    async fn operator_id(&self, _context: &MaintenanceAuthorizationContext) -> Option<String> {
+        None
     }
 }
 
@@ -278,11 +358,24 @@ impl MaintenanceAuthorization for DaemonMaintenanceAuthorization {
     ) -> Result<(), String> {
         self.verify_scope(context, MAINTENANCE_SCOPE_MUTATE).await
     }
+
+    async fn authorize_desktop_exit(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+    ) -> Result<(), String> {
+        self.verify_scope(context, MAINTENANCE_SCOPE_DESKTOP_EXIT)
+            .await
+    }
+
+    async fn operator_id(&self, context: &MaintenanceAuthorizationContext) -> Option<String> {
+        DaemonMaintenanceAuthorization::operator_id(self, context).await
+    }
 }
 
 async fn require_non_bring_up_maintenance_authorization(
     ctx: &IpcContext,
     headers: &HeaderMap,
+    action: &'static str,
 ) -> Result<(), axum::response::Response> {
     let session_id = headers
         .get("x-vem-maintenance-session")
@@ -290,10 +383,11 @@ async fn require_non_bring_up_maintenance_authorization(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or_default();
+    let context = MaintenanceAuthorizationContext {
+        session_id: session_id.to_string(),
+    };
     ctx.maintenance_authorization
-        .authorize_non_bring_up_mutation(&MaintenanceAuthorizationContext {
-            session_id: session_id.to_string(),
-        })
+        .authorize_non_bring_up_mutation(&context)
         .await
         .map_err(|message| {
             (
@@ -304,7 +398,20 @@ async fn require_non_bring_up_maintenance_authorization(
                 }),
             )
                 .into_response()
-        })
+        })?;
+    append_local_diagnostic_log(
+        ctx,
+        "info",
+        "maintenance_audit",
+        "protected maintenance mutation authorized",
+        Some(serde_json::json!({
+            "action": action,
+            "sessionId": context.session_id,
+            "operatorId": ctx.maintenance_authorization.operator_id(&context).await,
+        })),
+    )
+    .await;
+    Ok(())
 }
 
 async fn require_reclaim_maintenance_authorization(
@@ -329,6 +436,33 @@ async fn require_reclaim_maintenance_authorization(
     };
     ctx.maintenance_authorization
         .authorize_reclaim(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|message| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(ErrorMessage {
+                    code: "protected_maintenance_authorization_denied",
+                    message,
+                }),
+            )
+                .into_response()
+        })
+}
+
+async fn require_desktop_exit_maintenance_authorization(
+    ctx: &IpcContext,
+    headers: &HeaderMap,
+) -> Result<(), axum::response::Response> {
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    ctx.maintenance_authorization
+        .authorize_desktop_exit(&MaintenanceAuthorizationContext {
             session_id: session_id.to_string(),
         })
         .await
@@ -511,6 +645,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/provisioning/claim", post(claim_machine))
         .route("/v1/maintenance/status", get(maintenance_status))
         .route("/v1/maintenance/sessions", post(create_maintenance_session))
+        .route("/v1/maintenance/desktop-exit", post(authorize_desktop_exit))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
         .route("/v1/sale-readiness", get(sale_readiness))
@@ -580,7 +715,23 @@ async fn create_maintenance_session(
             .into_response();
     };
     match authority.issue(request).await {
-        Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
+        Ok(session) => {
+            append_local_diagnostic_log(
+                &ctx,
+                "info",
+                "maintenance_audit",
+                "protected maintenance session issued",
+                Some(serde_json::json!({
+                    "sessionId": session.session_id.clone(),
+                    "operatorId": authority.operator_id(&MaintenanceAuthorizationContext {
+                        session_id: session.session_id.clone(),
+                    }).await,
+                    "scopes": session.scopes.clone(),
+                })),
+            )
+            .await;
+            (StatusCode::CREATED, Json(session)).into_response()
+        }
         Err(message) => (
             StatusCode::FORBIDDEN,
             Json(ErrorMessage {
@@ -590,6 +741,19 @@ async fn create_maintenance_session(
         )
             .into_response(),
     }
+}
+
+async fn authorize_desktop_exit(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_desktop_exit_maintenance_authorization(&ctx, &headers).await {
+        return response;
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 fn ipc_cors_layer() -> CorsLayer {
@@ -1557,6 +1721,24 @@ async fn request_machine_reclaim(
     if let Err(response) = require_reclaim_maintenance_authorization(&ctx, &headers).await {
         return response;
     }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    append_local_diagnostic_log(
+        &ctx,
+        "info",
+        "maintenance_audit",
+        "protected maintenance mutation authorized",
+        Some(serde_json::json!({
+            "action": "bring_up.request_reclaim",
+            "sessionId": session_id,
+            "operatorId": ctx.maintenance_authorization.operator_id(&MaintenanceAuthorizationContext {
+                session_id: session_id.to_string(),
+            }).await,
+        })),
+    )
+    .await;
     let _execution_guard = ctx.bring_up_execution_lock.lock().await;
     match ctx.config_store.request_machine_reclaim().await {
         Ok(()) => (StatusCode::OK, Json(bring_up_snapshot_for(&ctx).await)).into_response(),
@@ -1600,7 +1782,10 @@ async fn apply_network_settings(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "bring_up.configure_network")
+            .await
+    {
         return response;
     }
     let _execution_guard = ctx.bring_up_execution_lock.lock().await;
@@ -1776,16 +1961,23 @@ fn bring_up_runtime_config_from_summary(
     summary: crate::config::RuntimeConfigurationSummary,
 ) -> crate::config::MachinePublicRuntimeConfig {
     let provisioned = summary.provisioning_profile_cache.is_some()
-        && summary.effective_public.machine_code.is_some();
+        && summary.effective_public.machine_code.is_some()
+        && summary.configured_state.maintenance_pin_configured;
     let mut provisioning_issues = Vec::new();
-    if !provisioned {
+    if summary.provisioning_profile_cache.is_none()
+        || summary.effective_public.machine_code.is_none()
+    {
         provisioning_issues.push("provisioning_profile_cache_missing".to_string());
+    }
+    if !summary.configured_state.maintenance_pin_configured {
+        provisioning_issues.push("maintenance_pin_not_configured".to_string());
     }
     crate::config::MachinePublicRuntimeConfig {
         public: summary.effective_public,
         machine_secret_configured: summary.configured_state.machine_secret_configured,
         mqtt_signing_secret_configured: summary.configured_state.mqtt_signing_secret_configured,
         mqtt_password_configured: summary.configured_state.mqtt_password_configured,
+        maintenance_pin_configured: summary.configured_state.maintenance_pin_configured,
         provisioned,
         provisioning_issues,
     }
@@ -1830,7 +2022,9 @@ async fn put_config(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "config.update").await
+    {
         return response;
     }
 
@@ -1855,23 +2049,38 @@ async fn claim_machine(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
-        return response;
-    }
-    let _execution_guard = ctx.bring_up_execution_lock.lock().await;
     if let Err(response) =
-        require_legacy_bring_up_task(&ctx, crate::bring_up::BringUpTaskKind::ClaimMachine).await
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "bring_up.claim_machine")
+            .await
     {
         return response;
     }
-    claim_machine_mutation(
-        State(ctx.clone()),
-        headers,
-        Json(_payload),
-        ClaimMachineExecution::FirstClaim,
-    )
-    .await
-    .into_response()
+    let _execution_guard = ctx.bring_up_execution_lock.lock().await;
+    let execution = match bring_up_snapshot_for(&ctx).await.current_task {
+        Some(task) if task.kind == crate::bring_up::BringUpTaskKind::ClaimMachine => {
+            ClaimMachineExecution::FirstClaim
+        }
+        Some(task) if task.kind == crate::bring_up::BringUpTaskKind::ReclaimMachine => {
+            if let Err(response) = require_reclaim_maintenance_authorization(&ctx, &headers).await {
+                return response;
+            }
+            ClaimMachineExecution::Reclaim
+        }
+        _ => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "bring_up_task_stale",
+                    message: "machine claim must use the daemon's current bring-up task"
+                        .to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    claim_machine_mutation(State(ctx.clone()), headers, Json(_payload), execution)
+        .await
+        .into_response()
 }
 
 async fn claim_machine_mutation(
@@ -3468,6 +3677,11 @@ async fn sync_planogram(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "planogram.sync").await
+    {
+        return response;
+    }
 
     let config = match ctx.config_store.load_effective_public_config().await {
         Ok(config) => config,
@@ -3594,6 +3808,11 @@ async fn apply_planogram(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "planogram.apply").await
+    {
+        return response;
+    }
     if let Err(response) = require_hardware_slot_topology_for_planogram(&ctx).await {
         return response;
     }
@@ -3612,7 +3831,13 @@ async fn record_physical_stock_attestation(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+    if let Err(response) = require_non_bring_up_maintenance_authorization(
+        &ctx,
+        &headers,
+        "bring_up.inventory_attestation",
+    )
+    .await
+    {
         return response;
     }
     let _execution_guard = ctx.bring_up_execution_lock.lock().await;
@@ -3681,7 +3906,9 @@ async fn record_stock_movement(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "stock.movement").await
+    {
         return response;
     }
 
@@ -3764,6 +3991,12 @@ async fn update_slot_sales_state(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "stock.slot_sales_state")
+            .await
+    {
+        return response;
+    }
     let machine_code = ctx
         .config_store
         .load_effective_public_config()
@@ -3788,7 +4021,13 @@ async fn clear_whole_machine_maintenance_lock(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+    if let Err(response) = require_non_bring_up_maintenance_authorization(
+        &ctx,
+        &headers,
+        "maintenance.whole_machine_lock_clear",
+    )
+    .await
+    {
         return response;
     }
 
@@ -4142,6 +4381,11 @@ async fn hardware_self_check(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "hardware.self_check").await
+    {
+        return response;
+    }
     let (status, config_updated) = match run_hardware_self_check(&ctx).await {
         Ok(result) => result,
         Err(response) => return response,
@@ -4263,7 +4507,9 @@ async fn control_environment(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "environment.control").await
+    {
         return response;
     }
 
@@ -4391,6 +4637,15 @@ async fn schedule_next_dispense_fault_injection(
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(
+        &ctx,
+        &headers,
+        "hardware.fault_injection.next_dispense",
+    )
+    .await
+    {
+        return response;
     }
     if !hardware_fault_injection_enabled() {
         return (
@@ -4669,6 +4924,7 @@ mod tests {
     use vending_core::hardware::{DispenseProgressEvent, DispenseProgressStage};
 
     static FAULT_INJECTION_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    const TEST_MAINTENANCE_PIN_VERIFIER: &str = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
 
     struct EnvGuard {
         name: &'static str,
@@ -4856,7 +5112,10 @@ mod tests {
             .await
             .expect("seed machine WireGuard key");
         secrets
-            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, "2468")
+            .write_secret(
+                crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT,
+                TEST_MAINTENANCE_PIN_VERIFIER,
+            )
             .await
             .expect("seed maintenance PIN");
         let secrets: Arc<dyn crate::secret::SecretStore> = secrets;
@@ -4927,7 +5186,7 @@ mod tests {
             },
             background_shutdown: CancellationToken::new(),
             bring_up_execution_lock: Arc::new(Mutex::new(())),
-            maintenance_authorization: Arc::new(TestMaintenanceAuthorization { allow: false }),
+            maintenance_authorization: Arc::new(TestMaintenanceAuthorization { allow: true }),
         }
     }
 
@@ -4937,9 +5196,13 @@ mod tests {
         token: Option<&str>,
         app: &Router,
     ) -> StatusCode {
+        let is_post = method == Method::POST;
         let mut builder = Request::builder().method(method).uri(uri);
         if let Some(token) = token {
             builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+            if is_post {
+                builder = builder.header("x-vem-maintenance-session", "protected-session-1");
+            }
         }
         let request = builder.body(axum::body::Body::empty()).expect("request");
         app.clone()
@@ -5733,7 +5996,7 @@ mod tests {
                     .method(Method::POST)
                     .uri(uri)
                     .header(AUTHORIZATION, format!("Bearer {token}"))
-                    .header("x-vem-maintenance-session", "test-maintenance-session")
+                    .header("x-vem-maintenance-session", "protected-session-1")
                     .header(CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(payload.to_string()))
                     .unwrap(),
@@ -5754,7 +6017,7 @@ mod tests {
                     .method(Method::PUT)
                     .uri(uri)
                     .header(AUTHORIZATION, format!("Bearer {token}"))
-                    .header("x-vem-maintenance-session", "test-maintenance-session")
+                    .header("x-vem-maintenance-session", "protected-session-1")
                     .header(CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(payload.to_string()))
                     .unwrap(),
@@ -6989,15 +7252,15 @@ mod tests {
     #[tokio::test]
     async fn api_endpoints_require_bearer_token() {
         let temp_dir = tempdir().expect("tmp");
-        let app = build_router(
-            test_ipc_context(
-                temp_dir.path(),
-                "token-1",
-                Some("MACHINE-1".to_string()),
-                "http://127.0.0.1:0",
-            )
-            .await,
-        );
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: false });
+        let app = build_router(ctx);
         assert_eq!(
             call_status_request(Method::GET, "/v1/catalog", None, &app).await,
             StatusCode::UNAUTHORIZED,
@@ -7595,6 +7858,7 @@ mod tests {
                     .method(Method::POST)
                     .uri("/v1/stock/planogram/sync")
                     .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -9300,6 +9564,45 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
+    #[tokio::test]
+    async fn maintenance_mutation_gateway_rejects_planogram_slot_state_and_self_check_without_a_session(
+    ) {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: false });
+        let app = build_router(ctx);
+
+        for (path, body) in [
+            (
+                "/v1/stock/planogram",
+                json!({
+                    "planogramVersion": "PLAN-1",
+                    "source": "local_maintenance",
+                    "slots": []
+                }),
+            ),
+            (
+                "/v1/stock/slot-sales-state",
+                json!({
+                    "planogramVersion": "PLAN-1",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotSalesState": "frozen",
+                    "source": "local_maintenance"
+                }),
+            ),
+            ("/v1/hardware/self-check", json!({})),
+        ] {
+            let response = post_json(&app, path, "token-1", body).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        }
+    }
+
     struct TestMaintenanceAuthorization {
         allow: bool,
     }
@@ -9323,12 +9626,13 @@ mod tests {
 
         async fn authorize_non_bring_up_mutation(
             &self,
-            _context: &MaintenanceAuthorizationContext,
+            context: &MaintenanceAuthorizationContext,
         ) -> Result<(), String> {
-            // The legacy IPC tests exercise domain effects, not the
-            // authorization boundary. Session rejection is covered through
-            // DaemonMaintenanceAuthorization above.
-            Ok(())
+            if self.allow && context.session_id == "protected-session-1" {
+                Ok(())
+            } else {
+                Err("protected maintenance session is not authorized for mutation".to_string())
+            }
         }
     }
 
@@ -9403,6 +9707,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maintenance_session_and_mutation_audits_identify_the_operator_without_the_pin() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let data_dir = ctx.data_dir.clone();
+        ctx.maintenance_authorization = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let app = build_router(ctx);
+
+        let issued = post_json(
+            &app,
+            "/v1/maintenance/sessions",
+            "token-1",
+            json!({ "pin": "2468", "operatorId": "field-tech-17" }),
+        )
+        .await;
+        assert_eq!(issued.status(), StatusCode::CREATED);
+        let issued = body::to_bytes(issued.into_body(), usize::MAX)
+            .await
+            .expect("session body");
+        let issued: serde_json::Value = serde_json::from_slice(&issued).expect("session json");
+        let session_id = issued["sessionId"].as_str().expect("session id");
+
+        let mutation = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/hardware/self-check")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", session_id)
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(mutation.status(), StatusCode::OK);
+
+        let logs = tokio::fs::read_to_string(data_dir.join("logs").join("machine-events.jsonl"))
+            .await
+            .expect("maintenance audit log");
+        assert!(logs.contains("maintenance_audit"));
+        assert!(logs.contains("field-tech-17"));
+        assert!(logs.contains(session_id));
+        assert!(logs.contains("hardware.self_check"));
+        assert!(!logs.contains("\"pin\""));
+        assert!(!logs.contains("2468"));
+    }
+
+    #[tokio::test]
+    async fn maintenance_pin_failures_are_bounded_before_the_daemon_allows_another_verification() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let app = build_router(ctx);
+
+        for _ in 0..3 {
+            let response = post_json(
+                &app,
+                "/v1/maintenance/sessions",
+                "token-1",
+                json!({ "pin": "0000" }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+
+        let throttled = post_json(
+            &app,
+            "/v1/maintenance/sessions",
+            "token-1",
+            json!({ "pin": "2468" }),
+        )
+        .await;
+        assert_eq!(throttled.status(), StatusCode::FORBIDDEN);
+        let body = body::to_bytes(throttled.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert!(!String::from_utf8_lossy(&body).contains("2468"));
+    }
+
+    #[tokio::test]
     async fn direct_reclaim_ipc_requires_reclaim_scope_not_route_visibility() {
         let temp_dir = tempdir().expect("tmp");
         let mut ctx = test_ipc_context(
@@ -9450,6 +9850,79 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn protected_desktop_exit_requires_a_daemon_issued_desktop_scope() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let app = build_router(ctx);
+
+        let ordinary = post_json(
+            &app,
+            "/v1/maintenance/sessions",
+            "token-1",
+            json!({ "pin": "2468" }),
+        )
+        .await;
+        let ordinary_body = body::to_bytes(ordinary.into_body(), usize::MAX)
+            .await
+            .expect("ordinary body");
+        let ordinary: serde_json::Value = serde_json::from_slice(&ordinary_body).expect("json");
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/maintenance/desktop-exit")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(
+                        "x-vem-maintenance-session",
+                        ordinary["sessionId"].as_str().expect("id"),
+                    )
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let privileged = post_json(
+            &app,
+            "/v1/maintenance/sessions",
+            "token-1",
+            json!({ "pin": "2468", "scopes": ["maintenance.desktop_exit"] }),
+        )
+        .await;
+        let privileged_body = body::to_bytes(privileged.into_body(), usize::MAX)
+            .await
+            .expect("privileged body");
+        let privileged: serde_json::Value = serde_json::from_slice(&privileged_body).expect("json");
+        let allowed = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/maintenance/desktop-exit")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(
+                        "x-vem-maintenance-session",
+                        privileged["sessionId"].as_str().expect("id"),
+                    )
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -10851,6 +11324,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/planogram")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
                 json!({
@@ -10892,6 +11366,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/movements")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
                 json!({
@@ -11959,6 +12434,7 @@ mod tests {
                         .method(Method::POST)
                         .uri("/v1/stock/planogram")
                         .header(AUTHORIZATION, "Bearer token-1")
+                        .header("x-vem-maintenance-session", "protected-session-1")
                         .header(CONTENT_TYPE, "application/json")
                         .body(axum::body::Body::from(planogram.to_string()))
                         .unwrap(),
@@ -11979,6 +12455,7 @@ mod tests {
                             .method(Method::POST)
                             .uri("/v1/stock/movements")
                             .header(AUTHORIZATION, "Bearer token-1")
+                            .header("x-vem-maintenance-session", "protected-session-1")
                             .header(CONTENT_TYPE, "application/json")
                             .body(axum::body::Body::from(
                                 json!({
@@ -12005,6 +12482,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/slot-sales-state")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
                 json!({
@@ -12031,6 +12509,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/movements")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
                 json!({
@@ -13059,6 +13538,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/planogram")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(planogram.to_string()))
             .unwrap();
@@ -13071,6 +13551,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/movements")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
                 json!({
@@ -13094,6 +13575,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/planogram")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(planogram.to_string()))
             .unwrap();
@@ -13192,6 +13674,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/planogram")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(base_planogram.to_string()))
             .unwrap();
@@ -13204,6 +13687,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/movements")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
                 json!({
@@ -13242,6 +13726,7 @@ mod tests {
                 .method(Method::POST)
                 .uri("/v1/stock/planogram")
                 .header(AUTHORIZATION, "Bearer token-1")
+                .header("x-vem-maintenance-session", "protected-session-1")
                 .header(CONTENT_TYPE, "application/json")
                 .body(axum::body::Body::from(conflict.to_string()))
                 .unwrap();
@@ -13347,6 +13832,7 @@ mod tests {
                 .method(Method::POST)
                 .uri("/v1/stock/planogram")
                 .header(AUTHORIZATION, "Bearer token-1")
+                .header("x-vem-maintenance-session", "protected-session-1")
                 .header(CONTENT_TYPE, "application/json")
                 .body(axum::body::Body::from(planogram.to_string()))
                 .unwrap();
@@ -13360,6 +13846,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/movements")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
                 json!({
@@ -13444,6 +13931,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/planogram")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(planogram.to_string()))
             .unwrap();
@@ -13476,6 +13964,7 @@ mod tests {
                 .method(Method::POST)
                 .uri("/v1/stock/movements")
                 .header(AUTHORIZATION, "Bearer token-1")
+                .header("x-vem-maintenance-session", "protected-session-1")
                 .header(CONTENT_TYPE, "application/json")
                 .body(axum::body::Body::from(movement.to_string()))
                 .unwrap();
@@ -13510,6 +13999,7 @@ mod tests {
             .method(Method::POST)
             .uri("/v1/stock/movements")
             .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
                 json!({

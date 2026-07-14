@@ -106,6 +106,10 @@ async fn run_console_cycle(
         secret_store,
     ));
     config_store
+        .import_factory_maintenance_pin_verifier()
+        .await
+        .map_err(|error| format!("factory maintenance PIN verifier import failed: {error}"))?;
+    config_store
         .recover_maintenance_from_cache()
         .await
         .map_err(|error| format!("secure decommission startup recovery failed: {error}"))?;

@@ -48,6 +48,7 @@ pub struct SecretStoreStatus {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub maintenance_pin_configured: bool,
     pub machine_wireguard_private_key_configured: bool,
     pub last_error: Option<String>,
 }
@@ -180,6 +181,7 @@ impl SecretStore for InMemorySecretStore {
             machine_secret_configured: values.contains_key(MACHINE_SECRET_ACCOUNT),
             mqtt_signing_secret_configured: values.contains_key(MQTT_SIGNING_SECRET_ACCOUNT),
             mqtt_password_configured: values.contains_key(MQTT_PASSWORD_ACCOUNT),
+            maintenance_pin_configured: values.contains_key(MACHINE_MAINTENANCE_PIN_ACCOUNT),
             machine_wireguard_private_key_configured: values
                 .contains_key(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT),
             last_error: None,
@@ -233,6 +235,10 @@ impl SecretStore for EnvSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            maintenance_pin_configured: self
+                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
+                .await?
+                .is_some(),
             machine_wireguard_private_key_configured: self
                 .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
                 .await?
@@ -298,6 +304,10 @@ impl SecretStore for FileSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            maintenance_pin_configured: self
+                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
+                .await?
+                .is_some(),
             machine_wireguard_private_key_configured: self
                 .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
                 .await?
@@ -366,10 +376,14 @@ impl SecretStore for ProtectedLocalSecretStore {
             .await;
         let (mqtt_password_configured, mqtt_password_error) =
             self.configured_for_status(MQTT_PASSWORD_ACCOUNT).await;
+        let (maintenance_pin_configured, maintenance_pin_error) = self
+            .configured_for_status(MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await;
         let mut last_error = [
             machine_secret_error,
             mqtt_signing_secret_error,
             mqtt_password_error,
+            maintenance_pin_error,
         ]
         .into_iter()
         .flatten()
@@ -382,6 +396,7 @@ impl SecretStore for ProtectedLocalSecretStore {
             machine_secret_configured,
             mqtt_signing_secret_configured,
             mqtt_password_configured,
+            maintenance_pin_configured,
             machine_wireguard_private_key_configured: {
                 let (configured, error) = self
                     .configured_for_status(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
@@ -622,6 +637,10 @@ impl SecretStore for KeyringSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            maintenance_pin_configured: self
+                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
+                .await?
+                .is_some(),
             machine_wireguard_private_key_configured: self
                 .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
                 .await?

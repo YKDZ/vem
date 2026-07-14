@@ -12,6 +12,7 @@ describe("machine config", () => {
       machineLocationLabel: null,
       machineSecret: null,
       machineSecretConfigured: false,
+      maintenancePinConfigured: false,
       mqttSigningSecret: null,
       mqttSigningSecretConfigured: false,
       mqttUsername: null,
