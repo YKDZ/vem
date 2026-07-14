@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -7535,6 +7535,7 @@ export function createFactoryAcceptanceCancellationController({
 }) {
   let cancellationSignal = null;
   let cleanupFailure = null;
+  const abortController = new AbortController();
 
   const cleanupStep = (name, action) => {
     try {
@@ -7551,7 +7552,12 @@ export function createFactoryAcceptanceCancellationController({
 
   return {
     requestCancellation(signal) {
-      cancellationSignal ??= signal;
+      if (!cancellationSignal) {
+        cancellationSignal = signal;
+        abortController.abort(
+          new Error(`factory acceptance cancelled by ${signal}`),
+        );
+      }
     },
     throwIfCancellationRequested() {
       if (cancellationSignal) {
@@ -7579,6 +7585,9 @@ export function createFactoryAcceptanceCancellationController({
     },
     get state() {
       return { cancellationSignal, cleanupFailure };
+    },
+    get signal() {
+      return abortController.signal;
     },
   };
 }
@@ -7727,6 +7736,71 @@ function buildEncodedPowerShellCommand(script) {
     script,
     "utf16le",
   ).toString("base64")}`;
+}
+
+const TRANSIENT_SSH_TRANSPORT_FAILURE =
+  /(?:kex_exchange_identification|ssh_exchange_identification|connection (?:closed|refused|reset|timed out)|no route to host|operation timed out)/i;
+
+function spawnSshOperation(command, args, { signal } = {}) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      signal,
+    });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve({ stdout, stderr, ...result });
+    };
+    child.on("error", (error) => finish({ status: null, signal: null, error }));
+    child.on("close", (status, signal) => finish({ status, signal }));
+  });
+}
+
+export async function runTransientSshOperation(
+  command,
+  args,
+  {
+    run = spawnSshOperation,
+    sleep = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    maxAttempts = 24,
+    retryDelayMs = 5000,
+    signal,
+  } = {},
+) {
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error("SSH operation maxAttempts must be a positive integer");
+  }
+  const throwIfAborted = () => {
+    if (!signal?.aborted) return;
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("SSH operation cancelled");
+  };
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    throwIfAborted();
+    const result = await run(command, args, { signal });
+    throwIfAborted();
+    if (result.status === 0) return result;
+    const diagnostic = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+    if (
+      attempt === maxAttempts ||
+      !TRANSIENT_SSH_TRANSPORT_FAILURE.test(diagnostic)
+    ) {
+      return result;
+    }
+    await sleep(retryDelayMs);
+    throwIfAborted();
+  }
+  throw new Error("unreachable SSH retry state");
 }
 
 export function buildStdinPowerShellCommand() {
@@ -8565,10 +8639,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           );
         }
         writeFileSync(localScriptPath, script, "utf8");
-        const upload = spawnSync(scpCommand[0], scpCommand.slice(1), {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+        const upload = await runTransientSshOperation(
+          scpCommand[0],
+          scpCommand.slice(1),
+          { signal: cancellation.signal },
+        );
         cancellation.throwIfCancellationRequested();
         if (upload.stdout) {
           process.stdout.write(upload.stdout);
@@ -8588,13 +8663,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         ) {
           const personalizationDirectory = `${remoteSupportScriptRoot}\\personalization`;
           const createSupportRootCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; function Assert-VemFactoryPersonalizationAcl([string]\$Path, [bool]\$Directory) { \$acl = Get-Acl -LiteralPath \$Path -ErrorAction Stop; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$owner = (New-Object System.Security.Principal.NTAccount(\$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$owner -ne \$admin.Value -or -not \$acl.AreAccessRulesProtected) { throw 'factory personalization ACL owner or inheritance is unsafe' }; \$rules = @(@(\$acl.Access) | Where-Object { -not \$_.IsInherited }); if (\$rules.Count -ne 2 -or @('\$system', '\$admin').Count -ne 2) { throw 'factory personalization ACL rule count is unsafe' }; foreach (\$rule in \$rules) { \$sid = \$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$sid -notin @('S-1-5-18', 'S-1-5-32-544') -or \$rule.AccessControlType -ne 'Allow' -or (\$rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'factory personalization ACL grants an unsafe principal or right' } } }; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteUploadedArtifactRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(personalizationDirectory)} -Force | Out-Null; \$acl = Get-Acl -LiteralPath ${quotePowerShellSingleQuoted(personalizationDirectory)}; \$acl.SetAccessRuleProtection(\$true, \$false); foreach (\$rule in @(\$acl.Access)) { [void]\$acl.RemoveAccessRuleAll(\$rule) }; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$acl.SetOwner(\$admin); foreach (\$sid in @(\$system, \$admin)) { \$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(\$sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }; Set-Acl -LiteralPath ${quotePowerShellSingleQuoted(personalizationDirectory)} -AclObject \$acl; & icacls.exe ${quotePowerShellSingleQuoted(personalizationDirectory)} /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null; if (\$LASTEXITCODE -ne 0) { throw 'icacls failed to protect factory personalization staging' }; Assert-VemFactoryPersonalizationAcl -Path ${quotePowerShellSingleQuoted(personalizationDirectory)} -Directory \$true"`;
-          const createSupportRoot = spawnSync(
+          const createSupportRoot = await runTransientSshOperation(
             sshCommand[0],
             [...sshCommand.slice(1), createSupportRootCommand],
-            {
-              encoding: "utf8",
-              stdio: ["ignore", "pipe", "pipe"],
-            },
+            { signal: cancellation.signal },
           );
           if (createSupportRoot.stdout) {
             process.stdout.write(createSupportRoot.stdout);
@@ -8614,13 +8686,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               `${remoteSupportScriptRoot}\\${scriptName}`,
               options,
             );
-            const uploadSupportScript = spawnSync(
+            const uploadSupportScript = await runTransientSshOperation(
               supportUpload[0],
               supportUpload.slice(1),
-              {
-                encoding: "utf8",
-                stdio: ["ignore", "pipe", "pipe"],
-              },
+              { signal: cancellation.signal },
             );
             if (uploadSupportScript.stdout) {
               process.stdout.write(uploadSupportScript.stdout);
@@ -8667,13 +8736,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               `${remoteUploadedArtifactRoot}\\${remoteFileName}`,
               options,
             );
-            const uploadArtifact = spawnSync(
+            const uploadArtifact = await runTransientSshOperation(
               artifactUpload[0],
               artifactUpload.slice(1),
-              {
-                encoding: "utf8",
-                stdio: ["ignore", "pipe", "pipe"],
-              },
+              { signal: cancellation.signal },
             );
             if (uploadArtifact.stdout) {
               process.stdout.write(uploadArtifact.stdout);
@@ -8693,22 +8759,19 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               options.remotePersonalizationMediaPath,
               options,
             );
-            const uploadedMedia = spawnSync(
+            const uploadedMedia = await runTransientSshOperation(
               mediaUpload[0],
               mediaUpload.slice(1),
-              {
-                encoding: "utf8",
-                stdio: ["ignore", "pipe", "pipe"],
-              },
+              { signal: cancellation.signal },
             );
             if (uploadedMedia.status !== 0) {
               throw new Error("Factory Personalization Media upload failed");
             }
             const verifyMediaAclCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; \$path = ${quotePowerShellSingleQuoted(options.remotePersonalizationMediaPath)}; if (-not (Test-Path -LiteralPath \$path -PathType Leaf)) { throw 'factory personalization media is missing' }; \$acl = Get-Acl -LiteralPath \$path -ErrorAction Stop; \$acl.SetAccessRuleProtection(\$true, \$false); foreach (\$rule in @(\$acl.Access)) { [void]\$acl.RemoveAccessRuleAll(\$rule) }; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$acl.SetOwner(\$admin); foreach (\$sid in @(\$system, \$admin)) { \$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(\$sid, 'FullControl', 'None', 'None', 'Allow'))) }; Set-Acl -LiteralPath \$path -AclObject \$acl; & icacls.exe \$path /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null; if (\$LASTEXITCODE -ne 0) { throw 'icacls failed to protect factory personalization media' }; \$acl = Get-Acl -LiteralPath \$path -ErrorAction Stop; \$owner = (New-Object System.Security.Principal.NTAccount(\$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value; \$rules = @(@(\$acl.Access) | Where-Object { -not \$_.IsInherited }); if (\$owner -ne \$admin.Value -or -not \$acl.AreAccessRulesProtected -or \$rules.Count -ne 2) { throw 'factory personalization media ACL is unsafe' }; foreach (\$rule in \$rules) { \$sid = \$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$sid -notin @('S-1-5-18', 'S-1-5-32-544') -or \$rule.AccessControlType -ne 'Allow' -or (\$rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'factory personalization media ACL grants an unsafe principal or right' } }"`;
-            const verifiedMediaAcl = spawnSync(
+            const verifiedMediaAcl = await runTransientSshOperation(
               sshCommand[0],
               [...sshCommand.slice(1), verifyMediaAclCommand],
-              { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+              { signal: cancellation.signal },
             );
             if (verifiedMediaAcl.status !== 0) {
               throw new Error(
