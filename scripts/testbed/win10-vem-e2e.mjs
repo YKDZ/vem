@@ -4499,6 +4499,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       recoveredAfterRestart = $null
       recoveryAttempts = $null
       recoveryEvidence = $null
+      recoveryFailure = $null
     }
     machineCode = $null
     provisioned = $false
@@ -4543,8 +4544,17 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       $evidence.claimHttpStatus = 200
       $evidence.machineCode = $claimResult.machineCode
       $evidence.claimResult.restartRequested = if ($null -ne $claimResult.restartRequested) { [bool]$claimResult.restartRequested } else { $null }
-      if ([bool]$evidence.claimResult.restartRequested) {
-        $evidence.claimResult.restartAttempted = $true
+    } catch {
+      $claimError = Get-HttpErrorInfo $_
+      $evidence.claimStatus = "failed"
+      $evidence.claimFailureCode = Convert-ClaimFailureClassification $claimError
+      $evidence.claimHttpStatus = $claimError.statusCode
+      throw "daemon IPC claim failed: $($evidence.claimFailureCode)"
+    }
+
+    if ([bool]$evidence.claimResult.restartRequested) {
+      $evidence.claimResult.restartAttempted = $true
+      try {
         $recoveredIpc = Restart-DaemonIpcAfterProvisioning ${psString(bringUpPlan.arguments.DaemonReadyFile)}
         $ready = $recoveredIpc.ready
         $baseUrl = $recoveredIpc.baseUrl
@@ -4553,13 +4563,11 @@ function Invoke-TestbedProvisioningClaim($Actions) {
         $evidence.claimResult.recoveredAfterRestart = [bool]$recoveredIpc.recovered
         $evidence.claimResult.recoveryAttempts = [int]$recoveredIpc.attempts
         $evidence.claimResult.recoveryEvidence = [string]$recoveredIpc.recoveryEvidence
+      } catch {
+        $evidence.claimResult.recoveredAfterRestart = $false
+        $evidence.claimResult.recoveryFailure = $_.Exception.Message
+        throw
       }
-    } catch {
-      $claimError = Get-HttpErrorInfo $_
-      $evidence.claimStatus = "failed"
-      $evidence.claimFailureCode = Convert-ClaimFailureClassification $claimError
-      $evidence.claimHttpStatus = $claimError.statusCode
-      throw "daemon IPC claim failed: $($evidence.claimFailureCode)"
     }
 
     $evidence.healthzAfterClaim = Get-SafeHealthzEvidence $baseUrl

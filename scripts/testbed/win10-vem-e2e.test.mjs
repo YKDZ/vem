@@ -1729,6 +1729,7 @@ describe("win10-vem-e2e reset planning", () => {
       "$recoveredIpc = Restart-DaemonIpcAfterProvisioning ",
       provisioningStart,
     );
+    const claimHttpCatch = script.indexOf("} catch {", claim);
     const waitFunction = script.slice(waitFunctionStart, provisioningStart);
     const serviceStart = waitFunction.indexOf(
       'Start-Service -Name "VemVendingDaemon"',
@@ -1745,12 +1746,16 @@ describe("win10-vem-e2e reset planning", () => {
     assert.ok(daemonIpcWait >= provisioningStart);
     assert.ok(daemonIpcWait < configRead);
     assert.ok(configRead < claim);
-    assert.ok(claim < restart);
+    assert.ok(claim < claimHttpCatch);
+    assert.ok(claimHttpCatch < restart);
     assert.match(script, /restartAttempted = \$true/);
     assert.match(
       script,
       /recoveredAfterRestart = \[bool\]\$recoveredIpc\.recovered/,
     );
+    assert.match(script, /recoveryFailure = \$_\.Exception\.Message/);
+    assert.match(script, /claimStatus = "provisioned"/);
+    assert.match(script, /claimHttpStatus = 200/);
   });
 
   it("starts a stopped daemon service and waits for delayed IPC readiness", () => {
@@ -1813,6 +1818,12 @@ $daemonIpc = Wait-DaemonIpc "C:\\daemon-ready.json" 3 1
     ]);
     assert.equal(result.attempts, 2);
     assert.equal(result.observedHealth, true);
+    assert.match(script, /\[int\]\$MaxAttempts = 20/);
+    assert.match(script, /\[int\]\$RetryDelayMilliseconds = 1000/);
+    assert.match(
+      script,
+      /Invoke-IpcJson "GET" "\$baseUrl\/healthz" @\{\} -TimeoutSec 2/,
+    );
   });
 
   it("retains Start-Service failures in the daemon IPC diagnostic", () => {
