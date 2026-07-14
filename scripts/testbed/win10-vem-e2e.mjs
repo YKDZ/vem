@@ -4066,6 +4066,26 @@ function Convert-ClaimFailureClassification($ErrorInfo) {
   return "request_failed"
 }
 
+function Get-NetworkSaleResponseBlockingCodes($ErrorInfo) {
+  if ($null -eq $ErrorInfo.body) {
+    return @()
+  }
+  $messageProperty = $ErrorInfo.body.PSObject.Properties["message"]
+  if ($null -eq $messageProperty -or $null -eq $messageProperty.Value) {
+    return @()
+  }
+  $message = [string]$messageProperty.Value
+  $match = [regex]::Match(
+    $message,
+    '\Amachine is not ready for network sale: ([A-Z][A-Z0-9_]*(?:,[A-Z][A-Z0-9_]*)*)\z',
+    [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+  )
+  if (-not $match.Success) {
+    return @()
+  }
+  return @($match.Groups[1].Value.Split(','))
+}
+
 function Test-ConfigFieldPresent($Object, [string]$Name) {
   if ($null -eq $Object) { return $false }
   $property = $Object.PSObject.Properties[$Name]
@@ -6325,6 +6345,196 @@ function Assert-SimulatedSaleFlowPreMutationTarget($Target, $DaemonMachineCode, 
   return [ordered]@{ ok = $true; code = "pre_mutation_target_verified" }
 }
 
+function Get-HardwareMappingFaultProbeContext(
+  [string]$ContextPath,
+  [string]$RunId
+) {
+  if (-not (Test-Path -LiteralPath $ContextPath -PathType Leaf)) {
+    throw "hardware mapping fault probe requires a successful sale-prepare context"
+  }
+
+  $Context = Read-JsonFile $ContextPath
+  if ([string]$Context.runId -ne [string]$RunId) {
+    throw "hardware mapping fault probe context belongs to a different run"
+  }
+  if (
+    $null -eq $Context.successfulPrepare -or
+    [string]$Context.successfulPrepare.runId -ne [string]$RunId -or
+    [string]$Context.successfulPrepare.status -ne "succeeded" -or
+    [string]$Context.successfulPrepare.phase -ne "prepare" -or
+    [string]::IsNullOrWhiteSpace([string]$Context.successfulPrepare.orderId) -or
+    [string]::IsNullOrWhiteSpace([string]$Context.successfulPrepare.paymentId)
+  ) {
+    throw "hardware mapping fault probe context has no successful sale-prepare baseline"
+  }
+  if (
+    $null -eq $Context.saleView -or
+    [string]::IsNullOrWhiteSpace([string]$Context.saleView.planogramVersion) -or
+    $null -eq $Context.selectedItem -or
+    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.inventoryId) -or
+    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.slotId) -or
+    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.slotCode)
+  ) {
+    throw "hardware mapping fault probe context has no saleable baseline item"
+  }
+  if ($null -eq $Context.paymentOptions -or $null -eq $Context.paymentOptions.options) {
+    throw "hardware mapping fault probe context has no payment options"
+  }
+
+  $contextPaymentOptions = @($Context.paymentOptions.options | Where-Object {
+    $null -ne $_ -and
+    $_.disabled -ne $true -and
+    [string]$_.method -ne "payment_code" -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.optionKey) -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.method) -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.providerCode)
+  })
+  $paymentOption = @($contextPaymentOptions | Where-Object {
+    [string]$_.method -eq "qr_code"
+  } | Select-Object -First 1)
+  if ($paymentOption.Count -eq 0) {
+    $paymentOption = @($contextPaymentOptions | Select-Object -First 1)
+  }
+  if ($paymentOption.Count -eq 0) {
+    throw "hardware mapping fault probe requires an available non-scanner payment option"
+  }
+
+  return [ordered]@{
+    selectedItem = $Context.selectedItem
+    planogramVersion = [string]$Context.saleView.planogramVersion
+    paymentOption = $paymentOption[0]
+  }
+}
+
+function Resolve-HardwareMappingFaultPaymentOption(
+  $ContextPaymentOption,
+  [string]$BaseUrl,
+  $Headers
+) {
+  $livePaymentOptions = Invoke-IpcJson "GET" "$BaseUrl/v1/payment-options" $Headers
+  $matchingOption = @($livePaymentOptions.options | Where-Object {
+    $_.disabled -ne $true -and
+    [string]$_.optionKey -eq [string]$ContextPaymentOption.optionKey -and
+    [string]$_.method -eq [string]$ContextPaymentOption.method -and
+    [string]$_.providerCode -eq [string]$ContextPaymentOption.providerCode
+  } | Select-Object -First 1)
+  if ($matchingOption.Count -eq 0) {
+    throw "hardware mapping fault probe payment option is no longer available"
+  }
+  $saleReadiness = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-readiness" $Headers
+  $readyPaymentOption = @($saleReadiness.components.paymentOptions.methods | Where-Object {
+    $_.ready -eq $true -and
+    [string]$_.method -eq [string]$ContextPaymentOption.method -and
+    [string]$_.providerCode -eq [string]$ContextPaymentOption.providerCode
+  } | Select-Object -First 1)
+  if ($readyPaymentOption.Count -eq 0) {
+    throw "hardware mapping fault probe payment option is not ready"
+  }
+  return [ordered]@{
+    option = $matchingOption[0]
+    ready = $true
+  }
+}
+
+function Invoke-HardwareMappingFaultProbe(
+  [string]$BaseUrl,
+  $Headers,
+  $DaemonIpc,
+  [string]$ContextPath,
+  [string]$RunId
+) {
+  $healthz = $DaemonIpc.healthz
+  $readyz = $DaemonIpc.readyz
+  $readinessBlockingCodes = @($readyz.blockingCodes | ForEach-Object { [string]$_ })
+  $mappingFault = [ordered]@{
+    healthzObserved = $null -ne $healthz -and $healthz.observed -eq $true
+    readyzObserved = $null -ne $readyz -and $readyz.observed -eq $true
+    hardwareOnline = if ($null -ne $healthz) { [bool]$healthz.hardwareOnline } else { $null }
+    readinessBlockingCodes = $readinessBlockingCodes
+    exactLowerControllerBlocker =
+      $readinessBlockingCodes.Count -eq 1 -and
+      $readinessBlockingCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
+  }
+  $transactionEntry = [ordered]@{
+    endpoint = "/v1/intents/create-order"
+    attempted = $false
+    rejected = $false
+    statusCode = $null
+    responseCode = $null
+    readinessBlockingCodes = $readinessBlockingCodes
+    responseBlockingCodes = @()
+    context = $null
+    request = $null
+    orderId = $null
+    paymentId = $null
+    vendingCommandId = $null
+  }
+
+  if (
+    $mappingFault.healthzObserved -ne $true -or
+    $mappingFault.readyzObserved -ne $true -or
+    $healthz.hardwareOnline -ne $false -or
+    $null -eq $readyz
+  ) {
+    throw "hardware mapping fault probe requires observed unhealthy daemon IPC healthz and readyz"
+  }
+
+  $probeContext = Get-HardwareMappingFaultProbeContext $ContextPath $RunId
+  $resolvedPaymentOption = Resolve-HardwareMappingFaultPaymentOption $probeContext.paymentOption $BaseUrl $Headers
+  $paymentOption = $resolvedPaymentOption.option
+  $createOrderRequest = [ordered]@{
+    inventoryId = [string]$probeContext.selectedItem.inventoryId
+    quantity = 1
+    planogramVersion = [string]$probeContext.planogramVersion
+    slotId = [string]$probeContext.selectedItem.slotId
+    slotCode = [string]$probeContext.selectedItem.slotCode
+    paymentMethod = [string]$paymentOption.method
+    paymentProviderCode = [string]$paymentOption.providerCode
+    profileSnapshot = [ordered]@{ source = "hardware_mapping_fault_probe"; runId = $RunId }
+  }
+  $transactionEntry.context = [ordered]@{
+    runId = $RunId
+    successfulPrepare = [ordered]@{
+      runId = $RunId
+      status = "succeeded"
+      phase = "prepare"
+    }
+    selectedItem = [ordered]@{
+      inventoryId = [string]$probeContext.selectedItem.inventoryId
+      slotId = [string]$probeContext.selectedItem.slotId
+      slotCode = [string]$probeContext.selectedItem.slotCode
+    }
+    planogramVersion = [string]$probeContext.planogramVersion
+    paymentOption = [ordered]@{
+      optionKey = [string]$paymentOption.optionKey
+      method = [string]$paymentOption.method
+      providerCode = [string]$paymentOption.providerCode
+      ready = [bool]$resolvedPaymentOption.ready
+    }
+  }
+  $transactionEntry.request = $createOrderRequest
+  $transactionEntry.attempted = $true
+  try {
+    Invoke-IpcJson "POST" "$BaseUrl/v1/intents/create-order" $Headers $createOrderRequest | Out-Null
+    $transactionEntry.responseCode = "transaction_creation_accepted"
+  } catch {
+    $rejection = Get-HttpErrorInfo $_
+    $transactionEntry.statusCode = $rejection.statusCode
+    $transactionEntry.responseCode = Convert-ClaimFailureClassification $rejection
+    $transactionEntry.responseBlockingCodes = @(Get-NetworkSaleResponseBlockingCodes $rejection)
+    $transactionEntry.rejected =
+      $transactionEntry.statusCode -eq 400 -and
+      $transactionEntry.responseCode -eq "create_order_blocked" -and
+      $transactionEntry.responseBlockingCodes.Count -eq 1 -and
+      $transactionEntry.responseBlockingCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
+  }
+
+  return [ordered]@{
+    mappingFault = $mappingFault
+    transactionEntry = $transactionEntry
+  }
+}
+
 function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $reportPath = ${psString(SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE)}
   $contextPath = ${psString(SIMULATED_HARDWARE_SALE_CONTEXT_FILE)}
@@ -6375,6 +6585,44 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
     $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
     $daemonIpcBeforeMutation = Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    $hardwareMappingFaultProbeRequired =
+      $daemonIpcBeforeMutation.healthz.observed -eq $true -and
+      $daemonIpcBeforeMutation.healthz.hardwareOnline -eq $false
+    if ($hardwareMappingFaultProbeRequired) {
+      $hardwareMappingFaultProbe = Invoke-HardwareMappingFaultProbe $baseUrl $headers $daemonIpcBeforeMutation $contextPath ${psString(runId)}
+      $report = [ordered]@{
+        schemaVersion = "simulated-hardware-sale-flow/v1"
+        phase = "prepare"
+        runtimeState = [ordered]@{
+          hardwareMode = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.hardwareMode)) { [string]$bringUp.hardwareMode } else { "unknown" }
+          bringUpState = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.state)) { [string]$bringUp.state } else { "unknown" }
+        }
+        daemonIpc = [ordered]@{
+          healthz = $daemonIpcBeforeMutation.healthz
+          readyz = $daemonIpcBeforeMutation.readyz
+        }
+        hardwareMappingFault = $hardwareMappingFaultProbe.mappingFault
+        transactionEntry = $hardwareMappingFaultProbe.transactionEntry
+        sale = [ordered]@{
+          orderId = $null
+          paymentId = $null
+          vendingCommandId = $null
+        }
+        result = [ordered]@{
+          simulatedHardwareReady = New-RuntimeAcceptanceAssertion "failed" $false
+          sellReady = [ordered]@{ status = "not_asserted"; asserted = $false }
+        }
+        diagnostics = @([ordered]@{
+          code = "hardware_mapping_fault"
+          message = "transaction creation is blocked while the serial mapping fault is active"
+        })
+      }
+      Write-JsonFile $reportPath $report
+      return [ordered]@{
+        path = $reportPath
+        report = $report
+      }
+    }
     $platformSetupGuardEvidence = [ordered]@{
       target = ${psString(ephemeralPlatformSetup?.target ?? "")}
       apiBaseUrl = ${psString(ephemeralPlatformSetup?.apiBaseUrl ?? "")}
@@ -6439,7 +6687,33 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       }
     }
     $createOrder = Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order" $headers $orderPayload
+    $preparedOrderId = if (-not [string]::IsNullOrWhiteSpace([string]$createOrder.orderId)) {
+      [string]$createOrder.orderId
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$createOrder.id)) {
+      [string]$createOrder.id
+    } else {
+      $null
+    }
+    $preparedPaymentId = if (-not [string]::IsNullOrWhiteSpace([string]$createOrder.paymentId)) {
+      [string]$createOrder.paymentId
+    } else {
+      $null
+    }
+    if (
+      [string]::IsNullOrWhiteSpace($preparedOrderId) -or
+      [string]::IsNullOrWhiteSpace($preparedPaymentId)
+    ) {
+      throw "successful sale prepare did not return order and payment IDs"
+    }
     Write-JsonFile $contextPath ([ordered]@{
+      runId = ${psString(runId)}
+      successfulPrepare = [ordered]@{
+        runId = ${psString(runId)}
+        status = "succeeded"
+        phase = "prepare"
+        orderId = $preparedOrderId
+        paymentId = $preparedPaymentId
+      }
       bringUp = $bringUp
       configSummary = $configSummary
       daemonIpcBeforeMutation = $daemonIpcBeforeMutation

@@ -2081,6 +2081,36 @@ describe("win10-vem-e2e reset planning", () => {
       /scannerOnline = \[bool\]\$daemonIpc\.healthz\.scannerOnline/,
     );
     assert.match(script, /daemonHealth = \$facts\.daemonHealth/);
+    assert.match(script, /function Invoke-HardwareMappingFaultProbe/);
+    assert.match(script, /LOWER_CONTROLLER_UNAVAILABLE/);
+    assert.match(
+      script,
+      /hardwareMappingFault = \$hardwareMappingFaultProbe\.mappingFault/,
+    );
+    assert.match(
+      script,
+      /transactionEntry = \$hardwareMappingFaultProbe\.transactionEntry/,
+    );
+    assert.match(script, /successfulPrepare = \[ordered\]@\{/);
+    assert.match(script, /\[string\]\$Context\.runId -ne \[string\]\$RunId/);
+    assert.match(script, /successfulPrepare\.status -ne "succeeded"/);
+    assert.match(script, /successfulPrepare\.phase -ne "prepare"/);
+    assert.match(script, /\[string\]\$Context\.saleView\.planogramVersion/);
+    assert.match(script, /\[string\]\$Context\.selectedItem\.inventoryId/);
+    assert.match(script, /\[string\]\$_\.method -ne "payment_code"/);
+    assert.match(script, /\[string\]\$_\.method -eq "qr_code"/);
+    assert.match(script, /\/v1\/sale-readiness/);
+    assert.match(script, /\$_.ready -eq \$true/);
+    assert.match(script, /readyzObserved/);
+    assert.match(script, /statusCode = \$rejection\.statusCode/);
+    assert.match(
+      script,
+      /responseCode = Convert-ClaimFailureClassification \$rejection/,
+    );
+    assert.match(script, /hardwareMappingFaultProbeRequired/);
+    assert.doesNotMatch(script, /hardwareMappingFaultCode/);
+    assert.doesNotMatch(script, /hardware-mapping-fault-code/);
+    assert.doesNotMatch(script, /hardware-mapping-fault-probe/);
     assert.match(
       script,
       /\$Facts\.runtimeState\.bringUpState -ne "simulated_hardware_ready"/,

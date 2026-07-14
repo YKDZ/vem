@@ -170,6 +170,7 @@ function currentTransactionOrScenario(): TransactionSnapshot {
       orderStatus: "dispensing",
       nextAction: "dispensing",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "sent",
         lastError: null,
@@ -191,6 +192,7 @@ function currentTransactionOrScenario(): TransactionSnapshot {
       orderStatus: "fulfilled",
       nextAction: "success",
       vending: {
+        commandId: null,
         commandNo: currentTransaction.vending?.commandNo ?? "UI-DEBUG-CMD",
         status: "succeeded",
         lastError: null,
@@ -266,6 +268,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
           color: item.color,
         }
       : null,
+    paymentId: null,
     paymentNo: "UI-DEBUG-PAY",
     paymentMethod,
     paymentProvider: providerCode,
@@ -298,6 +301,7 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
     nextAction: succeed ? "dispensing" : "payment_failed",
     vending: succeed
       ? {
+          commandId: null,
           commandNo: "UI-DEBUG-CMD",
           status: "sent",
           lastError: null,

@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   createScannerCodeDescriptor,
@@ -457,7 +458,7 @@ function runFailedDispenseCommand(commandJson) {
   };
 }
 
-function runBlockedSaleCommand(commandJson, failureMode) {
+function runBlockedSaleCommand(commandJson, failureMode, runId) {
   const command = JSON.parse(commandJson);
   if (!Array.isArray(command) || command.length < 2)
     throw new Error(`${failureMode} blocked-sale command must be a JSON array`);
@@ -474,39 +475,147 @@ function runBlockedSaleCommand(commandJson, failureMode) {
       `${failureMode} blocked-sale command returned invalid JSON`,
     );
   }
+  return assertBlockedSaleEvidence({
+    commandExitStatus: result.status,
+    output,
+    failureMode,
+    runId,
+  });
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function assertBlockedSaleEvidence({
+  commandExitStatus,
+  output,
+  failureMode,
+  runId,
+}) {
   const flow = output?.simulatedHardwareSaleFlow;
   const sale = flow?.sale;
-  const diagnosticCodes = Array.isArray(flow?.diagnostics)
-    ? flow.diagnostics
-        .map((diagnostic) => diagnostic?.code)
-        .filter((code) => typeof code === "string")
-    : [];
+  const healthz = flow?.daemonIpc?.healthz;
+  const readyz = flow?.daemonIpc?.readyz;
+  const mappingFault = flow?.hardwareMappingFault;
+  const transactionEntry = flow?.transactionEntry;
+  const readinessBlockingCodes = readyz?.blockingCodes;
+  const responseBlockingCodes = transactionEntry?.responseBlockingCodes;
+  const context = transactionEntry?.context;
+  const request = transactionEntry?.request;
+  const selectedItem = context?.selectedItem;
+  const paymentOption = context?.paymentOption;
+  const exactLowerControllerBlocker =
+    Array.isArray(readinessBlockingCodes) &&
+    readinessBlockingCodes.length === 1 &&
+    readinessBlockingCodes[0] === "LOWER_CONTROLLER_UNAVAILABLE";
+  const exactResponseLowerControllerBlocker =
+    Array.isArray(responseBlockingCodes) &&
+    responseBlockingCodes.length === 1 &&
+    responseBlockingCodes[0] === "LOWER_CONTROLLER_UNAVAILABLE";
   if (
-    !Number.isInteger(result.status) ||
-    result.status <= 0 ||
+    !Number.isInteger(commandExitStatus) ||
+    commandExitStatus <= 0 ||
     output?.ok === true ||
     flow?.phase !== "prepare" ||
     flow?.result?.simulatedHardwareReady?.status !== "failed" ||
-    typeof flow?.runtimeState?.bringUpState !== "string" ||
-    flow?.runtimeState?.bringUpState === "simulated_hardware_ready" ||
-    (flow?.daemonHealth?.hardwareOnline !== false &&
-      flow?.daemonHealth?.scannerOnline !== false) ||
-    typeof sale?.orderId === "string" ||
-    typeof sale?.paymentId === "string" ||
-    typeof sale?.vendingCommandId === "string" ||
-    !diagnosticCodes.includes("simulated_sale_flow_error")
+    healthz?.observed !== true ||
+    healthz.hardwareOnline !== false ||
+    readyz?.observed !== true ||
+    !exactLowerControllerBlocker ||
+    mappingFault?.healthzObserved !== true ||
+    mappingFault?.readyzObserved !== true ||
+    mappingFault?.hardwareOnline !== false ||
+    JSON.stringify(mappingFault?.readinessBlockingCodes) !==
+      JSON.stringify(readinessBlockingCodes) ||
+    Object.hasOwn(mappingFault ?? {}, "adapterDiagnosticCode") ||
+    transactionEntry?.endpoint !== "/v1/intents/create-order" ||
+    transactionEntry?.attempted !== true ||
+    transactionEntry?.rejected !== true ||
+    transactionEntry?.statusCode !== 400 ||
+    transactionEntry?.responseCode !== "create_order_blocked" ||
+    !exactResponseLowerControllerBlocker ||
+    JSON.stringify(transactionEntry?.readinessBlockingCodes) !==
+      JSON.stringify(readinessBlockingCodes) ||
+    context?.runId !== runId ||
+    context?.successfulPrepare?.runId !== runId ||
+    context?.successfulPrepare?.status !== "succeeded" ||
+    context?.successfulPrepare?.phase !== "prepare" ||
+    Object.hasOwn(context?.successfulPrepare ?? {}, "orderId") ||
+    Object.hasOwn(context?.successfulPrepare ?? {}, "paymentId") ||
+    !isNonEmptyString(selectedItem?.inventoryId) ||
+    !isNonEmptyString(selectedItem?.slotId) ||
+    !isNonEmptyString(selectedItem?.slotCode) ||
+    !isNonEmptyString(context?.planogramVersion) ||
+    paymentOption?.method === "payment_code" ||
+    !isNonEmptyString(paymentOption?.optionKey) ||
+    !isNonEmptyString(paymentOption?.method) ||
+    !isNonEmptyString(paymentOption?.providerCode) ||
+    paymentOption?.ready !== true ||
+    request?.inventoryId !== selectedItem?.inventoryId ||
+    request?.slotId !== selectedItem?.slotId ||
+    request?.slotCode !== selectedItem?.slotCode ||
+    request?.planogramVersion !== context?.planogramVersion ||
+    request?.quantity !== 1 ||
+    request?.paymentMethod !== paymentOption?.method ||
+    request?.paymentProviderCode !== paymentOption?.providerCode ||
+    transactionEntry?.orderId !== null ||
+    transactionEntry?.paymentId !== null ||
+    transactionEntry?.vendingCommandId !== null ||
+    sale?.orderId !== null ||
+    sale?.paymentId !== null ||
+    sale?.vendingCommandId !== null
   )
     throw new Error(
       `${failureMode} did not fail closed before creating a sale binding`,
     );
   return {
-    commandExitStatus: result.status,
+    commandExitStatus,
     simulatedHardwareReady: "failed",
-    bringUpState: flow.runtimeState.bringUpState,
-    hardwareOnline: flow.daemonHealth.hardwareOnline,
-    scannerOnline: flow.daemonHealth.scannerOnline,
+    daemonHealthObserved: healthz.observed,
+    hardwareOnline: healthz.hardwareOnline,
+    scannerOnline: healthz.scannerOnline,
+    readyzObserved: readyz.observed,
+    readinessBlockingCodes,
+    responseBlockingCodes,
+    transactionEntry,
     saleBindingCreated: false,
-    diagnosticCodes,
+  };
+}
+
+export function observedMappingFailureCase({
+  failureMode,
+  startReport,
+  expectedDiagnosticCode,
+  daemonFailClosed,
+}) {
+  const serialSession = startReport?.serialSession;
+  const diagnosticCode = startReport?.diagnostics?.find(
+    (diagnostic) => diagnostic?.code === expectedDiagnosticCode,
+  )?.code;
+  if (
+    startReport?.result !== "succeeded" ||
+    diagnosticCode !== expectedDiagnosticCode ||
+    !isNonEmptyString(serialSession?.serialSessionId) ||
+    !isNonEmptyString(serialSession?.startOperationReference) ||
+    !isNonEmptyString(serialSession?.deviceMappingDigest)
+  ) {
+    throw new Error(
+      `${failureMode} did not bind its fail-closed evidence to the observed start-serial-session report`,
+    );
+  }
+  return {
+    failureMode,
+    operation: "prepare-sale-with-faulted-mapping",
+    result: "observed_failure",
+    adapterResult: startReport.result,
+    diagnosticCode,
+    startSerialSession: {
+      serialSessionId: serialSession.serialSessionId,
+      startOperationReference: serialSession.startOperationReference,
+      deviceMappingDigest: serialSession.deviceMappingDigest,
+    },
+    daemonFailClosed,
   };
 }
 
@@ -546,15 +655,16 @@ async function runProductionFailureMatrix(options) {
       const failClosed = runBlockedSaleCommand(
         options.salePrepareCommandJson,
         failureMode,
+        options.runId,
       );
-      cases.push({
-        failureMode,
-        operation: "prepare-sale-with-faulted-mapping",
-        result: "observed_failure",
-        adapterResult: start.result,
-        diagnosticCode,
-        daemonFailClosed: failClosed,
-      });
+      cases.push(
+        observedMappingFailureCase({
+          failureMode,
+          startReport: start,
+          expectedDiagnosticCode: diagnosticCode,
+          daemonFailClosed: failClosed,
+        }),
+      );
     } finally {
       if (mappingSession)
         await stopFailureSession(options, mappingSession, null);
@@ -898,9 +1008,14 @@ async function runFailureMatrix({
   return cases;
 }
 
-main().catch((error) => {
-  console.error(
-    error instanceof Error ? error.message : "serial conformance failed",
-  );
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main().catch((error) => {
+    console.error(
+      error instanceof Error ? error.message : "serial conformance failed",
+    );
+    process.exitCode = 1;
+  });
+}

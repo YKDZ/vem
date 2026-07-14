@@ -24,6 +24,10 @@ import {
   VM_HOST_ADAPTER_CONTRACT_VERSION,
   VmHostAdapterExecutionError,
 } from "./vm-host-adapter-contract.mjs";
+import {
+  assertBlockedSaleEvidence,
+  observedMappingFailureCase,
+} from "./vm-host-adapter-serial-conformance.mjs";
 
 const HASH = "a".repeat(64);
 const PROTECTED_SCANNER_INPUT = "test-scanner-secret";
@@ -40,6 +44,76 @@ const SERIAL_CONFORMANCE = new URL(
 ).pathname;
 
 process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
+
+function blockedSaleOutput(overrides = {}) {
+  const flow = {
+    phase: "prepare",
+    result: { simulatedHardwareReady: { status: "failed" } },
+    daemonIpc: {
+      healthz: {
+        observed: true,
+        hardwareOnline: false,
+        scannerOnline: true,
+      },
+      readyz: {
+        observed: true,
+        blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      },
+    },
+    hardwareMappingFault: {
+      healthzObserved: true,
+      readyzObserved: true,
+      hardwareOnline: false,
+      readinessBlockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+    },
+    transactionEntry: {
+      endpoint: "/v1/intents/create-order",
+      attempted: true,
+      rejected: true,
+      statusCode: 400,
+      responseCode: "create_order_blocked",
+      readinessBlockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      responseBlockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      context: {
+        runId: "RUN-12-CONTRACT",
+        successfulPrepare: {
+          runId: "RUN-12-CONTRACT",
+          status: "succeeded",
+          phase: "prepare",
+        },
+        selectedItem: {
+          inventoryId: "inventory-001",
+          slotId: "slot-001",
+          slotCode: "A1",
+        },
+        planogramVersion: "planogram-001",
+        paymentOption: {
+          optionKey: "qr_code:alipay",
+          method: "qr_code",
+          providerCode: "alipay",
+          ready: true,
+        },
+      },
+      request: {
+        inventoryId: "inventory-001",
+        quantity: 1,
+        planogramVersion: "planogram-001",
+        slotId: "slot-001",
+        slotCode: "A1",
+        paymentMethod: "qr_code",
+        paymentProviderCode: "alipay",
+      },
+      orderId: null,
+      paymentId: null,
+      vendingCommandId: null,
+    },
+    sale: { orderId: null, paymentId: null, vendingCommandId: null },
+  };
+  return {
+    ok: false,
+    simulatedHardwareSaleFlow: { ...flow, ...overrides },
+  };
+}
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -2571,12 +2645,168 @@ describe("VM Host Adapter contract", () => {
   it("requires swapped and missing serial mappings to block a new sale before business IDs exist", () => {
     const source = readFileSync(SERIAL_CONFORMANCE, "utf8");
     assert.match(source, /prepare-sale-with-faulted-mapping/);
-    assert.match(source, /flow\?\.runtimeState\?\.bringUpState/);
-    assert.match(source, /flow\?\.daemonHealth\?\.hardwareOnline !== false/);
-    assert.match(source, /flow\?\.daemonHealth\?\.scannerOnline !== false/);
-    assert.match(source, /typeof sale\?\.orderId === "string"/);
-    assert.match(source, /typeof sale\?\.paymentId === "string"/);
-    assert.match(source, /typeof sale\?\.vendingCommandId === "string"/);
+    assert.match(source, /healthz\?\.observed !== true/);
+    assert.match(source, /readyz\?\.observed !== true/);
+    assert.match(source, /readinessBlockingCodes\.length === 1/);
+    assert.match(
+      source,
+      /Object\.hasOwn\(mappingFault \?\? \{\}, "adapterDiagnosticCode"\)/,
+    );
+    assert.match(source, /transactionEntry\?\.statusCode !== 400/);
+    assert.match(
+      source,
+      /transactionEntry\?\.responseCode !== "create_order_blocked"/,
+    );
+    assert.match(
+      source,
+      /context\?\.successfulPrepare\?\.status !== "succeeded"/,
+    );
+    assert.match(source, /paymentOption\?\.method === "payment_code"/);
+    assert.match(source, /startSerialSession/);
+    assert.doesNotMatch(source, /hardware-mapping-fault-code/);
+    assert.match(
+      source,
+      /transactionEntry\?\.endpoint !== "\/v1\/intents\/create-order"/,
+    );
+    assert.match(source, /transactionEntry\?\.rejected !== true/);
+    assert.match(source, /transactionEntry\?\.orderId !== null/);
+    assert.match(source, /transactionEntry\?\.paymentId !== null/);
+    assert.match(source, /transactionEntry\?\.vendingCommandId !== null/);
+  });
+
+  it("rejects mapping fault reports with extra blockers or fabricated sale context", () => {
+    const evidence = assertBlockedSaleEvidence({
+      commandExitStatus: 1,
+      output: blockedSaleOutput(),
+      failureMode: "swapped-roles",
+      runId: "RUN-12-CONTRACT",
+    });
+    assert.equal(evidence.scannerOnline, true);
+    assert.deepEqual(evidence.readinessBlockingCodes, [
+      "LOWER_CONTROLLER_UNAVAILABLE",
+    ]);
+
+    for (const [description, responseBlockingCodes] of [
+      [
+        "a response with multiple blockers after a single-blocker readyz snapshot",
+        ["LOWER_CONTROLLER_UNAVAILABLE", "NO_PAYMENT_OPTIONS"],
+      ],
+      [
+        "a response with a different blocker after a single-blocker readyz snapshot",
+        ["NO_PAYMENT_OPTIONS"],
+      ],
+      [
+        "an unparseable response message after a single-blocker readyz snapshot",
+        [],
+      ],
+    ]) {
+      const staleReadyzSnapshot = blockedSaleOutput();
+      staleReadyzSnapshot.simulatedHardwareSaleFlow.transactionEntry.responseBlockingCodes =
+        responseBlockingCodes;
+      assert.throws(
+        () =>
+          assertBlockedSaleEvidence({
+            commandExitStatus: 1,
+            output: staleReadyzSnapshot,
+            failureMode: "swapped-roles",
+            runId: "RUN-12-CONTRACT",
+          }),
+        /did not fail closed/,
+        description,
+      );
+    }
+
+    const multiBlocker = blockedSaleOutput();
+    multiBlocker.simulatedHardwareSaleFlow.daemonIpc.readyz.blockingCodes.push(
+      "NO_PAYMENT_OPTIONS",
+    );
+    multiBlocker.simulatedHardwareSaleFlow.hardwareMappingFault.readinessBlockingCodes.push(
+      "NO_PAYMENT_OPTIONS",
+    );
+    multiBlocker.simulatedHardwareSaleFlow.transactionEntry.readinessBlockingCodes.push(
+      "NO_PAYMENT_OPTIONS",
+    );
+    assert.throws(
+      () =>
+        assertBlockedSaleEvidence({
+          commandExitStatus: 1,
+          output: multiBlocker,
+          failureMode: "swapped-roles",
+          runId: "RUN-12-CONTRACT",
+        }),
+      /did not fail closed/,
+    );
+
+    const unavailablePayment = blockedSaleOutput();
+    unavailablePayment.simulatedHardwareSaleFlow.transactionEntry.context.paymentOption.ready = false;
+    assert.throws(
+      () =>
+        assertBlockedSaleEvidence({
+          commandExitStatus: 1,
+          output: unavailablePayment,
+          failureMode: "missing-device",
+          runId: "RUN-12-CONTRACT",
+        }),
+      /did not fail closed/,
+    );
+
+    const missingContext = blockedSaleOutput();
+    missingContext.simulatedHardwareSaleFlow.transactionEntry.context = null;
+    assert.throws(
+      () =>
+        assertBlockedSaleEvidence({
+          commandExitStatus: 1,
+          output: missingContext,
+          failureMode: "missing-device",
+          runId: "RUN-12-CONTRACT",
+        }),
+      /did not fail closed/,
+    );
+
+    const fabricatedContext = blockedSaleOutput();
+    fabricatedContext.simulatedHardwareSaleFlow.transactionEntry.request.slotId =
+      "invented-slot";
+    assert.throws(
+      () =>
+        assertBlockedSaleEvidence({
+          commandExitStatus: 1,
+          output: fabricatedContext,
+          failureMode: "missing-device",
+          runId: "RUN-12-CONTRACT",
+        }),
+      /did not fail closed/,
+    );
+  });
+
+  it("binds mapping fault evidence to the actual adapter start report", () => {
+    const startReport = {
+      result: "succeeded",
+      diagnostics: [{ code: "serial_swapped_roles" }],
+      serialSession: {
+        serialSessionId: "serial-session-001",
+        startOperationReference: "vm-operation://start-001",
+        deviceMappingDigest: `sha256:${"b".repeat(64)}`,
+      },
+    };
+    const failureCase = observedMappingFailureCase({
+      failureMode: "swapped-roles",
+      startReport,
+      expectedDiagnosticCode: "serial_swapped_roles",
+      daemonFailClosed: { saleBindingCreated: false },
+    });
+    assert.equal(failureCase.diagnosticCode, "serial_swapped_roles");
+    assert.deepEqual(failureCase.startSerialSession, startReport.serialSession);
+
+    assert.throws(
+      () =>
+        observedMappingFailureCase({
+          failureMode: "swapped-roles",
+          startReport: { ...startReport, serialSession: null },
+          expectedDiagnosticCode: "serial_swapped_roles",
+          daemonFailClosed: { saleBindingCreated: false },
+        }),
+      /did not bind its fail-closed evidence/,
+    );
   });
 
   it("stops the serial session from finally when evidence collection fails", () => {

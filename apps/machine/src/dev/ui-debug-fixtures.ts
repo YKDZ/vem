@@ -595,6 +595,7 @@ const emptyTransaction: TransactionSnapshot = {
   orderId: null,
   orderNo: null,
   productSummary: null,
+  paymentId: null,
   paymentNo: null,
   paymentMethod: null,
   paymentProvider: null,
@@ -621,6 +622,7 @@ function transaction(
     orderId: "550e8400-e29b-41d4-a716-446655440901",
     orderNo: "UI-DEBUG-ORDER",
     productSummary: { name: "基础短袖", sku: "TEE-BASIC-L-BLACK" },
+    paymentId: null,
     paymentNo: "UI-DEBUG-PAY",
     paymentMethod: "qr_code",
     paymentProvider: "alipay",
@@ -836,6 +838,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       orderStatus: "dispensing",
       nextAction: "dispensing",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "sent",
         lastError: null,
@@ -862,6 +865,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       orderStatus: "dispensing",
       nextAction: "dispensing",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "sent",
         lastError: null,
@@ -894,6 +898,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       orderStatus: "dispensing",
       nextAction: "dispensing",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "sent",
         lastError: null,
@@ -934,6 +939,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       orderStatus: "dispense_failed",
       nextAction: "dispense_failed",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "failed",
         lastError: "mock: motor timeout",
@@ -970,6 +976,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       orderStatus: "manual_handling",
       nextAction: "manual_handling",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "result_unknown",
         lastError: "mock: dispense result unknown",
@@ -1006,6 +1013,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       orderStatus: "refund_pending",
       nextAction: "refund_pending",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "failed",
         lastError: "refund requested after dispense failure",
@@ -1042,6 +1050,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       orderStatus: "refunded",
       nextAction: "refunded",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "failed",
         lastError: "mock: dispense failed before refund",
@@ -1078,6 +1087,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       orderStatus: "fulfilled",
       nextAction: "success",
       vending: {
+        commandId: null,
         commandNo: "UI-DEBUG-CMD",
         status: "succeeded",
         lastError: null,

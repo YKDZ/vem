@@ -866,33 +866,39 @@ export async function runAdmittedFactoryImageAcceptanceLifecycle(
       assertCleanup(reports.cleanup);
     } finally {
       if (capturedBase && preclaimEvidence) {
-        const recapture = await runAdapter(
-          input,
-          "capture-approved-base",
-          [iso],
-          factoryMedia(input),
-        );
-        assertSameBase(capturedBase, recapture);
-        const rehashedPreclaimEvidence = readAndHashRegularFile(
-          verifierOutput(input, "factory-preclaim-verify.json"),
-          "Factory preclaim verifier evidence",
-        );
-        if (rehashedPreclaimEvidence.digest !== preclaimEvidence.digest) {
-          throw new Error(
-            "Factory preclaim verifier evidence changed after cleanup",
+        try {
+          const recapture = await runAdapter(
+            input,
+            "capture-approved-base",
+            [iso],
+            factoryMedia(input),
           );
+          assertSameBase(capturedBase, recapture);
+          const rehashedPreclaimEvidence = readAndHashRegularFile(
+            verifierOutput(input, "factory-preclaim-verify.json"),
+            "Factory preclaim verifier evidence",
+          );
+          if (rehashedPreclaimEvidence.digest !== preclaimEvidence.digest) {
+            throw new Error(
+              "Factory preclaim verifier evidence changed after cleanup",
+            );
+          }
+          reports.postCleanup = {
+            captureApprovedBase: recapture,
+            preclaimEvidence: {
+              digest: rehashedPreclaimEvidence.digest,
+              unchanged: true,
+            },
+          };
+        } finally {
+          reports.postCleanup ??= {};
+          reports.postCleanup.finalCleanup = await runAdapter(
+            input,
+            "cleanup",
+            [capturedBase],
+          );
+          assertCleanup(reports.postCleanup.finalCleanup);
         }
-        reports.postCleanup = {
-          captureApprovedBase: recapture,
-          preclaimEvidence: {
-            digest: rehashedPreclaimEvidence.digest,
-            unchanged: true,
-          },
-        };
-        reports.postCleanup.finalCleanup = await runAdapter(input, "cleanup", [
-          capturedBase,
-        ]);
-        assertCleanup(reports.postCleanup.finalCleanup);
       }
       mkdirSync(dirname(input.evidence.lifecycleReport), {
         recursive: true,

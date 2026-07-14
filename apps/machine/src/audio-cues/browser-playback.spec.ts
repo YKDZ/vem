@@ -182,6 +182,7 @@ function transaction(
     orderId: "550e8400-e29b-41d4-a716-446655440020",
     orderNo: "ORD-AUDIO-FAIL-001",
     productSummary: null,
+    paymentId: null,
     paymentNo: "PAY-AUDIO-FAIL-001",
     paymentMethod: "payment_code",
     paymentProvider: "alipay",
@@ -190,6 +191,7 @@ function transaction(
     orderStatus: "manual_handling",
     totalAmountCents: 4900,
     vending: {
+      commandId: null,
       commandNo: "CMD-AUDIO-FAIL-001",
       status: "result_unknown",
       lastError: "dispense result unknown",
@@ -564,11 +566,13 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       cue: "refund.pending",
       snapshot: transaction({
         orderNo: "ORD-AUDIO-REFUND-001",
+        paymentId: null,
         paymentNo: "PAY-AUDIO-REFUND-001",
         paymentStatus: "refund_pending",
         orderStatus: "refund_pending",
         nextAction: "refund_pending",
         vending: {
+          commandId: null,
           commandNo: "CMD-AUDIO-REFUND-001",
           status: "failed",
           lastError: "refund requested after dispense failure",
@@ -579,11 +583,13 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       cue: "manual_handling.required",
       snapshot: transaction({
         orderNo: "ORD-AUDIO-MANUAL-001",
+        paymentId: null,
         paymentNo: "PAY-AUDIO-MANUAL-001",
         paymentStatus: "succeeded",
         orderStatus: "manual_handling",
         nextAction: "manual_handling",
         vending: {
+          commandId: null,
           commandNo: "CMD-AUDIO-MANUAL-001",
           status: "result_unknown",
           lastError: "dispense result unknown",
