@@ -1017,7 +1017,9 @@ function assertSerialEvidence(report, request, issues) {
       (record) => `${record.role}:${record.event}`,
     );
     for (const event of requiredEvents) {
-      const eventCount = eventsForSale.filter((value) => value === event).length;
+      const eventCount = eventsForSale.filter(
+        (value) => value === event,
+      ).length;
       if (eventCount === 0)
         issue(
           issues,

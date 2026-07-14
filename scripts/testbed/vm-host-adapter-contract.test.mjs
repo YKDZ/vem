@@ -1051,7 +1051,10 @@ describe("VM Host Adapter contract", () => {
       assert.throws(() =>
         validateVmHostAdapterReport(
           reportFor(collect, {
-            serialEvidence: { ...report.serialEvidence, records: invalidRecords },
+            serialEvidence: {
+              ...report.serialEvidence,
+              records: invalidRecords,
+            },
           }),
           collect,
         ),
