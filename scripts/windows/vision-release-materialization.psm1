@@ -17,6 +17,17 @@ function Get-VisionSafeArchivePath([string]$Name) {
   return ($segments -join [IO.Path]::DirectorySeparatorChar)
 }
 
+function Assert-VisionRegularArchiveEntry([object]$Entry) {
+  # ZIP stores Unix type bits in the upper word and DOS file attributes in the
+  # lower word.  Never materialize a link/reparse entry as a regular file.
+  $attributes = [Int64]$Entry.ExternalAttributes
+  $unixType = (($attributes -shr 16) -band 0xF000)
+  $dosAttributes = ($attributes -band 0xFFFF)
+  if ($unixType -eq 0xA000 -or (($dosAttributes -band 0x0400) -ne 0)) {
+    throw "Vision materialization failed: archive contains a symlink or reparse entry"
+  }
+}
+
 function Get-VisionVerifiedCandidateStream {
   param([string]$CandidatePath, [string]$ExpectedDigest, [object]$Descriptor)
 
@@ -78,6 +89,7 @@ function Invoke-VisionReleaseMaterialization {
     foreach ($entry in $archive.Entries) {
       $relative = Get-VisionSafeArchivePath $entry.FullName
       if ($entry.FullName.EndsWith("/")) { continue }
+      Assert-VisionRegularArchiveEntry $entry
       if (-not $seen.Add($relative)) { throw "Vision materialization failed: archive has case-colliding paths" }
       if ($entry.Length -lt 0 -or $entry.CompressedLength -lt 0) { throw "Vision materialization failed: archive lengths are invalid" }
       $expanded += $entry.Length; $compressed += $entry.CompressedLength

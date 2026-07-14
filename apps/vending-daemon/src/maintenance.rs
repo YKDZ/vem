@@ -226,7 +226,10 @@ impl WireGuardEncryptedConfigStore for WindowsDpapiWireGuardConfigStore {
             let tunnel_name_for_protection = tunnel_name.clone();
             let plaintext_config = plaintext_config.to_vec();
             let encrypted = tokio::task::spawn_blocking(move || {
-                protect_wireguard_config(&plaintext_config, &tunnel_name_for_protection)
+                // WireGuard config has the same machine-scope lifecycle as every
+                // daemon secret: LocalMachine DPAPI, UI forbidden, SYSTEM/Admin ACL.
+                let _ = tunnel_name_for_protection;
+                crate::secret::protect_machine_local_bytes_blocking(&plaintext_config)
             })
             .await
             .map_err(|error| format!("join WireGuard DPAPI protection failed: {error}"))??;
@@ -302,57 +305,9 @@ async fn persist_encrypted_config(
     tokio::fs::rename(staging_path, path)
         .await
         .map_err(|error| format!("replace encrypted WireGuard configuration failed: {error}"))?;
-    harden_machine_secret_file_permissions(path)
+    harden_machine_protected_file_permissions(path)
         .await
         .map_err(|error| format!("harden replaced WireGuard configuration failed: {error}"))
-}
-
-#[cfg(windows)]
-fn protect_wireguard_config(value: &[u8], tunnel_name: &str) -> Result<Vec<u8>, String> {
-    use std::ptr::{null, null_mut};
-    use windows_sys::Win32::{
-        Foundation::{GetLastError, LocalFree},
-        Security::Cryptography::{
-            CryptProtectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
-            CRYPT_INTEGER_BLOB,
-        },
-    };
-
-    let input = CRYPT_INTEGER_BLOB {
-        cbData: value.len() as u32,
-        pbData: value.as_ptr() as *mut u8,
-    };
-    let description = tunnel_name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let mut output = CRYPT_INTEGER_BLOB {
-        cbData: 0,
-        pbData: null_mut(),
-    };
-    let ok = unsafe {
-        CryptProtectData(
-            &input,
-            description.as_ptr(),
-            null(),
-            null(),
-            null(),
-            CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
-        )
-    };
-    if ok == 0 {
-        return Err(format!(
-            "protect WireGuard configuration failed: {}",
-            unsafe { GetLastError() }
-        ));
-    }
-    let result =
-        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
-    unsafe {
-        LocalFree(output.pbData as *mut std::ffi::c_void);
-    }
-    Ok(result)
 }
 
 #[derive(Clone)]

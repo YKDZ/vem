@@ -140,8 +140,8 @@ node scripts/factory/experimental-vision-candidate.mjs verify \
 ```powershell
 .\test-vision-candidate.ps1 `
   -BundlePath C:\VEM\updates\vision-candidate\vending-vision.zip `
+  -ExpectedDigest sha256:<operator-pinned-exact-bundle-digest> `
   -DescriptorPath C:\VEM\updates\vision-candidate\vision-release-descriptor.json `
-  -InstallerLibraryPath C:\VEM\updates\vision-candidate\install-vision-release.ps1 `
   -ConformanceEvidencePath C:\VEM\updates\vision-candidate\vision-conformance.json `
   -ReportPath C:\VEM\updates\vision-candidate\vision-conformance-report.json
 ```
@@ -162,7 +162,7 @@ node scripts/factory/experimental-vision-candidate.mjs finalize \
   --output /tmp/vision-experimental-delivery
 ```
 
-目标机仍使用 `provision-vision-factory-release.ps1` 写入受保护的 Factory delivery/trust 路径，然后调用同一个 `install-vision-release.ps1`。这次通过只证明软件与无摄像头 degraded 路径就绪，不替代插入真实摄像头后的视觉现场验收，也不把 Experimental Candidate 自动升级成 Factory/ISO acceptance。
+目标机仍使用 `provision-vision-factory-release.ps1` 写入受保护的 Factory delivery/trust 路径，然后调用同一个 `install-vision-release.ps1`。预批准也必须交付同一完整 delivery unit，并由操作员单独钉住 `-ExpectedDigest sha256:...`；它不会从 bundle 或 descriptor 隐式选择摘要。这次通过只证明软件与无摄像头 degraded 路径就绪，不替代插入真实摄像头后的视觉现场验收，也不把 Experimental Candidate 自动升级成 Factory/ISO acceptance。
 
 在 Windows 管理员 PowerShell 中，以已验证的本地输入安装：
 

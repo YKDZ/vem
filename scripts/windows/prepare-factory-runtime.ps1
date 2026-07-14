@@ -1591,6 +1591,8 @@ function Write-FactoryRuntimeFiles {
     # Merge preservation: FactoryProfile alone defines daemon environment;
     # EnvironmentName and DeploymentBatch are human-readable deployment metadata.
     environment = $Preflight.FactoryProfile
+    environmentName = $EnvironmentName
+    deploymentBatch = $DeploymentBatch
     provisioningEndpoint = $ProvisioningEndpoint
     hardwareMode = $HardwareMode
     hardwareModel = $HardwareModel

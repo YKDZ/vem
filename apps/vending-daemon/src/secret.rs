@@ -490,11 +490,16 @@ async fn unprotect_secret_blob(blob: Vec<u8>) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
-    let value = value.as_bytes().to_vec();
-    tokio::task::spawn_blocking(move || protect_secret_blob_blocking(&value))
+pub(crate) async fn protect_machine_local_bytes(value: &[u8]) -> Result<Vec<u8>, String> {
+    let value = value.to_vec();
+    tokio::task::spawn_blocking(move || protect_machine_local_bytes_blocking(&value))
         .await
         .map_err(|error| format!("join DPAPI protect failed: {error}"))?
+}
+
+#[cfg(windows)]
+async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
+    protect_machine_local_bytes(value.as_bytes()).await
 }
 
 #[cfg(windows)]
@@ -506,7 +511,7 @@ async fn unprotect_secret_blob(blob: Vec<u8>) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn protect_secret_blob_blocking(value: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn protect_machine_local_bytes_blocking(value: &[u8]) -> Result<Vec<u8>, String> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},

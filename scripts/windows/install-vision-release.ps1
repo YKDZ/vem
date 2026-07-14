@@ -899,7 +899,6 @@ try {
   }
   if (-not $releaseAlreadyPresent) {
     $staging=Join-Path $StateRoot ("staging\\" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $staging -Force | Out-Null
     try {
       if ($descriptor.bundle.extractor.handler -cne "zip-safe-v1") { Throw-InstallError "declared extractor handler is not installed" }
       # Merge preservation: VEM materializes the supplier's exact candidate bytes;

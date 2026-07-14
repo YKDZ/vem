@@ -480,11 +480,29 @@ pub struct HardwareSlotTopologyIdentity {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FactoryProfile {
+    Production,
+    Testbed,
+}
+
+impl FactoryProfile {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Testbed => "testbed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryRuntimeManifest {
     pub layout_version: u32,
-    pub environment: String,
+    pub environment: FactoryProfile,
+    pub environment_name: String,
+    pub deployment_batch: String,
     pub provisioning_endpoint: String,
     pub hardware_mode: RuntimeHardwareMode,
     pub hardware_model: String,
@@ -495,8 +513,6 @@ pub struct FactoryRuntimeManifest {
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalBringUpSettings {
-    #[serde(default)]
-    pub environment: Option<String>,
     #[serde(default)]
     pub provisioning_endpoint_override: Option<String>,
     #[serde(default)]
@@ -865,7 +881,10 @@ fn normalize_factory_manifest(
     if manifest.layout_version != 1 {
         return Err("unsupported factory manifest layout version".to_string());
     }
-    manifest.environment = normalize_required_string(manifest.environment, "environment")?;
+    manifest.environment_name =
+        normalize_required_string(manifest.environment_name, "environmentName")?;
+    manifest.deployment_batch =
+        normalize_required_string(manifest.deployment_batch, "deploymentBatch")?;
     manifest.provisioning_endpoint =
         normalize_http_endpoint(manifest.provisioning_endpoint, "provisioningEndpoint")?;
     manifest.hardware_model = normalize_required_string(manifest.hardware_model, "hardwareModel")?;
@@ -892,7 +911,6 @@ fn normalize_hardware_slot_topology(
 fn normalize_local_bring_up_settings(
     mut settings: LocalBringUpSettings,
 ) -> Result<LocalBringUpSettings, String> {
-    settings.environment = normalize_optional_string(settings.environment);
     settings.network_profile = normalize_optional_string(settings.network_profile);
     settings.provisioning_endpoint_override = settings
         .provisioning_endpoint_override
@@ -1837,19 +1855,10 @@ impl ConfigStore {
     }
 
     pub async fn provisioning_profile_name(&self) -> Result<String, String> {
-        let factory = self.load_factory_manifest().await?;
-        let local = self.load_local_bring_up_settings().await?;
-        let value = local
-            .and_then(|settings| settings.environment)
-            .or_else(|| factory.map(|manifest| manifest.environment))
-            .unwrap_or_else(|| "production".to_string())
-            .trim()
-            .to_ascii_lowercase();
-        if matches!(value.as_str(), "production" | "testbed") {
-            Ok(value)
-        } else {
-            Err("unsupported machine provisioning profile".to_string())
-        }
+        let factory = self.load_factory_manifest().await?.ok_or_else(|| {
+            "factory manifest is required for machine provisioning profile".to_string()
+        })?;
+        Ok(factory.environment.as_str().to_string())
     }
 
     pub async fn apply_maintenance_profile(
@@ -2906,6 +2915,8 @@ mod tests {
             serde_json::json!({
                 "layoutVersion": 1,
                 "environment": "production",
+                "environmentName": "production-line-a",
+                "deploymentBatch": "2026-07-a",
                 "provisioningEndpoint": "https://factory.example.com/api",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -3322,6 +3333,32 @@ mod tests {
         assert!(!object.contains_key("scannerUsbIdentity"));
     }
 
+    #[test]
+    fn local_bring_up_settings_reject_environment_override() {
+        let error = serde_json::from_value::<LocalBringUpSettings>(serde_json::json!({
+            "environment": "production"
+        }))
+        .expect_err("local settings must not select the Factory profile");
+        assert!(error.to_string().contains("unknown field `environment`"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_requires_a_typed_factory_manifest() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+        assert_eq!(
+            store
+                .provisioning_profile_name()
+                .await
+                .expect_err("missing manifest"),
+            "factory manifest is required for machine provisioning profile"
+        );
+    }
+
     #[tokio::test]
     async fn layered_runtime_summary_reads_owned_layers_and_excludes_machine_config_bridge() {
         let temp = TempDir::new().expect("temp");
@@ -3345,6 +3382,8 @@ mod tests {
             serde_json::json!({
                 "layoutVersion": 1,
                 "environment": "production",
+                "environmentName": "production-line-a",
+                "deploymentBatch": "2026-07-a",
                 "provisioningEndpoint": "https://factory.example.com/api",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -3360,7 +3399,6 @@ mod tests {
         tokio::fs::write(
             local_bring_up_settings_path(&data_dir),
             serde_json::json!({
-                "environment": "production",
                 "provisioningEndpointOverride": "https://bringup.example.com/api",
                 "networkProfile": "field-wifi"
             })
@@ -3526,6 +3564,8 @@ mod tests {
             serde_json::json!({
                 "layoutVersion": 1,
                 "environment": "production",
+                "environmentName": "production-line-a",
+                "deploymentBatch": "2026-07-a",
                 "provisioningEndpoint": "not-a-url",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -3607,6 +3647,8 @@ mod tests {
             serde_json::json!({
                 "layoutVersion": 1,
                 "environment": "production",
+                "environmentName": "production-line-a",
+                "deploymentBatch": "2026-07-a",
                 "provisioningEndpoint": "https://factory.example.com/api",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -4820,7 +4862,7 @@ mod tests {
     #[tokio::test]
     async fn restart_recovers_maintenance_status_from_cached_profile_and_persistent_key() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let data_dir = temp.path().to_path_buf();
+        let data_dir = temp.path().join("runtime").join("vending-daemon");
         let state = LocalStateStore::open(&data_dir.join("state.db"))
             .await
             .expect("state");

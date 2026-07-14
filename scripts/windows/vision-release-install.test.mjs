@@ -113,6 +113,16 @@ describe("Vision release installer fixtures", () => {
         installer,
         /# Merge preservation: VEM materializes the supplier's exact candidate bytes/,
       );
+      assert.doesNotMatch(
+        installer,
+        /\$staging=Join-Path \$StateRoot[\s\S]{0,180}New-Item -ItemType Directory -Path \$staging/,
+        "the installer must leave create-new ownership to the materializer",
+      );
+      assert.doesNotMatch(
+        candidate,
+        /\$staging = Join-Path \$WorkRoot[\s\S]{0,180}New-Item -ItemType Directory -Path \$staging/,
+        "preapproval must leave create-new ownership to the materializer",
+      );
     },
   );
 
@@ -155,7 +165,7 @@ describe("Vision release installer fixtures", () => {
       );
       assert.match(
         source,
-        /Invoke-VisionReleaseMaterialization -CandidatePath \$BundlePath -ExpectedDigest \(\[string\]\$descriptor\.bundle\.digest\)/,
+        /ExpectedDigest[\s\S]*Vision Candidate expected digest does not match the descriptor[\s\S]*Invoke-VisionReleaseMaterialization -CandidatePath \$BundlePath -ExpectedDigest \$ExpectedDigest/,
       );
       assert.match(
         source,

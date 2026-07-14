@@ -208,6 +208,7 @@ const FACTORY_SUPPORT_SCRIPT_NAMES = [
   "apply-managed-update.ps1",
   "provision-vision-factory-release.ps1",
   "install-vision-release.ps1",
+  "vision-release-materialization.psm1",
 ];
 
 const PLATFORM_TARGETS = {

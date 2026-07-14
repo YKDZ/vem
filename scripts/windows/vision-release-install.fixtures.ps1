@@ -25,6 +25,7 @@ function New-Zip([string]$Path, [object[]]$Entries) {
     try {
       foreach ($pair in $Entries) {
         $entry = $archive.CreateEntry([string]$pair[0])
+        if ($pair.Count -gt 2) { $entry.ExternalAttributes = [int]$pair[2] }
         $writer = [IO.StreamWriter]::new($entry.Open())
         try { $writer.Write([string]$pair[1]) } finally { $writer.Dispose() }
       }
@@ -43,7 +44,7 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-installer-fixture-" + 
 try {
   New-Item -ItemType Directory -Path $root | Out-Null
   if ($Case -eq "archive") {
-    foreach ($attack in @(@(,@("../escape.exe", "x")), @(,@("/absolute.exe", "x")), @(,@("runtime.exe:stream", "x")), @(@("Runtime.EXE", "a"), @("runtime.exe", "b")))) {
+    foreach ($attack in @(@(,@("../escape.exe", "x")), @(,@("/absolute.exe", "x")), @(,@("runtime.exe:stream", "x")), @(@("Runtime.EXE", "a"), @("runtime.exe", "b")), @(,@("unix-link", "target", -1610612736)), @(,@("windows-reparse", "target", 0x00000400)))) {
       $bundle = Join-Path $root ([guid]::NewGuid().ToString("N") + ".zip")
       $target = Join-Path $root ([guid]::NewGuid().ToString("N"))
       New-Zip $bundle $attack

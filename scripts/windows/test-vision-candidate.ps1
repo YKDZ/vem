@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$BundlePath,
+  [Parameter(Mandatory = $true)][string]$ExpectedDigest,
   [Parameter(Mandatory = $true)][string]$DescriptorPath,
   [Parameter(Mandatory = $true)][string]$ConformanceEvidencePath,
   [Parameter(Mandatory = $true)][string]$ReportPath,
@@ -53,6 +54,9 @@ $report = [ordered]@{
 
 try {
   $descriptor = (Read-StrictJson $DescriptorPath "Vision Candidate descriptor").value
+  if ($ExpectedDigest -notmatch '^sha256:[a-f0-9]{64}$' -or $ExpectedDigest -cne [string]$descriptor.bundle.digest) {
+    throw "Vision Candidate expected digest does not match the descriptor"
+  }
   $report.bundleDigest = [string]$descriptor.bundle.digest
   $report.descriptorDigest = [string]$descriptor.identity
   $report.releaseVersion = [string]$descriptor.releaseVersion
@@ -79,8 +83,9 @@ try {
     throw "Vision Candidate health port is owned by another process"
   }
 
-  New-Item -ItemType Directory -Path $staging -Force | Out-Null
-  Invoke-VisionReleaseMaterialization -CandidatePath $BundlePath -ExpectedDigest ([string]$descriptor.bundle.digest) -Descriptor $descriptor -Destination $staging -ExtractionPolicy @{ MaxArchiveEntries=4096; MaxExpandedBytes=4GB; MaxExpansionRatio=200 } | Out-Null
+  # The shared materializer exclusively creates its fresh destination.  Creating
+  # it here changes the security contract from create-new to overwrite-prone.
+  Invoke-VisionReleaseMaterialization -CandidatePath $BundlePath -ExpectedDigest $ExpectedDigest -Descriptor $descriptor -Destination $staging -ExtractionPolicy @{ MaxArchiveEntries=4096; MaxExpandedBytes=4GB; MaxExpansionRatio=200 } | Out-Null
   $entrypoint = Resolve-CandidateEntrypoint $staging ([string]$descriptor.entrypoint.command)
   if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) {
     throw "Vision Candidate entrypoint was not extracted"

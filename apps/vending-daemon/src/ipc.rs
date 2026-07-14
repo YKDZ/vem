@@ -5828,7 +5828,9 @@ mod tests {
             manifest_dir.join("factory-manifest.json"),
             serde_json::to_string_pretty(&json!({
                 "layoutVersion": 1,
-                "environment": "test",
+                "environment": "testbed",
+                "environmentName": "ipc-testbed",
+                "deploymentBatch": "ipc-test-batch",
                 "provisioningEndpoint": "http://127.0.0.1:0/api",
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
@@ -6330,6 +6332,8 @@ mod tests {
             json!({
                 "layoutVersion": 1,
                 "environment": "production",
+                "environmentName": "ipc-production",
+                "deploymentBatch": "ipc-test-batch",
                 "provisioningEndpoint": factory_server.uri(),
                 "hardwareMode": "production",
                 "hardwareModel": "VEM-PROD-24",
