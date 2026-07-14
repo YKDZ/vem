@@ -96,6 +96,7 @@ const DEFAULT_UNCONFIRMED_QR_DISPLAY_DELAY_MS = 30_000;
 // owner cannot be taken over mid-call.
 const PAYMENT_INTENT_CREATION_LEASE_MS = 90_000;
 const PAYMENT_INTENT_CREATION_LEASE_HEARTBEAT_MS = 30_000;
+const PAYMENT_INTENT_PROVIDER_DEADLINE_MS = 20_000;
 const RECOVERY_ACTIONS = [
   "confirm_dispensed",
   "confirm_not_dispensed",
@@ -2490,7 +2491,20 @@ export class OrdersService {
       publicConfigJson: {},
       sensitiveConfigJson: {},
     };
-    return await provider.createPaymentIntent({ ...input, config });
+    let timeoutId: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error("payment provider request timeout"));
+      }, PAYMENT_INTENT_PROVIDER_DEADLINE_MS);
+    });
+    try {
+      return await Promise.race([
+        provider.createPaymentIntent({ ...input, config }),
+        timeout,
+      ]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   }
 
   private async findPaymentCreationByIdempotencyKey(
@@ -2613,6 +2627,16 @@ export class OrdersService {
               : reconciliation.status,
         });
       }
+      // An acknowledged waiting trade is a presentation/polling state, not a
+      // permission to recreate the provider trade. Only Alipay's explicit,
+      // signed TRADE_NOT_EXIST reconciliation result permits the same payment
+      // number to be precreated again.
+      if (reconciliation.reason !== "provider_trade_not_exist") {
+        return this.toPaymentCreationResponse(existing, {
+          paymentUrl: "",
+          initialStatus: "processing",
+        });
+      }
     }
 
     const config = await this.resolveExistingPaymentConfig(existing);
@@ -2730,7 +2754,7 @@ export class OrdersService {
     }
     const initialStatus = intent.initialStatus ?? "pending";
     try {
-      await this.db
+      const [persisted] = await this.db
         .update(payments)
         .set({
           status: initialStatus,
@@ -2749,7 +2773,11 @@ export class OrdersService {
             eq(payments.intentCreationLeaseFence, claimedLease.fence),
             gt(payments.intentCreationLeaseExpiresAt, new Date()),
           ),
-        );
+        )
+        .returning({ id: payments.id });
+      if (!persisted) {
+        return await this.readPaymentIntentAfterLostLease(draft.paymentId);
+      }
     } catch (error) {
       // A database write error leaves the provider outcome uncertain. Cancel
       // only after a fresh, fenced ownership check; an expired or superseded
@@ -2771,12 +2799,42 @@ export class OrdersService {
     return intent;
   }
 
+  /**
+   * A stale lease owner may have received a valid provider QR but it is never
+   * allowed to present that QR unless its fenced persistence succeeded. Read
+   * the successor's durable state instead; callers can retry/join when no QR
+   * has been committed yet.
+   */
+  private async readPaymentIntentAfterLostLease(paymentId: string) {
+    const [successor] = await this.db
+      .select({
+        paymentUrl: payments.paymentUrl,
+        status: payments.status,
+        providerTradeNo: payments.providerTradeNo,
+      })
+      .from(payments)
+      .where(eq(payments.id, paymentId))
+      .limit(1);
+    if (successor?.status === "pending" && successor.paymentUrl) {
+      return {
+        providerTradeNo: successor.providerTradeNo,
+        paymentUrl: successor.paymentUrl,
+        initialStatus: "pending" as const,
+      };
+    }
+    return {
+      providerTradeNo: successor?.providerTradeNo ?? null,
+      paymentUrl: "",
+      initialStatus: "processing" as const,
+    };
+  }
+
   private async markPaymentCreationUncertain(
     draft: Pick<LocalPaymentDraft, "paymentId">,
     error: unknown,
     lease: PaymentIntentLease,
   ): Promise<void> {
-    await this.db
+    const updated = await this.db
       .update(payments)
       .set({
         status: "processing",
@@ -2797,7 +2855,11 @@ export class OrdersService {
           eq(payments.intentCreationLeaseFence, lease.fence),
           gt(payments.intentCreationLeaseExpiresAt, new Date()),
         ),
-      );
+      )
+      .returning({ id: payments.id });
+    // A successor owns the recovery if the fence no longer matches. Do not
+    // overwrite its reason or clear its lease from this stale worker.
+    if (updated.length === 0) return;
   }
 
   private async hasCurrentPaymentIntentLease(
@@ -2822,8 +2884,8 @@ export class OrdersService {
   private async renewPaymentIntentLease(
     paymentId: string,
     lease: PaymentIntentLease,
-  ): Promise<void> {
-    await this.db
+  ): Promise<boolean> {
+    const renewed = await this.db
       .update(payments)
       .set({
         intentCreationLeaseExpiresAt: new Date(
@@ -2841,7 +2903,9 @@ export class OrdersService {
           // window before a successor claims it.
           gt(payments.intentCreationLeaseExpiresAt, new Date()),
         ),
-      );
+      )
+      .returning({ id: payments.id });
+    return renewed.length > 0;
   }
 }
 

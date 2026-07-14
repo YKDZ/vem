@@ -38,6 +38,11 @@ export type ProviderPaymentQueryResult = {
   providerTradeNo?: string | null;
   paidAt?: Date;
   failedReason?: string | null;
+  /**
+   * Provider facts that control whether an uncertain order-code create may be
+   * retried. They are intentionally distinct from generic pending status.
+   */
+  reconciliationState?: "provider_trade_not_exist" | "wait_buyer_pay" | null;
   rawPayload?: Record<string, unknown>;
 };
 

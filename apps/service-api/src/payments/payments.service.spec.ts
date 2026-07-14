@@ -464,7 +464,13 @@ describe("PaymentsService", () => {
         status: "succeeded",
         eventType: "payment_code.succeeded",
         providerEventId: "payment_code:PCA001:succeeded",
-        rawPayload: {},
+        rawPayload: {
+          out_trade_no: "PAY001",
+          total_amount: "1.00",
+          app_id: "app-001",
+          seller_id: "seller-001",
+          trade_status: "TRADE_SUCCESS",
+        },
       });
       await service.applyProviderPaymentResult({
         paymentId: "pay-001",
@@ -1442,11 +1448,18 @@ describe("PaymentsService", () => {
         providerEventId: "EVT001",
         signatureValid: true,
         paymentStatus: "succeeded",
-        rawPayload: {},
+        rawPayload: {
+          out_trade_no: "PAY001",
+          total_amount: "1.00",
+          app_id: "app-001",
+          seller_id: "seller-001",
+          trade_status: "TRADE_SUCCESS",
+        },
       });
       const provider = { handleWebhook };
 
       const db = makeDb();
+      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
       makePaymentSelectMock(db, [
         {
           id: "pay-001",
@@ -1474,17 +1487,28 @@ describe("PaymentsService", () => {
           get: vi.fn().mockReturnValue(provider),
         } as unknown as PaymentProviderRegistry,
         configService: {
-          listCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
+          listCandidateConfigsForProvider: vi.fn().mockResolvedValue([
+            {
+              id: "cfg-duplicate",
+              providerCode: "alipay",
+              appId: "app-001",
+              merchantNo: "seller-001",
+              publicConfigJson: {},
+              sensitiveConfigJson: {},
+            },
+          ]),
         },
+        vendingService: { createAndDispatchCommands },
       });
 
       const result = await service.handleProviderWebhook(
-        "wechat_pay",
+        "alipay",
         {},
         { resource: {} },
         "",
       );
       expect(result).toMatchObject({ handled: true, duplicate: true });
+      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
     });
 
     it("returns {handled:false,reason:'payment_not_found'} when paymentNo not in db", async () => {
@@ -1577,7 +1601,7 @@ describe("PaymentsService", () => {
           amountCurrency: "CNY",
           tradeState: "SUCCESS",
         },
-        matchedConfigId: null,
+        matchedConfigId: "cfg-old",
       });
       const db = makeDb();
       makePaymentSelectMock(db, [
@@ -1661,6 +1685,53 @@ describe("PaymentsService", () => {
       await expect(
         service.handleProviderWebhook("wechat_pay", {}, {}, "tampered"),
       ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it("rejects an Alipay callback verified by a different payment config binding", async () => {
+      const handleWebhook = vi.fn().mockResolvedValue({
+        paymentNo: "PAY_ALI_BINDING",
+        eventType: "alipay.webhook",
+        providerEventId: "ALI_BINDING_EVT",
+        signatureValid: true,
+        paymentStatus: "succeeded",
+        providerTradeNo: "2024000",
+        matchedConfigId: "cfg-rotated",
+        rawPayload: {
+          out_trade_no: "PAY_ALI_BINDING",
+          total_amount: "1.00",
+          app_id: "APP-BOUND",
+          seller_id: "MERCHANT-BOUND",
+          trade_status: "TRADE_SUCCESS",
+        },
+      });
+      const db = makeDb();
+      makePaymentSelectMock(db, [
+        {
+          id: "pay-ali-binding",
+          providerId: "prov-alipay",
+          status: "pending",
+          orderId: "ord-ali-binding",
+          orderNo: "ORD-ALI-BINDING",
+          paymentNo: "PAY_ALI_BINDING",
+          amountCents: 100,
+          machineId: "mach-001",
+          providerConfigId: "cfg-bound",
+          providerConfigSnapshotJson: {},
+        },
+      ]);
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+      });
+
+      await expect(
+        service.handleProviderWebhook("alipay", {}, {}, ""),
+      ).resolves.toMatchObject({
+        handled: false,
+        reason: "payment_config_binding_mismatch",
+      });
     });
 
     it("alipay: total_amount mismatch → {handled:false, reason:'alipay_total_amount_mismatch'}", async () => {

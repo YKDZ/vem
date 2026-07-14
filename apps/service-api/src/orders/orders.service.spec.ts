@@ -2026,6 +2026,49 @@ describe("OrdersService", () => {
       expect(restoreIntent).toHaveBeenCalledOnce();
     });
 
+    it("keeps a WAIT_BUYER_PAY recovery in polling and never precreates another QR", async () => {
+      const reconcilePendingPaymentOnRead = vi.fn().mockResolvedValue({
+        status: "pending",
+        reconciled: false,
+        reason: "wait_buyer_pay",
+      });
+      const service = makeService({
+        paymentsService: { reconcilePendingPaymentOnRead },
+      });
+      const internal = service as unknown as {
+        restorePaymentCreation(input: Record<string, unknown>): Promise<{
+          paymentUrl: string | null;
+        }>;
+        createAndPersistPaymentIntent: ReturnType<typeof vi.fn>;
+      };
+      const restoreIntent = vi.spyOn(internal, "createAndPersistPaymentIntent");
+
+      await expect(
+        internal.restorePaymentCreation({
+          orderId: "550e8400-e29b-41d4-a716-446655440042",
+          orderNo: "ORD-WAIT-BUYER-PAY",
+          paymentId: "550e8400-e29b-41d4-a716-446655440043",
+          paymentNo: "PAY-WAIT-BUYER-PAY",
+          providerCode: "alipay",
+          paymentMethod: "qr_code",
+          machineId: "machine-1",
+          totalAmountCents: 100,
+          expiresAt: new Date("2026-07-14T01:00:00.000Z"),
+          reservations: [],
+          paymentStatus: "processing",
+          paymentUrl: null,
+          providerTradeNo: "ALI-TRADE-1",
+          providerConfigId: null,
+          providerConfigSnapshotJson: {},
+          intentCreationLeaseExpiresAt: null,
+          intentCreationLeaseOwnerToken: null,
+          intentCreationLeaseFence: 0,
+        }),
+      ).resolves.toMatchObject({ paymentUrl: null });
+
+      expect(restoreIntent).not.toHaveBeenCalled();
+    });
+
     it("loads the actual active reservations for a persisted checkout recovery", async () => {
       const db = makeQueuedDb([
         [
@@ -2121,6 +2164,73 @@ describe("OrdersService", () => {
       );
 
       expect(releaseReservation).not.toHaveBeenCalled();
+    });
+
+    it("does not return an old owner's QR when fenced persistence affects zero rows", async () => {
+      const db = makeDb();
+      let updateCount = 0;
+      db.update.mockImplementation(() => ({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockImplementation(async () => {
+              updateCount += 1;
+              return updateCount === 1 ? [{ id: "pay-1", fence: 1 }] : [];
+            }),
+          }),
+        }),
+      }));
+      db.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                paymentUrl: null,
+                status: "processing",
+                providerTradeNo: "successor-trade",
+              },
+            ]),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({
+            createPaymentIntent: vi.fn().mockResolvedValue({
+              providerTradeNo: null,
+              paymentUrl: "https://qr.alipay.com/old-owner",
+              initialStatus: "pending",
+            }),
+          }),
+        },
+      });
+      const internal = service as unknown as {
+        claimAndPersistPaymentIntent(
+          draft: Record<string, unknown>,
+          config: null,
+        ): Promise<{ paymentUrl: string; initialStatus: string }>;
+      };
+
+      await expect(
+        internal.claimAndPersistPaymentIntent(
+          {
+            orderId: "550e8400-e29b-41d4-a716-446655440070",
+            orderNo: "ORD-LEASE-PERSIST-LOST",
+            paymentId: "550e8400-e29b-41d4-a716-446655440071",
+            paymentNo: "PAY-LEASE-PERSIST-LOST",
+            providerCode: "alipay",
+            paymentMethod: "qr_code",
+            machineId: "machine-1",
+            totalAmountCents: 100,
+            expiresAt: new Date("2026-07-14T01:00:00.000Z"),
+            reservations: [],
+          },
+          null,
+        ),
+      ).resolves.toMatchObject({
+        paymentUrl: "",
+        initialStatus: "processing",
+      });
     });
 
     it("restores the persisted payment instead of allocating another order for the same checkout key", async () => {
@@ -2628,7 +2738,11 @@ function makeOrdersDbForPaymentUpdateFailure(): OrdersDbHarness {
         };
       }
       return {
-        where: vi.fn().mockRejectedValue(new Error("payment update failed")),
+        where: vi.fn().mockReturnValue({
+          returning: vi
+            .fn()
+            .mockRejectedValue(new Error("payment update failed")),
+        }),
       };
     }),
   }));

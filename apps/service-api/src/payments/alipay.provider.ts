@@ -57,6 +57,10 @@ type AlipayConfig = {
   orderCodePrecreateRetryDelayMs: number;
 };
 
+// Must finish before the 30s payment-intent lease heartbeat. This keeps a
+// single owner from extending a lease forever on a hung provider request.
+const MAX_ALIPAY_REQUEST_TIMEOUT_MS = 20_000;
+
 function readRequiredString(
   source: Record<string, unknown>,
   key: string,
@@ -123,7 +127,10 @@ function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
     endpoint: normalizeEndpoint(gatewayUrl),
     keyType,
     qrExpiresMinutes: readPositiveInteger(source, "qrExpiresMinutes", 15),
-    requestTimeoutMs: readPositiveInteger(source, "requestTimeoutMs", 20_000),
+    requestTimeoutMs: Math.min(
+      readPositiveInteger(source, "requestTimeoutMs", 20_000),
+      MAX_ALIPAY_REQUEST_TIMEOUT_MS,
+    ),
     timeoutCompensationSeconds: readPositiveInteger(
       source,
       "timeoutCompensationSeconds",
@@ -235,6 +242,8 @@ function mapAlipayTradeStatus(
       providerTradeNo:
         typeof data["trade_no"] === "string" ? data["trade_no"] : null,
       failedReason: subCode ?? code,
+      reconciliationState:
+        subCode === "ACQ.TRADE_NOT_EXIST" ? "provider_trade_not_exist" : null,
       rawPayload: data,
     };
   }
@@ -259,6 +268,8 @@ function mapAlipayTradeStatus(
     paidAt:
       parseAlipayDate(data["send_pay_date"] ?? data["gmt_payment"]) ??
       undefined,
+    reconciliationState:
+      tradeStatus === "WAIT_BUYER_PAY" ? "wait_buyer_pay" : null,
     rawPayload: data,
   };
 }
@@ -266,7 +277,6 @@ function mapAlipayTradeStatus(
 function assertSuccessfulPrecreate(
   data: Record<string, unknown>,
   paymentNo: string,
-  amountCents: number,
 ): string {
   const code = typeof data["code"] === "string" ? data["code"] : null;
   if (code !== "10000") {
@@ -288,13 +298,6 @@ function assertSuccessfulPrecreate(
     );
   }
 
-  const totalAmount = readString(data, "total_amount");
-  if (totalAmount !== amountCentsToYuan(amountCents)) {
-    throw new BadGatewayException(
-      `Alipay alipay.trade.precreate total_amount mismatch: ${totalAmount}`,
-    );
-  }
-
   return readString(data, "qr_code");
 }
 
@@ -312,8 +315,12 @@ function assertVerifiedSuccessfulAlipayQuery(
     );
   }
 
-  const totalAmount = readString(data, "total_amount");
-  if (totalAmount !== amountCentsToYuan(input.amountCents)) {
+  const totalAmount = data["total_amount"];
+  if (
+    typeof totalAmount === "string" &&
+    totalAmount.length > 0 &&
+    totalAmount !== amountCentsToYuan(input.amountCents)
+  ) {
     throw new BadGatewayException(
       `Alipay alipay.trade.query total_amount mismatch: ${totalAmount}`,
     );
@@ -545,12 +552,11 @@ function assertAlipayBody(value: unknown): Record<string, string> {
 function selectAlipayConfig(
   configs: PaymentProviderRuntimeConfig[],
   body: Record<string, string>,
-): AlipayConfig {
-  const parsed = configs.map(parseAlipayConfig);
+): PaymentProviderRuntimeConfig {
   const appId = body["app_id"] ?? null;
   const selected =
-    (appId ? parsed.find((config) => config.appId === appId) : null) ??
-    parsed[0];
+    (appId ? configs.find((config) => config.appId === appId) : null) ??
+    configs[0];
   if (!selected) {
     throw new UnauthorizedException("Alipay config not found for webhook");
   }
@@ -635,11 +641,7 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
       request,
     );
 
-    const paymentUrl = assertSuccessfulPrecreate(
-      data,
-      input.paymentNo,
-      input.amountCents,
-    );
+    const paymentUrl = assertSuccessfulPrecreate(data, input.paymentNo);
     return {
       providerTradeNo: null,
       paymentUrl,
@@ -947,11 +949,16 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const body = assertAlipayBody(input.body);
     const configs =
       input.candidateConfigs.length > 0 ? input.candidateConfigs : [];
-    const config = selectAlipayConfig(configs, body);
+    const matchedRuntimeConfig = selectAlipayConfig(configs, body);
+    const config = parseAlipayConfig(matchedRuntimeConfig);
     const sdk = createAlipaySdk(this.sdkFactory, config);
     if (!sdk.checkNotifySignV2(body)) {
       throw new UnauthorizedException("Alipay signature invalid");
     }
-    return mapAlipayWebhook(body);
+    const result = mapAlipayWebhook(body);
+    return {
+      ...result,
+      matchedConfigId: matchedRuntimeConfig.id ?? null,
+    };
   }
 }

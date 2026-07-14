@@ -65,7 +65,12 @@ type WeChatPayConfig = {
   paymentCodeSignType: "MD5" | "HMAC-SHA256";
   paymentCodeDeviceInfo: string | null;
   notifyUrl: string;
+  /** Bounded below the payment-creation lease heartbeat (30 seconds). */
+  requestTimeoutMs: number;
 };
+
+const DEFAULT_WECHAT_REQUEST_TIMEOUT_MS = 15_000;
+const MAX_WECHAT_REQUEST_TIMEOUT_MS = 20_000;
 
 function readRequiredString(
   source: Record<string, unknown>,
@@ -77,6 +82,14 @@ function readRequiredString(
     throw new ConflictException(`${providerName} config is incomplete: ${key}`);
   }
   return value;
+}
+
+function readRequestTimeoutMs(source: Record<string, unknown>): number {
+  const value = source["requestTimeoutMs"];
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return DEFAULT_WECHAT_REQUEST_TIMEOUT_MS;
+  }
+  return Math.min(value, MAX_WECHAT_REQUEST_TIMEOUT_MS);
 }
 
 /**
@@ -169,6 +182,7 @@ function parseWeChatPayConfig(
         ? source["paymentCodeDeviceInfo"].trim()
         : null,
     notifyUrl: readRequiredString(source, "notifyUrl", "WeChat Pay"),
+    requestTimeoutMs: readRequestTimeoutMs(source),
   };
 }
 
@@ -199,15 +213,32 @@ async function requestWechat(
     `serial_no="${config.merchantCertificateSerialNo}"`,
     `signature="${signature}"`,
   ].join(",");
-  const response = await fetch(`https://api.mch.weixin.qq.com${path}`, {
-    method,
-    headers: {
-      Accept: "application/json",
-      Authorization: `WECHATPAY2-SHA256-RSA2048 ${authorization}`,
-      "Content-Type": "application/json",
-    },
-    body: bodyText.length > 0 ? bodyText : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, config.requestTimeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(`https://api.mch.weixin.qq.com${path}`, {
+      method,
+      headers: {
+        Accept: "application/json",
+        Authorization: `WECHATPAY2-SHA256-RSA2048 ${authorization}`,
+        "Content-Type": "application/json",
+      },
+      body: bodyText.length > 0 ? bodyText : undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new BadGatewayException(
+        `WeChat Pay request timed out after ${config.requestTimeoutMs}ms`,
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   const rawBodyText = await response.text();
   if (!response.ok) {
     // Only expose non-sensitive error snippet; do not leak keys/credentials
@@ -250,6 +281,7 @@ async function postWechatV2Xml(
   url: string,
   body: string,
   agent: Agent | undefined,
+  timeoutMs: number,
 ): Promise<{ statusCode: number; text: string }> {
   return await new Promise((resolve, reject) => {
     const target = new URL(url);
@@ -262,6 +294,7 @@ async function postWechatV2Xml(
           "content-length": Buffer.byteLength(body),
         },
         agent,
+        timeout: timeoutMs,
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -276,6 +309,11 @@ async function postWechatV2Xml(
         });
       },
     );
+    req.on("timeout", () => {
+      req.destroy(
+        new Error(`WeChat Pay V2 request timed out after ${timeoutMs}ms`),
+      );
+    });
     req.on("error", reject);
     req.write(body);
     req.end();
@@ -310,7 +348,12 @@ async function requestWechatV2(
         config.merchantApiKeyPem ?? "",
       )
     : undefined;
-  const response = await postWechatV2Xml(url, body, agent);
+  const response = await postWechatV2Xml(
+    url,
+    body,
+    agent,
+    config.requestTimeoutMs,
+  );
   if (response.statusCode < 200 || response.statusCode >= 300) {
     throw new BadGatewayException(
       `WeChat Pay V2 request failed: ${response.statusCode}`,

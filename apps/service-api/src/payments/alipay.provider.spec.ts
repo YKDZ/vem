@@ -216,12 +216,11 @@ describe("AlipayProvider", () => {
     ).rejects.toThrow("Alipay alipay.trade.precreate failed");
   });
 
-  it("rejects a precreate QR that echoes a different amount", async () => {
+  it("accepts a signed precreate QR when Alipay omits optional total_amount", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec).mockResolvedValueOnce({
       code: "10000",
       out_trade_no: "PAY202605060121",
-      total_amount: "9.99",
       qr_code: "https://qr.alipay.com/bax-sandbox",
     });
     const provider = new AlipayProvider(factory);
@@ -234,7 +233,10 @@ describe("AlipayProvider", () => {
         amountCents: 100,
         expiresAt: new Date(Date.now() + 15 * 60_000),
       }),
-    ).rejects.toThrow("Alipay alipay.trade.precreate total_amount mismatch");
+    ).resolves.toMatchObject({
+      paymentUrl: "https://qr.alipay.com/bax-sandbox",
+      initialStatus: "pending",
+    });
   });
 
   it("rejects a precreate response that omits the payment number", async () => {
@@ -468,6 +470,9 @@ describe("AlipayProvider", () => {
       );
       expect(result.status).toBe(status);
       expect(result.providerTradeNo).toBe("2026050622000000001");
+      if (tradeStatus === "WAIT_BUYER_PAY") {
+        expect(result.reconciliationState).toBe("wait_buyer_pay");
+      }
     },
   );
 
@@ -490,6 +495,7 @@ describe("AlipayProvider", () => {
 
     expect(result.status).toBe("pending");
     expect(result.failedReason).toBe("ACQ.TRADE_NOT_EXIST");
+    expect(result.reconciliationState).toBe("provider_trade_not_exist");
   });
 
   it("does not report a mismatched successful query as paid", async () => {
@@ -908,7 +914,7 @@ describe("AlipayProvider", () => {
       headers: {},
       body,
       rawBodyText: new URLSearchParams(body).toString(),
-      candidateConfigs: [makeRuntimeConfig()],
+      candidateConfigs: [makeRuntimeConfig({ id: "cfg-ali-1" })],
     });
 
     expect(sdk.checkNotifySignV2).toHaveBeenCalledWith(body);
@@ -918,6 +924,7 @@ describe("AlipayProvider", () => {
       providerTradeNo: "2026050622000000003",
       paymentStatus: "succeeded",
       signatureValid: true,
+      matchedConfigId: "cfg-ali-1",
     });
   });
 

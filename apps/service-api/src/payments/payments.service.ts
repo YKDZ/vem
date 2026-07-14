@@ -1588,51 +1588,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return { handled: false, reason: "payment_not_found" };
     }
 
-    const boundConfig = await this.paymentProviderConfigService
-      .resolveForExistingPayment({
-        providerCode,
-        providerConfigId: payment.providerConfigId ?? null,
-        machineId: payment.machineId,
-        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
-      })
-      .catch(() => null);
-    const validationConfigs =
-      boundConfig?.providerCode === providerCode
-        ? [boundConfig, ...candidateConfigs]
-        : candidateConfigs;
-    const businessValidation = this.validateProviderWebhookBusinessFields(
-      providerCode,
-      webhook.rawPayload,
-      {
-        paymentNo: payment.paymentNo,
-        amountCents: payment.amountCents,
-        machineId: payment.machineId,
-      },
-      validationConfigs,
-      webhook.normalizedPayload,
-      webhook.matchedConfigId ?? boundConfig?.id ?? null,
-      webhook.paymentStatus,
-    );
-
-    const eventType = businessValidation.ok
-      ? webhook.eventType
-      : `${webhook.eventType}.business_invalid`;
-
-    const inserted = await this.db
-      .insert(paymentEvents)
-      .values({
-        paymentId: payment.id,
-        providerId: payment.providerId,
-        eventType,
-        providerEventId: webhook.providerEventId,
-        rawPayloadJson: buildStoredEventPayload(webhook.rawPayload),
-        signatureValid: webhook.signatureValid,
-        handledAt: new Date(),
-      })
-      .onConflictDoNothing()
-      .returning({ id: paymentEvents.id });
-
-    if (inserted.length === 0) {
+    // The provider verifies the callback against one concrete merchant
+    // configuration. It must be the immutable configuration binding captured
+    // when this payment was created; accepting another currently-valid
+    // merchant would make app/seller matching meaningless after a rotation.
+    if (
+      payment.providerConfigId === null ||
+      (payment.providerConfigId !== undefined &&
+        webhook.matchedConfigId !== payment.providerConfigId)
+    ) {
       await this.webhookAttemptRecorder.finish({
         attemptId,
         providerId: payment.providerId,
@@ -1644,17 +1608,77 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         paymentNo: payment.paymentNo,
         orderNo: payment.orderNo,
         signatureValid: webhook.signatureValid,
-        businessValid: true,
-        handled: true,
-        duplicate: true,
-        failureReason: "duplicate_event",
+        businessValid: false,
+        handled: false,
+        failureReason: "payment_config_binding_mismatch",
       });
-      return { handled: true, duplicate: true };
+      return { handled: false, reason: "payment_config_binding_mismatch" };
     }
+
+    const boundConfig = await this.paymentProviderConfigService
+      .resolveForExistingPayment({
+        providerCode,
+        providerConfigId: payment.providerConfigId ?? null,
+        machineId: payment.machineId,
+        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
+      })
+      .catch(() => null);
+    const validationConfigs =
+      payment.providerConfigId === undefined
+        ? candidateConfigs
+        : boundConfig?.id === payment.providerConfigId &&
+            boundConfig.providerCode === providerCode
+          ? [boundConfig]
+          : [];
+    const businessValidation = this.validateProviderWebhookBusinessFields(
+      providerCode,
+      webhook.rawPayload,
+      {
+        paymentNo: payment.paymentNo,
+        amountCents: payment.amountCents,
+        machineId: payment.machineId,
+      },
+      validationConfigs,
+      webhook.normalizedPayload,
+      webhook.matchedConfigId,
+      webhook.paymentStatus,
+    );
 
     if (!businessValidation.ok) {
       const reason = (businessValidation as { ok: false; reason: string })
         .reason;
+      const inserted = await this.db
+        .insert(paymentEvents)
+        .values({
+          paymentId: payment.id,
+          providerId: payment.providerId,
+          eventType: `${webhook.eventType}.business_invalid`,
+          providerEventId: webhook.providerEventId,
+          rawPayloadJson: buildStoredEventPayload(webhook.rawPayload),
+          signatureValid: webhook.signatureValid,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .returning({ id: paymentEvents.id });
+      if (inserted.length === 0) {
+        await this.webhookAttemptRecorder.finish({
+          attemptId,
+          providerId: payment.providerId,
+          paymentId: payment.id,
+          matchedConfigId: webhook.matchedConfigId,
+          eventKind: "payment",
+          eventType: webhook.eventType,
+          providerEventId: webhook.providerEventId,
+          paymentNo: payment.paymentNo,
+          orderNo: payment.orderNo,
+          signatureValid: webhook.signatureValid,
+          businessValid: false,
+          handled: true,
+          duplicate: true,
+          failureReason: "duplicate_event",
+        });
+        return { handled: true, duplicate: true };
+      }
       await this.webhookAttemptRecorder.finish({
         attemptId,
         providerId: payment.providerId,
@@ -1673,8 +1697,30 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return { handled: false, reason };
     }
 
+    // The event is the durable inbox/dedupe record. Insert it in the same
+    // transaction as the terminal state and inventory transition so an abort
+    // leaves neither a consumed event nor a partially applied payment.
+    const persistWebhookEvent = async (tx: DrizzleTransaction) =>
+      await tx
+        .insert(paymentEvents)
+        .values({
+          paymentId: payment.id,
+          providerId: payment.providerId,
+          eventType: webhook.eventType,
+          providerEventId: webhook.providerEventId,
+          rawPayloadJson: buildStoredEventPayload(webhook.rawPayload),
+          signatureValid: webhook.signatureValid,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .returning({ id: paymentEvents.id });
+
+    let duplicate = false;
+
     if (webhook.paymentStatus === "succeeded") {
       const transition = await this.db.transaction(async (tx) => {
+        const inserted = await persistWebhookEvent(tx);
+        if (inserted.length === 0) return { duplicate: true };
         const [r] = await tx
           .select({
             paymentId: payments.id,
@@ -1688,16 +1734,28 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .from(payments)
           .innerJoin(orders, eq(orders.id, payments.orderId))
           .where(eq(payments.id, payment.id));
-        if (!r) return null;
+        if (!r) return { duplicate: false, shouldDispatch: false };
 
         if (r.paymentStatus === "succeeded") {
-          return { orderId: r.orderId, shouldDispatch: false };
+          return {
+            duplicate: false,
+            orderId: r.orderId,
+            shouldDispatch: false,
+          };
         }
         if (!canApplyProviderTerminalStatus(r.paymentStatus)) {
-          return { orderId: r.orderId, shouldDispatch: false };
+          return {
+            duplicate: false,
+            orderId: r.orderId,
+            shouldDispatch: false,
+          };
         }
         if (isPaymentIncidentLocked(r)) {
-          return { orderId: r.orderId, shouldDispatch: false };
+          return {
+            duplicate: false,
+            orderId: r.orderId,
+            shouldDispatch: false,
+          };
         }
 
         await tx
@@ -1736,16 +1794,20 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           });
         }
 
-        return { orderId: r.orderId, shouldDispatch: true };
+        return { duplicate: false, orderId: r.orderId, shouldDispatch: true };
       });
 
-      if (transition?.shouldDispatch) {
+      duplicate = transition?.duplicate ?? false;
+
+      if (transition?.shouldDispatch && transition.orderId) {
         await this.vendingService.createAndDispatchCommands(transition.orderId);
       }
     }
 
     if (webhook.paymentStatus === "failed") {
-      await this.db.transaction(async (tx) => {
+      const transition = await this.db.transaction(async (tx) => {
+        const inserted = await persistWebhookEvent(tx);
+        if (inserted.length === 0) return { duplicate: true };
         const [r] = await tx
           .select({
             paymentId: payments.id,
@@ -1756,8 +1818,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .from(payments)
           .innerJoin(orders, eq(orders.id, payments.orderId))
           .where(eq(payments.id, payment.id));
-        if (!r) return;
-        if (!canApplyProviderTerminalStatus(r.paymentStatus)) return;
+        if (!r) return { duplicate: false };
+        if (!canApplyProviderTerminalStatus(r.paymentStatus)) {
+          return { duplicate: false };
+        }
 
         await tx
           .update(payments)
@@ -1791,7 +1855,46 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           orderId: r.orderId,
           reason: "payment_failed",
         });
+        return { duplicate: false };
       });
+      duplicate = transition?.duplicate ?? false;
+    }
+
+    if (
+      webhook.paymentStatus !== "succeeded" &&
+      webhook.paymentStatus !== "failed"
+    ) {
+      const inserted = await this.db.transaction(
+        async (tx) => await persistWebhookEvent(tx),
+      );
+      duplicate = inserted.length === 0;
+    }
+
+    if (duplicate) {
+      // A transaction may have committed payment success before process death
+      // prevented dispatch. Re-enter the idempotent command creator on a
+      // provider redelivery; it joins an existing command rather than issuing
+      // a second dispense command.
+      if (webhook.paymentStatus === "succeeded") {
+        await this.vendingService.createAndDispatchCommands(payment.orderId);
+      }
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        providerId: payment.providerId,
+        paymentId: payment.id,
+        matchedConfigId: webhook.matchedConfigId,
+        eventKind: "payment",
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        paymentNo: payment.paymentNo,
+        orderNo: payment.orderNo,
+        signatureValid: webhook.signatureValid,
+        businessValid: true,
+        handled: true,
+        duplicate: true,
+        failureReason: "duplicate_event",
+      });
+      return { handled: true, duplicate: true };
     }
 
     await this.webhookAttemptRecorder.finish({
@@ -2122,7 +2225,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             await this.db
               .update(paymentReconciliationAttempts)
               .set({
-                status: providerStatus,
+                status: result.reconciliationState ?? providerStatus,
                 providerPaymentStatus: providerStatus,
                 providerTradeNo: result.providerTradeNo ?? null,
                 ...rawPayloadFields,
@@ -2393,13 +2496,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           status: providerStatus,
           providerTradeNo:
             result.providerTradeNo ?? payment.providerTradeNo ?? null,
+          failedReason: result.reconciliationState ?? null,
           updatedAt: new Date(),
         })
         .where(eq(payments.id, payment.id));
       await this.db
         .update(paymentReconciliationAttempts)
         .set({
-          status: providerStatus,
+          status: result.reconciliationState ?? providerStatus,
           providerPaymentStatus: providerStatus,
           providerTradeNo: result.providerTradeNo ?? null,
           ...rawPayloadFields,
@@ -2412,7 +2516,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return {
         status: providerStatus,
         reconciled: false,
-        reason: `provider_${providerStatus}`,
+        reason: result.reconciliationState ?? `provider_${providerStatus}`,
       };
     }
 
