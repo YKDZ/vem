@@ -4310,13 +4310,23 @@ function Get-SafeReadyzEvidence([string]$BaseUrl) {
   }
 }
 
-function Wait-DaemonIpc([string]$ReadyFilePath) {
+function Wait-DaemonIpc(
+  [string]$ReadyFilePath,
+  [int]$MaxAttempts = 18,
+  [int]$RetryDelayMilliseconds = 2000
+) {
   $lastError = $null
-  for ($attempt = 0; $attempt -lt 18; $attempt++) {
+  $lastServiceStartError = $null
+  for ($attempt = 0; $attempt -lt $MaxAttempts; $attempt++) {
     try {
-      $service = Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
-      if ($null -ne $service -and $service.Status -eq "Stopped") {
-        Start-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
+      $service = Get-Service -Name "VemVendingDaemon" -ErrorAction Stop
+      if ($service.Status -eq "Stopped") {
+        try {
+          Start-Service -Name "VemVendingDaemon" -ErrorAction Stop
+        } catch {
+          $lastServiceStartError = $_.Exception.Message
+          throw "Start-Service VemVendingDaemon failed: $lastServiceStartError"
+        }
       }
 
       $ready = Read-JsonFile $ReadyFilePath
@@ -4331,14 +4341,70 @@ function Wait-DaemonIpc([string]$ReadyFilePath) {
         baseUrl = $baseUrl
         headers = $headers
         attempts = $attempt + 1
-        recovered = $true
+        observedHealth = $true
       }
     } catch {
       $lastError = $_.Exception.Message
-      Start-Sleep -Seconds 2
+      if ($attempt -lt ($MaxAttempts - 1)) {
+        Start-Sleep -Milliseconds $RetryDelayMilliseconds
+      }
     }
   }
-  throw "daemon IPC did not become available: $lastError"
+  $serviceStartDiagnostic = if ($null -ne $lastServiceStartError) {
+    "; last service start error: $lastServiceStartError"
+  } else {
+    ""
+  }
+  throw "daemon IPC did not become available after $MaxAttempts attempts: $lastError$serviceStartDiagnostic"
+}
+
+function Wait-DaemonIpcAfterProvisioningRestart(
+  [string]$ReadyFilePath,
+  [string]$PreviousBaseUrl,
+  [int]$MaxAttempts = 72,
+  [int]$RetryDelayMilliseconds = 250
+) {
+  if ([string]::IsNullOrWhiteSpace($PreviousBaseUrl)) {
+    throw "previous daemon IPC base URL is required to observe provisioning recovery"
+  }
+
+  for ($attempt = 0; $attempt -lt $MaxAttempts; $attempt++) {
+    try {
+      Invoke-IpcJson "GET" "$PreviousBaseUrl/healthz" @{} | Out-Null
+    } catch {
+      $currentIpc = Wait-DaemonIpc $ReadyFilePath
+      return [ordered]@{
+        ready = $currentIpc.ready
+        baseUrl = $currentIpc.baseUrl
+        headers = $currentIpc.headers
+        attempts = $currentIpc.attempts
+        observedHealth = [bool]$currentIpc.observedHealth
+        recovered = $true
+        previousIpcUnavailable = $true
+        recoveryObservationAttempts = $attempt + 1
+        recoveryEvidence = "observed_previous_ipc_unavailable_then_healthy"
+      }
+    }
+
+    if ($attempt -lt ($MaxAttempts - 1)) {
+      Start-Sleep -Milliseconds $RetryDelayMilliseconds
+    }
+  }
+
+  # The internal reconfigure cycle can be shorter than the probe interval. Keep
+  # Factory acceptance available, but do not label this as a recovered cycle.
+  $currentIpc = Wait-DaemonIpc $ReadyFilePath
+  return [ordered]@{
+    ready = $currentIpc.ready
+    baseUrl = $currentIpc.baseUrl
+    headers = $currentIpc.headers
+    attempts = $currentIpc.attempts
+    observedHealth = [bool]$currentIpc.observedHealth
+    recovered = $false
+    previousIpcUnavailable = $false
+    recoveryObservationAttempts = $MaxAttempts
+    recoveryEvidence = "post_claim_health_observed_without_previous_ipc_unavailability"
+  }
 }
 
 function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
@@ -4458,6 +4524,11 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     claimHttpStatus = $null
     claimResult = [ordered]@{
       restartRequested = $null
+      observedHealthAfterRestart = $null
+      recoveredAfterRestart = $null
+      previousIpcUnavailable = $null
+      recoveryAttempts = $null
+      recoveryEvidence = $null
     }
     machineCode = $null
     provisioned = $false
@@ -4503,12 +4574,15 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       $evidence.machineCode = $claimResult.machineCode
       $evidence.claimResult.restartRequested = if ($null -ne $claimResult.restartRequested) { [bool]$claimResult.restartRequested } else { $null }
       if ([bool]$evidence.claimResult.restartRequested) {
-        $recoveredIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+        $recoveredIpc = Wait-DaemonIpcAfterProvisioningRestart ${psString(bringUpPlan.arguments.DaemonReadyFile)} $baseUrl
         $ready = $recoveredIpc.ready
         $baseUrl = $recoveredIpc.baseUrl
         $headers = $recoveredIpc.headers
+        $evidence.claimResult.observedHealthAfterRestart = [bool]$recoveredIpc.observedHealth
         $evidence.claimResult.recoveredAfterRestart = [bool]$recoveredIpc.recovered
+        $evidence.claimResult.previousIpcUnavailable = [bool]$recoveredIpc.previousIpcUnavailable
         $evidence.claimResult.recoveryAttempts = [int]$recoveredIpc.attempts
+        $evidence.claimResult.recoveryEvidence = [string]$recoveredIpc.recoveryEvidence
       }
     } catch {
       $claimError = Get-HttpErrorInfo $_

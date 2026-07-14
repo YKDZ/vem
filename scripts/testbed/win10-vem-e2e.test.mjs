@@ -53,6 +53,49 @@ import {
   sanitizeFactoryPreclaimReport,
 } from "./win10-vem-e2e.mjs";
 
+function extractPowerShellFunction(script, name) {
+  const start = script.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `generated script is missing ${name}`);
+
+  const openingBrace = script.indexOf("{", start);
+  let depth = 0;
+  for (let index = openingBrace; index < script.length; index += 1) {
+    if (script[index] === "{") {
+      depth += 1;
+    } else if (script[index] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return script.slice(start, index + 1);
+      }
+    }
+  }
+  throw new Error(`generated PowerShell function ${name} is not closed`);
+}
+
+function runPowerShellSemanticHarness(functionSource, harness) {
+  const directory = mkdtempSync(join(tmpdir(), "vem-daemon-ipc-harness-"));
+  const scriptPath = join(directory, "harness.ps1");
+  try {
+    writeFileSync(
+      scriptPath,
+      `$ErrorActionPreference = "Stop"\n${functionSource}\n${harness}`,
+    );
+    const result = spawnSync(
+      "pwsh",
+      ["-NoProfile", "-NonInteractive", "-File", scriptPath],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      result.status,
+      0,
+      `PowerShell semantic harness failed:\n${result.stdout}\n${result.stderr}`,
+    );
+    return JSON.parse(result.stdout.trim());
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 describe("transient SSH operation retry", () => {
   it("retries a legacy SCP upload after a startup-window connection reset", async () => {
     const calls = [];
@@ -1698,6 +1741,247 @@ describe("win10-vem-e2e reset planning", () => {
     assert.ok(daemonIpcWait >= provisioningStart);
     assert.ok(daemonIpcWait < configRead);
     assert.ok(configRead < claim);
+  });
+
+  it("starts a stopped daemon service and waits for delayed IPC readiness", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+    const result = runPowerShellSemanticHarness(
+      extractPowerShellFunction(script, "Wait-DaemonIpc"),
+      `
+$calls = [System.Collections.Generic.List[string]]::new()
+$serviceChecks = 0
+$readyReads = 0
+
+function Get-Service {
+  param([string]$Name, $ErrorAction)
+  $calls.Add("get-service")
+  $script:serviceChecks += 1
+  [pscustomobject]@{ Status = if ($script:serviceChecks -eq 1) { "Stopped" } else { "Running" } }
+}
+
+function Start-Service {
+  param([string]$Name, $ErrorAction)
+  $calls.Add("start-service")
+}
+
+function Read-JsonFile {
+  param([string]$Path)
+  $calls.Add("read-ready")
+  $script:readyReads += 1
+  if ($script:readyReads -eq 1) { throw "ready file not yet published" }
+  [pscustomobject]@{ ipcToken = "token"; healthzUrl = "http://127.0.0.1:7891/healthz" }
+}
+
+function Get-IpcBaseUrl { param($Ready) "http://127.0.0.1:7891" }
+function Invoke-IpcJson {
+  param([string]$Method, [string]$Uri, $Headers, $Body = $null)
+  $calls.Add("health")
+  [pscustomobject]@{ status = "ok" }
+}
+function Start-Sleep {
+  param([int]$Milliseconds)
+  $calls.Add("sleep:$Milliseconds")
+}
+
+$daemonIpc = Wait-DaemonIpc "C:\\daemon-ready.json" 3 1
+@{ calls = @($calls); attempts = $daemonIpc.attempts; observedHealth = $daemonIpc.observedHealth } | ConvertTo-Json -Compress
+`,
+    );
+
+    assert.deepEqual(result.calls, [
+      "get-service",
+      "start-service",
+      "read-ready",
+      "sleep:1",
+      "get-service",
+      "read-ready",
+      "health",
+    ]);
+    assert.equal(result.attempts, 2);
+    assert.equal(result.observedHealth, true);
+  });
+
+  it("retains Start-Service failures in the daemon IPC diagnostic", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+    const result = runPowerShellSemanticHarness(
+      extractPowerShellFunction(script, "Wait-DaemonIpc"),
+      `
+$calls = [System.Collections.Generic.List[string]]::new()
+function Get-Service {
+  param([string]$Name, $ErrorAction)
+  $calls.Add("get-service")
+  [pscustomobject]@{ Status = "Stopped" }
+}
+function Start-Service {
+  param([string]$Name, $ErrorAction)
+  $calls.Add("start-service")
+  throw "SCM access denied"
+}
+function Read-JsonFile { throw "ready file must not be read after Start-Service fails" }
+function Get-IpcBaseUrl { throw "not reached" }
+function Invoke-IpcJson { throw "not reached" }
+function Start-Sleep {
+  param([int]$Milliseconds)
+  $calls.Add("sleep:$Milliseconds")
+}
+
+$failure = $null
+try {
+  Wait-DaemonIpc "C:\\daemon-ready.json" 2 1 | Out-Null
+} catch {
+  $failure = $_.Exception.Message
+}
+@{ calls = @($calls); failure = $failure } | ConvertTo-Json -Compress
+`,
+    );
+
+    assert.deepEqual(result.calls, [
+      "get-service",
+      "start-service",
+      "sleep:1",
+      "get-service",
+      "start-service",
+    ]);
+    assert.match(result.failure, /Start-Service.*SCM access denied/);
+    assert.match(result.failure, /last service start error.*SCM access denied/);
+  });
+
+  it("only marks post-claim IPC as recovered after old IPC becomes unavailable", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+    const result = runPowerShellSemanticHarness(
+      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioningRestart")}`,
+      `
+$calls = [System.Collections.Generic.List[string]]::new()
+$healthChecks = 0
+$calls.Add("claim")
+function Get-Service {
+  param([string]$Name, $ErrorAction)
+  $calls.Add("get-service")
+  [pscustomobject]@{ Status = "Running" }
+}
+function Start-Service { throw "not reached" }
+function Read-JsonFile {
+  param([string]$Path)
+  $calls.Add("read-ready")
+  [pscustomobject]@{ ipcToken = "token"; healthzUrl = "http://127.0.0.1:7891/healthz" }
+}
+function Get-IpcBaseUrl { param($Ready) "http://127.0.0.1:7891" }
+function Invoke-IpcJson {
+  param([string]$Method, [string]$Uri, $Headers, $Body = $null)
+  $script:healthChecks += 1
+  if ($script:healthChecks -eq 1) {
+    $calls.Add("old-health:healthy")
+    return [pscustomobject]@{ status = "ok" }
+  }
+  if ($script:healthChecks -eq 2) {
+    $calls.Add("old-health:unavailable")
+    throw "connection refused"
+  }
+  $calls.Add("new-health:healthy")
+  [pscustomobject]@{ status = "ok" }
+}
+function Start-Sleep {
+  param([int]$Milliseconds)
+  $calls.Add("sleep:$Milliseconds")
+}
+
+$daemonIpc = Wait-DaemonIpcAfterProvisioningRestart "C:\\daemon-ready.json" "http://127.0.0.1:7891" 3 1
+@{
+  calls = @($calls)
+  recovered = $daemonIpc.recovered
+  previousIpcUnavailable = $daemonIpc.previousIpcUnavailable
+  recoveryEvidence = $daemonIpc.recoveryEvidence
+} | ConvertTo-Json -Compress
+`,
+    );
+
+    assert.deepEqual(result.calls, [
+      "claim",
+      "old-health:healthy",
+      "sleep:1",
+      "old-health:unavailable",
+      "get-service",
+      "read-ready",
+      "new-health:healthy",
+    ]);
+    assert.equal(result.recovered, true);
+    assert.equal(result.previousIpcUnavailable, true);
+    assert.equal(
+      result.recoveryEvidence,
+      "observed_previous_ipc_unavailable_then_healthy",
+    );
+  });
+
+  it("does not call a continuously healthy post-claim IPC cycle recovered", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+    const result = runPowerShellSemanticHarness(
+      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioningRestart")}`,
+      `
+$calls = [System.Collections.Generic.List[string]]::new()
+$calls.Add("claim")
+function Get-Service {
+  param([string]$Name, $ErrorAction)
+  $calls.Add("get-service")
+  [pscustomobject]@{ Status = "Running" }
+}
+function Start-Service { throw "not reached" }
+function Read-JsonFile {
+  param([string]$Path)
+  $calls.Add("read-ready")
+  [pscustomobject]@{ ipcToken = "token"; healthzUrl = "http://127.0.0.1:7891/healthz" }
+}
+function Get-IpcBaseUrl { param($Ready) "http://127.0.0.1:7891" }
+function Invoke-IpcJson {
+  param([string]$Method, [string]$Uri, $Headers, $Body = $null)
+  $calls.Add("health:healthy")
+  [pscustomobject]@{ status = "ok" }
+}
+function Start-Sleep {
+  param([int]$Milliseconds)
+  $calls.Add("sleep:$Milliseconds")
+}
+
+$daemonIpc = Wait-DaemonIpcAfterProvisioningRestart "C:\\daemon-ready.json" "http://127.0.0.1:7891" 2 1
+@{
+  calls = @($calls)
+  recovered = $daemonIpc.recovered
+  previousIpcUnavailable = $daemonIpc.previousIpcUnavailable
+  recoveryEvidence = $daemonIpc.recoveryEvidence
+} | ConvertTo-Json -Compress
+`,
+    );
+
+    assert.deepEqual(result.calls, [
+      "claim",
+      "health:healthy",
+      "sleep:1",
+      "health:healthy",
+      "get-service",
+      "read-ready",
+      "health:healthy",
+    ]);
+    assert.equal(result.recovered, false);
+    assert.equal(result.previousIpcUnavailable, false);
+    assert.equal(
+      result.recoveryEvidence,
+      "post_claim_health_observed_without_previous_ipc_unavailability",
+    );
   });
 
   it("emits provision diagnostics for missing ready file and token failures", () => {
