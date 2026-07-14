@@ -5,7 +5,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{Path as AxumPath, Query, State, WebSocketUpgrade},
     http::{
-        header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
+        header::{HeaderName, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
         HeaderMap, Method, StatusCode,
     },
     response::{IntoResponse, Json},
@@ -52,11 +52,15 @@ struct ClearWholeMachineMaintenanceLockRequest {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClaimMachineRequest {
     claim_code: String,
-    #[serde(default)]
-    rotate_maintenance_identity: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimMachineExecution {
+    FirstClaim,
+    Reclaim,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -151,6 +155,43 @@ async fn require_non_bring_up_maintenance_authorization(
     };
     ctx.maintenance_authorization
         .authorize_non_bring_up_mutation(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|message| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(ErrorMessage {
+                    code: "protected_maintenance_authorization_denied",
+                    message,
+                }),
+            )
+                .into_response()
+        })
+}
+
+async fn require_reclaim_maintenance_authorization(
+    ctx: &IpcContext,
+    headers: &HeaderMap,
+) -> Result<(), axum::response::Response> {
+    let Some(session_id) = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage {
+                code: "protected_maintenance_authorization_required",
+                message: "machine reclaim requires a protected maintenance authorization"
+                    .to_string(),
+            }),
+        )
+            .into_response());
+    };
+    ctx.maintenance_authorization
+        .authorize_reclaim(&MaintenanceAuthorizationContext {
             session_id: session_id.to_string(),
         })
         .await
@@ -322,6 +363,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/readyz", get(readyz))
         .route("/v1/bring-up", get(bring_up_snapshot))
         .route("/v1/bring-up/tasks/execute", post(execute_bring_up_task))
+        .route(
+            "/v1/bring-up/reclaim/request",
+            post(request_machine_reclaim),
+        )
         .route("/v1/network/settings", post(apply_network_settings))
         .route("/v1/network/available", get(available_wifi_networks))
         .route("/v1/config", get(get_config).put(put_config))
@@ -378,7 +423,11 @@ fn ipc_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
-        .allow_headers([AUTHORIZATION, CONTENT_TYPE])
+        .allow_headers([
+            AUTHORIZATION,
+            CONTENT_TYPE,
+            HeaderName::from_static("x-vem-maintenance-session"),
+        ])
         .allow_private_network(true)
 }
 
@@ -1064,13 +1113,22 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
     let network_bootstrap_reached_platform = network_status
         .as_ref()
         .is_some_and(network_reached_platform);
+    // Factory/testbed preparation writes only the platform endpoints before
+    // first claim. An unclaimed daemon has no machine credential with which
+    // to produce the ordinary sale-readiness platform probe, so that durable
+    // pre-claim configuration is the bounded evidence that exposes the claim
+    // cursor. The typed claim itself still validates the code with Platform.
+    let preclaim_platform_endpoint_configured = config
+        .as_ref()
+        .is_some_and(|config| !config.provisioned && !config.public.api_base_url.trim().is_empty());
 
     let snapshot = crate::bring_up::evaluate_bring_up(crate::bring_up::BringUpEvaluationInput {
         config,
         config_error,
         hardware_mode,
         platform_reachable: sale_component_ready(sale_readiness.as_ref(), "platformReachability")
-            || network_bootstrap_reached_platform,
+            || network_bootstrap_reached_platform
+            || preclaim_platform_endpoint_configured,
         topology_ready,
         topology_code,
         topology_message,
@@ -1193,7 +1251,7 @@ async fn execute_bring_up_task(
                 maintenance_authorization,
             },
         ) => {
-            if task.kind == crate::bring_up::BringUpTaskKind::ReclaimMachine {
+            let execution = if task.kind == crate::bring_up::BringUpTaskKind::ReclaimMachine {
                 let Some(maintenance_authorization) = maintenance_authorization.as_ref() else {
                     return (
                         StatusCode::FORBIDDEN,
@@ -1220,16 +1278,17 @@ async fn execute_bring_up_task(
                     )
                         .into_response();
                 }
-            }
+                ClaimMachineExecution::Reclaim
+            } else {
+                ClaimMachineExecution::FirstClaim
+            };
             // Reclaim rotation is an invariant of the daemon-projected task;
             // the client never chooses it.
             claim_machine_mutation(
                 State(ctx.clone()),
                 headers,
-                Json(ClaimMachineRequest {
-                    claim_code,
-                    rotate_maintenance_identity: task.rotate_maintenance_identity,
-                }),
+                Json(ClaimMachineRequest { claim_code }),
+                execution,
             )
             .await
             .into_response()
@@ -1258,6 +1317,51 @@ async fn execute_bring_up_task(
     }
 }
 
+async fn request_machine_reclaim(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_reclaim_maintenance_authorization(&ctx, &headers).await {
+        return response;
+    }
+    let _execution_guard = ctx.bring_up_execution_lock.lock().await;
+    match ctx.config_store.request_machine_reclaim().await {
+        Ok(()) => (StatusCode::OK, Json(bring_up_snapshot_for(&ctx).await)).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorMessage {
+                code: "machine_reclaim_request_persist_failed",
+                message: error,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn require_legacy_bring_up_task(
+    ctx: &IpcContext,
+    expected_kind: crate::bring_up::BringUpTaskKind,
+) -> Result<(), axum::response::Response> {
+    let snapshot = bring_up_snapshot_for(ctx).await;
+    match snapshot.current_task.as_ref() {
+        // The legacy endpoint is also used by protected routine maintenance
+        // after Bring-Up completed. There is no cursor to race in that state.
+        None => Ok(()),
+        Some(task) if task.kind == expected_kind => Ok(()),
+        Some(_) => Err((
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "bring_up_task_stale",
+                message: "daemon bring-up task changed; refresh the current task".to_string(),
+            }),
+        )
+            .into_response()),
+    }
+}
+
 async fn apply_network_settings(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -1269,7 +1373,13 @@ async fn apply_network_settings(
     if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
         return response;
     }
-    apply_network_settings_mutation(State(ctx), headers, Json(_payload))
+    let _execution_guard = ctx.bring_up_execution_lock.lock().await;
+    if let Err(response) =
+        require_legacy_bring_up_task(&ctx, crate::bring_up::BringUpTaskKind::ConfigureNetwork).await
+    {
+        return response;
+    }
+    apply_network_settings_mutation(State(ctx.clone()), headers, Json(_payload))
         .await
         .into_response()
 }
@@ -1522,38 +1632,36 @@ async fn claim_machine(
     if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
         return response;
     }
-    claim_machine_mutation(State(ctx), headers, Json(_payload))
-        .await
-        .into_response()
+    let _execution_guard = ctx.bring_up_execution_lock.lock().await;
+    if let Err(response) =
+        require_legacy_bring_up_task(&ctx, crate::bring_up::BringUpTaskKind::ClaimMachine).await
+    {
+        return response;
+    }
+    claim_machine_mutation(
+        State(ctx.clone()),
+        headers,
+        Json(_payload),
+        ClaimMachineExecution::FirstClaim,
+    )
+    .await
+    .into_response()
 }
 
 async fn claim_machine_mutation(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
     Json(payload): Json<ClaimMachineRequest>,
+    execution: ClaimMachineExecution,
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
 
     let claim_code = payload.claim_code.trim().to_ascii_uppercase();
-    // A machine that already owns a maintenance identity can only claim as a
-    // reclaim.  Client `false` is advisory at best and must never preserve an
-    // identity that the platform is replacing.
-    let rotate_maintenance_identity = payload.rotate_maintenance_identity
-        || ctx
-            .config_store
-            .machine_reclaim_requested()
-            .await
-            .unwrap_or(false)
-        || ctx
-            .config_store
-            .load_provisioning_profile_cache_summary()
-            .await
-            .ok()
-            .flatten()
-            .and_then(|profile| profile.maintenance)
-            .is_some();
+    // Only the daemon-projected reclaim task can rotate the maintenance
+    // identity. Legacy callers cannot choose this lifecycle transition.
+    let rotate_maintenance_identity = execution == ClaimMachineExecution::Reclaim;
     let maintenance_public_key = match if rotate_maintenance_identity {
         ctx.config_store
             .ensure_reclaim_maintenance_public_key(&claim_code)
@@ -3282,7 +3390,13 @@ async fn record_physical_stock_attestation(
     if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
         return response;
     }
-    record_physical_stock_attestation_mutation(State(ctx), headers, Json(_input))
+    let _execution_guard = ctx.bring_up_execution_lock.lock().await;
+    if let Err(response) =
+        require_legacy_bring_up_task(&ctx, crate::bring_up::BringUpTaskKind::AttestStock).await
+    {
+        return response;
+    }
+    record_physical_stock_attestation_mutation(State(ctx.clone()), headers, Json(_input))
         .await
         .into_response()
 }
@@ -4620,15 +4734,20 @@ mod tests {
             .await;
 
         let temp_dir = tempdir().expect("tmp");
-        let app = build_router(
-            test_ipc_context(
-                temp_dir.path(),
-                "token-1",
-                Some("MACHINE-1".to_string()),
-                &server.uri(),
-            )
-            .await,
-        );
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_claim_task_available(&ctx).await;
+        ctx.config_store
+            .request_machine_reclaim()
+            .await
+            .expect("persist reclaim request");
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: true });
+        let app = build_router(ctx);
         let response = app
             .oneshot(
                 Request::builder()
@@ -4831,8 +4950,7 @@ mod tests {
     #[tokio::test]
     async fn network_settings_rejects_invalid_payload_before_adapter_call() {
         let temp = tempdir().expect("temp");
-        let mut ctx =
-            test_ipc_context(temp.path(), "token-1", Some("M1".to_string()), "http://api").await;
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "").await;
         let calls = Arc::new(AtomicUsize::new(0));
         ctx.network_adapter = Arc::new(CountingNetworkAdapter {
             calls: calls.clone(),
@@ -5501,9 +5619,24 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(factory_server.received_requests().await.unwrap().len(), 1);
         assert_eq!(
-            stale_legacy_server.received_requests().await.unwrap().len(),
+            factory_server
+                .received_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|request| request.url.path() == "/machines/claim")
+                .count(),
+            1
+        );
+        assert_eq!(
+            stale_legacy_server
+                .received_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|request| request.url.path() == "/machines/claim")
+                .count(),
             0
         );
     }
@@ -5612,8 +5745,7 @@ mod tests {
 
         let temp_dir = tempdir().expect("tmp");
         let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
-        mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
+        let app = build_router(ctx.clone());
 
         let response = post_json(
             &app,
@@ -5629,6 +5761,8 @@ mod tests {
         let claim: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(claim["status"], "provisioned");
         assert!(!serde_json::to_string(&claim).unwrap().contains("planogram"));
+
+        mark_runtime_sale_ready(&ctx).await;
 
         let sale_view = app
             .clone()
@@ -5702,22 +5836,46 @@ mod tests {
     #[tokio::test]
     async fn same_device_reclaim_keeps_intact_local_stock_ledger_trusted() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/machines/claim"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
-            .mount(&server)
-            .await;
 
         let temp_dir = tempdir().expect("tmp");
-        let app = build_router(
-            test_ipc_context(
-                temp_dir.path(),
-                "token-1",
-                Some("MACHINE-1".to_string()),
-                &server.uri(),
-            )
-            .await,
-        );
+        write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
+        let factory_manifest_path = temp_dir.path().join("factory/factory-manifest.json");
+        let mut factory_manifest: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(&factory_manifest_path)
+                .await
+                .expect("read factory manifest"),
+        )
+        .expect("decode factory manifest");
+        factory_manifest["environment"] = json!("production");
+        tokio::fs::write(
+            factory_manifest_path,
+            serde_json::to_vec(&factory_manifest).expect("encode factory manifest"),
+        )
+        .await
+        .expect("write production factory manifest");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let mut active_profile: crate::config::MachineProvisioningProfile =
+            serde_json::from_value(valid_provisioning_profile()).expect("active profile");
+        active_profile.api_base_url = server.uri();
+        let active_maintenance = active_profile.maintenance.clone();
+        ctx.config_store
+            .apply_provisioning_profile(active_profile)
+            .await
+            .expect("apply active profile");
+        ctx.config_store
+            .apply_maintenance_profile(&active_maintenance, false)
+            .await
+            .expect("apply active maintenance identity");
+        mark_runtime_sale_ready(&ctx).await;
+        mark_claim_task_available(&ctx).await;
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: true });
+        let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
         assert_eq!(
@@ -5751,12 +5909,45 @@ mod tests {
             StatusCode::CREATED
         );
 
+        mark_claim_task_available(&ctx).await;
+        ctx.config_store
+            .request_machine_reclaim()
+            .await
+            .expect("persist reclaim request");
+        let next_public_key = ctx
+            .config_store
+            .ensure_reclaim_maintenance_public_key("ABCD-2345")
+            .await
+            .expect("prepare reclaim key");
+        let mut reclaimed_profile = valid_provisioning_profile();
+        reclaimed_profile["maintenance"]["publicKey"] = json!(next_public_key);
+        reclaimed_profile["maintenance"]["reclaimExpiresAt"] = json!("2030-01-01T00:00:00Z");
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(reclaimed_profile))
+            .mount(&server)
+            .await;
+        let app = build_router(ctx);
+        let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(snapshot["currentTask"]["kind"], "reclaim_machine");
+
         assert_eq!(
             post_json(
                 &app,
-                "/v1/provisioning/claim",
+                "/v1/bring-up/tasks/execute",
                 "token-1",
-                json!({ "claimCode": "ABCD-2345" }),
+                json!({
+                    "contractVersion": 1,
+                    "taskId": "bring_up.reclaim_machine",
+                    "taskVersion": 1,
+                    "kind": "reclaim_machine",
+                    "intent": "reclaim_machine",
+                    "mutation": {
+                        "type": "claim_machine",
+                        "claimCode": "ABCD-2345",
+                        "maintenanceAuthorization": { "sessionId": "protected-session-1" }
+                    }
+                }),
             )
             .await
             .status(),
@@ -6093,7 +6284,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_claim_without_default_api_base_url_reports_backend_unavailable() {
+    async fn failed_claim_without_default_api_base_url_fails_closed_before_backend_claim() {
         let temp_dir = tempdir().expect("tmp");
         let app = build_router(test_ipc_context(temp_dir.path(), "token-1", None, "").await);
 
@@ -6104,12 +6295,12 @@ mod tests {
             json!({ "claimCode": "ABCD-2345" }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["code"], "machine_claim_backend_unavailable");
+        assert_eq!(payload["code"], "bring_up_task_stale");
         let text = serde_json::to_string(&payload).unwrap();
         assert!(!text.contains("ABCD-2345"));
         assert!(!text.contains("apiBaseUrl"));
@@ -8614,6 +8805,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_preclaim_endpoint_projects_the_claim_task_for_factory_execution() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await,
+        );
+
+        let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(snapshot["state"], "claim_required");
+        assert_eq!(snapshot["currentTask"]["taskId"], "bring_up.claim_machine");
+        assert_eq!(snapshot["currentTask"]["taskVersion"], 1);
+    }
+
+    #[tokio::test]
     async fn legacy_bring_up_mutation_endpoints_do_not_bypass_the_cursor_with_only_ipc_token() {
         let temp_dir = tempdir().expect("tmp");
         let app = build_router(
@@ -8669,6 +8873,157 @@ mod tests {
                 Err("protected maintenance session is not authorized for mutation".to_string())
             }
         }
+    }
+
+    async fn mark_claim_task_available(ctx: &IpcContext) {
+        *ctx.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
+            status: NetworkSetupStatus::Connected,
+            ssid: "field-network".to_string(),
+            hidden: false,
+            diagnostics: vec![crate::network::NetworkDiagnostic {
+                component: "provisioning_endpoint".to_string(),
+                level: "info".to_string(),
+                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
+                message: "reachable".to_string(),
+            }],
+            operator_guidance: "reachable".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        });
+    }
+
+    #[tokio::test]
+    async fn protected_daemon_reclaim_request_persists_the_intent_before_projecting_reclaim() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        mark_claim_task_available(&ctx).await;
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: true });
+        let config_store = ctx.config_store.clone();
+        let app = build_router(ctx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/bring-up/reclaim/request")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(config_store
+            .machine_reclaim_requested()
+            .await
+            .expect("reclaim intent"));
+
+        let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(snapshot["currentTask"]["kind"], "reclaim_machine");
+        assert_eq!(snapshot["currentTask"]["rotateMaintenanceIdentity"], true);
+    }
+
+    #[tokio::test]
+    async fn legacy_claim_rejects_client_selected_identity_rotation() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        mark_claim_task_available(&ctx).await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({
+                "claimCode": "RECL-2345",
+                "rotateMaintenanceIdentity": true,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            server.received_requests().await.expect("requests").len(),
+            0,
+            "untrusted legacy input must not reach platform claim",
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_legacy_and_typed_claims_share_one_cursor_mutation() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        mark_claim_task_available(&ctx).await;
+        let app = build_router(ctx);
+
+        let (legacy, typed) = tokio::join!(
+            post_json(
+                &app,
+                "/v1/provisioning/claim",
+                "token-1",
+                json!({ "claimCode": "ABCD-2345" }),
+            ),
+            post_json(
+                &app,
+                "/v1/bring-up/tasks/execute",
+                "token-1",
+                json!({
+                    "contractVersion": 1,
+                    "taskId": "bring_up.claim_machine",
+                    "taskVersion": 1,
+                    "kind": "claim_machine",
+                    "intent": "claim_machine",
+                    "mutation": {
+                        "type": "claim_machine",
+                        "claimCode": "ABCD-2345",
+                    },
+                }),
+            ),
+        );
+        let statuses = [legacy.status(), typed.status()];
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::OK)
+                .count(),
+            1
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::CONFLICT)
+                .count(),
+            1,
+        );
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .into_iter()
+                .filter(|request| request.url.path() == "/machines/claim")
+                .count(),
+            1,
+            "only the winning cursor mutation may reach the platform",
+        );
     }
 
     #[tokio::test]

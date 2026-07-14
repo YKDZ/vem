@@ -425,7 +425,7 @@ function runtimeAcceptanceFacts(overrides = {}) {
     },
     provisioning: {
       provisioned: true,
-      usedDaemonIpcClaimPath: true,
+      usedDaemonIpcTaskExecute: true,
       machineCode: "VEM-TESTBED-WINVM-01",
     },
     daemonRuntime: {
@@ -1680,9 +1680,17 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /mqttUrl = 'mqtt:\/\/118\.25\.104\.160:1883'/);
     assert.match(
       script,
-      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/provisioning\/claim"/,
+      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/bring-up" \$headers/,
     );
-    assert.match(script, /usedDaemonIpcClaimPath = \$true/);
+    assert.match(script, /taskId = \[string\]\$currentTask\.taskId/);
+    assert.match(script, /taskVersion = \[uint64\]\$currentTask\.taskVersion/);
+    assert.match(script, /kind = \[string\]\$currentTask\.kind/);
+    assert.match(script, /intent = \[string\]\$currentTask\.intent/);
+    assert.match(
+      script,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/bring-up\/tasks\/execute"/,
+    );
+    assert.match(script, /usedDaemonIpcTaskExecute = \$true/);
     assert.match(script, /machineCode = \$claimResult\.machineCode/);
     assert.match(script, /provisioned = \$configEvidence\.provisioned/);
     assert.match(script, /claimResult = \[ordered\]@{/);
@@ -1721,8 +1729,12 @@ describe("win10-vem-e2e reset planning", () => {
       'Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers',
       provisioningStart,
     );
+    const taskSnapshot = script.indexOf(
+      'Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers',
+      provisioningStart,
+    );
     const claim = script.indexOf(
-      'Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim"',
+      'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute"',
       provisioningStart,
     );
     const restart = script.indexOf(
@@ -1745,7 +1757,8 @@ describe("win10-vem-e2e reset planning", () => {
     assert.ok(readyRead < healthz);
     assert.ok(daemonIpcWait >= provisioningStart);
     assert.ok(daemonIpcWait < configRead);
-    assert.ok(configRead < claim);
+    assert.ok(configRead < taskSnapshot);
+    assert.ok(taskSnapshot < claim);
     assert.ok(claim < claimHttpCatch);
     assert.ok(claimHttpCatch < restart);
     assert.match(script, /restartAttempted = \$true/);
@@ -2060,8 +2073,8 @@ try {
         actions: [
           {
             evidence: {
-              usedDaemonIpcClaimPath: true,
-              endpoint: "http://127.0.0.1:3921/v1/provisioning/claim",
+              usedDaemonIpcTaskExecute: true,
+              endpoint: "http://127.0.0.1:3921/v1/bring-up/tasks/execute",
               claimStatus: "provisioned",
             },
           },
@@ -2069,7 +2082,7 @@ try {
       }),
       {
         provisioned: true,
-        usedDaemonIpcClaimPath: true,
+        usedDaemonIpcTaskExecute: true,
         machineCode: "VEM-TESTBED-WINVM-01",
         machineSecretConfigured: true,
         mqttSigningSecretConfigured: true,
@@ -2084,13 +2097,13 @@ try {
         actions: [
           {
             evidence: {
-              usedDaemonIpcClaimPath: true,
+              usedDaemonIpcTaskExecute: true,
               endpoint: "http://127.0.0.1:3921/v1/config",
               claimStatus: "not_attempted",
             },
           },
         ],
-      }).usedDaemonIpcClaimPath,
+      }).usedDaemonIpcTaskExecute,
       false,
     );
     assert.equal(
@@ -2103,14 +2116,14 @@ try {
         actions: [
           {
             evidence: {
-              usedDaemonIpcClaimPath: true,
-              endpoint: "http://127.0.0.1:3921/v1/provisioning/claim",
+              usedDaemonIpcTaskExecute: true,
+              endpoint: "http://127.0.0.1:3921/v1/bring-up/tasks/execute",
               claimStatus: "failed",
               claimFailureCode: "machine_profile_persistence_failed",
             },
           },
         ],
-      }).usedDaemonIpcClaimPath,
+      }).usedDaemonIpcTaskExecute,
       true,
     );
   });
@@ -4451,7 +4464,7 @@ try {
         runtimeAcceptanceFacts({
           provisioning: {
             provisioned: true,
-            usedDaemonIpcClaimPath: true,
+            usedDaemonIpcTaskExecute: true,
             machineCode,
           },
         }),

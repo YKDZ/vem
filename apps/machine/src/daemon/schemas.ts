@@ -165,8 +165,8 @@ const bringUpReasonSchema = z.object({
 
 const bringUpTaskSchema = z.object({
   contractVersion: z.literal(1),
-  taskId: z.string().default(""),
-  taskVersion: z.number().int().positive().default(1),
+  taskId: z.string().min(1),
+  taskVersion: z.number().int().positive(),
   kind: z.enum([
     "configure_network",
     "claim_machine",

@@ -253,7 +253,7 @@ describe("DaemonApiClient", () => {
     expect(JSON.stringify(status)).not.toContain("private");
   });
 
-  it("sends an explicit rotation marker only for reclaim claims", async () => {
+  it("does not let the legacy claim client select maintenance rotation", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -296,17 +296,12 @@ describe("DaemonApiClient", () => {
       ),
     );
 
-    await daemonClient.claimMachine("RECL-2345", {
-      rotateMaintenanceIdentity: true,
-    });
+    await daemonClient.claimMachine("RECL-2345");
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:7891/v1/provisioning/claim",
       expect.objectContaining({
-        body: JSON.stringify({
-          claimCode: "RECL-2345",
-          rotateMaintenanceIdentity: true,
-        }),
+        body: JSON.stringify({ claimCode: "RECL-2345" }),
       }),
     );
   });
@@ -346,6 +341,8 @@ describe("DaemonApiClient", () => {
           },
           currentTask: {
             contractVersion: 1,
+            taskId: "bring_up.claim_machine",
+            taskVersion: 1,
             kind: "claim_machine",
             intent: "claim_machine",
             rotateMaintenanceIdentity: false,

@@ -1036,7 +1036,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "Machine Provisioning must complete before runtime-ready can pass.",
     );
   }
-  if (facts.provisioning?.usedDaemonIpcClaimPath !== true) {
+  if (facts.provisioning?.usedDaemonIpcTaskExecute !== true) {
     addDiagnostic(
       diagnostics,
       "machine_provisioning_bypassed_daemon_ipc",
@@ -1384,17 +1384,17 @@ export function buildReadyFileEvidence(readyFile) {
 
 export function buildProvisioningFacts({ configSnapshot, actions = [] } = {}) {
   const actionList = Array.isArray(actions) ? actions : [];
-  const usedDaemonIpcClaimPath = actionList.some((action) => {
+  const usedDaemonIpcTaskExecute = actionList.some((action) => {
     const evidence = action?.evidence ?? {};
     return (
-      evidence.usedDaemonIpcClaimPath === true &&
-      String(evidence.endpoint ?? "").endsWith("/v1/provisioning/claim") &&
+      evidence.usedDaemonIpcTaskExecute === true &&
+      String(evidence.endpoint ?? "").endsWith("/v1/bring-up/tasks/execute") &&
       ["provisioned", "failed"].includes(String(evidence.claimStatus ?? ""))
     );
   });
   return {
     provisioned: configSnapshot?.provisioned === true,
-    usedDaemonIpcClaimPath,
+    usedDaemonIpcTaskExecute,
     machineCode: configSnapshot?.public?.machineCode ?? null,
     machineSecretConfigured: configSnapshot?.machineSecretConfigured === true,
     mqttSigningSecretConfigured:
@@ -4423,17 +4423,17 @@ function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
 }
 
 function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
-  $usedClaimPath = $false
+  $usedTaskExecute = $false
   $claimEvidence = $null
   foreach ($action in @($ProvisioningActions)) {
     $actionEvidence = $action.evidence
     if (
       $null -ne $actionEvidence -and
-      [bool]$actionEvidence.usedDaemonIpcClaimPath -and
-      ([string]$actionEvidence.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -and
+      [bool]$actionEvidence.usedDaemonIpcTaskExecute -and
+      ([string]$actionEvidence.endpoint).EndsWith("/v1/bring-up/tasks/execute", [StringComparison]::OrdinalIgnoreCase) -and
       @("provisioned", "failed") -contains [string]$actionEvidence.claimStatus
     ) {
-      $usedClaimPath = $true
+      $usedTaskExecute = $true
       $claimEvidence = $actionEvidence
     }
   }
@@ -4441,7 +4441,7 @@ function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
 
   return [ordered]@{
     provisioned = [bool]$DaemonIpc.config.provisioned
-    usedDaemonIpcClaimPath = $usedClaimPath
+    usedDaemonIpcTaskExecute = $usedTaskExecute
     machineCode = $DaemonIpc.config.machineCode
     machineSecretConfigured = [bool]$DaemonIpc.config.machineSecretConfigured
     mqttSigningSecretConfigured = [bool]$DaemonIpc.config.mqttSigningSecretConfigured
@@ -4479,7 +4479,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
   $status = "succeeded"
   $message = $null
   $evidence = [ordered]@{
-    usedDaemonIpcClaimPath = $false
+    usedDaemonIpcTaskExecute = $false
     readyFile = ${psString(bringUpPlan.arguments.DaemonReadyFile)}
     endpoint = $null
     runId = ${psString(runId)}
@@ -4541,11 +4541,36 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $configBeforeClaim = Invoke-IpcJson "PUT" "$baseUrl/v1/config" $headers $configPayload
     $evidence.preClaimConfigApplied = $true
 
-    $claimPayload = [ordered]@{ claimCode = ${psString(claimCode)} }
-    $evidence.endpoint = "$baseUrl/v1/provisioning/claim"
-    $evidence.usedDaemonIpcClaimPath = $true
+    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
+    $currentTask = $bringUp.currentTask
+    if ($null -eq $currentTask) {
+      throw "daemon did not project a current Factory claim task"
+    }
+    if ([string]$currentTask.kind -ne "claim_machine" -or [string]$currentTask.intent -ne "claim_machine") {
+      throw "daemon projected unexpected Factory claim task: $($currentTask.kind)/$($currentTask.intent)"
+    }
+    if (
+      [int]$currentTask.contractVersion -ne 1 -or
+      [string]::IsNullOrWhiteSpace([string]$currentTask.taskId) -or
+      [uint64]$currentTask.taskVersion -lt 1
+    ) {
+      throw "daemon projected an invalid Factory claim task cursor"
+    }
+    $claimPayload = [ordered]@{
+      contractVersion = [int]$currentTask.contractVersion
+      taskId = [string]$currentTask.taskId
+      taskVersion = [uint64]$currentTask.taskVersion
+      kind = [string]$currentTask.kind
+      intent = [string]$currentTask.intent
+      mutation = [ordered]@{
+        type = "claim_machine"
+        claimCode = ${psString(claimCode)}
+      }
+    }
+    $evidence.endpoint = "$baseUrl/v1/bring-up/tasks/execute"
+    $evidence.usedDaemonIpcTaskExecute = $true
     try {
-      $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim" $headers $claimPayload
+      $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $claimPayload
       $evidence.claimStatus = "provisioned"
       $evidence.claimHttpStatus = 200
       $evidence.machineCode = $claimResult.machineCode
@@ -6200,7 +6225,7 @@ function Classify-RuntimeAcceptanceReport($Facts) {
   if (-not [bool]$Facts.provisioning.provisioned) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_incomplete" "Machine Provisioning must complete before runtime-ready can pass."
   }
-  if (-not [bool]$Facts.provisioning.usedDaemonIpcClaimPath) {
+  if (-not [bool]$Facts.provisioning.usedDaemonIpcTaskExecute) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_bypassed_daemon_ipc" "Machine Provisioning must use the daemon IPC claim path."
   }
   if (-not [bool]$Facts.daemonRuntime.readyz.ready) {
@@ -6317,7 +6342,7 @@ function Get-RuntimeAcceptanceReport($ProvisioningActions = @()) {
     }
     provisioning = [ordered]@{
       provisioned = [bool]$factsSubset.provisioning.provisioned
-      usedDaemonIpcClaimPath = [bool]$factsSubset.provisioning.usedDaemonIpcClaimPath
+      usedDaemonIpcTaskExecute = [bool]$factsSubset.provisioning.usedDaemonIpcTaskExecute
       machineCode = if ([string]::IsNullOrWhiteSpace($daemonIpc.config.machineCode)) { $null } else { [string]$daemonIpc.config.machineCode }
     }
     daemonRuntime = [ordered]@{
@@ -6384,7 +6409,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if (
     -not [bool]$Facts.provisioning.provisioned -or
     -not [bool]$Facts.provisioning.usedMachineClaimCodePath -or
-    -not [bool]$Facts.provisioning.usedDaemonIpcClaimPath -or
+    -not [bool]$Facts.provisioning.usedDaemonIpcTaskExecute -or
     -not [bool]$Facts.provisioning.profileApplied -or
     [string]$Facts.provisioning.profile.status -ne "applied" -or
     -not [bool]$Facts.provisioning.profile.machineSecretConfigured -or
@@ -6395,7 +6420,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if (
     [string]$Facts.provisioning.claim.runId -ne [string]$Facts.platformSetup.preparedRunId -or
     [string]$Facts.provisioning.claim.status -ne "provisioned" -or
-    -not ([string]$Facts.provisioning.claim.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -or
+    -not ([string]$Facts.provisioning.claim.endpoint).EndsWith("/v1/bring-up/tasks/execute", [StringComparison]::OrdinalIgnoreCase) -or
     [int]$Facts.provisioning.claim.httpStatus -ne 200
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "fresh_machine_claim_evidence_required" "Simulated hardware sale-flow evidence must include a successful daemon IPC claim from the same run."
@@ -7090,8 +7115,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     }
     provisioning = [ordered]@{
       provisioned = [bool]$provisioningFacts.provisioned
-      usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
-      usedDaemonIpcClaimPath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
+      usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcTaskExecute
+      usedDaemonIpcTaskExecute = [bool]$provisioningFacts.usedDaemonIpcTaskExecute
       profileApplied = [bool]$provisioningFacts.machineSecretConfigured -and [bool]$provisioningFacts.mqttSigningSecretConfigured
       machineCode = $provisioningFacts.machineCode
       claim = $provisioningFacts.claim
@@ -8111,7 +8136,7 @@ Defaults target the documented Machine Runtime Testbed:
 
 Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on the remote host and requires VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD in the remote PowerShell environment.
 
-Provision mode reads the daemon ready file, applies only pre-claim platform endpoints, and claims the prepared testbed identity through daemon IPC /v1/provisioning/claim.
+Provision mode starts and reads the daemon IPC, applies only pre-claim platform endpoints, obtains its current claim task cursor, and claims the prepared testbed identity through daemon IPC /v1/bring-up/tasks/execute.
 
 Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
 

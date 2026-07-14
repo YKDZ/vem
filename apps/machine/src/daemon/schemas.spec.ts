@@ -202,6 +202,8 @@ describe("daemon schemas", () => {
       },
       currentTask: {
         contractVersion: 1,
+        taskId: "bring_up.attest_stock",
+        taskVersion: 1,
         kind: "attest_stock",
         intent: "record_stock",
         rotateMaintenanceIdentity: false,
@@ -228,7 +230,7 @@ describe("daemon schemas", () => {
     expect(parsed.state).toBe("stock_attestation_required");
     expect(parsed.currentTask).toEqual({
       contractVersion: 1,
-      taskId: "",
+      taskId: "bring_up.attest_stock",
       taskVersion: 1,
       kind: "attest_stock",
       intent: "record_stock",
@@ -244,6 +246,58 @@ describe("daemon schemas", () => {
       evidence: "durable",
     });
     expect(JSON.stringify(parsed)).not.toContain("secret");
+  });
+
+  it("fails closed when a daemon task omits either cursor field", () => {
+    const snapshot = {
+      state: "claim_required",
+      readinessLevel: "not_ready",
+      hardwareMode: "production",
+      blockingReasons: [],
+      diagnostics: [],
+      allowedActions: {
+        configureNetwork: false,
+        claimMachine: true,
+        retryClaim: true,
+        syncProfile: false,
+        resolveTopology: false,
+        runRuntimeAcceptance: false,
+        runHardwareAcceptance: false,
+        attestStock: false,
+        startSales: false,
+      },
+      currentTask: {
+        contractVersion: 1,
+        taskId: "bring_up.claim_machine",
+        taskVersion: 1,
+        kind: "claim_machine",
+        intent: "claim_machine",
+        rotateMaintenanceIdentity: false,
+        projection: {
+          type: "claim_code",
+          rotateMaintenanceIdentity: false,
+        },
+      },
+      progress: [],
+      updatedAt: "2026-07-14T00:00:00Z",
+    };
+
+    const { taskId: _taskId, ...withoutTaskId } = snapshot.currentTask;
+    expect(() =>
+      bringUpSnapshotSchema.parse({
+        ...snapshot,
+        currentTask: withoutTaskId,
+      }),
+    ).toThrow();
+
+    const { taskVersion: _taskVersion, ...withoutTaskVersion } =
+      snapshot.currentTask;
+    expect(() =>
+      bringUpSnapshotSchema.parse({
+        ...snapshot,
+        currentTask: withoutTaskVersion,
+      }),
+    ).toThrow();
   });
 
   it("fails closed when a daemon omits the versioned task projection", () => {
