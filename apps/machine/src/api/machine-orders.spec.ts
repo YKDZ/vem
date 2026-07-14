@@ -36,6 +36,7 @@ function createMockClient(overrides?: {
         fulfillmentState: "awaiting_fulfillment",
         totalAmountCents: 599,
         payment: {
+          paymentId: "550e8400-e29b-41d4-a716-446655440011",
           paymentNo: "PAY-1",
           method: "mock",
           status: "pending",
