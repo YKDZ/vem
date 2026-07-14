@@ -1432,6 +1432,10 @@ describe("real deterministic Factory ISO builder", () => {
         baselineScript,
         /Add-LocalGroupMember[^\n]+accounts\.maintenance/,
       );
+      assert.match(
+        baselineScript,
+        /if \(-not \(Test-Path -LiteralPath \$windowsUpdatePolicyPath -PathType Container\)\) \{[\s\S]+New-Item -Path \$windowsUpdatePolicyPath[\s\S]+\}[\s\S]+Set-ItemProperty -Path \$windowsUpdatePolicyPath -Name NoAutoUpdate/,
+      );
       assert.equal(baseline.assets.length, 8);
       assert.match(
         baseline.assets.find((asset) => asset.role === "openssh-installer")
