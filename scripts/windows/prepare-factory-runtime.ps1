@@ -57,6 +57,7 @@ param(
   # and emits only byte-derived assembly evidence. It never prepares the host.
   [switch]$DeliveryAssemblyEvidenceOnly,
   [Parameter(Mandatory = $false)][string]$DeliveryAssemblyOutputRoot,
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyContractNonce,
   # Emits only the profile/trace-metadata boundary that this entrypoint would
   # write.  This is intentionally non-mutating and lets CI exercise the
   # PowerShell-to-daemon contract without pretending to prepare a Windows host.
@@ -935,6 +936,7 @@ function Invoke-FactoryRuntimeDeliveryAssemblyEvidence {
   return [ordered]@{
     schemaVersion = "vem-factory-runtime-delivery-assembly/v1"
     kind = "factory-runtime-support-scripts"
+    deliveryAssemblyContractNonce = $DeliveryAssemblyContractNonce
     root = $targetRoot
     files = $files
   }

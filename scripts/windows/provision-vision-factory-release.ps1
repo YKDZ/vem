@@ -4,7 +4,8 @@ param(
   # Test-only producer mode: use a disposable root while retaining the exact
   # manifest verification and copy loop used by Factory provisioning.
   [switch]$DeliveryAssemblyEvidenceOnly,
-  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyOutputRoot
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyOutputRoot,
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyContractNonce
 )
 
 $ErrorActionPreference = "Stop"
@@ -157,6 +158,7 @@ foreach ($installed in $installedFiles | Sort-Object relative) {
 [ordered]@{
   schemaVersion = "vem-factory-vision-provisioning-evidence/v1"
   kind = "factory-vision-provisioning-evidence"
+  deliveryAssemblyContractNonce = $DeliveryAssemblyContractNonce
   sourceManifestDigest = Get-Sha256Digest $manifestPath
   files = $evidenceFiles
 } | ConvertTo-Json -Depth 20

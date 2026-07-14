@@ -517,6 +517,50 @@ export function finalizeExperimentalCandidate(options) {
   return classification;
 }
 
+export function stageExperimentalVisionDeliveryAssemblyContract({
+  outputRoot,
+  kind,
+  nonce,
+}) {
+  if (kind === "deliveryAssembly") {
+    const mediaRoot = join(resolve(outputRoot), "VEM");
+    const files = {};
+    stageFactoryVisionInstaller((relative, bytes) => {
+      writeBytes(join(mediaRoot, relative), bytes);
+      files[relative] = digestBytes(bytes);
+    });
+    mkdirSync(join(mediaRoot, "VISION-RELEASE"), { recursive: true });
+    mkdirSync(join(mediaRoot, "VISION-TRUST"), { recursive: true });
+    writeBytes(
+      join(mediaRoot, "VISION-FACTORY-PROVISIONING.JSON"),
+      canonicalBytes({
+        schemaVersion: "vem-vision-factory-provisioning/v1",
+        kind: "vision-factory-provisioning",
+        files: Object.fromEntries(
+          Object.entries(files).sort(([left], [right]) =>
+            left.localeCompare(right),
+          ),
+        ),
+      }),
+    );
+    return { outputRoot: resolve(outputRoot), kind };
+  }
+  if (kind === "preapprovalDeliveryAssembly") {
+    const bundle = Buffer.from(`inventory-contract:${nonce}\n`);
+    const descriptor = canonicalBytes({
+      schemaVersion: "vem-vision-delivery-contract-fixture/v1",
+      nonce,
+    });
+    const staged = stagePreapprovalDeliveryUnit({
+      candidate: { bundle, documents: { descriptor } },
+      verified: { bundleDigest: digestBytes(bundle) },
+      outputDirectory: outputRoot,
+    });
+    return { outputRoot: resolve(outputRoot), kind, staged };
+  }
+  throw new Error("unsupported Experimental Vision delivery assembly kind");
+}
+
 function usage() {
   return `
 experimental-vision-candidate.mjs verify --candidate-dir DIR --tag TAG --expected-bundle-digest sha256:... --expected-supplier-identity spki-sha256:...
@@ -529,38 +573,61 @@ experimental-vision-candidate.mjs finalize (verify options) --conformance PATH -
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
-    const options = parseArgs(process.argv.slice(2));
-    const shared = {
-      candidateDirectory: options["candidate-dir"],
-      tag: options.tag,
-      expectedBundleDigest: options["expected-bundle-digest"],
-      expectedSupplierIdentity: options["expected-supplier-identity"],
-    };
-    if (options.command === "verify") {
-      const { verified } = verifyCandidateInputs(shared);
-      process.stdout.write(`${JSON.stringify(verified, null, 2)}\n`);
-    } else if (options.command === "prepare-preapproval") {
-      const { candidate, verified } = verifyCandidateInputs(shared);
-      const result = stagePreapprovalDeliveryUnit({
-        candidate,
-        verified,
-        outputDirectory: options.output,
+    const contractIndex = process.argv.indexOf("--delivery-assembly-contract");
+    if (contractIndex >= 0) {
+      const contractPath = process.argv[contractIndex + 1];
+      const contract = JSON.parse(readFileSync(contractPath, "utf8"));
+      if (
+        contract?.schemaVersion !==
+          "vem-delivery-assembly-execution-contract/v1" ||
+        contract.producer !==
+          "scripts/factory/experimental-vision-candidate.mjs" ||
+        typeof contract.outputRoot !== "string"
+      ) {
+        throw new Error(
+          "invalid Experimental Vision delivery assembly contract",
+        );
+      }
+      const result = stageExperimentalVisionDeliveryAssemblyContract({
+        outputRoot: contract.outputRoot,
+        kind: contract.kind,
+        nonce: contract.nonce,
       });
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    } else if (options.command === "finalize") {
-      const result = finalizeExperimentalCandidate({
-        ...shared,
-        conformancePath: options.conformance,
-        acceptancePrivateKey: options["acceptance-private-key"],
-        expectedAcceptanceIdentity: options["expected-acceptance-identity"],
-        verifierPath: options.verifier,
-        baseManifestPath: options["base-manifest"],
-        outputDirectory: options.output,
-        approverIdentity: options["approver-identity"],
-      });
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(result)}\n`);
     } else {
-      throw new Error(usage());
+      const options = parseArgs(process.argv.slice(2));
+      const shared = {
+        candidateDirectory: options["candidate-dir"],
+        tag: options.tag,
+        expectedBundleDigest: options["expected-bundle-digest"],
+        expectedSupplierIdentity: options["expected-supplier-identity"],
+      };
+      if (options.command === "verify") {
+        const { verified } = verifyCandidateInputs(shared);
+        process.stdout.write(`${JSON.stringify(verified, null, 2)}\n`);
+      } else if (options.command === "prepare-preapproval") {
+        const { candidate, verified } = verifyCandidateInputs(shared);
+        const result = stagePreapprovalDeliveryUnit({
+          candidate,
+          verified,
+          outputDirectory: options.output,
+        });
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      } else if (options.command === "finalize") {
+        const result = finalizeExperimentalCandidate({
+          ...shared,
+          conformancePath: options.conformance,
+          acceptancePrivateKey: options["acceptance-private-key"],
+          expectedAcceptanceIdentity: options["expected-acceptance-identity"],
+          verifierPath: options.verifier,
+          baseManifestPath: options["base-manifest"],
+          outputDirectory: options.output,
+          approverIdentity: options["approver-identity"],
+        });
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      } else {
+        throw new Error(usage());
+      }
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

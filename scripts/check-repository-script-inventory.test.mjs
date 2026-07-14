@@ -20,7 +20,177 @@ function withFixture(files, callback) {
   }
 }
 
+function deliveryAssemblyFixture({ producerSource, executionSource }) {
+  const member = "scripts/windows/vision-release-materialization.psm1";
+  const producer = "scripts/factory/producer.mjs";
+  const verifier = "scripts/factory/verifier.mjs";
+  const executionTest = "scripts/factory/execution.mjs";
+  return {
+    files: {
+      [member]: "Export-ModuleMember\n",
+      [producer]: producerSource,
+      [verifier]: [
+        'import { createHash } from "node:crypto";',
+        'import { readFileSync } from "node:fs";',
+        'import { join } from "node:path";',
+        'const contract = JSON.parse(readFileSync(process.argv.at(-1), "utf8"));',
+        'const bytes = readFileSync(join(contract.outputRoot, "stage", "member.bin"));',
+        'const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;',
+        'process.stdout.write(JSON.stringify({ nonce: contract.nonce, root: contract.root, files: { [contract.members[0]]: { stagedPath: "stage/member.bin", digest } } }) + "\\n");',
+      ].join("\n"),
+      [executionTest]: executionSource,
+    },
+    inventory: [
+      {
+        path: producer,
+        owner: "field-operations",
+        category: "public runbook operation",
+        workflows: ["factory preparation"],
+        deliveryAssemblyAction: "javascript-stage",
+        deliveryAssembly: [member],
+        deliveryAssemblyEvidence: {
+          artifact: "stage/manifest.json",
+          producer,
+          verifier,
+          executionTest,
+          members: [member],
+        },
+      },
+      {
+        path: verifier,
+        owner: "field-operations",
+        category: "verifier-test guard",
+        workflows: ["factory preparation"],
+      },
+      {
+        path: executionTest,
+        owner: "field-operations",
+        category: "verifier-test guard",
+        workflows: ["factory preparation"],
+      },
+      {
+        path: member,
+        owner: "field-operations",
+        category: "public runbook operation",
+        workflows: ["factory preparation"],
+      },
+    ],
+  };
+}
+
+const WORKING_DELIVERY_PRODUCER = [
+  'import { mkdirSync, readFileSync, writeFileSync } from "node:fs";',
+  'import { join } from "node:path";',
+  'const contract = JSON.parse(readFileSync(process.argv.at(-1), "utf8"));',
+  'mkdirSync(join(contract.outputRoot, "stage"), { recursive: true });',
+  'writeFileSync(join(contract.outputRoot, "stage", "member.bin"), readFileSync(join(contract.repositoryRoot, contract.members[0])));',
+  'writeFileSync(join(contract.outputRoot, "stage", "manifest.json"), JSON.stringify({ nonce: contract.nonce }));',
+].join("\n");
+
+const WORKING_DELIVERY_EXECUTION = [
+  'import { spawnSync } from "node:child_process";',
+  'import { readFileSync, writeFileSync } from "node:fs";',
+  'import { createHash } from "node:crypto";',
+  'import { join } from "node:path";',
+  "const contractPath = process.argv.at(-1);",
+  'const contract = JSON.parse(readFileSync(contractPath, "utf8"));',
+  "for (const path of [contract.producer, contract.verifier]) {",
+  '  const result = spawnSync(process.execPath, [join(contract.repositoryRoot, path), contractPath], { encoding: "utf8" });',
+  "  if (result.status !== 0) { process.stderr.write(result.stderr || result.stdout); process.exit(result.status ?? 1); }",
+  "  if (path === contract.verifier) {",
+  "    const artifact = readFileSync(join(contract.outputRoot, contract.artifact));",
+  '    const artifactDigest = `sha256:${createHash("sha256").update(artifact).digest("hex")}`;',
+  '    writeFileSync(join(contract.root, "execution-proof.json"), JSON.stringify({ schemaVersion: "vem-delivery-assembly-execution-proof/v1", nonce: contract.nonce, root: contract.root, producer: contract.producer, verifier: contract.verifier, artifact: { name: contract.artifact, stagedPath: contract.artifact, digest: artifactDigest }, verification: JSON.parse(result.stdout) }));',
+  "  }",
+  "}",
+].join("\n");
+
 describe("repository script inventory guard", () => {
+  it("executes a nonce-bound producer and independently verified staged bytes", () => {
+    const fixture = deliveryAssemblyFixture({
+      producerSource: WORKING_DELIVERY_PRODUCER,
+      executionSource: WORKING_DELIVERY_EXECUTION,
+    });
+    withFixture(fixture.files, (root) => {
+      const result = checkRepositoryScriptInventory({
+        root,
+        inventory: fixture.inventory,
+        publicRunbooks: [],
+      });
+
+      assert.equal(
+        result.checks.find(
+          (check) => check.name === "delivery-assembly-execution-contracts",
+        )?.passed,
+        true,
+        result.failures.join("\n"),
+      );
+      assert.doesNotMatch(
+        result.failures.join("\n"),
+        /delivery assembly execution contract failed/,
+      );
+    });
+  });
+
+  for (const [name, producerSource, executionSource] of [
+    [
+      "an execution test that exits successfully without running anything",
+      WORKING_DELIVERY_PRODUCER,
+      "process.exit(0);",
+    ],
+    [
+      "a dead producer with a complete declaration",
+      "process.exit(0);",
+      WORKING_DELIVERY_EXECUTION,
+    ],
+    [
+      "a commented or template-only producer implementation",
+      [
+        "// writeFileSync(join(contract.root, 'stage', 'member.bin'), bytes);",
+        "const template = `Copy-Item member.bin stage/member.bin`;",
+        "const hereString = String.raw`@' Copy-Item member.bin stage/member.bin '@`;",
+        "void template; void hereString;",
+        "process.exit(0);",
+      ].join("\n"),
+      WORKING_DELIVERY_EXECUTION,
+    ],
+    [
+      "an unused or shadowed producer implementation",
+      [
+        "function stageMember() { return 'would copy a member'; }",
+        "const stageMember = () => 'shadowed';",
+        "void stageMember;",
+        "process.exit(0);",
+      ].join("\n"),
+      WORKING_DELIVERY_EXECUTION,
+    ],
+  ]) {
+    it(`rejects ${name}`, () => {
+      const fixture = deliveryAssemblyFixture({
+        producerSource,
+        executionSource,
+      });
+      withFixture(fixture.files, (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: fixture.inventory,
+          publicRunbooks: [],
+        });
+
+        assert.equal(
+          result.checks.find(
+            (check) => check.name === "delivery-assembly-execution-contracts",
+          )?.passed,
+          false,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /deliveryAssembly execution contract failed/,
+        );
+      });
+    });
+  }
+
   it("fails when a retained script is not classified", () => {
     withFixture(
       {
