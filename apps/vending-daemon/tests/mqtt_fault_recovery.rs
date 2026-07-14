@@ -66,6 +66,7 @@ async fn mqtt_environment_control_command_flow_publishes_ack_and_result() {
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
         )],
+        &[],
     )
     .await
     .expect("start daemon");
@@ -141,6 +142,7 @@ async fn mqtt_command_flow_survives_without_ui_and_dedupes_replay() {
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
         )],
+        &[],
     )
     .await
     .expect("start daemon");
@@ -246,6 +248,7 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
         )],
+        &[],
     )
     .await
     .expect("start once");
@@ -295,6 +298,7 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
         )],
+        &[],
     )
     .await
     .expect("restart daemon");
@@ -349,6 +353,7 @@ async fn initial_mqtt_backlog_drains_past_async_client_capacity_without_losing_d
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
         )],
+        &[],
     )
     .await
     .expect("start daemon with 32 due events");
@@ -386,6 +391,7 @@ async fn broker_unavailable_keeps_due_outbox_with_retry_error() {
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
         )],
+        &[],
     )
     .await
     .expect("start daemon with dead broker");
@@ -447,6 +453,7 @@ async fn puback_drop_proxy_retransmits_durable_qos1_without_stranding_other_outb
                 "VEM_MQTT_SIGNING_SECRET",
                 sensitive::TEST_MQTT_SIGNING_SECRET,
             )],
+            &[],
         )
         .await
         .expect("start daemon through PubAck-drop proxy");

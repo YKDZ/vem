@@ -135,15 +135,30 @@ node scripts/factory/experimental-vision-candidate.mjs verify \
   --expected-supplier-identity spki-sha256:...
 ```
 
-将原始 Candidate 与 `scripts/windows/test-vision-candidate.ps1` 传输到目标 Windows 后，在管理员 PowerShell 中运行预批准测试。该脚本只暂时停止 Vision 任务和 VEM 已记录的 Vision 进程，不会停止 daemon 或 Machine UI；结束后恢复原任务状态，并输出严格的五字段 conformance JSON：
+不要零散复制 bundle、descriptor 或 PowerShell 模块。验证 Candidate 后先生成自包含的预批准交付单元；它包含 exact bundle、descriptor、测试入口、共享 materializer、共享脱敏模块、`preapproval-manifest.json` 与 `SHA256SUMS`。manifest 把操作员钉住的 `ExpectedDigest` 与每个实际执行文件的 digest 一起写入可哈希边界：
+
+```bash
+node scripts/factory/experimental-vision-candidate.mjs prepare-preapproval \
+  --candidate-dir /tmp/vision-candidate \
+  --tag v0.2.1-rc.1 \
+  --expected-bundle-digest sha256:<operator-pinned-exact-bundle-digest> \
+  --expected-supplier-identity spki-sha256:... \
+  --output /tmp/vision-preapproval-delivery
+```
+
+将 `/tmp/vision-preapproval-delivery/VEM-VISION-PREAPPROVAL` 整个目录原样传输到 `C:\VEM\updates\vision-preapproval`；传输前后都验证 `SHA256SUMS`。不得重新压缩 bundle、重命名 manifest 中的文件，或以本机仓库中的脚本替换目录内的测试入口或模块。Windows 入口会再次校验 manifest identity、每个文件 digest、无 reparse traversal，以及 manifest 的 `ExpectedDigest` 与显式参数完全一致。该脚本只暂时停止 Vision 任务和 VEM 已记录且身份验证过的 Vision 进程，不会停止 daemon 或 Machine UI；结束后会验证地恢复旧 release，并输出 conformance JSON：
 
 ```powershell
-.\test-vision-candidate.ps1 `
-  -BundlePath C:\VEM\updates\vision-candidate\vending-vision.zip `
-  -ExpectedDigest sha256:<operator-pinned-exact-bundle-digest> `
-  -DescriptorPath C:\VEM\updates\vision-candidate\vision-release-descriptor.json `
-  -ConformanceEvidencePath C:\VEM\updates\vision-candidate\vision-conformance.json `
-  -ReportPath C:\VEM\updates\vision-candidate\vision-conformance-report.json
+$delivery = "C:\VEM\updates\vision-preapproval"
+$manifest = Get-Content -LiteralPath "$delivery\preapproval-manifest.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($manifest.expectedDigest -cne "sha256:<operator-pinned-exact-bundle-digest>") { throw "operator ExpectedDigest differs from preapproval delivery" }
+& "$delivery\test-vision-candidate.ps1" `
+  -BundlePath "$delivery\bundle.bin" `
+  -ExpectedDigest $manifest.expectedDigest `
+  -DescriptorPath "$delivery\vision-release-descriptor.json" `
+  -PreapprovalManifestPath "$delivery\preapproval-manifest.json" `
+  -ConformanceEvidencePath "$delivery\vision-conformance.json" `
+  -ReportPath "$delivery\vision-conformance-report.json"
 ```
 
 取回 conformance 后，在可信工作站生成签名的 Experimental Candidate Factory 交付目录。`--verifier` 与 `--base-manifest` 必须来自当前 Factory 信任域；验收私钥不得传到目标机或写入仓库：
@@ -162,7 +177,7 @@ node scripts/factory/experimental-vision-candidate.mjs finalize \
   --output /tmp/vision-experimental-delivery
 ```
 
-目标机仍使用 `provision-vision-factory-release.ps1` 写入受保护的 Factory delivery/trust 路径，然后调用同一个 `install-vision-release.ps1`。预批准也必须交付同一完整 delivery unit，并由操作员单独钉住 `-ExpectedDigest sha256:...`；它不会从 bundle 或 descriptor 隐式选择摘要。这次通过只证明软件与无摄像头 degraded 路径就绪，不替代插入真实摄像头后的视觉现场验收，也不把 Experimental Candidate 自动升级成 Factory/ISO acceptance。
+目标机仍使用 `provision-vision-factory-release.ps1` 写入受保护的最终 Factory delivery/trust 路径，然后调用同一个 `install-vision-release.ps1`。预批准必须使用上述完整且可哈希验证的 preapproval delivery unit，并由操作员在 manifest 外再次钉住同一个 `-ExpectedDigest sha256:...`；它不会从 bundle 或 descriptor 隐式选择摘要。这次通过只证明软件与无摄像头 degraded 路径就绪，不替代插入真实摄像头后的视觉现场验收，也不把 Experimental Candidate 自动升级成 Factory/ISO acceptance。
 
 在 Windows 管理员 PowerShell 中，以已验证的本地输入安装：
 

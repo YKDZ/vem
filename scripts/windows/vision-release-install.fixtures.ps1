@@ -3,6 +3,7 @@ param([ValidateSet("archive", "bytes", "first-install", "acl", "task", "process-
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
+Import-Module (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1") -Force -ErrorAction Stop
 
 function Assert-Throws([scriptblock]$Action, [string]$Label) {
   try { & $Action } catch { return }
@@ -33,6 +34,21 @@ function New-Zip([string]$Path, [object[]]$Entries) {
   } finally { $stream.Dispose() }
 }
 
+function Import-InstallerFunctions {
+  $installerPath = Join-Path $PSScriptRoot "install-vision-release.ps1"
+  $tokens = $null; $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($installerPath, [ref]$tokens, [ref]$errors)
+  if (@($errors).Count -ne 0) { throw "production installer does not parse" }
+  foreach ($functionAst in @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false))) {
+    Invoke-Expression ($functionAst.Extent.Text.Replace(("function " + $functionAst.Name), ("function global:" + $functionAst.Name)))
+  }
+}
+
+# Portable cases exercise function bodies extracted from the actual installer
+# entry point.  This is intentionally not an installer -Library mode: release
+# mutation remains available only through the production entry script.
+Import-InstallerFunctions
+
 function Test-SourceBoundary([string[]]$Needles) {
   $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot "install-vision-release.ps1") -Raw -Encoding UTF8
   foreach ($needle in $Needles) {
@@ -44,7 +60,7 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-installer-fixture-" + 
 try {
   New-Item -ItemType Directory -Path $root | Out-Null
   if ($Case -eq "archive") {
-    foreach ($attack in @(@(,@("../escape.exe", "x")), @(,@("/absolute.exe", "x")), @(,@("runtime.exe:stream", "x")), @(@("Runtime.EXE", "a"), @("runtime.exe", "b")), @(,@("unix-link", "target", -1610612736)), @(,@("windows-reparse", "target", 0x00000400)))) {
+    foreach ($attack in @(@(,@("../escape.exe", "x")), @(,@("/absolute.exe", "x")), @(,@("runtime.exe:stream", "x")), @(@("Runtime.EXE", "a"), @("runtime.exe", "b")), @(,@("unix-link", "target", -1610612736)), @(,@("windows-reparse", "target", 0x00000400)), @(,@("unix-link-dir/", "target", -1610612736)), @(,@("windows-reparse-dir/", "target", 0x00000400)))) {
       $bundle = Join-Path $root ([guid]::NewGuid().ToString("N") + ".zip")
       $target = Join-Path $root ([guid]::NewGuid().ToString("N"))
       New-Zip $bundle $attack
@@ -53,6 +69,23 @@ try {
       $descriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$digest; bytes=[Int64]$bytes.Length } }
       Assert-Throws { Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination $target -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 } } "unsafe archive"
     }
+    $bundle = Join-Path $root "safe.zip"
+    New-Zip $bundle @(,@("bin/runtime.exe", "safe runtime"))
+    $bytes = [IO.File]::ReadAllBytes($bundle)
+    $digest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
+    $descriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$digest; bytes=[Int64]$bytes.Length } }
+    $safeTarget = Join-Path $root "safe-materialization"
+    Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination $safeTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 } | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $safeTarget "bin/runtime.exe") -PathType Leaf)) { throw "safe archive was not materialized" }
+    $guarded = Join-Path $root "guarded\nested"; $outside = Join-Path $root "outside"
+    New-Item -ItemType Directory -Path $guarded,$outside -Force | Out-Null
+    $reparse = Join-Path $guarded "redirect"
+    try {
+      New-Item -ItemType SymbolicLink -Path $reparse -Target $outside | Out-Null
+      Assert-ThrowsMessage {
+        Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination (Join-Path $reparse "materialization") -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 }
+      } "destination must not traverse a reparse point" "destination ancestor reparse"
+    } catch [System.UnauthorizedAccessException] { Write-Output "destination reparse fixture skipped by host policy" }
     Write-Output "archive fixtures passed"
   } elseif ($Case -eq "bytes") {
     $file = Join-Path $root "record.json"; [IO.File]::WriteAllText($file, '{"ok":true}', [Text.UTF8Encoding]::new($false))
@@ -66,7 +99,14 @@ try {
     $delivery = Join-Path $root "factory\vision-release"; New-Item -ItemType Directory -Path $delivery -Force | Out-Null
     foreach ($name in @("bundle.bin", "descriptor.json", "attestation.json", "sbom.json", "provenance.json", "conformance.json", "approval.json", "factory-manifest.json")) { [IO.File]::WriteAllText((Join-Path $delivery $name), "fixture", [Text.UTF8Encoding]::new($false)) }
     Assert-NonReparsePath $delivery "first install delivery"
-    Test-SourceBoundary @("FactoryVisionDeliveryRoot", "Get-FactoryTrustPolicy", "Set-SystemInstallerAcl", "Assert-ReleaseContracts")
+    $outside = Join-Path $root "outside-delivery"; New-Item -ItemType Directory -Path $outside -Force | Out-Null
+    $redirect = Join-Path $delivery "redirect"
+    try {
+      New-Item -ItemType SymbolicLink -Path $redirect -Target $outside | Out-Null
+      Assert-Throws { Assert-NonReparsePath (Join-Path $redirect "descriptor.json") "first install delivery" } "installer delivery ancestor reparse"
+      Assert-Throws { Get-CanonicalContainedPath $delivery (Join-Path $redirect "descriptor.json") "installer delivery file" } "installer delivery contained reparse"
+    } catch [System.UnauthorizedAccessException] { Write-Output "installer reparse fixture skipped by host policy" }
+    Test-SourceBoundary @('$FactoryTrustRoot', "Get-FactoryTrustPolicy", "Set-SystemInstallerAcl", "Assert-ReleaseContracts")
     Write-Output "first-install fixtures passed"
   } elseif ($Case -eq "acl") {
     $protected = Join-Path $root "protected"; New-Item -ItemType Directory -Path $protected | Out-Null

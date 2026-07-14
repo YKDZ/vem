@@ -19,6 +19,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
 Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
+Import-Module (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1") -Force -ErrorAction Stop
 
 $releaseRoot = Join-Path $VisionRoot "releases"
 $visionRoot = $VisionRoot # Kept for task/runbook compatibility.
@@ -840,8 +841,8 @@ function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
 }
 
 function Sanitize([string]$Message) {
-  $clean = ([regex]::Replace($Message, '(?i)(token|password|secret|key|path)\s*[=:]?\s*[^\r\n]*|(?:[A-Z]:\\|\\\\[^\\]+\\[^\\]+|/(?:[^\s\r\n]+/)*[^\s\r\n]+)[^\r\n]*', '')).Trim()
-  return $clean.Substring(0, [Math]::Min(240, $clean.Length))
+  $null = $Message
+  return Get-VisionRedactedDiagnostic "release installation"
 }
 
 function Rollback-PreviousRelease([object]$Previous, [object]$Candidate) {

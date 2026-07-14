@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::{io::AsyncReadExt, process::Child, time::sleep};
 use vending_daemon::secret::{
-    ProtectedLocalSecretStore, SecretStore, MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT,
-    MQTT_SIGNING_SECRET_ACCOUNT,
+    ProtectedLocalSecretStore, SecretStore, MACHINE_MAINTENANCE_PIN_ACCOUNT,
+    MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,44 +42,12 @@ impl DaemonHarness {
     pub async fn start(
         public_config: serde_json::Value,
         protected_secrets: &[(&str, &str)],
+        child_env: &[(&str, &str)],
     ) -> Result<Self, String> {
         let temp_dir = TempDir::new().map_err(|error| error.to_string())?;
         let data_dir = temp_dir.path().join("vending-daemon");
-        let mut harness = Self::start_at(data_dir, public_config, protected_secrets).await?;
-        harness._temp_dir = Some(temp_dir);
-        Ok(harness)
-    }
-
-    /// Start a harness with explicit test-only file secrets.  This is for
-    /// integration cases that must obtain a daemon-issued maintenance session;
-    /// the default harness deliberately continues to use the read-only env
-    /// store so ordinary tests cannot accidentally persist credentials.
-    pub async fn start_with_file_secrets(
-        public_config: serde_json::Value,
-        secrets: &[(&str, &str)],
-    ) -> Result<Self, String> {
-        Self::start_with_file_secrets_and_env(public_config, secrets, &[]).await
-    }
-
-    pub async fn start_with_file_secrets_and_env(
-        public_config: serde_json::Value,
-        secrets: &[(&str, &str)],
-        extra_env: &[(&str, &str)],
-    ) -> Result<Self, String> {
-        let temp_dir = TempDir::new().map_err(|error| error.to_string())?;
-        let data_dir = temp_dir.path().join("vending-daemon");
-        let secret_dir = data_dir.join("secrets");
-        tokio::fs::create_dir_all(&secret_dir)
-            .await
-            .map_err(|error| error.to_string())?;
-        for (account, value) in secrets {
-            tokio::fs::write(secret_dir.join(account), value)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-
         let mut harness =
-            Self::start_at_with_secret_store(data_dir, public_config, extra_env, "file").await?;
+            Self::start_at(data_dir, public_config, protected_secrets, child_env).await?;
         harness._temp_dir = Some(temp_dir);
         Ok(harness)
     }
@@ -88,15 +56,7 @@ impl DaemonHarness {
         data_dir: PathBuf,
         public_config: serde_json::Value,
         protected_secrets: &[(&str, &str)],
-    ) -> Result<Self, String> {
-        Self::start_at_with_secret_store(data_dir, public_config, extra_env, "env").await
-    }
-
-    async fn start_at_with_secret_store(
-        data_dir: PathBuf,
-        public_config: serde_json::Value,
-        extra_env: &[(&str, &str)],
-        _secret_store: &str,
+        child_env: &[(&str, &str)],
     ) -> Result<Self, String> {
         tokio::fs::create_dir_all(&data_dir)
             .await
@@ -123,6 +83,7 @@ impl DaemonHarness {
             .arg("--print-ready-file")
             .arg(&ready_file)
             .env("VEM_DISK_PRESSURE_MIN_AVAILABLE_BYTES", "0")
+            .envs(child_env.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|error| error.to_string())?;
@@ -223,9 +184,10 @@ async fn seed_protected_test_secrets(
     let store = ProtectedLocalSecretStore::new(data_dir.to_path_buf());
     for (name, value) in protected_secrets {
         let account = match *name {
-            "VEM_MQTT_SIGNING_SECRET" => MQTT_SIGNING_SECRET_ACCOUNT,
-            "VEM_MQTT_PASSWORD" => MQTT_PASSWORD_ACCOUNT,
-            "VEM_MACHINE_SECRET" => MACHINE_SECRET_ACCOUNT,
+            "VEM_MQTT_SIGNING_SECRET" | "mqtt_signing_secret" => MQTT_SIGNING_SECRET_ACCOUNT,
+            "VEM_MQTT_PASSWORD" | "mqtt_password" => MQTT_PASSWORD_ACCOUNT,
+            "VEM_MACHINE_SECRET" | "machine_secret" => MACHINE_SECRET_ACCOUNT,
+            "machine_maintenance_pin" => MACHINE_MAINTENANCE_PIN_ACCOUNT,
             other => return Err(format!("unsupported explicit test secret: {other}")),
         };
         store.write_secret(account, value).await?;

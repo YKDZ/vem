@@ -23,7 +23,7 @@ fn minimal_config() -> serde_json::Value {
 
 #[tokio::test]
 async fn console_startup_writes_ready_file_and_sqlite_schema() {
-    let mut daemon = DaemonHarness::start(minimal_config(), &[])
+    let mut daemon = DaemonHarness::start(minimal_config(), &[], &[])
         .await
         .expect("start daemon");
     assert!(daemon.ready.healthz_url.starts_with("http://127.0.0.1:"));
@@ -47,6 +47,7 @@ async fn console_startup_writes_ready_file_and_sqlite_schema() {
 async fn console_startup_writes_local_runtime_flags_to_ready_file() {
     let mut daemon = DaemonHarness::start(
         minimal_config(),
+        &[],
         &[("VEM_ENABLE_ADVANCED_MAINTENANCE_CONFIG", "true")],
     )
     .await

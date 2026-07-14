@@ -209,6 +209,7 @@ const FACTORY_SUPPORT_SCRIPT_NAMES = [
   "provision-vision-factory-release.ps1",
   "install-vision-release.ps1",
   "vision-release-materialization.psm1",
+  "test-wireguard-localsystem-acceptance.ps1",
 ];
 
 const PLATFORM_TARGETS = {

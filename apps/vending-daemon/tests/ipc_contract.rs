@@ -61,7 +61,7 @@ async fn start_network_daemon(
     public_config: serde_json::Value,
     extra_env: &[(&str, &str)],
 ) -> DaemonHarness {
-    DaemonHarness::start_with_file_secrets_and_env(
+    DaemonHarness::start(
         public_config,
         &[("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER)],
         extra_env,
@@ -93,9 +93,10 @@ async fn execute_existing_network_probe_task(
 
 #[tokio::test]
 async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
-    let mut daemon = DaemonHarness::start_with_file_secrets(
+    let mut daemon = DaemonHarness::start(
         configured_daemon(),
         &[("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER)],
+        &[],
     )
     .await
     .expect("start");
@@ -210,7 +211,7 @@ async fn bring_up_snapshot_exposes_safe_network_required_state() {
     let mut config = configured_daemon();
     config["machineCode"] = serde_json::Value::Null;
     config["apiBaseUrl"] = serde_json::Value::String(String::new());
-    let mut daemon = DaemonHarness::start(config, &[]).await.expect("start");
+    let mut daemon = DaemonHarness::start(config, &[], &[]).await.expect("start");
 
     let snapshot = daemon.get_json("/v1/bring-up").await;
 
@@ -245,6 +246,7 @@ async fn preclaim_endpoint_configuration_requires_daemon_probe_before_claim_curs
     config["machineCode"] = serde_json::Value::Null;
     let mut daemon = DaemonHarness::start(
         config,
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
@@ -400,6 +402,7 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
     config["apiBaseUrl"] = serde_json::Value::String(String::new());
     let mut daemon = start_network_daemon(
         config,
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
@@ -524,6 +527,7 @@ async fn network_bootstrap_moves_unclaimed_runtime_from_offline_to_claim_ready()
         serde_json::Value::String("https://provisioning.example.test/api".to_string());
     let mut daemon = start_network_daemon(
         config,
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
@@ -605,6 +609,7 @@ async fn network_bootstrap_connected_pending_persists_without_claim_ready() {
         serde_json::Value::String("https://provisioning.example.test/api".to_string());
     let mut daemon = start_network_daemon(
         config,
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "pending_success"),
@@ -663,6 +668,7 @@ async fn protected_network_settings_does_not_report_reachability_until_diagnosti
     let wifi_password = ["diagnostics", "network", "pass"].join("-");
     let mut daemon = start_network_daemon(
         configured_daemon(),
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "associated_only"),
@@ -729,6 +735,7 @@ async fn protected_network_settings_reports_invalid_password_without_echoing_sec
     let wifi_password = ["wrong", "network", "credential"].join("-");
     let mut daemon = start_network_daemon(
         configured_daemon(),
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "invalid_password"),
@@ -784,6 +791,7 @@ async fn protected_network_settings_accepts_hidden_ssid_manual_entry() {
     let wifi_password = ["hidden", "network", "credential"].join("-");
     let mut daemon = start_network_daemon(
         configured_daemon(),
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
@@ -827,6 +835,7 @@ async fn protected_network_settings_rejects_captive_portal_with_operator_guidanc
     let wifi_password = ["guest", "network", "credential"].join("-");
     let mut daemon = start_network_daemon(
         configured_daemon(),
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "captive_portal"),

@@ -5050,7 +5050,10 @@ async fn events_ws_inner(mut socket: WebSocket, events: broadcast::Sender<Daemon
 mod tests {
     use super::*;
     use crate::{
-        config::default_public_config,
+        config::{
+            default_public_config, FactoryProfile, FactoryRuntimeManifest,
+            HardwareSlotTopologyIdentity, RuntimeHardwareMode,
+        },
         secret::{InMemorySecretStore, SecretStore},
         state::{store::OutboxInput, LocalStateStore},
         transaction::TransactionStateMachine,
@@ -5269,6 +5272,38 @@ mod tests {
             state.clone(),
             secrets,
         ));
+        let factory_manifest_path = config_store.factory_manifest_path();
+        if !tokio::fs::try_exists(&factory_manifest_path)
+            .await
+            .expect("inspect factory manifest")
+        {
+            let factory_manifest = FactoryRuntimeManifest {
+                layout_version: 1,
+                environment: FactoryProfile::Production,
+                environment_name: "vps-fresh-ipc".to_string(),
+                deployment_batch: "ipc-test-batch".to_string(),
+                provisioning_endpoint: backend_base_url.to_string(),
+                hardware_mode: RuntimeHardwareMode::Simulated,
+                hardware_model: "VEM-PROD-24".to_string(),
+                hardware_slot_topology: HardwareSlotTopologyIdentity {
+                    identity: "vem-prod-24".to_string(),
+                    version: "2026-06-adr0026".to_string(),
+                },
+            };
+            tokio::fs::create_dir_all(
+                factory_manifest_path
+                    .parent()
+                    .expect("factory manifest parent"),
+            )
+            .await
+            .expect("create factory manifest parent");
+            tokio::fs::write(
+                factory_manifest_path,
+                serde_json::to_vec_pretty(&factory_manifest).expect("serialize factory manifest"),
+            )
+            .await
+            .expect("seed typed factory manifest");
+        }
 
         let mut public = default_public_config();
         public.machine_code = machine_code;
@@ -5278,9 +5313,12 @@ mod tests {
             .await
             .expect("save public config");
         if public.machine_code.as_deref() == Some("MACHINE-1") {
-            write_platform_profile_cache_for_store(&config_store, None)
-                .await
-                .expect("write default profile cache");
+            write_platform_profile_cache_for_store(
+                &config_store,
+                Some(("vem-prod-24", "2026-06-adr0026")),
+            )
+            .await
+            .expect("write default profile cache");
         }
         let public = config_store
             .load_public_config()
@@ -7019,6 +7057,33 @@ mod tests {
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["code"], "bring_up_task_stale");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("ABCD-2345"));
+        assert!(!text.contains("apiBaseUrl"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_without_factory_manifest_reports_profile_boundary_failure() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "").await;
+        tokio::fs::remove_file(ctx.config_store.factory_manifest_path())
+            .await
+            .expect("remove seeded factory manifest");
+        let app = build_router(ctx);
+
+        let response = post_json_with_maintenance(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "provisioning_profile_invalid");
         let text = serde_json::to_string(&payload).unwrap();
         assert!(!text.contains("ABCD-2345"));
         assert!(!text.contains("apiBaseUrl"));
@@ -9315,6 +9380,7 @@ mod tests {
                 .await
                 .expect("save serial config");
         }
+        write_platform_profile_cache(&ctx, Some(("vem-prod-24", "2026-06-adr0026"))).await;
         let response = app
             .clone()
             .oneshot(
@@ -10552,6 +10618,9 @@ mod tests {
         .await;
         apply_platform_topology(&ctx, "vem-prod-24", "2026-06-adr0026").await;
         mark_runtime_sale_ready(&ctx).await;
+        tokio::fs::remove_file(ctx.config_store.factory_manifest_path())
+            .await
+            .expect("remove local topology fixture");
         let app = build_router(ctx);
 
         let response = post_json_with_maintenance(
@@ -10586,6 +10655,7 @@ mod tests {
         .await;
         write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
         mark_runtime_sale_ready(&ctx).await;
+        remove_platform_profile_cache(&ctx).await;
         let app = build_router(ctx);
 
         let response = post_json_with_maintenance(

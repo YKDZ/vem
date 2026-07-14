@@ -4,10 +4,13 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 const fixture = "scripts/windows/vision-release-install.fixtures.ps1";
+const candidateFixture = "scripts/windows/test-vision-candidate.fixtures.ps1";
 const behaviorHarness =
   "scripts/windows/vision-release-install-harness.behavior.ps1";
 const windowsHarness =
   "scripts/windows/vision-release-install.windows-harness.ps1";
+const wireGuardAcceptance =
+  "scripts/windows/test-wireguard-localsystem-acceptance.ps1";
 const ciWorkflow = ".github/workflows/ci.yml";
 const SPAWN_TIMEOUT_MS = 45_000;
 const TEST_TIMEOUT_MS = 60_000;
@@ -44,7 +47,21 @@ function parsePowerShell(path) {
 }
 
 describe("Vision release installer fixtures", () => {
-  for (const testCase of ["archive"]) {
+  for (const testCase of [
+    "archive",
+    "bytes",
+    "first-install",
+    "acl",
+    "task",
+    "process-record",
+    "launcher",
+    "protocol",
+    "rollback",
+    "orphan",
+    "mutex",
+    "reinstall",
+    "runtime-verifier",
+  ]) {
     boundedIt(`runs the ${testCase} fixture through PowerShell`, () => {
       const result = spawnBounded("pwsh", [
         "-NoProfile",
@@ -57,6 +74,19 @@ describe("Vision release installer fixtures", () => {
       assert.match(result.stdout, new RegExp(`${testCase} fixtures passed`));
     });
   }
+
+  boundedIt(
+    "runs candidate reparse and redaction fixtures through PowerShell",
+    () => {
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-File",
+        candidateFixture,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stdout, /candidate fixtures passed/);
+    },
+  );
 
   for (const [name, path] of [
     ["production installer", "scripts/windows/install-vision-release.ps1"],
@@ -73,8 +103,10 @@ describe("Vision release installer fixtures", () => {
       "Vision Candidate test harness",
       "scripts/windows/test-vision-candidate.ps1",
     ],
+    ["Vision Candidate fixture", candidateFixture],
     ["Windows harness library seam", windowsHarness],
     ["Windows behavior harness", behaviorHarness],
+    ["Windows LocalSystem WireGuard acceptance", wireGuardAcceptance],
   ]) {
     boundedIt(`parses the ${name}`, () => {
       const result = parsePowerShell(path);
@@ -103,7 +135,10 @@ describe("Vision release installer fixtures", () => {
       );
       for (const source of [installer, candidate]) {
         assert.match(source, /Invoke-VisionReleaseMaterialization/);
-        assert.doesNotMatch(source, /\[switch\]\$Library|Expand-ZipSafely|Get-VerifiedBundleStream/);
+        assert.doesNotMatch(
+          source,
+          /\[switch\]\$Library|Expand-ZipSafely|Get-VerifiedBundleStream/,
+        );
       }
       assert.match(
         materialization,
@@ -169,7 +204,24 @@ describe("Vision release installer fixtures", () => {
       );
       assert.match(
         source,
-        /Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\\VEM\\"/,
+        /Get-VerifiedPreviousVisionRuntime[\s\S]*Stop-VerifiedPreviousVisionRuntime[\s\S]*Restore-VerifiedPreviousVisionRuntime/,
+      );
+      assert.match(
+        source,
+        /previous Vision process record does not bind the selected release/,
+      );
+      assert.match(
+        source,
+        /previous Vision process identity no longer matches its record/,
+      );
+      assert.match(
+        source,
+        /previous Vision release did not restore with its verified identity/,
+      );
+      assert.match(source, /Assert-CandidateNonReparsePath/);
+      assert.match(
+        source,
+        /Get-VisionRedactedDiagnostic "candidate preapproval"/,
       );
       assert.match(source, /modelReady -ne \$true/);
       assert.match(source, /protocolVersion = "vem\.vision\.v1"/);
@@ -193,6 +245,27 @@ describe("Vision release installer fixtures", () => {
       /-RequireVisionOnline -VisionOnly/,
     );
   });
+
+  boundedIt(
+    "keeps WireGuard claim-to-handshake acceptance on the real Windows services",
+    () => {
+      const source = readFileSync(wireGuardAcceptance, "utf8");
+      assert.match(source, /Get-CimInstance Win32_Service/);
+      assert.match(source, /Restart-Service -Name \$TunnelServiceName/);
+      assert.match(source, /Restart-Service -Name \$DaemonServiceName/);
+      assert.match(
+        source,
+        /WireGuard encrypted configuration ACL is not restricted to SYSTEM and Administrators/,
+      );
+      assert.match(source, /\/v1\/maintenance\/status/);
+      assert.match(source, /handshakeVerified -eq \$true/);
+      assert.match(source, /& \$wg show \$Name latest-handshakes/);
+      assert.doesNotMatch(
+        source,
+        /FakeTunnel|mock handshake|simulated handshake/i,
+      );
+    },
+  );
 
   boundedIt("stops non-reparse traversal at a Windows drive root", () => {
     for (const path of [
@@ -2222,7 +2295,10 @@ try {
         installer,
         /Import-Module \(Join-Path \$PSScriptRoot "vision-release-materialization\.psm1"\)/,
       );
-      assert.doesNotMatch(installer, /\[switch\]\$Library|Get-VerifiedBundleStream|Expand-ZipSafely/);
+      assert.doesNotMatch(
+        installer,
+        /\[switch\]\$Library|Get-VerifiedBundleStream|Expand-ZipSafely/,
+      );
     },
   );
 

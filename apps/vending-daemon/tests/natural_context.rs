@@ -82,6 +82,7 @@ async fn daemon_fetches_external_environment_and_exposes_operator_visible_natura
     let mut daemon = DaemonHarness::start(
         configured_daemon(server.uri()),
         &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+        &[],
     )
     .await
     .expect("start daemon");
@@ -150,6 +151,7 @@ async fn unconfigured_external_environment_is_operator_visible_without_blocking_
     let mut daemon = DaemonHarness::start(
         configured_daemon(server.uri()),
         &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+        &[],
     )
     .await
     .expect("start daemon");

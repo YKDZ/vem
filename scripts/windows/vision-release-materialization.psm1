@@ -10,6 +10,10 @@ function Get-VisionSafeArchivePath([string]$Name) {
   if ([string]::IsNullOrWhiteSpace($Name) -or $Name -match '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)|(^|[\\/])[^\\/]*:|[\x00-\x1f]') {
     throw "Vision materialization failed: archive contains an unsafe path"
   }
+  # Directory entries are permitted, but their type is checked before callers
+  # skip extraction.  Leave a second trailing separator invalid instead of
+  # silently normalizing an empty archive path segment.
+  if ($Name -match '[\\/]$') { $Name = $Name.Substring(0, $Name.Length - 1) }
   $segments = $Name -split '[\\/]'
   if ($segments | Where-Object { $_ -eq "" -or $_ -eq "." -or $_.EndsWith(".") -or $_.EndsWith(" ") -or $_ -match '^(?i:(CON|PRN|AUX|NUL|CLOCK\$|COM[1-9]|LPT[1-9]))(?:\..*)?$' }) {
     throw "Vision materialization failed: archive contains an unsafe or reserved device path"
@@ -25,6 +29,80 @@ function Assert-VisionRegularArchiveEntry([object]$Entry) {
   $dosAttributes = ($attributes -band 0xFFFF)
   if ($unixType -eq 0xA000 -or (($dosAttributes -band 0x0400) -ne 0)) {
     throw "Vision materialization failed: archive contains a symlink or reparse entry"
+  }
+}
+
+function Assert-VisionNoReparseTraversal([string]$Path, [string]$Label) {
+  Assert-VisionMaterializationPath $Path $Label
+  $cursor = [IO.Path]::GetFullPath($Path)
+  while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+    if (Test-Path -LiteralPath $cursor) {
+      $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+      if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Vision materialization failed: $Label must not traverse a reparse point"
+      }
+    }
+    $parent = Split-Path -Parent $cursor
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
+    $cursor = $parent
+  }
+  return [IO.Path]::GetFullPath($Path)
+}
+
+function Assert-VisionContainedPath([string]$Root, [string]$Candidate, [string]$Label) {
+  $canonicalRoot = (Assert-VisionNoReparseTraversal $Root "$Label root").TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+  if ([string]::IsNullOrWhiteSpace($canonicalRoot)) { $canonicalRoot = [IO.Path]::GetFullPath($Root) }
+  $canonicalCandidate = Assert-VisionNoReparseTraversal $Candidate $Label
+  $prefix = $canonicalRoot + [IO.Path]::DirectorySeparatorChar
+  if ($canonicalCandidate -cne $canonicalRoot -and -not $canonicalCandidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Vision materialization failed: $Label escapes the materialization destination"
+  }
+  return $canonicalCandidate
+}
+
+function New-VisionSafeDirectoryTree([string]$Path, [string]$Label, [string]$ContainmentRoot) {
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  if (-not [string]::IsNullOrWhiteSpace($ContainmentRoot)) {
+    [void](Assert-VisionContainedPath $ContainmentRoot $fullPath $Label)
+  } else {
+    [void](Assert-VisionNoReparseTraversal $fullPath $Label)
+  }
+  $pending = [Collections.Generic.List[string]]::new()
+  $cursor = $fullPath
+  while (-not (Test-Path -LiteralPath $cursor)) {
+    $pending.Add($cursor)
+    $parent = Split-Path -Parent $cursor
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) {
+      throw "Vision materialization failed: $Label has no existing trusted ancestor"
+    }
+    $cursor = $parent
+  }
+  $existing = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+  if (-not $existing.PSIsContainer) { throw "Vision materialization failed: $Label ancestor is not a directory" }
+  [void](Assert-VisionNoReparseTraversal $cursor $Label)
+  for ($index = $pending.Count - 1; $index -ge 0; $index--) {
+    $directory = $pending[$index]
+    if (-not (Test-Path -LiteralPath $directory)) {
+      New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+    }
+    $created = Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+    if (-not $created.PSIsContainer) { throw "Vision materialization failed: $Label is not a directory" }
+    [void](Assert-VisionNoReparseTraversal $directory $Label)
+    if (-not [string]::IsNullOrWhiteSpace($ContainmentRoot)) {
+      [void](Assert-VisionContainedPath $ContainmentRoot $directory $Label)
+    }
+  }
+  return $fullPath
+}
+
+function Remove-VisionMaterializationDestination([string]$Destination) {
+  if (-not (Test-Path -LiteralPath $Destination)) { return }
+  try {
+    [void](Assert-VisionNoReparseTraversal $Destination "materialization cleanup destination")
+    Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction Stop
+  } catch {
+    # A failed extraction must never follow a substituted destination while
+    # attempting best-effort cleanup.  The original failure remains primary.
   }
 }
 
@@ -75,8 +153,10 @@ function Invoke-VisionReleaseMaterialization {
     }
   }
   Assert-VisionMaterializationPath $Destination "destination"
+  [void](Assert-VisionNoReparseTraversal $Destination "destination")
   if (Test-Path -LiteralPath $Destination) { throw "Vision materialization failed: destination already exists" }
-  New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+  [void](New-VisionSafeDirectoryTree $Destination "destination" $null)
+  [void](Assert-VisionNoReparseTraversal $Destination "destination")
   $stream = Get-VisionVerifiedCandidateStream $CandidatePath $ExpectedDigest $Descriptor
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $true)
@@ -88,8 +168,8 @@ function Invoke-VisionReleaseMaterialization {
     $expanded = [Int64]0; $compressed = [Int64]0
     foreach ($entry in $archive.Entries) {
       $relative = Get-VisionSafeArchivePath $entry.FullName
-      if ($entry.FullName.EndsWith("/")) { continue }
       Assert-VisionRegularArchiveEntry $entry
+      if ($entry.FullName.EndsWith("/")) { continue }
       if (-not $seen.Add($relative)) { throw "Vision materialization failed: archive has case-colliding paths" }
       if ($entry.Length -lt 0 -or $entry.CompressedLength -lt 0) { throw "Vision materialization failed: archive lengths are invalid" }
       $expanded += $entry.Length; $compressed += $entry.CompressedLength
@@ -98,16 +178,22 @@ function Invoke-VisionReleaseMaterialization {
       }
     }
     foreach ($entry in $archive.Entries) {
+      $relative = Get-VisionSafeArchivePath $entry.FullName
+      Assert-VisionRegularArchiveEntry $entry
       if ($entry.FullName.EndsWith("/")) { continue }
-      $target = Join-Path $Destination (Get-VisionSafeArchivePath $entry.FullName)
-      $parent = Split-Path -Parent $target; New-Item -ItemType Directory -Path $parent -Force | Out-Null
+      $target = Assert-VisionContainedPath $Destination (Join-Path $Destination $relative) "archive entry target"
+      $parent = Split-Path -Parent $target
+      [void](New-VisionSafeDirectoryTree $parent "archive entry parent" $Destination)
+      [void](Assert-VisionContainedPath $Destination $target "archive entry target")
       $input = $entry.Open(); $output = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
       try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
-      if ((Get-Item -LiteralPath $target -Force).Length -ne $entry.Length) { throw "Vision materialization failed: archive entry was extracted incompletely" }
+      $written = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+      if (($written.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $written.PSIsContainer -or $written.Length -ne $entry.Length) { throw "Vision materialization failed: archive entry was extracted incompletely" }
+      [void](Assert-VisionContainedPath $Destination $target "archive entry target")
     }
     return [pscustomobject]@{ bundleDigest=$ExpectedDigest; destination=$Destination; files=@($archive.Entries | Where-Object { -not $_.FullName.EndsWith("/") } | ForEach-Object { $_.FullName }) }
   } catch {
-    Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-VisionMaterializationDestination $Destination
     throw
   } finally { $archive.Dispose(); $stream.Dispose() }
 }

@@ -76,12 +76,13 @@ async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
     let pty = PtyHarness::open();
     let scanner_path = pty.slave_path.to_string_lossy().to_string();
     pty.spawn_scanner_writer(b"621234567890123456\r\n621234567890123456\r\n");
-    let mut daemon = DaemonHarness::start_with_file_secrets(
+    let mut daemon = DaemonHarness::start(
         scanner_config(scanner_path),
         &[
             ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
             ("machine_secret", sensitive::TEST_MACHINE_SECRET),
         ],
+        &[],
     )
     .await
     .expect("start daemon");
@@ -135,12 +136,13 @@ async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
 #[tokio::test]
 async fn scanner_open_failure_reports_offline() {
     let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
-    let mut daemon = DaemonHarness::start_with_file_secrets(
+    let mut daemon = DaemonHarness::start(
         scanner_config("/dev/vem-missing-scanner".to_string()),
         &[
             ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
             ("machine_secret", sensitive::TEST_MACHINE_SECRET),
         ],
+        &[],
     )
     .await
     .expect("start daemon");
@@ -293,13 +295,14 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
     let mut config = production_scanner_config(scanner_path, lower_controller_path);
     config["apiBaseUrl"] = json!(server.uri());
     config["mqttUrl"] = json!(mqtt.url());
-    let mut daemon = DaemonHarness::start_with_file_secrets(
+    let mut daemon = DaemonHarness::start(
         config,
         &[
             ("machine_secret", sensitive::TEST_MACHINE_SECRET),
             ("mqtt_signing_secret", sensitive::TEST_MQTT_SIGNING_SECRET),
             ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
         ],
+        &[],
     )
     .await
     .expect("start daemon");
@@ -459,13 +462,14 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
     let mut config = production_scanner_config(scanner_path, lower_controller_path);
     config["apiBaseUrl"] = json!(server.uri());
     config["mqttUrl"] = json!(mqtt.url());
-    let mut daemon = DaemonHarness::start_with_file_secrets(
+    let mut daemon = DaemonHarness::start(
         config,
         &[
             ("machine_secret", sensitive::TEST_MACHINE_SECRET),
             ("mqtt_signing_secret", sensitive::TEST_MQTT_SIGNING_SECRET),
             ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
         ],
+        &[],
     )
     .await
     .expect("start daemon");
@@ -524,7 +528,7 @@ async fn vision_disabled_reports_disabled_status() {
     config["scannerAdapter"] = serde_json::json!("disabled");
     config["scannerSerialPortPath"] = serde_json::Value::Null;
     config["visionEnabled"] = serde_json::json!(false);
-    let mut daemon = DaemonHarness::start(config, &[]).await.expect("start");
+    let mut daemon = DaemonHarness::start(config, &[], &[]).await.expect("start");
     let vision = wait_for_vision_message(&daemon, "disabled").await;
     assert_eq!(vision["enabled"], false);
     assert_eq!(vision["online"], false);
@@ -544,7 +548,7 @@ async fn vision_mock_process_updates_ready_status() {
     config["visionEnabled"] = serde_json::json!(true);
     config["visionWsUrl"] = serde_json::json!(format!("ws://127.0.0.1:{port}/ws"));
 
-    let mut daemon = DaemonHarness::start(config, &[])
+    let mut daemon = DaemonHarness::start(config, &[], &[])
         .await
         .expect("start daemon");
     let vision_status = wait_for_vision_ready(&daemon).await;

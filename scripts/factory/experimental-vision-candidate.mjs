@@ -172,6 +172,82 @@ function writeBytes(path, bytes) {
   writeFileSync(path, bytes);
 }
 
+export function createPreapprovalDeliveryManifest({
+  bundle,
+  descriptor,
+  expectedBundleDigest,
+  testEntry,
+  materializer,
+  redactor,
+}) {
+  if (digestBytes(bundle) !== expectedBundleDigest) {
+    throw new Error("preapproval bundle does not match ExpectedDigest");
+  }
+  const files = {
+    "bundle.bin": digestBytes(bundle),
+    "vision-release-descriptor.json": digestBytes(descriptor),
+    "test-vision-candidate.ps1": digestBytes(testEntry),
+    "vision-release-materialization.psm1": digestBytes(materializer),
+    "vision-diagnostic-redaction.psm1": digestBytes(redactor),
+  };
+  const manifest = {
+    schemaVersion: "vem-vision-preapproval-delivery/v1",
+    kind: "vision-preapproval-delivery",
+    expectedDigest: expectedBundleDigest,
+    descriptorDigest: files["vision-release-descriptor.json"],
+    files,
+  };
+  return {
+    ...manifest,
+    identity: digestBytes(canonicalBytes(manifest)),
+  };
+}
+
+export function stagePreapprovalDeliveryUnit({
+  candidate,
+  verified,
+  outputDirectory,
+}) {
+  const outputRoot = resolve(outputDirectory);
+  const preapprovalRoot = join(outputRoot, "VEM-VISION-PREAPPROVAL");
+  const testEntry = readFileSync(
+    new URL("../windows/test-vision-candidate.ps1", import.meta.url),
+  );
+  const materializer = readFileSync(
+    new URL("../windows/vision-release-materialization.psm1", import.meta.url),
+  );
+  const redactor = readFileSync(
+    new URL("../windows/vision-diagnostic-redaction.psm1", import.meta.url),
+  );
+  const manifest = createPreapprovalDeliveryManifest({
+    bundle: candidate.bundle,
+    descriptor: candidate.documents.descriptor,
+    expectedBundleDigest: verified.bundleDigest,
+    testEntry,
+    materializer,
+    redactor,
+  });
+  const entries = {
+    "bundle.bin": candidate.bundle,
+    "vision-release-descriptor.json": candidate.documents.descriptor,
+    "test-vision-candidate.ps1": testEntry,
+    "vision-release-materialization.psm1": materializer,
+    "vision-diagnostic-redaction.psm1": redactor,
+    "preapproval-manifest.json": canonicalBytes(manifest),
+  };
+  for (const [name, bytes] of Object.entries(entries)) {
+    writeBytes(join(preapprovalRoot, name), bytes);
+  }
+  writeFileSync(
+    join(preapprovalRoot, "SHA256SUMS"),
+    `${Object.entries(entries)
+      .map(([name, bytes]) => `${digestBytes(bytes).slice(7)}  ${name}`)
+      .sort()
+      .join("\n")}\n`,
+  );
+  return { root: preapprovalRoot, manifest };
+}
+
 function createExperimentalFactoryManifest({
   baseManifest,
   candidate,
@@ -438,6 +514,8 @@ function usage() {
   return `
 experimental-vision-candidate.mjs verify --candidate-dir DIR --tag TAG --expected-bundle-digest sha256:... --expected-supplier-identity spki-sha256:...
 
+experimental-vision-candidate.mjs prepare-preapproval (verify options) --output DIR
+
 experimental-vision-candidate.mjs finalize (verify options) --conformance PATH --acceptance-private-key PATH --expected-acceptance-identity spki-sha256:... --verifier PATH --base-manifest PATH --output DIR
 `.trim();
 }
@@ -454,6 +532,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (options.command === "verify") {
       const { verified } = verifyCandidateInputs(shared);
       process.stdout.write(`${JSON.stringify(verified, null, 2)}\n`);
+    } else if (options.command === "prepare-preapproval") {
+      const { candidate, verified } = verifyCandidateInputs(shared);
+      const result = stagePreapprovalDeliveryUnit({
+        candidate,
+        verified,
+        outputDirectory: options.output,
+      });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else if (options.command === "finalize") {
       const result = finalizeExperimentalCandidate({
         ...shared,
