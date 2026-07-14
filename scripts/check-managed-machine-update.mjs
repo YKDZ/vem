@@ -25,9 +25,11 @@ function functionBlock(source, name) {
 
 const daemonBlock = functionBlock(script, "Restart-DaemonComponent");
 const uiBlock = functionBlock(script, "Restart-UiComponent");
-const rollbackBlock = functionBlock(script, "Restore-ComponentBackup");
+const rollbackBlock = functionBlock(script, "Restore-ComponentBackups");
 const convertBlock = functionBlock(script, "ConvertTo-ComponentSpec");
+const sidecarConvertBlock = functionBlock(script, "ConvertTo-UiSidecarSpec");
 const componentsBlock = functionBlock(script, "Get-RequestedComponents");
+const installBlock = functionBlock(script, "Install-Component");
 const daemonHealthBlock = functionBlock(script, "Test-DaemonHealth");
 const uiHealthBlock = functionBlock(script, "Test-UiHealth");
 const stopBlock = functionBlock(script, "Stop-ComponentForReplace");
@@ -72,10 +74,13 @@ addCheck(
   script.includes("New-BackupPath") &&
     script.includes("Copy-Item") &&
     script.includes("backupPath") &&
-    script.indexOf("Copy-Item -LiteralPath $Spec.targetPath") <
-      script.indexOf("Stop-ComponentForReplace -Component $Spec.component") &&
-    script.indexOf("Stop-ComponentForReplace -Component $Spec.component") <
-      script.indexOf("Copy-Item -LiteralPath $Spec.artifactPath"),
+    installBlock.indexOf("Copy-Item -LiteralPath $Spec.targetPath") <
+      installBlock.indexOf(
+        "Stop-ComponentForReplace -Component $Spec.component",
+      ) &&
+    installBlock.indexOf(
+      "Stop-ComponentForReplace -Component $Spec.component",
+    ) < installBlock.indexOf("Copy-Item -LiteralPath $Spec.artifactPath"),
   `${scriptPath} should back up the active executable before replacement`,
 );
 
@@ -91,6 +96,50 @@ addCheck(
     ) &&
     script.includes("targetPath for ui must be C:\\VEM\\bringup\\machine.exe"),
   `${scriptPath} should reject manifest/direct inputs that bind a component to the wrong production executable`,
+);
+
+addCheck(
+  "binds-ui-sidecar-to-webview-loader-path",
+  script.includes('"C:\\VEM\\bringup\\WebView2Loader.dll"') &&
+    script.includes(
+      "targetPath for ui sidecar must be C:\\VEM\\bringup\\WebView2Loader.dll",
+    ) &&
+    convertBlock.includes('componentName -ne "ui"') &&
+    convertBlock.includes("sidecars are supported only for ui") &&
+    convertBlock.includes("Count -gt 1") &&
+    sidecarConvertBlock.includes("Assert-AllowedUiSidecarTargetPath"),
+  `${scriptPath} should allow only one UI WebView2Loader.dll sidecar at its fixed production path`,
+);
+
+addCheck(
+  "preflights-and-backs-up-ui-delivery-unit-before-stop",
+  installBlock.includes(
+    "Assert-Sha256 -Path $sidecar.artifactPath -ExpectedSha256 $sidecar.sha256",
+  ) &&
+    installBlock.includes(
+      "Copy-Item -LiteralPath $sidecar.targetPath -Destination $sidecarBackupPath",
+    ) &&
+    installBlock.indexOf("Assert-Sha256 -Path $sidecar.artifactPath") <
+      installBlock.indexOf("Stop-ComponentForReplace -Component $Spec.component") &&
+    installBlock.indexOf(
+      "Copy-Item -LiteralPath $sidecar.targetPath -Destination $sidecarBackupPath",
+    ) < installBlock.indexOf("Stop-ComponentForReplace -Component $Spec.component"),
+  `${scriptPath} should validate and back up machine.exe and its sidecar before stopping UI`,
+);
+
+addCheck(
+  "replaces-ui-delivery-unit-in-one-stop-start-cycle",
+  installBlock.includes(
+    "Copy-Item -LiteralPath $sidecar.artifactPath -Destination $sidecar.targetPath",
+  ) &&
+    installBlock.includes(
+      "Assert-Sha256 -Path $sidecar.targetPath -ExpectedSha256 $sidecar.sha256",
+    ) &&
+    (installBlock.match(/Stop-ComponentForReplace -Component \$Spec\.component/g) ?? [])
+      .length === 1 &&
+    (installBlock.match(/Restart-Component -Component \$Spec\.component/g) ?? [])
+      .length === 1,
+  `${scriptPath} should replace machine.exe and WebView2Loader.dll with one UI stop and one restart`,
 );
 
 addCheck(
@@ -165,6 +214,16 @@ addCheck(
 );
 
 addCheck(
+  "ui-health-verifies-sidecar-hash",
+  uiHealthBlock.includes("foreach ($sidecar in @($Sidecars))") &&
+    uiHealthBlock.includes(
+      "Assert-Sha256 -Path $sidecar.targetPath -ExpectedSha256 $sidecar.sha256",
+    ) &&
+    uiHealthBlock.includes("sidecars = $sidecarEvidence"),
+  `${scriptPath} UI health should verify and record every declared sidecar hash`,
+);
+
+addCheck(
   "ui-restart-supports-task-and-direct-fallback",
   script.includes('ValidateSet("auto", "scheduledTask", "directProcess")') &&
     uiBlock.includes("Resolve-UiLaunchMode") &&
@@ -178,10 +237,15 @@ addCheck(
   "rolls-back-on-health-failure",
   script.includes("try {") &&
     script.includes("catch {") &&
-    script.includes("Restore-ComponentBackup") &&
+    script.includes("Restore-ComponentBackups") &&
     rollbackBlock.includes("Restart-Component") &&
-    rollbackBlock.includes("Copy-Item"),
-  `${scriptPath} should restore the backup and restart the component if install or health checks fail`,
+    rollbackBlock.includes("foreach ($sidecarState in @($SidecarStates))") &&
+    rollbackBlock.includes(
+      "Copy-Item -LiteralPath $sidecarState.backupPath -Destination $sidecarState.targetPath",
+    ) &&
+    installBlock.includes("$replacementStarted") &&
+    installBlock.includes("if ($replacementStarted"),
+  `${scriptPath} should restore the whole delivery unit and restart the component if install or health checks fail`,
 );
 
 addCheck(
@@ -203,6 +267,8 @@ addCheck(
     runbook.includes("updateId") &&
     runbook.includes("C:\\VEM\\bringup\\vending-daemon.exe") &&
     runbook.includes("C:\\VEM\\bringup\\machine.exe") &&
+    runbook.includes("C:\\VEM\\bringup\\WebView2Loader.dll") &&
+    runbook.includes("原子交付单元") &&
     runbook.includes("healthz") &&
     runbook.includes("readyz") &&
     runbook.includes("launchMode") &&

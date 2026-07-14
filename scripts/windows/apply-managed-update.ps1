@@ -19,7 +19,14 @@
 #       "component": "ui",
 #       "artifactPath": "C:\\VEM\\updates\\machine.exe",
 #       "sha256": "...",
-#       "targetPath": "C:\\VEM\\bringup\\machine.exe"
+#       "targetPath": "C:\\VEM\\bringup\\machine.exe",
+#       "sidecars": [
+#         {
+#           "artifactPath": "C:\\VEM\\updates\\WebView2Loader.dll",
+#           "sha256": "...",
+#           "targetPath": "C:\\VEM\\bringup\\WebView2Loader.dll"
+#         }
+#       ]
 #     }
 #   ]
 # }
@@ -85,6 +92,10 @@ function Get-DefaultTargetPath {
   throw "component must be daemon or ui"
 }
 
+function Get-UiSidecarTargetPath {
+  return "C:\VEM\bringup\WebView2Loader.dll"
+}
+
 function Normalize-WindowsPath {
   param([string]$Path)
   return $Path.Trim().TrimEnd("\").ToLowerInvariant()
@@ -104,6 +115,16 @@ function Assert-AllowedTargetPath {
       throw "targetPath for daemon must be C:\VEM\bringup\vending-daemon.exe"
     }
     throw "targetPath for ui must be C:\VEM\bringup\machine.exe"
+  }
+  return $allowed
+}
+
+function Assert-AllowedUiSidecarTargetPath {
+  param([string]$TargetPath)
+
+  $allowed = Get-UiSidecarTargetPath
+  if ((Normalize-WindowsPath -Path $TargetPath) -ne (Normalize-WindowsPath -Path $allowed)) {
+    throw "targetPath for ui sidecar must be C:\VEM\bringup\WebView2Loader.dll"
   }
   return $allowed
 }
@@ -249,6 +270,7 @@ function Test-UiHealth {
   param(
     [string]$TargetPath,
     [string]$ExpectedSha256,
+    [object[]]$Sidecars = @(),
     [string]$LaunchMode,
     [int]$TimeoutSeconds,
     [int]$PollSeconds
@@ -259,6 +281,14 @@ function Test-UiHealth {
   do {
     try {
       $targetSha256 = Assert-Sha256 -Path $TargetPath -ExpectedSha256 $ExpectedSha256
+      $sidecarEvidence = @()
+      foreach ($sidecar in @($Sidecars)) {
+        $sidecarSha256 = Assert-Sha256 -Path $sidecar.targetPath -ExpectedSha256 $sidecar.sha256
+        $sidecarEvidence += [pscustomobject]@{
+          targetPath = $sidecar.targetPath
+          targetSha256 = $sidecarSha256
+        }
+      }
       $process = Get-ExactMachineProcess -TargetPath $TargetPath | Select-Object -First 1
       if ($null -ne $process) {
         return [pscustomobject]@{
@@ -269,6 +299,7 @@ function Test-UiHealth {
           path = $process.Path
           targetPath = $TargetPath
           targetSha256 = $targetSha256
+          sidecars = $sidecarEvidence
         }
       }
     } catch {
@@ -370,28 +401,58 @@ function Test-ComponentHealth {
     [string]$Component,
     [string]$TargetPath,
     [string]$ExpectedSha256,
+    [object[]]$Sidecars = @(),
     [string]$LaunchMode
   )
 
   if ($Component -eq "daemon") {
     return Test-DaemonHealth -ReadyFile $DaemonReadyFile -TimeoutSeconds $HealthTimeoutSeconds -PollSeconds $HealthPollSeconds
   }
-  return Test-UiHealth -TargetPath $TargetPath -ExpectedSha256 $ExpectedSha256 -LaunchMode $LaunchMode -TimeoutSeconds $HealthTimeoutSeconds -PollSeconds $HealthPollSeconds
+  return Test-UiHealth -TargetPath $TargetPath -ExpectedSha256 $ExpectedSha256 -Sidecars $Sidecars -LaunchMode $LaunchMode -TimeoutSeconds $HealthTimeoutSeconds -PollSeconds $HealthPollSeconds
 }
 
-function Restore-ComponentBackup {
+function Restore-ComponentBackups {
   param(
-    [string]$Component,
-    [string]$BackupPath,
-    [string]$TargetPath
+    $Spec,
+    [string]$PrimaryBackupPath,
+    [object[]]$SidecarStates
   )
 
-  if (-not (Test-Path -LiteralPath $BackupPath -PathType Leaf)) {
-    throw "backup missing, cannot rollback: $BackupPath"
+  if (-not (Test-Path -LiteralPath $PrimaryBackupPath -PathType Leaf)) {
+    throw "backup missing, cannot rollback: $PrimaryBackupPath"
   }
-  Stop-ComponentForReplace -Component $Component -TargetPath $TargetPath
-  Copy-Item -LiteralPath $BackupPath -Destination $TargetPath -Force
-  return Restart-Component -Component $Component -TargetPath $TargetPath
+  foreach ($sidecarState in @($SidecarStates)) {
+    if (-not (Test-Path -LiteralPath $sidecarState.backupPath -PathType Leaf)) {
+      throw "backup missing, cannot rollback: $($sidecarState.backupPath)"
+    }
+  }
+
+  Stop-ComponentForReplace -Component $Spec.component -TargetPath $Spec.targetPath
+  Copy-Item -LiteralPath $PrimaryBackupPath -Destination $Spec.targetPath -Force
+  Assert-Sha256 -Path $Spec.targetPath -ExpectedSha256 $Spec.originalSha256 | Out-Null
+  foreach ($sidecarState in @($SidecarStates)) {
+    Copy-Item -LiteralPath $sidecarState.backupPath -Destination $sidecarState.targetPath -Force
+    Assert-Sha256 -Path $sidecarState.targetPath -ExpectedSha256 $sidecarState.originalSha256 | Out-Null
+  }
+  return Restart-Component -Component $Spec.component -TargetPath $Spec.targetPath
+}
+
+function ConvertTo-UiSidecarSpec {
+  param($Item)
+
+  if ([string]::IsNullOrWhiteSpace([string]$Item.artifactPath)) {
+    throw "artifactPath is required for ui sidecar"
+  }
+  $requestedTargetPath = [string]$Item.targetPath
+  if ([string]::IsNullOrWhiteSpace($requestedTargetPath)) {
+    $requestedTargetPath = Get-UiSidecarTargetPath
+  }
+
+  return [pscustomobject]@{
+    artifactPath = [string]$Item.artifactPath
+    sha256 = Normalize-Sha256 -Value ([string]$Item.sha256)
+    targetPath = Assert-AllowedUiSidecarTargetPath -TargetPath $requestedTargetPath
+  }
 }
 
 function ConvertTo-ComponentSpec {
@@ -410,12 +471,25 @@ function ConvertTo-ComponentSpec {
   }
   $targetPath = Assert-AllowedTargetPath -Component $componentName -TargetPath $requestedTargetPath
   $normalizedSha256 = Normalize-Sha256 -Value ([string]$Item.sha256)
+  $sidecars = @()
+  if ($null -ne $Item.sidecars) {
+    if ($componentName -ne "ui") {
+      throw "sidecars are supported only for ui"
+    }
+    if (@($Item.sidecars).Count -gt 1) {
+      throw "ui supports only the WebView2Loader.dll sidecar"
+    }
+    foreach ($sidecar in @($Item.sidecars)) {
+      $sidecars += ConvertTo-UiSidecarSpec -Item $sidecar
+    }
+  }
 
   return [pscustomobject]@{
     component = $componentName
     artifactPath = [string]$Item.artifactPath
     sha256 = $normalizedSha256
     targetPath = $targetPath
+    sidecars = $sidecars
   }
 }
 
@@ -471,13 +545,16 @@ function Install-Component {
   param($Spec)
 
   $startedAt = (Get-Date).ToUniversalTime().ToString("o")
+  $replacementStarted = $false
   $result = [ordered]@{
     component = $Spec.component
     artifactPath = $Spec.artifactPath
     targetPath = $Spec.targetPath
     expectedSha256 = $Spec.sha256
+    originalSha256 = $null
     startedAt = $startedAt
     backupPath = $null
+    sidecars = @()
     installedSha256 = $null
     restart = $null
     healthCheck = $null
@@ -487,24 +564,58 @@ function Install-Component {
     error = $null
   }
 
+  foreach ($sidecar in @($Spec.sidecars)) {
+    $result.sidecars += [pscustomobject][ordered]@{
+      artifactPath = $sidecar.artifactPath
+      targetPath = $sidecar.targetPath
+      expectedSha256 = $sidecar.sha256
+      originalSha256 = $null
+      backupPath = $null
+      installedSha256 = $null
+    }
+  }
+
   try {
     Assert-Sha256 -Path $Spec.artifactPath -ExpectedSha256 $Spec.sha256 | Out-Null
     if (-not (Test-Path -LiteralPath $Spec.targetPath -PathType Leaf)) {
       throw "target executable not found: $($Spec.targetPath)"
     }
+    $result.originalSha256 = (Get-FileHash -LiteralPath $Spec.targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Spec | Add-Member -NotePropertyName originalSha256 -NotePropertyValue $result.originalSha256 -Force
+
+    for ($index = 0; $index -lt @($Spec.sidecars).Count; $index += 1) {
+      $sidecar = @($Spec.sidecars)[$index]
+      Assert-Sha256 -Path $sidecar.artifactPath -ExpectedSha256 $sidecar.sha256 | Out-Null
+      if (-not (Test-Path -LiteralPath $sidecar.targetPath -PathType Leaf)) {
+        throw "target sidecar not found: $($sidecar.targetPath)"
+      }
+      $result.sidecars[$index].originalSha256 = (Get-FileHash -LiteralPath $sidecar.targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
 
     $backupPath = New-BackupPath -Component $Spec.component -TargetPath $Spec.targetPath -BackupRoot $BackupRoot
     Copy-Item -LiteralPath $Spec.targetPath -Destination $backupPath -Force
     $result.backupPath = $backupPath
+    for ($index = 0; $index -lt @($Spec.sidecars).Count; $index += 1) {
+      $sidecar = @($Spec.sidecars)[$index]
+      $sidecarBackupPath = New-BackupPath -Component $Spec.component -TargetPath $sidecar.targetPath -BackupRoot $BackupRoot
+      Copy-Item -LiteralPath $sidecar.targetPath -Destination $sidecarBackupPath -Force
+      $result.sidecars[$index].backupPath = $sidecarBackupPath
+    }
 
+    $replacementStarted = $true
     Stop-ComponentForReplace -Component $Spec.component -TargetPath $Spec.targetPath
     Copy-Item -LiteralPath $Spec.artifactPath -Destination $Spec.targetPath -Force
     $installedSha256 = Assert-Sha256 -Path $Spec.targetPath -ExpectedSha256 $Spec.sha256
     $result.installedSha256 = $installedSha256
+    for ($index = 0; $index -lt @($Spec.sidecars).Count; $index += 1) {
+      $sidecar = @($Spec.sidecars)[$index]
+      Copy-Item -LiteralPath $sidecar.artifactPath -Destination $sidecar.targetPath -Force
+      $result.sidecars[$index].installedSha256 = Assert-Sha256 -Path $sidecar.targetPath -ExpectedSha256 $sidecar.sha256
+    }
 
     $restart = Restart-Component -Component $Spec.component -TargetPath $Spec.targetPath
     $result.restart = $restart
-    $health = Test-ComponentHealth -Component $Spec.component -TargetPath $Spec.targetPath -ExpectedSha256 $Spec.sha256 -LaunchMode $restart.launchMode
+    $health = Test-ComponentHealth -Component $Spec.component -TargetPath $Spec.targetPath -ExpectedSha256 $Spec.sha256 -Sidecars $Spec.sidecars -LaunchMode $restart.launchMode
     $result.healthCheck = $health
     if (-not [bool]$health.ok) {
       throw "post-update health check failed for $($Spec.component)"
@@ -513,12 +624,27 @@ function Install-Component {
     $result.ok = $true
   } catch {
     $result.error = $_.Exception.Message
-    if ($null -ne $result.backupPath) {
+    if ($replacementStarted -and $null -ne $result.backupPath) {
       $result.rollbackAttempted = $true
       try {
-        $rollbackRestart = Restore-ComponentBackup -Component $Spec.component -BackupPath $result.backupPath -TargetPath $Spec.targetPath
+        $rollbackSidecars = @()
+        foreach ($sidecarState in @($result.sidecars)) {
+          $rollbackSidecars += [pscustomobject]@{
+            targetPath = $sidecarState.targetPath
+            backupPath = $sidecarState.backupPath
+            originalSha256 = $sidecarState.originalSha256
+          }
+        }
+        $rollbackRestart = Restore-ComponentBackups -Spec $Spec -PrimaryBackupPath $result.backupPath -SidecarStates $rollbackSidecars
         $result.rollbackRestart = $rollbackRestart
-        $rollbackHealth = Test-ComponentHealth -Component $Spec.component -TargetPath $Spec.targetPath -ExpectedSha256 ((Get-FileHash -LiteralPath $Spec.targetPath -Algorithm SHA256).Hash.ToLowerInvariant()) -LaunchMode $rollbackRestart.launchMode
+        $rollbackHealthSidecars = @()
+        foreach ($sidecarState in @($result.sidecars)) {
+          $rollbackHealthSidecars += [pscustomobject]@{
+            targetPath = $sidecarState.targetPath
+            sha256 = $sidecarState.originalSha256
+          }
+        }
+        $rollbackHealth = Test-ComponentHealth -Component $Spec.component -TargetPath $Spec.targetPath -ExpectedSha256 $result.originalSha256 -Sidecars $rollbackHealthSidecars -LaunchMode $rollbackRestart.launchMode
         $result.rollbackOk = [bool]$rollbackHealth.ok
         $result.rollbackHealthCheck = $rollbackHealth
       } catch {
