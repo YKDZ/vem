@@ -993,7 +993,7 @@ do {
   $resumingCleanup =
     $null -ne $cleanupStatus -and
     $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1' -and
-    $cleanupStatus.phase -in @('ready', 'account-removed', 'media-ejected', 'complete')
+    $cleanupStatus.phase -in @('ready', 'autologon-restored', 'account-removed', 'media-ejected', 'complete')
   $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
   $bootstrapUser = Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
   $oobeComplete =
@@ -1009,7 +1009,13 @@ do {
 } while ((Get-Date) -lt $oobeDeadline)
 if (-not $oobeComplete) { throw 'VEM Factory OOBE did not complete before cleanup deadline' }
 Write-CleanupStatus 'ready'
+$winlogonPath = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'
+Set-ItemProperty -Path $winlogonPath -Name AutoAdminLogon -Value '1' -Force
+Set-ItemProperty -Path $winlogonPath -Name ForceAutoLogon -Value '1' -Force
+Set-ItemProperty -Path $winlogonPath -Name DefaultUserName -Value 'VEMKiosk' -Force
+Set-ItemProperty -Path $winlogonPath -Name DefaultDomainName -Value $env:COMPUTERNAME -Force
 Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
+Write-CleanupStatus 'autologon-restored'
 Remove-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
 Write-CleanupStatus 'account-removed'
 $shell = New-Object -ComObject Shell.Application

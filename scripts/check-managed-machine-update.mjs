@@ -120,10 +120,15 @@ addCheck(
       "Copy-Item -LiteralPath $sidecar.targetPath -Destination $sidecarBackupPath",
     ) &&
     installBlock.indexOf("Assert-Sha256 -Path $sidecar.artifactPath") <
-      installBlock.indexOf("Stop-ComponentForReplace -Component $Spec.component") &&
+      installBlock.indexOf(
+        "Stop-ComponentForReplace -Component $Spec.component",
+      ) &&
     installBlock.indexOf(
       "Copy-Item -LiteralPath $sidecar.targetPath -Destination $sidecarBackupPath",
-    ) < installBlock.indexOf("Stop-ComponentForReplace -Component $Spec.component"),
+    ) <
+      installBlock.indexOf(
+        "Stop-ComponentForReplace -Component $Spec.component",
+      ),
   `${scriptPath} should validate and back up machine.exe and its sidecar before stopping UI`,
 );
 
@@ -135,10 +140,15 @@ addCheck(
     installBlock.includes(
       "Assert-Sha256 -Path $sidecar.targetPath -ExpectedSha256 $sidecar.sha256",
     ) &&
-    (installBlock.match(/Stop-ComponentForReplace -Component \$Spec\.component/g) ?? [])
-      .length === 1 &&
-    (installBlock.match(/Restart-Component -Component \$Spec\.component/g) ?? [])
-      .length === 1,
+    (
+      installBlock.match(
+        /Stop-ComponentForReplace -Component \$Spec\.component/g,
+      ) ?? []
+    ).length === 1 &&
+    (
+      installBlock.match(/Restart-Component -Component \$Spec\.component/g) ??
+      []
+    ).length === 1,
   `${scriptPath} should replace machine.exe and WebView2Loader.dll with one UI stop and one restart`,
 );
 
