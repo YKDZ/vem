@@ -92,7 +92,7 @@ impl DaemonHarness {
         data_dir: PathBuf,
         public_config: serde_json::Value,
         extra_env: &[(&str, &str)],
-        secret_store: &str,
+        _secret_store: &str,
     ) -> Result<Self, String> {
         tokio::fs::create_dir_all(&data_dir)
             .await
@@ -117,7 +117,6 @@ impl DaemonHarness {
             .arg("127.0.0.1:0")
             .arg("--print-ready-file")
             .arg(&ready_file)
-            .env("VEM_DAEMON_SECRET_STORE", secret_store)
             .env("VEM_DISK_PRESSURE_MIN_AVAILABLE_BYTES", "0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

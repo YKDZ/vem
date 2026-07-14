@@ -301,7 +301,10 @@ async fn persist_encrypted_config(
     }
     tokio::fs::rename(staging_path, path)
         .await
-        .map_err(|error| format!("replace encrypted WireGuard configuration failed: {error}"))
+        .map_err(|error| format!("replace encrypted WireGuard configuration failed: {error}"))?;
+    harden_machine_secret_file_permissions(path)
+        .await
+        .map_err(|error| format!("harden replaced WireGuard configuration failed: {error}"))
 }
 
 #[cfg(windows)]

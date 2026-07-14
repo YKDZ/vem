@@ -662,12 +662,10 @@ impl SecretStore for KeyringSecretStore {
 }
 
 pub fn default_secret_store(data_dir: PathBuf) -> Arc<dyn SecretStore> {
-    match std::env::var("VEM_DAEMON_SECRET_STORE").ok().as_deref() {
-        Some("env") => Arc::new(EnvSecretStore),
-        Some("file") => Arc::new(FileSecretStore::new(data_dir)),
-        Some("keyring") => Arc::new(KeyringSecretStore),
-        _ => Arc::new(ProtectedLocalSecretStore::new(data_dir)),
-    }
+    // Production startup has one machine-scope secret lifecycle. Test stores
+    // are injected into ConfigStore/DaemonRuntime directly, never selected by
+    // inherited service environment variables.
+    Arc::new(ProtectedLocalSecretStore::new(data_dir))
 }
 
 #[cfg(test)]
@@ -685,6 +683,23 @@ mod tests {
                 "*S-1-5-32-544:F",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn production_secret_store_ignores_legacy_inherited_selector() {
+        let temp = tempfile::tempdir().unwrap();
+        // SAFETY: this focused test restores the inherited compatibility selector.
+        unsafe { std::env::set_var("VEM_DAEMON_SECRET_STORE", "env") };
+
+        let status = default_secret_store(temp.path().to_path_buf())
+            .status()
+            .await
+            .unwrap();
+
+        // SAFETY: restore the process environment after this test.
+        unsafe { std::env::remove_var("VEM_DAEMON_SECRET_STORE") };
+        assert_eq!(status.kind, "protected_local_file");
+        assert_eq!(status.protection, protected_secret_protection_name());
     }
 
     #[tokio::test]
@@ -822,5 +837,26 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn protected_machine_store_recovers_provisioned_secret_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().to_path_buf();
+        let provisioned = ProtectedLocalSecretStore::new(data_dir.clone());
+        provisioned
+            .write_secret(MACHINE_SECRET_ACCOUNT, "machine-secret-after-restart")
+            .await
+            .unwrap();
+
+        let restarted = ProtectedLocalSecretStore::new(data_dir);
+        assert_eq!(
+            restarted
+                .read_secret(MACHINE_SECRET_ACCOUNT)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("machine-secret-after-restart"),
+        );
     }
 }
