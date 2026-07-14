@@ -110,7 +110,9 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
     },
   );
   daemonExit = new Promise((resolve) => {
-    daemon?.on("exit", () => resolve());
+    daemon?.on("exit", () => {
+      resolve();
+    });
   });
   daemon.stdout.on("data", (chunk) => {
     recordDaemonOutput("stdout", chunk);
@@ -165,7 +167,11 @@ test.afterAll(async () => {
     daemon.kill("SIGTERM");
     const stopped = await Promise.race([
       daemonExit?.then(() => true) ?? Promise.resolve(true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000)),
+      new Promise<false>((resolve) =>
+        setTimeout(() => {
+          resolve(false);
+        }, 5_000),
+      ),
     ]);
     if (!stopped) {
       daemon.kill("SIGKILL");
