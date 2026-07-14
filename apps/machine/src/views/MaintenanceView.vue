@@ -477,6 +477,12 @@ function boundDiagnosticString(
 
 onMounted(async () => {
   maintenanceViewMounted = true;
+  const handedOffSession =
+    daemonClient.getMaintenanceSessionForRoute("maintenance");
+  if (handedOffSession) {
+    setMaintenanceSession(handedOffSession);
+    maintenanceAuthentication.message = "已继续首次部署的维护会话。";
+  }
   removeMaintenanceSessionInvalidationListener =
     daemonClient.onMaintenanceSessionInvalidated(() => {
       clearMaintenanceSession();

@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import type {
   BringUpSnapshot,
   NetworkSettingsResponse,
+  SaleViewSnapshot,
   WifiNetwork,
 } from "@/daemon/schemas";
 
@@ -21,6 +22,19 @@ const router = useRouter();
 
 const claimForm = reactive({ claimCode: "" });
 const networkForm = reactive({ ssid: "", password: "", hidden: false });
+const stockAttestation = reactive({
+  attestationId: "",
+  planogramVersion: "",
+  confirmed: false,
+  loading: false,
+  slots: [] as Array<{
+    slotId: string;
+    slotCode: string;
+    sku: string;
+    quantity: number;
+    capacity: number;
+  }>,
+});
 const bringUp = ref<BringUpSnapshot | null>(null);
 const networkResult = ref<NetworkSettingsResponse | null>(null);
 const wifiNetworks = ref<WifiNetwork[]>([]);
@@ -49,6 +63,8 @@ const currentTaskNeedsMaintenanceSession = computed(() =>
     "claim_machine",
     "reclaim_machine",
     "attest_stock",
+    "resolve_topology",
+    "run_hardware_acceptance",
   ].includes(currentTask.value?.kind ?? ""),
 );
 const maintenanceSessionRequiredForReclaim = computed(
@@ -158,16 +174,139 @@ function progressLabel(step: BringUpProgressStep): string {
   return `${kindLabels[step.kind]} · ${statusLabels[step.status]}`;
 }
 
+function newPhysicalAttestationId(): string {
+  const randomId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`;
+  return `bring-up-stock-${randomId}`;
+}
+
+function resetPhysicalStockAttestation(): void {
+  stockAttestation.attestationId = "";
+  stockAttestation.planogramVersion = "";
+  stockAttestation.confirmed = false;
+  stockAttestation.slots = [];
+}
+
+function populatePhysicalStockAttestation(snapshot: SaleViewSnapshot): void {
+  const planogramVersion = snapshot.planogramVersion;
+  if (!planogramVersion || snapshot.items.length === 0) {
+    resetPhysicalStockAttestation();
+    statusMessage.value = "未读取到可盘点的有效货道，请先完成货道配置。";
+    return;
+  }
+  const retainEnteredQuantities =
+    stockAttestation.planogramVersion === planogramVersion &&
+    stockAttestation.slots.length === snapshot.items.length;
+  const enteredQuantities = new Map(
+    stockAttestation.slots.map((slot) => [slot.slotId, slot.quantity]),
+  );
+  stockAttestation.attestationId = retainEnteredQuantities
+    ? stockAttestation.attestationId
+    : newPhysicalAttestationId();
+  stockAttestation.planogramVersion = planogramVersion;
+  stockAttestation.confirmed = retainEnteredQuantities
+    ? stockAttestation.confirmed
+    : false;
+  stockAttestation.slots = snapshot.items.map((item) => ({
+    slotId: item.slotId,
+    slotCode: item.slotCode,
+    sku: item.sku,
+    quantity: retainEnteredQuantities
+      ? (enteredQuantities.get(item.slotId) ?? item.physicalStock)
+      : item.physicalStock,
+    capacity: item.capacity,
+  }));
+}
+
+async function loadPhysicalStockAttestation(): Promise<void> {
+  if (currentTask.value?.kind !== "attest_stock") {
+    resetPhysicalStockAttestation();
+    return;
+  }
+  stockAttestation.loading = true;
+  try {
+    populatePhysicalStockAttestation(await daemonClient.getSaleView());
+  } catch {
+    resetPhysicalStockAttestation();
+    statusMessage.value = "无法读取当前货道库存，请检查本机服务后重试。";
+  } finally {
+    stockAttestation.loading = false;
+  }
+}
+
+const physicalStockAttestationReady = computed(
+  () =>
+    stockAttestation.attestationId.length > 0 &&
+    stockAttestation.planogramVersion.length > 0 &&
+    stockAttestation.slots.length > 0 &&
+    stockAttestation.confirmed &&
+    stockAttestation.slots.every(
+      (slot) =>
+        Number.isInteger(slot.quantity) &&
+        slot.quantity >= 0 &&
+        slot.quantity <= slot.capacity,
+    ),
+);
+
 async function refreshBringUp(): Promise<void> {
   loading.value = true;
   try {
     bringUp.value = await daemonClient.getBringUp();
+    await loadPhysicalStockAttestation();
   } catch (error) {
     statusMessage.value =
       error instanceof Error ? error.message : "无法读取本机启动状态";
   } finally {
     loading.value = false;
   }
+}
+
+async function submitPhysicalStockAttestation(): Promise<void> {
+  const task = currentTask.value;
+  if (
+    !task ||
+    task.kind !== "attest_stock" ||
+    !canExecuteCurrentTask() ||
+    !physicalStockAttestationReady.value ||
+    submitting.value
+  ) {
+    return;
+  }
+  submitting.value = true;
+  try {
+    await daemonClient.executeBringUpTask(task, {
+      type: "record_stock",
+      attestation: {
+        attestationId: stockAttestation.attestationId,
+        planogramVersion: stockAttestation.planogramVersion,
+        operatorId: "front-panel",
+        slots: stockAttestation.slots.map((slot) => ({
+          slotId: slot.slotId,
+          slotCode: slot.slotCode,
+          sku: slot.sku,
+          quantity: Number(slot.quantity),
+          enabled: true,
+        })),
+      },
+    });
+    statusMessage.value = "实物库存已确认，正在读取下一项部署任务。";
+    await refreshBringUp();
+  } catch {
+    statusMessage.value = "实物库存确认失败，请核对每个货道后重试。";
+  } finally {
+    submitting.value = false;
+  }
+}
+
+async function continueProtectedMaintenance(): Promise<void> {
+  if (!daemonClient.handoffMaintenanceSessionToMaintenance()) {
+    maintenanceSessionAuthorized.value = false;
+    maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
+    return;
+  }
+  await router.replace({
+    path: "/maintenance",
+    query: { source: "protected-bring-up" },
+  });
 }
 
 async function loadWifiNetworks(): Promise<void> {
@@ -276,11 +415,8 @@ async function submitClaim(): Promise<void> {
 async function submitCurrentTask(): Promise<void> {
   if (!currentTask.value || submitting.value || !canExecuteCurrentTask())
     return;
-  if (
-    currentTask.value.intent === "open_maintenance" ||
-    currentTask.value.intent === "record_stock"
-  ) {
-    await router.replace("/maintenance");
+  if (currentTask.value.intent === "open_maintenance") {
+    await continueProtectedMaintenance();
     return;
   }
   if (currentTask.value.intent === "refresh_profile") {
@@ -433,6 +569,53 @@ onUnmounted(() => {
             </button>
           </form>
 
+          <form
+            v-else-if="currentTask?.kind === 'attest_stock'"
+            class="physical-stock-attestation"
+            @submit.prevent="submitPhysicalStockAttestation"
+          >
+            <div>
+              <h2>实物库存确认</h2>
+              <p>逐格填写现场实际数量；提交后将作为首次部署库存凭证。</p>
+            </div>
+            <p v-if="stockAttestation.loading">正在读取有效货道…</p>
+            <div v-else class="physical-stock-attestation__slots">
+              <label v-for="slot in stockAttestation.slots" :key="slot.slotId">
+                <span
+                  >{{ slot.slotCode }} 实际数量（{{ slot.sku }}，容量
+                  {{ slot.capacity }}）</span
+                >
+                <input
+                  v-model.number="slot.quantity"
+                  :aria-label="`${slot.slotCode} 实际数量`"
+                  class="kiosk-touch-target"
+                  inputmode="numeric"
+                  :max="slot.capacity"
+                  min="0"
+                  required
+                  step="1"
+                  type="number"
+                />
+              </label>
+            </div>
+            <label class="physical-stock-attestation__confirmation">
+              <input v-model="stockAttestation.confirmed" type="checkbox" />
+              <span>已逐格核对实物数量，并确认提交。</span>
+            </label>
+            <button
+              class="kiosk-touch-target primary-action"
+              type="submit"
+              :disabled="
+                !canExecuteCurrentTask() ||
+                !physicalStockAttestationReady ||
+                submitting ||
+                stockAttestation.loading
+              "
+            >
+              {{ submitting ? "正在提交实物库存" : "确认并提交实物库存" }}
+            </button>
+          </form>
+
           <button
             v-else-if="currentTask"
             class="kiosk-touch-target primary-action"
@@ -562,5 +745,19 @@ button {
 }
 .progress .revalidate {
   color: #fde68a;
+}
+.physical-stock-attestation__slots {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+.physical-stock-attestation__confirmation {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.physical-stock-attestation__confirmation input {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 </style>

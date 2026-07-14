@@ -448,6 +448,36 @@ describe("DaemonApiClient", () => {
     expect(daemonClient.currentMaintenanceSession).toBeNull();
   });
 
+  it("continues an explicit protected Bring-Up flow back to maintenance", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          sessionId: "continued-session",
+          expiresAt: "2030-07-14T12:00:00.000Z",
+          scopes: ["maintenance.mutate"],
+        }),
+        { status: 201 },
+      ),
+    );
+
+    await daemonClient.beginMaintenanceSession("2468");
+    expect(daemonClient.handoffMaintenanceSessionToBringUp()).toBe(true);
+    expect(daemonClient.handoffMaintenanceSessionToMaintenance()).toBe(true);
+    expect(daemonClient.getMaintenanceSessionForRoute("maintenance")).toEqual(
+      expect.objectContaining({ sessionId: "continued-session" }),
+    );
+    daemonClient.releaseMaintenanceSessionRoute("bring-up");
+    expect(daemonClient.currentMaintenanceSession).not.toBeNull();
+    daemonClient.releaseMaintenanceSessionRoute("maintenance");
+    expect(daemonClient.currentMaintenanceSession).toBeNull();
+  });
+
   it("adds Authorization header to requests", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

@@ -204,6 +204,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/check-windows-bringup-bundle.mjs",
+    owner: "machine-runtime",
+    category: "verifier-test guard",
+    workflows: ["smoke", "testbed workflows"],
+  },
+  {
+    path: "scripts/check-windows-bringup-bundle.test.mjs",
+    owner: "machine-runtime",
+    category: "verifier-test guard",
+    workflows: ["smoke", "testbed workflows"],
+  },
+  {
     path: "scripts/check-windows-oobe-registry.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -535,6 +547,18 @@ const DEFAULT_INVENTORY = [
 ];
 
 const DEFAULT_PUBLIC_RUNBOOKS = [
+  {
+    path: "public/windows-bringup-bundle.md",
+    scripts: [
+      "scripts/windows/vending-daemon-smoke.ps1",
+      "scripts/windows/setup-scheduled-tasks.ps1",
+    ],
+    requiredText: [
+      "Protected maintenance session for smoke",
+      "VEM_MAINTENANCE_PIN",
+      "same Factory/Testbed bootstrap",
+    ],
+  },
   {
     path: "public/customer-accessible-kiosk-lockdown.md",
     scripts: [

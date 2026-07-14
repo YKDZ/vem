@@ -295,6 +295,14 @@ export class DaemonApiClient {
     );
   }
 
+  getMaintenanceSessionForRoute(
+    route: MaintenanceSessionRouteScope,
+  ): MaintenanceSession | null {
+    return this.hasMaintenanceSessionForRoute(route)
+      ? this.currentMaintenanceSession
+      : null;
+  }
+
   async getHealth(): Promise<HealthSnapshot> {
     return healthSnapshotSchema.parse(await this.request("/healthz"));
   }
@@ -392,6 +400,14 @@ export class DaemonApiClient {
       return false;
     }
     this.maintenanceSessionRouteScope = "bring-up";
+    return true;
+  }
+
+  handoffMaintenanceSessionToMaintenance(): boolean {
+    if (!this.hasMaintenanceSessionForRoute("bring-up")) {
+      return false;
+    }
+    this.maintenanceSessionRouteScope = "maintenance";
     return true;
   }
 

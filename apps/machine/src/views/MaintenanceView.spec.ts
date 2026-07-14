@@ -26,6 +26,7 @@ const {
   beginMaintenanceSessionMock,
   clearMaintenanceSessionMock,
   handoffMaintenanceSessionToBringUpMock,
+  getMaintenanceSessionForRouteMock,
   releaseMaintenanceSessionRouteMock,
   onMaintenanceSessionInvalidatedMock,
   callTauriCommandMock,
@@ -52,6 +53,7 @@ const {
   beginMaintenanceSessionMock: vi.fn(),
   clearMaintenanceSessionMock: vi.fn(),
   handoffMaintenanceSessionToBringUpMock: vi.fn(),
+  getMaintenanceSessionForRouteMock: vi.fn(),
   releaseMaintenanceSessionRouteMock: vi.fn(),
   onMaintenanceSessionInvalidatedMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
@@ -94,6 +96,7 @@ vi.mock("@/daemon/client", () => ({
     beginMaintenanceSession: beginMaintenanceSessionMock,
     clearMaintenanceSession: clearMaintenanceSessionMock,
     handoffMaintenanceSessionToBringUp: handoffMaintenanceSessionToBringUpMock,
+    getMaintenanceSessionForRoute: getMaintenanceSessionForRouteMock,
     releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
     onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
   },
@@ -400,6 +403,7 @@ beforeEach(() => {
     scopes: ["maintenance.mutate"],
   });
   handoffMaintenanceSessionToBringUpMock.mockReturnValue(true);
+  getMaintenanceSessionForRouteMock.mockReturnValue(null);
   onMaintenanceSessionInvalidatedMock.mockImplementation(
     (listener: () => void) => {
       maintenanceSessionInvalidationListener = listener;
@@ -1543,6 +1547,25 @@ describe("MaintenanceView hardware config", () => {
         "lower controller must be healthy before clearing whole-machine lock",
       );
     });
+  });
+});
+
+describe("MaintenanceView protected route continuation", () => {
+  it("restores an explicit Bring-Up-to-Maintenance session without another PIN prompt", async () => {
+    getMaintenanceSessionForRouteMock.mockReturnValue({
+      sessionId: "continued-bring-up-session",
+      expiresAt: "2030-07-14T12:00:00.000Z",
+      scopes: ["maintenance.mutate"],
+    });
+
+    const host = await mountView();
+
+    expect(getMaintenanceSessionForRouteMock).toHaveBeenCalledWith(
+      "maintenance",
+    );
+    expect(host.textContent).toContain("已授权");
+    expect(host.textContent).toContain("已继续首次部署的维护会话。");
+    expect(host.textContent).not.toContain("验证并解锁");
   });
 });
 

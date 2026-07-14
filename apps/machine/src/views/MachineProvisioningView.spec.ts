@@ -8,10 +8,12 @@ const {
   routerReplaceMock,
   getBringUpMock,
   executeBringUpTaskMock,
+  getSaleViewMock,
   scanWifiNetworksMock,
   beginMaintenanceSessionMock,
   hasMaintenanceSessionForRouteMock,
   handoffMaintenanceSessionToBringUpMock,
+  handoffMaintenanceSessionToMaintenanceMock,
   onMaintenanceSessionInvalidatedMock,
   releaseMaintenanceSessionRouteMock,
 } = vi.hoisted(() => ({
@@ -19,10 +21,12 @@ const {
   routerReplaceMock: vi.fn(),
   getBringUpMock: vi.fn(),
   executeBringUpTaskMock: vi.fn(),
+  getSaleViewMock: vi.fn(),
   scanWifiNetworksMock: vi.fn(),
   beginMaintenanceSessionMock: vi.fn(),
   hasMaintenanceSessionForRouteMock: vi.fn(),
   handoffMaintenanceSessionToBringUpMock: vi.fn(),
+  handoffMaintenanceSessionToMaintenanceMock: vi.fn(),
   onMaintenanceSessionInvalidatedMock: vi.fn(),
   releaseMaintenanceSessionRouteMock: vi.fn(),
 }));
@@ -38,10 +42,13 @@ vi.mock("@/daemon/client", () => ({
   daemonClient: {
     getBringUp: getBringUpMock,
     executeBringUpTask: executeBringUpTaskMock,
+    getSaleView: getSaleViewMock,
     scanWifiNetworks: scanWifiNetworksMock,
     beginMaintenanceSession: beginMaintenanceSessionMock,
     hasMaintenanceSessionForRoute: hasMaintenanceSessionForRouteMock,
     handoffMaintenanceSessionToBringUp: handoffMaintenanceSessionToBringUpMock,
+    handoffMaintenanceSessionToMaintenance:
+      handoffMaintenanceSessionToMaintenanceMock,
     onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
     releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
   },
@@ -100,6 +107,42 @@ function provisionedConfig() {
   };
 }
 
+function saleView() {
+  return {
+    items: [
+      {
+        machineCode: "M001",
+        slotId: "550e8400-e29b-41d4-a716-446655440001",
+        slotCode: "A1",
+        layerNo: 1,
+        cellNo: 1,
+        inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+        variantId: "550e8400-e29b-41d4-a716-446655440003",
+        productId: "550e8400-e29b-41d4-a716-446655440004",
+        productName: "Mineral Water",
+        productDescription: null,
+        coverImageUrl: null,
+        categoryId: null,
+        categoryName: null,
+        sku: "WATER-001",
+        size: null,
+        color: null,
+        priceCents: 100,
+        productSortOrder: 1,
+        targetGender: null,
+        capacity: 8,
+        parLevel: 6,
+        physicalStock: 2,
+        saleableStock: 2,
+        slotSalesState: "needs_count",
+      },
+    ],
+    source: "local_stock",
+    planogramVersion: "PLAN-1",
+    lastUpdatedAt: "2026-07-14T00:00:00Z",
+  };
+}
+
 async function mountView(): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.append(host);
@@ -135,6 +178,7 @@ function buttonByText(host: HTMLElement, text: string): HTMLButtonElement {
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
+  getBringUpMock.mockReset();
   getBringUpMock.mockResolvedValue(snapshot());
   executeBringUpTaskMock.mockResolvedValue({
     status: "connected",
@@ -144,6 +188,7 @@ beforeEach(() => {
     operatorGuidance: "现场网络已连通",
     updatedAt: "2026-07-04T00:01:00Z",
   });
+  getSaleViewMock.mockResolvedValue(saleView());
   scanWifiNetworksMock.mockResolvedValue({
     networks: [
       {
@@ -157,6 +202,7 @@ beforeEach(() => {
   });
   hasMaintenanceSessionForRouteMock.mockReturnValue(true);
   handoffMaintenanceSessionToBringUpMock.mockReturnValue(true);
+  handoffMaintenanceSessionToMaintenanceMock.mockReturnValue(true);
   onMaintenanceSessionInvalidatedMock.mockReturnValue(() => undefined);
   beginMaintenanceSessionMock.mockImplementation(async () => {
     hasMaintenanceSessionForRouteMock.mockReturnValue(true);
@@ -424,6 +470,103 @@ describe("Bring-Up Console", () => {
     expect(host.textContent).not.toContain("无线网络密码");
   });
 
+  it("submits a PIN-gated physical stock attestation through the typed cursor without opening maintenance", async () => {
+    hasMaintenanceSessionForRouteMock.mockReturnValue(false);
+    getBringUpMock
+      .mockResolvedValueOnce(
+        snapshot({
+          state: "stock_attestation_required",
+          currentTask: {
+            contractVersion: 1,
+            taskId: "bring_up.attest_stock",
+            taskVersion: 1,
+            kind: "attest_stock",
+            intent: "record_stock",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "stock_attestation",
+              entryMode: "final_actual_quantities",
+            },
+          },
+          progress: [{ kind: "stock", status: "current", evidence: "durable" }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        snapshot({
+          state: "profile_applied",
+          currentTask: {
+            contractVersion: 1,
+            taskId: "bring_up.sync_profile",
+            taskVersion: 1,
+            kind: "sync_profile",
+            intent: "refresh_profile",
+            rotateMaintenanceIdentity: false,
+            projection: { type: "profile_sync" },
+          },
+          progress: [
+            { kind: "stock", status: "completed", evidence: "durable" },
+          ],
+        }),
+      );
+    executeBringUpTaskMock.mockResolvedValueOnce(saleView());
+    const host = await mountView();
+
+    expect(host.textContent).toContain("实物库存确认");
+    expect(host.textContent).toContain("A1");
+    expect(buttonByText(host, "确认并提交实物库存").disabled).toBe(true);
+
+    const pin = inputByLabel(host, "维护 PIN");
+    pin.value = "2468";
+    pin.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "验证维护 PIN").click();
+    await vi.waitFor(() => {
+      expect(beginMaintenanceSessionMock).toHaveBeenCalledWith("2468", []);
+    });
+
+    const quantity = inputByLabel(host, "A1 实际数量");
+    quantity.value = "5";
+    quantity.dispatchEvent(new Event("input"));
+    const confirmation = host.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    confirmation.checked = true;
+    confirmation.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    buttonByText(host, "确认并提交实物库存").click();
+    await vi.waitFor(() => {
+      expect(executeBringUpTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "bring_up.attest_stock",
+          kind: "attest_stock",
+          intent: "record_stock",
+        }),
+        {
+          type: "record_stock",
+          attestation: {
+            attestationId: expect.any(String),
+            planogramVersion: "PLAN-1",
+            operatorId: "front-panel",
+            slots: [
+              {
+                slotId: "550e8400-e29b-41d4-a716-446655440001",
+                slotCode: "A1",
+                sku: "WATER-001",
+                quantity: 5,
+                enabled: true,
+              },
+            ],
+          },
+        },
+      );
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("当前任务：同步运行档案");
+    });
+  });
+
   it("routes maintenance-owned tasks to maintenance instead of inventing a local completion", async () => {
     getBringUpMock.mockResolvedValue(
       snapshot({
@@ -444,7 +587,11 @@ describe("Bring-Up Console", () => {
 
     buttonByText(host, "前往维护控制台继续").click();
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+      expect(handoffMaintenanceSessionToMaintenanceMock).toHaveBeenCalledOnce();
+      expect(routerReplaceMock).toHaveBeenCalledWith({
+        path: "/maintenance",
+        query: { source: "protected-bring-up" },
+      });
     });
   });
 });

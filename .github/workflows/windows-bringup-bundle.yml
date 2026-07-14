@@ -23,6 +23,7 @@ on:
       - crates/**
       - packages/shared/**
       - scripts/windows/**
+      - public/windows-bringup-bundle.md
       - Cargo.lock
       - Cargo.toml
       - pnpm-lock.yaml
@@ -81,38 +82,7 @@ jobs:
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\vending-daemon-smoke.ps1") -Destination $scriptDir
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\setup-scheduled-tasks.ps1") -Destination $scriptDir
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\machine-config.bringup.example.json") -Destination (Join-Path $bundleRoot "machine-config.bringup.example.json")
-
-          $readme = @(
-            'VEM Windows bring-up bundle',
-            '',
-            'Contents:',
-            '- vending-daemon.exe',
-            '- machine.exe',
-            '- WebView2Loader.dll',
-            '- machine-config.bringup.example.json',
-            '- scripts/windows/vending-daemon-smoke.ps1',
-            '- scripts/windows/setup-scheduled-tasks.ps1',
-            '- VERSION.txt',
-            '',
-            'Install or update machine services/tasks:',
-            '  powershell -ExecutionPolicy Bypass -File C:\VEM\bringup\scripts\windows\setup-scheduled-tasks.ps1 -StartNow',
-            '',
-            'Before installing services or running field smoke:',
-            '1. Copy machine-config.bringup.example.json to C:\VEM\bringup\machine-config.json.',
-            '2. Fill machineCode, API/MQTT URLs, COM ports and scanner settings for the target machine.',
-            '3. Provision machineSecret, mqttSigningSecret and mqttPassword through the controlled field secret path. Do not store real secrets in this bundle.',
-            '4. setup-scheduled-tasks.ps1 seeds C:\ProgramData\VEM\vending-daemon\machine-config.json from C:\VEM\bringup\machine-config.json only when the ProgramData config does not already exist.',
-            '',
-            'Example:',
-            '  powershell -ExecutionPolicy Bypass -File C:\VEM\bringup\scripts\windows\vending-daemon-smoke.ps1 `',
-            '    -DaemonExe C:\VEM\bringup\vending-daemon.exe `',
-            '    -MachineUiExe C:\VEM\bringup\machine.exe `',
-            '    -DataDir C:\ProgramData\VEM\vending-daemon `',
-            '    -MachineConfig C:\VEM\bringup\machine-config.json `',
-            '    -ComPort COM3 `',
-            '    -ScannerPort COM4'
-          )
-          $readme | Set-Content -Encoding UTF8 (Join-Path $bundleRoot "README.txt")
+          Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "public\windows-bringup-bundle.md") -Destination (Join-Path $bundleRoot "README.md")
 
           $hashLines = Get-ChildItem -Path $bundleRoot -File -Recurse |
             Where-Object { $_.Name -ne "VERSION.txt" } |

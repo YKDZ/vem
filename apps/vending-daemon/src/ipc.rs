@@ -12914,25 +12914,47 @@ mod tests {
             .unwrap()
             .contains(&json!("PHYSICAL_STOCK_ATTESTATION_MISSING")));
 
+        let bring_up_before = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(
+            bring_up_before["currentTask"]["kind"], "attest_stock",
+            "production stock readiness must expose the typed attestation cursor"
+        );
+
         let attestation = post_json_with_maintenance(
             &app,
-            "/v1/stock/attestation",
+            "/v1/bring-up/tasks/execute",
             "token-1",
             json!({
-                "attestationId": "ATT-PROD-001",
-                "planogramVersion": "PLAN-PHYSICAL-ATTEST",
-                "operatorId": "operator-1",
-                "slots": [{
-                    "slotId": slot_id,
-                    "slotCode": "A1",
-                    "sku": "WATER-001",
-                    "quantity": 5,
-                    "enabled": true
-                }]
+                "contractVersion": bring_up_before["currentTask"]["contractVersion"],
+                "taskId": bring_up_before["currentTask"]["taskId"],
+                "taskVersion": bring_up_before["currentTask"]["taskVersion"],
+                "kind": bring_up_before["currentTask"]["kind"],
+                "intent": bring_up_before["currentTask"]["intent"],
+                "mutation": {
+                    "type": "record_stock",
+                    "attestation": {
+                        "attestationId": "ATT-PROD-001",
+                        "planogramVersion": "PLAN-PHYSICAL-ATTEST",
+                        "operatorId": "operator-1",
+                        "slots": [{
+                            "slotId": slot_id,
+                            "slotCode": "A1",
+                            "sku": "WATER-001",
+                            "quantity": 5,
+                            "enabled": true
+                        }]
+                    }
+                }
             }),
         )
         .await;
         assert_eq!(attestation.status(), StatusCode::CREATED);
+
+        let bring_up_after = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_ne!(
+            bring_up_after["currentTask"]["kind"], "attest_stock",
+            "typed attestation must advance the daemon-owned cursor"
+        );
 
         let readiness = app
             .oneshot(
