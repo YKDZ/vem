@@ -283,6 +283,11 @@ function runtimeAcceptanceFacts(overrides = {}) {
       url: "http://tauri.localhost/#/",
       sessionUser: "VEMKiosk",
       sessionId: 3,
+      processId: 500,
+      cdpAvailable: true,
+      cdpListenerProcessId: 600,
+      cdpListenerSessionId: 3,
+      cdpMachineAncestorProcessId: 500,
     },
     kioskDesktopEscape: {
       desktopVisible: false,
@@ -900,6 +905,9 @@ describe("win10-vem-e2e reset planning", () => {
         sessionId: 3,
         processId: 500,
         webView2ProcessId: null,
+        cdpListenerProcessId: null,
+        cdpListenerSessionId: null,
+        cdpMachineAncestorProcessId: null,
         cdpTargetId: null,
         cdpAvailable: true,
         error: "kiosk_webview_not_verified",
@@ -932,12 +940,35 @@ describe("win10-vem-e2e reset planning", () => {
       buildKioskRuntimeEvidence({
         activeSession,
         machineProcesses,
+        cdpListener: {
+          processId: 600,
+          sessionId: 3,
+          machineAncestorProcessId: 500,
+        },
         cdpTargets: [
           { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
         ],
       }).webviewRunning,
       true,
     );
+
+    for (const cdpListener of [
+      null,
+      { processId: 600, sessionId: 7, machineAncestorProcessId: 500 },
+      { processId: 600, sessionId: 3, machineAncestorProcessId: 999 },
+    ]) {
+      assert.equal(
+        buildKioskRuntimeEvidence({
+          activeSession,
+          machineProcesses,
+          cdpListener,
+          cdpTargets: [
+            { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
+          ],
+        }).webviewRunning,
+        false,
+      );
+    }
 
     assert.deepEqual(
       buildKioskRuntimeEvidence({
@@ -956,6 +987,9 @@ describe("win10-vem-e2e reset planning", () => {
         sessionId: 3,
         processId: 500,
         webView2ProcessId: 600,
+        cdpListenerProcessId: null,
+        cdpListenerSessionId: null,
+        cdpMachineAncestorProcessId: null,
         cdpTargetId: null,
         cdpAvailable: false,
         error: null,
@@ -3942,7 +3976,7 @@ describe("win10-vem-e2e reset planning", () => {
     }
   });
 
-  it("does not fail runtime-ready from missing or process-only desktop escape evidence", () => {
+  it("fails runtime-ready when desktop escape surfaces are not explicitly observed", () => {
     for (const kioskDesktopEscape of [
       undefined,
       {
@@ -3964,12 +3998,34 @@ describe("win10-vem-e2e reset planning", () => {
       );
 
       assert.deepEqual(report.result.runtimeReady, {
-        status: "passed",
-        asserted: true,
+        status: "failed",
+        asserted: false,
       });
       assert.ok(
-        !report.diagnostics.some((diagnostic) =>
-          diagnostic.code.startsWith("kiosk_"),
+        report.diagnostics.some((diagnostic) =>
+          diagnostic.code.endsWith("_observation_missing"),
+        ),
+      );
+    }
+  });
+
+  it("fails runtime-ready when CDP listener is not bound to machine.exe", () => {
+    for (const kioskRuntime of [
+      { ...runtimeAcceptanceFacts().kioskRuntime, cdpListenerProcessId: null },
+      { ...runtimeAcceptanceFacts().kioskRuntime, cdpListenerSessionId: 7 },
+      {
+        ...runtimeAcceptanceFacts().kioskRuntime,
+        cdpMachineAncestorProcessId: 999,
+      },
+    ]) {
+      const report = buildRuntimeAcceptanceReport(
+        runtimeAcceptanceFacts({ kioskRuntime }),
+      );
+      assert.equal(report.result.runtimeReady.status, "failed");
+      assert.ok(
+        report.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === "kiosk_cdp_process_binding_missing",
         ),
       );
     }

@@ -630,7 +630,11 @@ jobs:
             typeof kiosk.url !== "string" ||
             kiosk.url !== "http://tauri.localhost/#/" ||
             typeof kiosk.cdpTargetId !== "string" ||
-            !/^[A-Za-z0-9._:-]{8,256}$/.test(kiosk.cdpTargetId)
+            !/^[A-Za-z0-9._:-]{8,256}$/.test(kiosk.cdpTargetId) ||
+            !Number.isInteger(kiosk.processId) ||
+            !Number.isInteger(kiosk.cdpListenerProcessId) ||
+            kiosk.cdpListenerSessionId !== kiosk.sessionId ||
+            kiosk.cdpMachineAncestorProcessId !== kiosk.processId
           ) throw new Error("runtime acceptance did not observe an active VEMKiosk session");
           process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_USER=${kiosk.sessionUser}\n`);
           process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_ID=${kiosk.sessionId}\n`);

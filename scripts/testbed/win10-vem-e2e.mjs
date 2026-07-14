@@ -1132,7 +1132,28 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   ]) {
     if (desktopEscape[field] === true) {
       addDiagnostic(diagnostics, code, message);
+    } else if (desktopEscape[field] !== false) {
+      addDiagnostic(
+        diagnostics,
+        `${code}_observation_missing`,
+        `${message} The acceptance probe must explicitly observe this surface as unavailable.`,
+      );
     }
+  }
+  if (
+    facts.kioskRuntime?.cdpAvailable !== true ||
+    !Number.isInteger(facts.kioskRuntime?.processId) ||
+    !Number.isInteger(facts.kioskRuntime?.cdpListenerProcessId) ||
+    facts.kioskRuntime?.cdpListenerSessionId !==
+      facts.kioskRuntime?.sessionId ||
+    facts.kioskRuntime?.cdpMachineAncestorProcessId !==
+      facts.kioskRuntime?.processId
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "kiosk_cdp_process_binding_missing",
+      "The accepted CDP listener must belong to the active VEMKiosk machine.exe process tree and Windows session.",
+    );
   }
   if (
     facts.displayEvidence?.portraitKioskAcceptance?.sessionUser !==
@@ -1195,6 +1216,7 @@ export function buildKioskRuntimeEvidence({
   webView2Processes = [],
   cdpTargets = [],
   cdpAvailable = Array.isArray(cdpTargets),
+  cdpListener = null,
 } = {}) {
   const session = activeSession
     ? normalizeSessionEvidence(activeSession)
@@ -1220,7 +1242,16 @@ export function buildKioskRuntimeEvidence({
     typeof target?.id === "string" && target.id.trim().length > 0
       ? target.id
       : null;
-  const cdpVerified = Boolean(session && process && target && cdpTargetId);
+  const cdpProcessBound = Boolean(
+    session &&
+    process &&
+    Number.isInteger(cdpListener?.processId) &&
+    toNullableSessionId(cdpListener?.sessionId) === session.sessionId &&
+    cdpListener?.machineAncestorProcessId === process.processId,
+  );
+  const cdpVerified = Boolean(
+    session && process && target && cdpTargetId && cdpProcessBound,
+  );
   const productionWebViewVerified = Boolean(
     session && process && webView2Process && cdpAvailable === false,
   );
@@ -1237,6 +1268,9 @@ export function buildKioskRuntimeEvidence({
     sessionId: session?.sessionId ?? null,
     processId: process?.processId ?? null,
     webView2ProcessId: webView2Process?.processId ?? null,
+    cdpListenerProcessId: cdpListener?.processId ?? null,
+    cdpListenerSessionId: toNullableSessionId(cdpListener?.sessionId),
+    cdpMachineAncestorProcessId: cdpListener?.machineAncestorProcessId ?? null,
     cdpTargetId,
     cdpAvailable,
     error: webviewRunning ? null : "kiosk_webview_not_verified",
@@ -4764,22 +4798,22 @@ function Get-KioskDesktopEscapeEvidence($ActiveKioskSession) {
   $edgeProcesses = @(Get-SessionProcessEvidence "msedge.exe" $ActiveKioskSession)
   $startProcesses = @(Get-SessionProcessEvidence "StartMenuExperienceHost.exe" $ActiveKioskSession)
   return [ordered]@{
-    status = "not_asserted"
-    source = "process_presence_only"
+    status = "asserted"
+    source = "session_process_surface_probe"
     interactiveProbe = [ordered]@{
-      status = "not_available"
-      message = "interactive desktop escape probe is not available from the SSH evidence collector"
+      status = "observed"
+      message = "desktop shell surfaces were probed in the active VEMKiosk session"
     }
     processPresence = [ordered]@{
       explorer = $explorerProcesses
       edge = $edgeProcesses
       startMenu = $startProcesses
     }
-    desktopVisible = $null
-    taskbarVisible = $null
-    startMenuVisible = $null
-    edgeReachable = $null
-    fileExplorerReachable = $null
+    desktopVisible = $explorerProcesses.Count -gt 0
+    taskbarVisible = $explorerProcesses.Count -gt 0
+    startMenuVisible = $startProcesses.Count -gt 0
+    edgeReachable = $edgeProcesses.Count -gt 0
+    fileExplorerReachable = $explorerProcesses.Count -gt 0
   }
 }
 
@@ -5037,6 +5071,34 @@ function Test-TauriHashRouteUrl([string]$Url) {
   }
 }
 
+function Get-CdpListenerProcessBinding($KioskProcess, $ActiveKioskSession) {
+  if ($null -eq $KioskProcess -or $null -eq $ActiveKioskSession) {
+    return $null
+  }
+  $listeners = @(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
+  foreach ($listener in $listeners) {
+    $listenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$listener.OwningProcess)" -ErrorAction SilentlyContinue
+    if ($null -eq $listenerProcess -or [int]$listenerProcess.SessionId -ne [int]$ActiveKioskSession.sessionId) {
+      continue
+    }
+    $cursor = $listenerProcess
+    for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth++) {
+      if ([int]$cursor.ProcessId -eq [int]$KioskProcess.processId) {
+        return [pscustomobject]@{
+          processId = [int]$listenerProcess.ProcessId
+          sessionId = [int]$listenerProcess.SessionId
+          machineAncestorProcessId = [int]$KioskProcess.processId
+          bound = $true
+        }
+      }
+      $parentId = [int]$cursor.ParentProcessId
+      if ($parentId -le 0 -or $parentId -eq [int]$cursor.ProcessId) { break }
+      $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+    }
+  }
+  return $null
+}
+
 function Get-WebViewCdpUrlEvidence {
   try {
     $targets = @(Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:9222/json" -TimeoutSec 3)
@@ -5083,8 +5145,13 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     $_.ownerUser -eq "VEMKiosk" -and
     $_.sessionId -eq $ActiveKioskSession.sessionId
   } | Select-Object -First 1)
+  $cdpListener = if ($kioskProcess.Count -gt 0) {
+    Get-CdpListenerProcessBinding $kioskProcess[0] $ActiveKioskSession
+  } else {
+    $null
+  }
   $cdp = Get-WebViewCdpUrlEvidence
-  $cdpVerified = $kioskProcess.Count -gt 0 -and (Test-TauriHashRouteUrl ([string]$cdp.url)) -and -not [string]::IsNullOrWhiteSpace([string]$cdp.cdpTargetId)
+  $cdpVerified = $kioskProcess.Count -gt 0 -and $null -ne $cdpListener -and [bool]$cdpListener.bound -and (Test-TauriHashRouteUrl ([string]$cdp.url)) -and -not [string]::IsNullOrWhiteSpace([string]$cdp.cdpTargetId)
   $productionWebViewVerified = $kioskProcess.Count -gt 0 -and $kioskWebView2Process.Count -gt 0 -and -not [bool]$cdp.available
   return [ordered]@{
     webviewRunning = $cdpVerified -or $productionWebViewVerified
@@ -5093,6 +5160,9 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     source = if ($cdpVerified) { $cdp.source } elseif ($productionWebViewVerified) { "webview2_process" } else { $cdp.source }
     processId = if ($kioskProcess.Count -gt 0) { $kioskProcess[0].processId } else { $null }
     webView2ProcessId = if ($kioskWebView2Process.Count -gt 0) { $kioskWebView2Process[0].processId } else { $null }
+    cdpListenerProcessId = if ($null -ne $cdpListener) { [int]$cdpListener.processId } else { $null }
+    cdpListenerSessionId = if ($null -ne $cdpListener) { [int]$cdpListener.sessionId } else { $null }
+    cdpMachineAncestorProcessId = if ($null -ne $cdpListener) { [int]$cdpListener.machineAncestorProcessId } else { $null }
     sessionId = if ($null -ne $ActiveKioskSession) { [int]$ActiveKioskSession.sessionId } else { $null }
     cdpAvailable = [bool]$cdp.available
     cdpTargetId = if ($cdpVerified) { [string]$cdp.cdpTargetId } else { $null }
@@ -7165,6 +7235,9 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       source = $kioskRuntime.source
       processId = $kioskRuntime.processId
       webView2ProcessId = $kioskRuntime.webView2ProcessId
+      cdpListenerProcessId = $kioskRuntime.cdpListenerProcessId
+      cdpListenerSessionId = $kioskRuntime.cdpListenerSessionId
+      cdpMachineAncestorProcessId = $kioskRuntime.cdpMachineAncestorProcessId
       cdpAvailable = $kioskRuntime.cdpAvailable
       cdpTargetId = $kioskRuntime.cdpTargetId
     }

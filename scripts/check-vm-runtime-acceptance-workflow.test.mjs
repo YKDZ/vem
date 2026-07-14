@@ -195,6 +195,15 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       acceptanceBlock,
       /--certificate\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519-cert\.pub"/,
     );
+    assert.match(acceptanceBlock, /kiosk\.cdpListenerProcessId/);
+    assert.match(
+      acceptanceBlock,
+      /kiosk\.cdpListenerSessionId !== kiosk\.sessionId/,
+    );
+    assert.match(
+      acceptanceBlock,
+      /kiosk\.cdpMachineAncestorProcessId !== kiosk\.processId/,
+    );
     assert.doesNotMatch(acceptanceBlock, /sshpass|SSHPASS/);
     assert.doesNotMatch(acceptanceBlock, /MAINTENANCE_RELAY_WINDOWS_SSH_HOST/);
     assert.doesNotMatch(workflow, /vm_wireguard_ip/);
