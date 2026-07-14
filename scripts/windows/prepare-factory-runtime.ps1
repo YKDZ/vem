@@ -11,6 +11,7 @@ param(
   [Parameter(Mandatory = $false)][string]$MachineUiArtifactPath,
   [Parameter(Mandatory = $false)][string]$MachineUiSha256,
   [Parameter(Mandatory = $false)][string]$EnvironmentName,
+  [Parameter(Mandatory = $false)][string]$DeploymentBatch,
   [Parameter(Mandatory = $false)][string]$ProvisioningEndpoint,
   [Parameter(Mandatory = $false)][string]$MqttUrl,
   [Parameter(Mandatory = $false)][ValidateSet("production", "simulated")][string]$HardwareMode,
@@ -66,6 +67,7 @@ function Assert-RequiredInputs {
       "MachineUiArtifactPath",
       "MachineUiSha256",
       "EnvironmentName",
+      "DeploymentBatch",
       "ProvisioningEndpoint",
       "MqttUrl",
       "HardwareMode",
@@ -899,6 +901,7 @@ function New-FactoryRuntimePlan {
     resetExistingVemState = [bool]$ResetExistingVemState
     inputs = [ordered]@{
       environmentName = $EnvironmentName
+      deploymentBatch = $DeploymentBatch
       provisioningEndpoint = $ProvisioningEndpoint
       hardwareMode = $HardwareMode
       hardwareModel = $HardwareModel
@@ -1446,6 +1449,7 @@ function Write-FactoryRuntimeFiles {
     createdAt = (Get-Date).ToUniversalTime().ToString("o")
     layoutVersion = $TargetLayoutVersion
     environmentName = $EnvironmentName
+    deploymentBatch = $DeploymentBatch
     provisioningEndpoint = $ProvisioningEndpoint
     factoryProfile = $Preflight.FactoryProfile
     personalization = $Preflight.PersonalizationRedaction
@@ -1524,7 +1528,9 @@ function Write-FactoryRuntimeFiles {
   }
   $daemonManifest = [ordered]@{
     layoutVersion = 1
-    environment = $EnvironmentName
+    # Merge preservation: FactoryProfile alone defines daemon environment;
+    # EnvironmentName and DeploymentBatch are human-readable deployment metadata.
+    environment = $Preflight.FactoryProfile
     provisioningEndpoint = $ProvisioningEndpoint
     hardwareMode = $HardwareMode
     hardwareModel = $HardwareModel
@@ -1538,6 +1544,7 @@ function Write-FactoryRuntimeFiles {
   $bringupSettings = [ordered]@{
     schemaVersion = "vem-local-bringup-settings/v1"
     environmentName = $EnvironmentName
+    deploymentBatch = $DeploymentBatch
     provisioningEndpoint = $ProvisioningEndpoint
     hardwareMode = $HardwareMode
     hardwareModel = $HardwareModel

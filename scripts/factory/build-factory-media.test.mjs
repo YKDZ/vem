@@ -784,6 +784,7 @@ async function fixture({
       schemaVersion: "vem-factory-preparation/v1",
       kind: "factory-preparation",
       environmentName: "fixture",
+      deploymentBatch: "fixture-batch",
       provisioningEndpoint: "http://platform.invalid/api",
       mqttUrl: "mqtt://platform.invalid:1883",
       hardware: {
@@ -1477,6 +1478,7 @@ describe("real deterministic Factory ISO builder", () => {
           "MachineUiArtifactPath",
           "MachineUiSha256",
           "EnvironmentName",
+          "DeploymentBatch",
           "ProvisioningEndpoint",
           "MqttUrl",
           "HardwareMode",

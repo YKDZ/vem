@@ -367,6 +367,7 @@ async function fixture() {
       schemaVersion: "vem-factory-preparation/v1",
       kind: "factory-preparation",
       environmentName: "fixture",
+      deploymentBatch: "fixture-batch",
       provisioningEndpoint: "http://platform.invalid/api",
       mqttUrl: "mqtt://platform.invalid:1883",
       hardware: {

@@ -62,6 +62,7 @@ const requiredPrepareParams = [
   "MachineUiArtifactPath",
   "MachineUiSha256",
   "EnvironmentName",
+  "DeploymentBatch",
   "ProvisioningEndpoint",
   "HardwareMode",
   "HardwareModel",
@@ -138,6 +139,18 @@ const verifierShellBlock = functionBlock(verifier, "Get-KioskShellEvidence");
 const setupVisionTaskBlock = topLevelTail(
   setupTasks,
   'Write-Host "[7/9] Configure VEM\\StartVisionServer logon task"',
+);
+
+addCheck(
+  "factory-profile-is-the-only-daemon-environment-source",
+  prepare.includes(
+    "# Merge preservation: FactoryProfile alone defines daemon environment;",
+  ) &&
+    prepare.includes("environment = $Preflight.FactoryProfile") &&
+    !prepare.includes("environment = $EnvironmentName") &&
+    prepare.includes("deploymentBatch = $DeploymentBatch") &&
+    verifier.includes("daemon factory manifest environment must match FactoryProfile"),
+  "Factory preparation must preserve FactoryProfile as the strict daemon environment while carrying human-readable name and batch metadata separately",
 );
 
 addCheck(

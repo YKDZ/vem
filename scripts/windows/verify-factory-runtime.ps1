@@ -1231,6 +1231,26 @@ if ($null -ne $manifest) {
     Add-Failure $failures "local bring-up settings missing: $settingsPath"
   }
 
+  $daemonFactoryManifestPath = "C:\ProgramData\VEM\factory\factory-manifest.json"
+  if (Test-Path -LiteralPath $daemonFactoryManifestPath -PathType Leaf) {
+    $daemonFactoryManifest = Read-JsonFile -Path $daemonFactoryManifestPath
+    $checks.daemonFactoryManifest = [ordered]@{
+      path = $daemonFactoryManifestPath
+      environment = $daemonFactoryManifest.environment
+      environmentName = $daemonFactoryManifest.environmentName
+      deploymentBatch = $daemonFactoryManifest.deploymentBatch
+    }
+    if ([string]$daemonFactoryManifest.environment -cne [string]$manifest.factoryProfile) {
+      Add-Failure $failures "daemon factory manifest environment must match FactoryProfile"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$daemonFactoryManifest.environmentName) -or
+        [string]::IsNullOrWhiteSpace([string]$daemonFactoryManifest.deploymentBatch)) {
+      Add-Failure $failures "daemon factory manifest must retain EnvironmentName and deploymentBatch metadata"
+    }
+  } else {
+    Add-Failure $failures "daemon factory manifest missing: $daemonFactoryManifestPath"
+  }
+
   $componentChecks = @()
   foreach ($component in @($manifest.components)) {
     $componentChecks += Assert-Sha256 -Path ([string]$component.targetPath) -ExpectedSha256 ([string]$component.sha256) -Failures $failures
