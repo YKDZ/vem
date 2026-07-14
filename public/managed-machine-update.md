@@ -5,7 +5,7 @@
 ## 范围
 
 - daemon 产物：`C:\VEM\bringup\vending-daemon.exe`
-- 机器 UI 产物：`C:\VEM\bringup\machine.exe`
+- 机器 UI 交付单元：`C:\VEM\bringup\machine.exe` 与 `C:\VEM\bringup\WebView2Loader.dll`
 - Vision Release Bundle：供应方原始不可变 bundle、descriptor、attestation、SBOM、provenance、conformance evidence 和 VEM approval
 - Vision 版本目录：`C:\VEM\vision\releases\<version>-<digest-prefix>`
 - Vision 外部配置与 current selection：`C:\ProgramData\VEM\vision`
@@ -21,7 +21,7 @@ daemon 或 UI 的受控传输仍使用 `scripts/windows/deploy-windows-artifact.
 
 Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式任务启动；更新只停止该任务和 VEM 记录的 Vision 子进程，不得停止 daemon 或机器 UI。
 
-更新器会把每个组件绑定到生产目标路径。`daemon` 只能替换 `C:\VEM\bringup\vending-daemon.exe`；`ui` 只能替换 `C:\VEM\bringup\machine.exe`。清单或直接调用如果提供了不同的 `targetPath`，会在替换前失败。省略 `targetPath` 时，使用所选组件允许的默认路径。
+更新器会把每个组件绑定到生产目标路径。`daemon` 只能替换 `C:\VEM\bringup\vending-daemon.exe`；`ui` 只能替换 `C:\VEM\bringup\machine.exe`。UI 清单还可携带唯一允许的 sidecar `C:\VEM\bringup\WebView2Loader.dll`。清单或直接调用如果提供了不同的 `targetPath`，会在替换前失败。省略 `targetPath` 时，使用所选组件允许的默认路径。
 
 ## 清单
 
@@ -41,13 +41,20 @@ Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式
       "component": "ui",
       "artifactPath": "C:\\VEM\\updates\\machine.exe",
       "sha256": "replace-with-64-hex-sha256",
-      "targetPath": "C:\\VEM\\bringup\\machine.exe"
+      "targetPath": "C:\\VEM\\bringup\\machine.exe",
+      "sidecars": [
+        {
+          "artifactPath": "C:\\VEM\\updates\\WebView2Loader.dll",
+          "sha256": "replace-with-64-hex-sha256",
+          "targetPath": "C:\\VEM\\bringup\\WebView2Loader.dll"
+        }
+      ]
     }
   ]
 }
 ```
 
-`updateId` 为必填，并会复制到证据 JSON。`components` 至少必须包含一个组件；空数组会被拒绝。
+`updateId` 为必填，并会复制到证据 JSON。`components` 至少必须包含一个组件；空数组会被拒绝。`sidecars` 只在 UI 清单模式中支持；省略它时旧的单文件 UI 清单保持兼容。更新器会在停止 UI 前验证并备份 UI 主程序和 sidecar，然后一次停止、整组替换、一次启动。
 
 在 Windows 主机上使用管理员 PowerShell 运行：
 
@@ -84,18 +91,18 @@ Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式
 
 - 请求的组件、产物路径、目标路径和预期 sha256
 - 清单 `updateId`
-- 旧可执行文件的备份路径
-- 已安装哈希
+- 旧可执行文件和 UI sidecar 的备份路径
+- 主程序和 sidecar 的已安装哈希
 - 更新后健康检查结果
 - 适用时的 rollbackAttempted、rollbackOk 和回滚健康详情
 
 daemon 健康通过 daemon ready 文件检查。`healthzUrl` 和 `readyzUrl` 都必须携带 ready 文件令牌并返回 HTTP 成功。证据会记录 `healthzOk`、`readyzOk`、daemon `status`、ready `mode`、ready `status` 和 `blockingCodes`。更新验收不要要求 `canSell=true`，因为真实机器可能正处于维护窗口或硬件未接入状态。
 
-机器 UI 健康检查会确认已部署目标哈希仍匹配请求的 SHA256，并且存在从 `C:\VEM\bringup\machine.exe` 精确路径运行的 `machine.exe` 进程。`Path` 为空或不同的机器进程不视为健康。
+机器 UI 健康检查会确认已部署主程序与清单中的 sidecar 哈希均匹配请求的 SHA256，并且存在从 `C:\VEM\bringup\machine.exe` 精确路径运行的 `machine.exe` 进程。`Path` 为空或不同的机器进程不视为健康。
 
 ## 回滚
 
-脚本会在替换前备份当前可执行文件。若替换、重启或健康检查失败，它会恢复备份，只重启受影响组件，并记录回滚证据。
+脚本会在替换前备份当前可执行文件。UI 清单包含 sidecar 时，主程序和 sidecar 是同一个原子交付单元；若任一替换、重启或健康检查失败，它会整组恢复备份，只重启 UI 一次，并记录回滚证据。
 
 UI 回滚使用与正常 UI 重启相同的启动模式解析。任务存在时可通过 `VEMMachineUI` 恢复；主机基于 Shell Launcher 或直接进程时，可通过直接启动 `machine.exe` 恢复。
 
