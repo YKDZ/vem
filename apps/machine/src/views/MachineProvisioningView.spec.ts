@@ -215,6 +215,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   mountedApp?.unmount();
   mountedApp = null;
   document.body.innerHTML = "";
@@ -576,6 +577,308 @@ describe("Bring-Up Console", () => {
       expect(host.textContent).toContain("PHYSICAL_STOCK_ATTESTATION_PENDING");
       expect(host.textContent).toContain("正在等待平台确认");
     });
+  });
+
+  it("keeps slot quantities editable when the daemon reports a missing attestation", async () => {
+    getBringUpMock.mockResolvedValue(
+      snapshot({
+        state: "stock_attestation_required",
+        diagnostics: [
+          {
+            code: "PHYSICAL_STOCK_ATTESTATION_MISSING",
+            component: "stock",
+            message: "physical stock attestation is missing",
+          },
+        ],
+        currentTask: {
+          contractVersion: 1,
+          taskId: "bring_up.attest_stock",
+          taskVersion: 1,
+          kind: "attest_stock",
+          intent: "record_stock",
+          rotateMaintenanceIdentity: false,
+          projection: {
+            type: "stock_attestation",
+            entryMode: "final_actual_quantities",
+          },
+        },
+        progress: [{ kind: "stock", status: "current", evidence: "durable" }],
+      }),
+    );
+
+    const host = await mountView();
+    const quantity = inputByLabel(host, "A1 实际数量");
+
+    expect(quantity.disabled).toBe(false);
+    expect(host.textContent).toContain("PHYSICAL_STOCK_ATTESTATION_MISSING");
+  });
+
+  it("preserves rejected slot quantities and submits the corrected count with a new attestation", async () => {
+    const stockTask = {
+      contractVersion: 1,
+      taskId: "bring_up.attest_stock",
+      taskVersion: 1,
+      kind: "attest_stock",
+      intent: "record_stock",
+      rotateMaintenanceIdentity: false,
+      projection: {
+        type: "stock_attestation",
+        entryMode: "final_actual_quantities",
+      },
+    };
+    getBringUpMock
+      .mockResolvedValueOnce(
+        snapshot({
+          state: "stock_attestation_required",
+          currentTask: stockTask,
+          progress: [{ kind: "stock", status: "current", evidence: "durable" }],
+        }),
+      )
+      .mockResolvedValue(
+        snapshot({
+          state: "stock_attestation_required",
+          diagnostics: [
+            {
+              code: "PHYSICAL_STOCK_ATTESTATION_REJECTED",
+              component: "stock",
+              message: "platform rejected the stock correction",
+            },
+          ],
+          currentTask: stockTask,
+          progress: [{ kind: "stock", status: "current", evidence: "durable" }],
+        }),
+      );
+    const host = await mountView();
+    const quantity = inputByLabel(host, "A1 实际数量");
+    quantity.value = "5";
+    quantity.dispatchEvent(new Event("input"));
+    const confirmation = host.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    confirmation.checked = true;
+    confirmation.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    buttonByText(host, "确认并提交实物库存").click();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("PHYSICAL_STOCK_ATTESTATION_REJECTED");
+    });
+    const correctedQuantity = inputByLabel(host, "A1 实际数量");
+    expect(correctedQuantity.value).toBe("5");
+    expect(correctedQuantity.disabled).toBe(false);
+
+    correctedQuantity.value = "4";
+    correctedQuantity.dispatchEvent(new Event("input"));
+    const correctedConfirmation = host.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    correctedConfirmation.checked = true;
+    correctedConfirmation.dispatchEvent(new Event("change"));
+    await nextTick();
+    buttonByText(host, "确认并提交实物库存").click();
+
+    await vi.waitFor(() => {
+      expect(executeBringUpTaskMock).toHaveBeenCalledTimes(2);
+    });
+    const first = executeBringUpTaskMock.mock.calls[0]?.[1] as {
+      attestation: {
+        attestationId: string;
+        slots: Array<{ quantity: number }>;
+      };
+    };
+    const second = executeBringUpTaskMock.mock.calls[1]?.[1] as {
+      attestation: {
+        attestationId: string;
+        slots: Array<{ quantity: number }>;
+      };
+    };
+    expect(second.attestation.attestationId).not.toBe(
+      first.attestation.attestationId,
+    );
+    expect(second.attestation.slots[0]?.quantity).toBe(4);
+  });
+
+  it("polls from a pending daemon snapshot after restart while keeping the stock form visible", async () => {
+    vi.useFakeTimers();
+    getBringUpMock
+      .mockResolvedValueOnce(
+        snapshot({
+          state: "stock_attestation_required",
+          diagnostics: [
+            {
+              code: "PHYSICAL_STOCK_ATTESTATION_PENDING",
+              component: "stock",
+              message: "awaiting Platform acknowledgement",
+            },
+          ],
+          currentTask: {
+            contractVersion: 1,
+            taskId: "bring_up.attest_stock",
+            taskVersion: 1,
+            kind: "attest_stock",
+            intent: "record_stock",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "stock_attestation",
+              entryMode: "final_actual_quantities",
+            },
+          },
+          progress: [{ kind: "stock", status: "current", evidence: "durable" }],
+        }),
+      )
+      .mockResolvedValue(
+        snapshot({
+          state: "runtime_ready",
+          diagnostics: [],
+          currentTask: {
+            contractVersion: 1,
+            taskId: "bring_up.sync_profile",
+            taskVersion: 1,
+            kind: "sync_profile",
+            intent: "refresh_profile",
+            rotateMaintenanceIdentity: false,
+            projection: { type: "profile_sync" },
+          },
+          progress: [
+            { kind: "stock", status: "completed", evidence: "durable" },
+          ],
+        }),
+      );
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    mountedApp = createApp(MachineProvisioningView);
+    mountedApp.use(createPinia());
+    mountedApp.mount(host);
+    await vi.advanceTimersByTimeAsync(0);
+    await nextTick();
+
+    expect(host.textContent).toContain("PHYSICAL_STOCK_ATTESTATION_PENDING");
+    expect(inputByLabel(host, "A1 实际数量").disabled).toBe(true);
+    expect(host.textContent).toContain("正在等待平台确认");
+    expect(getBringUpMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    await nextTick();
+
+    expect(getBringUpMock).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain("当前任务：同步运行档案");
+  });
+
+  it("retries the same attestation after a lost response when the daemon snapshot is missing", async () => {
+    getBringUpMock.mockResolvedValue(
+      snapshot({
+        state: "stock_attestation_required",
+        diagnostics: [
+          {
+            code: "PHYSICAL_STOCK_ATTESTATION_MISSING",
+            component: "stock",
+            message: "physical stock attestation is missing",
+          },
+        ],
+        currentTask: {
+          contractVersion: 1,
+          taskId: "bring_up.attest_stock",
+          taskVersion: 1,
+          kind: "attest_stock",
+          intent: "record_stock",
+          rotateMaintenanceIdentity: false,
+          projection: {
+            type: "stock_attestation",
+            entryMode: "final_actual_quantities",
+          },
+        },
+        progress: [{ kind: "stock", status: "current", evidence: "durable" }],
+      }),
+    );
+    executeBringUpTaskMock
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(saleView());
+    const host = await mountView();
+    const quantity = inputByLabel(host, "A1 实际数量");
+    quantity.value = "5";
+    quantity.dispatchEvent(new Event("input"));
+    const confirmation = host.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    confirmation.checked = true;
+    confirmation.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    buttonByText(host, "确认并提交实物库存").click();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("可保留当前数量并重试");
+    });
+    expect(buttonByText(host, "确认并提交实物库存").disabled).toBe(false);
+    buttonByText(host, "确认并提交实物库存").click();
+
+    await vi.waitFor(() => {
+      expect(executeBringUpTaskMock).toHaveBeenCalledTimes(2);
+    });
+    const attempts = executeBringUpTaskMock.mock.calls.map(
+      (call) =>
+        (call[1] as { attestation: { attestationId: string } }).attestation
+          .attestationId,
+    );
+    expect(attempts[1]).toBe(attempts[0]);
+  });
+
+  it("waits instead of resubmitting after a lost response when the daemon snapshot is pending", async () => {
+    const stockTask = {
+      contractVersion: 1,
+      taskId: "bring_up.attest_stock",
+      taskVersion: 1,
+      kind: "attest_stock",
+      intent: "record_stock",
+      rotateMaintenanceIdentity: false,
+      projection: {
+        type: "stock_attestation",
+        entryMode: "final_actual_quantities",
+      },
+    };
+    getBringUpMock
+      .mockResolvedValueOnce(
+        snapshot({
+          state: "stock_attestation_required",
+          currentTask: stockTask,
+          progress: [{ kind: "stock", status: "current", evidence: "durable" }],
+        }),
+      )
+      .mockResolvedValue(
+        snapshot({
+          state: "stock_attestation_required",
+          diagnostics: [
+            {
+              code: "PHYSICAL_STOCK_ATTESTATION_PENDING",
+              component: "stock",
+              message: "awaiting Platform acknowledgement",
+            },
+          ],
+          currentTask: stockTask,
+          progress: [{ kind: "stock", status: "current", evidence: "durable" }],
+        }),
+      );
+    executeBringUpTaskMock.mockRejectedValueOnce(new Error("response lost"));
+    const host = await mountView();
+    const quantity = inputByLabel(host, "A1 实际数量");
+    quantity.value = "5";
+    quantity.dispatchEvent(new Event("input"));
+    const confirmation = host.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    confirmation.checked = true;
+    confirmation.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    buttonByText(host, "确认并提交实物库存").click();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("已由本机服务确认为等待平台确认");
+    });
+
+    expect(inputByLabel(host, "A1 实际数量").disabled).toBe(true);
+    expect(buttonByText(host, "正在等待平台确认").disabled).toBe(true);
+    buttonByText(host, "正在等待平台确认").click();
+    expect(executeBringUpTaskMock).toHaveBeenCalledTimes(1);
   });
 
   it("routes maintenance-owned tasks to maintenance instead of inventing a local completion", async () => {

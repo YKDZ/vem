@@ -2651,6 +2651,16 @@ try {
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/stock\/attestation"/,
     );
+    assert.match(script, /function Wait-PlatformAcceptedStockAttestation/);
+    assert.match(
+      script,
+      /\$stockAcceptance = Wait-PlatformAcceptedStockAttestation/,
+    );
+    assert.match(
+      script,
+      /PHYSICAL_STOCK_ATTESTATION_PENDING.*must not expose saleable stock/s,
+    );
+    assert.match(script, /\$physicalStockAttestation\.status -eq "ready"/);
     assert.match(
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/create-order"/,
@@ -2702,6 +2712,18 @@ try {
         script.indexOf(
           'Invoke-IpcJson "POST" "$baseUrl/v1/stock/planogram/sync"',
         ),
+    );
+    assert.ok(
+      script.indexOf(
+        "$stockAcceptance = Wait-PlatformAcceptedStockAttestation",
+      ) <
+        script.indexOf(
+          'Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order"',
+        ),
+    );
+    assert.ok(
+      script.indexOf("$selectedItem = @($saleView.items") <
+        script.indexOf("platformMovementId ="),
     );
   });
 

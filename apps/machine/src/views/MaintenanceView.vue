@@ -647,6 +647,21 @@ function savePendingStockMovement(pending: PendingStockMovement | null): void {
 const pendingStockMovement = ref<PendingStockMovement | null>(
   loadPendingStockMovement(),
 );
+const stockMovementAwaitingResolution = computed(
+  () => pendingStockMovement.value !== null,
+);
+
+function restorePendingStockMovementForm(): void {
+  const pending = pendingStockMovement.value;
+  if (!pending) return;
+  stockForm.planogramVersion = pending.planogramVersion;
+  stockForm.slotId = pending.slotId;
+  stockForm.movementType = pending.movementType;
+  stockForm.quantity = pending.quantity;
+  stockForm.attributedTo = pending.attributedTo;
+  stockMaintenance.message =
+    "已恢复结果未知的库存动作；表单已锁定，请用原动作编号向本机服务查询并恢复。";
+}
 
 const adapters: HardwareAdapter[] = ["mock", "serial"];
 
@@ -1235,6 +1250,10 @@ async function refreshStockMaintenanceView(): Promise<void> {
       physicalStock: item.physicalStock,
       capacity: item.capacity,
     }));
+    if (pendingStockMovement.value) {
+      restorePendingStockMovementForm();
+      return;
+    }
     stockForm.planogramVersion =
       snapshot.planogramVersion ?? stockForm.planogramVersion;
     if (!stockForm.slotId && stockMaintenance.slots[0]) {
@@ -1263,27 +1282,21 @@ async function submitStockMovement(): Promise<void> {
     quantity: Number(stockForm.quantity),
     attributedTo: stockForm.attributedTo.trim() || "front-panel",
   } satisfies Omit<PendingStockMovement, "movementId">;
-  const pending =
-    pendingStockMovement.value &&
-    pendingStockMovement.value.planogramVersion ===
-      candidate.planogramVersion &&
-    pendingStockMovement.value.slotId === candidate.slotId &&
-    pendingStockMovement.value.movementType === candidate.movementType &&
-    pendingStockMovement.value.quantity === candidate.quantity &&
-    pendingStockMovement.value.attributedTo === candidate.attributedTo
-      ? pendingStockMovement.value
-      : { movementId: nextMovementId(), ...candidate };
+  const pending = pendingStockMovement.value ?? {
+    movementId: nextMovementId(),
+    ...candidate,
+  };
   pendingStockMovement.value = pending;
   savePendingStockMovement(pending);
   try {
     const snapshot = await daemonClient.recordStockMovement({
       movementId: pending.movementId,
-      planogramVersion: candidate.planogramVersion,
-      slotId: candidate.slotId,
-      movementType: candidate.movementType,
-      quantity: candidate.quantity,
+      planogramVersion: pending.planogramVersion,
+      slotId: pending.slotId,
+      movementType: pending.movementType,
+      quantity: pending.quantity,
       source: "local_maintenance",
-      attributedTo: candidate.attributedTo,
+      attributedTo: pending.attributedTo,
     });
     catalogStore.applySnapshot(snapshot);
     pendingStockMovement.value = null;
@@ -1480,7 +1493,10 @@ async function submitStockMovement(): Promise<void> {
                 >
                 <select
                   v-model="stockForm.movementType"
-                  :disabled="!maintenanceSessionAuthorized"
+                  :disabled="
+                    !maintenanceSessionAuthorized ||
+                    stockMovementAwaitingResolution
+                  "
                   class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
                 >
                   <option value="planned_refill">计划补货</option>
@@ -1491,7 +1507,10 @@ async function submitStockMovement(): Promise<void> {
                 <span class="text-sm font-semibold text-slate-200">数量</span>
                 <input
                   v-model.number="stockForm.quantity"
-                  :disabled="!maintenanceSessionAuthorized"
+                  :disabled="
+                    !maintenanceSessionAuthorized ||
+                    stockMovementAwaitingResolution
+                  "
                   class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
                   min="0"
                   step="1"
@@ -1506,7 +1525,10 @@ async function submitStockMovement(): Promise<void> {
               >
               <input
                 v-model="stockForm.planogramVersion"
-                :disabled="!maintenanceSessionAuthorized"
+                :disabled="
+                  !maintenanceSessionAuthorized ||
+                  stockMovementAwaitingResolution
+                "
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
               />
             </label>
@@ -1515,7 +1537,10 @@ async function submitStockMovement(): Promise<void> {
               <span class="text-sm font-semibold text-slate-200">货道</span>
               <select
                 v-model="stockForm.slotId"
-                :disabled="!maintenanceSessionAuthorized"
+                :disabled="
+                  !maintenanceSessionAuthorized ||
+                  stockMovementAwaitingResolution
+                "
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
               >
                 <option
@@ -1535,7 +1560,10 @@ async function submitStockMovement(): Promise<void> {
               <span class="text-sm font-semibold text-slate-200">记录人</span>
               <input
                 v-model="stockForm.attributedTo"
-                :disabled="!maintenanceSessionAuthorized"
+                :disabled="
+                  !maintenanceSessionAuthorized ||
+                  stockMovementAwaitingResolution
+                "
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
               />
             </label>
@@ -1559,7 +1587,11 @@ async function submitStockMovement(): Promise<void> {
                   !stockForm.slotId
                 "
               >
-                记录库存动作
+                {{
+                  stockMovementAwaitingResolution
+                    ? "查询并恢复待确认库存动作"
+                    : "记录库存动作"
+                }}
               </button>
             </div>
           </fieldset>

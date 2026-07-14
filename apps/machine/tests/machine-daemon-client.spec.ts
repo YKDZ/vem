@@ -1032,6 +1032,8 @@ test("record-stock UI PIN-gates and keeps the typed cursor pending for Platform 
   await expect(
     page.getByRole("button", { name: "正在等待平台确认" }),
   ).toBeDisabled();
+  await expect(page.getByLabel("A1 实际数量")).toBeVisible();
+  await expect(page.getByLabel("A1 实际数量")).toBeDisabled();
   expect(protectedBringUpRequests).toEqual([
     {
       maintenanceSession: "e2e-maintenance-session",
@@ -1062,6 +1064,13 @@ test("record-stock UI PIN-gates and keeps the typed cursor pending for Platform 
     },
   ]);
   await expect(page).not.toHaveURL(/#\/maintenance$/);
+
+  await page.reload();
+  await expect(
+    page.getByText("PHYSICAL_STOCK_ATTESTATION_PENDING", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByLabel("A1 实际数量")).toBeVisible();
+  await expect(page.getByLabel("A1 实际数量")).toBeDisabled();
 });
 
 test("sync backlog routes to catalog but displays degraded sync status", async ({

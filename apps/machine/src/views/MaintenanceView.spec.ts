@@ -533,12 +533,28 @@ it("makes MACHINE_AUTH_MISSING recovery usable in production after PIN verificat
 
 function submitButton(host: HTMLElement): HTMLButtonElement {
   const button = Array.from(host.querySelectorAll("button")).find((item) =>
-    item.textContent?.includes("记录库存动作"),
+    ["记录库存动作", "查询并恢复待确认库存动作"].some((text) =>
+      item.textContent?.includes(text),
+    ),
   );
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error("submit button not found");
   }
   return button;
+}
+
+function stockInputByLabel(
+  host: HTMLElement,
+  labelText: string,
+): HTMLInputElement {
+  const label = Array.from(host.querySelectorAll("label")).find((item) =>
+    item.textContent?.includes(labelText),
+  );
+  const input = label?.querySelector("input");
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`${labelText} stock input not found`);
+  }
+  return input;
 }
 
 function buttonByText(host: HTMLElement, text: string): HTMLButtonElement {
@@ -1667,5 +1683,64 @@ describe("MaintenanceView stock maintenance", () => {
     );
     expect(first.movementId).toMatch(/^LOCAL-/);
     expect(second.movementId).toBe(first.movementId);
+  });
+
+  it("restores and locks an unknown refill fingerprint until the daemon resolves its original key", async () => {
+    globalThis.localStorage.setItem(
+      "vem.machine.pending-stock-movement.v1",
+      JSON.stringify({
+        movementId: "LOCAL-PERSISTED-REFILL",
+        planogramVersion: "PLAN-1",
+        slotId: "550e8400-e29b-41d4-a716-446655440001",
+        movementType: "planned_refill",
+        quantity: 4,
+        attributedTo: "operator-restart",
+      }),
+    );
+    recordStockMovementMock
+      .mockRejectedValueOnce(new Error("result still unknown"))
+      .mockResolvedValueOnce(saleViewFixture());
+
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const quantity = stockInputByLabel(host, "数量");
+    const planogram = stockInputByLabel(host, "货道图版本");
+    const attributedTo = stockInputByLabel(host, "记录人");
+
+    expect(movementTypeSelect(host).value).toBe("planned_refill");
+    expect(quantity.value).toBe("4");
+    expect(planogram.value).toBe("PLAN-1");
+    expect(attributedTo.value).toBe("operator-restart");
+    expect(movementTypeSelect(host).disabled).toBe(true);
+    expect(quantity.disabled).toBe(true);
+    expect(planogram.disabled).toBe(true);
+    expect(attributedTo.disabled).toBe(true);
+    expect(host.textContent).toContain("查询并恢复待确认库存动作");
+
+    submitButton(host).click();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("result still unknown");
+    });
+    expect(quantity.disabled).toBe(true);
+    submitButton(host).click();
+
+    await vi.waitFor(() => {
+      expect(recordStockMovementMock).toHaveBeenCalledTimes(2);
+    });
+    for (const [body] of recordStockMovementMock.mock.calls) {
+      expect(body).toEqual(
+        expect.objectContaining({
+          movementId: "LOCAL-PERSISTED-REFILL",
+          planogramVersion: "PLAN-1",
+          slotId: "550e8400-e29b-41d4-a716-446655440001",
+          movementType: "planned_refill",
+          quantity: 4,
+          attributedTo: "operator-restart",
+        }),
+      );
+    }
+    await vi.waitFor(() => {
+      expect(quantity.disabled).toBe(false);
+    });
   });
 });

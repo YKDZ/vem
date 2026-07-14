@@ -12861,6 +12861,9 @@ mod tests {
     async fn physical_stock_attestation_endpoint_keeps_production_cursor_pending_until_platform_acknowledgement(
     ) {
         let server = MockServer::start().await;
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
+        let movement_id = format!("ATT-PROD-001:{slot_id}");
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -12881,6 +12884,26 @@ mod tests {
             })))
             .mount(&server)
             .await;
+        Mock::given(method("POST"))
+            .and(path("/machine-stock-movements"))
+            .and(body_partial_json(json!({ "movementId": movement_id })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "movementId": movement_id,
+                "status": "accepted",
+                "acceptedAt": "2026-07-14T00:00:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-AFTER-STOCK-ACK",
+                "nextAction": "wait_payment",
+                "orderStatus": "pending_payment",
+                "totalAmountCents": 100
+            })))
+            .mount(&server)
+            .await;
 
         let temp_dir = tempdir().expect("tmp");
         let ctx = test_ipc_context(
@@ -12891,9 +12914,7 @@ mod tests {
         )
         .await;
         mark_runtime_sale_ready(&ctx).await;
-        let app = build_router(ctx);
-        let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
-        let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
+        let app = build_router(ctx.clone());
 
         assert_eq!(
             post_json_with_maintenance(
@@ -12976,6 +12997,7 @@ mod tests {
         );
 
         let readiness = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
@@ -13000,6 +13022,81 @@ mod tests {
             .unwrap()
             .contains(&json!("PHYSICAL_STOCK_ATTESTATION_PENDING")));
         assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+
+        let pending_order = post_json_with_maintenance(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 1,
+                "planogramVersion": "PLAN-PHYSICAL-ATTEST",
+                "slotId": slot_id,
+                "slotCode": "A1",
+                "paymentMethod": "qr_code",
+                "paymentProviderCode": "wechat_pay",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(pending_order.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("recorded pending requests")
+                .iter()
+                .filter(|request| request.url.path() == "/machine-orders")
+                .count(),
+            0,
+            "pending stock acknowledgement must not reach Platform order creation"
+        );
+
+        let upload = crate::stock_upload::StockMovementUploadRuntime::new(
+            ctx.state.clone(),
+            ctx.ui.backend.clone(),
+            CancellationToken::new(),
+        );
+        let uploaded = upload.flush_due_once().await.expect("stock upload");
+        assert_eq!(uploaded.accepted, 1);
+        assert_eq!(uploaded.failed, 0);
+
+        let bring_up_accepted = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_ne!(
+            bring_up_accepted["currentTask"]["kind"], "attest_stock",
+            "Platform acceptance must advance the daemon-owned stock cursor"
+        );
+        let sale_view = get_ipc_json(&app, "/v1/sale-view", Some("token-1")).await;
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "sale_ready");
+        assert_eq!(sale_view["items"][0]["saleableStock"], 5);
+
+        let accepted_order = post_json_with_maintenance(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 1,
+                "planogramVersion": "PLAN-PHYSICAL-ATTEST",
+                "slotId": slot_id,
+                "slotCode": "A1",
+                "paymentMethod": "qr_code",
+                "paymentProviderCode": "wechat_pay",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(accepted_order.status(), StatusCode::OK);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("recorded accepted requests")
+                .iter()
+                .filter(|request| request.url.path() == "/machine-orders")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

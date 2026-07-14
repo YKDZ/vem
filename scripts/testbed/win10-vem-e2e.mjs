@@ -6806,6 +6806,53 @@ function Invoke-HardwareMappingFaultProbe(
   }
 }
 
+function Wait-PlatformAcceptedStockAttestation(
+  [string]$BaseUrl,
+  $Headers,
+  [string]$AttestationId,
+  [string]$PlanogramVersion
+) {
+  $deadline = [DateTime]::UtcNow.AddSeconds(120)
+  do {
+    $readiness = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-readiness" $Headers
+    $saleView = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-view" $Headers
+    $physicalStockAttestation = $readiness.components.physicalStockAttestation
+    $saleableSlots = @($saleView.items | Where-Object {
+      [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
+    })
+
+    if ([string]$physicalStockAttestation.status -eq "pending") {
+      if ($saleableSlots.Count -gt 0) {
+        throw "PHYSICAL_STOCK_ATTESTATION_PENDING must not expose saleable stock"
+      }
+    } elseif ([string]$physicalStockAttestation.status -eq "ready") {
+      if (
+        [string]$physicalStockAttestation.attestationId -ne $AttestationId -or
+        [string]$physicalStockAttestation.planogramVersion -ne $PlanogramVersion
+      ) {
+        throw "Platform accepted stock evidence does not match the submitted attestation"
+      }
+      if ($saleableSlots.Count -eq 0) {
+        throw "Platform accepted stock attestation did not produce a sale-ready slot"
+      }
+      return [ordered]@{
+        readiness = $readiness
+        saleView = $saleView
+        evidence = $physicalStockAttestation
+      }
+    } elseif (
+      [string]$physicalStockAttestation.code -eq "PHYSICAL_STOCK_ATTESTATION_REJECTED" -or
+      [string]$physicalStockAttestation.code -eq "PHYSICAL_STOCK_ATTESTATION_UPLOAD_FAILED"
+    ) {
+      throw "Platform rejected simulated stock attestation: $($physicalStockAttestation.message)"
+    }
+
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  throw "timed out waiting for Platform-accepted simulated stock attestation"
+}
+
 function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $reportPath = ${psString(SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE)}
   $contextPath = ${psString(SIMULATED_HARDWARE_SALE_CONTEXT_FILE)}
@@ -6934,11 +6981,21 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
         }
       })
     }
-    $attestation = Invoke-IpcJson "POST" "$baseUrl/v1/stock/attestation" $headers $attestationPayload
-    $saleView = Invoke-IpcJson "GET" "$baseUrl/v1/sale-view" $headers
+    $attestationSubmission = Invoke-IpcJson "POST" "$baseUrl/v1/stock/attestation" $headers $attestationPayload
+    $stockAcceptance = Wait-PlatformAcceptedStockAttestation $baseUrl $headers ([string]$attestationPayload.attestationId) ([string]$attestationPayload.planogramVersion)
+    $saleView = $stockAcceptance.saleView
     $selectedItem = @($saleView.items | Where-Object {
       [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
     } | Select-Object -First 1)
+    $attestation = [ordered]@{
+      attestationId = [string]$stockAcceptance.evidence.attestationId
+      accepted = $true
+      status = "accepted"
+      uploadStatus = "accepted"
+      acceptedAt = [string]$stockAcceptance.evidence.attestedAt
+      platformMovementId = ("{0}:{1}" -f [string]$stockAcceptance.evidence.attestationId, [string]$selectedItem.slotId)
+      submission = $attestationSubmission
+    }
     if ($selectedItem.Count -eq 0) {
       throw "sale view does not contain a sale-ready simulated slot after stock attestation"
     }
