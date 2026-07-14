@@ -120,6 +120,8 @@ function makeService(overrides: {
   }
   const vendingService: VendingService = {
     createAndDispatchCommands: vi.fn().mockResolvedValue(undefined),
+    createPendingDispatchCommands: vi.fn().mockResolvedValue([]),
+    dispatchPendingCommandsForOrder: vi.fn().mockResolvedValue([]),
     ...overrides.vendingService,
   } as unknown as VendingService;
   const inventoryService: InventoryService = {
@@ -376,7 +378,8 @@ describe("PaymentsService", () => {
 
   describe("applyProviderPaymentResult", () => {
     it("dispatches only once for duplicate providerEventId", async () => {
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const createPendingDispatchCommands = vi.fn().mockResolvedValue([]);
+      const dispatchPendingCommandsForOrder = vi.fn().mockResolvedValue([]);
       const db = makeDb();
       db.select
         .mockReturnValueOnce({
@@ -455,7 +458,10 @@ describe("PaymentsService", () => {
 
       const service = makeService({
         db,
-        vendingService: { createAndDispatchCommands },
+        vendingService: {
+          createPendingDispatchCommands,
+          dispatchPendingCommandsForOrder,
+        },
       });
 
       await service.applyProviderPaymentResult({
@@ -481,8 +487,10 @@ describe("PaymentsService", () => {
         rawPayload: {},
       });
 
-      expect(createAndDispatchCommands).toHaveBeenCalledTimes(1);
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+      expect(createPendingDispatchCommands).toHaveBeenCalledTimes(1);
+      expect(createPendingDispatchCommands).toHaveBeenCalledWith(db, "ord-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledTimes(1);
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith("ord-001");
     });
 
     it("does not dispatch when a late success arrives after cancellation", async () => {
@@ -706,8 +714,10 @@ describe("PaymentsService", () => {
       expect(queryPayment).not.toHaveBeenCalled();
     });
 
-    it("applies succeeded status and calls createAndDispatchCommands once", async () => {
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+    it("applies succeeded status and dispatches the durable command once", async () => {
+      const dispatchPendingCommandsForOrder = vi
+        .fn()
+        .mockResolvedValue(undefined);
       const queryPayment = vi.fn().mockResolvedValue({
         status: "succeeded",
         providerTradeNo: "TXN001",
@@ -805,13 +815,13 @@ describe("PaymentsService", () => {
           has: vi.fn().mockReturnValue(true),
           get: vi.fn().mockReturnValue(provider),
         } as unknown as PaymentProviderRegistry,
-        vendingService: { createAndDispatchCommands },
+        vendingService: { dispatchPendingCommandsForOrder },
       });
 
       const { reconciled } = await service.reconcilePendingPayments();
       expect(reconciled).toBe(1);
       expect(queryPayment).toHaveBeenCalledOnce();
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith("ord-001");
     });
 
     it("skips createAndDispatchCommands when status remains pending", async () => {
@@ -1459,7 +1469,9 @@ describe("PaymentsService", () => {
       const provider = { handleWebhook };
 
       const db = makeDb();
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const dispatchPendingCommandsForOrder = vi
+        .fn()
+        .mockResolvedValue(undefined);
       makePaymentSelectMock(db, [
         {
           id: "pay-001",
@@ -1498,7 +1510,7 @@ describe("PaymentsService", () => {
             },
           ]),
         },
-        vendingService: { createAndDispatchCommands },
+        vendingService: { dispatchPendingCommandsForOrder },
       });
 
       const result = await service.handleProviderWebhook(
@@ -1508,7 +1520,7 @@ describe("PaymentsService", () => {
         "",
       );
       expect(result).toMatchObject({ handled: true, duplicate: true });
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith("ord-001");
     });
 
     it("returns {handled:false,reason:'payment_not_found'} when paymentNo not in db", async () => {
@@ -1581,6 +1593,50 @@ describe("PaymentsService", () => {
         expect.objectContaining({
           candidateConfigs: [oldBoundConfig],
         }),
+      );
+    });
+
+    it("passes the payment's exact Alipay config binding into signature verification", async () => {
+      const handleWebhook = vi.fn().mockResolvedValue({
+        eventKind: "payment",
+        paymentNo: null,
+        eventType: "alipay.webhook",
+        providerEventId: "ALI-BOUND-VERIFY",
+        signatureValid: true,
+        paymentStatus: null,
+        rawPayload: {},
+      });
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi
+                .fn()
+                .mockResolvedValue([{ providerConfigId: "cfg-payment-bound" }]),
+            }),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listWebhookCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
+        },
+      });
+
+      await service.handleProviderWebhook(
+        "alipay",
+        {},
+        { out_trade_no: "PAY-BOUND-VERIFY" },
+        "out_trade_no=PAY-BOUND-VERIFY",
+      );
+
+      expect(handleWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedConfigId: "cfg-payment-bound" }),
       );
     });
 
@@ -2224,7 +2280,8 @@ describe("PaymentsService", () => {
     it("keeps reservations active and does not confirm inventory on payment success", async () => {
       const db = makeDb();
       const confirmReservation = vi.fn().mockResolvedValue(undefined);
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const createPendingDispatchCommands = vi.fn().mockResolvedValue([]);
+      const dispatchPendingCommandsForOrder = vi.fn().mockResolvedValue([]);
 
       db.select
         .mockReturnValueOnce({
@@ -2260,7 +2317,10 @@ describe("PaymentsService", () => {
       const service = makeService({
         db,
         inventoryService: { confirmReservation } as unknown as InventoryService,
-        vendingService: { createAndDispatchCommands },
+        vendingService: {
+          createPendingDispatchCommands,
+          dispatchPendingCommandsForOrder,
+        },
       });
 
       const result = await service.markMockSucceeded("PAY001", "admin-1");
@@ -2272,7 +2332,8 @@ describe("PaymentsService", () => {
         alreadyHandled: false,
       });
       expect(confirmReservation).not.toHaveBeenCalled();
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+      expect(createPendingDispatchCommands).toHaveBeenCalledWith(db, "ord-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith("ord-001");
     });
   });
 
@@ -2861,7 +2922,9 @@ describe("PaymentsService", () => {
         }),
       }));
 
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const dispatchPendingCommandsForOrder = vi
+        .fn()
+        .mockResolvedValue(undefined);
       const service = makeService({
         db,
         registry: {
@@ -2884,13 +2947,15 @@ describe("PaymentsService", () => {
             sensitiveConfigJson: {},
           }),
         },
-        vendingService: { createAndDispatchCommands },
+        vendingService: { dispatchPendingCommandsForOrder },
       });
 
       const result = await service.expireOverduePayments(now);
       expect(queryPayment).toHaveBeenCalled();
       expect(cancelPayment).not.toHaveBeenCalled();
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-exp-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith(
+        "ord-exp-001",
+      );
       expect(result.processed).toBeGreaterThanOrEqual(1);
       expect(insertedValues).toContainEqual(
         expect.objectContaining({

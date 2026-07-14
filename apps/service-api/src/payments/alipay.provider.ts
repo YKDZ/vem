@@ -552,13 +552,18 @@ function assertAlipayBody(value: unknown): Record<string, string> {
 function selectAlipayConfig(
   configs: PaymentProviderRuntimeConfig[],
   body: Record<string, string>,
+  expectedConfigId?: string | null,
 ): PaymentProviderRuntimeConfig {
   const appId = body["app_id"] ?? null;
-  const selected =
-    (appId ? configs.find((config) => config.appId === appId) : null) ??
-    configs[0];
+  const selected = expectedConfigId
+    ? configs.find((config) => config.id === expectedConfigId)
+    : ((appId ? configs.find((config) => config.appId === appId) : null) ??
+      configs[0]);
   if (!selected) {
     throw new UnauthorizedException("Alipay config not found for webhook");
+  }
+  if (appId && selected.appId && selected.appId !== appId) {
+    throw new UnauthorizedException("Alipay app id does not match binding");
   }
   return selected;
 }
@@ -949,7 +954,11 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const body = assertAlipayBody(input.body);
     const configs =
       input.candidateConfigs.length > 0 ? input.candidateConfigs : [];
-    const matchedRuntimeConfig = selectAlipayConfig(configs, body);
+    const matchedRuntimeConfig = selectAlipayConfig(
+      configs,
+      body,
+      input.expectedConfigId,
+    );
     const config = parseAlipayConfig(matchedRuntimeConfig);
     const sdk = createAlipaySdk(this.sdkFactory, config);
     if (!sdk.checkNotifySignV2(body)) {

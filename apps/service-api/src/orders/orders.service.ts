@@ -66,6 +66,8 @@ import {
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
+import type { PaymentReconciliationState } from "../payments/payment-provider.interface";
+
 import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
@@ -281,7 +283,42 @@ type ExistingPaymentCreation = LocalPaymentDraft & {
   intentCreationLeaseExpiresAt: Date | null;
   intentCreationLeaseOwnerToken: string | null;
   intentCreationLeaseFence: number;
+  failedReason: string | null;
 };
+
+const RECONCILIATION_RETRY_CLAIMED = "provider_trade_retry_claimed";
+
+/**
+ * Convert only the provider's durable TRADE_NOT_EXIST fact back into an
+ * intent-creation state. The update itself is the cross-process ownership
+ * claim; WAIT_BUYER_PAY and generic pending states cannot pass this CAS.
+ */
+export async function claimReconciledPaymentForIntentCreation(
+  db: DrizzleClient,
+  paymentId: string,
+): Promise<boolean> {
+  const reconciliationState: PaymentReconciliationState =
+    "provider_trade_not_exist";
+  const claimed = await db
+    .update(payments)
+    .set({
+      status: "processing",
+      failedReason: RECONCILIATION_RETRY_CLAIMED,
+      intentCreationLeaseExpiresAt: null,
+      intentCreationLeaseOwnerToken: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(payments.id, paymentId),
+        eq(payments.status, "pending"),
+        isNull(payments.paymentUrl),
+        eq(payments.failedReason, reconciliationState),
+      ),
+    )
+    .returning({ id: payments.id });
+  return claimed.length === 1;
+}
 
 type PaymentIntentLease = {
   ownerToken: string;
@@ -2530,6 +2567,7 @@ export class OrdersService {
         intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
         intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
         intentCreationLeaseFence: payments.intentCreationLeaseFence,
+        failedReason: payments.failedReason,
       })
       .from(orders)
       .innerJoin(payments, eq(payments.id, orders.paymentId))
@@ -2613,6 +2651,9 @@ export class OrdersService {
       });
     }
 
+    let mustClaimReconciledRetry =
+      existing.paymentStatus === "pending" &&
+      existing.failedReason === "provider_trade_not_exist";
     if (existing.paymentStatus === "processing") {
       const reconciliation =
         (await this.paymentsService?.reconcilePendingPaymentOnRead(
@@ -2637,6 +2678,20 @@ export class OrdersService {
           initialStatus: "processing",
         });
       }
+      mustClaimReconciledRetry = true;
+    }
+
+    if (
+      mustClaimReconciledRetry &&
+      !(await claimReconciledPaymentForIntentCreation(
+        this.db,
+        existing.paymentId,
+      ))
+    ) {
+      return this.toPaymentCreationResponse(existing, {
+        paymentUrl: "",
+        initialStatus: "processing",
+      });
     }
 
     const config = await this.resolveExistingPaymentConfig(existing);
@@ -2758,6 +2813,7 @@ export class OrdersService {
         .update(payments)
         .set({
           status: initialStatus,
+          failedReason: null,
           providerTradeNo: intent.providerTradeNo,
           paymentUrl: intent.paymentUrl,
           expiresAt: draft.expiresAt,

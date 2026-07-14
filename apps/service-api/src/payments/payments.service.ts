@@ -438,6 +438,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         }
       }
 
+      await this.vendingService.createPendingDispatchCommands(tx, row.orderId);
+
       return {
         paymentNo: row.paymentNo,
         paymentId: row.paymentId,
@@ -448,7 +450,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (!transition.alreadyHandled) {
-      await this.vendingService.createAndDispatchCommands(transition.orderId);
+      await this.vendingService.dispatchPendingCommandsForOrder(
+        transition.orderId,
+      );
       await this.auditService.record({
         adminUserId,
         action: "payments.mock.succeed",
@@ -670,7 +674,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               );
               if (applied) {
                 await this.vendingService
-                  .createAndDispatchCommands(payment.orderId)
+                  .dispatchPendingCommandsForOrder(payment.orderId)
                   .catch((_err: unknown) => {
                     // ignore dispatch errors
                   });
@@ -1480,6 +1484,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     const candidateConfigs = await this.paymentProviderConfigService
       .listWebhookCandidateConfigsForProvider(providerCode)
       .catch(() => []);
+    const expectedConfigId = await this.findWebhookExpectedConfigId(
+      providerCode,
+      body,
+    );
 
     let webhook: Awaited<
       ReturnType<NonNullable<typeof provider.handleWebhook>>
@@ -1490,6 +1498,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         body,
         rawBodyText: computedRawBodyText,
         candidateConfigs,
+        expectedConfigId,
       });
     } catch (err) {
       const isUnauthorized =
@@ -1537,6 +1546,38 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       failureReason: "invalid_body",
     });
     return { handled: false, reason: "unknown_event_kind" };
+  }
+
+  private async findWebhookExpectedConfigId(
+    providerCode: string,
+    body: unknown,
+  ): Promise<string | null | undefined> {
+    if (
+      providerCode !== "alipay" ||
+      typeof body !== "object" ||
+      body === null
+    ) {
+      return undefined;
+    }
+    const rawPaymentNo = Reflect.get(body, "out_trade_no");
+    const paymentNo = Array.isArray(rawPaymentNo)
+      ? rawPaymentNo[0]
+      : rawPaymentNo;
+    if (typeof paymentNo !== "string" || paymentNo.length === 0) {
+      return undefined;
+    }
+    const [binding] = await this.db
+      .select({ providerConfigId: payments.paymentProviderConfigId })
+      .from(payments)
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(
+        and(
+          eq(payments.paymentNo, paymentNo),
+          eq(paymentProviders.code, providerCode),
+        ),
+      )
+      .limit(1);
+    return binding?.providerConfigId;
   }
 
   private async handlePaymentWebhook(
@@ -1794,13 +1835,17 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           });
         }
 
+        await this.vendingService.createPendingDispatchCommands(tx, r.orderId);
+
         return { duplicate: false, orderId: r.orderId, shouldDispatch: true };
       });
 
       duplicate = transition?.duplicate ?? false;
 
       if (transition?.shouldDispatch && transition.orderId) {
-        await this.vendingService.createAndDispatchCommands(transition.orderId);
+        await this.vendingService.dispatchPendingCommandsForOrder(
+          transition.orderId,
+        );
       }
     }
 
@@ -1876,7 +1921,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       // provider redelivery; it joins an existing command rather than issuing
       // a second dispense command.
       if (webhook.paymentStatus === "succeeded") {
-        await this.vendingService.createAndDispatchCommands(payment.orderId);
+        await this.vendingService.dispatchPendingCommandsForOrder(
+          payment.orderId,
+        );
       }
       await this.webhookAttemptRecorder.finish({
         attemptId,
@@ -2270,7 +2317,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             reconciled += 1;
             if (providerStatus === "succeeded") {
               await this.vendingService
-                .createAndDispatchCommands(payment.orderId)
+                .dispatchPendingCommandsForOrder(payment.orderId)
                 .catch((_err: unknown) => {
                   // ignore dispatch errors during reconciliation
                 });
@@ -2550,7 +2597,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     if (applied && finalStatus === "succeeded") {
       await this.vendingService
-        .createAndDispatchCommands(payment.orderId)
+        .dispatchPendingCommandsForOrder(payment.orderId)
         // oxlint-disable-next-line no-empty-function -- polling path should not fail the caller
         .catch(() => {});
     }
@@ -2599,7 +2646,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       (await this.canDispatchPaymentSuccess(row.orderId))
     ) {
       await this.vendingService
-        .createAndDispatchCommands(row.orderId)
+        .dispatchPendingCommandsForOrder(row.orderId)
         .catch((_err: unknown) => {
           // keep payment success durable even if dispatch has a transient failure
         });
@@ -2721,6 +2768,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             reason: "reconcile_succeeded",
           });
         }
+        await this.vendingService.createPendingDispatchCommands(tx, orderId);
       } else {
         await tx
           .update(payments)
@@ -3988,7 +4036,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       (await this.canDispatchPaymentSuccess(payment.orderId))
     ) {
       await this.vendingService
-        .createAndDispatchCommands(payment.orderId)
+        .dispatchPendingCommandsForOrder(payment.orderId)
         // oxlint-disable-next-line no-empty-function -- fire-and-forget; vending failures are handled by reconciliation
         .catch(() => {});
     }

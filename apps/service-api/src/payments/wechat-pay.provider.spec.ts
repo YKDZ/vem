@@ -511,6 +511,61 @@ describe("WeChatPayProvider", () => {
       vi.unstubAllGlobals();
     });
 
+    it("keeps the V3 deadline active while the response body is streaming", async () => {
+      vi.useFakeTimers();
+      const signedResponse = createSignedApiResponse(
+        { code_url: "weixin://wxpay/bizpayurl?pr=slow-body" },
+        platformPrivateKey,
+      );
+      const fetchSpy = vi
+        .fn()
+        .mockImplementation((_url: string, init: RequestInit) =>
+          Promise.resolve({
+            ok: signedResponse.ok,
+            status: signedResponse.status,
+            headers: signedResponse.headers,
+            text: () =>
+              new Promise<string>((resolve, reject) => {
+                const bodyTimer = setTimeout(() => {
+                  void signedResponse.text().then(resolve, reject);
+                }, 10);
+                init.signal?.addEventListener("abort", () => {
+                  clearTimeout(bodyTimer);
+                  reject(new Error("response body aborted"));
+                });
+              }),
+          } as Response),
+        );
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const outcome = provider
+        .createPaymentIntent({
+          config: makeConfig({
+            publicConfigJson: {
+              ...makeConfig().publicConfigJson,
+              requestTimeoutMs: 1,
+            },
+          }),
+          paymentNo: "PAY_TIMEOUT_BODY_001",
+          orderNo: "ORD_TIMEOUT_BODY_001",
+          amountCents: 100,
+          expiresAt: new Date(Date.now() + 900_000),
+        })
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      await vi.advanceTimersByTimeAsync(10);
+
+      const error = await outcome;
+      expect(error).toBeInstanceOf(Error);
+      expect(error instanceof Error ? error.message : "").toContain(
+        "WeChat Pay request timed out after 1ms",
+      );
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
     it("Authorization serial_no uses merchantCertificateSerialNo not platformCertificateSerialNo", async () => {
       const fetchSpy = vi
         .fn()

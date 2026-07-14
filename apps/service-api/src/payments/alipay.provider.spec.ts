@@ -928,6 +928,120 @@ describe("AlipayProvider", () => {
     });
   });
 
+  it("selects the exact payment binding when rotated configs share an appId", async () => {
+    const oldSdk: AlipaySdkLike = {
+      curl: vi.fn(),
+      exec: vi.fn(),
+      checkNotifySignV2: vi.fn().mockReturnValue(true),
+    };
+    const rotatedSdk: AlipaySdkLike = {
+      curl: vi.fn(),
+      exec: vi.fn(),
+      checkNotifySignV2: vi.fn().mockReturnValue(false),
+    };
+    const factory = {
+      create: vi.fn((options: { privateKey: string }) =>
+        options.privateKey.includes("OLD") ? oldSdk : rotatedSdk,
+      ),
+    } as unknown as AlipaySdkClientFactory;
+    const provider = new AlipayProvider(factory);
+    const shared = {
+      appId: "2021000123456789",
+      merchantNo: "2088123456789012",
+    };
+    const body = {
+      notify_id: "notify-shared-app",
+      app_id: shared.appId,
+      seller_id: shared.merchantNo,
+      out_trade_no: "PAY-SHARED-APP",
+      trade_no: "ALI-SHARED-APP",
+      total_amount: "1.00",
+      trade_status: "TRADE_SUCCESS",
+      sign: "signed-with-old-cert",
+    };
+
+    await expect(
+      provider.handleWebhook({
+        headers: {},
+        body,
+        rawBodyText: new URLSearchParams(body).toString(),
+        expectedConfigId: "cfg-old",
+        candidateConfigs: [
+          makeRuntimeConfig({
+            ...shared,
+            id: "cfg-rotated",
+            sensitiveConfigJson: {
+              ...makeRuntimeConfig().sensitiveConfigJson,
+              privateKeyPem: "ROTATED PRIVATE KEY",
+            },
+          }),
+          makeRuntimeConfig({
+            ...shared,
+            id: "cfg-old",
+            sensitiveConfigJson: {
+              ...makeRuntimeConfig().sensitiveConfigJson,
+              privateKeyPem: "OLD PRIVATE KEY",
+            },
+          }),
+        ],
+      }),
+    ).resolves.toMatchObject({ matchedConfigId: "cfg-old" });
+    expect(oldSdk.checkNotifySignV2).toHaveBeenCalledWith(body);
+    expect(rotatedSdk.checkNotifySignV2).not.toHaveBeenCalled();
+  });
+
+  it("rejects a shared-app callback signed by a different config binding", async () => {
+    const boundSdk = {
+      curl: vi.fn(),
+      exec: vi.fn(),
+      checkNotifySignV2: vi.fn().mockReturnValue(false),
+    } as unknown as AlipaySdkLike;
+    const otherSdk = {
+      curl: vi.fn(),
+      exec: vi.fn(),
+      checkNotifySignV2: vi.fn().mockReturnValue(true),
+    } as unknown as AlipaySdkLike;
+    const factory = {
+      create: vi.fn((options: { privateKey: string }) =>
+        options.privateKey.includes("BOUND") ? boundSdk : otherSdk,
+      ),
+    } as unknown as AlipaySdkClientFactory;
+    const provider = new AlipayProvider(factory);
+    const body = {
+      app_id: "2021000123456789",
+      out_trade_no: "PAY-CROSS-BINDING",
+      trade_status: "TRADE_SUCCESS",
+      sign: "signed-by-other-binding",
+    };
+
+    await expect(
+      provider.handleWebhook({
+        headers: {},
+        body,
+        rawBodyText: new URLSearchParams(body).toString(),
+        expectedConfigId: "cfg-bound",
+        candidateConfigs: [
+          makeRuntimeConfig({
+            id: "cfg-other",
+            sensitiveConfigJson: {
+              ...makeRuntimeConfig().sensitiveConfigJson,
+              privateKeyPem: "OTHER PRIVATE KEY",
+            },
+          }),
+          makeRuntimeConfig({
+            id: "cfg-bound",
+            sensitiveConfigJson: {
+              ...makeRuntimeConfig().sensitiveConfigJson,
+              privateKeyPem: "BOUND PRIVATE KEY",
+            },
+          }),
+        ],
+      }),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(boundSdk.checkNotifySignV2).toHaveBeenCalledWith(body);
+    expect(otherSdk.checkNotifySignV2).not.toHaveBeenCalled();
+  });
+
   it("rejects async notification when checkNotifySignV2 returns false", async () => {
     const { factory } = makeSdk({
       checkNotifySignV2: vi.fn().mockReturnValue(false),

@@ -30,6 +30,10 @@ export type ProviderPaymentQueryInput = {
   config: PaymentProviderRuntimeConfig;
 };
 
+export type PaymentReconciliationState =
+  | "provider_trade_not_exist"
+  | "wait_buyer_pay";
+
 export type ProviderPaymentQueryResult = {
   status: Extract<
     PaymentStatus,
@@ -42,7 +46,7 @@ export type ProviderPaymentQueryResult = {
    * Provider facts that control whether an uncertain order-code create may be
    * retried. They are intentionally distinct from generic pending status.
    */
-  reconciliationState?: "provider_trade_not_exist" | "wait_buyer_pay" | null;
+  reconciliationState?: PaymentReconciliationState | null;
   rawPayload?: Record<string, unknown>;
 };
 
@@ -183,6 +187,9 @@ export type ProviderWebhookInput = {
   body: unknown;
   rawBodyText: string;
   candidateConfigs: PaymentProviderRuntimeConfig[];
+  /** Immutable config binding found from the untrusted payment number before
+   * signature verification. Providers must verify with this exact config. */
+  expectedConfigId?: string | null;
 };
 
 export interface PaymentProvider {

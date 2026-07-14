@@ -217,9 +217,8 @@ async function requestWechat(
   const timeout = setTimeout(() => {
     controller.abort();
   }, config.requestTimeoutMs);
-  let response: Response;
   try {
-    response = await fetch(`https://api.mch.weixin.qq.com${path}`, {
+    const response = await fetch(`https://api.mch.weixin.qq.com${path}`, {
       method,
       headers: {
         Accept: "application/json",
@@ -229,6 +228,38 @@ async function requestWechat(
       body: bodyText.length > 0 ? bodyText : undefined,
       signal: controller.signal,
     });
+    // Fetch resolves as soon as response headers arrive. Reading, validating
+    // and parsing the body are part of the same provider request deadline.
+    const rawBodyText = await response.text();
+    if (!response.ok) {
+      throw new BadGatewayException(
+        `WeChat Pay request failed: ${response.status} ${rawBodyText.slice(0, 200)}`,
+      );
+    }
+
+    if (rawBodyText.trim().length === 0) return {};
+
+    const respTimestamp = response.headers.get("Wechatpay-Timestamp") ?? "";
+    const respNonce = response.headers.get("Wechatpay-Nonce") ?? "";
+    const respSignature = response.headers.get("Wechatpay-Signature") ?? "";
+    const respSerial = response.headers.get("Wechatpay-Serial") ?? "";
+    if (!respTimestamp || !respNonce || !respSignature || !respSerial) {
+      throw new BadGatewayException(
+        "WeChat Pay response missing signature headers",
+      );
+    }
+    if (respSerial !== config.platformCertificateSerialNo) {
+      throw new BadGatewayException("WeChat Pay response serial mismatch");
+    }
+    const respSignMessage = `${respTimestamp}\n${respNonce}\n${rawBodyText}\n`;
+    const respValid = createVerify("RSA-SHA256")
+      .update(respSignMessage, "utf8")
+      .verify(config.platformPublicKeyPem, respSignature, "base64");
+    if (!respValid) {
+      throw new BadGatewayException("WeChat Pay response signature invalid");
+    }
+
+    return assertRecord(JSON.parse(rawBodyText) as unknown);
   } catch (error) {
     if (controller.signal.aborted) {
       throw new BadGatewayException(
@@ -239,42 +270,6 @@ async function requestWechat(
   } finally {
     clearTimeout(timeout);
   }
-  const rawBodyText = await response.text();
-  if (!response.ok) {
-    // Only expose non-sensitive error snippet; do not leak keys/credentials
-    throw new BadGatewayException(
-      `WeChat Pay request failed: ${response.status} ${rawBodyText.slice(0, 200)}`,
-    );
-  }
-
-  // Empty body (e.g. 204 No Content for close endpoint) — no signature to verify
-  if (rawBodyText.trim().length === 0) {
-    return {};
-  }
-
-  // Verify response signature before parsing
-  const respTimestamp = response.headers.get("Wechatpay-Timestamp") ?? "";
-  const respNonce = response.headers.get("Wechatpay-Nonce") ?? "";
-  const respSignature = response.headers.get("Wechatpay-Signature") ?? "";
-  const respSerial = response.headers.get("Wechatpay-Serial") ?? "";
-
-  if (!respTimestamp || !respNonce || !respSignature || !respSerial) {
-    throw new BadGatewayException(
-      "WeChat Pay response missing signature headers",
-    );
-  }
-  if (respSerial !== config.platformCertificateSerialNo) {
-    throw new BadGatewayException("WeChat Pay response serial mismatch");
-  }
-  const respSignMessage = `${respTimestamp}\n${respNonce}\n${rawBodyText}\n`;
-  const respValid = createVerify("RSA-SHA256")
-    .update(respSignMessage, "utf8")
-    .verify(config.platformPublicKeyPem, respSignature, "base64");
-  if (!respValid) {
-    throw new BadGatewayException("WeChat Pay response signature invalid");
-  }
-
-  return assertRecord(JSON.parse(rawBodyText) as unknown);
 }
 
 async function postWechatV2Xml(
