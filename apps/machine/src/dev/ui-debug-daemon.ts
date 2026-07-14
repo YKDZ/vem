@@ -142,6 +142,8 @@ function currentBringUp(): BringUpSnapshot {
       attestStock: false,
       startSales: false,
     },
+    currentTask: null,
+    progress: [],
     updatedAt: nowIso(),
   };
 }

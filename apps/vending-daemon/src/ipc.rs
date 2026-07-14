@@ -60,6 +60,14 @@ struct ClaimMachineRequest {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct BringUpTaskExecutionRequest {
+    contract_version: u8,
+    kind: crate::bring_up::BringUpTaskKind,
+    intent: crate::bring_up::BringUpTaskIntent,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LocalEnvironmentControlRequest {
     air_conditioner_on: Option<bool>,
     target_temperature_celsius: Option<i8>,
@@ -208,6 +216,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/bring-up", get(bring_up_snapshot))
+        .route("/v1/bring-up/tasks/execute", post(execute_bring_up_task))
         .route("/v1/network/settings", post(apply_network_settings))
         .route("/v1/network/available", get(available_wifi_networks))
         .route("/v1/config", get(get_config).put(put_config))
@@ -892,7 +901,11 @@ async fn bring_up_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) ->
         return (status, error).into_response();
     }
 
-    let (config, config_error, hardware_mode) =
+    (StatusCode::OK, Json(bring_up_snapshot_for(&ctx).await)).into_response()
+}
+
+async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnapshot {
+    let (config, config_error, hardware_mode, reclaim_required) =
         match ctx.config_store.load_runtime_configuration_summary().await {
             Ok(summary) => {
                 let hardware_mode = summary
@@ -902,16 +915,23 @@ async fn bring_up_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) ->
                         crate::bring_up::BringUpHardwareMode::from(manifest.hardware_mode.clone())
                     })
                     .unwrap_or_default();
-                (
-                    Some(bring_up_runtime_config_from_summary(summary)),
-                    None,
-                    hardware_mode,
-                )
+                let config = bring_up_runtime_config_from_summary(summary.clone());
+                // A cached daemon-owned maintenance identity with an absent
+                // applied profile is a replacement/reinstall, not a normal
+                // first claim. It must take the rotating reclaim task.
+                let reclaim_required = summary
+                    .provisioning_profile_cache
+                    .as_ref()
+                    .and_then(|profile| profile.maintenance.as_ref())
+                    .is_some()
+                    && !config.provisioned;
+                (Some(config), None, hardware_mode, reclaim_required)
             }
             Err(error) => (
                 None,
                 Some(error),
                 crate::bring_up::BringUpHardwareMode::default(),
+                false,
             ),
         };
     let topology = match ctx.config_store.hardware_slot_topology_readiness().await {
@@ -973,6 +993,7 @@ async fn bring_up_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) ->
             .and_then(|snapshot| snapshot.get("canStartNetworkAuthorizedSale"))
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
+        reclaim_required,
         updated_at: crate::state::store::now_iso(),
     });
     let mut snapshot = snapshot;
@@ -991,6 +1012,45 @@ async fn bring_up_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) ->
             );
     }
 
+    snapshot
+}
+
+async fn execute_bring_up_task(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(payload): Json<BringUpTaskExecutionRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let snapshot = bring_up_snapshot_for(&ctx).await;
+    let Some(task) = snapshot.current_task.as_ref() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "bring_up_task_not_available",
+                message: "no daemon bring-up task is currently executable".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    if task.contract_version != payload.contract_version
+        || task.kind != payload.kind
+        || task.intent != payload.intent
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "bring_up_task_stale",
+                message: "daemon bring-up task changed; refresh the current task".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // This POST is the task execution gate. Network/claim mutation handlers
+    // additionally re-check their task before changing machine state; a UI
+    // cannot advance the ordered daemon cursor by issuing a legacy GET.
     (StatusCode::OK, Json(snapshot)).into_response()
 }
 
@@ -8241,6 +8301,40 @@ mod tests {
             .unwrap()
             .iter()
             .any(|reason| reason["code"] == "HARDWARE_SLOT_TOPOLOGY_MISMATCH"));
+    }
+
+    #[tokio::test]
+    async fn bring_up_task_execution_rechecks_the_daemon_cursor_before_accepting_an_intent() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/bring-up/tasks/execute",
+            "token-1",
+            json!({
+                "contractVersion": 1,
+                "kind": "claim_machine",
+                "intent": "claim_machine"
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+            "bring_up_task_stale"
+        );
     }
 
     #[tokio::test]

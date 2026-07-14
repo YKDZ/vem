@@ -40,6 +40,7 @@ function taskLabel(
   > = {
     configure_network: "配置现场网络",
     claim_machine: "领取机器",
+    reclaim_machine: "重新领取机器",
     sync_profile: "同步运行档案",
     resolve_topology: "处理货道拓扑",
     run_hardware_acceptance: "完成本机验收",
@@ -98,6 +99,7 @@ async function submitNetworkSettings(): Promise<void> {
   submitting.value = true;
   const password = networkForm.password;
   try {
+    await daemonClient.executeBringUpTask(currentTask.value);
     networkResult.value = await daemonClient.applyNetworkSettings({
       ssid: networkForm.ssid.trim(),
       password,
@@ -114,8 +116,10 @@ async function submitNetworkSettings(): Promise<void> {
 }
 
 async function submitClaim(): Promise<void> {
+  const task = currentTask.value;
   if (
-    currentTask.value?.intent !== "claim_machine" ||
+    !task ||
+    !["claim_machine", "reclaim_machine"].includes(task.intent) ||
     !claimForm.claimCode.trim() ||
     submitting.value
   ) {
@@ -124,7 +128,10 @@ async function submitClaim(): Promise<void> {
   submitting.value = true;
   const claimCode = claimForm.claimCode.trim().toUpperCase();
   try {
-    const result = await daemonClient.claimMachine(claimCode);
+    await daemonClient.executeBringUpTask(task);
+    const result = await daemonClient.claimMachine(claimCode, {
+      rotateMaintenanceIdentity: task.rotateMaintenanceIdentity,
+    });
     machineStore.configSummary = result.config;
     machineStore.configLoaded = true;
     claimForm.claimCode = "";
@@ -151,7 +158,7 @@ async function submitCurrentTask(): Promise<void> {
     return;
   }
   if (currentTask.value.intent === "refresh_profile") {
-    await refreshBringUp();
+    bringUp.value = await daemonClient.executeBringUpTask(currentTask.value);
   }
 }
 
@@ -209,7 +216,10 @@ onMounted(async () => {
           </form>
 
           <form
-            v-else-if="currentTask?.intent === 'claim_machine'"
+            v-else-if="
+              currentTask?.intent === 'claim_machine' ||
+              currentTask?.intent === 'reclaim_machine'
+            "
             @submit.prevent="submitClaim"
           >
             <label>

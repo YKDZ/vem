@@ -596,6 +596,20 @@ function bringUpSnapshot(
       attestStock: false,
       startSales: state === "sell_ready",
     },
+    currentTask:
+      state === "claim_required"
+        ? {
+            contractVersion: 1,
+            kind: "claim_machine",
+            intent: "claim_machine",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "claim_code",
+              rotateMaintenanceIdentity: false,
+            },
+          }
+        : null,
+    progress: [],
     updatedAt: "2026-07-04T00:00:00Z",
   };
 }
@@ -777,6 +791,29 @@ describe("sale readiness UI flow", () => {
     expect(host.textContent).toContain("daemon 不可用，进入维护页");
     expect(host.textContent).not.toContain("ZodError");
     expect(host.textContent).not.toContain("Invalid enum value");
+  });
+
+  it("does not let delayed boot reads navigate after the boot component is gone", async () => {
+    const pendingHealth: {
+      resolve: ((value: ReturnType<typeof healthSnapshot>) => void) | null;
+    } = { resolve: null };
+    getHealthMock.mockReturnValue(
+      new Promise<ReturnType<typeof healthSnapshot>>((resolve) => {
+        pendingHealth.resolve = resolve;
+      }),
+    );
+
+    await mountView(BootView);
+    await vi.waitFor(() => {
+      expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
+    });
+    mountedApp?.unmount();
+    mountedApp = null;
+    pendingHealth.resolve?.(healthSnapshot());
+    await nextTick();
+    await nextTick();
+
+    expect(routerReplaceMock).not.toHaveBeenCalled();
   });
 
   it("loads sale readiness during boot so a ready catalog can enter purchase", async () => {

@@ -35,6 +35,7 @@ pub enum BringUpReadinessLevel {
 pub enum BringUpTaskKind {
     ConfigureNetwork,
     ClaimMachine,
+    ReclaimMachine,
     SyncProfile,
     ResolveTopology,
     RunHardwareAcceptance,
@@ -47,6 +48,7 @@ pub enum BringUpTaskKind {
 pub enum BringUpTaskIntent {
     ConfigureNetwork,
     ClaimMachine,
+    ReclaimMachine,
     RefreshProfile,
     OpenMaintenance,
     RecordStock,
@@ -56,8 +58,25 @@ pub enum BringUpTaskIntent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BringUpTask {
+    pub contract_version: u8,
     pub kind: BringUpTaskKind,
     pub intent: BringUpTaskIntent,
+    pub rotate_maintenance_identity: bool,
+    pub projection: BringUpTaskProjection,
+}
+
+/// The task-specific payload keeps complex work out of the generic
+/// Maintenance route. The UI can render one bounded form/action without
+/// inferring the daemon cursor from route state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BringUpTaskProjection {
+    NetworkSettings { supports_hidden_network: bool },
+    ClaimCode { rotate_maintenance_identity: bool },
+    ProfileSync,
+    TopologyResolution { component: String },
+    HardwareAcceptance { component: String },
+    StockAttestation { entry_mode: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,6 +175,10 @@ pub struct BringUpEvaluationInput {
     pub stock_attestation_required: bool,
     pub stock_attestation_ready: bool,
     pub sale_ready: bool,
+    /// A replacement/reinstalled machine must claim through the protected
+    /// reclaim path so it rotates, rather than overwrites, daemon-owned
+    /// maintenance identity.
+    pub reclaim_required: bool,
     pub updated_at: String,
 }
 
@@ -293,15 +316,13 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
             BringUpState::ProfileApplied
                 | BringUpState::HardwareAcceptanceRequired
                 | BringUpState::StockAttestationRequired
-                | BringUpState::RuntimeReady
-                | BringUpState::SimulatedHardwareReady
         ),
         run_hardware_acceptance: state == BringUpState::HardwareAcceptanceRequired,
         attest_stock: state == BringUpState::StockAttestationRequired,
         start_sales: state == BringUpState::SellReady,
     };
 
-    let current_task = task_for_state(&state);
+    let current_task = task_for_state(&state, input.reclaim_required);
     let progress = progress_for_state(&state, &input, provisioned);
 
     BringUpSnapshot {
@@ -317,7 +338,7 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
     }
 }
 
-fn task_for_state(state: &BringUpState) -> Option<BringUpTask> {
+fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringUpTask> {
     let (kind, intent) = match state {
         BringUpState::NetworkRequired => (
             BringUpTaskKind::ConfigureNetwork,
@@ -327,6 +348,10 @@ fn task_for_state(state: &BringUpState) -> Option<BringUpTask> {
             BringUpTaskKind::SyncProfile,
             BringUpTaskIntent::RefreshProfile,
         ),
+        BringUpState::ClaimRequired if reclaim_required => (
+            BringUpTaskKind::ReclaimMachine,
+            BringUpTaskIntent::ReclaimMachine,
+        ),
         BringUpState::ClaimRequired => (
             BringUpTaskKind::ClaimMachine,
             BringUpTaskIntent::ClaimMachine,
@@ -335,18 +360,51 @@ fn task_for_state(state: &BringUpState) -> Option<BringUpTask> {
             BringUpTaskKind::ResolveTopology,
             BringUpTaskIntent::OpenMaintenance,
         ),
-        BringUpState::HardwareAcceptanceRequired
-        | BringUpState::RuntimeReady
-        | BringUpState::SimulatedHardwareReady => (
+        BringUpState::HardwareAcceptanceRequired => (
             BringUpTaskKind::RunHardwareAcceptance,
             BringUpTaskIntent::OpenMaintenance,
         ),
         BringUpState::StockAttestationRequired => {
             (BringUpTaskKind::AttestStock, BringUpTaskIntent::RecordStock)
         }
-        BringUpState::SellReady => return None,
+        BringUpState::RuntimeReady
+        | BringUpState::SimulatedHardwareReady
+        | BringUpState::SellReady => {
+            return None;
+        }
     };
-    Some(BringUpTask { kind, intent })
+    let projection = task_projection(&kind, reclaim_required);
+    Some(BringUpTask {
+        contract_version: 1,
+        kind,
+        intent,
+        rotate_maintenance_identity: reclaim_required && state == &BringUpState::ClaimRequired,
+        projection,
+    })
+}
+
+fn task_projection(kind: &BringUpTaskKind, reclaim_required: bool) -> BringUpTaskProjection {
+    match kind {
+        BringUpTaskKind::ConfigureNetwork => BringUpTaskProjection::NetworkSettings {
+            supports_hidden_network: true,
+        },
+        BringUpTaskKind::ClaimMachine | BringUpTaskKind::ReclaimMachine => {
+            BringUpTaskProjection::ClaimCode {
+                rotate_maintenance_identity: reclaim_required,
+            }
+        }
+        BringUpTaskKind::SyncProfile => BringUpTaskProjection::ProfileSync,
+        BringUpTaskKind::ResolveTopology => BringUpTaskProjection::TopologyResolution {
+            component: "topology".to_string(),
+        },
+        BringUpTaskKind::RunHardwareAcceptance => BringUpTaskProjection::HardwareAcceptance {
+            component: "hardware".to_string(),
+        },
+        BringUpTaskKind::AttestStock => BringUpTaskProjection::StockAttestation {
+            entry_mode: "final_actual_quantities".to_string(),
+        },
+        BringUpTaskKind::StartSales => BringUpTaskProjection::ProfileSync,
+    }
 }
 
 fn progress_for_state(
@@ -355,14 +413,14 @@ fn progress_for_state(
     provisioned: bool,
 ) -> Vec<BringUpProgressStep> {
     let current = match state {
-        BringUpState::NetworkRequired => 0,
-        BringUpState::PlatformReachable | BringUpState::ClaimRequired => 1,
-        BringUpState::ProfileApplied | BringUpState::TopologyMismatch => 2,
-        BringUpState::HardwareAcceptanceRequired
-        | BringUpState::RuntimeReady
-        | BringUpState::SimulatedHardwareReady => 3,
-        BringUpState::StockAttestationRequired => 4,
-        BringUpState::SellReady => 6,
+        BringUpState::NetworkRequired => Some(0),
+        BringUpState::PlatformReachable | BringUpState::ClaimRequired => Some(1),
+        BringUpState::ProfileApplied | BringUpState::TopologyMismatch => Some(2),
+        BringUpState::HardwareAcceptanceRequired => Some(3),
+        BringUpState::StockAttestationRequired => Some(4),
+        BringUpState::RuntimeReady
+        | BringUpState::SimulatedHardwareReady
+        | BringUpState::SellReady => None,
     };
     let kinds = [
         (BringUpStepKind::Network, BringUpEvidenceKind::Volatile),
@@ -391,20 +449,17 @@ fn progress_for_state(
 
 fn progress_status(
     index: usize,
-    current: usize,
+    current: Option<usize>,
     kind: &BringUpStepKind,
     evidence: &BringUpEvidenceKind,
     input: &BringUpEvaluationInput,
     provisioned: bool,
 ) -> BringUpStepStatus {
+    if Some(index) == current {
+        return BringUpStepStatus::Current;
+    }
     match kind {
-        BringUpStepKind::Network => {
-            if index == current {
-                BringUpStepStatus::Current
-            } else {
-                BringUpStepStatus::Revalidate
-            }
-        }
+        BringUpStepKind::Network => BringUpStepStatus::Revalidate,
         BringUpStepKind::Provisioning if provisioned => BringUpStepStatus::Completed,
         BringUpStepKind::Topology if provisioned && input.topology_ready == Some(true) => {
             BringUpStepStatus::Completed
@@ -420,8 +475,9 @@ fn progress_status(
             BringUpStepStatus::Completed
         }
         BringUpStepKind::SaleReadiness if input.sale_ready => BringUpStepStatus::Revalidate,
-        _ if index == current => BringUpStepStatus::Current,
-        _ if matches!(evidence, BringUpEvidenceKind::Volatile) && index < current => {
+        _ if matches!(evidence, BringUpEvidenceKind::Volatile)
+            && current.is_some_and(|current| index < current) =>
+        {
             BringUpStepStatus::Revalidate
         }
         _ => BringUpStepStatus::Upcoming,
@@ -542,8 +598,13 @@ mod tests {
         assert_eq!(
             snapshot.current_task,
             Some(BringUpTask {
+                contract_version: 1,
                 kind: BringUpTaskKind::ConfigureNetwork,
                 intent: BringUpTaskIntent::ConfigureNetwork,
+                rotate_maintenance_identity: false,
+                projection: BringUpTaskProjection::NetworkSettings {
+                    supports_hidden_network: true,
+                },
             })
         );
         assert!(snapshot
@@ -589,6 +650,32 @@ mod tests {
         assert!(snapshot.allowed_actions.claim_machine);
         assert!(snapshot.allowed_actions.retry_claim);
         assert!(!snapshot.allowed_actions.start_sales);
+    }
+
+    #[test]
+    fn protected_reclaim_projects_a_rotating_daemon_identity_task() {
+        let mut config = public_config();
+        config.public.api_base_url = "http://127.0.0.1:3000/api".to_string();
+        let snapshot = evaluate_bring_up(BringUpEvaluationInput {
+            config: Some(config),
+            platform_reachable: true,
+            reclaim_required: true,
+            updated_at: "2026-07-14T00:00:00Z".to_string(),
+            ..BringUpEvaluationInput::default()
+        });
+
+        assert_eq!(
+            snapshot.current_task,
+            Some(BringUpTask {
+                contract_version: 1,
+                kind: BringUpTaskKind::ReclaimMachine,
+                intent: BringUpTaskIntent::ReclaimMachine,
+                rotate_maintenance_identity: true,
+                projection: BringUpTaskProjection::ClaimCode {
+                    rotate_maintenance_identity: true,
+                },
+            })
+        );
     }
 
     #[test]
@@ -663,7 +750,16 @@ mod tests {
             snapshot.readiness_level,
             BringUpReadinessLevel::SimulatedHardwareReady
         );
-        assert!(snapshot.allowed_actions.run_runtime_acceptance);
+        assert!(!snapshot.allowed_actions.run_runtime_acceptance);
+        assert_eq!(snapshot.current_task, None);
+        assert_eq!(
+            snapshot
+                .progress
+                .iter()
+                .filter(|step| step.status == BringUpStepStatus::Current)
+                .count(),
+            0
+        );
         assert!(!snapshot.allowed_actions.start_sales);
     }
 
@@ -731,5 +827,56 @@ mod tests {
         assert_eq!(snapshot.state, BringUpState::SellReady);
         assert_eq!(snapshot.readiness_level, BringUpReadinessLevel::SellReady);
         assert!(snapshot.allowed_actions.start_sales);
+    }
+
+    #[test]
+    fn nonterminal_projection_has_one_current_step_and_only_durable_evidence_can_complete() {
+        let snapshot = evaluate_bring_up(BringUpEvaluationInput {
+            config: Some(provisioned_config()),
+            platform_reachable: true,
+            topology_ready: Some(false),
+            updated_at: "2026-07-14T00:00:00Z".to_string(),
+            ..BringUpEvaluationInput::default()
+        });
+
+        assert_eq!(snapshot.state, BringUpState::TopologyMismatch);
+        assert_eq!(
+            snapshot
+                .progress
+                .iter()
+                .filter(|step| step.status == BringUpStepStatus::Current)
+                .count(),
+            1
+        );
+        assert!(snapshot.progress.iter().all(|step| {
+            step.status != BringUpStepStatus::Completed
+                || step.evidence == BringUpEvidenceKind::Durable
+        }));
+    }
+
+    #[test]
+    fn runtime_ready_is_completed_without_a_fake_hardware_task() {
+        let snapshot = evaluate_bring_up(BringUpEvaluationInput {
+            config: Some(production_config()),
+            hardware_mode: BringUpHardwareMode::Production,
+            platform_reachable: true,
+            topology_ready: Some(true),
+            active_planogram_ready: true,
+            hardware_online: true,
+            production_dispense_path_ready: true,
+            updated_at: "2026-07-14T00:00:00Z".to_string(),
+            ..BringUpEvaluationInput::default()
+        });
+
+        assert_eq!(snapshot.state, BringUpState::RuntimeReady);
+        assert_eq!(snapshot.current_task, None);
+        assert_eq!(
+            snapshot
+                .progress
+                .iter()
+                .filter(|step| step.status == BringUpStepStatus::Current)
+                .count(),
+            0
+        );
     }
 }

@@ -61,31 +61,27 @@ export function routeForStartup(input: {
     return startupRouteFromProjectionTarget(transactionView.routeTarget);
   }
 
+  // A missing or old daemon projection is not a compatibility mode. Fail
+  // closed in Maintenance rather than reconstructing bring-up from legacy
+  // config/readiness flags or presenting an offline bypass.
+  if (!input.bringUp) return "/maintenance";
+
   // The daemon's current task is the authoritative Bring-Up cursor.  Do not
-  // let a legacy readiness summary make the console skip an unfinished task.
-  if (input.bringUp?.currentTask) return "/bring-up";
+  // let a readiness summary make the console skip an unfinished task.
+  if (input.bringUp.currentTask) return "/bring-up";
 
   const bringUpReady =
     input.bringUp?.state === "sell_ready" ||
     input.bringUp?.state === "runtime_ready" ||
     input.bringUp?.state === "simulated_hardware_ready";
-  if (input.bringUp && !bringUpReady) {
-    return "/bring-up";
-  }
-  if (!input.bringUp) {
-    if (!input.config) return "/bring-up";
-    if (!input.config.provisioned) return "/bring-up";
-    if (!input.health?.configConfigured) return "/maintenance";
-  }
+  if (!bringUpReady) return "/maintenance";
 
-  if (input.bringUp?.state === "sell_ready") return "/catalog";
+  if (input.bringUp.state === "sell_ready") return "/catalog";
   if (
     bringUpReady &&
     (input.ready?.canSell || input.bringUp?.allowedActions.startSales)
   ) {
     return "/catalog";
   }
-  if (input.ready?.canSell) return "/catalog";
-  if (input.ready?.suggestedRoute === "maintenance") return "/maintenance";
-  return "/offline";
+  return "/maintenance";
 }

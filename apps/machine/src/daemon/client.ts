@@ -189,6 +189,21 @@ export class DaemonApiClient {
     return bringUpSnapshotSchema.parse(await this.request("/v1/bring-up"));
   }
 
+  async executeBringUpTask(
+    task: NonNullable<BringUpSnapshot["currentTask"]>,
+  ): Promise<BringUpSnapshot> {
+    return bringUpSnapshotSchema.parse(
+      await this.request("/v1/bring-up/tasks/execute", {
+        method: "POST",
+        body: {
+          contractVersion: task.contractVersion,
+          kind: task.kind,
+          intent: task.intent,
+        },
+      }),
+    );
+  }
+
   async applyNetworkSettings(
     body: NetworkSettingsRequest,
   ): Promise<NetworkSettingsResponse> {

@@ -7,6 +7,7 @@ const {
   DaemonUnavailableErrorMock,
   routerReplaceMock,
   getBringUpMock,
+  executeBringUpTaskMock,
   claimMachineMock,
   applyNetworkSettingsMock,
   scanWifiNetworksMock,
@@ -14,6 +15,7 @@ const {
   DaemonUnavailableErrorMock: class DaemonUnavailableError extends Error {},
   routerReplaceMock: vi.fn(),
   getBringUpMock: vi.fn(),
+  executeBringUpTaskMock: vi.fn(),
   claimMachineMock: vi.fn(),
   applyNetworkSettingsMock: vi.fn(),
   scanWifiNetworksMock: vi.fn(),
@@ -29,6 +31,7 @@ vi.mock("@/daemon/client", () => ({
   DaemonUnavailableError: DaemonUnavailableErrorMock,
   daemonClient: {
     getBringUp: getBringUpMock,
+    executeBringUpTask: executeBringUpTaskMock,
     claimMachine: claimMachineMock,
     applyNetworkSettings: applyNetworkSettingsMock,
     scanWifiNetworks: scanWifiNetworksMock,
@@ -57,7 +60,13 @@ function snapshot(overrides = {}) {
       attestStock: false,
       startSales: false,
     },
-    currentTask: { kind: "configure_network", intent: "configure_network" },
+    currentTask: {
+      contractVersion: 1,
+      kind: "configure_network",
+      intent: "configure_network",
+      rotateMaintenanceIdentity: false,
+      projection: { type: "network_settings", supportsHiddenNetwork: true },
+    },
     progress: [
       { kind: "network", status: "current", evidence: "volatile" },
       { kind: "provisioning", status: "upcoming", evidence: "durable" },
@@ -114,6 +123,7 @@ beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
   getBringUpMock.mockResolvedValue(snapshot());
+  executeBringUpTaskMock.mockResolvedValue(snapshot());
   scanWifiNetworksMock.mockResolvedValue({
     networks: [
       {
@@ -191,7 +201,16 @@ describe("Bring-Up Console", () => {
     getBringUpMock.mockResolvedValue(
       snapshot({
         state: "claim_required",
-        currentTask: { kind: "claim_machine", intent: "claim_machine" },
+        currentTask: {
+          contractVersion: 1,
+          kind: "claim_machine",
+          intent: "claim_machine",
+          rotateMaintenanceIdentity: false,
+          projection: {
+            type: "claim_code",
+            rotateMaintenanceIdentity: false,
+          },
+        },
         progress: [
           { kind: "network", status: "revalidate", evidence: "volatile" },
           { kind: "provisioning", status: "current", evidence: "durable" },
@@ -206,7 +225,9 @@ describe("Bring-Up Console", () => {
 
     buttonByText(host, "提交领取码").click();
     await vi.waitFor(() => {
-      expect(claimMachineMock).toHaveBeenCalledWith("ABCD-2345");
+      expect(claimMachineMock).toHaveBeenCalledWith("ABCD-2345", {
+        rotateMaintenanceIdentity: false,
+      });
     });
     expect(host.textContent).not.toContain("无线网络密码");
   });
@@ -215,7 +236,13 @@ describe("Bring-Up Console", () => {
     getBringUpMock.mockResolvedValue(
       snapshot({
         state: "topology_mismatch",
-        currentTask: { kind: "resolve_topology", intent: "open_maintenance" },
+        currentTask: {
+          contractVersion: 1,
+          kind: "resolve_topology",
+          intent: "open_maintenance",
+          rotateMaintenanceIdentity: false,
+          projection: { type: "topology_resolution", component: "topology" },
+        },
         progress: [
           { kind: "topology", status: "current", evidence: "durable" },
         ],

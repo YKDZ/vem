@@ -345,8 +345,14 @@ describe("DaemonApiClient", () => {
             startSales: false,
           },
           currentTask: {
+            contractVersion: 1,
             kind: "claim_machine",
             intent: "claim_machine",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "claim_code",
+              rotateMaintenanceIdentity: false,
+            },
           },
           progress: [
             {

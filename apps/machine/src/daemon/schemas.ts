@@ -164,9 +164,11 @@ const bringUpReasonSchema = z.object({
 });
 
 const bringUpTaskSchema = z.object({
+  contractVersion: z.literal(1),
   kind: z.enum([
     "configure_network",
     "claim_machine",
+    "reclaim_machine",
     "sync_profile",
     "resolve_topology",
     "run_hardware_acceptance",
@@ -176,10 +178,35 @@ const bringUpTaskSchema = z.object({
   intent: z.enum([
     "configure_network",
     "claim_machine",
+    "reclaim_machine",
     "refresh_profile",
     "open_maintenance",
     "record_stock",
     "start_sales",
+  ]),
+  rotateMaintenanceIdentity: z.boolean(),
+  projection: z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("network_settings"),
+      supportsHiddenNetwork: z.boolean(),
+    }),
+    z.object({
+      type: z.literal("claim_code"),
+      rotateMaintenanceIdentity: z.boolean(),
+    }),
+    z.object({ type: z.literal("profile_sync") }),
+    z.object({
+      type: z.literal("topology_resolution"),
+      component: z.literal("topology"),
+    }),
+    z.object({
+      type: z.literal("hardware_acceptance"),
+      component: z.literal("hardware"),
+    }),
+    z.object({
+      type: z.literal("stock_attestation"),
+      entryMode: z.literal("final_actual_quantities"),
+    }),
   ]),
 });
 
@@ -229,8 +256,8 @@ export const bringUpSnapshotSchema = z.object({
     attestStock: z.boolean(),
     startSales: z.boolean(),
   }),
-  currentTask: bringUpTaskSchema.nullable().optional(),
-  progress: z.array(bringUpProgressStepSchema).optional(),
+  currentTask: bringUpTaskSchema.nullable(),
+  progress: z.array(bringUpProgressStepSchema),
   updatedAt: z.string(),
 });
 

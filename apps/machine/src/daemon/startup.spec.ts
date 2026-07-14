@@ -83,7 +83,7 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
-  it("routes bring-up console when daemon is available but config summary is unavailable", () => {
+  it("fails closed when daemon is available but its bring-up projection is unavailable", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
@@ -101,7 +101,7 @@ describe("routeForStartup", () => {
         },
         restoredTransaction: null,
       }),
-    ).toBe("/bring-up");
+    ).toBe("/maintenance");
   });
 
   it("routes incomplete daemon bring-up to the bring-up console", () => {
@@ -134,6 +134,19 @@ describe("routeForStartup", () => {
             attestStock: false,
             startSales: false,
           },
+          currentTask: {
+            contractVersion: 1,
+            kind: "claim_machine",
+            intent: "claim_machine",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "claim_code",
+              rotateMaintenanceIdentity: false,
+            },
+          },
+          progress: [
+            { kind: "provisioning", status: "current", evidence: "durable" },
+          ],
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: null,
@@ -166,8 +179,14 @@ describe("routeForStartup", () => {
             startSales: false,
           },
           currentTask: {
+            contractVersion: 1,
             kind: "run_hardware_acceptance",
             intent: "open_maintenance",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "hardware_acceptance",
+              component: "hardware",
+            },
           },
           progress: [
             { kind: "hardware", status: "current", evidence: "volatile" },
@@ -212,6 +231,8 @@ describe("routeForStartup", () => {
             attestStock: false,
             startSales: true,
           },
+          currentTask: null,
+          progress: [],
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: {
@@ -227,6 +248,28 @@ describe("routeForStartup", () => {
         restoredTransaction: null,
       }),
     ).toBe("/catalog");
+  });
+
+  it("fails closed when an old daemon omits the required bring-up projection", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: healthBase,
+        config: configBase,
+        bringUp: null,
+        ready: {
+          ready: true,
+          canSell: true,
+          mode: "daemon",
+          blockingCodes: [],
+          blockingReasons: [],
+          degradedReasons: [],
+          suggestedRoute: "catalog",
+          updatedAt: "2026-07-14T00:00:00Z",
+        },
+        restoredTransaction: null,
+      }),
+    ).toBe("/maintenance");
   });
 
   it("routes payment", () => {
@@ -252,6 +295,8 @@ describe("routeForStartup", () => {
             attestStock: false,
             startSales: true,
           },
+          currentTask: null,
+          progress: [],
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: null,
@@ -311,6 +356,8 @@ describe("routeForStartup", () => {
             attestStock: false,
             startSales: false,
           },
+          currentTask: null,
+          progress: [],
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: {
@@ -389,6 +436,8 @@ describe("routeForStartup", () => {
               attestStock: false,
               startSales: false,
             },
+            currentTask: null,
+            progress: [],
             updatedAt: "2026-07-04T00:00:00Z",
           },
           ready: null,
@@ -547,7 +596,7 @@ describe("routeForStartup", () => {
     ).toMatchObject({ name: "result", params: { kind: "manual_handling" } });
   });
 
-  it("routes offline based on ready snapshot", () => {
+  it("does not use an offline fallback without daemon bring-up", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
@@ -565,7 +614,7 @@ describe("routeForStartup", () => {
         },
         restoredTransaction: null,
       }),
-    ).toBe("/offline");
+    ).toBe("/maintenance");
   });
 
   it("routes maintenance when ready snapshot suggests maintenance", () => {
@@ -595,7 +644,7 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
-  it("routes catalog by default when sell available", () => {
+  it("does not use a catalog fallback when bring-up is absent", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
@@ -613,6 +662,6 @@ describe("routeForStartup", () => {
         },
         restoredTransaction: null,
       }),
-    ).toBe("/catalog");
+    ).toBe("/maintenance");
   });
 });

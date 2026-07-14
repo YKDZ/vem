@@ -201,8 +201,14 @@ describe("daemon schemas", () => {
         startSales: false,
       },
       currentTask: {
+        contractVersion: 1,
         kind: "attest_stock",
         intent: "record_stock",
+        rotateMaintenanceIdentity: false,
+        projection: {
+          type: "stock_attestation",
+          entryMode: "final_actual_quantities",
+        },
       },
       progress: [
         {
@@ -221,8 +227,14 @@ describe("daemon schemas", () => {
 
     expect(parsed.state).toBe("stock_attestation_required");
     expect(parsed.currentTask).toEqual({
+      contractVersion: 1,
       kind: "attest_stock",
       intent: "record_stock",
+      rotateMaintenanceIdentity: false,
+      projection: {
+        type: "stock_attestation",
+        entryMode: "final_actual_quantities",
+      },
     });
     expect(parsed.progress?.[0]).toMatchObject({
       kind: "provisioning",
@@ -230,6 +242,30 @@ describe("daemon schemas", () => {
       evidence: "durable",
     });
     expect(JSON.stringify(parsed)).not.toContain("secret");
+  });
+
+  it("fails closed when a daemon omits the versioned task projection", () => {
+    expect(() =>
+      bringUpSnapshotSchema.parse({
+        state: "sell_ready",
+        blockingReasons: [],
+        diagnostics: [],
+        readinessLevel: "sell_ready",
+        hardwareMode: "production",
+        allowedActions: {
+          configureNetwork: false,
+          claimMachine: false,
+          retryClaim: false,
+          syncProfile: false,
+          resolveTopology: false,
+          runRuntimeAcceptance: false,
+          runHardwareAcceptance: false,
+          attestStock: false,
+          startSales: true,
+        },
+        updatedAt: "2026-07-14T00:00:00Z",
+      }),
+    ).toThrow();
   });
 
   it("parses Protected Network Settings response without password fields", () => {
