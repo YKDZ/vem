@@ -1106,6 +1106,7 @@ function factoryPreparationDescriptor(manifest, resolvedAssets) {
     profile: manifest.profile,
     parameters: {
       environmentName: preparation.environmentName,
+      deploymentBatch: preparation.deploymentBatch,
       provisioningEndpoint: preparation.provisioningEndpoint,
       mqttUrl: preparation.mqttUrl,
       hardware: preparation.hardware,
@@ -1141,6 +1142,7 @@ export function factoryPreparationSplat(
     MachineUiArtifactPath: path("machineUi"),
     MachineUiSha256: descriptor.assets.machineUi.sha256,
     EnvironmentName: parameters.environmentName,
+    DeploymentBatch: parameters.deploymentBatch,
     ProvisioningEndpoint: parameters.provisioningEndpoint,
     MqttUrl: parameters.mqttUrl,
     HardwareMode: parameters.hardware.mode,
@@ -1209,7 +1211,7 @@ try {
   }
   Assert-ExactProperties $descriptor @('schemaVersion','kind','profile','parameters','assets') 'Factory preparation descriptor'
   if ($descriptor.schemaVersion -cne 'vem-factory-preparation-descriptor/v1' -or $descriptor.kind -cne 'factory-preparation-descriptor' -or $descriptor.profile -cne '${profile}') { throw 'Factory preparation descriptor profile is invalid' }
-  Assert-ExactProperties $descriptor.parameters @('environmentName','provisioningEndpoint','mqttUrl','hardware','display','accounts','expectedKioskShell','targetLayoutVersion','maintenance') 'Factory preparation parameters'
+  Assert-ExactProperties $descriptor.parameters @('environmentName','deploymentBatch','provisioningEndpoint','mqttUrl','hardware','display','accounts','expectedKioskShell','targetLayoutVersion','maintenance') 'Factory preparation parameters'
   Assert-ExactProperties $descriptor.parameters.hardware @('mode','model','topologyIdentity','topologyVersion') 'Factory preparation hardware'
   Assert-ExactProperties $descriptor.parameters.display @('width','height','orientation') 'Factory preparation display'
   Assert-ExactProperties $descriptor.parameters.accounts @('kioskUser','maintenanceUser','autoLogonUser') 'Factory preparation accounts'
@@ -1229,7 +1231,7 @@ try {
   $prepare = @{
     DaemonArtifactPath = Join-Path $MediaRoot $descriptor.assets.daemon.path; DaemonSha256 = $descriptor.assets.daemon.sha256
     MachineUiArtifactPath = Join-Path $MediaRoot $descriptor.assets.machineUi.path; MachineUiSha256 = $descriptor.assets.machineUi.sha256
-    EnvironmentName = $descriptor.parameters.environmentName; ProvisioningEndpoint = $descriptor.parameters.provisioningEndpoint; MqttUrl = $descriptor.parameters.mqttUrl
+    EnvironmentName = $descriptor.parameters.environmentName; DeploymentBatch = $descriptor.parameters.deploymentBatch; ProvisioningEndpoint = $descriptor.parameters.provisioningEndpoint; MqttUrl = $descriptor.parameters.mqttUrl
     HardwareMode = $descriptor.parameters.hardware.mode; HardwareModel = $descriptor.parameters.hardware.model; TopologyIdentity = $descriptor.parameters.hardware.topologyIdentity; TopologyVersion = $descriptor.parameters.hardware.topologyVersion
     ExpectedDisplayWidth = [int]$descriptor.parameters.display.width; ExpectedDisplayHeight = [int]$descriptor.parameters.display.height; ExpectedDisplayOrientation = $descriptor.parameters.display.orientation
     ExpectedKioskUser = $descriptor.parameters.accounts.kioskUser; ExpectedMaintenanceUser = $descriptor.parameters.accounts.maintenanceUser; ExpectedAutoLogonUser = $descriptor.parameters.accounts.autoLogonUser; ExpectedKioskShell = $descriptor.parameters.expectedKioskShell

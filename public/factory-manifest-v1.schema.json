@@ -383,6 +383,7 @@
         "schemaVersion",
         "kind",
         "environmentName",
+        "deploymentBatch",
         "provisioningEndpoint",
         "mqttUrl",
         "hardware",
@@ -396,6 +397,7 @@
         "schemaVersion": { "const": "vem-factory-preparation/v1" },
         "kind": { "const": "factory-preparation" },
         "environmentName": { "type": "string", "minLength": 1 },
+        "deploymentBatch": { "type": "string", "minLength": 1 },
         "provisioningEndpoint": { "type": "string", "minLength": 1 },
         "mqttUrl": { "type": "string", "minLength": 1 },
         "hardware": {

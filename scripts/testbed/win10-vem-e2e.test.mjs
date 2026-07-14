@@ -2759,6 +2759,16 @@ try {
     assert.match(verifier, /hardwareModel = \$manifest\.hardware\.model/);
   });
 
+  it("passes deterministic deployment batches to both direct factory preparation paths", () => {
+    const source = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
+
+    assert.match(source, /DeploymentBatch = "dirty-host-reset-v1"/);
+    assert.match(
+      source,
+      /DeploymentBatch = \$\{psString\(`clean-base-\$\{cleanBaseFactoryProfile\}-v1`\)\}/,
+    );
+  });
+
   it("plans VM runtime acceptance from an approved preclaim base", () => {
     const temp = mkdtempSync(join(tmpdir(), "vem-vm-acceptance-artifacts-"));
     try {

@@ -63,6 +63,7 @@ function validInput() {
       schemaVersion: "vem-factory-preparation/v1",
       kind: "factory-preparation",
       environmentName: "factory-testbed",
+      deploymentBatch: "fixture-batch",
       provisioningEndpoint: "http://platform.invalid/api",
       mqttUrl: "mqtt://platform.invalid:1883",
       hardware: {
@@ -138,6 +139,19 @@ function validInput() {
 }
 
 describe("Factory Manifest v1", () => {
+  it("keeps a batch-like deployment label separate from the strict Factory profile", () => {
+    const input = validInput();
+    input.factoryPreparation.deploymentBatch = "vps-fresh-20260714T120000Z";
+
+    const manifest = createFactoryManifest(input);
+
+    assert.equal(manifest.profile, "testbed");
+    assert.equal(
+      manifest.factoryPreparation.deploymentBatch,
+      "vps-fresh-20260714T120000Z",
+    );
+  });
+
   it("creates and validates an immutable profile-neutral manifest", () => {
     const manifest = createFactoryManifest(validInput());
 

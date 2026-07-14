@@ -92,6 +92,7 @@ const FACTORY_PREPARATION_KEYS = [
   "schemaVersion",
   "kind",
   "environmentName",
+  "deploymentBatch",
   "provisioningEndpoint",
   "mqttUrl",
   "hardware",
@@ -123,6 +124,7 @@ function assertFactoryPreparation(value, profile, issues) {
     );
   for (const key of [
     "environmentName",
+    "deploymentBatch",
     "provisioningEndpoint",
     "mqttUrl",
     "expectedKioskShell",
