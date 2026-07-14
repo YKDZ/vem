@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDaemonConnectionInfo } from "@/native/daemon-connection";
 
-import { daemonClient } from "./client";
+import { DaemonUnavailableError, daemonClient } from "./client";
 
 declare global {
   interface Window {
@@ -476,6 +476,104 @@ describe("DaemonApiClient", () => {
       "WIFI_AUTH_FAILED",
     );
     expect(JSON.stringify(result)).not.toContain(submittedPassword);
+  });
+
+  it("preserves all five typed network diagnostics from a standard 422 response", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    const diagnostics = [
+      ["local_adapter", "local_adapter", "ready", "LOCAL_ADAPTER_READY"],
+      ["local_address", "local_address", "ready", "LOCAL_ADDRESS_READY"],
+      [
+        "local_default_route",
+        "local_default_route",
+        "failed",
+        "LOCAL_DEFAULT_ROUTE_UNAVAILABLE",
+      ],
+      [
+        "provisioning_endpoint",
+        "platform_api",
+        "failed",
+        "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+      ],
+      ["mqtt", "mqtt_broker", "not_configured", "MQTT_BROKER_NOT_PROVISIONED"],
+    ].map(([component, source, status, code]) => ({
+      component,
+      level: "error",
+      code,
+      message: `${code} diagnostic for the operator`,
+      evidence: {
+        source,
+        status,
+        reasonCode: code,
+        reason: `${code} diagnostic for the operator`,
+        recoveryAction: "Follow the operator guidance and retry.",
+      },
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "failed",
+          ssid: "Store-WiFi",
+          hidden: false,
+          diagnostics,
+          operatorGuidance: "请检查本机网络和平台连接。",
+          updatedAt: "2026-07-14T00:00:00Z",
+        }),
+        { status: 422 },
+      ),
+    );
+
+    const result = await daemonClient.applyNetworkSettings({
+      ssid: "Store-WiFi",
+      password: "correct-password",
+      hidden: false,
+    });
+
+    expect(result.diagnostics.map((item) => item.code)).toEqual([
+      "LOCAL_ADAPTER_READY",
+      "LOCAL_ADDRESS_READY",
+      "LOCAL_DEFAULT_ROUTE_UNAVAILABLE",
+      "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+      "MQTT_BROKER_NOT_PROVISIONED",
+    ]);
+    expect(result.diagnostics.map((item) => item.evidence?.source)).toEqual([
+      "local_adapter",
+      "local_address",
+      "local_default_route",
+      "platform_api",
+      "mqtt_broker",
+    ]);
+  });
+
+  it("safely falls back when a rejected daemon response exceeds the read limit", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("x".repeat(64 * 1024 + 1), { status: 422 }),
+    );
+
+    await expect(
+      daemonClient.applyNetworkSettings({
+        ssid: "Store-WiFi",
+        password: "correct-password",
+        hidden: false,
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: "DaemonUnavailableError",
+        statusCode: 422,
+        responseBody: undefined,
+      } satisfies Partial<DaemonUnavailableError>),
+    );
   });
 
   it("preserves a rejected cursor network response instead of resolving a failed mock", async () => {

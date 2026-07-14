@@ -294,11 +294,56 @@ fn merge_local_and_platform_probe(
     mut local: NetworkSettingsResponse,
     platform: NetworkSettingsResponse,
 ) -> NetworkSettingsResponse {
-    local.status = platform.status;
+    // A Platform reply can arrive through a VPN, virtual NIC, or a stale
+    // route.  It is useful evidence, but it must never promote a machine
+    // whose selected physical adapter has not independently proved adapter,
+    // address, and default-route readiness.
+    let local_ready = has_ready_local_physical_evidence(&local);
+    let platform_ready = has_ready_evidence(&platform, NetworkEvidenceSource::PlatformApi);
+    if local_ready && platform_ready {
+        local.status = NetworkSetupStatus::Connected;
+        local.operator_guidance = platform.operator_guidance;
+        local.updated_at = platform.updated_at;
+    } else if !local_ready {
+        // Keep the local status and recovery guidance authoritative.  The
+        // Platform diagnostic below remains visible as a separate fact.
+    } else {
+        local.status = platform.status;
+        local.operator_guidance = platform.operator_guidance;
+        local.updated_at = platform.updated_at;
+    }
     local.diagnostics.extend(platform.diagnostics);
-    local.operator_guidance = platform.operator_guidance;
-    local.updated_at = platform.updated_at;
     local
+}
+
+/// Claim readiness is deliberately stricter than a successful HTTP request.
+/// Every source must be independently reported as ready, preventing a route
+/// on a VPN or virtual adapter from masking a failed physical local path.
+pub fn is_ready_for_machine_claim(network: &NetworkSettingsResponse) -> bool {
+    matches!(network.status, NetworkSetupStatus::Connected)
+        && has_ready_local_physical_evidence(network)
+        && has_ready_evidence(network, NetworkEvidenceSource::PlatformApi)
+}
+
+fn has_ready_local_physical_evidence(network: &NetworkSettingsResponse) -> bool {
+    [
+        NetworkEvidenceSource::LocalAdapter,
+        NetworkEvidenceSource::LocalAddress,
+        NetworkEvidenceSource::LocalDefaultRoute,
+    ]
+    .into_iter()
+    .all(|source| has_ready_evidence(network, source))
+}
+
+fn has_ready_evidence(
+    network: &NetworkSettingsResponse,
+    expected_source: NetworkEvidenceSource,
+) -> bool {
+    network.diagnostics.iter().any(|diagnostic| {
+        diagnostic.evidence.as_ref().is_some_and(|evidence| {
+            evidence.source == expected_source && evidence.status == NetworkEvidenceStatus::Ready
+        })
+    })
 }
 
 fn local_network_ready_response(ssid: &str, hidden: bool) -> NetworkSettingsResponse {
@@ -588,22 +633,24 @@ impl NetworkAdapter for FakeNetworkAdapter {
     ) -> NetworkSettingsResponse {
         let local = self.probe_local_network_readiness().await;
         let platform = match self.outcome.as_str() {
-            "success" | "pending_success" => NetworkSettingsResponse {
-                status: NetworkSetupStatus::Connected,
-                ssid: "existing-network".to_string(),
-                hidden: false,
-                diagnostics: vec![diagnostic_with_evidence(
-                    "provisioning_endpoint",
-                    "ok",
-                    "PRECLAIM_PLATFORM_API_REACHABLE",
-                    "Fake Platform API health endpoint is reachable",
-                    NetworkEvidenceSource::PlatformApi,
-                    NetworkEvidenceStatus::Ready,
-                    "Continue with machine claim.",
-                )],
-                operator_guidance: "现有网络已验证可访问平台。".to_string(),
-                updated_at: crate::state::store::now_iso(),
-            },
+            "success" | "pending_success" | "platform_success_local_failure" => {
+                NetworkSettingsResponse {
+                    status: NetworkSetupStatus::Connected,
+                    ssid: "existing-network".to_string(),
+                    hidden: false,
+                    diagnostics: vec![diagnostic_with_evidence(
+                        "provisioning_endpoint",
+                        "ok",
+                        "PRECLAIM_PLATFORM_API_REACHABLE",
+                        "Fake Platform API health endpoint is reachable",
+                        NetworkEvidenceSource::PlatformApi,
+                        NetworkEvidenceStatus::Ready,
+                        "Continue with machine claim.",
+                    )],
+                    operator_guidance: "现有网络已验证可访问平台。".to_string(),
+                    updated_at: crate::state::store::now_iso(),
+                }
+            }
             _ => failed_preclaim_probe_response(
                 "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
                 "Fake Platform API health endpoint is unreachable",
@@ -1477,6 +1524,76 @@ enum NativeWlanEvent {
 #[cfg(windows)]
 struct NativeWlanNotificationContext {
     sender: std::sync::mpsc::Sender<NativeWlanEvent>,
+    interface_guid: windows_sys::core::GUID,
+    profile_name: String,
+    ssid: String,
+}
+
+#[cfg(any(windows, test))]
+fn wlan_notification_matches_target(
+    expected_interface: [u8; 16],
+    notification_interface: [u8; 16],
+    expected_profile: &str,
+    notification_profile: &str,
+    expected_ssid: &str,
+    notification_ssid: &str,
+) -> bool {
+    expected_interface == notification_interface
+        && expected_profile == notification_profile
+        && expected_ssid == notification_ssid
+}
+
+#[cfg(any(windows, test))]
+fn wlan_reason_is_authentication_failure(reason: u32) -> bool {
+    // The documented WLAN_REASON_CODE_MSMSEC range is the connection
+    // security/authentication family, including
+    // MSMSEC_PSK_MISMATCH_SUSPECTED (294932).  Treat the whole family as an
+    // authentication result rather than flattening it into association or
+    // timeout; the numeric code remains in the diagnostic for operators.
+    (294_913..=294_939).contains(&reason)
+        || matches!(
+            reason,
+            163_853 // WLAN_REASON_CODE_KEY_MISMATCH
+                | 229_381 // WLAN_REASON_CODE_START_SECURITY_FAILURE
+                | 229_382 // WLAN_REASON_CODE_SECURITY_FAILURE
+                | 229_383 // WLAN_REASON_CODE_SECURITY_TIMEOUT
+                | 229_385 // WLAN_REASON_CODE_ROAMING_SECURITY_FAILURE
+                | 229_386 // WLAN_REASON_CODE_ADHOC_SECURITY_FAILURE
+                | 229_394 // WLAN_REASON_CODE_TOO_MANY_SECURITY_ATTEMPTS
+                | 524_294 // WLAN_REASON_CODE_MSM_SECURITY_MISSING
+                | 524_295 // WLAN_REASON_CODE_IHV_SECURITY_NOT_SUPPORTED
+                | 524_300 // WLAN_REASON_CODE_SECURITY_MISSING
+        )
+}
+
+#[cfg(windows)]
+fn wlan_guid_identity(guid: &windows_sys::core::GUID) -> [u8; 16] {
+    let mut identity = [0u8; 16];
+    identity[..4].copy_from_slice(&guid.data1.to_ne_bytes());
+    identity[4..6].copy_from_slice(&guid.data2.to_ne_bytes());
+    identity[6..8].copy_from_slice(&guid.data3.to_ne_bytes());
+    identity[8..].copy_from_slice(&guid.data4);
+    identity
+}
+
+#[cfg(windows)]
+fn wlan_notification_profile_name(
+    payload: &windows_sys::Win32::NetworkManagement::WiFi::WLAN_CONNECTION_NOTIFICATION_DATA,
+) -> Option<String> {
+    let length = payload
+        .strProfileName
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(payload.strProfileName.len());
+    String::from_utf16(&payload.strProfileName[..length]).ok()
+}
+
+#[cfg(windows)]
+fn wlan_notification_ssid(
+    payload: &windows_sys::Win32::NetworkManagement::WiFi::WLAN_CONNECTION_NOTIFICATION_DATA,
+) -> Option<&str> {
+    let length = usize::try_from(payload.dot11Ssid.uSSIDLength).ok()?.min(32);
+    std::str::from_utf8(&payload.dot11Ssid.ucSSID[..length]).ok()
 }
 
 #[cfg(windows)]
@@ -1504,6 +1621,22 @@ unsafe extern "system" fn native_wlan_notification_callback(
     }
     let payload = &*(notification.pData as *const WLAN_CONNECTION_NOTIFICATION_DATA);
     let context = &*(context as *const NativeWlanNotificationContext);
+    let Some(notification_profile) = wlan_notification_profile_name(payload) else {
+        return;
+    };
+    let Some(notification_ssid) = wlan_notification_ssid(payload) else {
+        return;
+    };
+    if !wlan_notification_matches_target(
+        wlan_guid_identity(&context.interface_guid),
+        wlan_guid_identity(&notification.InterfaceGuid),
+        &context.profile_name,
+        &notification_profile,
+        &context.ssid,
+        notification_ssid,
+    ) {
+        return;
+    }
     let event = if notification.NotificationCode == wlan_notification_acm_connection_complete as u32
         && payload.wlanReasonCode == WLAN_REASON_CODE_SUCCESS
     {
@@ -1577,7 +1710,12 @@ fn apply_windows_wlan_profile_native(
             }
 
             let (sender, receiver) = mpsc::channel();
-            let context = Box::new(NativeWlanNotificationContext { sender });
+            let context = Box::new(NativeWlanNotificationContext {
+                sender,
+                interface_guid: interface.InterfaceGuid,
+                profile_name: profile_name.clone(),
+                ssid: ssid.to_string(),
+            });
             let context_ptr = Box::into_raw(context);
             let mut previous_notification_source = 0;
             let registration = WlanRegisterNotification(
@@ -1811,18 +1949,7 @@ unsafe fn windows_wlan_is_associated_with_ssid(
 
 #[cfg(windows)]
 fn wlan_association_state_from_reason(reason: u32) -> WlanAssociationState {
-    use windows_sys::Win32::NetworkManagement::WiFi::{
-        WLAN_REASON_CODE_KEY_MISMATCH, WLAN_REASON_CODE_MSMSEC_AUTH_START_TIMEOUT,
-        WLAN_REASON_CODE_MSMSEC_AUTH_SUCCESS_TIMEOUT, WLAN_REASON_CODE_SECURITY_TIMEOUT,
-    };
-    if [
-        WLAN_REASON_CODE_KEY_MISMATCH,
-        WLAN_REASON_CODE_MSMSEC_AUTH_START_TIMEOUT,
-        WLAN_REASON_CODE_MSMSEC_AUTH_SUCCESS_TIMEOUT,
-        WLAN_REASON_CODE_SECURITY_TIMEOUT,
-    ]
-    .contains(&reason)
-    {
+    if wlan_reason_is_authentication_failure(reason) {
         WlanAssociationState::AuthenticationFailed(reason)
     } else {
         WlanAssociationState::AssociationFailed(reason)
@@ -1839,12 +1966,8 @@ fn inspect_windows_local_interface(
     interface_guid: Option<&windows_sys::core::GUID>,
 ) -> Result<LocalInterfaceObservation, String> {
     use std::{mem, ptr};
-    use windows_sys::Win32::NetworkManagement::{
-        IpHelper::{
-            ConvertInterfaceGuidToLuid, GetAdaptersAddresses, GAA_FLAG_INCLUDE_GATEWAYS,
-            IP_ADAPTER_ADDRESSES_LH,
-        },
-        Ndis::NET_IF_OPER_STATUS_UP,
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        ConvertInterfaceGuidToLuid, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
     };
     const ERROR_SUCCESS: u32 = 0;
     const ERROR_BUFFER_OVERFLOW: u32 = 111;
@@ -1866,7 +1989,7 @@ fn inspect_windows_local_interface(
         let mut buffer = vec![0u8; size as usize];
         let mut result = GetAdaptersAddresses(
             0,
-            GAA_FLAG_INCLUDE_GATEWAYS,
+            0,
             ptr::null(),
             buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
             &mut size,
@@ -1875,7 +1998,7 @@ fn inspect_windows_local_interface(
             buffer.resize(size as usize, 0);
             result = GetAdaptersAddresses(
                 0,
-                GAA_FLAG_INCLUDE_GATEWAYS,
+                0,
                 ptr::null(),
                 buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
                 &mut size,
@@ -1897,18 +2020,15 @@ fn inspect_windows_local_interface(
             let candidate = &*adapter;
             let matches_target =
                 target_luid.is_none_or(|target| candidate.Luid.Value == target.Value);
-            if matches_target
-                && physical_adapter_is_eligible(
-                    candidate.IfType,
-                    candidate.OperStatus == NET_IF_OPER_STATUS_UP,
-                )
-            {
-                let local_address_ready = adapter_has_usable_address(candidate);
-                let default_route_ready = !candidate.FirstGatewayAddress.is_null()
-                    && !(*candidate.FirstGatewayAddress)
-                        .Address
-                        .lpSockaddr
-                        .is_null();
+            if matches_target && interface_luid_is_present_physical_adapter(&candidate.Luid)? {
+                let address_families = adapter_usable_address_families(candidate);
+                let local_address_ready = address_families.any();
+                // A gateway field does not prove a real default route on this
+                // interface: it can be a VPN, virtual NIC, or another family.
+                let default_route_ready = interface_has_default_route_for_usable_family(
+                    &candidate.Luid,
+                    address_families,
+                )?;
                 let observation = LocalInterfaceObservation {
                     adapter_ready: true,
                     local_address_ready,
@@ -1933,12 +2053,70 @@ fn physical_adapter_is_eligible(if_type: u32, operational: bool) -> bool {
     operational && matches!(if_type, 6 | 71)
 }
 
-#[cfg(windows)]
-unsafe fn adapter_has_usable_address(
-    adapter: &windows_sys::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH,
+#[cfg(any(windows, test))]
+fn mib_if_row2_indicates_present_physical_adapter(
+    if_type: u32,
+    operational: bool,
+    interface_and_oper_status_flags: u8,
 ) -> bool {
+    // MIB_IF_ROW2::InterfaceAndOperStatusFlags: HardwareInterface is bit 0
+    // and ConnectorPresent is bit 2. Requiring both rejects virtual Ethernet
+    // paths such as Hyper-V in addition to the IF_TYPE tunnel/loopback filter.
+    physical_adapter_is_eligible(if_type, operational)
+        && interface_and_oper_status_flags & 0b0000_0101 == 0b0000_0101
+}
+
+#[cfg(windows)]
+unsafe fn interface_luid_is_present_physical_adapter(
+    luid: &windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH,
+) -> Result<bool, String> {
+    use std::mem;
+    use windows_sys::Win32::NetworkManagement::{
+        IpHelper::{GetIfEntry2, MIB_IF_ROW2},
+        Ndis::NET_IF_OPER_STATUS_UP,
+    };
+
+    const ERROR_SUCCESS: u32 = 0;
+    let mut row: MIB_IF_ROW2 = mem::zeroed();
+    row.InterfaceLuid = *luid;
+    let result = GetIfEntry2(&mut row);
+    if result != ERROR_SUCCESS {
+        return Err(format!(
+            "Windows could not inspect interface hardware flags (error {result})"
+        ));
+    }
+
+    // HardwareInterface and ConnectorPresent are bits 0 and 2 in
+    // MIB_IF_ROW2.InterfaceAndOperStatusFlags. Hyper-V, VPN, tunnel, and
+    // loopback paths must not pass just because they expose an Ethernet type.
+    Ok(mib_if_row2_indicates_present_physical_adapter(
+        row.Type,
+        row.OperStatus == NET_IF_OPER_STATUS_UP,
+        row.InterfaceAndOperStatusFlags._bitfield,
+    ))
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, Default)]
+struct UsableAddressFamilies {
+    ipv4: bool,
+    ipv6: bool,
+}
+
+#[cfg(windows)]
+impl UsableAddressFamilies {
+    fn any(self) -> bool {
+        self.ipv4 || self.ipv6
+    }
+}
+
+#[cfg(windows)]
+unsafe fn adapter_usable_address_families(
+    adapter: &windows_sys::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH,
+) -> UsableAddressFamilies {
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR_IN};
 
+    let mut families = UsableAddressFamilies::default();
     let mut address = adapter.FirstUnicastAddress;
     while !address.is_null() {
         let socket = (*address).Address.lpSockaddr;
@@ -1947,8 +2125,8 @@ unsafe fn adapter_has_usable_address(
                 AF_INET => {
                     let ipv4 = &*(socket.cast::<SOCKADDR_IN>());
                     let bytes = ipv4.sin_addr.S_un.S_addr.to_ne_bytes();
-                    if bytes[0] != 127 && !(bytes[0] == 169 && bytes[1] == 254) {
-                        return true;
+                    if ipv4_address_is_usable(&bytes) {
+                        families.ipv4 = true;
                     }
                 }
                 AF_INET6 => {
@@ -1957,10 +2135,8 @@ unsafe fn adapter_has_usable_address(
                     .sin6_addr
                     .u
                     .Byte;
-                    if bytes.iter().any(|byte| *byte != 0)
-                        && !(bytes[..15].iter().all(|byte| *byte == 0) && bytes[15] == 1)
-                    {
-                        return true;
+                    if ipv6_address_is_usable(&bytes) {
+                        families.ipv6 = true;
                     }
                 }
                 _ => {}
@@ -1968,7 +2144,67 @@ unsafe fn adapter_has_usable_address(
         }
         address = (*address).Next;
     }
-    false
+    families
+}
+
+#[cfg(any(windows, test))]
+fn ipv4_address_is_usable(bytes: &[u8; 4]) -> bool {
+    bytes[0] != 127 && !(bytes[0] == 169 && bytes[1] == 254) && bytes != &[0, 0, 0, 0]
+}
+
+#[cfg(any(windows, test))]
+fn ipv6_address_is_usable(bytes: &[u8; 16]) -> bool {
+    let unspecified = bytes.iter().all(|byte| *byte == 0);
+    let loopback = bytes[..15].iter().all(|byte| *byte == 0) && bytes[15] == 1;
+    // fe80::/10 is valid only on a link. It cannot alone demonstrate an
+    // Internet-capable local path.
+    let link_local = bytes[0] == 0xfe && bytes[1] & 0b1100_0000 == 0b1000_0000;
+    !unspecified && !loopback && !link_local
+}
+
+#[cfg(windows)]
+unsafe fn interface_has_default_route_for_usable_family(
+    luid: &windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH,
+    families: UsableAddressFamilies,
+) -> Result<bool, String> {
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+
+    if families.ipv4 && interface_has_default_route_for_family(luid, AF_INET)? {
+        return Ok(true);
+    }
+    if families.ipv6 && interface_has_default_route_for_family(luid, AF_INET6)? {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+#[cfg(windows)]
+unsafe fn interface_has_default_route_for_family(
+    luid: &windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH,
+    family: windows_sys::Win32::Networking::WinSock::ADDRESS_FAMILY,
+) -> Result<bool, String> {
+    use std::{ptr, slice};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        FreeMibTable, GetIpForwardTable2, MIB_IPFORWARD_TABLE2,
+    };
+
+    const ERROR_SUCCESS: u32 = 0;
+    let mut table: *mut MIB_IPFORWARD_TABLE2 = ptr::null_mut();
+    let result = GetIpForwardTable2(family, &mut table);
+    if result != ERROR_SUCCESS || table.is_null() {
+        return Err(format!(
+            "Windows could not inspect default routes for address family {family} (error {result})"
+        ));
+    }
+    let rows = slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize);
+    let ready = rows.iter().any(|row| {
+        row.InterfaceLuid.Value == luid.Value
+            && row.DestinationPrefix.PrefixLength == 0
+            && row.DestinationPrefix.Prefix.si_family == family
+            && row.Loopback == 0
+    });
+    FreeMibTable(table.cast());
+    Ok(ready)
 }
 
 #[cfg(test)]
@@ -2048,6 +2284,48 @@ mod tests {
             item.evidence.as_ref().is_some_and(|evidence| {
                 evidence.source == NetworkEvidenceSource::MqttBroker
                     && evidence.status == NetworkEvidenceStatus::NotConfigured
+            })
+        }));
+    }
+
+    #[test]
+    fn platform_success_cannot_mask_failed_physical_local_readiness() {
+        let local = local_network_unavailable_response(
+            "existing-network",
+            false,
+            "LOCAL_DEFAULT_ROUTE_UNAVAILABLE",
+            "The selected physical adapter has no usable default route",
+        );
+        let platform = NetworkSettingsResponse {
+            status: NetworkSetupStatus::Connected,
+            ssid: "existing-network".to_string(),
+            hidden: false,
+            diagnostics: vec![diagnostic_with_evidence(
+                "provisioning_endpoint",
+                "ok",
+                "PRECLAIM_PLATFORM_API_REACHABLE",
+                "Platform API is reachable through another path",
+                NetworkEvidenceSource::PlatformApi,
+                NetworkEvidenceStatus::Ready,
+                "Do not treat this as local physical readiness.",
+            )],
+            operator_guidance: "platform ready".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        };
+
+        let merged = merge_local_and_platform_probe(local, platform);
+
+        assert_eq!(merged.status, NetworkSetupStatus::Failed);
+        assert!(merged.diagnostics.iter().any(|item| {
+            item.evidence.as_ref().is_some_and(|evidence| {
+                evidence.source == NetworkEvidenceSource::LocalAdapter
+                    && evidence.status == NetworkEvidenceStatus::Failed
+            })
+        }));
+        assert!(merged.diagnostics.iter().any(|item| {
+            item.evidence.as_ref().is_some_and(|evidence| {
+                evidence.source == NetworkEvidenceSource::PlatformApi
+                    && evidence.status == NetworkEvidenceStatus::Ready
             })
         }));
     }
@@ -2208,6 +2486,85 @@ mod tests {
         assert!(!physical_adapter_is_eligible(24, true), "loopback");
         assert!(!physical_adapter_is_eligible(131, true), "tunnel/VPN");
         assert!(!physical_adapter_is_eligible(71, false), "down Wi-Fi");
+    }
+
+    #[test]
+    fn windows_local_readiness_requires_hardware_and_connector_mib_flags() {
+        assert!(mib_if_row2_indicates_present_physical_adapter(
+            6, true, 0b101
+        ));
+        assert!(!mib_if_row2_indicates_present_physical_adapter(
+            6, true, 0b001
+        ));
+        assert!(!mib_if_row2_indicates_present_physical_adapter(
+            6, true, 0b100
+        ));
+        assert!(!mib_if_row2_indicates_present_physical_adapter(
+            6, false, 0b101
+        ));
+        assert!(!mib_if_row2_indicates_present_physical_adapter(
+            131, true, 0b101
+        ));
+    }
+
+    #[test]
+    fn ipv6_link_local_address_cannot_independently_satisfy_local_readiness() {
+        assert!(!ipv4_address_is_usable(&[169, 254, 1, 1]));
+        assert!(ipv4_address_is_usable(&[192, 0, 2, 8]));
+        assert!(!ipv6_address_is_usable(&[
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]));
+        assert!(!ipv6_address_is_usable(&[
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]));
+        assert!(ipv6_address_is_usable(&[
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]));
+    }
+
+    #[test]
+    fn wlan_notification_context_accepts_only_the_requested_interface_profile_and_ssid() {
+        let interface = [1; 16];
+        assert!(wlan_notification_matches_target(
+            interface,
+            interface,
+            "VEM-WIFI-abc",
+            "VEM-WIFI-abc",
+            "VEM-Lab",
+            "VEM-Lab",
+        ));
+        assert!(!wlan_notification_matches_target(
+            interface,
+            [2; 16],
+            "VEM-WIFI-abc",
+            "VEM-WIFI-abc",
+            "VEM-Lab",
+            "VEM-Lab",
+        ));
+        assert!(!wlan_notification_matches_target(
+            interface,
+            interface,
+            "VEM-WIFI-abc",
+            "another-profile",
+            "VEM-Lab",
+            "VEM-Lab",
+        ));
+        assert!(!wlan_notification_matches_target(
+            interface,
+            interface,
+            "VEM-WIFI-abc",
+            "VEM-WIFI-abc",
+            "VEM-Lab",
+            "Other-WiFi",
+        ));
+    }
+
+    #[test]
+    fn wlan_psk_mismatch_reason_is_an_authentication_failure() {
+        // WLAN_REASON_CODE_MSMSEC_PSK_MISMATCH_SUSPECTED
+        assert!(wlan_reason_is_authentication_failure(294_932));
+        assert!(wlan_reason_is_authentication_failure(163_853)); // KEY_MISMATCH
+        assert!(!wlan_reason_is_authentication_failure(229_378)); // association failure
     }
 
     #[test]

@@ -216,11 +216,51 @@ async fn preclaim_endpoint_configuration_requires_daemon_probe_before_claim_curs
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+        .any(|item| item["evidence"]["source"] == "platform_api"
+            && item["evidence"]["status"] == "ready"
+            && item["code"] == "PRECLAIM_PLATFORM_API_REACHABLE"));
 
     let after = daemon.get_json("/v1/bring-up").await;
     assert_eq!(after["state"], "claim_required");
     assert_eq!(after["currentTask"]["kind"], "claim_machine");
+    daemon.terminate().await;
+}
+
+#[tokio::test]
+async fn preclaim_platform_success_cannot_claim_through_a_failed_physical_local_path() {
+    let mut config = configured_daemon();
+    config["machineCode"] = serde_json::Value::Null;
+    let mut daemon = DaemonHarness::start(
+        config,
+        &[
+            ("VEM_NETWORK_ADAPTER", "fake"),
+            ("VEM_FAKE_NETWORK_OUTCOME", "platform_success_local_failure"),
+        ],
+    )
+    .await
+    .expect("start");
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+
+    let response = execute_existing_network_probe_task(&daemon, base).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let probe: serde_json::Value = response.json().await.expect("probe json");
+    assert_eq!(probe["status"], "failed");
+    assert!(probe["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .any(|item| item["evidence"]["source"] == "local_adapter"
+            && item["evidence"]["status"] == "failed"));
+    assert!(probe["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .any(|item| item["evidence"]["source"] == "platform_api"
+            && item["evidence"]["status"] == "ready"));
+
+    let after = daemon.get_json("/v1/bring-up").await;
+    assert_eq!(after["state"], "network_required");
+    assert_eq!(after["allowedActions"]["claimMachine"], false);
     daemon.terminate().await;
 }
 
@@ -248,33 +288,29 @@ async fn protected_network_settings_connects_password_wifi_without_persisting_se
     assert_eq!(result["status"], "connected");
     assert_eq!(result["ssid"], "VEM-Lab");
     assert_eq!(result["hidden"], false);
+    for source in ["local_adapter", "local_address", "local_default_route"] {
+        assert!(
+            result["diagnostics"]
+                .as_array()
+                .expect("diagnostics")
+                .iter()
+                .any(|item| item["evidence"]["source"] == source
+                    && item["evidence"]["status"] == "ready"),
+            "{source} must be independently ready after Wi-Fi setup"
+        );
+    }
     assert!(result["diagnostics"]
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["component"] == "local_network"
-            && item["code"] == "LOCAL_NETWORK_CONNECTED"));
+        .any(|item| item["evidence"]["source"] == "platform_api"
+            && item["evidence"]["status"] == "pending"));
     assert!(result["diagnostics"]
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["component"] == "dhcp_ip" && item["code"] == "DHCP_IP_READY"));
-    assert!(result["diagnostics"]
-        .as_array()
-        .expect("diagnostics")
-        .iter()
-        .any(|item| item["component"] == "dns" && item["code"] == "DNS_READY"));
-    assert!(result["diagnostics"]
-        .as_array()
-        .expect("diagnostics")
-        .iter()
-        .any(|item| item["component"] == "provisioning_endpoint"
-            && item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
-    assert!(result["diagnostics"]
-        .as_array()
-        .expect("diagnostics")
-        .iter()
-        .any(|item| item["component"] == "mqtt" && item["code"] == "MQTT_REACHABLE"));
+        .any(|item| item["evidence"]["source"] == "mqtt_broker"
+            && item["evidence"]["status"] == "not_configured"));
     assert!(!result.to_string().contains(&wifi_password));
 
     let bring_up = daemon.get_json("/v1/bring-up").await;
@@ -283,7 +319,7 @@ async fn protected_network_settings_connects_password_wifi_without_persisting_se
         .expect("bring-up diagnostics")
         .iter()
         .any(|item| item["component"] == "provisioning_endpoint"
-            && item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+            && item["code"] == "PLATFORM_API_PENDING"));
 
     let logs = sensitive::read_text_files_under(&daemon.data_dir).await;
     assert!(
@@ -357,7 +393,7 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
         .expect("bring-up diagnostics")
         .iter()
         .any(|item| item["component"] == "provisioning_endpoint"
-            && item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+            && item["code"] == "PLATFORM_API_PENDING"));
     assert_eq!(after["allowedActions"]["startSales"], false);
 
     let root = daemon.data_dir.parent().expect("runtime root");
@@ -435,6 +471,26 @@ async fn network_bootstrap_moves_unclaimed_runtime_from_offline_to_claim_ready()
         execute_network_task(&daemon, base, "VEM-Field-WPA2", &wifi_password, false).await;
     assert_eq!(response.status(), StatusCode::OK);
 
+    let probe_response = execute_existing_network_probe_task(&daemon, base).await;
+    assert_eq!(probe_response.status(), StatusCode::OK);
+    let probe: serde_json::Value = probe_response.json().await.expect("probe json");
+    for source in [
+        "local_adapter",
+        "local_address",
+        "local_default_route",
+        "platform_api",
+    ] {
+        assert!(
+            probe["diagnostics"]
+                .as_array()
+                .expect("probe diagnostics")
+                .iter()
+                .any(|item| item["evidence"]["source"] == source
+                    && item["evidence"]["status"] == "ready"),
+            "{source} must be ready before the claim cursor advances"
+        );
+    }
+
     let after = daemon.get_json("/v1/bring-up").await;
     assert_eq!(after["state"], "claim_required");
     assert_eq!(after["readinessLevel"], "not_ready");
@@ -452,7 +508,7 @@ async fn network_bootstrap_moves_unclaimed_runtime_from_offline_to_claim_ready()
         .expect("diagnostics")
         .iter()
         .any(|item| item["component"] == "provisioning_endpoint"
-            && item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+            && item["code"] == "PRECLAIM_PLATFORM_API_REACHABLE"));
     assert!(!after.to_string().contains(&wifi_password));
 
     daemon.terminate().await;
@@ -548,7 +604,10 @@ async fn protected_network_settings_does_not_report_reachability_until_diagnosti
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["component"] == "dhcp_ip" && item["code"] == "DHCP_IP_PENDING"));
+        .any(|item| item["component"] == "local_address"
+            && item["evidence"]["source"] == "local_address"
+            && item["evidence"]["status"] == "pending"
+            && item["code"] == "DHCP_IP_PENDING"));
     assert!(!result.to_string().contains(&wifi_password));
 
     let bring_up = daemon.get_json("/v1/bring-up").await;
@@ -632,8 +691,9 @@ async fn protected_network_settings_accepts_hidden_ssid_manual_entry() {
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["component"] == "local_network"
-            && item["code"] == "LOCAL_NETWORK_CONNECTED"));
+        .any(|item| item["evidence"]["source"] == "local_adapter"
+            && item["evidence"]["status"] == "ready"
+            && item["code"] == "LOCAL_ADAPTER_READY"));
 
     daemon.terminate().await;
 }

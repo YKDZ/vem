@@ -92,6 +92,56 @@ type Subscription = {
 };
 
 const MAX_SEEN_EVENT_IDS = 1000;
+// Network setup failures carry five independently typed diagnostics.  Leave
+// ample room for all operator guidance while bounding untrusted daemon output
+// in the kiosk renderer.  Never parse a truncated JSON prefix.
+const MAX_DAEMON_RESPONSE_BYTES = 64 * 1024;
+
+type BoundedResponseText =
+  | { exceeded: false; text: string }
+  | { exceeded: true };
+
+async function readDaemonResponseText(
+  response: Response,
+): Promise<BoundedResponseText> {
+  const declaredLength = response.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    Number.isFinite(Number(declaredLength)) &&
+    Number(declaredLength) > MAX_DAEMON_RESPONSE_BYTES
+  ) {
+    return { exceeded: true };
+  }
+
+  if (!response.body) return { exceeded: false, text: "" };
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_DAEMON_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return { exceeded: true };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { exceeded: false, text: new TextDecoder().decode(body) };
+}
 
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
@@ -120,8 +170,28 @@ export class DaemonApiClient {
       return this.request(path, { ...options, retry401: false });
     }
 
+    const body = await readDaemonResponseText(response).catch(
+      (error: unknown) => {
+        throw new DaemonUnavailableError(
+          "could not read daemon response",
+          error,
+          {
+            statusCode: response.status,
+          },
+        );
+      },
+    );
+    const statusMessage = `${path} returned HTTP ${response.status}`;
+
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
+      if (body.exceeded) {
+        throw new DaemonUnavailableError(
+          `${statusMessage}; response body exceeds the safe read limit`,
+          undefined,
+          { statusCode: response.status },
+        );
+      }
+      const { text } = body;
       let responseCode: string | undefined;
       let responseMessage: string | undefined;
       try {
@@ -146,7 +216,6 @@ export class DaemonApiClient {
         responseCode = undefined;
         responseMessage = undefined;
       }
-      const statusMessage = `${path} returned HTTP ${response.status}`;
       throw new DaemonUnavailableError(
         responseMessage
           ? `${responseMessage} (${statusMessage})`
@@ -156,12 +225,21 @@ export class DaemonApiClient {
           statusCode: response.status,
           responseCode,
           responseMessage,
-          responseBody: text.slice(0, 2_000),
+          // This is either the complete bounded response or absent above;
+          // callers must never see a sliced JSON document.
+          responseBody: text,
         },
       );
     }
 
-    const text = await response.text();
+    if (body.exceeded) {
+      throw new DaemonUnavailableError(
+        `${path} response exceeds the safe read limit`,
+        undefined,
+        { statusCode: response.status },
+      );
+    }
+    const { text } = body;
     const parsed: unknown = text ? JSON.parse(text) : null;
     return parsed;
   }

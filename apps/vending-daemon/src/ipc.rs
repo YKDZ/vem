@@ -1119,7 +1119,7 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
     let network_status = ctx.ui.status_cache.network.read().await.clone();
     let network_bootstrap_reached_platform = network_status
         .as_ref()
-        .is_some_and(network_reached_platform);
+        .is_some_and(crate::network::is_ready_for_machine_claim);
     let snapshot = crate::bring_up::evaluate_bring_up(crate::bring_up::BringUpEvaluationInput {
         config,
         config_error,
@@ -1368,7 +1368,7 @@ async fn probe_existing_network_mutation(ctx: &IpcContext) -> axum::response::Re
             sync.last_error.as_deref(),
         ));
     drop(sync);
-    let proven = network_reached_platform(&response);
+    let proven = crate::network::is_ready_for_machine_claim(&response);
     *ctx.ui.status_cache.network.write().await = Some(response.clone());
     (
         if proven {
@@ -1636,17 +1636,6 @@ fn sale_component<'a>(
 
 fn sale_component_ready(snapshot: Option<&serde_json::Value>, component: &str) -> bool {
     sale_component_bool(snapshot, component, "ready")
-}
-
-fn network_reached_platform(network: &NetworkSettingsResponse) -> bool {
-    matches!(network.status, NetworkSetupStatus::Connected)
-        && network.diagnostics.iter().any(|item| {
-            item.evidence.as_ref().is_some_and(|evidence| {
-                evidence.source == crate::network::NetworkEvidenceSource::PlatformApi
-                    && evidence.status == crate::network::NetworkEvidenceStatus::Ready
-            }) || (item.component == "provisioning_endpoint"
-                && item.code == "PROVISIONING_ENDPOINT_REACHABLE")
-        })
 }
 
 fn sale_component_bool(snapshot: Option<&serde_json::Value>, component: &str, field: &str) -> bool {
@@ -4531,6 +4520,58 @@ mod tests {
         std::env::remove_var(name);
         EnvGuard { name, previous }
     }
+
+    fn completed_preclaim_network_response(ssid: &str) -> NetworkSettingsResponse {
+        use crate::network::{
+            NetworkDiagnostic, NetworkEvidenceSource, NetworkEvidenceStatus,
+            NetworkReadinessEvidence,
+        };
+
+        let ready =
+            |component: &str, code: &str, source: NetworkEvidenceSource| NetworkDiagnostic {
+                component: component.to_string(),
+                level: "ok".to_string(),
+                code: code.to_string(),
+                message: format!("fixture {component} is ready"),
+                evidence: Some(NetworkReadinessEvidence {
+                    source,
+                    status: NetworkEvidenceStatus::Ready,
+                    reason_code: code.to_string(),
+                    reason: format!("fixture {component} is ready"),
+                    recovery_action: "fixture evidence is already verified".to_string(),
+                }),
+            };
+
+        NetworkSettingsResponse {
+            status: NetworkSetupStatus::Connected,
+            ssid: ssid.to_string(),
+            hidden: false,
+            diagnostics: vec![
+                ready(
+                    "local_adapter",
+                    "LOCAL_ADAPTER_READY",
+                    NetworkEvidenceSource::LocalAdapter,
+                ),
+                ready(
+                    "local_address",
+                    "LOCAL_ADDRESS_READY",
+                    NetworkEvidenceSource::LocalAddress,
+                ),
+                ready(
+                    "local_default_route",
+                    "LOCAL_DEFAULT_ROUTE_READY",
+                    NetworkEvidenceSource::LocalDefaultRoute,
+                ),
+                ready(
+                    "provisioning_endpoint",
+                    "PRECLAIM_PLATFORM_API_REACHABLE",
+                    NetworkEvidenceSource::PlatformApi,
+                ),
+            ],
+            operator_guidance: "fixture pre-claim network is ready".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        }
+    }
     use wiremock::{
         matchers::{body_partial_json, method, path},
         Mock, MockServer, ResponseTemplate,
@@ -4673,20 +4714,8 @@ mod tests {
         // The IPC unit harness represents a daemon that has completed its
         // Local Network/Platform probe. Individual tests that exercise a
         // fresh, offline runtime clear this volatile evidence explicitly.
-        *status_cache.network.write().await = Some(NetworkSettingsResponse {
-            status: NetworkSetupStatus::Connected,
-            ssid: "test-network".to_string(),
-            hidden: false,
-            diagnostics: vec![crate::network::NetworkDiagnostic {
-                component: "provisioning_endpoint".to_string(),
-                level: "info".to_string(),
-                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
-                message: "reachable".to_string(),
-                evidence: None,
-            }],
-            operator_guidance: "reachable".to_string(),
-            updated_at: crate::state::store::now_iso(),
-        });
+        *status_cache.network.write().await =
+            Some(completed_preclaim_network_response("test-network"));
         let transaction = TransactionStateMachine::new(
             state.clone(),
             backend.clone(),
@@ -5055,20 +5084,7 @@ mod tests {
             _api_base_url: &str,
         ) -> crate::network::NetworkSettingsResponse {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            crate::network::NetworkSettingsResponse {
-                status: crate::network::NetworkSetupStatus::Connected,
-                ssid: "existing-network".to_string(),
-                hidden: false,
-                diagnostics: vec![crate::network::NetworkDiagnostic {
-                    component: "provisioning_endpoint".to_string(),
-                    level: "ok".to_string(),
-                    code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
-                    message: "fixture endpoint reachable".to_string(),
-                    evidence: None,
-                }],
-                operator_guidance: "fixture endpoint reachable".to_string(),
-                updated_at: crate::state::store::now_iso(),
-            }
+            completed_preclaim_network_response("existing-network")
         }
     }
 
@@ -9134,20 +9150,8 @@ mod tests {
     }
 
     async fn mark_claim_task_available(ctx: &IpcContext) {
-        *ctx.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
-            status: NetworkSetupStatus::Connected,
-            ssid: "field-network".to_string(),
-            hidden: false,
-            diagnostics: vec![crate::network::NetworkDiagnostic {
-                component: "provisioning_endpoint".to_string(),
-                level: "info".to_string(),
-                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
-                message: "reachable".to_string(),
-                evidence: None,
-            }],
-            operator_guidance: "reachable".to_string(),
-            updated_at: crate::state::store::now_iso(),
-        });
+        *ctx.ui.status_cache.network.write().await =
+            Some(completed_preclaim_network_response("field-network"));
     }
 
     #[tokio::test]
@@ -9299,20 +9303,8 @@ mod tests {
             .request_machine_reclaim()
             .await
             .expect("persist reclaim request");
-        *ctx.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
-            status: NetworkSetupStatus::Connected,
-            ssid: "field-network".to_string(),
-            hidden: false,
-            diagnostics: vec![crate::network::NetworkDiagnostic {
-                component: "provisioning_endpoint".to_string(),
-                level: "info".to_string(),
-                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
-                message: "reachable".to_string(),
-                evidence: None,
-            }],
-            operator_guidance: "reachable".to_string(),
-            updated_at: crate::state::store::now_iso(),
-        });
+        *ctx.ui.status_cache.network.write().await =
+            Some(completed_preclaim_network_response("field-network"));
         let app = build_router(ctx);
 
         let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
@@ -9362,20 +9354,8 @@ mod tests {
                 .request_machine_reclaim()
                 .await
                 .expect("persist reclaim request");
-            *ctx.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
-                status: NetworkSetupStatus::Connected,
-                ssid: "field-network".to_string(),
-                hidden: false,
-                diagnostics: vec![crate::network::NetworkDiagnostic {
-                    component: "provisioning_endpoint".to_string(),
-                    level: "info".to_string(),
-                    code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
-                    message: "reachable".to_string(),
-                    evidence: None,
-                }],
-                operator_guidance: "reachable".to_string(),
-                updated_at: crate::state::store::now_iso(),
-            });
+            *ctx.ui.status_cache.network.write().await =
+                Some(completed_preclaim_network_response("field-network"));
             ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow });
             let app = build_router(ctx);
             let response = post_json(
@@ -9415,20 +9395,8 @@ mod tests {
             "http://127.0.0.1:0",
         )
         .await;
-        *ctx.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
-            status: NetworkSetupStatus::Connected,
-            ssid: "field-network".to_string(),
-            hidden: false,
-            diagnostics: vec![crate::network::NetworkDiagnostic {
-                component: "provisioning_endpoint".to_string(),
-                level: "info".to_string(),
-                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
-                message: "reachable".to_string(),
-                evidence: None,
-            }],
-            operator_guidance: "reachable".to_string(),
-            updated_at: crate::state::store::now_iso(),
-        });
+        *ctx.ui.status_cache.network.write().await =
+            Some(completed_preclaim_network_response("field-network"));
         let before =
             get_ipc_json(&build_router(ctx.clone()), "/v1/bring-up", Some("token-1")).await;
         assert!(before["progress"]
@@ -9445,20 +9413,8 @@ mod tests {
             "http://127.0.0.1:0",
         )
         .await;
-        *restarted.ui.status_cache.network.write().await = Some(NetworkSettingsResponse {
-            status: NetworkSetupStatus::Connected,
-            ssid: "field-network".to_string(),
-            hidden: false,
-            diagnostics: vec![crate::network::NetworkDiagnostic {
-                component: "provisioning_endpoint".to_string(),
-                level: "info".to_string(),
-                code: "PROVISIONING_ENDPOINT_REACHABLE".to_string(),
-                message: "reachable".to_string(),
-                evidence: None,
-            }],
-            operator_guidance: "reachable".to_string(),
-            updated_at: crate::state::store::now_iso(),
-        });
+        *restarted.ui.status_cache.network.write().await =
+            Some(completed_preclaim_network_response("field-network"));
         let after = get_ipc_json(&build_router(restarted), "/v1/bring-up", Some("token-1")).await;
         assert!(after["progress"]
             .as_array()
