@@ -3445,7 +3445,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       },
     },
     finalReadiness: {
-      approvedPreclaimBase: approvedPreclaimBaseEvaluation,
+      approvedPreclaimBase: {
+        status: approvedPreclaimBaseEvaluation.status,
+        asserted: approvedPreclaimBaseEvaluation.asserted,
+      },
       cleanBasePreparationAcceptance: {
         status: cleanBaseEvaluation.status,
         asserted: cleanBaseEvaluation.asserted,

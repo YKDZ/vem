@@ -3559,13 +3559,6 @@ describe("win10-vem-e2e reset planning", () => {
       assert.deepEqual(report.finalReadiness.approvedPreclaimBase, {
         status: "failed",
         asserted: false,
-        diagnostic: {
-          code: "factory-preclaim-verify_invalid",
-          message:
-            "approved preclaim base verification returned invalid evidence",
-          detail:
-            "expected ok=true and factory-preclaim-verification/v1 schema and kind",
-        },
       });
       assert.equal(report.preparationVerifierStatus, "failed");
       assert.equal(report.ok, false);
@@ -3690,12 +3683,13 @@ describe("win10-vem-e2e reset planning", () => {
     const steps = [
       {
         ...plan.steps[0],
-        status: "passed",
-        exitCode: 0,
+        status: "failed",
+        exitCode: 1,
         stdoutPath: `${plan.artifacts.logsRoot}/01.stdout.log`,
         stderrPath: `${plan.artifacts.logsRoot}/01.stderr.log`,
-        parsed: approvedPreclaimBaseEvidence(),
-        error: null,
+        parsed: null,
+        error:
+          "postgres://vem_test:preclaim-db-pass@127.0.0.1:55432/vem_acceptance_run_181 token=preclaim-token password=preclaim-plain",
       },
       {
         ...plan.steps[1],
@@ -3733,6 +3727,9 @@ describe("win10-vem-e2e reset planning", () => {
     assert.equal(report.steps[0].parsed, undefined);
     assert.equal(report.steps[1].parsed, undefined);
     assert.doesNotMatch(serialized, /secret-db-pass/);
+    assert.doesNotMatch(serialized, /preclaim-db-pass/);
+    assert.doesNotMatch(serialized, /preclaim-token/);
+    assert.doesNotMatch(serialized, /password=preclaim-plain/);
     assert.doesNotMatch(serialized, /CLAIM-SECRET-181/);
     assert.doesNotMatch(serialized, /active-ipc-token/);
     assert.doesNotMatch(serialized, /active-token/);
