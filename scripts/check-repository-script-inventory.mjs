@@ -393,6 +393,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/vm-host-adapter-conformance.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
