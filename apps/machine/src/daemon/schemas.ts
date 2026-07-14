@@ -157,6 +157,12 @@ export const configSummarySchema = z.object({
   provisioningIssues: z.array(z.string()).default([]),
 });
 
+export const maintenanceSessionSchema = z.object({
+  sessionId: z.string().min(1),
+  expiresAt: z.iso.datetime(),
+  scopes: z.array(z.string().min(1)).min(1),
+});
+
 const bringUpReasonSchema = z.object({
   code: z.string(),
   component: z.string(),
@@ -629,6 +635,7 @@ export const daemonEventSchema = daemonIpcEventNotificationSchema;
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 export type ReadySnapshot = z.infer<typeof readySnapshotSchema>;
 export type ConfigSummary = z.infer<typeof configSummarySchema>;
+export type MaintenanceSession = z.infer<typeof maintenanceSessionSchema>;
 export type BringUpSnapshot = z.infer<typeof bringUpSnapshotSchema>;
 export type NetworkSettingsResponse = z.infer<
   typeof networkSettingsResponseSchema

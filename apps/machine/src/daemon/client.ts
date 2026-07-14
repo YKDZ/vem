@@ -20,6 +20,7 @@ import {
   machineSaleViewSnapshotSchema,
   provisioningClaimResponseSchema,
   maintenanceEnrollmentStatusSchema,
+  maintenanceSessionSchema,
   scannerStatusSchema,
   syncStatusSchema,
   transactionSnapshotSchema,
@@ -37,6 +38,7 @@ import {
   type NetworkSettingsResponse,
   type ProvisioningClaimResponse,
   type MaintenanceEnrollmentStatus,
+  type MaintenanceSession,
   type ReadySnapshot,
   type RemoteOpsStatus,
   type SaleViewSnapshot,
@@ -143,8 +145,13 @@ async function readDaemonResponseText(
   return { exceeded: false, text: new TextDecoder().decode(body) };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
+  private maintenanceSession: MaintenanceSession | null = null;
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventIdQueue: string[] = [];
 
@@ -158,6 +165,9 @@ export class DaemonApiClient {
       headers: {
         Authorization: `Bearer ${connection.token}`,
         "Content-Type": "application/json",
+        ...(this.maintenanceSession
+          ? { "x-vem-maintenance-session": this.maintenanceSession.sessionId }
+          : {}),
       },
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -271,6 +281,18 @@ export class DaemonApiClient {
     task: NonNullable<BringUpSnapshot["currentTask"]>,
     mutation: unknown,
   ): Promise<unknown> {
+    const protectedMutation =
+      task.kind === "reclaim_machine" &&
+      isRecord(mutation) &&
+      mutation.type === "claim_machine" &&
+      this.maintenanceSession
+        ? {
+            ...mutation,
+            maintenanceAuthorization: {
+              sessionId: this.maintenanceSession.sessionId,
+            },
+          }
+        : mutation;
     try {
       return await this.request("/v1/bring-up/tasks/execute", {
         method: "POST",
@@ -280,7 +302,7 @@ export class DaemonApiClient {
           taskVersion: task.taskVersion,
           kind: task.kind,
           intent: task.intent,
-          mutation,
+          mutation: protectedMutation,
         },
       });
     } catch (error: unknown) {
@@ -342,6 +364,24 @@ export class DaemonApiClient {
     return maintenanceEnrollmentStatusSchema.parse(
       await this.request("/v1/maintenance/status"),
     );
+  }
+
+  async beginMaintenanceSession(
+    pin: string,
+    scopes: string[] = [],
+  ): Promise<MaintenanceSession> {
+    const session = maintenanceSessionSchema.parse(
+      await this.request("/v1/maintenance/sessions", {
+        method: "POST",
+        body: { pin, scopes },
+      }),
+    );
+    this.maintenanceSession = session;
+    return session;
+  }
+
+  clearMaintenanceSession(): void {
+    this.maintenanceSession = null;
   }
 
   async getCatalog(): Promise<CatalogSnapshot> {

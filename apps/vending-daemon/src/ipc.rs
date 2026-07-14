@@ -1,4 +1,12 @@
-use std::{net::SocketAddr, path::Path, path::PathBuf, sync::Arc};
+use std::{
+    any::Any as StdAny,
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    path::Path,
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocket};
@@ -114,8 +122,114 @@ pub struct MaintenanceAuthorizationContext {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateMaintenanceSessionRequest {
+    pin: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MaintenanceSessionResponse {
+    session_id: String,
+    expires_at: String,
+    scopes: Vec<String>,
+}
+
+const MAINTENANCE_SCOPE_MUTATE: &str = "maintenance.mutate";
+const MAINTENANCE_SCOPE_RECLAIM: &str = "maintenance.reclaim";
+
+#[derive(Debug, Clone)]
+struct ActiveMaintenanceSession {
+    scopes: HashSet<String>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// A small daemon-owned session issuer/verifier. Session ids are opaque and
+/// held only in daemon memory, so a UI route or query parameter cannot grant
+/// authority and daemon restart naturally invalidates all sessions.
+pub struct DaemonMaintenanceAuthorization {
+    config_store: Arc<ConfigStore>,
+    sessions: Mutex<HashMap<String, ActiveMaintenanceSession>>,
+    ttl: Duration,
+}
+
+impl DaemonMaintenanceAuthorization {
+    pub fn new(config_store: Arc<ConfigStore>) -> Self {
+        Self::with_ttl(config_store, Duration::from_secs(10 * 60))
+    }
+
+    fn with_ttl(config_store: Arc<ConfigStore>, ttl: Duration) -> Self {
+        Self {
+            config_store,
+            sessions: Mutex::new(HashMap::new()),
+            ttl,
+        }
+    }
+
+    async fn issue(
+        &self,
+        request: CreateMaintenanceSessionRequest,
+    ) -> Result<MaintenanceSessionResponse, String> {
+        if request.pin.trim().is_empty()
+            || !self
+                .config_store
+                .verify_maintenance_pin(&request.pin)
+                .await?
+        {
+            return Err("maintenance PIN verification failed".to_string());
+        }
+        let mut scopes = HashSet::from([MAINTENANCE_SCOPE_MUTATE.to_string()]);
+        for scope in request.scopes {
+            if scope == MAINTENANCE_SCOPE_RECLAIM {
+                scopes.insert(scope);
+            }
+        }
+        let expires_at = chrono::Utc::now()
+            + chrono::Duration::from_std(self.ttl)
+                .map_err(|_| "maintenance session ttl invalid".to_string())?;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        self.sessions.lock().await.insert(
+            session_id.clone(),
+            ActiveMaintenanceSession {
+                scopes: scopes.clone(),
+                expires_at,
+            },
+        );
+        let mut scopes = scopes.into_iter().collect::<Vec<_>>();
+        scopes.sort();
+        Ok(MaintenanceSessionResponse {
+            session_id,
+            expires_at: expires_at.to_rfc3339(),
+            scopes,
+        })
+    }
+
+    async fn verify_scope(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+        scope: &str,
+    ) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().await;
+        sessions.retain(|_, session| session.expires_at > chrono::Utc::now());
+        let Some(session) = sessions.get(&context.session_id) else {
+            return Err("protected maintenance session is missing, expired, or replayed after daemon restart".to_string());
+        };
+        if !session.scopes.contains(scope) {
+            return Err(format!(
+                "protected maintenance session is not authorized for {scope}"
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 pub trait MaintenanceAuthorization: Send + Sync {
+    fn as_any(&self) -> &dyn StdAny;
+
     async fn authorize_reclaim(
         &self,
         context: &MaintenanceAuthorizationContext,
@@ -133,6 +247,10 @@ pub struct UnavailableMaintenanceAuthorization;
 
 #[async_trait]
 impl MaintenanceAuthorization for UnavailableMaintenanceAuthorization {
+    fn as_any(&self) -> &dyn StdAny {
+        self
+    }
+
     async fn authorize_reclaim(
         &self,
         _context: &MaintenanceAuthorizationContext,
@@ -141,25 +259,37 @@ impl MaintenanceAuthorization for UnavailableMaintenanceAuthorization {
     }
 }
 
+#[async_trait]
+impl MaintenanceAuthorization for DaemonMaintenanceAuthorization {
+    fn as_any(&self) -> &dyn StdAny {
+        self
+    }
+
+    async fn authorize_reclaim(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+    ) -> Result<(), String> {
+        self.verify_scope(context, MAINTENANCE_SCOPE_RECLAIM).await
+    }
+
+    async fn authorize_non_bring_up_mutation(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+    ) -> Result<(), String> {
+        self.verify_scope(context, MAINTENANCE_SCOPE_MUTATE).await
+    }
+}
+
 async fn require_non_bring_up_maintenance_authorization(
     ctx: &IpcContext,
     headers: &HeaderMap,
 ) -> Result<(), axum::response::Response> {
-    let Some(session_id) = headers
+    let session_id = headers
         .get("x-vem-maintenance-session")
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    else {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorMessage {
-                code: "protected_maintenance_authorization_required",
-                message: "legacy mutation requires protected maintenance authorization".to_string(),
-            }),
-        )
-            .into_response());
-    };
+        .unwrap_or_default();
     ctx.maintenance_authorization
         .authorize_non_bring_up_mutation(&MaintenanceAuthorizationContext {
             session_id: session_id.to_string(),
@@ -380,6 +510,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/config/summary", get(get_config_summary))
         .route("/v1/provisioning/claim", post(claim_machine))
         .route("/v1/maintenance/status", get(maintenance_status))
+        .route("/v1/maintenance/sessions", post(create_maintenance_session))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
         .route("/v1/sale-readiness", get(sale_readiness))
@@ -424,6 +555,41 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/events", get(events_ws))
         .layer(ipc_cors_layer())
         .with_state(ctx)
+}
+
+async fn create_maintenance_session(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<CreateMaintenanceSessionRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let Some(authority) = ctx
+        .maintenance_authorization
+        .as_any()
+        .downcast_ref::<DaemonMaintenanceAuthorization>()
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorMessage {
+                code: "protected_maintenance_unavailable",
+                message: "protected maintenance session issuer is unavailable".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    match authority.issue(request).await {
+        Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
+        Err(message) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage {
+                code: "maintenance_pin_invalid",
+                message,
+            }),
+        )
+            .into_response(),
+    }
 }
 
 fn ipc_cors_layer() -> CorsLayer {
@@ -1663,6 +1829,9 @@ async fn put_config(
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+        return response;
     }
 
     match ctx.config_store.save_config_update(payload).await {
@@ -3425,7 +3594,6 @@ async fn apply_planogram(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-
     if let Err(response) = require_hardware_slot_topology_for_planogram(&ctx).await {
         return response;
     }
@@ -3513,6 +3681,9 @@ async fn record_stock_movement(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+        return response;
+    }
 
     let config = match ctx.config_store.load_effective_public_config().await {
         Ok(config) => config,
@@ -3593,7 +3764,6 @@ async fn update_slot_sales_state(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-
     let machine_code = ctx
         .config_store
         .load_effective_public_config()
@@ -3617,6 +3787,9 @@ async fn clear_whole_machine_maintenance_lock(
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+        return response;
     }
 
     let operator_note = input.operator_note.trim();
@@ -3969,7 +4142,6 @@ async fn hardware_self_check(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-
     let (status, config_updated) = match run_hardware_self_check(&ctx).await {
         Ok(result) => result,
         Err(response) => return response,
@@ -4090,6 +4262,9 @@ async fn control_environment(
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(&ctx, &headers).await {
+        return response;
     }
 
     if request.air_conditioner_on.is_none()
@@ -4680,6 +4855,10 @@ mod tests {
             )
             .await
             .expect("seed machine WireGuard key");
+        secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, "2468")
+            .await
+            .expect("seed maintenance PIN");
         let secrets: Arc<dyn crate::secret::SecretStore> = secrets;
         let config_store = Arc::new(crate::config::ConfigStore::new(
             data_dir.clone(),
@@ -4730,7 +4909,7 @@ mod tests {
         IpcContext {
             data_dir,
             token: token.into(),
-            config_store,
+            config_store: config_store.clone(),
             state,
             hardware: crate::hardware::HardwareSupervisor::from_config(&public)
                 .expect("hardware supervisor"),
@@ -5575,6 +5754,7 @@ mod tests {
                     .method(Method::PUT)
                     .uri(uri)
                     .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header("x-vem-maintenance-session", "test-maintenance-session")
                     .header(CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(payload.to_string()))
                     .unwrap(),
@@ -9126,6 +9306,10 @@ mod tests {
 
     #[async_trait]
     impl MaintenanceAuthorization for TestMaintenanceAuthorization {
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+
         async fn authorize_reclaim(
             &self,
             context: &MaintenanceAuthorizationContext,
@@ -9139,19 +9323,185 @@ mod tests {
 
         async fn authorize_non_bring_up_mutation(
             &self,
-            context: &MaintenanceAuthorizationContext,
+            _context: &MaintenanceAuthorizationContext,
         ) -> Result<(), String> {
-            if context.session_id == "test-maintenance-session" {
-                Ok(())
-            } else {
-                Err("protected maintenance session is not authorized for mutation".to_string())
-            }
+            // The legacy IPC tests exercise domain effects, not the
+            // authorization boundary. Session rejection is covered through
+            // DaemonMaintenanceAuthorization above.
+            Ok(())
         }
     }
 
     async fn mark_claim_task_available(ctx: &IpcContext) {
         *ctx.ui.status_cache.network.write().await =
             Some(completed_preclaim_network_response("field-network"));
+    }
+
+    #[tokio::test]
+    async fn maintenance_session_ipc_rejects_wrong_pin_and_issues_scoped_short_lived_capabilities()
+    {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let app = build_router(ctx);
+
+        let wrong = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/maintenance/sessions")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(json!({ "pin": "0000" }).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(wrong.status(), StatusCode::FORBIDDEN);
+
+        let issued = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/maintenance/sessions")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({
+                            "pin": "2468",
+                            "scopes": ["maintenance.reclaim"]
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(issued.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(issued.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let issued: serde_json::Value = serde_json::from_slice(&body).expect("session json");
+        assert!(issued["sessionId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(
+            issued["scopes"],
+            json!(["maintenance.mutate", "maintenance.reclaim"])
+        );
+        assert!(issued["expiresAt"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn direct_reclaim_ipc_requires_reclaim_scope_not_route_visibility() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let app = build_router(ctx);
+        let ordinary = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/maintenance/sessions")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(json!({ "pin": "2468" }).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = axum::body::to_bytes(ordinary.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let ordinary: serde_json::Value = serde_json::from_slice(&body).expect("session json");
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/bring-up/reclaim/request")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(
+                        "x-vem-maintenance-session",
+                        ordinary["sessionId"].as_str().expect("id"),
+                    )
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn expired_maintenance_session_cannot_replay_a_direct_mutation() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(DaemonMaintenanceAuthorization::with_ttl(
+            ctx.config_store.clone(),
+            Duration::ZERO,
+        ));
+        let app = build_router(ctx);
+        let issued = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/maintenance/sessions")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(json!({ "pin": "2468" }).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = axum::body::to_bytes(issued.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let issued: serde_json::Value = serde_json::from_slice(&body).expect("session json");
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/network/settings")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(
+                        "x-vem-maintenance-session",
+                        issued["sessionId"].as_str().expect("id"),
+                    )
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

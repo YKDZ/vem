@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { formatMachineSlotCoordinate } from "@vem/shared";
-import { computed, onMounted, onUnmounted, reactive } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
@@ -52,6 +52,12 @@ const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
 const { handleMaintenanceTap } = useMaintenanceEntry();
+const maintenanceAuthentication = reactive({
+  pin: "",
+  loading: false,
+  message: null as string | null,
+});
+const maintenanceSessionActive = ref(false);
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
 const DIAGNOSTIC_DISPLAY_MAX_CHARS = 12_000;
 const DIAGNOSTIC_DISPLAY_MAX_DEPTH = 8;
@@ -171,6 +177,26 @@ const operatorEnteredMaintenance = computed(() => {
     ? source.includes("operator")
     : source === "operator";
 });
+
+async function beginProtectedMaintenance(): Promise<void> {
+  maintenanceAuthentication.loading = true;
+  maintenanceAuthentication.message = null;
+  try {
+    const session = await daemonClient.beginMaintenanceSession(
+      maintenanceAuthentication.pin,
+      operatorEnteredMaintenance.value ? ["maintenance.reclaim"] : [],
+    );
+    maintenanceSessionActive.value = true;
+    maintenanceAuthentication.pin = "";
+    maintenanceAuthentication.message = `已验证维护会话，${new Date(session.expiresAt).toLocaleTimeString("zh-CN")} 前有效。`;
+  } catch (error) {
+    maintenanceSessionActive.value = false;
+    maintenanceAuthentication.message =
+      error instanceof Error ? error.message : "维护 PIN 验证失败";
+  } finally {
+    maintenanceAuthentication.loading = false;
+  }
+}
 
 function cloneLowerControllerUsbIdentity(
   identity: MachineConfig["lowerControllerUsbIdentity"],
@@ -1091,6 +1117,146 @@ async function submitStockMovement(): Promise<void> {
           <h2>生产维护</h2>
         </div>
       </header>
+
+      <section
+        class="mt-4 rounded-3xl border border-white/10 bg-slate-950/30 p-4"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="text-left">
+            <p class="text-sm font-semibold text-slate-100">维护授权</p>
+            <p class="mt-1 text-sm text-slate-300">
+              健康与阻塞诊断始终可查看；修改机器前需验证 PIN。
+            </p>
+          </div>
+          <span
+            class="text-sm font-semibold"
+            :class="
+              maintenanceSessionActive ? 'text-emerald-200' : 'text-amber-200'
+            "
+          >
+            {{ maintenanceSessionActive ? "已授权" : "只读" }}
+          </span>
+        </div>
+        <form
+          v-if="!maintenanceSessionActive"
+          class="mt-3 flex flex-wrap gap-3"
+          @submit.prevent="beginProtectedMaintenance"
+        >
+          <input
+            v-model="maintenanceAuthentication.pin"
+            class="kiosk-touch-target min-w-40 rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-white outline-none"
+            type="password"
+            inputmode="numeric"
+            autocomplete="off"
+            placeholder="维护 PIN"
+            aria-label="维护 PIN"
+          />
+          <button
+            class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+            type="submit"
+            :disabled="
+              maintenanceAuthentication.loading ||
+              !maintenanceAuthentication.pin
+            "
+          >
+            验证并解锁
+          </button>
+        </form>
+        <p
+          v-if="maintenanceAuthentication.message"
+          class="mt-3 text-sm text-slate-200"
+          aria-live="polite"
+        >
+          {{ maintenanceAuthentication.message }}
+        </p>
+      </section>
+
+      <section
+        v-if="!operatorEnteredMaintenance && saleCriticalBlockers.length > 0"
+        class="mt-4 grid gap-3"
+        aria-label="当前阻塞项"
+      >
+        <h3 class="text-left text-sm font-semibold text-rose-100">
+          当前阻塞项
+        </h3>
+        <article
+          v-for="blocker in saleCriticalBlockers"
+          :key="`${blocker.component}-${blocker.code}`"
+          class="rounded-3xl border border-rose-300/30 bg-rose-500/15 p-4 text-left"
+        >
+          <p class="font-semibold text-rose-50">{{ blocker.operatorLabel }}</p>
+          <p class="mt-1 text-sm text-rose-100/90">
+            {{ blocker.operatorAction }}
+          </p>
+          <button
+            class="kiosk-touch-target mt-3 rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
+            type="button"
+            :disabled="!maintenanceSessionActive || hardwareMaintenance.loading"
+            @click="runHardwareCheck"
+          >
+            {{ maintenanceSessionActive ? "执行恢复自检" : "先验证 PIN" }}
+          </button>
+          <details class="mt-3 text-sm text-rose-100/80">
+            <summary>技术证据</summary>
+            <p class="mt-2">{{ blocker.code }} · {{ blocker.message }}</p>
+          </details>
+        </article>
+      </section>
+
+      <section
+        v-if="operatorEnteredMaintenance"
+        class="mt-4 grid gap-3 md:grid-cols-2"
+        aria-label="维护任务概览"
+      >
+        <article
+          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
+        >
+          <p class="font-semibold text-white">健康与连接</p>
+          <p class="mt-1 text-sm text-slate-300">
+            查看本地服务、平台与 MQTT 状态。
+          </p>
+          <button
+            class="kiosk-touch-target mt-3 rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100"
+            type="button"
+            :disabled="diagnostics.loading"
+            @click="refreshDiagnostics"
+          >
+            刷新诊断
+          </button>
+          <details class="mt-3 text-sm text-slate-300">
+            <summary>技术证据</summary>
+            <p class="mt-2">
+              {{ machineStore.health?.process.code ?? "未读取" }}
+            </p>
+          </details>
+        </article>
+        <article
+          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
+        >
+          <p class="font-semibold text-white">硬件与绑定</p>
+          <p class="mt-1 text-sm text-slate-300">
+            检查下位机、扫码器与视觉运行状态。
+          </p>
+          <button
+            class="kiosk-touch-target mt-3 rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
+            type="button"
+            :disabled="!maintenanceSessionActive || hardwareMaintenance.loading"
+            @click="runHardwareCheck"
+          >
+            执行设备检查
+          </button>
+          <details class="mt-3 text-sm text-slate-300">
+            <summary>技术证据</summary>
+            <p class="mt-2">
+              {{
+                machineStore.health?.hardwareOnline
+                  ? "下位机在线"
+                  : "下位机不可用"
+              }}
+            </p>
+          </details>
+        </article>
+      </section>
 
       <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
         <p

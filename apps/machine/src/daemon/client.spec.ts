@@ -50,6 +50,7 @@ beforeEach(() => {
   resetWs();
   vi.spyOn(globalThis, "fetch").mockReset();
   daemonClient["connection"] = null;
+  daemonClient["maintenanceSession"] = null;
   daemonClient["seenEventIds"].clear();
   daemonClient["seenEventIdQueue"].length = 0;
 });
@@ -82,6 +83,94 @@ function healthFixture() {
 }
 
 describe("DaemonApiClient", () => {
+  it("issues a daemon-maintained scoped session and attaches its opaque id only to later IPC calls", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "opaque-session",
+            expiresAt: "2026-07-14T12:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(healthFixture()), { status: 200 }),
+      );
+
+    await daemonClient.beginMaintenanceSession("2468");
+    await daemonClient.getHealth();
+
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:7891/v1/maintenance/sessions",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ pin: "2468", scopes: [] }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:7891/healthz",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-vem-maintenance-session": "opaque-session",
+        }),
+      }),
+    );
+  });
+
+  it("passes the daemon-issued reclaim capability inside the typed bring-up mutation", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "reclaim-session",
+            expiresAt: "2026-07-14T12:00:00.000Z",
+            scopes: ["maintenance.mutate", "maintenance.reclaim"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+
+    await daemonClient.beginMaintenanceSession("2468", ["maintenance.reclaim"]);
+    await daemonClient.executeBringUpTask(
+      {
+        contractVersion: 1,
+        taskId: "bring_up.reclaim_machine",
+        taskVersion: 1,
+        kind: "reclaim_machine",
+        intent: "reclaim_machine",
+        rotateMaintenanceIdentity: true,
+        projection: { type: "claim_code", rotateMaintenanceIdentity: true },
+      },
+      { type: "claim_machine", claimCode: "RECLAIM-1" },
+    );
+
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(
+      "http://127.0.0.1:7891/v1/bring-up/tasks/execute",
+      expect.objectContaining({
+        body: expect.stringContaining(
+          '"maintenanceAuthorization":{"sessionId":"reclaim-session"}',
+        ),
+      }),
+    );
+  });
+
   it("adds Authorization header to requests", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

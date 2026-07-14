@@ -178,7 +178,9 @@ async fn run_console_cycle(
         ui,
         background_shutdown: CancellationToken::new(),
         bring_up_execution_lock: Arc::new(tokio::sync::Mutex::new(())),
-        maintenance_authorization: Arc::new(ipc::UnavailableMaintenanceAuthorization),
+        maintenance_authorization: Arc::new(ipc::DaemonMaintenanceAuthorization::new(
+            config_store.clone(),
+        )),
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
         .await

@@ -1456,6 +1456,28 @@ impl ConfigStore {
         provisioning_profile_cache_summary_path(&self.data_dir)
     }
 
+    /// Compares the supplied field PIN inside the daemon boundary.  The PIN
+    /// itself never crosses into a persisted UI setting or diagnostic.
+    pub async fn verify_maintenance_pin(&self, supplied: &str) -> Result<bool, String> {
+        let Some(expected) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let supplied = supplied.trim().as_bytes();
+        let expected = expected.trim().as_bytes();
+        if supplied.len() != expected.len() {
+            return Ok(false);
+        }
+        let mut difference = 0u8;
+        for (left, right) in supplied.iter().zip(expected.iter()) {
+            difference |= left ^ right;
+        }
+        Ok(difference == 0)
+    }
+
     pub async fn ensure_maintenance_public_key(&self) -> Result<String, String> {
         self.maintenance.ensure_public_key().await
     }

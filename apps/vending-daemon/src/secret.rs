@@ -16,14 +16,18 @@ pub const MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT: &str = "machine_wireguard_priva
 pub const MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT: &str =
     "machine_wireguard_pending_private_key";
 pub const MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT: &str = "machine_maintenance_lifecycle";
+/// The field-maintenance PIN is deliberately a daemon-only secret.  It is
+/// never part of the IPC config summary or a UI runtime flag.
+pub const MACHINE_MAINTENANCE_PIN_ACCOUNT: &str = "machine_maintenance_pin";
 
-const SECRET_ACCOUNTS: [&str; 6] = [
+const SECRET_ACCOUNTS: [&str; 7] = [
     MACHINE_SECRET_ACCOUNT,
     MQTT_SIGNING_SECRET_ACCOUNT,
     MQTT_PASSWORD_ACCOUNT,
     MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
     MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
     MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+    MACHINE_MAINTENANCE_PIN_ACCOUNT,
 ];
 
 #[cfg(any(windows, test))]
@@ -94,6 +98,7 @@ impl FileSecretStore {
                 "machine_wireguard_pending_private_key"
             }
             MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle",
+            MACHINE_MAINTENANCE_PIN_ACCOUNT => "machine_maintenance_pin",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -117,6 +122,7 @@ impl ProtectedLocalSecretStore {
                 "machine_wireguard_pending_private_key.dpapi"
             }
             MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle.dpapi",
+            MACHINE_MAINTENANCE_PIN_ACCOUNT => "machine_maintenance_pin.dpapi",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -189,6 +195,7 @@ fn env_account_name(account: &str) -> Option<&'static str> {
         MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => Some("VEM_MACHINE_WIREGUARD_PRIVATE_KEY"),
         MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => None,
         MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => None,
+        MACHINE_MAINTENANCE_PIN_ACCOUNT => None,
         _ => None,
     }
 }

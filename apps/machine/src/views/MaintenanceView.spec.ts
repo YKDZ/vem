@@ -23,6 +23,7 @@ const {
   getConfigMock,
   saveConfigMock,
   downloadLogExportMock,
+  beginMaintenanceSessionMock,
   callTauriCommandMock,
   openVisionTryOnSessionMock,
   machineAudioPlaybackFactoryOverride,
@@ -44,6 +45,7 @@ const {
   getConfigMock: vi.fn(),
   saveConfigMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
+  beginMaintenanceSessionMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
   machineAudioPlaybackFactoryOverride: {
@@ -81,6 +83,7 @@ vi.mock("@/daemon/client", () => ({
     getConfig: getConfigMock,
     saveConfig: saveConfigMock,
     downloadLogExport: downloadLogExportMock,
+    beginMaintenanceSession: beginMaintenanceSessionMock,
   },
 }));
 
@@ -376,6 +379,11 @@ beforeEach(() => {
   getConfigMock.mockResolvedValue(provisionedConfigSummary());
   saveConfigMock.mockResolvedValue({});
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
+  beginMaintenanceSessionMock.mockResolvedValue({
+    sessionId: "maintenance-session-1",
+    expiresAt: "2026-07-14T12:00:00.000Z",
+    scopes: ["maintenance.mutate"],
+  });
   callTauriCommandMock.mockResolvedValue(undefined);
   openVisionTryOnSessionMock.mockResolvedValue({
     sessionId: "maintenance-session-1",
@@ -407,6 +415,40 @@ async function mountView(): Promise<HTMLElement> {
   await nextTick();
   return host;
 }
+
+it("keeps automatic maintenance diagnostics readable while mutations remain PIN-gated", async () => {
+  routeMock.query = {};
+  getReadyMock.mockResolvedValue(maintenanceReadyFixture());
+  const host = await mountView();
+
+  expect(host.textContent).toContain("只读");
+  expect(host.textContent).toContain("当前阻塞项");
+  const recovery = Array.from(host.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes("先验证 PIN"),
+  );
+  expect(recovery).toBeInstanceOf(HTMLButtonElement);
+  expect(recovery).toHaveProperty("disabled", true);
+});
+
+it("verifies the PIN through daemon IPC before enabling protected maintenance actions", async () => {
+  const host = await mountView();
+  const input = host.querySelector('input[aria-label="维护 PIN"]');
+  expect(input).toBeInstanceOf(HTMLInputElement);
+  (input as HTMLInputElement).value = "2468";
+  input?.dispatchEvent(new Event("input", { bubbles: true }));
+  await nextTick();
+  input
+    ?.closest("form")
+    ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await vi.waitFor(() => {
+    expect(beginMaintenanceSessionMock).toHaveBeenCalledWith("2468", [
+      "maintenance.reclaim",
+    ]);
+  });
+  await vi.waitFor(() => {
+    expect(host.textContent).toContain("已授权");
+  });
+});
 
 function submitButton(host: HTMLElement): HTMLButtonElement {
   const button = Array.from(host.querySelectorAll("button")).find((item) =>
@@ -494,7 +536,9 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).not.toContain("扫码器适配器");
     expect(host.textContent).not.toContain("visionWsUrl");
     expect(host.textContent).not.toContain("MockHardwareControls");
-    expect(host.querySelector("input[type='password']")).toBeNull();
+    expect(
+      host.querySelector("input[type='password']:not([aria-label='维护 PIN'])"),
+    ).toBeNull();
     expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
