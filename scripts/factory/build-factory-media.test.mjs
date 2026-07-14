@@ -1584,6 +1584,14 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(prepareOobe, /'suppress-oobe-privacy'/);
       assert.match(prepareOobe, /DisablePrivacyExperience/);
       assert.match(prepareOobe, /PrivacyConsentStatus/);
+      assert.match(
+        prepareOobe,
+        /Test-Path -LiteralPath \$oobeStatePath -PathType Container/,
+      );
+      assert.doesNotMatch(
+        prepareOobe,
+        /\$oobeStatePath\s*=.*\n\s*New-Item -Path \$oobeStatePath/,
+      );
       assert.match(prepareOobe, /'bootstrap-runtime'/);
       assert.match(prepareOobe, /Write-BootstrapStatus 'failed'/);
       assert.doesNotMatch(

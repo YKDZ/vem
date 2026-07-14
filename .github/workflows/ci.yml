@@ -43,6 +43,7 @@ jobs:
               - 'scripts/factory/**'
               - 'scripts/windows/**'
               - 'scripts/check-factory-manifest.test.mjs'
+              - 'scripts/check-windows-oobe-registry.test.mjs'
               - 'public/factory-manifest-v1.schema.json'
               - '.github/workflows/build-factory-iso.yml'
               - '.github/workflows/build-windows-runtime-artifacts.yml'
@@ -593,3 +594,6 @@ jobs:
 
       - name: Check Windows service wrapper
         run: cargo check -p vending-daemon --target x86_64-pc-windows-msvc
+
+      - name: Test Windows OOBE registry preservation
+        run: node --test scripts/check-windows-oobe-registry.test.mjs
