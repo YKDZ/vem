@@ -156,6 +156,7 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
       },
     ],
     requestedCapabilities: capabilities,
+    serialSession: null,
     ...overrides,
   };
 }
@@ -596,6 +597,12 @@ describe("VM Host Adapter contract", () => {
 
   it("hard-rejects stale request, report, and adapter contract versions", () => {
     const request = createVmHostAdapterRequest(requestFor());
+    const { serialSession: _serialSession, ...requestWithoutSerialSession } =
+      request;
+    assert.throws(
+      () => createVmHostAdapterRequest(requestWithoutSerialSession),
+      /serialSession/,
+    );
     assert.throws(
       () =>
         createVmHostAdapterRequest({

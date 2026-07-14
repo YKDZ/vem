@@ -336,6 +336,7 @@ function adapterRequest(
     audioCapture: null,
     assets,
     requestedCapabilities: capabilities,
+    serialSession: null,
   });
 }
 

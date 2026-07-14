@@ -144,6 +144,7 @@ function requestFor({ operation, run, targetIdentity, assets, kiosk }) {
         : null,
     assets,
     requestedCapabilities: CAPABILITIES[operation],
+    serialSession: null,
   });
 }
 

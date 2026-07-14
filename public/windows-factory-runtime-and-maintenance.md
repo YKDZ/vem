@@ -403,7 +403,7 @@ Assets, consumed assets, serial mapping roles, evidence roles, request and
 report objects all reject unknown keys and duplicates. Evidence is canonical
 `factory-evidence://sha256/<digest>` and must bind exactly to its lowercase
 digest. On failed, timed-out, or cancelled execution, the client writes a
-validated, sanitized `vem-vm-host-adapter-diagnostic/v1` artifact for upload.
+validated, sanitized `vem-vm-host-adapter-diagnostic/v2` artifact for upload.
 On `SIGINT` or `SIGTERM`, it aborts the active request, waits for the adapter
 process group after `SIGTERM` and `SIGKILL` escalation, and completes recovery
 cleanup before exiting; workflow `always()` cleanup remains the lifecycle

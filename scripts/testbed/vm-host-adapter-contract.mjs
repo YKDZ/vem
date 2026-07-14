@@ -284,7 +284,7 @@ function sameAssets(left, right) {
 }
 
 function isV2Request(request) {
-  return Object.hasOwn(request ?? {}, "serialSession");
+  return request?.schemaVersion === REQUEST_SCHEMA_VERSION;
 }
 
 function isSerialSessionOperation(operation) {
