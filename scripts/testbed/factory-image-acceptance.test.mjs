@@ -291,12 +291,15 @@ describe("Factory Image Acceptance lifecycle", () => {
         process.env.VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID,
       VEM_VM_HOST_ADAPTER_FAIL_OPERATION:
         process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION,
+      VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY:
+        process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY,
     };
     try {
       process.env.RUNNER_TEMP = root;
       process.env.VEM_VM_HOST_ADAPTER = adapter;
       process.env.VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID = `factory-cas://sha256/${"d".repeat(64)}`;
       process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION = "clean-install";
+      process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
       await assert.rejects(() =>
         runAdmittedFactoryImageAcceptanceLifecycle(input, {
           manifestIdentity: input.factory.manifestIdentity,
@@ -318,6 +321,7 @@ describe("Factory Image Acceptance lifecycle", () => {
         report.reports.cleanup.observed.baseIdentity,
         `factory-cas://sha256/${"a".repeat(64)}`,
       );
+      assert.equal(report.reports.cleanup.request.factoryMedia, null);
     } finally {
       for (const [key, value] of Object.entries(environment)) {
         if (value === undefined) delete process.env[key];
@@ -353,6 +357,8 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
         process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION,
       VEM_VM_HOST_ADAPTER_OPERATION_LOG:
         process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG,
+      VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY:
+        process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY,
     };
     try {
       process.env.PATH = `${bin}:${process.env.PATH}`;
@@ -362,6 +368,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION =
         "create-disposable-overlay";
       process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG = adapterLog;
+      process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
       await assert.rejects(() =>
         runAdmittedFactoryImageAcceptanceLifecycle(input, {
           manifestIdentity: input.factory.manifestIdentity,
@@ -377,6 +384,11 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       assert.equal(
         report.reports.postCleanup.captureApprovedBase.observed.baseIdentity,
         `factory-cas://sha256/${"f".repeat(64)}`,
+      );
+      assert.equal(
+        report.reports.postCleanup.captureApprovedBase.request.factoryMedia
+          .outputIdentity,
+        input.factory.isoIdentity,
       );
       assert.equal(report.reports.postCleanup.preclaimEvidence.unchanged, true);
       assert.equal(
@@ -412,6 +424,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
           RUNNER_TEMP: root,
           VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH: inputPath,
           VEM_VM_HOST_ADAPTER: adapter,
+          VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY: "1",
           VEM_VM_HOST_ADAPTER_OPERATION_LOG: adapterLog,
           VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID: `factory-cas://sha256/${"d".repeat(64)}`,
         },
@@ -439,6 +452,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
           RUNNER_TEMP: root,
           VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH: inputPath,
           VEM_VM_HOST_ADAPTER: adapter,
+          VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY: "1",
         },
       });
       assert.equal(result.status, 0, result.stderr);

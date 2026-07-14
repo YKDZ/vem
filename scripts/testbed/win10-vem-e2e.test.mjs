@@ -900,6 +900,7 @@ describe("win10-vem-e2e reset planning", () => {
         sessionId: 3,
         processId: 500,
         webView2ProcessId: null,
+        cdpTargetId: null,
         cdpAvailable: true,
         error: "kiosk_webview_not_verified",
       },
@@ -920,7 +921,9 @@ describe("win10-vem-e2e reset planning", () => {
         machineProcesses: [
           { processId: 501, ownerUser: "VEMKiosk", sessionId: 7 },
         ],
-        cdpTargets: [{ url: "http://tauri.localhost/#/" }],
+        cdpTargets: [
+          { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
+        ],
       }).webviewRunning,
       false,
     );
@@ -929,7 +932,9 @@ describe("win10-vem-e2e reset planning", () => {
       buildKioskRuntimeEvidence({
         activeSession,
         machineProcesses,
-        cdpTargets: [{ url: "http://tauri.localhost/#/" }],
+        cdpTargets: [
+          { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
+        ],
       }).webviewRunning,
       true,
     );
@@ -951,6 +956,7 @@ describe("win10-vem-e2e reset planning", () => {
         sessionId: 3,
         processId: 500,
         webView2ProcessId: 600,
+        cdpTargetId: null,
         cdpAvailable: false,
         error: null,
       },
@@ -1356,6 +1362,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /\$_\.sessionId -eq \$ActiveKioskSession\.sessionId/);
     assert.match(script, /webviewRunning = \$kioskRuntime.webviewRunning/);
     assert.match(script, /url = \$kioskRuntime.url/);
+    assert.match(script, /cdpTargetId = \$kioskRuntime.cdpTargetId/);
     assert.match(
       script,
       /webView2ProcessId = \$kioskRuntime.webView2ProcessId/,
@@ -2080,6 +2087,16 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/create-order"/,
+    );
+    assert.match(
+      script,
+      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/stock\/movements\/dispense-confirmation\?orderId=\$orderQuery&vendingCommandId=\$commandQuery" \$headers/,
+    );
+    assert.match(script, /\$attempt -lt 30/);
+    assert.doesNotMatch(script, /VEM_TESTBED_MACHINE_AUTH_TOKEN/);
+    assert.doesNotMatch(
+      script,
+      /machine-stock-movements\/dispense-confirmation/,
     );
     assert.doesNotMatch(script, /\/v1\/intents\/mock-payment/);
     assert.match(script, /paymentMethod = "payment_code"/);

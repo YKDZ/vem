@@ -59,6 +59,7 @@ jobs:
       VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER }}
       VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID }}
       VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE }}
+      VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID: ${{ vars.VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID }}
     steps:
       - name: Checkout Trusted Commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -182,6 +183,7 @@ jobs:
           test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER:-}"
           test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID:-}"
           test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE:-}"
+          test -n "${VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID:-}"
           node scripts/testbed/vm-host-adapter-conformance.mjs \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-conformance.json"
 

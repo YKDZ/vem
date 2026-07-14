@@ -461,7 +461,12 @@ async function runProductionFailureMatrix(options) {
   const cases = await runFailureMatrix({
     ...options,
     saleBinding: options.successfulSaleBinding,
-    failureModes: ["malformed-frame", "device-disconnected"],
+    failureModes: [
+      "malformed-frame",
+      "device-disconnected",
+      "swapped-roles",
+      "missing-device",
+    ],
   });
 
   let pendingSale;
@@ -681,6 +686,8 @@ async function runFailureMatrix({
     "device-disconnected",
     "scanner-timeout",
     "dispense-failed",
+    "swapped-roles",
+    "missing-device",
   ],
 }) {
   const cases = [];
@@ -690,6 +697,8 @@ async function runFailureMatrix({
       "device-disconnected": "serial_device_disconnected",
       "scanner-timeout": "serial_scanner_timeout",
       "dispense-failed": "serial_dispense_failed",
+      "swapped-roles": "serial_swapped_roles",
+      "missing-device": "serial_missing_device",
     }[failureMode];
     let session;
     try {

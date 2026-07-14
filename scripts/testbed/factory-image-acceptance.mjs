@@ -314,6 +314,19 @@ function adapterRequest(
     "capture-display": ["display-capture", "cancellation", "cleanup"],
     cleanup: ["cleanup", "cancellation"],
   }[operation];
+  const visualChallenge =
+    operation === "capture-display"
+      ? {
+          token: randomBytes(32).toString("hex"),
+          colorRgb: [...randomBytes(3)].map((component) => component || 1),
+          region: {
+            x: randomBytes(1)[0] % 1033,
+            y: randomBytes(1)[0] % 1897,
+            width: 48,
+            height: 24,
+          },
+        }
+      : null;
   return createVmHostAdapterRequest({
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-request/v2",
@@ -331,6 +344,8 @@ function adapterRequest(
         ? {
             activeKioskSession: displayBinding.activeKioskSession,
             tauriRoute: displayBinding.tauriRoute,
+            cdpTargetId: displayBinding.cdpTargetId,
+            visualChallenge,
           }
         : null,
     audioCapture: null,
@@ -517,7 +532,9 @@ function verifyRuntimeResult(path) {
     runtime.kioskRuntime?.sessionUser !== "VEMKiosk" ||
     !Number.isInteger(runtime.kioskRuntime?.sessionId) ||
     runtime.kioskRuntime.sessionId < 1 ||
-    !/^http:\/\/tauri\.localhost\/#\/.+/.test(runtime.kioskRuntime?.url ?? "")
+    !/^http:\/\/tauri\.localhost\/#\//.test(runtime.kioskRuntime?.url ?? "") ||
+    typeof runtime.kioskRuntime?.cdpTargetId !== "string" ||
+    runtime.kioskRuntime.cdpTargetId.length === 0
   ) {
     throw new Error(
       "runtime acceptance did not produce a runtime-ready assertion",
@@ -535,6 +552,7 @@ function verifyRuntimeResult(path) {
         sessionId: runtime.kioskRuntime.sessionId,
       },
       tauriRoute: runtime.kioskRuntime.url,
+      cdpTargetId: runtime.kioskRuntime.cdpTargetId,
     },
   };
 }

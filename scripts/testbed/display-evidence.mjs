@@ -19,7 +19,7 @@ function paeth(left, above, upperLeft) {
   return aboveDistance <= upperLeftDistance ? above : upperLeft;
 }
 
-export function inspectPng(bytes) {
+export function inspectPng(bytes, { challenge = null } = {}) {
   if (
     !Buffer.isBuffer(bytes) ||
     bytes.length < 45 ||
@@ -69,6 +69,26 @@ export function inspectPng(bytes) {
     return malformed("PNG must contain IHDR and IDAT chunks");
   const channels = colorType === 6 ? 4 : 3;
   const stride = width * channels;
+  if (challenge !== null) {
+    const { colorRgb, region } = challenge;
+    if (
+      !Array.isArray(colorRgb) ||
+      colorRgb.length !== 3 ||
+      colorRgb.some((component) => !Number.isInteger(component)) ||
+      !region ||
+      !Number.isInteger(region.x) ||
+      !Number.isInteger(region.y) ||
+      !Number.isInteger(region.width) ||
+      !Number.isInteger(region.height) ||
+      region.x < 0 ||
+      region.y < 0 ||
+      region.width < 1 ||
+      region.height < 1 ||
+      region.x + region.width > width ||
+      region.y + region.height > height
+    )
+      return malformed("PNG challenge region is invalid");
+  }
   let raw;
   try {
     raw = inflateSync(idat);
@@ -80,6 +100,7 @@ export function inspectPng(bytes) {
   let previous = Buffer.alloc(stride);
   const pixels = new Set();
   let nonTransparentPixelCount = 0;
+  let matchingChallengePixelCount = 0;
   for (let row = 0; row < height; row += 1) {
     const filter = raw.readUInt8(row * (stride + 1));
     const scanline = Buffer.from(
@@ -106,6 +127,18 @@ export function inspectPng(bytes) {
         (column + 1) * channels,
       );
       if (channels === 3 || pixel[3] > 0) nonTransparentPixelCount += 1;
+      if (
+        challenge !== null &&
+        column >= challenge.region.x &&
+        column < challenge.region.x + challenge.region.width &&
+        row >= challenge.region.y &&
+        row < challenge.region.y + challenge.region.height &&
+        pixel[0] === challenge.colorRgb[0] &&
+        pixel[1] === challenge.colorRgb[1] &&
+        pixel[2] === challenge.colorRgb[2] &&
+        (channels === 3 || pixel[3] > 0)
+      )
+        matchingChallengePixelCount += 1;
       pixels.add(pixel.toString("hex"));
     }
     previous = scanline;
@@ -120,6 +153,7 @@ export function inspectPng(bytes) {
     nonTransparentPixelCount,
     nonTransparentPixelRatio: nonTransparentPixelCount / (width * height),
     distinctPixelCount: pixels.size,
+    ...(challenge === null ? {} : { matchingChallengePixelCount }),
   };
 }
 
@@ -127,6 +161,7 @@ export function inspectExportedDisplayCapture({
   directory,
   evidence,
   capture,
+  challenge = null,
 }) {
   if (!/^[a-f0-9]{64}\.png$/.test(evidence?.fileName ?? ""))
     throw new Error(
@@ -141,7 +176,7 @@ export function inspectExportedDisplayCapture({
     throw new Error(
       "display evidence file digest does not match its logical identity",
     );
-  const inspected = inspectPng(bytes);
+  const inspected = inspectPng(bytes, { challenge });
   if (!inspected.ok || inspected.nonTransparentPixelCount === 0)
     throw new Error(
       `display PNG capture is ${inspected.kind}: ${inspected.message ?? "transparent"}`,
@@ -159,5 +194,12 @@ export function inspectExportedDisplayCapture({
       throw new Error(
         `display capture ${key} does not match exported PNG inspection`,
       );
+  if (
+    challenge !== null &&
+    inspected.matchingChallengePixelCount !== challenge.matchingPixelCount
+  )
+    throw new Error(
+      "display challenge pixels do not match exported PNG inspection",
+    );
   return inspected;
 }

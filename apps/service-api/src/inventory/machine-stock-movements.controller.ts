@@ -2,7 +2,10 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
+  NotFoundException,
   Post,
+  Query,
   UseGuards,
 } from "@nestjs/common";
 import { ApiTags } from "@nestjs/swagger";
@@ -42,5 +45,31 @@ export class MachineStockMovementsController {
       ...body,
       machineCode: machine.code,
     });
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Get("dispense-confirmation")
+  async getDispenseConfirmation(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Query("orderId") orderId: string,
+    @Query("vendingCommandId") vendingCommandId: string,
+  ) {
+    if (!orderId || !vendingCommandId) {
+      throw new BadRequestException(
+        "orderId and vendingCommandId are required",
+      );
+    }
+    const evidence = await this.service.getAcceptedOrderBoundDispenseMovement(
+      machine,
+      orderId,
+      vendingCommandId,
+    );
+    if (!evidence) {
+      throw new NotFoundException(
+        "Accepted order-bound dispense movement not found",
+      );
+    }
+    return evidence;
   }
 }

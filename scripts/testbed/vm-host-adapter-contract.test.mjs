@@ -136,6 +136,12 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
         ? {
             activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
             tauriRoute: "http://tauri.localhost/#/",
+            cdpTargetId: "cdp-target-runtime-001",
+            visualChallenge: {
+              token: "d".repeat(64),
+              colorRgb: [23, 141, 209],
+              region: { x: 24, y: 24, width: 48, height: 24 },
+            },
           }
         : null,
     audioCapture:
@@ -465,12 +471,27 @@ function reportFor(request, overrides = {}) {
             captureOperationReference: request.operationReference,
             activeKioskSession: request.displayCapture.activeKioskSession,
             tauriRoute: request.displayCapture.tauriRoute,
+            cdpTargetId: request.displayCapture.cdpTargetId,
+            foregroundKiosk: {
+              activeKioskSession: request.displayCapture.activeKioskSession,
+              tauriRoute: request.displayCapture.tauriRoute,
+              cdpTargetId: request.displayCapture.cdpTargetId,
+              visible: true,
+            },
             cdpProbe: {
               endpoint: "http://127.0.0.1:9222/json",
+              targetId: request.displayCapture.cdpTargetId,
               targetUrl: request.displayCapture.tauriRoute,
               appVisible: true,
               appTextLength: 16,
               domNodeCount: 3,
+              challengeToken: request.displayCapture.visualChallenge.token,
+            },
+            visualChallenge: {
+              ...request.displayCapture.visualChallenge,
+              matchingPixelCount:
+                request.displayCapture.visualChallenge.region.width *
+                request.displayCapture.visualChallenge.region.height,
             },
             capture: {
               source: "contract-test-generated-png",
@@ -1481,7 +1502,7 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
-  it("requires the active sale route, 1080x1920 framebuffer, and a non-empty same-session CDP #app probe", () => {
+  it("requires a foreground kiosk binding, 1080x1920 framebuffer, and a matching CDP visual challenge", () => {
     const request = createVmHostAdapterRequest(requestFor("capture-display"));
     const report = reportFor(request);
     for (const displayCapture of [
@@ -1492,6 +1513,27 @@ describe("VM Host Adapter contract", () => {
       {
         ...report.displayCapture,
         cdpProbe: { ...report.displayCapture.cdpProbe, appTextLength: 0 },
+      },
+      {
+        ...report.displayCapture,
+        foregroundKiosk: {
+          ...report.displayCapture.foregroundKiosk,
+          visible: false,
+        },
+      },
+      {
+        ...report.displayCapture,
+        cdpProbe: {
+          ...report.displayCapture.cdpProbe,
+          targetId: "cdp-target-other-002",
+        },
+      },
+      {
+        ...report.displayCapture,
+        visualChallenge: {
+          ...report.displayCapture.visualChallenge,
+          matchingPixelCount: 1,
+        },
       },
       {
         ...report.displayCapture,
@@ -2154,7 +2196,7 @@ describe("VM Host Adapter contract", () => {
     assert.equal(diagnostic.diagnostics[0].code, "evidence_invalid");
   });
 
-  it("accepts the exact customer #/ route through the actual CLI", () => {
+  it("binds the CLI display capture to the supplied CDP target and generated visual challenge", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-display-cli-"));
     const out = join(root, "display.json");
     execFileSync(
@@ -2175,6 +2217,8 @@ describe("VM Host Adapter contract", () => {
         "3",
         "--tauri-route",
         "http://tauri.localhost/#/",
+        "--cdp-target-id",
+        "cdp-target-runtime-001",
         "--out",
         out,
       ],
@@ -2189,6 +2233,13 @@ describe("VM Host Adapter contract", () => {
     );
     const report = JSON.parse(readFileSync(out, "utf8"));
     assert.equal(report.displayCapture.tauriRoute, "http://tauri.localhost/#/");
+    assert.equal(report.displayCapture.cdpTargetId, "cdp-target-runtime-001");
+    assert.match(report.displayCapture.visualChallenge.token, /^[a-f0-9]{64}$/);
+    assert.equal(
+      report.displayCapture.visualChallenge.matchingPixelCount,
+      report.displayCapture.visualChallenge.region.width *
+        report.displayCapture.visualChallenge.region.height,
+    );
   });
 
   it("runs validated recovery cleanup after an ordinary adapter failure", async () => {
@@ -2490,6 +2541,26 @@ describe("VM Host Adapter contract", () => {
         paymentId: "payment-001",
         vendingCommandId: "vending-command-001",
       },
+      {
+        failureMode: "swapped-roles",
+        operation: "collect-serial-evidence",
+        result: "observed_failure",
+        adapterResult: "succeeded",
+        diagnosticCode: "serial_swapped_roles",
+        orderId: "order-001",
+        paymentId: "payment-001",
+        vendingCommandId: "vending-command-001",
+      },
+      {
+        failureMode: "missing-device",
+        operation: "collect-serial-evidence",
+        result: "observed_failure",
+        adapterResult: "succeeded",
+        diagnosticCode: "serial_missing_device",
+        orderId: "order-001",
+        paymentId: "payment-001",
+        vendingCommandId: "vending-command-001",
+      },
     ]);
     assert.doesNotMatch(
       JSON.stringify(report),
@@ -2572,6 +2643,7 @@ describe("VM Host Adapter contract", () => {
           VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID: "3",
           VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE:
             "http://tauri.localhost/#/",
+          VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID: "cdp-target-runtime-001",
           VEM_VM_HOST_CLEAN_INSTALL_STATUS: "blocked-issue15",
           VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
         },

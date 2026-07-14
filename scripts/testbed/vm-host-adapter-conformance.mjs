@@ -78,6 +78,9 @@ function activeKioskSessionFromEnvironment() {
   const tauriRoute = String(
     process.env.VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE ?? "",
   ).trim();
+  const cdpTargetId = String(
+    process.env.VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID ?? "",
+  ).trim();
   if (
     sessionUser !== "VEMKiosk" ||
     !Number.isInteger(sessionId) ||
@@ -86,11 +89,13 @@ function activeKioskSessionFromEnvironment() {
     throw new Error(
       "adapter conformance requires an observed VEMKiosk session binding",
     );
-  if (tauriRoute !== "http://tauri.localhost/#/")
+  if (!/^http:\/\/tauri\.localhost\/#\//.test(tauriRoute))
     throw new Error(
-      "adapter conformance requires an observed Tauri kiosk route",
+      "adapter conformance requires an observed Tauri kiosk hash route",
     );
-  return { sessionUser, sessionId, tauriRoute };
+  if (!/^[A-Za-z0-9._:-]{8,256}$/.test(cdpTargetId))
+    throw new Error("adapter conformance requires an observed CDP target id");
+  return { sessionUser, sessionId, tauriRoute, cdpTargetId };
 }
 
 function requestFor({ operation, run, targetIdentity, assets, kiosk }) {
@@ -119,6 +124,17 @@ function requestFor({ operation, run, targetIdentity, assets, kiosk }) {
               sessionId: kiosk.sessionId,
             },
             tauriRoute: kiosk.tauriRoute,
+            cdpTargetId: kiosk.cdpTargetId,
+            visualChallenge: {
+              token: randomBytes(32).toString("hex"),
+              colorRgb: [randomBytes(1)[0] || 1, randomBytes(1)[0] || 1, 255],
+              region: {
+                x: randomBytes(1)[0] % 1033,
+                y: randomBytes(1)[0] % 1897,
+                width: 48,
+                height: 24,
+              },
+            },
           }
         : null,
     audioCapture:

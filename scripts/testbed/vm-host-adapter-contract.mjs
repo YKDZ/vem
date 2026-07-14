@@ -143,6 +143,8 @@ const SANITIZED_DIAGNOSTIC_CODES = new Set([
   "serial_device_disconnected",
   "serial_scanner_timeout",
   "serial_dispense_failed",
+  "serial_swapped_roles",
+  "serial_missing_device",
 ]);
 
 const TERMINAL_RESULTS = new Set([
@@ -1265,9 +1267,68 @@ function assertTauriRoute(value, path, issues) {
   issue(issues, path, "must be a strict tauri.localhost hash route");
 }
 
+function assertCdpTargetId(value, path, issues) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{8,256}$/.test(value))
+    issue(issues, path, "must be a non-empty CDP target id");
+}
+
+function assertVisualChallenge(value, path, issues) {
+  if (!assertExactKeys(value, ["token", "colorRgb", "region"], path, issues))
+    return;
+  if (
+    typeof value.token !== "string" ||
+    !/^[a-f0-9]{32,128}$/.test(value.token)
+  )
+    issue(
+      issues,
+      `${path}.token`,
+      "must be a high-entropy visual challenge token",
+    );
+  if (
+    !Array.isArray(value.colorRgb) ||
+    value.colorRgb.length !== 3 ||
+    value.colorRgb.some(
+      (component) =>
+        !Number.isInteger(component) || component < 0 || component > 255,
+    ) ||
+    value.colorRgb.every((component) => component === 0)
+  )
+    issue(issues, `${path}.colorRgb`, "must be a non-black RGB triplet");
+  if (
+    !assertExactKeys(
+      value.region,
+      ["x", "y", "width", "height"],
+      `${path}.region`,
+      issues,
+    )
+  )
+    return;
+  for (const key of ["x", "y", "width", "height"])
+    if (!Number.isInteger(value.region[key]))
+      issue(issues, `${path}.region.${key}`, "must be an integer");
+  if (
+    value.region.x < 0 ||
+    value.region.y < 0 ||
+    value.region.width < 8 ||
+    value.region.height < 8 ||
+    value.region.x + value.region.width > 1080 ||
+    value.region.y + value.region.height > 1920
+  )
+    issue(
+      issues,
+      `${path}.region`,
+      "must remain inside the 1080x1920 foreground framebuffer",
+    );
+}
+
 function assertDisplayCaptureRequest(value, path, issues) {
   if (
-    !assertExactKeys(value, ["activeKioskSession", "tauriRoute"], path, issues)
+    !assertExactKeys(
+      value,
+      ["activeKioskSession", "tauriRoute", "cdpTargetId", "visualChallenge"],
+      path,
+      issues,
+    )
   )
     return;
   assertActiveKioskSession(
@@ -1276,12 +1337,12 @@ function assertDisplayCaptureRequest(value, path, issues) {
     issues,
   );
   assertTauriRoute(value.tauriRoute, `${path}.tauriRoute`, issues);
-  if (value.tauriRoute !== "http://tauri.localhost/#/")
-    issue(
-      issues,
-      `${path}.tauriRoute`,
-      "must request the exact customer sale route",
-    );
+  assertCdpTargetId(value.cdpTargetId, `${path}.cdpTargetId`, issues);
+  assertVisualChallenge(
+    value.visualChallenge,
+    `${path}.visualChallenge`,
+    issues,
+  );
 }
 
 function assertAudioCaptureRequest(value, path, issues) {
@@ -1628,7 +1689,10 @@ function assertDisplayCaptureResult(value, request, report, issues) {
         "captureOperationReference",
         "activeKioskSession",
         "tauriRoute",
+        "cdpTargetId",
+        "foregroundKiosk",
         "cdpProbe",
+        "visualChallenge",
         "capture",
       ],
       path,
@@ -1671,18 +1735,45 @@ function assertDisplayCaptureResult(value, request, report, issues) {
       "must match the requested active kiosk session",
     );
   assertTauriRoute(value.tauriRoute, `${path}.tauriRoute`, issues);
-  if (value.tauriRoute !== "http://tauri.localhost/#/")
-    issue(
-      issues,
-      `${path}.tauriRoute`,
-      "must prove the exact customer sale route",
-    );
   if (value.tauriRoute !== request.displayCapture?.tauriRoute)
     issue(issues, `${path}.tauriRoute`, "must bind the requested kiosk route");
+  assertCdpTargetId(value.cdpTargetId, `${path}.cdpTargetId`, issues);
+  if (value.cdpTargetId !== request.displayCapture?.cdpTargetId)
+    issue(issues, `${path}.cdpTargetId`, "must bind the requested CDP target");
+  if (
+    assertExactKeys(
+      value.foregroundKiosk,
+      ["activeKioskSession", "tauriRoute", "cdpTargetId", "visible"],
+      `${path}.foregroundKiosk`,
+      issues,
+    )
+  ) {
+    if (
+      JSON.stringify(value.foregroundKiosk.activeKioskSession) !==
+        JSON.stringify(request.displayCapture?.activeKioskSession) ||
+      value.foregroundKiosk.tauriRoute !== request.displayCapture?.tauriRoute ||
+      value.foregroundKiosk.cdpTargetId !==
+        request.displayCapture?.cdpTargetId ||
+      value.foregroundKiosk.visible !== true
+    )
+      issue(
+        issues,
+        `${path}.foregroundKiosk`,
+        "must prove the requested kiosk session, route, and CDP target are foreground-visible",
+      );
+  }
   if (
     assertExactKeys(
       value.cdpProbe,
-      ["endpoint", "targetUrl", "appVisible", "appTextLength", "domNodeCount"],
+      [
+        "endpoint",
+        "targetId",
+        "targetUrl",
+        "appVisible",
+        "appTextLength",
+        "domNodeCount",
+        "challengeToken",
+      ],
       `${path}.cdpProbe`,
       issues,
     )
@@ -1699,6 +1790,12 @@ function assertDisplayCaptureResult(value, request, report, issues) {
         `${path}.cdpProbe.targetUrl`,
         "must bind the captured route",
       );
+    if (value.cdpProbe.targetId !== value.cdpTargetId)
+      issue(
+        issues,
+        `${path}.cdpProbe.targetId`,
+        "must bind the foreground CDP target",
+      );
     if (value.cdpProbe.appVisible !== true)
       issue(
         issues,
@@ -1712,6 +1809,54 @@ function assertDisplayCaptureResult(value, request, report, issues) {
           `${path}.cdpProbe.${key}`,
           "must prove a non-empty #app DOM",
         );
+  }
+  if (
+    assertExactKeys(
+      value.visualChallenge,
+      ["token", "colorRgb", "region", "matchingPixelCount"],
+      `${path}.visualChallenge`,
+      issues,
+    )
+  ) {
+    assertVisualChallenge(
+      {
+        token: value.visualChallenge.token,
+        colorRgb: value.visualChallenge.colorRgb,
+        region: value.visualChallenge.region,
+      },
+      `${path}.visualChallenge`,
+      issues,
+    );
+    if (
+      JSON.stringify({
+        token: value.visualChallenge.token,
+        colorRgb: value.visualChallenge.colorRgb,
+        region: value.visualChallenge.region,
+      }) !== JSON.stringify(request.displayCapture?.visualChallenge)
+    )
+      issue(
+        issues,
+        `${path}.visualChallenge`,
+        "must bind the requested visual challenge",
+      );
+    const requiredPixels =
+      value.visualChallenge.region?.width *
+      value.visualChallenge.region?.height;
+    if (
+      !Number.isInteger(value.visualChallenge.matchingPixelCount) ||
+      value.visualChallenge.matchingPixelCount !== requiredPixels
+    )
+      issue(
+        issues,
+        `${path}.visualChallenge.matchingPixelCount`,
+        "must prove every requested challenge pixel was visible in the framebuffer",
+      );
+    if (value.cdpProbe?.challengeToken !== value.visualChallenge.token)
+      issue(
+        issues,
+        `${path}.cdpProbe.challengeToken`,
+        "must prove the CDP target observed the visual challenge token",
+      );
   }
   if (
     !assertExactKeys(
@@ -3461,6 +3606,7 @@ export async function runVmHostAdapter({
           directory: scopedEvidenceDirectory,
           evidence,
           capture: outcome.report.displayCapture.capture,
+          challenge: outcome.report.displayCapture.visualChallenge,
         });
       else
         inspectExportedDefaultAudioCapture({

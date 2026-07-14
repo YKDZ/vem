@@ -76,12 +76,27 @@ function displayCapture(request, evidenceEntry) {
     captureOperationReference: request.operationReference,
     activeKioskSession: request.displayCapture.activeKioskSession,
     tauriRoute: request.displayCapture.tauriRoute,
+    cdpTargetId: request.displayCapture.cdpTargetId,
+    foregroundKiosk: {
+      activeKioskSession: request.displayCapture.activeKioskSession,
+      tauriRoute: request.displayCapture.tauriRoute,
+      cdpTargetId: request.displayCapture.cdpTargetId,
+      visible: true,
+    },
     cdpProbe: {
       endpoint: "http://127.0.0.1:9222/json",
+      targetId: request.displayCapture.cdpTargetId,
       targetUrl: request.displayCapture.tauriRoute,
       appVisible: true,
       appTextLength: 16,
       domNodeCount: 3,
+      challengeToken: request.displayCapture.visualChallenge.token,
+    },
+    visualChallenge: {
+      ...request.displayCapture.visualChallenge,
+      matchingPixelCount:
+        request.displayCapture.visualChallenge.region.width *
+        request.displayCapture.visualChallenge.region.height,
     },
     capture: {
       source: "contract-test-generated-png",
@@ -93,12 +108,21 @@ function displayCapture(request, evidenceEntry) {
       pixelCount: 2_073_600,
       nonTransparentPixelCount: 2_073_600,
       nonTransparentPixelRatio: 1,
-      distinctPixelCount: 513,
+      distinctPixelCount: displayDistinctPixelCount(
+        request.displayCapture.visualChallenge,
+      ),
     },
   };
 }
 
-function materializeDisplayEvidence() {
+function displayDistinctPixelCount(challenge) {
+  const [red, green, blue] = challenge.colorRgb;
+  const isBackground = red === 16 && green === 24 && blue === 32;
+  const isPaletteColor = blue === 128 && (red === 0 || red === 1);
+  return isBackground || isPaletteColor ? 513 : 514;
+}
+
+function materializeDisplayEvidence(challenge) {
   const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
   if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -130,6 +154,24 @@ function materializeDisplayEvidence() {
       (0x80 << 8) |
       0xff;
     pixels.writeUInt32BE(color >>> 0, 1 + index * 4);
+  }
+  for (
+    let row = challenge.region.y;
+    row < challenge.region.y + challenge.region.height;
+    row += 1
+  ) {
+    const rowStart = row * (width * 4 + 1);
+    for (
+      let column = challenge.region.x;
+      column < challenge.region.x + challenge.region.width;
+      column += 1
+    ) {
+      const offset = rowStart + 1 + column * 4;
+      pixels[offset] = challenge.colorRgb[0];
+      pixels[offset + 1] = challenge.colorRgb[1];
+      pixels[offset + 2] = challenge.colorRgb[2];
+      pixels[offset + 3] = 255;
+    }
   }
   const bytes = Buffer.concat([
     signature,
@@ -346,7 +388,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     });
   const evidenceEntries =
     request.operation === "capture-display"
-      ? [materializeDisplayEvidence()]
+      ? [materializeDisplayEvidence(request.displayCapture.visualChallenge)]
       : request.operation === "capture-default-audio"
         ? [materializeDefaultAudioEvidence()]
         : [];
@@ -611,12 +653,16 @@ const observedSerialFaultCode =
     "device-disconnected",
     "scanner-timeout",
     "dispense-failed",
+    "swapped-roles",
+    "missing-device",
   ]).has(serialFault)
     ? {
         "malformed-frame": "serial_malformed_frame",
         "device-disconnected": "serial_device_disconnected",
         "scanner-timeout": "serial_scanner_timeout",
         "dispense-failed": "serial_dispense_failed",
+        "swapped-roles": "serial_swapped_roles",
+        "missing-device": "serial_missing_device",
       }[serialFault]
     : null;
 if (

@@ -1216,7 +1216,11 @@ export function buildKioskRuntimeEvidence({
           toNullableSessionId(candidate?.sessionId) === session?.sessionId,
       )
     : null;
-  const cdpVerified = Boolean(session && process && target);
+  const cdpTargetId =
+    typeof target?.id === "string" && target.id.trim().length > 0
+      ? target.id
+      : null;
+  const cdpVerified = Boolean(session && process && target && cdpTargetId);
   const productionWebViewVerified = Boolean(
     session && process && webView2Process && cdpAvailable === false,
   );
@@ -1233,6 +1237,7 @@ export function buildKioskRuntimeEvidence({
     sessionId: session?.sessionId ?? null,
     processId: process?.processId ?? null,
     webView2ProcessId: webView2Process?.processId ?? null,
+    cdpTargetId,
     cdpAvailable,
     error: webviewRunning ? null : "kiosk_webview_not_verified",
   };
@@ -5022,6 +5027,7 @@ function Get-WebViewCdpUrlEvidence {
       return [pscustomobject]@{
         available = $true
         url = [string]$target[0].url
+        cdpTargetId = if ([string]::IsNullOrWhiteSpace([string]$target[0].id)) { $null } else { [string]$target[0].id }
         source = "webview_cdp"
         error = $null
       }
@@ -5029,6 +5035,7 @@ function Get-WebViewCdpUrlEvidence {
     return [pscustomobject]@{
       available = $true
       url = "unavailable:no-tauri-hash-route-target"
+      cdpTargetId = $null
       source = "webview_cdp"
       error = "no_tauri_hash_route_target"
     }
@@ -5036,6 +5043,7 @@ function Get-WebViewCdpUrlEvidence {
     return [pscustomobject]@{
       available = $false
       url = "unavailable:webview-cdp"
+      cdpTargetId = $null
       source = "webview_cdp"
       error = [string]$_
     }
@@ -5056,7 +5064,7 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     $_.sessionId -eq $ActiveKioskSession.sessionId
   } | Select-Object -First 1)
   $cdp = Get-WebViewCdpUrlEvidence
-  $cdpVerified = $kioskProcess.Count -gt 0 -and (Test-TauriHashRouteUrl ([string]$cdp.url))
+  $cdpVerified = $kioskProcess.Count -gt 0 -and (Test-TauriHashRouteUrl ([string]$cdp.url)) -and -not [string]::IsNullOrWhiteSpace([string]$cdp.cdpTargetId)
   $productionWebViewVerified = $kioskProcess.Count -gt 0 -and $kioskWebView2Process.Count -gt 0 -and -not [bool]$cdp.available
   return [ordered]@{
     webviewRunning = $cdpVerified -or $productionWebViewVerified
@@ -5067,6 +5075,7 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     webView2ProcessId = if ($kioskWebView2Process.Count -gt 0) { $kioskWebView2Process[0].processId } else { $null }
     sessionId = if ($null -ne $ActiveKioskSession) { [int]$ActiveKioskSession.sessionId } else { $null }
     cdpAvailable = [bool]$cdp.available
+    cdpTargetId = if ($cdpVerified) { [string]$cdp.cdpTargetId } else { $null }
     error = $cdp.error
   }
 }
@@ -6234,7 +6243,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     [string]$Facts.sale.paymentProviderCode -ne "mock" -or
     [string]::IsNullOrWhiteSpace($Facts.sale.paymentId) -or
     [string]::IsNullOrWhiteSpace($Facts.sale.paymentNo) -or
-    [string]$Facts.sale.paymentStatus -ne "paid" -or
+    [string]$Facts.sale.paymentStatus -ne "succeeded" -or
     -not [bool]$Facts.sale.paymentSucceeded -or
     [string]::IsNullOrWhiteSpace($Facts.sale.vendingCommandId) -or
     -not [bool]$Facts.sale.dispenseSimulated -or
@@ -6245,11 +6254,20 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_customer_sale_not_successful" "Simulated payment and simulated dispense must reach a successful customer-facing result."
   }
   if (
-    [string]$Facts.platformState.paymentStatus -ne "paid" -or
+    [string]$Facts.platformState.paymentStatus -ne "succeeded" -or
     [string]$Facts.platformState.fulfillmentStatus -ne "dispensed" -or
-    -not [bool]$Facts.platformState.stockMovementAccepted
+    -not [bool]$Facts.platformState.stockMovementAccepted -or
+    [string]$Facts.platformState.postSaleDispenseMovement.status -ne "accepted" -or
+    [string]::IsNullOrWhiteSpace([string]$Facts.platformState.postSaleDispenseMovement.movementId) -or
+    [string]$Facts.platformState.postSaleDispenseMovement.orderId -ne [string]$Facts.sale.orderId -or
+    [string]$Facts.platformState.postSaleDispenseMovement.vendingCommandId -ne [string]$Facts.sale.vendingCommandId -or
+    [int]$Facts.platformState.postSaleDispenseMovement.quantity -ne 1 -or
+    [int]$Facts.platformState.postSaleDispenseMovement.deltaQuantity -ne -1 -or
+    $null -eq $Facts.platformState.postSaleDispenseMovement.beforeQuantity -or
+    $null -eq $Facts.platformState.postSaleDispenseMovement.afterQuantity -or
+    ([int]$Facts.platformState.postSaleDispenseMovement.beforeQuantity - [int]$Facts.platformState.postSaleDispenseMovement.afterQuantity) -ne [int]$Facts.platformState.postSaleDispenseMovement.quantity
   ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_sale_state_not_updated" "Platform/testbed state must reflect paid, dispensed, and accepted stock movement results."
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_sale_state_not_updated" "Platform/testbed state must bind this fulfilled sale to an accepted post-sale dispense movement and its inventory delta."
   }
 
   return [ordered]@{
@@ -6324,6 +6342,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $paymentOptions = $null
   $createOrder = $null
   $currentTransaction = $null
+  $postSaleDispenseMovement = $null
   $selectedItem = $null
   $flowError = $null
   $effectiveProvisioningActions = @($ProvisioningActions)
@@ -6585,6 +6604,18 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $null
   }
+  if ($null -ne $orderId -and $null -ne $vendingCommandId) {
+    $orderQuery = [uri]::EscapeDataString($orderId)
+    $commandQuery = [uri]::EscapeDataString($vendingCommandId)
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+      try {
+        $postSaleDispenseMovement = Invoke-IpcJson "GET" "$baseUrl/v1/stock/movements/dispense-confirmation?orderId=$orderQuery&vendingCommandId=$commandQuery" $headers
+        break
+      } catch {
+        Start-Sleep -Seconds 1
+      }
+    }
+  }
   $dispenseResult = if ($fulfillmentStatus -eq "dispensed") {
     "dispensed"
   } elseif ($fulfillmentStatus -eq "dispense_failed") {
@@ -6659,18 +6690,28 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       paymentId = $paymentId
       paymentNo = $paymentNo
       paymentStatus = $paymentStatus
-      paymentSucceeded = $paymentStatus -eq "paid"
+      paymentSucceeded = $paymentStatus -eq "succeeded"
       vendingCommandId = $vendingCommandId
       dispenseSimulated = $true
       dispenseResult = $dispenseResult
       dispenseSucceeded = $fulfillmentStatus -eq "dispensed"
-      customerResult = if ($paymentStatus -eq "paid" -and $fulfillmentStatus -eq "dispensed") { "success" } elseif ($null -ne $flowError) { "failed" } else { "unknown" }
+      customerResult = if ($paymentStatus -eq "succeeded" -and $fulfillmentStatus -eq "dispensed") { "success" } elseif ($null -ne $flowError) { "failed" } else { "unknown" }
     }
     platformState = [ordered]@{
       orderStatus = $orderStatus
       paymentStatus = $paymentStatus
       fulfillmentStatus = $fulfillmentStatus
-      stockMovementAccepted = $stockUploadStatus -eq "accepted"
+      stockMovementAccepted = $null -ne $postSaleDispenseMovement -and [string]$postSaleDispenseMovement.status -eq "accepted"
+      postSaleDispenseMovement = [ordered]@{
+        movementId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.movementId } else { $null }
+        orderId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.orderId } else { $null }
+        vendingCommandId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.vendingCommandId } else { $null }
+        quantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.quantity } else { $null }
+        beforeQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.beforeQuantity } else { $null }
+        afterQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.afterQuantity } else { $null }
+        deltaQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.deltaQuantity } else { $null }
+        status = if ($null -ne $postSaleDispenseMovement -and [string]$postSaleDispenseMovement.status -eq "accepted") { "accepted" } else { "missing" }
+      }
     }
   }
 
@@ -6844,6 +6885,7 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       processId = $kioskRuntime.processId
       webView2ProcessId = $kioskRuntime.webView2ProcessId
       cdpAvailable = $kioskRuntime.cdpAvailable
+      cdpTargetId = $kioskRuntime.cdpTargetId
     }
     kioskDesktopEscape = $kioskDesktopEscape
   }

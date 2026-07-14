@@ -207,6 +207,11 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(conformance, /VEM_VM_HOST_FACTORY_ISO_ID/);
     assert.match(conformance, /VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID/);
+    assert.match(workflow, /VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID/);
+    assert.match(
+      conformance,
+      /test -n "\$\{VEM_VM_HOST_CONFORMANCE_KIOSK_CDP_TARGET_ID:-\}"/,
+    );
     assert.doesNotMatch(conformance, /VEM_VM_HOST_ADAPTER_CONFORMANCE/);
   });
 

@@ -89,6 +89,16 @@ export type ConfirmOrderBoundDispenseInput = {
   context: OrderBoundDispenseConfirmationContext;
 };
 
+export type AcceptedOrderBoundDispenseMovement = {
+  movementId: string;
+  orderId: string;
+  vendingCommandId: string;
+  quantity: number;
+  beforeQuantity: number | null;
+  afterQuantity: number | null;
+  deltaQuantity: number;
+};
+
 export type PendingFailedLinePartialRefundDecision = {
   orderId: string;
   orderItemIds: string[];
@@ -404,6 +414,70 @@ export class MachineStockMovementsRepository {
       )
       .limit(1);
 
+    return row ?? null;
+  }
+
+  async findAcceptedOrderBoundDispenseMovement(
+    machineId: string,
+    orderId: string,
+    vendingCommandId: string,
+  ): Promise<AcceptedOrderBoundDispenseMovement | null> {
+    const [row] = await this.db
+      .select({
+        movementId: machineRawStockMovements.movementId,
+        orderId: orders.id,
+        vendingCommandId: vendingCommands.id,
+        quantity: machineRawStockMovements.quantity,
+        beforeQuantity: sql<
+          number | null
+        >`(${machineRawStockMovements.payloadJson}->>'beforeQuantity')::int`,
+        afterQuantity: sql<
+          number | null
+        >`(${machineRawStockMovements.payloadJson}->>'afterQuantity')::int`,
+        deltaQuantity: inventoryMovements.deltaQty,
+      })
+      .from(machineRawStockMovements)
+      .innerJoin(
+        orders,
+        and(
+          eq(orders.id, orderId),
+          eq(orders.machineId, machineId),
+          eq(
+            sql`${machineRawStockMovements.payloadJson}->'orderContext'->>'orderNo'`,
+            orders.orderNo,
+          ),
+        ),
+      )
+      .innerJoin(
+        vendingCommands,
+        and(
+          eq(vendingCommands.id, vendingCommandId),
+          eq(vendingCommands.orderId, orders.id),
+          eq(
+            sql`${machineRawStockMovements.payloadJson}->'orderContext'->>'vendingCommandNo'`,
+            vendingCommands.commandNo,
+          ),
+        ),
+      )
+      .innerJoin(
+        inventoryMovements,
+        and(
+          eq(inventoryMovements.orderId, orders.id),
+          eq(inventoryMovements.reason, "purchase_confirmed"),
+          eq(
+            inventoryMovements.note,
+            sql`concat('machine_stock_movement:', ${machineRawStockMovements.id})`,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(machineRawStockMovements.machineId, machineId),
+          eq(machineRawStockMovements.movementType, "dispense_succeeded"),
+          eq(machineRawStockMovements.status, "accepted"),
+        ),
+      )
+      .limit(1);
     return row ?? null;
   }
 

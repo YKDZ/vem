@@ -96,6 +96,25 @@ pub struct StockMovementSaleSafetyBlocker {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DispenseConfirmation {
+    pub movement_id: String,
+    pub order_id: String,
+    pub vending_command_id: String,
+    pub quantity: i64,
+    pub before_quantity: Option<i64>,
+    pub after_quantity: Option<i64>,
+    pub delta_quantity: i64,
+    pub status: DispenseConfirmationStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DispenseConfirmationStatus {
+    Accepted,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineStockSnapshot {
@@ -642,6 +661,31 @@ impl BackendClient {
         .await
     }
 
+    pub async fn get_dispense_confirmation(
+        &self,
+        order_id: &str,
+        vending_command_id: &str,
+    ) -> Result<DispenseConfirmation, String> {
+        let url = reqwest::Url::parse("http://localhost")
+            .map(|mut url| {
+                url.set_path("/machine-stock-movements/dispense-confirmation");
+                url.query_pairs_mut()
+                    .append_pair("orderId", order_id)
+                    .append_pair("vendingCommandId", vending_command_id);
+                url
+            })
+            .map(|url| {
+                let path = url.path();
+                match url.query() {
+                    Some(query) => format!("{path}?{query}"),
+                    None => path.to_string(),
+                }
+            })
+            .map_err(|error| format!("build dispense confirmation url failed: {error}"))?;
+        self.request_json_typed(reqwest::Method::GET, &url, None, true)
+            .await
+    }
+
     pub async fn mark_mock_payment(
         &self,
         order_no: &str,
@@ -1109,6 +1153,100 @@ mod tests {
             .await
             .expect("status");
         assert_eq!(response["orderStatus"], "fulfilled");
+    }
+
+    #[tokio::test]
+    async fn backend_get_dispense_confirmation_uses_bearer_and_encodes_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken": "token-123",
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-stock-movements/dispense-confirmation"))
+            .and(query_param("orderId", "order /?&=1"))
+            .and(query_param("vendingCommandId", "command /?&=2"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "movementId": "MOVE-1",
+                "orderId": "order /?&=1",
+                "vendingCommandId": "command /?&=2",
+                "quantity": 1,
+                "beforeQuantity": 3,
+                "afterQuantity": 2,
+                "deltaQuantity": -1,
+                "status": "accepted",
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        client.authenticate("M-1", "S-1").await.expect("auth");
+        let response = client
+            .get_dispense_confirmation("order /?&=1", "command /?&=2")
+            .await
+            .expect("dispense confirmation");
+
+        assert_eq!(response.movement_id, "MOVE-1");
+        assert_eq!(response.status, DispenseConfirmationStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn backend_get_dispense_confirmation_refreshes_expired_bearer_token() {
+        let server = MockServer::start().await;
+        let auth_calls = Arc::new(AtomicUsize::new(0));
+        let auth_calls_for_mock = auth_calls.clone();
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(move |_request: &Request| {
+                let token = if auth_calls_for_mock.fetch_add(1, Ordering::SeqCst) == 0 {
+                    "expired-token"
+                } else {
+                    "fresh-token"
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "accessToken": token,
+                }))
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-stock-movements/dispense-confirmation"))
+            .and(header("authorization", "Bearer expired-token"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-stock-movements/dispense-confirmation"))
+            .and(header("authorization", "Bearer fresh-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "movementId": "MOVE-1",
+                "orderId": "order-1",
+                "vendingCommandId": "command-1",
+                "quantity": 1,
+                "beforeQuantity": 3,
+                "afterQuantity": 2,
+                "deltaQuantity": -1,
+                "status": "accepted",
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        client
+            .authenticate("M-1", "S-1")
+            .await
+            .expect("initial auth");
+        let response = client
+            .get_dispense_confirmation("order-1", "command-1")
+            .await
+            .expect("dispense confirmation");
+
+        assert_eq!(response.movement_id, "MOVE-1");
+        assert_eq!(auth_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

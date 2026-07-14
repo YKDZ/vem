@@ -179,12 +179,37 @@ function displayCaptureForOperation(operation) {
     throw new Error(
       "--tauri-route must be a strict tauri.localhost hash route",
     );
+  const rawChallenge = readOption("--visual-challenge-json", {
+    optional: true,
+  });
+  let visualChallenge;
+  if (rawChallenge) {
+    try {
+      visualChallenge = JSON.parse(rawChallenge);
+    } catch {
+      throw new Error("--visual-challenge-json must be valid JSON");
+    }
+  } else {
+    const bytes = randomBytes(8);
+    visualChallenge = {
+      token: randomBytes(32).toString("hex"),
+      colorRgb: [...randomBytes(3)].map((component) => component || 1),
+      region: {
+        x: bytes[0] % 1033,
+        y: bytes[1] % 1897,
+        width: 48,
+        height: 24,
+      },
+    };
+  }
   return {
     activeKioskSession: {
       sessionUser: readOption("--active-kiosk-session-user"),
       sessionId,
     },
     tauriRoute,
+    cdpTargetId: readOption("--cdp-target-id"),
+    visualChallenge,
   };
 }
 
