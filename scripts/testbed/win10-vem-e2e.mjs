@@ -8290,7 +8290,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             [...sshCommand.slice(1), remoteCommand],
             {
               encoding: "utf8",
-              input: remoteScript,
+              input: `${remoteScript}\n`,
               stdio: ["pipe", "pipe", "pipe"],
             },
           );

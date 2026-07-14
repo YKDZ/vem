@@ -674,6 +674,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       assert.match(sshStdin, /verify-factory-runtime\.ps1/);
       assert.match(sshStdin, /factory-preclaim-verification\/v1/);
       assert.match(sshStdin, /absentMachineIdentity/);
+      assert.ok(sshStdin.endsWith("\n\n"));
       assert.match(sshArgs, /StrictHostKeyChecking=accept-new/);
       assert.match(
         sshArgs,
