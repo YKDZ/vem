@@ -51,6 +51,7 @@ describe("display evidence PNG inspection", () => {
       heightPx: 2,
       pixelCount: 4,
       nonTransparentPixelCount: 4,
+      nonTransparentPixelRatio: 1,
       distinctPixelCount: 4,
     });
     const directory = mkdtempSync(join(tmpdir(), "vem-display-evidence-"));
@@ -71,6 +72,7 @@ describe("display evidence PNG inspection", () => {
           heightPx: 2,
           pixelCount: 4,
           nonTransparentPixelCount: 4,
+          nonTransparentPixelRatio: 1,
           distinctPixelCount: 4,
         },
       }).kind,
