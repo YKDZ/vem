@@ -48,32 +48,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
   });
 
-  it("downloads Windows runtime artifacts with bounded curl retries on the self-hosted runner", () => {
+  it("uses the approved Factory base instead of rebuilding or uploading runtime artifacts", () => {
     const workflow = readWorkflow();
-    const download = stepBlock(workflow, "Download Windows Runtime Artifacts");
 
     assert.match(workflow, /permissions:\n\s+actions: read\n\s+contents: read/);
-    assert.doesNotMatch(download, /uses:\s+actions\/download-artifact@v4/);
-    assert.match(download, /timeout-minutes:\s+25/);
-    assert.match(download, /ARTIFACT_NAME:/);
-    assert.match(
-      download,
-      /\$\{GITHUB_API_URL\}\/repos\/\$\{GITHUB_REPOSITORY\}\/actions\/runs\/\$\{GITHUB_RUN_ID\}\/artifacts/,
-    );
-    assert.match(download, /--max-time 120/);
-    assert.match(download, /--max-time 1200/);
-    assert.match(download, /--retry 3/);
-    assert.match(download, /archive_download_url/);
-    assert.match(download, /VEM_RUNTIME_ARTIFACT_CACHE_DIR/);
-    assert.match(download, /RUNNER_TOOL_CACHE/);
-    assert.match(download, /cache_key=/);
-    assert.match(download, /unzip -tq "\$cache_zip"/);
-    assert.match(download, /Using cached Windows runtime artifact zip/);
-    assert.match(download, /cp "\$artifact_zip" "\$cache_zip"/);
-    assert.match(
-      download,
-      /unzip -q "\$artifact_zip" -d artifacts\/vm-runtime-inputs/,
-    );
+    assert.doesNotMatch(workflow, /build-windows-artifacts/);
+    assert.doesNotMatch(workflow, /Download Windows Runtime Artifacts/);
+    assert.doesNotMatch(workflow, /vm-runtime-inputs/);
+    assert.match(workflow, /VEM_VM_HOST_APPROVED_BASE_ID/);
   });
 
   it("starts ephemeral infrastructure with explicit Postgres and MQTT readiness diagnostics", () => {
@@ -171,8 +153,21 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(endpoint, /vm-host-adapter-report\.json/);
     assert.match(endpoint, /endpoint\.reachability !== "discovered"/);
-    assert.match(endpoint, /VM_GUEST_MAINTENANCE_HOST=\$\{endpoint\.host\}/);
-    assert.match(endpoint, /VM_GUEST_MAINTENANCE_PORT=\$\{endpoint\.port\}/);
+    assert.match(
+      endpoint,
+      /VM_GUEST_MAINTENANCE_ENDPOINT_JSON=\$\{JSON\.stringify\(endpoint\)\}/,
+    );
+
+    const sshTrust = stepBlock(
+      workflow,
+      "Initialize Run-Scoped VM Guest SSH Trust",
+    );
+    assert.match(
+      sshTrust,
+      /known_hosts_path="\$MAINTENANCE_SSH_DIR\/known_hosts"/,
+    );
+    assert.match(sshTrust, /chmod 600 "\$known_hosts_path"/);
+    assert.match(sshTrust, /VM_RUNTIME_SSH_HOST_KEY_ALIAS/);
 
     const acceptanceBlock = workflow.slice(
       workflow.indexOf("- name: Run VM Runtime Acceptance"),
@@ -180,13 +175,24 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(
       acceptanceBlock,
-      /--remote\s+"\$WINDOWS_SSH_USER@\$VM_GUEST_MAINTENANCE_HOST"/,
+      /--factory-guest-endpoint-json\s+"\$VM_GUEST_MAINTENANCE_ENDPOINT_JSON"/,
     );
     assert.match(
       acceptanceBlock,
       /--maintenance-ingress-source-allowlist\s+"\$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP"/,
     );
-    assert.match(acceptanceBlock, /--ssh-port\s+"\$VM_GUEST_MAINTENANCE_PORT"/);
+    assert.match(
+      acceptanceBlock,
+      /--expected-testbed-user\s+"\$WINDOWS_SSH_USER"/,
+    );
+    assert.match(
+      acceptanceBlock,
+      /--ssh-known-hosts-path\s+"\$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH"/,
+    );
+    assert.match(
+      acceptanceBlock,
+      /--ssh-host-key-alias\s+"\$VM_RUNTIME_SSH_HOST_KEY_ALIAS"/,
+    );
     assert.match(
       acceptanceBlock,
       /--identity\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519"/,
@@ -264,6 +270,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       assert.match(exchange, requiredTextPattern(fileName));
       assert.match(leakGuard, requiredTextPattern(fileName));
     }
+    assert.match(leakGuard, requiredTextPattern("known_hosts"));
     assert.match(cleanup, /rm -rf -- "\$ssh_directory"/);
     assert.match(cleanup, /cleanup\.sshDirectoryRemoved/);
 

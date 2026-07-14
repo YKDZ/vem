@@ -547,6 +547,14 @@ function commandArg(command, flag) {
   return index === -1 ? undefined : command[index + 1];
 }
 
+function approvedPreclaimBaseEvidence() {
+  return {
+    schemaVersion: "factory-preclaim-verification/v1",
+    kind: "factory-preclaim-verification",
+    ok: true,
+  };
+}
+
 describe("win10-vem-e2e reset planning", () => {
   it("requires the exact protected GitHub gate and runner identity before secret media can be opened", () => {
     const trusted = {
@@ -2301,20 +2309,10 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(verifier, /hardwareModel = \$manifest\.hardware\.model/);
   });
 
-  it("plans VM runtime acceptance as a non-interactive CI-ready artifact workflow", () => {
+  it("plans VM runtime acceptance from an approved preclaim base", () => {
     const temp = mkdtempSync(join(tmpdir(), "vem-vm-acceptance-artifacts-"));
     try {
-      const daemonArtifact = join(temp, "vending-daemon.exe");
-      const machineUiArtifact = join(temp, "machine.exe");
-      const machineUiSidecar = join(temp, "WebView2Loader.dll");
       const outputPath = join(temp, "vm-runtime-acceptance-plan.json");
-      writeFileSync(daemonArtifact, "daemon acceptance artifact", "utf8");
-      writeFileSync(
-        machineUiArtifact,
-        "machine ui acceptance artifact",
-        "utf8",
-      );
-      writeFileSync(machineUiSidecar, "webview2 loader acceptance", "utf8");
 
       const result = spawnSync(
         process.execPath,
@@ -2332,10 +2330,23 @@ describe("win10-vem-e2e reset planning", () => {
           "http://127.0.0.1:26849/api",
           "--ephemeral-mqtt-url",
           "mqtt://127.0.0.1:1883",
-          "--daemon-artifact",
-          daemonArtifact,
-          "--machine-ui-artifact",
-          machineUiArtifact,
+          "--factory-guest-endpoint-json",
+          JSON.stringify({
+            protocol: "ssh",
+            host: "10.91.2.10",
+            port: 22,
+            reachability: "discovered",
+          }),
+          "--expected-testbed-user",
+          "YKDZ",
+          "--ssh-known-hosts-path",
+          "/tmp/vem-runtime-known-hosts",
+          "--ssh-host-key-alias",
+          "vem-runtime-run-181",
+          "--identity",
+          "/tmp/vem-runtime-id",
+          "--certificate",
+          "/tmp/vem-runtime-id-cert.pub",
           "--out",
           outputPath,
           "--dry-run",
@@ -2367,13 +2378,28 @@ describe("win10-vem-e2e reset planning", () => {
       assert.deepEqual(
         plan.steps.map((step) => step.name),
         [
-          "dirty-host factory reset acceptance",
+          "approved preclaim base verification",
           "ephemeral platform setup",
           "runtime acceptance",
           "simulated hardware sale flow",
         ],
       );
-      assert.equal(plan.steps[0].mode, "dirty-host-factory-acceptance");
+      assert.equal(plan.artifacts.source, "approved-preclaim-base");
+      assert.equal(plan.steps[0].mode, "factory-preclaim-verify");
+      assert.equal(commandArg(plan.steps[0].command, "--remote"), undefined);
+      assert.equal(
+        commandArg(plan.steps[0].command, "--factory-guest-endpoint-json"),
+        JSON.stringify({
+          protocol: "ssh",
+          host: "10.91.2.10",
+          port: 22,
+          reachability: "discovered",
+        }),
+      );
+      assert.equal(
+        commandArg(plan.steps[0].command, "--ssh-host-key-alias"),
+        "vem-runtime-run-181",
+      );
       assert.equal(plan.steps[1].command[0], "pnpm");
       assert.deepEqual(plan.steps[1].cwd, "apps/service-api");
       assert.ok(
@@ -2390,9 +2416,17 @@ describe("win10-vem-e2e reset planning", () => {
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(plan.readinessLevels.sellReady, "not_asserted");
-      assert.equal(plan.ci.requiredSecrets.includes("SSHPASS"), false);
-      assert.match(plan.artifacts.daemonSha256, /^[a-f0-9]{64}$/);
-      assert.match(plan.artifacts.machineUiSha256, /^[a-f0-9]{64}$/);
+      assert.deepEqual(plan.ci.requiredSecrets, []);
+      assert.deepEqual(plan.ci.requiredCredentials, [
+        "approved-preclaim-base",
+        "certificate-only-ssh",
+      ]);
+      assert.equal(
+        plan.steps.some(
+          (step) => step.mode === "dirty-host-factory-acceptance",
+        ),
+        false,
+      );
       assert.doesNotMatch(result.stdout, /pass@127\.0\.0\.1/);
       assert.doesNotMatch(
         readFileSync(outputPath, "utf8"),
@@ -3418,7 +3452,7 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
-  it("threads optional clean-base factory evidence through VM runtime acceptance without replacing dirty-host acceptance", () => {
+  it("threads optional clean-base factory evidence through preclaim-based runtime acceptance", () => {
     const plan = buildVmRuntimeAcceptancePlan({
       runId: "RUN-182",
       platformTarget: "ephemeral-run-182",
@@ -3440,7 +3474,7 @@ describe("win10-vem-e2e reset planning", () => {
       plan.steps.map((step) => step.name),
       [
         "clean-base factory preparation acceptance",
-        "dirty-host factory reset acceptance",
+        "approved preclaim base verification",
         "ephemeral platform setup",
         "runtime acceptance",
         "simulated hardware sale flow",
@@ -3465,7 +3499,11 @@ describe("win10-vem-e2e reset planning", () => {
           status: "passed",
           parsed: cleanBaseFactoryAcceptanceEvidence(),
         },
-        { ...plan.steps[1], status: "passed", parsed: {} },
+        {
+          ...plan.steps[1],
+          status: "passed",
+          parsed: approvedPreclaimBaseEvidence(),
+        },
       ],
     });
 
@@ -3477,13 +3515,10 @@ describe("win10-vem-e2e reset planning", () => {
       status: "passed",
       asserted: true,
     });
-    assert.equal(
-      report.finalReadiness.dirtyHostResetAcceptance.status,
-      "passed",
-    );
+    assert.equal(report.finalReadiness.approvedPreclaimBase.status, "passed");
   });
 
-  it("propagates a non-default SSH port to every VM acceptance child command", () => {
+  it("propagates run-scoped certificate SSH trust to every VM acceptance child command", () => {
     const plan = buildVmRuntimeAcceptancePlan({
       runId: "RUN-183",
       platformTarget: "ephemeral-run-183",
@@ -3495,13 +3530,23 @@ describe("win10-vem-e2e reset planning", () => {
       machineUiArtifactSha256: "b".repeat(64),
       remote: "maintainer@relay-vm.example",
       sshPort: 22022,
+      sshKnownHostsPath: "/tmp/vem-runtime-known-hosts",
+      sshHostKeyAlias: "vem-runtime-run-183",
     });
     for (const step of plan.steps.filter((step) =>
-      ["dirty-host factory reset acceptance", "runtime acceptance"].includes(
+      ["approved preclaim base verification", "runtime acceptance"].includes(
         step.name,
       ),
     )) {
       assert.equal(commandArg(step.command, "--ssh-port"), "22022");
+      assert.equal(
+        commandArg(step.command, "--ssh-known-hosts-path"),
+        "/tmp/vem-runtime-known-hosts",
+      );
+      assert.equal(
+        commandArg(step.command, "--ssh-host-key-alias"),
+        "vem-runtime-run-183",
+      );
     }
     const saleStep = plan.steps.find(
       (step) => step.name === "simulated hardware sale flow",
@@ -3513,6 +3558,14 @@ describe("win10-vem-e2e reset planning", () => {
     ]) {
       const childCommand = JSON.parse(commandArg(saleStep.command, option));
       assert.equal(commandArg(childCommand, "--ssh-port"), "22022");
+      assert.equal(
+        commandArg(childCommand, "--ssh-known-hosts-path"),
+        "/tmp/vem-runtime-known-hosts",
+      );
+      assert.equal(
+        commandArg(childCommand, "--ssh-host-key-alias"),
+        "vem-runtime-run-183",
+      );
     }
   });
 
@@ -3582,11 +3635,7 @@ describe("win10-vem-e2e reset planning", () => {
         exitCode: 0,
         stdoutPath: `${plan.artifacts.logsRoot}/01.stdout.log`,
         stderrPath: `${plan.artifacts.logsRoot}/01.stderr.log`,
-        parsed: {
-          runtimeAcceptanceFactsSubset: {
-            readyFile: { ipcToken: "active-ipc-token" },
-          },
-        },
+        parsed: approvedPreclaimBaseEvidence(),
         error: null,
       },
       {
@@ -3652,14 +3701,7 @@ describe("win10-vem-e2e reset planning", () => {
         {
           ...plan.steps[0],
           status: "passed",
-          report: plan.artifacts.dirtyHostFactoryAcceptance,
           parsed: {
-            dirtyHostFactoryAcceptance: {
-              displayProof: {
-                status: "passed",
-                source: "interactive_kiosk_session",
-              },
-            },
             inventory: {
               displayEvidence: {
                 interactiveWindowsSessions: {
@@ -3700,7 +3742,7 @@ describe("win10-vem-e2e reset planning", () => {
       );
 
       assert.equal(screenshotIndex.status, "missing");
-      assert.equal(screenshotIndex.displayEvidence.length, 3);
+      assert.equal(screenshotIndex.displayEvidence.length, 2);
       assert.equal(screenshotIndex.missingReason, "no_screenshot_artifacts");
       assert.equal(sessionIndex.status, "indexed");
       assert.equal(sessionIndex.sessions.length, 1);

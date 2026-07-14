@@ -2486,6 +2486,12 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   if (options.sshPort) {
     command.push("--ssh-port", String(options.sshPort));
   }
+  if (options.sshKnownHostsPath) {
+    command.push("--ssh-known-hosts-path", options.sshKnownHostsPath);
+  }
+  if (options.sshHostKeyAlias) {
+    command.push("--ssh-host-key-alias", options.sshHostKeyAlias);
+  }
   if (options.sshConfig === true) {
     command.push("--ssh-config");
   }
@@ -2552,7 +2558,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     "--ephemeral-mqtt-url",
     options.ephemeralMqttUrl,
   );
-  const artifacts = resolveVmRuntimeAcceptanceArtifacts(options);
   const evidenceRoot = `${
     options.evidenceRoot ?? DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT
   }/${runId}`;
@@ -2563,33 +2568,23 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const ephemeralPlatformEvidence = `${evidenceRoot}/ephemeral-platform.json`;
   const cleanBaseFactoryAcceptance =
     options.cleanBaseEvidence ?? options.cleanBaseFactoryAcceptance ?? null;
-  const dirtyHostReport = `${evidenceRoot}/dirty-host-factory-acceptance-response.json`;
+  const approvedPreclaimBaseReport = `${evidenceRoot}/approved-preclaim-base-response.json`;
   const runtimeAcceptanceReport = `${evidenceRoot}/runtime-acceptance-response.json`;
   const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
-  const dirtyHostArgs = [];
-  if (options.useExistingRemoteArtifacts === true) {
-    dirtyHostArgs.push("--use-existing-remote-artifacts");
-  } else {
-    dirtyHostArgs.push(
-      "--daemon-artifact",
-      options.daemonArtifact,
-      "--machine-ui-artifact",
-      options.machineUiArtifact,
+  const approvedPreclaimOptions = options.factoryGuestEndpointJson
+    ? { ...options, remote: undefined, sshPort: undefined }
+    : options;
+  const approvedPreclaimBaseCommand = buildAcceptanceScriptCommand(
+    "factory-preclaim-verify",
+    { ...approvedPreclaimOptions, runId, machineCode, platformTarget },
+    ["--out", approvedPreclaimBaseReport],
+  );
+  if (options.factoryGuestEndpointJson) {
+    approvedPreclaimBaseCommand.push(
+      "--factory-guest-endpoint-json",
+      options.factoryGuestEndpointJson,
     );
   }
-  const dirtyHostCommand = buildAcceptanceScriptCommand(
-    "dirty-host-factory-acceptance",
-    { ...options, runId, machineCode, platformTarget },
-    [
-      ...dirtyHostArgs,
-      "--platform-api-base-url",
-      apiBaseUrl,
-      "--platform-mqtt-url",
-      mqttUrl,
-      "--out",
-      dirtyHostReport,
-    ],
-  );
   const runtimeCommand = buildAcceptanceScriptCommand(
     "runtime-acceptance",
     { ...options, runId, machineCode, platformTarget },
@@ -2689,33 +2684,27 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     },
     evidenceRoot,
     artifacts: {
-      source: artifacts.source,
+      source: "approved-preclaim-base",
       report: reportPath,
       logsRoot,
       screenshotsRoot,
       sessionsRoot,
       ephemeralPlatformEvidence,
       cleanBaseFactoryAcceptance,
-      dirtyHostFactoryAcceptance: dirtyHostReport,
+      approvedPreclaimBase: approvedPreclaimBaseReport,
       runtimeAcceptance: runtimeAcceptanceReport,
       simulatedHardwareSaleFlow: saleFlowReport,
-      daemonSha256: artifacts.daemonSha256,
-      machineUiSha256: artifacts.machineUiSha256,
     },
     ci: {
       entrypoint:
         "node scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance",
-      requiredSecrets: [
-        "VEM_KIOSK_PASSWORD",
-        "VEM_MAINTENANCE_PASSWORD",
-        "VEM_AUTOLOGON_PASSWORD",
-        "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
-      ],
+      requiredSecrets: [],
+      requiredCredentials: ["approved-preclaim-base", "certificate-only-ssh"],
       requiredEnvironment: ["PAYMENT_MOCK_ENABLED=true"],
       githubActionsScope: "future manual runtime gate",
     },
     readinessLevels: {
-      dirtyHostResetAcceptance: "asserted_by_dirty_host_step",
+      approvedPreclaimBase: "asserted_by_preclaim_step",
       cleanBasePreparationAcceptance: cleanBaseFactoryAcceptance
         ? "asserted_by_clean_base_step"
         : "not_asserted",
@@ -2726,11 +2715,11 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     steps: [
       ...cleanBaseStep,
       {
-        name: "dirty-host factory reset acceptance",
-        mode: "dirty-host-factory-acceptance",
+        name: "approved preclaim base verification",
+        mode: "factory-preclaim-verify",
         status: "planned",
-        command: dirtyHostCommand,
-        report: dirtyHostReport,
+        command: approvedPreclaimBaseCommand,
+        report: approvedPreclaimBaseReport,
         blocksOnFailure: true,
       },
       {
@@ -2935,11 +2924,6 @@ function buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
   const stepArtifacts = steps.map(vmStepArtifactSummary);
 
   for (const step of steps) {
-    appendDisplayEvidence(
-      displayEvidence,
-      `${step.name}:dirty-host-display-proof`,
-      step.parsed?.dirtyHostFactoryAcceptance?.displayProof,
-    );
     appendDisplayEvidence(
       displayEvidence,
       `${step.name}:inventory-display-evidence`,
@@ -3362,14 +3346,31 @@ function evaluateCleanBasePreparationStep(step) {
   };
 }
 
+function evaluateApprovedPreclaimBaseStep(step) {
+  const report = step?.parsed;
+  const verified =
+    step?.status === "passed" &&
+    report?.ok === true &&
+    report?.schemaVersion === "factory-preclaim-verification/v1" &&
+    report?.kind === "factory-preclaim-verification";
+  return {
+    status: verified ? "passed" : (step?.status ?? "missing"),
+    asserted: verified,
+  };
+}
+
 export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const stepMap = new Map(steps.map((step) => [step.name, step]));
   const cleanBase = stepMap.get("clean-base factory preparation acceptance");
-  const dirtyHost = stepMap.get("dirty-host factory reset acceptance");
+  const approvedPreclaimBase = stepMap.get(
+    "approved preclaim base verification",
+  );
   const ephemeral = stepMap.get("ephemeral platform setup");
   const runtime = stepMap.get("runtime acceptance");
   const saleFlow = stepMap.get("simulated hardware sale flow");
   const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
+  const approvedPreclaimBaseEvaluation =
+    evaluateApprovedPreclaimBaseStep(approvedPreclaimBase);
   const diagnostics = [
     ...(cleanBaseEvaluation.diagnostic ? [cleanBaseEvaluation.diagnostic] : []),
     ...steps
@@ -3395,13 +3396,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     evidenceRoot: plan.evidenceRoot,
     artifacts: plan.artifacts,
     steps: steps.map(sanitizeVmRuntimeAcceptanceStep),
-    preparationVerifierStatus:
-      dirtyHost?.status === "passed"
-        ? "passed"
-        : (dirtyHost?.status ?? "missing"),
+    preparationVerifierStatus: approvedPreclaimBaseEvaluation.status,
     bringUpStateProgression: {
       cleanBasePreparationAcceptance: cleanBaseEvaluation.status,
-      dirtyHostResetAcceptance: dirtyHost?.status ?? "missing",
+      approvedPreclaimBase: approvedPreclaimBaseEvaluation.status,
       ephemeralPlatformSetup: ephemeral?.status ?? "missing",
       runtimeAcceptance: runtime?.status ?? "missing",
       simulatedHardwareSaleFlow: saleFlow?.status ?? "missing",
@@ -3429,10 +3427,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       },
     },
     finalReadiness: {
-      dirtyHostResetAcceptance:
-        dirtyHost?.status === "passed"
-          ? { status: "passed", asserted: true }
-          : { status: dirtyHost?.status ?? "missing", asserted: false },
+      approvedPreclaimBase: approvedPreclaimBaseEvaluation,
       cleanBasePreparationAcceptance: {
         status: cleanBaseEvaluation.status,
         asserted: cleanBaseEvaluation.asserted,
@@ -7956,7 +7951,7 @@ Factory-image-delivery-unit mode reads a completed clean-base factory acceptance
 
 Factory-preclaim-verify mode connects only through an adapter-discovered certificate SSH endpoint, invokes the Factory ISO-installed verifier without preparation, and emits structured baseline and unclaimed-identity evidence before approved-base capture.
 
-VM runtime acceptance mode is the future CI/manual gate entrypoint. It plans or runs dirty-host factory reset acceptance, ephemeral platform setup, runtime acceptance, and simulated hardware sale-flow in one non-interactive sequence. It requires --run-id, a non-shared --platform-target, explicit --ephemeral-database-url/--ephemeral-api-base-url/--ephemeral-mqtt-url, and local artifacts unless --use-existing-remote-artifacts is intentionally supplied. Reports and logs are written under artifacts/vm-runtime-acceptance/<run-id>/.
+VM runtime acceptance mode is the CI/manual gate entrypoint. It verifies the restored approved preclaim base through certificate-only SSH, then runs ephemeral platform setup, runtime acceptance, and simulated hardware sale-flow in one non-interactive sequence. It requires --run-id, a non-shared --platform-target, explicit --ephemeral-database-url/--ephemeral-api-base-url/--ephemeral-mqtt-url, and certificate SSH inputs. Reports and logs are written under artifacts/vm-runtime-acceptance/<run-id>/.
 `);
 }
 
@@ -7982,6 +7977,12 @@ function parseArgs(argv) {
         throw new Error("--ssh-known-hosts-path must be an absolute path");
       }
       options.sshKnownHostsPath = next;
+      index += 1;
+    } else if (arg === "--ssh-host-key-alias") {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(next ?? "")) {
+        throw new Error("--ssh-host-key-alias must be a safe host-key alias");
+      }
+      options.sshHostKeyAlias = next;
       index += 1;
     } else if (arg === "--identity") {
       options.identity = next;
@@ -8219,7 +8220,9 @@ function applyFactoryGuestEndpoint(options) {
     ...options,
     remote: `${options.expectedTestbedUser}@${endpoint.host}`,
     sshPort: endpoint.port,
-    sshHostKeyAlias: `vem-factory-${normalizeEphemeralRunId(options.runId).toLowerCase()}`,
+    sshHostKeyAlias:
+      options.sshHostKeyAlias ??
+      `vem-factory-${normalizeEphemeralRunId(options.runId).toLowerCase()}`,
     expectedMaintenanceIngressHost:
       options.expectedMaintenanceIngressHost ?? endpoint.host,
   };
