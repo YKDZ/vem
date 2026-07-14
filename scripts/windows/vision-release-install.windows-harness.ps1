@@ -2086,20 +2086,33 @@ try {
   Write-Utf8 $processRecordPath $trustedProcessRecord
   $victim | Stop-Process -Force
 
-  # Hold the named mutex from a second process long enough to prove that a
+  # Hold the named mutex from a second runspace long enough to prove that a
   # concurrent production installation waits rather than racing activation.
   $mutex = [Threading.Mutex]::new($false, "Global\VEMVisionReleaseInstaller")
+  $blockedPowerShell = [PowerShell]::Create()
+  $blocked = $null
+  $mutexAcquired = $false
   try {
-    Assert-True ($mutex.WaitOne([TimeSpan]::FromSeconds(5))) "could not acquire installer mutex"
-    $blocked = Start-Job -ScriptBlock { param($script,$factory,$config,$evidence,$user) $delivery=Join-Path $factory "vision-release"; & $script -BundlePath (Join-Path $delivery "bundle.bin") -DescriptorPath (Join-Path $delivery "descriptor.json") -AttestationPath (Join-Path $delivery "attestation.json") -SbomPath (Join-Path $delivery "sbom.json") -ProvenancePath (Join-Path $delivery "provenance.json") -ConformanceEvidencePath (Join-Path $delivery "conformance.json") -ApprovalPath (Join-Path $delivery "approval.json") -FactoryManifestPath (Join-Path $delivery "factory-manifest.json") -ConfigurationPath $config -EvidencePath $evidence -TaskUser $user } -ArgumentList "C:\VEM\bringup\install-vision-release.ps1", $factoryRoot, (Join-Path $stateRoot "config\fixture.json"), $evidencePath, $env:USERNAME
-    Start-Sleep -Seconds 2
-    Assert-True ($blocked.State -eq "Running") "concurrent installer did not wait on mutex"
+    try {
+      $mutexAcquired = $mutex.WaitOne([TimeSpan]::FromSeconds(5))
+      Assert-True $mutexAcquired "could not acquire installer mutex"
+      $blockedPowerShell.AddScript({ param($script,$factory,$config,$evidence,$user) $delivery=Join-Path $factory "vision-release"; & $script -BundlePath (Join-Path $delivery "bundle.bin") -DescriptorPath (Join-Path $delivery "descriptor.json") -AttestationPath (Join-Path $delivery "attestation.json") -SbomPath (Join-Path $delivery "sbom.json") -ProvenancePath (Join-Path $delivery "provenance.json") -ConformanceEvidencePath (Join-Path $delivery "conformance.json") -ApprovalPath (Join-Path $delivery "approval.json") -FactoryManifestPath (Join-Path $delivery "factory-manifest.json") -ConfigurationPath $config -EvidencePath $evidence -TaskUser $user }.ToString()).AddArgument("C:\VEM\bringup\install-vision-release.ps1").AddArgument($factoryRoot).AddArgument((Join-Path $stateRoot "config\fixture.json")).AddArgument($evidencePath).AddArgument($env:USERNAME) | Out-Null
+      $blocked = $blockedPowerShell.BeginInvoke()
+      Start-Sleep -Seconds 2
+      Assert-True (-not $blocked.IsCompleted) "concurrent installer did not wait on mutex"
+    } finally {
+      if ($mutexAcquired) { $mutex.ReleaseMutex() }
+      $mutex.Dispose()
+    }
+    Assert-True ($blocked.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds(30))) "concurrent installer did not complete after mutex release"
+    $blockedPowerShell.EndInvoke($blocked) | Out-Null
   } finally {
-    if ($mutex) { $mutex.ReleaseMutex(); $mutex.Dispose() }
+    if ($null -ne $blocked) {
+      if (-not $blocked.IsCompleted) { $blockedPowerShell.Stop() }
+      $blocked.AsyncWaitHandle.Dispose()
+    }
+    $blockedPowerShell.Dispose()
   }
-  Wait-Job -Job $blocked -Timeout 30 | Out-Null
-  Receive-Job -Job $blocked -ErrorAction Stop | Out-Null
-  Remove-Job -Job $blocked -Force
   & (Join-Path $context.harnessScriptRoot "verify-vem-runtime.ps1") -RequireVisionOnline -VisionOnly
 } catch {
   [IO.File]::WriteAllText((Join-Path $context.root "process-mutex-runtime-error.txt"), ($_ | Out-String), [Text.UTF8Encoding]::new($false))
