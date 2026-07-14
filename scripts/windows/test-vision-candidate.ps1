@@ -134,9 +134,9 @@ function Restore-VerifiedPreviousVisionRuntime([object]$Runtime, [string]$Select
         $null -ne $restored -and
         [bool]$restored.active -and
         $restored.selection.revision -ceq $Runtime.selection.revision -and
+        $restored.selection.installDirectory -ceq $Runtime.selection.installDirectory -and
+        $restored.selection.entrypoint -ceq $Runtime.selection.entrypoint -and
         $restored.selection.bundleDigest -ceq $Runtime.selection.bundleDigest -and
-        $restored.processId -eq $Runtime.processId -and
-        $restored.creationTimeUtcTicks -eq $Runtime.creationTimeUtcTicks -and
         $restored.executablePath -ceq $Runtime.executablePath -and
         $restored.executableDigest -ceq $Runtime.executableDigest
       ) { return $true }
@@ -379,6 +379,10 @@ try {
     } catch { $cleanupOk = $false }
   }
   $report.cleanupOk = $cleanupOk
-  if (-not $cleanupOk -and [string]::IsNullOrWhiteSpace($report.failure)) { $report.failure = "Vision Candidate cleanup failed" }
+  if (-not $cleanupOk) {
+    $report.ok = $false
+    if ([string]::IsNullOrWhiteSpace($report.failure)) { $report.failure = Sanitize "Vision Candidate cleanup failed" }
+  }
   Write-AtomicJson $ReportPath $report
+  if (-not $cleanupOk) { throw "Vision Candidate cleanup failed" }
 }

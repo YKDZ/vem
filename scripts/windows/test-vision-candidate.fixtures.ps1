@@ -62,6 +62,7 @@ try {
   Assert-Throws { Assert-PreapprovalDeliveryManifest -Path $manifestPath -Expected $unsigned.expectedDigest -Bundle $bundle -Descriptor $descriptor -EntryScriptPath (Join-Path $delivery "test-vision-candidate.ps1") -MaterializerPath (Join-Path $delivery "vision-release-materialization.psm1") -RedactorPath (Join-Path $delivery "vision-diagnostic-redaction.psm1") } "ExpectedDigest mismatch"
 
   $active = Get-Process -Id $PID -ErrorAction Stop
+  $script:restoredProcess = $null
   try {
     $activePath = [IO.Path]::GetFullPath($active.Path); $activeRoot = Split-Path -Parent $activePath; $activeLeaf = Split-Path -Leaf $activePath
     $activeDigest = "sha256:" + (Get-FileHash -LiteralPath $activePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -71,11 +72,24 @@ try {
     [IO.File]::WriteAllText($selectionPath, ($selection | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText($processPath, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     $runtime = Get-VerifiedPreviousVisionRuntime $selectionPath $processPath
     if ($null -eq $runtime -or -not $runtime.active) { throw "active previous Vision runtime was not identity-bound" }
-    function global:Start-ScheduledTask { param($TaskName,$TaskPath) }
+    $script:fixtureActivePath = $activePath
+    $script:fixtureActiveDigest = $activeDigest
+    $script:fixtureSelection = $selection
+    $script:fixtureProcessPath = $processPath
+    function global:Start-ScheduledTask {
+      param($TaskName,$TaskPath)
+      $script:restoredProcess = Start-Process -FilePath $script:fixtureActivePath -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30") -PassThru
+      Start-Sleep -Milliseconds 100
+      $script:restoredProcess.Refresh()
+      $newRecord = [ordered]@{ selectionRevision=$script:fixtureSelection.revision; bundleDigest=$script:fixtureSelection.bundleDigest; processId=$script:restoredProcess.Id; creationTimeUtcTicks=$script:restoredProcess.StartTime.ToUniversalTime().Ticks; executablePath=$script:fixtureActivePath; executableDigest=$script:fixtureActiveDigest }
+      [IO.File]::WriteAllText($script:fixtureProcessPath, ($newRecord | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    }
     function global:Stop-ScheduledTask { param($TaskName,$TaskPath) }
-    if (-not (Restore-VerifiedPreviousVisionRuntime $runtime $selectionPath $processPath)) { throw "verified previous Vision runtime was not restored" }
-    # The empty Start-ScheduledTask fixture must not falsely report an inactive
+    if (-not (Restore-VerifiedPreviousVisionRuntime $runtime $selectionPath $processPath)) { throw "newly launched Vision runtime did not restore" }
+    if ($null -eq $script:restoredProcess -or $script:restoredProcess.Id -eq $runtime.processId) { throw "newly launched Vision runtime did not receive a new process ID" }
+    # The no-process Start-ScheduledTask fixture must not falsely report an inactive
     # recorded release as restored merely because its selection remains valid.
+    function global:Start-ScheduledTask { param($TaskName,$TaskPath) }
     $inactiveRecord = [ordered]@{ selectionRevision=$selection.revision; bundleDigest=$selection.bundleDigest; processId=2147483647; creationTimeUtcTicks=$record.creationTimeUtcTicks; executablePath=$activePath; executableDigest=$activeDigest }
     [IO.File]::WriteAllText($processPath, ($inactiveRecord | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     $inactiveRuntime = Get-VerifiedPreviousVisionRuntime $selectionPath $processPath
@@ -83,7 +97,13 @@ try {
     if (Restore-VerifiedPreviousVisionRuntime $inactiveRuntime $selectionPath $processPath -TimeoutSeconds 0) { throw "expected inactive restore failure" }
     $record.executableDigest = "sha256:" + ("b" * 64); [IO.File]::WriteAllText($processPath, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Assert-Throws { Get-VerifiedPreviousVisionRuntime $selectionPath $processPath } "mismatched previous runtime digest"
-  } finally { $active.Dispose(); Remove-Item -LiteralPath Function:global:Start-ScheduledTask,Function:global:Stop-ScheduledTask -Force -ErrorAction SilentlyContinue }
+  } finally {
+    if ($null -ne $script:restoredProcess) {
+      try { if (-not $script:restoredProcess.HasExited) { $script:restoredProcess.Kill(); $script:restoredProcess.WaitForExit(10000) | Out-Null } } finally { $script:restoredProcess.Dispose() }
+    }
+    $active.Dispose()
+    Remove-Item -LiteralPath Function:global:Start-ScheduledTask,Function:global:Stop-ScheduledTask -Force -ErrorAction SilentlyContinue
+  }
   Write-Output "candidate fixtures passed"
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

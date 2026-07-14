@@ -88,6 +88,7 @@ $destinations = @{
   "VISION-TRUST/" = $trustRoot
   "VISION-INSTALLER/install-vision-release.ps1" = (Join-Path $bringupRoot "install-vision-release.ps1")
   "VISION-INSTALLER/vision-release-materialization.psm1" = (Join-Path $bringupRoot "vision-release-materialization.psm1")
+  "VISION-INSTALLER/vision-diagnostic-redaction.psm1" = (Join-Path $bringupRoot "vision-diagnostic-redaction.psm1")
   "VISION-INSTALLER/provision-vision-factory-release.ps1" = (Join-Path $bringupRoot "provision-vision-factory-release.ps1")
 }
 $installedFiles = @()

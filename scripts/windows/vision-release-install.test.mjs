@@ -181,6 +181,47 @@ describe("Vision release installer fixtures", () => {
   );
 
   boundedIt(
+    "keeps Factory installer media and runtime support closure complete for redacted diagnostics",
+    () => {
+      const builder = readFileSync(
+        "scripts/factory/build-factory-media.mjs",
+        "utf8",
+      );
+      const provisioner = readFileSync(
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "utf8",
+      );
+      const prepare = readFileSync(
+        "scripts/windows/prepare-factory-runtime.ps1",
+        "utf8",
+      );
+      const installer = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
+
+      assert.match(
+        installer,
+        /Import-Module \(Join-Path \$PSScriptRoot "vision-diagnostic-redaction\.psm1"\)/,
+      );
+      assert.match(builder, /"vision-diagnostic-redaction\.psm1"/);
+      assert.match(
+        builder,
+        /VISION-INSTALLER\/vision-diagnostic-redaction\.psm1/,
+      );
+      assert.match(
+        provisioner,
+        /"VISION-INSTALLER\/vision-diagnostic-redaction\.psm1" = \(Join-Path \$bringupRoot "vision-diagnostic-redaction\.psm1"\)/,
+      );
+      assert.match(prepare, /"vision-diagnostic-redaction\.psm1"/);
+      assert.match(
+        prepare,
+        /Copy-ScriptIfPresent -Name "vision-diagnostic-redaction\.psm1" -TargetDirectory \$scriptsRoot/,
+      );
+    },
+  );
+
+  boundedIt(
     "revalidates reparse-safe containment after materialization and before configuration selection writes",
     () => {
       const installer = readFileSync(
@@ -279,7 +320,15 @@ describe("Vision release installer fixtures", () => {
       assert.doesNotMatch(source, /SHA256\]::HashData|Convert\]::ToHexString/);
       assert.match(
         source,
-        /\$restored\.active[\s\S]*\$restored\.processId[\s\S]*\$restored\.creationTimeUtcTicks/,
+        /\$restored\.active[\s\S]*\$restored\.selection\.revision[\s\S]*\$Runtime\.selection\.revision[\s\S]*\$restored\.selection\.installDirectory[\s\S]*\$Runtime\.selection\.installDirectory[\s\S]*\$restored\.selection\.bundleDigest[\s\S]*\$Runtime\.selection\.bundleDigest/,
+      );
+      assert.doesNotMatch(
+        source,
+        /\$restored\.processId\s+-eq\s+\$Runtime\.processId|\$restored\.creationTimeUtcTicks\s+-eq\s+\$Runtime\.creationTimeUtcTicks/,
+      );
+      assert.match(
+        source,
+        /\$report\.ok\s*=\s*\$false[\s\S]*Write-AtomicJson \$ReportPath \$report[\s\S]*throw "Vision Candidate cleanup failed"/,
       );
       assert.match(source, /Assert-CandidateNonReparsePath/);
       assert.match(
@@ -293,13 +342,36 @@ describe("Vision release installer fixtures", () => {
   );
 
   boundedIt(
-    "requires active prior-runtime identity before reporting restoration success",
+    "accepts a new bound prior-runtime process but fails closed when the launcher produces none",
     () => {
       const fixtureSource = readFileSync(candidateFixture, "utf8");
-      assert.match(fixtureSource, /empty Start-ScheduledTask fixture/);
       assert.match(
         fixtureSource,
-        /Restore-VerifiedPreviousVisionRuntime[\s\S]*expected inactive restore failure/,
+        /newly launched Vision runtime did not receive a new process ID/,
+      );
+      assert.match(fixtureSource, /new process ID/);
+      assert.match(
+        fixtureSource,
+        /no-process Start-ScheduledTask fixture[\s\S]*Restore-VerifiedPreviousVisionRuntime[\s\S]*expected inactive restore failure/,
+      );
+    },
+  );
+
+  boundedIt(
+    "documents the Candidate as a self-contained preapproval delivery unit rather than a resident bringup script",
+    () => {
+      const runbook = readFileSync("public/managed-machine-update.md", "utf8");
+      assert.match(runbook, /VEM-VISION-PREAPPROVAL/);
+      assert.match(runbook, /preapproval-manifest\.json/);
+      assert.match(runbook, /vision-release-materialization\.psm1/);
+      assert.match(runbook, /vision-diagnostic-redaction\.psm1/);
+      assert.match(
+        runbook,
+        /C:\\VEM\\updates\\vision-preapproval\\test-vision-candidate\.ps1/,
+      );
+      assert.doesNotMatch(
+        runbook,
+        /C:\\VEM\\bringup\\scripts\\test-vision-candidate\.ps1/,
       );
     },
   );

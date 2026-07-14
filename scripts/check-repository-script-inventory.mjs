@@ -463,6 +463,10 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["runtime acceptance", "managed update"],
+    deliveryClosure: [
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
   },
   {
     path: "scripts/windows/test-vision-candidate.fixtures.ps1",
@@ -822,6 +826,35 @@ function validateInventoryEntry(entry) {
   return failures;
 }
 
+function validateDeliveryClosure(entry, entriesByPath, source) {
+  if (entry.deliveryClosure === undefined) return [];
+  if (
+    !Array.isArray(entry.deliveryClosure) ||
+    entry.deliveryClosure.length === 0
+  ) {
+    return [
+      `${entry.path} deliveryClosure must name one or more closure members`,
+    ];
+  }
+  const failures = [];
+  for (const closurePath of entry.deliveryClosure) {
+    if (typeof closurePath !== "string" || !entriesByPath.has(closurePath)) {
+      failures.push(
+        `${entry.path} delivery closure is not classified: ${String(closurePath)}`,
+      );
+      continue;
+    }
+    const closureName = closurePath.split("/").at(-1);
+    const siblingImport = `Join-Path $PSScriptRoot "${closureName}"`;
+    if (!source.includes(siblingImport)) {
+      failures.push(
+        `${entry.path} delivery closure is not imported from its sibling path: ${closurePath}`,
+      );
+    }
+  }
+  return failures;
+}
+
 function scriptMaintainsFactoryDeliveryEvidence(source) {
   return (
     source.includes("factory-runtime-manifest.json") &&
@@ -1032,6 +1065,13 @@ export function checkRepositoryScriptInventory(options = {}) {
     }
     failures.push(
       ...validateStaleIntegrationText(entry.path, readText(root, entry.path)),
+    );
+    failures.push(
+      ...validateDeliveryClosure(
+        entry,
+        entriesByPath,
+        readText(root, entry.path),
+      ),
     );
     for (const failure of validateLegacyEvidence(root, entry)) {
       failures.push(failure);

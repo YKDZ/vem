@@ -143,6 +143,7 @@ const EFFECTIVE_IMPLEMENTATION_FILES = [
   "provision-vision-factory-release.ps1",
   "install-vision-release.ps1",
   "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1",
 ];
 const VISION_DOCUMENT_ROLES = [
   "descriptor",
@@ -3963,6 +3964,9 @@ async function stageBuildInputs({
   const materializationBytes = await readFile(
     new URL("../windows/vision-release-materialization.psm1", import.meta.url),
   );
+  const redactionBytes = await readFile(
+    new URL("../windows/vision-diagnostic-redaction.psm1", import.meta.url),
+  );
   await writeFile(
     join(trustRoot, "vision-release-trust-anchor.json"),
     visionTrustMaterial.anchorBytes,
@@ -3986,6 +3990,10 @@ async function stageBuildInputs({
   await writeFile(
     join(installerRoot, "vision-release-materialization.psm1"),
     materializationBytes,
+  );
+  await writeFile(
+    join(installerRoot, "vision-diagnostic-redaction.psm1"),
+    redactionBytes,
   );
   const provisioningManifest = visionFactoryProvisioningManifest({
     "VISION-RELEASE/factory-manifest.json": Buffer.from(
@@ -4017,6 +4025,7 @@ async function stageBuildInputs({
     "VISION-INSTALLER/provision-vision-factory-release.ps1": provisionerBytes,
     "VISION-INSTALLER/vision-release-materialization.psm1":
       materializationBytes,
+    "VISION-INSTALLER/vision-diagnostic-redaction.psm1": redactionBytes,
   });
   await writeFile(
     join(stageDirectory, "VEM", "VISION-FACTORY-PROVISIONING.JSON"),
@@ -4125,6 +4134,7 @@ export async function createWindowsFactoryFirstBootMedia({
     "provision-vision-factory-release.ps1",
     "install-vision-release.ps1",
     "vision-release-materialization.psm1",
+    "vision-diagnostic-redaction.psm1",
   ]) {
     await writeFile(
       join(scriptsRoot, script),
@@ -4181,6 +4191,7 @@ export async function createWindowsFactoryFirstBootMedia({
       "install-vision-release.ps1",
       "provision-vision-factory-release.ps1",
       "vision-release-materialization.psm1",
+      "vision-diagnostic-redaction.psm1",
     ]) {
       await writeFile(
         join(installerRoot, script),
@@ -4228,6 +4239,9 @@ export async function createWindowsFactoryFirstBootMedia({
               await readFile(
                 join(installerRoot, "vision-release-materialization.psm1"),
               ),
+            "VISION-INSTALLER/vision-diagnostic-redaction.psm1": await readFile(
+              join(installerRoot, "vision-diagnostic-redaction.psm1"),
+            ),
           }),
         ),
       ),

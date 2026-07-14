@@ -50,6 +50,55 @@ describe("repository script inventory guard", () => {
     );
   });
 
+  it("fails when a declared delivery-unit entrypoint does not import every classified closure member", () => {
+    withFixture(
+      {
+        "scripts/windows/test-vision-candidate.ps1":
+          'Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1")',
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+        "scripts/windows/vision-diagnostic-redaction.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/windows/test-vision-candidate.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["runtime acceptance"],
+              deliveryClosure: [
+                "scripts/windows/vision-release-materialization.psm1",
+                "scripts/windows/vision-diagnostic-redaction.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["runtime acceptance"],
+            },
+            {
+              path: "scripts/windows/vision-diagnostic-redaction.psm1",
+              owner: "field-operations",
+              category: "test support operation",
+              workflows: ["runtime acceptance"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /test-vision-candidate\.ps1 delivery closure is not imported from its sibling path: scripts\/windows\/vision-diagnostic-redaction\.psm1/,
+        );
+      },
+    );
+  });
+
   it("fails when a factory image preparation script bypasses delivery evidence", () => {
     withFixture(
       {

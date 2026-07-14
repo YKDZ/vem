@@ -927,7 +927,8 @@ function Assert-FactoryRuntimePreflight {
     "apply-managed-update.ps1",
     "provision-vision-factory-release.ps1",
     "install-vision-release.ps1",
-    "vision-release-materialization.psm1"
+    "vision-release-materialization.psm1",
+    "vision-diagnostic-redaction.psm1"
   ) | ForEach-Object { Assert-SupportScriptPresent -Name $_ }
 
   return [pscustomobject]@{
@@ -1553,6 +1554,7 @@ function Write-FactoryRuntimeFiles {
   Copy-ScriptIfPresent -Name "provision-vision-factory-release.ps1" -TargetDirectory $scriptsRoot
   Copy-ScriptIfPresent -Name "install-vision-release.ps1" -TargetDirectory $scriptsRoot
   Copy-ScriptIfPresent -Name "vision-release-materialization.psm1" -TargetDirectory $scriptsRoot
+  Copy-ScriptIfPresent -Name "vision-diagnostic-redaction.psm1" -TargetDirectory $scriptsRoot
 
   $machineUiStartupMode = if (Test-ShellLauncherAvailable) { "shell_launcher" } else { "scheduled_task" }
   $manifest = [ordered]@{
