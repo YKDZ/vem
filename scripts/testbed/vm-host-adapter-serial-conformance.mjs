@@ -9,6 +9,7 @@ import {
   createVmHostAdapterRequest,
   runVmHostAdapter,
   VM_HOST_ADAPTER_CONTRACT_VERSION,
+  VmHostAdapterExecutionError,
 } from "./vm-host-adapter-contract.mjs";
 
 function readOption(name) {
@@ -58,6 +59,7 @@ function requestFor({
   session,
   scannerDescriptor,
   saleCorrelationId,
+  saleBinding,
   idempotencyCheck = false,
 }) {
   const operationNonce = nonce();
@@ -120,6 +122,7 @@ function requestFor({
           deviceRoles: ["lower-controller", "scanner"],
           scannerInjection: null,
           saleCorrelationIds: [saleCorrelationId],
+          saleBindings: [saleBinding],
           idempotencyCheck: false,
         }
       : {
@@ -135,6 +138,7 @@ function requestFor({
                 ? scannerDescriptor
                 : null,
           saleCorrelationIds: [saleCorrelationId],
+          saleBindings: [saleBinding],
           idempotencyCheck,
         };
   return createVmHostAdapterRequest(request);
@@ -149,6 +153,12 @@ async function main() {
   const approvedRuntimeBase = readOption("--approved-runtime-base");
   const lifecycleReference = readOption("--lifecycle-reference");
   const saleCorrelationId = readOption("--sale-correlation-id");
+  const saleBinding = {
+    saleCorrelationId,
+    orderId: readOption("--order-id"),
+    paymentId: readOption("--payment-id"),
+    vendingCommandId: readOption("--vending-command-id"),
+  };
   const workDirectory = join(
     dirname(out),
     "vm-host-adapter-serial-conformance",
@@ -162,6 +172,7 @@ async function main() {
   let firstStop;
   let repeatedStop;
   let recoveryStop;
+  let failureMatrix;
   let session;
   let primaryError;
   try {
@@ -173,6 +184,7 @@ async function main() {
         lifecycleReference,
         approvedRuntimeBase,
         saleCorrelationId,
+        saleBinding,
       }),
       workDirectory,
       environment,
@@ -189,6 +201,7 @@ async function main() {
         session,
         scannerDescriptor,
         saleCorrelationId,
+        saleBinding,
       }),
       workDirectory,
       environment,
@@ -207,6 +220,7 @@ async function main() {
           ...scannerDescriptor,
         },
         saleCorrelationId,
+        saleBinding,
       }),
       workDirectory,
       environment,
@@ -220,6 +234,7 @@ async function main() {
         approvedRuntimeBase,
         session,
         saleCorrelationId,
+        saleBinding,
       }),
       workDirectory,
       environment,
@@ -233,6 +248,7 @@ async function main() {
         approvedRuntimeBase,
         session,
         saleCorrelationId,
+        saleBinding,
         idempotencyCheck: true,
       }),
       workDirectory,
@@ -240,6 +256,17 @@ async function main() {
     });
     if (!repeatedStop.serialSession.simulatorCleanup.idempotencyVerified)
       throw new Error("adapter did not prove repeated serial stop idempotency");
+    failureMatrix = await runFailureMatrix({
+      runId,
+      targetIdentity,
+      lifecycleReference,
+      approvedRuntimeBase,
+      saleCorrelationId,
+      saleBinding,
+      scannerCode,
+      workDirectory,
+      environment,
+    });
   } catch (error) {
     primaryError = error;
   } finally {
@@ -254,6 +281,7 @@ async function main() {
             approvedRuntimeBase,
             session,
             saleCorrelationId,
+            saleBinding,
             idempotencyCheck: true,
           }),
           workDirectory,
@@ -285,6 +313,7 @@ async function main() {
             repeatedStop,
             recoveryStop,
           },
+          failureMatrix,
         },
         null,
         2,
@@ -293,6 +322,114 @@ async function main() {
     );
   }
   if (primaryError) throw primaryError;
+}
+
+async function runFailureMatrix({
+  runId,
+  targetIdentity,
+  lifecycleReference,
+  approvedRuntimeBase,
+  saleCorrelationId,
+  saleBinding,
+  scannerCode,
+  workDirectory,
+  environment,
+}) {
+  const cases = [];
+  for (const failureMode of [
+    "malformed-frame",
+    "device-disconnected",
+    "scanner-timeout",
+    "dispense-failed",
+  ]) {
+    let session;
+    let stop;
+    try {
+      const start = await runVmHostAdapter({
+        request: requestFor({
+          operation: "start-serial-session",
+          runId,
+          targetIdentity,
+          lifecycleReference,
+          approvedRuntimeBase,
+          saleCorrelationId,
+          saleBinding,
+        }),
+        workDirectory,
+        environment,
+      });
+      session = start.serialSession;
+      const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
+      const inject = await runVmHostAdapter({
+        request: requestFor({
+          operation: "inject-scanner-code",
+          runId,
+          targetIdentity,
+          lifecycleReference,
+          approvedRuntimeBase,
+          session,
+          scannerDescriptor,
+          saleCorrelationId,
+          saleBinding,
+        }),
+        workDirectory,
+        environment,
+        scannerCode,
+      });
+      try {
+        await runVmHostAdapter({
+          request: requestFor({
+            operation: "collect-serial-evidence",
+            runId,
+            targetIdentity,
+            lifecycleReference,
+            approvedRuntimeBase,
+            session,
+            scannerDescriptor: {
+              operationNonce: inject.request.operationNonce,
+              ...scannerDescriptor,
+            },
+            saleCorrelationId,
+            saleBinding,
+          }),
+          workDirectory,
+          environment: {
+            ...environment,
+            VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
+          },
+        });
+        throw new Error(`${failureMode} unexpectedly produced sale evidence`);
+      } catch (error) {
+        if (!(error instanceof VmHostAdapterExecutionError)) throw error;
+        if (error.diagnostic.result !== "failed")
+          throw new Error(`${failureMode} did not fail the serial session`);
+        cases.push({ failureMode, result: error.diagnostic.result });
+      }
+    } finally {
+      if (session) {
+        stop = await runVmHostAdapter({
+          request: requestFor({
+            operation: "stop-serial-session",
+            runId,
+            targetIdentity,
+            lifecycleReference,
+            approvedRuntimeBase,
+            session,
+            saleCorrelationId,
+            saleBinding,
+            idempotencyCheck: true,
+          }),
+          workDirectory,
+          environment,
+        });
+        if (stop.serialSession.simulatorCleanup.survivingProcessCount !== 0)
+          throw new Error(
+            `${failureMode} left serial simulator processes behind`,
+          );
+      }
+    }
+  }
+  return cases;
 }
 
 main().catch((error) => {

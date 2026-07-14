@@ -347,6 +347,10 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       workflow,
       "Run Production Serial COM And Scanner Sale Conformance",
     );
+    const saleBinding = stepBlock(
+      workflow,
+      "Bind Actual Sale IDs For Serial Conformance",
+    );
     const display = stepBlock(
       workflow,
       "Capture Windows Display Evidence Through Host Adapter",
@@ -360,9 +364,20 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(serialSale, /--scanner-code-stdin/);
     assert.match(serialSale, /--sale-correlation-id/);
+    assert.match(serialSale, /--order-id "\$VEM_SERIAL_ORDER_ID"/);
+    assert.match(serialSale, /--payment-id "\$VEM_SERIAL_PAYMENT_ID"/);
+    assert.match(
+      serialSale,
+      /--vending-command-id "\$VEM_SERIAL_VENDING_COMMAND_ID"/,
+    );
     assert.match(serialSale, /serial-com-scanner-sale-conformance\.json/);
     assert.doesNotMatch(serialSale, /mock-payment/);
+    assert.match(saleBinding, /simulated-hardware-sale-flow-response\.json/);
+    assert.match(saleBinding, /sale\.orderId/);
+    assert.match(saleBinding, /sale\.paymentNo/);
+    assert.match(saleBinding, /sale\.vendingCommandId/);
     assert.ok(workflow.indexOf(runtime) < workflow.indexOf(serialSale));
+    assert.ok(workflow.indexOf(saleBinding) < workflow.indexOf(serialSale));
     assert.ok(workflow.indexOf(serialSale) < workflow.indexOf(display));
   });
 });

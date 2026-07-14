@@ -585,6 +585,29 @@ jobs:
             --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
 
+      - name: Bind Actual Sale IDs For Serial Conformance
+        if: success()
+        run: |
+          set -euo pipefail
+          report="artifacts/vm-runtime-acceptance/${RUN_ID}/simulated-hardware-sale-flow-response.json"
+          node - "$report" >> "$GITHUB_ENV" <<'NODE'
+          const fs = require("node:fs");
+          const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const sale = value.simulatedHardwareSaleFlow?.sale;
+          if (
+            value.ok !== true ||
+            value.simulatedHardwareSaleFlow?.result?.simulatedHardwareReady?.status !== "passed" ||
+            typeof sale?.orderId !== "string" || !sale.orderId ||
+            typeof sale?.paymentNo !== "string" || !sale.paymentNo ||
+            typeof sale?.vendingCommandId !== "string" || !sale.vendingCommandId ||
+            sale.paymentStatus !== "paid" ||
+            sale.dispenseResult !== "dispensed"
+          ) throw new Error("sale flow did not produce bound order, payment, and vending-command identifiers");
+          process.stdout.write(`VEM_SERIAL_ORDER_ID=${sale.orderId}\n`);
+          process.stdout.write(`VEM_SERIAL_PAYMENT_ID=${sale.paymentNo}\n`);
+          process.stdout.write(`VEM_SERIAL_VENDING_COMMAND_ID=${sale.vendingCommandId}\n`);
+          NODE
+
       - name: Run Production Serial COM And Scanner Sale Conformance
         if: success()
         run: |
@@ -601,6 +624,9 @@ jobs:
               --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
               --lifecycle-reference "vm-lifecycle://$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]').runtime-acceptance" \
               --sale-correlation-id "$sale_correlation_id" \
+              --order-id "$VEM_SERIAL_ORDER_ID" \
+              --payment-id "$VEM_SERIAL_PAYMENT_ID" \
+              --vending-command-id "$VEM_SERIAL_VENDING_COMMAND_ID" \
               --out "artifacts/vm-runtime-acceptance/${RUN_ID}/serial-com-scanner-sale-conformance.json"
 
       - name: Bind Active Kiosk Session For Native Audio Capture
@@ -620,7 +646,7 @@ jobs:
             !Number.isInteger(kiosk.sessionId) ||
             kiosk.sessionId < 1 ||
             typeof kiosk.url !== "string" ||
-            !/^http:\/\/tauri\.localhost\/#\/.+/.test(kiosk.url)
+            kiosk.url !== "http://tauri.localhost/#/"
           ) throw new Error("runtime acceptance did not observe an active VEMKiosk session");
           process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_USER=${kiosk.sessionUser}\n`);
           process.stdout.write(`VEM_ACTIVE_KIOSK_SESSION_ID=${kiosk.sessionId}\n`);

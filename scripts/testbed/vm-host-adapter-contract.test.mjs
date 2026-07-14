@@ -127,7 +127,7 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
       operation === "capture-display"
         ? {
             activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
-            tauriRoute: "http://tauri.localhost/#/idle",
+            tauriRoute: "http://tauri.localhost/#/",
           }
         : null,
     audioCapture:
@@ -203,6 +203,14 @@ function serialSessionRequest(operation, overrides = {}) {
         ? scannerInjection
         : null,
       saleCorrelationIds: ["sale-correlation://sale-001"],
+      saleBindings: [
+        {
+          saleCorrelationId: "sale-correlation://sale-001",
+          orderId: "order-001",
+          paymentId: "payment-001",
+          vendingCommandId: "vending-command-001",
+        },
+      ],
       idempotencyCheck: false,
     },
     ...overrides,
@@ -230,6 +238,14 @@ function serialDeviceMappings(connectionState) {
 
 function serialEvidenceRecords(request) {
   const saleCorrelationId = request.serialSession.saleCorrelationIds[0];
+  const saleBinding = request.serialSession.saleBindings[0];
+  let sequence = 0;
+  const capturedFrame = () => ({
+    source: "guest-serial-session",
+    sequence: (sequence += 1),
+    digest: `sha256:${"f".repeat(64)}`,
+    byteLength: 16,
+  });
   const lower = [
     "handshake",
     "health",
@@ -248,6 +264,8 @@ function serialEvidenceRecords(request) {
     saleCorrelationId: event.startsWith("dispense-")
       ? (request.serialSession.saleCorrelationIds[0] ?? null)
       : null,
+    saleBinding: event.startsWith("dispense-") ? saleBinding : null,
+    capturedFrame: capturedFrame(),
   }));
   return [
     ...lower,
@@ -264,6 +282,8 @@ function serialEvidenceRecords(request) {
       scannerCodeSuffix:
         request.serialSession.scannerInjection.scannerCodeSuffix,
       saleCorrelationId,
+      saleBinding,
+      capturedFrame: capturedFrame(),
     },
     ...["payment-request", "payment-ack", "payment-result"].map((event) => ({
       role: "payment",
@@ -275,6 +295,8 @@ function serialEvidenceRecords(request) {
       scannerCodeByteLength: null,
       scannerCodeSuffix: null,
       saleCorrelationId,
+      saleBinding,
+      capturedFrame: capturedFrame(),
     })),
   ];
 }
@@ -432,13 +454,20 @@ function reportFor(request, overrides = {}) {
             captureOperationReference: request.operationReference,
             activeKioskSession: request.displayCapture.activeKioskSession,
             tauriRoute: request.displayCapture.tauriRoute,
+            cdpProbe: {
+              endpoint: "http://127.0.0.1:9222/json",
+              targetUrl: request.displayCapture.tauriRoute,
+              appVisible: true,
+              appTextLength: 16,
+              domNodeCount: 3,
+            },
             capture: {
               artifact: evidence[0].identity,
               format: "png",
-              widthPx: 2,
-              heightPx: 2,
-              pixelCount: 4,
-              nonTransparentPixelCount: 4,
+              widthPx: 1080,
+              heightPx: 1920,
+              pixelCount: 2_073_600,
+              nonTransparentPixelCount: 2_073_600,
               distinctPixelCount: 4,
             },
           }
@@ -815,6 +844,81 @@ describe("VM Host Adapter contract", () => {
           collect,
         ),
       );
+  });
+
+  it("requires frame-captured sale evidence to bind the actual order, payment, and vending command", () => {
+    const collect = createVmHostAdapterRequest(
+      serialSessionRequest("collect-serial-evidence"),
+    );
+    const report = reportFor(collect);
+    for (const records of [
+      report.serialEvidence.records.map((record) =>
+        record.role === "scanner"
+          ? {
+              ...record,
+              capturedFrame: { ...record.capturedFrame, source: "sidecar" },
+            }
+          : record,
+      ),
+      report.serialEvidence.records.map((record) =>
+        record.saleBinding === null
+          ? record
+          : {
+              ...record,
+              saleBinding: {
+                ...record.saleBinding,
+                paymentId: "payment-other",
+              },
+            },
+      ),
+    ])
+      assert.throws(() =>
+        validateVmHostAdapterReport(
+          reportFor(collect, {
+            serialEvidence: { ...report.serialEvidence, records },
+          }),
+          collect,
+        ),
+      );
+  });
+
+  it("rejects plaintext scanner input persisted by an adapter sidecar", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-scanner-leak-"));
+    const start = await runVmHostAdapter({
+      request: createVmHostAdapterRequest(
+        serialSessionRequest("start-serial-session"),
+      ),
+      workDirectory: root,
+      environment: { VEM_VM_HOST_ADAPTER: FAKE_ADAPTER },
+    });
+    const inject = serialSessionRequest("inject-scanner-code");
+    inject.serialSession = {
+      ...inject.serialSession,
+      serialSessionId: start.serialSession.serialSessionId,
+      sessionBindingToken: start.serialSession.sessionBindingToken,
+      startOperationReference: start.serialSession.startOperationReference,
+      deviceMappingDigest: start.serialSession.deviceMappingDigest,
+    };
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request: createVmHostAdapterRequest(inject),
+          workDirectory: root,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_SCANNER_LEAK_FILE: join(
+              root,
+              "adapter-work",
+              "sidecar.txt",
+            ),
+          },
+          scannerCode: PROTECTED_SCANNER_INPUT,
+        }),
+      (error) =>
+        error instanceof VmHostAdapterExecutionError &&
+        error.diagnostic.diagnostics[0].code === "evidence_invalid",
+    );
+    assert.equal(existsSync(join(root, "adapter-work", "sidecar.txt")), false);
   });
 
   it("requires stopped sessions to prove idempotent simulator cleanup with no survivors", () => {
@@ -1364,6 +1468,35 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("requires the active sale route, 1080x1920 framebuffer, and a non-empty same-session CDP #app probe", () => {
+    const request = createVmHostAdapterRequest(requestFor("capture-display"));
+    const report = reportFor(request);
+    for (const displayCapture of [
+      {
+        ...report.displayCapture,
+        tauriRoute: "http://tauri.localhost/#/maintenance",
+      },
+      {
+        ...report.displayCapture,
+        cdpProbe: { ...report.displayCapture.cdpProbe, appTextLength: 0 },
+      },
+      {
+        ...report.displayCapture,
+        capture: {
+          ...report.displayCapture.capture,
+          widthPx: 1920,
+          heightPx: 1080,
+        },
+      },
+    ])
+      assert.throws(() =>
+        validateVmHostAdapterReport(
+          reportFor(request, { displayCapture }),
+          request,
+        ),
+      );
+  });
+
   it("rejects default-audio evidence without an active kiosk binding, selected endpoint, native cue, or synchronized non-silent capture", () => {
     const request = createVmHostAdapterRequest(
       requestFor("capture-default-audio"),
@@ -1494,10 +1627,7 @@ describe("VM Host Adapter contract", () => {
       sessionUser: "VEMKiosk",
       sessionId: 3,
     });
-    assert.equal(
-      report.displayCapture.tauriRoute,
-      "http://tauri.localhost/#/idle",
-    );
+    assert.equal(report.displayCapture.tauriRoute, "http://tauri.localhost/#/");
   });
 
   it("accepts a successful operation only when every requested capability is negotiated", () => {
@@ -2031,6 +2161,12 @@ describe("VM Host Adapter contract", () => {
       `factory-cas://sha256/${HASH}`,
       "--sale-correlation-id",
       "sale-correlation://sale-001",
+      "--order-id",
+      "order-001",
+      "--payment-id",
+      "payment-001",
+      "--vending-command-id",
+      "vending-command-001",
     ];
     const environment = {
       ...process.env,
@@ -2115,6 +2251,12 @@ describe("VM Host Adapter contract", () => {
         "vm-lifecycle://run-12-contract.runtime-testbed",
         "--sale-correlation-id",
         "sale-correlation://sale-001",
+        "--order-id",
+        "order-001",
+        "--payment-id",
+        "payment-001",
+        "--vending-command-id",
+        "vending-command-001",
       ],
       {
         env: {
@@ -2130,6 +2272,12 @@ describe("VM Host Adapter contract", () => {
       true,
     );
     assert.equal(report.reports.collect.serialEvidence.records.length, 9);
+    assert.deepEqual(report.failureMatrix, [
+      { failureMode: "malformed-frame", result: "failed" },
+      { failureMode: "device-disconnected", result: "failed" },
+      { failureMode: "scanner-timeout", result: "failed" },
+      { failureMode: "dispense-failed", result: "failed" },
+    ]);
     assert.doesNotMatch(
       JSON.stringify(report),
       new RegExp(PROTECTED_SCANNER_INPUT),
@@ -2162,6 +2310,12 @@ describe("VM Host Adapter contract", () => {
           "vm-lifecycle://run-12-contract.runtime-testbed",
           "--sale-correlation-id",
           "sale-correlation://sale-001",
+          "--order-id",
+          "order-001",
+          "--payment-id",
+          "payment-001",
+          "--vending-command-id",
+          "vending-command-001",
         ],
         {
           env: {
@@ -2203,7 +2357,7 @@ describe("VM Host Adapter contract", () => {
           VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_USER: "VEMKiosk",
           VEM_VM_HOST_CONFORMANCE_KIOSK_SESSION_ID: "3",
           VEM_VM_HOST_CONFORMANCE_KIOSK_TAURI_ROUTE:
-            "http://tauri.localhost/#/idle",
+            "http://tauri.localhost/#/",
           VEM_VM_HOST_CLEAN_INSTALL_STATUS: "blocked-issue15",
           VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
         },

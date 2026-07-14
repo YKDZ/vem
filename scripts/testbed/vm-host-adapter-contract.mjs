@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { inspectExportedDefaultAudioCapture } from "./default-audio-evidence.mjs";
@@ -152,6 +159,7 @@ const SALE_EVIDENCE_ROLES = new Set([...SERIAL_DEVICE_ROLES, "payment"]);
 const SCANNER_CODE_SUFFIX = /^[a-f0-9]{8}$/;
 const SALE_CORRELATION_ID =
   /^sale-correlation:\/\/[a-z0-9][a-z0-9._:@-]{2,191}$/;
+const BUSINESS_IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._:@-]{2,191}$/;
 
 export class VmHostAdapterContractError extends Error {
   constructor(issues) {
@@ -433,6 +441,7 @@ function assertSerialSessionRequest(session, request, issues) {
         "deviceRoles",
         "scannerInjection",
         "saleCorrelationIds",
+        "saleBindings",
         "idempotencyCheck",
       ],
       "request.serialSession",
@@ -550,6 +559,48 @@ function assertSerialSessionRequest(session, request, issues) {
         "must bind at least one logical sale correlation identity",
       );
   }
+  if (!Array.isArray(session.saleBindings))
+    issue(
+      issues,
+      "request.serialSession.saleBindings",
+      "must bind concrete observed business identifiers",
+    );
+  else {
+    if (session.saleBindings.length !== session.saleCorrelationIds?.length)
+      issue(
+        issues,
+        "request.serialSession.saleBindings",
+        "must bind every requested sale correlation identity",
+      );
+    session.saleBindings.forEach((binding, index) => {
+      const path = `request.serialSession.saleBindings[${index}]`;
+      if (
+        !assertExactKeys(
+          binding,
+          ["saleCorrelationId", "orderId", "paymentId", "vendingCommandId"],
+          path,
+          issues,
+        )
+      )
+        return;
+      if (binding.saleCorrelationId !== session.saleCorrelationIds?.[index])
+        issue(
+          issues,
+          `${path}.saleCorrelationId`,
+          "must match its requested sale correlation identity",
+        );
+      for (const key of ["orderId", "paymentId", "vendingCommandId"])
+        if (
+          typeof binding[key] !== "string" ||
+          !BUSINESS_IDENTIFIER.test(binding[key])
+        )
+          issue(
+            issues,
+            `${path}.${key}`,
+            "must be a concrete observed business identifier",
+          );
+    });
+  }
   if (typeof session.idempotencyCheck !== "boolean")
     issue(
       issues,
@@ -627,6 +678,8 @@ function assertSemanticRecord(record, index, request, issues) {
         "scannerCodeByteLength",
         "scannerCodeSuffix",
         "saleCorrelationId",
+        "saleBinding",
+        "capturedFrame",
       ],
       path,
       issues,
@@ -635,6 +688,59 @@ function assertSemanticRecord(record, index, request, issues) {
     return;
   if (!SALE_EVIDENCE_ROLES.has(record.role))
     issue(issues, `${path}.role`, "must be a supported serial evidence role");
+  if (
+    assertExactKeys(
+      record.capturedFrame,
+      ["source", "sequence", "digest", "byteLength"],
+      `${path}.capturedFrame`,
+      issues,
+    )
+  ) {
+    if (record.capturedFrame.source !== "guest-serial-session")
+      issue(
+        issues,
+        `${path}.capturedFrame.source`,
+        "must be captured from the guest serial session, not a synthetic sidecar",
+      );
+    if (
+      !Number.isInteger(record.capturedFrame.sequence) ||
+      record.capturedFrame.sequence < 1
+    )
+      issue(
+        issues,
+        `${path}.capturedFrame.sequence`,
+        "must be a positive frame sequence",
+      );
+    if (!SHA256_DIGEST.test(record.capturedFrame.digest ?? ""))
+      issue(
+        issues,
+        `${path}.capturedFrame.digest`,
+        "must be a SHA-256 frame digest",
+      );
+    if (
+      !Number.isInteger(record.capturedFrame.byteLength) ||
+      record.capturedFrame.byteLength < 1
+    )
+      issue(
+        issues,
+        `${path}.capturedFrame.byteLength`,
+        "must be a positive frame byte length",
+      );
+  }
+  const expectedSaleBinding = request.serialSession.saleBindings?.find(
+    (binding) => binding.saleCorrelationId === record.saleCorrelationId,
+  );
+  if (record.saleCorrelationId === null) {
+    if (record.saleBinding !== null)
+      issue(issues, `${path}.saleBinding`, "must be null when no sale applies");
+  } else if (
+    JSON.stringify(record.saleBinding) !== JSON.stringify(expectedSaleBinding)
+  )
+    issue(
+      issues,
+      `${path}.saleBinding`,
+      "must bind the observed order, payment, and vending command for this sale",
+    );
   if (record.sessionBindingToken !== request.serialSession.sessionBindingToken)
     issue(
       issues,
@@ -1145,6 +1251,12 @@ function assertDisplayCaptureRequest(value, path, issues) {
     issues,
   );
   assertTauriRoute(value.tauriRoute, `${path}.tauriRoute`, issues);
+  if (value.tauriRoute !== "http://tauri.localhost/#/")
+    issue(
+      issues,
+      `${path}.tauriRoute`,
+      "must request the exact customer sale route",
+    );
 }
 
 function assertAudioCaptureRequest(value, path, issues) {
@@ -1473,6 +1585,7 @@ function assertDisplayCaptureResult(value, request, report, issues) {
         "captureOperationReference",
         "activeKioskSession",
         "tauriRoute",
+        "cdpProbe",
         "capture",
       ],
       path,
@@ -1515,8 +1628,48 @@ function assertDisplayCaptureResult(value, request, report, issues) {
       "must match the requested active kiosk session",
     );
   assertTauriRoute(value.tauriRoute, `${path}.tauriRoute`, issues);
+  if (value.tauriRoute !== "http://tauri.localhost/#/")
+    issue(
+      issues,
+      `${path}.tauriRoute`,
+      "must prove the exact customer sale route",
+    );
   if (value.tauriRoute !== request.displayCapture?.tauriRoute)
     issue(issues, `${path}.tauriRoute`, "must bind the requested kiosk route");
+  if (
+    assertExactKeys(
+      value.cdpProbe,
+      ["endpoint", "targetUrl", "appVisible", "appTextLength", "domNodeCount"],
+      `${path}.cdpProbe`,
+      issues,
+    )
+  ) {
+    if (value.cdpProbe.endpoint !== "http://127.0.0.1:9222/json")
+      issue(
+        issues,
+        `${path}.cdpProbe.endpoint`,
+        "must use the local WebView CDP endpoint",
+      );
+    if (value.cdpProbe.targetUrl !== value.tauriRoute)
+      issue(
+        issues,
+        `${path}.cdpProbe.targetUrl`,
+        "must bind the captured route",
+      );
+    if (value.cdpProbe.appVisible !== true)
+      issue(
+        issues,
+        `${path}.cdpProbe.appVisible`,
+        "must prove #app is visible",
+      );
+    for (const key of ["appTextLength", "domNodeCount"])
+      if (!Number.isInteger(value.cdpProbe[key]) || value.cdpProbe[key] < 1)
+        issue(
+          issues,
+          `${path}.cdpProbe.${key}`,
+          "must prove a non-empty #app DOM",
+        );
+  }
   if (
     !assertExactKeys(
       value.capture,
@@ -1556,6 +1709,12 @@ function assertDisplayCaptureResult(value, request, report, issues) {
         "must be a positive decoded PNG measurement",
       );
   }
+  if (value.capture.widthPx !== 1080 || value.capture.heightPx !== 1920)
+    issue(
+      issues,
+      `${path}.capture`,
+      "must be an exact 1080x1920 kiosk framebuffer capture",
+    );
 }
 
 function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
@@ -2684,6 +2843,8 @@ export function validateVmHostAdapterReport(input, requestInput) {
                     scannerCodeByteLength: record.scannerCodeByteLength,
                     scannerCodeSuffix: record.scannerCodeSuffix,
                     saleCorrelationId: record.saleCorrelationId,
+                    saleBinding: record.saleBinding,
+                    capturedFrame: record.capturedFrame,
                   })),
                 },
         }
@@ -2809,6 +2970,25 @@ function scopedEvidenceExportDirectory({
     );
   mkdirSync(scope, { recursive: true, mode: 0o700 });
   return scope;
+}
+
+function assertScannerCodeNotPersisted(directory, scannerCode) {
+  if (typeof scannerCode !== "string" || scannerCode.length === 0) return;
+  const visit = (path) => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) visit(child);
+      else if (entry.isFile() && readFileSync(child).includes(scannerCode))
+        throw new Error(
+          "protected scanner input must not persist in adapter work directories or sidecars",
+        );
+    }
+  };
+  try {
+    if (lstatSync(directory).isDirectory()) visit(directory);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 
 function processGroupExists(child) {
@@ -3009,6 +3189,7 @@ function serialSessionForRecovery(request) {
     deviceRoles: [...SERIAL_DEVICE_ROLES],
     scannerInjection: null,
     saleCorrelationIds: [...request.serialSession.saleCorrelationIds],
+    saleBindings: structuredClone(request.serialSession.saleBindings),
     idempotencyCheck: false,
   };
 }
@@ -3093,6 +3274,7 @@ export async function runVmHostAdapter({
     );
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1)
     throw new Error("VM Host Adapter timeout must be a positive integer");
+  const adapterWorkDirectory = join(resolve(workDirectory), "adapter-work");
   const scopedEvidenceDirectory =
     request.operation === "capture-display" ||
     request.operation === "capture-default-audio"
@@ -3108,7 +3290,7 @@ export async function runVmHostAdapter({
     request.operation === "capture-default-audio"
   )
     mkdirSync(scopedEvidenceDirectory, { recursive: true, mode: 0o700 });
-  mkdirSync(workDirectory, { recursive: true, mode: 0o700 });
+  mkdirSync(adapterWorkDirectory, { recursive: true, mode: 0o700 });
   const adapterEnvironment = {
     ...environment,
     VEM_VM_HOST_ADAPTER_CONTRACT_VERSION: CONTRACT_VERSION,
@@ -3121,7 +3303,7 @@ export async function runVmHostAdapter({
     if (cancellation) return cancellation;
     cancellation = await invokeAdapter({
       request: cancelRequestFor(request),
-      workDirectory,
+      workDirectory: adapterWorkDirectory,
       environment: adapterEnvironment,
       timeoutMs: Math.min(timeoutMs, 30000),
       signal: undefined,
@@ -3131,7 +3313,7 @@ export async function runVmHostAdapter({
   };
   let outcome = await invokeAdapter({
     request,
-    workDirectory,
+    workDirectory: adapterWorkDirectory,
     environment: adapterEnvironment,
     timeoutMs,
     signal,
@@ -3139,6 +3321,18 @@ export async function runVmHostAdapter({
     onStarted: onOperationStarted,
     scannerCode,
   });
+  try {
+    assertScannerCodeNotPersisted(adapterWorkDirectory, scannerCode);
+    if (scopedEvidenceDirectory)
+      assertScannerCodeNotPersisted(scopedEvidenceDirectory, scannerCode);
+  } catch {
+    outcome = {
+      ...outcome,
+      result: "failed",
+      code: "evidence_invalid",
+      report: null,
+    };
+  }
   if (
     outcome.result === "succeeded" &&
     ["capture-display", "capture-default-audio"].includes(request.operation)
@@ -3190,7 +3384,7 @@ export async function runVmHostAdapter({
   try {
     recovery = await invokeAdapter({
       request: cleanupRequestFor(request),
-      workDirectory,
+      workDirectory: adapterWorkDirectory,
       environment: adapterEnvironment,
       timeoutMs: Math.min(timeoutMs, 30000),
       signal: undefined,
@@ -3225,6 +3419,7 @@ export async function runVmHostAdapter({
     cleanup,
     scannerCode,
   });
+  rmSync(adapterWorkDirectory, { recursive: true, force: true });
   throw new VmHostAdapterExecutionError(
     `VM Host Adapter reported ${outcome.result}`,
     diagnostic,

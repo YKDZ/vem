@@ -645,9 +645,19 @@ The Windows acceptance requires:
 - a virtual Windows default audio endpoint and host-side PCM/WAV capture;
 - real Tauri native audio playback with non-silent captured frames;
 - an active kiosk console session, `machine.exe` as the foreground window,
-  WebView route/DOM evidence, and a platform framebuffer screenshot;
+  an exact `http://tauri.localhost/#/` WebView route, a same-session CDP
+  `#app` visibility/non-empty-DOM probe, and a valid 1080x1920 platform
+  framebuffer PNG screenshot;
 - daemon `sell_ready`, real Admin API and MQTT interaction, simulated payment,
-  and a successful dispense flow.
+  and a successful dispense flow driven by scanner and lower-controller frames
+  from one serial session. The serial capture binds each sale to its concrete
+  order, payment, and vending-command identifiers. It records frame digests,
+  lengths, and sequence numbers from the guest serial session, never a host
+  semantic sidecar. Malformed-frame, device-disconnect, scanner-timeout, and
+  dispense-failure paths are acceptance cases and must fail without inventing
+  successful sale evidence. Scanner plaintext is an injection-only protected
+  input and must not appear in reports, evidence uploads, adapter work roots,
+  or sidecars.
 
 Application-level audio device selection is not added. VEM uses the Windows
 default output; physical 3.5 mm speaker wiring, direction, audibility, and

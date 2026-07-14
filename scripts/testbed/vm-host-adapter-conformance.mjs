@@ -86,7 +86,7 @@ function activeKioskSessionFromEnvironment() {
     throw new Error(
       "adapter conformance requires an observed VEMKiosk session binding",
     );
-  if (!/^http:\/\/tauri\.localhost\/#\/.+/.test(tauriRoute))
+  if (tauriRoute !== "http://tauri.localhost/#/")
     throw new Error(
       "adapter conformance requires an observed Tauri kiosk route",
     );

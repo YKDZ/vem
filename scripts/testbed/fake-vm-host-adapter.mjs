@@ -74,13 +74,20 @@ function displayCapture(request, evidenceEntry) {
     captureOperationReference: request.operationReference,
     activeKioskSession: request.displayCapture.activeKioskSession,
     tauriRoute: request.displayCapture.tauriRoute,
+    cdpProbe: {
+      endpoint: "http://127.0.0.1:9222/json",
+      targetUrl: request.displayCapture.tauriRoute,
+      appVisible: true,
+      appTextLength: 16,
+      domNodeCount: 3,
+    },
     capture: {
       artifact: evidenceEntry.identity,
       format: "png",
-      widthPx: 2,
-      heightPx: 2,
-      pixelCount: 4,
-      nonTransparentPixelCount: 4,
+      widthPx: 1080,
+      heightPx: 1920,
+      pixelCount: 2_073_600,
+      nonTransparentPixelCount: 2_073_600,
       distinctPixelCount: 4,
     },
   };
@@ -98,13 +105,22 @@ function materializeDisplayEvidence() {
     return bytes;
   };
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(2, 0);
-  ihdr.writeUInt32BE(2, 4);
+  const width = 1080;
+  const height = 1920;
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
   ihdr.writeUInt8(8, 8);
   ihdr.writeUInt8(6, 9);
-  const pixels = Buffer.from([
-    0, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 255, 255, 255, 255, 255, 255,
-  ]);
+  const pixels = Buffer.alloc(height * (width * 4 + 1));
+  for (let row = 0; row < height; row += 1) {
+    const start = row * (width * 4 + 1);
+    pixels[start] = 0;
+    for (let column = 0; column < width; column += 1)
+      pixels.writeUInt32BE(0x101820ff, start + 1 + column * 4);
+  }
+  pixels.writeUInt32BE(0xff4040ff, 1);
+  pixels.writeUInt32BE(0x40ff40ff, 5);
+  pixels.writeUInt32BE(0x4040ffff, 9);
   const bytes = Buffer.concat([
     signature,
     chunk("IHDR", ihdr),
@@ -211,9 +227,20 @@ function mutateSerialState(request, state) {
   return { ...binding, ...session };
 }
 
+function capturedFrame(sequence) {
+  return {
+    source: "guest-serial-session",
+    sequence,
+    digest: `sha256:${createHash("sha256").update(`serial-frame-${sequence}`).digest("hex")}`,
+    byteLength: 16,
+  };
+}
+
 function semanticRecords(request) {
   const session = request.serialSession;
   const saleCorrelationId = session.saleCorrelationIds[0];
+  const saleBinding = session.saleBindings[0];
+  let sequence = 0;
   const lower = [
     "handshake",
     "health",
@@ -233,6 +260,8 @@ function semanticRecords(request) {
       event.startsWith("dispense-") && session.saleCorrelationIds.length > 0
         ? session.saleCorrelationIds[0]
         : null,
+    saleBinding: event.startsWith("dispense-") ? saleBinding : null,
+    capturedFrame: capturedFrame((sequence += 1)),
   }));
   return [
     ...lower,
@@ -246,6 +275,8 @@ function semanticRecords(request) {
       scannerCodeByteLength: session.scannerInjection.scannerCodeByteLength,
       scannerCodeSuffix: session.scannerInjection.scannerCodeSuffix,
       saleCorrelationId,
+      saleBinding,
+      capturedFrame: capturedFrame((sequence += 1)),
     },
     ...["payment-request", "payment-ack", "payment-result"].map((event) => ({
       role: "payment",
@@ -257,6 +288,8 @@ function semanticRecords(request) {
       scannerCodeByteLength: null,
       scannerCodeSuffix: null,
       saleCorrelationId,
+      saleBinding,
+      capturedFrame: capturedFrame((sequence += 1)),
     })),
   ];
 }
@@ -503,6 +536,12 @@ if (request.operation === "inject-scanner-code") {
     throw new Error(
       "protected scanner input does not match request descriptor",
     );
+  if (process.env.VEM_VM_HOST_ADAPTER_SCANNER_LEAK_FILE)
+    writeFileSync(
+      process.env.VEM_VM_HOST_ADAPTER_SCANNER_LEAK_FILE,
+      protectedCode,
+      { mode: 0o600 },
+    );
 }
 if (process.env.VEM_VM_HOST_ADAPTER_OPERATION_LOG) {
   writeFileSync(
@@ -547,10 +586,23 @@ if (
 }
 const configuredScenario =
   process.env.VEM_VM_HOST_ADAPTER_FAKE_SCENARIO ?? "success";
-const scenarioForOperation =
+let scenarioForOperation =
   process.env.VEM_VM_HOST_ADAPTER_FAIL_OPERATION === request.operation
     ? "failure"
     : configuredScenario;
+const serialFault = String(
+  process.env.VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT ?? "",
+).trim();
+if (
+  request.operation === "collect-serial-evidence" &&
+  new Set([
+    "malformed-frame",
+    "device-disconnected",
+    "scanner-timeout",
+    "dispense-failed",
+  ]).has(serialFault)
+)
+  scenarioForOperation = "failure";
 if (
   scenarioForOperation === "hang" &&
   request.operation !== "cleanup" &&
