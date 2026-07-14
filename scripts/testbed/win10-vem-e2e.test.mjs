@@ -49,6 +49,7 @@ import {
   findActiveKioskSession,
   getRuntimeAcceptanceExitStatus,
   isStrictTauriHashRouteUrl,
+  sanitizeFactoryPreclaimReport,
 } from "./win10-vem-e2e.mjs";
 
 describe("factory acceptance cancellation cleanup", () => {
@@ -1772,6 +1773,19 @@ describe("win10-vem-e2e reset planning", () => {
       /C:\\VEM\\bringup\\scripts\\verify-factory-runtime\.ps1/,
     );
     assert.match(script, /factory-preclaim-verification\/v1/);
+    assert.match(
+      script,
+      /failureCount = @\(\$factoryVerification\.failures\)\.Count/,
+    );
+    assert.match(script, /failures = @\(\$factoryVerification\.failures/);
+    assert.match(
+      script,
+      /machineUiStartup = \$factoryVerification\.checks\.machineUiStartup/,
+    );
+    assert.doesNotMatch(
+      script,
+      /machineUiTask = \$factoryVerification\.checks\.machineUiTask/,
+    );
     assert.match(script, /absentMachineIdentity/);
     assert.match(script, /oobe-bootstrap-status\.json/);
     assert.match(script, /OOBEInProgress/);
@@ -3740,6 +3754,57 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(serialized, /json-token/);
     assert.doesNotMatch(serialized, /password=plain/);
     assert.match(serialized, /\[REDACTED\]/);
+  });
+
+  it("sanitizes factory preclaim verifier output before emitting CI evidence", () => {
+    const sanitized = sanitizeFactoryPreclaimReport({
+      failures: [
+        "probe failed --api-key plain-api-key --credential=plain-credential",
+        "retry --token plain-token --client-secret 'plain-client-secret'",
+        "PowerShell -ApiKey powershell-api-key -Credential 'powershell-credential'",
+      ],
+      checks: {
+        machineUiStartup: {
+          arguments:
+            "--private-key plain-private-key --password=plain-password -Token powershell-token -Password=powershell-password",
+        },
+      },
+    });
+    const serialized = JSON.stringify(sanitized);
+    for (const secret of [
+      "plain-api-key",
+      "plain-credential",
+      "plain-token",
+      "plain-client-secret",
+      "plain-private-key",
+      "plain-password",
+      "powershell-api-key",
+      "powershell-credential",
+      "powershell-token",
+      "powershell-password",
+    ]) {
+      assert.doesNotMatch(serialized, new RegExp(secret));
+    }
+    assert.match(serialized, /\[REDACTED\]/);
+
+    const source = readFileSync(
+      new URL("./win10-vem-e2e.mjs", import.meta.url),
+      "utf8",
+    );
+    const preclaimBranch = source.slice(
+      source.indexOf('if (options.mode === "factory-preclaim-verify")'),
+      source.indexOf('if (options.mode === "vm-runtime-acceptance")'),
+    );
+
+    assert.match(preclaimBranch, /sanitizeFactoryPreclaimReport\(report\)/);
+    assert.match(
+      preclaimBranch,
+      /writeJsonOutput\(options\.out, sanitizedReport\)/,
+    );
+    assert.doesNotMatch(
+      preclaimBranch,
+      /process\.stdout\.write\(result\.stdout\)/,
+    );
   });
 
   it("indexes existing display and session evidence into VM runtime acceptance artifact directories", () => {

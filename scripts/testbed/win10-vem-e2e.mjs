@@ -2806,6 +2806,10 @@ function redactSensitiveText(value) {
       /"(claimCode|token|secret|password)"\s*:\s*("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
       `"$1":"${REDACTED}"`,
     )
+    .replace(
+      /(-{1,2}(?:claim[-_]?code|token|secret|password|passwd|pwd|credential|api[-_]?key|access[-_]?key|private[-_]?key|client[-_]?secret|wifi[-_]?password|network[-_]?password|ssid[-_]?password))(?:=|\s+)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      `$1=${REDACTED}`,
+    )
     .replace(/VEM-WIN10-REAL-01/gi, REDACTED)
     .replace(/100\.66\.207\.119/g, REDACTED)
     .replace(/DESKTOP-2IDRN2K/gi, REDACTED)
@@ -2852,6 +2856,10 @@ function sanitizeReportValue(value) {
       ];
     }),
   );
+}
+
+export function sanitizeFactoryPreclaimReport(report) {
+  return sanitizeReportValue(report);
 }
 
 function sanitizeVmRuntimeAcceptancePlan(plan) {
@@ -3717,10 +3725,12 @@ try {
     checks = [ordered]@{
       factoryRuntime = [ordered]@{
         ok = [bool]$factoryVerification.ok
+        failureCount = @($factoryVerification.failures).Count
+        failures = @($factoryVerification.failures | ForEach-Object { [string]$_ })
         baseline = $factoryVerification.checks.manifest
         packages = $factoryVerification.checks.factoryRemoteMaintenanceCapability.packageVersions
         daemonService = $factoryVerification.checks.daemonService
-        machineUiTask = $factoryVerification.checks.machineUiTask
+        machineUiStartup = $factoryVerification.checks.machineUiStartup
         maintenanceSshCa = $factoryVerification.checks.factoryRemoteMaintenanceCapability.caFingerprint
         passwordSsh = $factoryVerification.checks.factoryRemoteMaintenanceCapability.passwordAuthentication
         accounts = $factoryVerification.checks.factoryRemoteMaintenanceCapability.accountPolicy
@@ -8294,7 +8304,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               stdio: ["pipe", "pipe", "pipe"],
             },
           );
-          if (result.stdout) process.stdout.write(result.stdout);
           if (result.stderr) process.stderr.write(result.stderr);
           let report;
           try {
@@ -8304,7 +8313,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               "factory-preclaim-verify did not return structured verifier evidence",
             );
           }
-          if (options.out) writeJsonOutput(options.out, report);
+          const sanitizedReport = sanitizeFactoryPreclaimReport(report);
+          process.stdout.write(`${JSON.stringify(sanitizedReport, null, 2)}\n`);
+          if (options.out) writeJsonOutput(options.out, sanitizedReport);
           if (result.status !== 0 || report.ok !== true) {
             process.exitCode = 1;
           }
