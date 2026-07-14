@@ -1653,6 +1653,17 @@ fn execute_stable_wlan_rollback<A: StableWlanRollbackStepAdapter>(
     Ok(())
 }
 
+/// Candidate connection failure follows the same recovery invariant as a
+/// stable-profile rollback: the marker is the crash-recovery evidence and is
+/// cleared only after the exact old stable connection is usable again.
+#[cfg(any(windows, test))]
+fn execute_candidate_failure_recovery<A: StableWlanRollbackStepAdapter>(
+    registry: &WlanCallbackMutationRegistry,
+    adapter: &mut A,
+) -> Result<(), String> {
+    execute_stable_wlan_rollback(registry, adapter)
+}
+
 #[cfg(test)]
 fn stale_candidate_startup_recovery_plan(
     current: CurrentWlanConnectionQuery,
@@ -2119,19 +2130,20 @@ fn classify_current_wlan_query(
 }
 
 #[cfg(any(windows, test))]
-fn current_wlan_query_allows_candidate_cleanup(
-    query: &CurrentWlanConnectionQuery,
-    candidate_name: &str,
-) -> bool {
-    match query {
-        CurrentWlanConnectionQuery::Connected(current)
-        | CurrentWlanConnectionQuery::Connecting(current)
-        | CurrentWlanConnectionQuery::Disconnecting(current) => {
-            current.profile_name != candidate_name
-        }
-        CurrentWlanConnectionQuery::Absent => true,
-        CurrentWlanConnectionQuery::Error(_) => false,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UncommittedWlanDropCandidateDisposition {
+    Preserve,
+}
+
+#[cfg(any(windows, test))]
+fn uncommitted_wlan_drop_candidate_disposition(
+    _query: &CurrentWlanConnectionQuery,
+    _candidate_name: &str,
+) -> UncommittedWlanDropCandidateDisposition {
+    // A current-connection observation is not a transaction outcome. Only an
+    // explicit commit or a completed rollback may clear the durable marker;
+    // Drop represents neither and therefore has no cleanup disposition.
+    UncommittedWlanDropCandidateDisposition::Preserve
 }
 
 #[cfg(windows)]
@@ -2586,29 +2598,25 @@ impl Drop for StableWlanProfileTransaction {
         unsafe {
             // Drop deliberately does not claim rollback: XML/order restore
             // without a verified old-profile reconnect is a false recovery.
-            // Its only best-effort action is to remove a manual candidate
-            // when it is no longer current; explicit `rollback` owns every
-            // stable recovery result and freezes failures.
+            // A non-current or absent candidate is likewise not evidence of
+            // a completed rollback. Explicit `commit`/`rollback` own cleanup;
+            // an uncommitted Drop always retains the durable marker.
             if let Ok(client) = WlanClientHandle::open() {
                 let current_query =
                     windows_wlan_current_connection_state(client.raw(), &self.interface_guid);
                 if require_safe_current_wlan_query(
                     wlan_callback_mutation_registry(),
                     &current_query,
-                    "rollback candidate cleanup",
+                    "uncommitted transaction drop",
                 )
                 .is_ok()
-                    && current_wlan_query_allows_candidate_cleanup(
+                {
+                    match uncommitted_wlan_drop_candidate_disposition(
                         &current_query,
                         &self.candidate_name,
-                    )
-                {
-                    let _ = delete_wlan_profile(
-                        client.raw(),
-                        &self.interface_guid,
-                        &self.candidate_name,
-                        "abandoned manual candidate",
-                    );
+                    ) {
+                        UncommittedWlanDropCandidateDisposition::Preserve => {}
+                    }
                 }
             }
         }
@@ -3180,6 +3188,92 @@ unsafe fn ensure_wlan_client_open(client: &mut WlanClientHandle) -> Result<(), S
 }
 
 #[cfg(windows)]
+struct NativeCandidateFailureRecoveryOperations<'a> {
+    client: &'a mut WlanClientHandle,
+    interface: &'a windows_sys::Win32::NetworkManagement::WiFi::WLAN_INTERFACE_INFO,
+    candidate_name: &'a str,
+    previous: &'a PreviousWlanConnection,
+    restored: Option<WlanConnectionObservation>,
+}
+
+#[cfg(windows)]
+impl StableWlanRollbackOperations for NativeCandidateFailureRecoveryOperations<'_> {
+    fn restore_old_profile(&mut self) -> Result<(), String> {
+        unsafe {
+            ensure_wlan_client_open(self.client).map_err(|error| {
+                format!("could not open the WLAN client to restore the old stable profile: {error}")
+            })?;
+            let profile_name = wide_null(&self.previous.profile_name);
+            capture_existing_wlan_profile(
+                self.client.raw(),
+                &self.interface.InterfaceGuid,
+                &profile_name,
+            )?
+            .ok_or_else(|| {
+                format!(
+                    "old stable WLAN profile {:?} is no longer present",
+                    self.previous.profile_name
+                )
+            })?;
+            Ok(())
+        }
+    }
+
+    fn connect_old_stable(&mut self) -> Result<(), String> {
+        unsafe {
+            ensure_wlan_client_open(self.client).map_err(|error| {
+                format!(
+                    "could not open the WLAN client to reconnect the old stable profile: {error}"
+                )
+            })?;
+            let restored = attempt_windows_wlan_connection(
+                self.client,
+                self.interface,
+                &self.previous.profile_name,
+                &self.previous.ssid,
+                false,
+            )
+            .map_err(|error| format!("old stable WLAN reconnect failed: {error}"))?;
+            if !matches!(restored.association, WlanAssociationState::Associated) {
+                return Err(
+                    "old stable WLAN did not associate with its exact profile/interface/SSID"
+                        .to_string(),
+                );
+            }
+            self.restored = Some(restored);
+            Ok(())
+        }
+    }
+
+    fn verify_old_stable(&mut self) -> Result<(), String> {
+        let restored = self.restored.ok_or_else(|| {
+            "old stable WLAN verification ran without an exact restored connection".to_string()
+        })?;
+        if !restored.local_address_ready || !restored.default_route_ready {
+            return Err(
+                "old stable WLAN did not verify a usable local address and default route"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    fn clear_candidate(&mut self) -> Result<(), String> {
+        unsafe {
+            ensure_wlan_client_open(self.client).map_err(|error| {
+                format!("could not open the WLAN client to clear the failed candidate: {error}")
+            })?;
+            delete_wlan_profile(
+                self.client.raw(),
+                &self.interface.InterfaceGuid,
+                self.candidate_name,
+                "failed manual candidate after verified old stable recovery",
+            )
+        }
+    }
+}
+
+#[cfg(windows)]
 unsafe fn recover_after_candidate_failure(
     client: &mut WlanClientHandle,
     interface: &windows_sys::Win32::NetworkManagement::WiFi::WLAN_INTERFACE_INFO,
@@ -3191,50 +3285,25 @@ unsafe fn recover_after_candidate_failure(
         // register another callback or issue a new WLAN mutation in this
         // process; the candidate is manual and startup/next process will
         // clean it up before attempting a connection.
-        return Err(
-            "WLAN recovery is deferred until daemon restart because a callback context could not be safely released"
-                .to_string(),
-        );
+        return Err(wlan_recovery_required(
+            "candidate failure recovery cannot begin because WLAN callbacks are not safe",
+        ));
     }
-    ensure_wlan_client_open(client)?;
-    let candidate_delete = delete_wlan_profile(
-        client.raw(),
-        &interface.InterfaceGuid,
-        candidate_name,
-        "failed manual candidate",
-    );
-
-    // Do not merely restore an old profile file. The radio was moved to the
-    // candidate, so actively reconnect the exact original profile/interface/
-    // SSID and require the same local address/default-route evidence.
-    let previous_reconnect = match previous_connection {
-        Some(previous) => {
-            ensure_wlan_client_open(client)?;
-            match attempt_windows_wlan_connection(
-                client,
-                interface,
-                &previous.profile_name,
-                &previous.ssid,
-                false,
-            ) {
-                Ok(observation) if wlan_local_connection_succeeded(observation) => Ok(()),
-                Ok(_) => {
-                    Err("Windows could not restore the prior WLAN connection readiness".to_string())
-                }
-                Err(error) => Err(format!(
-                    "Windows could not reconnect the prior WLAN profile: {error}"
-                )),
-            }
-        }
-        None => Ok(()),
+    let Some(previous) = previous_connection else {
+        return Err(wlan_recovery_required(
+            "candidate failure has no captured old stable profile to restore and verify; candidate marker is retained",
+        ));
     };
-
-    match (candidate_delete, previous_reconnect) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(delete), Ok(())) => Err(format!("{delete}; prior WLAN connection was restored")),
-        (Ok(()), Err(reconnect)) => Err(reconnect),
-        (Err(delete), Err(reconnect)) => Err(format!("{delete}; {reconnect}")),
-    }
+    let registry = wlan_callback_mutation_registry();
+    let operations = NativeCandidateFailureRecoveryOperations {
+        client,
+        interface,
+        candidate_name,
+        previous,
+        restored: None,
+    };
+    let mut adapter = StableWlanRollbackAdapter::new(operations);
+    execute_candidate_failure_recovery(registry, &mut adapter)
 }
 
 #[cfg(any(windows, test))]
@@ -4079,7 +4148,7 @@ mod tests {
     };
 
     #[test]
-    fn current_wlan_query_keeps_invalid_state_and_disconnecting_distinct_from_absent() {
+    fn uncommitted_drop_preserves_candidate_for_every_current_wlan_query() {
         const ERROR_INVALID_STATE: u32 = 5023;
         let candidate = "VEM-WIFI-CANDIDATE-deadbeefdeadbeefdead-retry";
         let candidate_connection = CurrentWlanConnection {
@@ -4087,26 +4156,25 @@ mod tests {
             ssid: "VEM-Lab".to_string(),
         };
 
-        assert!(!current_wlan_query_allows_candidate_cleanup(
-            &CurrentWlanConnectionQuery::Error(ERROR_INVALID_STATE),
-            candidate,
-        ));
-        assert!(!current_wlan_query_allows_candidate_cleanup(
-            &CurrentWlanConnectionQuery::Disconnecting(candidate_connection),
-            candidate,
-        ));
-        assert!(current_wlan_query_allows_candidate_cleanup(
-            &CurrentWlanConnectionQuery::Absent,
-            candidate,
-        ));
-        assert!(current_wlan_query_allows_candidate_cleanup(
-            &CurrentWlanConnectionQuery::Connected(CurrentWlanConnection {
+        for query in [
+            CurrentWlanConnectionQuery::Error(ERROR_INVALID_STATE),
+            CurrentWlanConnectionQuery::Disconnecting(candidate_connection),
+            CurrentWlanConnectionQuery::Absent,
+            CurrentWlanConnectionQuery::Connected(CurrentWlanConnection {
                 profile_name: "VEM-WIFI-stable".to_string(),
                 ssid: "VEM-Lab".to_string(),
             }),
-            candidate,
-        ));
+        ] {
+            assert_eq!(
+                uncommitted_wlan_drop_candidate_disposition(&query, candidate),
+                UncommittedWlanDropCandidateDisposition::Preserve,
+                "Drop must not infer successful rollback from {query:?}"
+            );
+        }
+    }
 
+    #[test]
+    fn current_wlan_query_keeps_disconnecting_distinct_from_absent() {
         let registry = WlanCallbackMutationRegistry::default();
         let previous = previous_wlan_connection_from_query(
             &registry,
@@ -4739,6 +4807,88 @@ mod tests {
         execute_stable_wlan_rollback(&registry, &mut adapter)
             .expect("all four native rollback boundaries succeeded");
         assert_eq!(adapter.operations.calls, steps);
+        drop(permit);
+        assert!(!registry.is_fused());
+    }
+
+    #[test]
+    fn production_candidate_failure_recovery_fault_matrix_keeps_marker_until_old_stable_is_verified(
+    ) {
+        struct FaultingCandidateRecoveryOperations {
+            fail_step: Option<StableWlanRollbackStep>,
+            calls: Vec<StableWlanRollbackStep>,
+            candidate_present: bool,
+        }
+
+        impl FaultingCandidateRecoveryOperations {
+            fn record(&mut self, step: StableWlanRollbackStep) -> Result<(), String> {
+                self.calls.push(step);
+                if self.fail_step == Some(step) {
+                    return Err(format!("injected {step:?} failure"));
+                }
+                if step == StableWlanRollbackStep::ClearCandidate {
+                    self.candidate_present = false;
+                }
+                Ok(())
+            }
+        }
+
+        impl StableWlanRollbackOperations for FaultingCandidateRecoveryOperations {
+            fn restore_old_profile(&mut self) -> Result<(), String> {
+                self.record(StableWlanRollbackStep::RestoreOldProfile)
+            }
+
+            fn connect_old_stable(&mut self) -> Result<(), String> {
+                self.record(StableWlanRollbackStep::ConnectOldStable)
+            }
+
+            fn verify_old_stable(&mut self) -> Result<(), String> {
+                self.record(StableWlanRollbackStep::VerifyOldStable)
+            }
+
+            fn clear_candidate(&mut self) -> Result<(), String> {
+                self.record(StableWlanRollbackStep::ClearCandidate)
+            }
+        }
+
+        let steps = [
+            StableWlanRollbackStep::RestoreOldProfile,
+            StableWlanRollbackStep::ConnectOldStable,
+            StableWlanRollbackStep::VerifyOldStable,
+            StableWlanRollbackStep::ClearCandidate,
+        ];
+        for (failed_index, failed_step) in steps.into_iter().enumerate() {
+            let registry = WlanCallbackMutationRegistry::default();
+            let permit = registry.acquire().expect("candidate recovery owns permit");
+            let operations = FaultingCandidateRecoveryOperations {
+                fail_step: Some(failed_step),
+                calls: vec![],
+                candidate_present: true,
+            };
+            let mut adapter = StableWlanRollbackAdapter::new(operations);
+            let error = execute_candidate_failure_recovery(&registry, &mut adapter)
+                .expect_err("every recovery boundary must freeze before marker removal");
+
+            assert!(error.contains("WLAN_RECOVERY_REQUIRED"));
+            assert_eq!(adapter.operations.calls, steps[..=failed_index]);
+            assert!(adapter.operations.candidate_present);
+            drop(permit);
+            assert!(registry.is_fused());
+            assert!(registry.acquire().is_err());
+        }
+
+        let registry = WlanCallbackMutationRegistry::default();
+        let permit = registry.acquire().expect("candidate recovery owns permit");
+        let operations = FaultingCandidateRecoveryOperations {
+            fail_step: None,
+            calls: vec![],
+            candidate_present: true,
+        };
+        let mut adapter = StableWlanRollbackAdapter::new(operations);
+        execute_candidate_failure_recovery(&registry, &mut adapter)
+            .expect("candidate clears only after exact old stable verification");
+        assert_eq!(adapter.operations.calls, steps);
+        assert!(!adapter.operations.candidate_present);
         drop(permit);
         assert!(!registry.is_fused());
     }
