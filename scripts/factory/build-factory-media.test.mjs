@@ -22,6 +22,7 @@ import {
   assertWimMagic,
   createWindowsFactoryFirstBootMedia,
   factoryAutounattendXml,
+  factoryOobeCompletionScript,
   factoryProfileImplementationScript,
   expectedFactoryEffectiveInputRoles,
   factoryPreparationSplat,
@@ -1111,6 +1112,44 @@ describe("real deterministic Factory ISO builder", () => {
     }
   });
 
+  it("resumes OOBE cleanup after the bootstrap account was already removed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-oobe-cleanup-reentry-"));
+    const fixturePath = join(root, "fixture.ps1");
+    const escapedRoot = root.replaceAll("'", "''");
+    const script = `$ErrorActionPreference = 'Stop'
+New-PSDrive -Name C -PSProvider FileSystem -Root '${escapedRoot}' | Out-Null
+New-Item -ItemType Directory -Force -Path 'C:\\ProgramData\\VEM\\factory' | Out-Null
+Set-Content -LiteralPath 'C:\\ProgramData\\VEM\\factory\\oobe-bootstrap-status.json' -NoNewline -Encoding UTF8 -Value '{"schemaVersion":"vem-factory-oobe-bootstrap-status/v1","state":"succeeded","stage":"complete","errorType":""}'
+Set-Content -LiteralPath 'C:\\ProgramData\\VEM\\factory\\oobe-cleanup-status.json' -NoNewline -Encoding UTF8 -Value '{"schemaVersion":"vem-factory-oobe-cleanup-status/v1","phase":"ready"}'
+$script:TaskRegistered = $true
+function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
+function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Remove-ItemProperty { param($Path, $Name, $ErrorAction) }
+function Remove-LocalUser { param($Name, $ErrorAction) }
+function Get-Volume { param($ErrorAction) @() }
+function New-Object { param($ComObject) [pscustomobject]@{} }
+function Start-Sleep { param($Seconds) throw "unexpected cleanup retry: resuming=$resumingCleanup bootstrap=$($bootstrapStatus.state)/$($bootstrapStatus.stage) setup=$($setupState.OOBEInProgress)/$($setupState.SystemSetupInProgress)/$($setupState.SetupType)" }
+function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
+function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
+${factoryOobeCompletionScript()}
+if ($script:TaskRegistered) { throw 'cleanup task was not unregistered' }
+$cleanupStatus = Get-Content -LiteralPath 'C:\\ProgramData\\VEM\\factory\\oobe-cleanup-status.json' -Raw | ConvertFrom-Json
+if ($cleanupStatus.phase -cne 'complete') { throw 'cleanup did not reach the complete phase' }
+`;
+    try {
+      await writeFile(fixturePath, script, "utf8");
+      execFileSync("pwsh", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        fixturePath,
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("selects the requested Windows IMAGE from wimlib XML containing every image", async () => {
     const data = await fixture();
     const fakeWimlib = join(data.root, "fake-wimlib-imagex");
@@ -1633,6 +1672,13 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(completeOobe, /OOBEInProgress/);
       assert.match(completeOobe, /SystemSetupInProgress/);
       assert.match(completeOobe, /Get-LocalUser -Name 'VEMOobeBootstrap'/);
+      assert.match(completeOobe, /vem-factory-oobe-cleanup-status\/v1/);
+      assert.match(
+        completeOobe,
+        /Write-CleanupStatus 'ready'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'/,
+      );
+      assert.match(completeOobe, /Write-CleanupStatus 'media-ejected'/);
+      assert.match(completeOobe, /Write-CleanupStatus 'complete'/);
       assert.match(
         completeOobe,
         /if \(-not \$oobeComplete\) \{ throw 'VEM Factory OOBE did not complete before cleanup deadline' \}[\s\S]+Remove-LocalUser/,
@@ -1646,6 +1692,10 @@ describe("real deterministic Factory ISO builder", () => {
         /medium remains mounted after cleanup retries/,
       );
       assert.match(completeOobe, /Unregister-ScheduledTask/);
+      assert.match(
+        completeOobe,
+        /throw 'VEM Factory OOBE cleanup task remains registered'/,
+      );
       const ingestScript = join(
         directory,
         "sources",

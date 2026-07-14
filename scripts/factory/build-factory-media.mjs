@@ -967,8 +967,19 @@ export function factoryOobeCompletionScript() {
   return `$ErrorActionPreference = 'Stop'
 $factoryRoot = 'C:\\ProgramData\\VEM\\factory'
 $diagnosticPath = Join-Path $factoryRoot 'oobe-bootstrap-status.json'
+$cleanupStatusPath = Join-Path $factoryRoot 'oobe-cleanup-status.json'
 $oobeDeadline = (Get-Date).AddMinutes(30)
 $oobeComplete = $false
+function Write-CleanupStatus([string]$Phase) {
+  $status = [ordered]@{
+    schemaVersion = 'vem-factory-oobe-cleanup-status/v1'
+    phase = $Phase
+  } | ConvertTo-Json -Compress
+  $temporaryPath = "$cleanupStatusPath.tmp"
+  $temporaryFileSystemPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($temporaryPath)
+  [IO.File]::WriteAllText($temporaryFileSystemPath, $status, [Text.UTF8Encoding]::new($false))
+  Move-Item -LiteralPath $temporaryPath -Destination $cleanupStatusPath -Force
+}
 do {
   $bootstrapStatus = if (Test-Path -LiteralPath $diagnosticPath -PathType Leaf) {
     Get-Content -LiteralPath $diagnosticPath -Raw | ConvertFrom-Json -ErrorAction Stop
@@ -976,6 +987,13 @@ do {
   if ($null -ne $bootstrapStatus -and $bootstrapStatus.state -eq 'failed') {
     throw 'VEM Factory OOBE bootstrap failed before cleanup'
   }
+  $cleanupStatus = if (Test-Path -LiteralPath $cleanupStatusPath -PathType Leaf) {
+    Get-Content -LiteralPath $cleanupStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
+  } else { $null }
+  $resumingCleanup =
+    $null -ne $cleanupStatus -and
+    $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1' -and
+    $cleanupStatus.phase -in @('ready', 'account-removed', 'media-ejected', 'complete')
   $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
   $bootstrapUser = Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
   $oobeComplete =
@@ -985,12 +1003,15 @@ do {
     [int]$setupState.OOBEInProgress -eq 0 -and
     [int]$setupState.SystemSetupInProgress -eq 0 -and
     [int]$setupState.SetupType -eq 0 -and
-    $null -ne $bootstrapUser
-  if (-not $oobeComplete) { Start-Sleep -Seconds 5 }
+    ($resumingCleanup -or $null -ne $bootstrapUser)
+  if ($oobeComplete) { break }
+  Start-Sleep -Seconds 5
 } while ((Get-Date) -lt $oobeDeadline)
 if (-not $oobeComplete) { throw 'VEM Factory OOBE did not complete before cleanup deadline' }
+Write-CleanupStatus 'ready'
 Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
 Remove-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
+Write-CleanupStatus 'account-removed'
 $shell = New-Object -ComObject Shell.Application
 $personalizationVolumes = @()
 for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
@@ -1002,7 +1023,16 @@ for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
   Start-Sleep -Seconds 2
 }
 if ($personalizationVolumes.Count -ne 0) { throw 'VEM personalization medium remains mounted after cleanup retries' }
-Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
+Write-CleanupStatus 'media-ejected'
+for ($attempt = 0; $attempt -lt 10; $attempt += 1) {
+  Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
+  if ($null -eq (Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Seconds 1
+}
+if ($null -ne (Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue)) {
+  throw 'VEM Factory OOBE cleanup task remains registered'
+}
+Write-CleanupStatus 'complete'
 `;
 }
 
