@@ -903,6 +903,8 @@ $ErrorActionPreference = 'Stop'
 $factoryRoot = 'C:\\ProgramData\\VEM\\factory'
 $personalizationPath = Join-Path $factoryRoot 'one-time-personalization.json'
 $answerPath = Join-Path $factoryRoot 'oobe-unattend.xml'
+$pantherAnswerPath = Join-Path $env:WINDIR 'Panther\\unattend.xml'
+$pantherUnattendAnswerPath = Join-Path $env:WINDIR 'Panther\\Unattend\\unattend.xml'
 $diagnosticPath = Join-Path $factoryRoot 'oobe-bootstrap-status.json'
 $stage = 'initialize'
 function Write-BootstrapStatus([string]$State, [string]$Stage, [string]$ErrorType = '') {
@@ -947,6 +949,9 @@ try {
 </unattend>
 "@
   [IO.File]::WriteAllText($answerPath, $answer, [Text.UTF8Encoding]::new($false))
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pantherUnattendAnswerPath) | Out-Null
+  [IO.File]::WriteAllText($pantherAnswerPath, $answer, [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($pantherUnattendAnswerPath, $answer, [Text.UTF8Encoding]::new($false))
   New-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -Value $answerPath -PropertyType String -Force | Out-Null
   $stage = 'bootstrap-runtime'
   & (Join-Path $MediaRoot 'bootstrap-factory-runtime.ps1') -MediaRoot $MediaRoot
@@ -965,6 +970,8 @@ try {
   $configuredAnswer = [string](Get-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue).UnattendFile
   if ($configuredAnswer -ceq $answerPath) { Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -Name UnattendFile -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath $answerPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $pantherAnswerPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $pantherUnattendAnswerPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
   Write-BootstrapStatus 'failed' $stage $failureType
   throw

@@ -100,8 +100,11 @@ partition, Windows partition, and MBR recovery partition. The ISO remains
 BIOS+UEFI bootable in either case, but acceptance must boot it using the
 firmware mode declared by the manifest. During `specialize`, the installer
 consumes the restricted one-time personalization media and writes an
-installation-unique `oobeSystem` answer file through Windows Setup's
-`HKLM\\SYSTEM\\Setup\\UnattendFile` lookup. The deterministic Factory ISO
+installation-unique `oobeSystem` answer file into Windows Setup's standard
+`%WINDIR%\\Panther` search locations, with
+`HKLM\\SYSTEM\\Setup\\UnattendFile` retained as a fallback. The first kiosk
+logon removes every answer-file copy and the registry fallback. The
+deterministic Factory ISO
 contains neither an account password nor a machine-specific OOBE answer.
 The specialize bootstrap discovers that medium through the .NET drive API,
 without loading the Storage module, and accepts exactly one ready CD-ROM with

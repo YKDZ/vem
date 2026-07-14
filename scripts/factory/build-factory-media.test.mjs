@@ -1592,6 +1592,17 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.ok(prepareOobe.includes("HKLM:\\SYSTEM\\Setup"));
       assert.match(prepareOobe, /New-ItemProperty[^\n]+UnattendFile/);
+      assert.ok(prepareOobe.includes("Panther\\unattend.xml"));
+      assert.ok(prepareOobe.includes("Panther\\Unattend\\unattend.xml"));
+      assert.match(prepareOobe, /WriteAllText\(\$pantherAnswerPath, \$answer/);
+      assert.match(
+        prepareOobe,
+        /WriteAllText\(\$pantherUnattendAnswerPath, \$answer/,
+      );
+      assert.match(
+        prepareOobe,
+        /catch \{[\s\S]+Remove-Item[^\n]+\$pantherAnswerPath[\s\S]+Remove-Item[^\n]+\$pantherUnattendAnswerPath/,
+      );
       const completeOobe = await readFile(
         join(
           directory,
