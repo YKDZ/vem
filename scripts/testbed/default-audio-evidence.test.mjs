@@ -6,7 +6,7 @@ import {
   inspectWavPcm,
 } from "./default-audio-evidence.mjs";
 
-function wav(samples) {
+function wav(samples, sampleRateHz = 48_000) {
   const data = Buffer.alloc(samples.length * 2);
   samples.forEach((sample, index) => data.writeInt16LE(sample, index * 2));
   const bytes = Buffer.alloc(44 + data.length);
@@ -16,8 +16,8 @@ function wav(samples) {
   bytes.writeUInt32LE(16, 16);
   bytes.writeUInt16LE(1, 20);
   bytes.writeUInt16LE(1, 22);
-  bytes.writeUInt32LE(48000, 24);
-  bytes.writeUInt32LE(96000, 28);
+  bytes.writeUInt32LE(sampleRateHz, 24);
+  bytes.writeUInt32LE(sampleRateHz * 2, 28);
   bytes.writeUInt16LE(2, 32);
   bytes.writeUInt16LE(16, 34);
   bytes.write("data", 36);
@@ -50,5 +50,16 @@ describe("default audio evidence PCM inspection", () => {
 
   it("rejects malformed containers", () => {
     assert.deepEqual(inspectWavPcm(Buffer.from("not a wav")).kind, "malformed");
+  });
+
+  it("preserves the exact fractional duration of a valid 44.1 kHz capture", () => {
+    const samples = Array.from({ length: 24_000 }, (_, index) =>
+      index % 2 === 0 ? 1024 : 2048,
+    );
+    const result = inspectWavPcm(wav(samples, 44_100));
+
+    assert.equal(result.kind, "passed");
+    assert.equal(result.durationMs, (24_000 / 44_100) * 1_000);
+    assert.equal(Number.isInteger(result.durationMs), false);
   });
 });

@@ -1383,7 +1383,6 @@ function assertAudioCaptureResult(value, request, report, issues) {
     "sampleRateHz",
     "channels",
     "frameCount",
-    "durationMs",
     "nonSilentFrameCount",
     "peakAbsoluteSample",
     "distinctNonSilentSampleMagnitudes",
@@ -1398,6 +1397,15 @@ function assertAudioCaptureResult(value, request, report, issues) {
         "must be a valid PCM measurement",
       );
   }
+  if (
+    !Number.isFinite(value.capture.durationMs) ||
+    value.capture.durationMs <= 0
+  )
+    issue(
+      issues,
+      `${path}.capture.durationMs`,
+      "must be a positive finite PCM duration",
+    );
   if (
     JSON.stringify(value.capture.threshold) !==
     JSON.stringify(request.audioCapture?.threshold)
