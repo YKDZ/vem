@@ -123,6 +123,47 @@ node scripts/check-machine-vision-deployment.mjs
 
 Vision 的源码、模型、依赖、打包、SBOM 和 provenance 由 Vision 发布方负责。VEM 只消费原始 immutable bundle，绝不重新构建、重新打包或修改版本目录中的私有运行时文件。每个 Factory Manifest 的 `vision-release` 必须绑定同一 bundle digest 的 descriptor、artifact attestation、SBOM、provenance、black-box conformance evidence 和 VEM approval；任一 digest 不一致都不得安装或作为 Factory Manifest 选择。
 
+现场测试使用与 Factory/ISO 相同的供应方 Candidate、提取器、外部配置、运行入口和最终安装器，不再维护 Development bundle 或另一套安装路径。唯一放宽的是验收层级：先在目标机的隔离暂存目录执行候选包黑盒测试，摄像头未接入时允许 `cameraReady=false`，但模型、HTTP、WebSocket、版本和进程身份必须通过；通过后才由 VEM 验收密钥签署 conformance 与 approval，并从已有 Factory Manifest 派生一次性的 Experimental Candidate 交付目录。
+
+在可信工作站上先验证供应方签名和操作者固定的 tag、bundle digest、supplier identity：
+
+```bash
+node scripts/factory/experimental-vision-candidate.mjs verify \
+  --candidate-dir /tmp/vision-candidate \
+  --tag v0.2.1-rc.1 \
+  --expected-bundle-digest sha256:... \
+  --expected-supplier-identity spki-sha256:...
+```
+
+将原始 Candidate 与 `scripts/windows/test-vision-candidate.ps1` 传输到目标 Windows 后，在管理员 PowerShell 中运行预批准测试。该脚本只暂时停止 Vision 任务和 VEM 已记录的 Vision 进程，不会停止 daemon 或 Machine UI；结束后恢复原任务状态，并输出严格的五字段 conformance JSON：
+
+```powershell
+.\test-vision-candidate.ps1 `
+  -BundlePath C:\VEM\updates\vision-candidate\vending-vision.zip `
+  -DescriptorPath C:\VEM\updates\vision-candidate\vision-release-descriptor.json `
+  -InstallerLibraryPath C:\VEM\updates\vision-candidate\install-vision-release.ps1 `
+  -ConformanceEvidencePath C:\VEM\updates\vision-candidate\vision-conformance.json `
+  -ReportPath C:\VEM\updates\vision-candidate\vision-conformance-report.json
+```
+
+取回 conformance 后，在可信工作站生成签名的 Experimental Candidate Factory 交付目录。`--verifier` 与 `--base-manifest` 必须来自当前 Factory 信任域；验收私钥不得传到目标机或写入仓库：
+
+```bash
+node scripts/factory/experimental-vision-candidate.mjs finalize \
+  --candidate-dir /tmp/vision-candidate \
+  --tag v0.2.1-rc.1 \
+  --expected-bundle-digest sha256:... \
+  --expected-supplier-identity spki-sha256:... \
+  --conformance /tmp/vision-conformance.json \
+  --acceptance-private-key /tmp/vem-acceptance-private.pem \
+  --expected-acceptance-identity spki-sha256:... \
+  --verifier /trusted/vision-release-verifier.exe \
+  --base-manifest /trusted/factory-manifest.json \
+  --output /tmp/vision-experimental-delivery
+```
+
+目标机仍使用 `provision-vision-factory-release.ps1` 写入受保护的 Factory delivery/trust 路径，然后调用同一个 `install-vision-release.ps1`。这次通过只证明软件与无摄像头 degraded 路径就绪，不替代插入真实摄像头后的视觉现场验收，也不把 Experimental Candidate 自动升级成 Factory/ISO acceptance。
+
 在 Windows 管理员 PowerShell 中，以已验证的本地输入安装：
 
 ```powershell

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, it } from "node:test";
 
+import { canonicalJson } from "./factory-manifest.mjs";
 import {
   assessVisionReleaseCandidate,
   createVisionReleaseApproval,
@@ -9,6 +10,7 @@ import {
   runVisionReleaseConformance,
   sanitizeVisionReleaseEvidence,
   verifySignedVisionReleaseEvidence,
+  verifySignedVisionSupplierCandidate,
   verifyVisionReleaseSelection,
 } from "./vision-release.mjs";
 
@@ -16,6 +18,8 @@ const HASH = "a".repeat(64);
 const OTHER_HASH = "b".repeat(64);
 const digest = (hash = HASH) => `sha256:${hash}`;
 const evidence = (hash = HASH) => `factory-evidence://sha256/${hash}`;
+const digestBytes = (bytes) =>
+  `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const digestJsonForFixture = (value) =>
   `sha256:${createHash("sha256")
     .update(JSON.stringify(value, Object.keys(value).sort()))
@@ -72,6 +76,7 @@ function releaseFixture() {
     conformanceEvidenceDigest: digest(),
     approverIdentity: "vem-release-approval:production",
   });
+  const approvalDigest = digestJsonForFixture(approval);
   const manifestAsset = {
     role: "vision-release",
     digest: descriptor.bundle.digest,
@@ -81,8 +86,8 @@ function releaseFixture() {
       descriptorDigest: descriptor.identity,
       attestationIdentity: evidence(digestJsonForFixture(attestation).slice(7)),
       attestationDigest: digestJsonForFixture(attestation),
-      approvalIdentity: `factory-evidence://sha256/${approval.identity.slice(7)}`,
-      approvalDigest: approval.identity,
+      approvalIdentity: evidence(approvalDigest.slice(7)),
+      approvalDigest,
       conformanceEvidenceIdentity: evidence(),
       conformanceEvidenceDigest: digest(),
     },
@@ -284,6 +289,109 @@ describe("Vision Release Bundle contract", () => {
           approvedIdentities: {},
         }),
       /bytes are invalid/i,
+    );
+  });
+
+  it("verifies the supplier half before executing a Vision Candidate", () => {
+    const bundle = Buffer.from("exact-windows-candidate-bundle");
+    const sbom = Buffer.from('{"spdxVersion":"SPDX-2.3"}\n');
+    const provenance = Buffer.from(
+      '{"predicateType":"https://slsa.dev/provenance/v1"}\n',
+    );
+    const descriptor = createVisionReleaseDescriptor({
+      releaseVersion: "0.2.1-rc.1",
+      bundle: {
+        digest: digestBytes(bundle),
+        bytes: bundle.length,
+        platform: { os: "windows", architecture: "x86_64" },
+        format: "zip",
+        extractor: {
+          contractVersion: "vem-vision-extractor/v1",
+          handler: "zip-safe-v1",
+        },
+      },
+      entrypoint: {
+        command: "vending-vision/vending-vision.exe",
+        arguments: ["--no-browser"],
+      },
+      lifecycle: { requiresInteractiveSession: true, shutdownTimeoutMs: 10000 },
+      configuration: {
+        format: "json",
+        schemaVersion: "vending-vision-site-config/v1",
+        argument: "--config",
+      },
+      health: {
+        port: 7892,
+        path: "/health",
+        expectedStatus: 200,
+        timeoutMs: 30000,
+      },
+      protocol: { version: "vem.vision.v1", webSocketPath: "/ws" },
+      sbom: {
+        identity: `factory-evidence://${digestBytes(sbom).replace(":", "/")}`,
+        digest: digestBytes(sbom),
+        format: "spdx-json",
+      },
+      provenance: {
+        identity: `factory-evidence://${digestBytes(provenance).replace(":", "/")}`,
+        digest: digestBytes(provenance),
+        predicateType: "https://slsa.dev/provenance/v1",
+      },
+    });
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const publicKeyDer = publicKey.export({ type: "spki", format: "der" });
+    const supplierIdentity = `spki-sha256:${createHash("sha256")
+      .update(publicKeyDer)
+      .digest("hex")}`;
+    const attestation = {
+      schemaVersion: "vem-vision-artifact-attestation/v1",
+      kind: "vision-artifact-attestation",
+      bundleDigest: descriptor.bundle.digest,
+      descriptorDigest: descriptor.identity,
+      sbomDigest: descriptor.sbom.digest,
+      provenanceDigest: descriptor.provenance.digest,
+      signerIdentity: supplierIdentity,
+    };
+    const documents = {
+      descriptor: Buffer.from(`${canonicalJson(descriptor)}\n`),
+      attestation: Buffer.from(`${canonicalJson(attestation)}\n`),
+      sbom,
+      provenance,
+    };
+    const signatures = Object.fromEntries(
+      Object.entries(documents).map(([role, bytes]) => [
+        role,
+        {
+          signer: {
+            identity: supplierIdentity,
+            publicKey: publicKeyDer.toString("base64"),
+          },
+          signature: sign(
+            null,
+            Buffer.from(canonicalJson({ role, digest: digestBytes(bytes) })),
+            privateKey,
+          ).toString("base64"),
+        },
+      ]),
+    );
+
+    const verified = verifySignedVisionSupplierCandidate({
+      bundle,
+      documents,
+      signatures,
+      expectedSignerIdentity: supplierIdentity,
+    });
+    assert.equal(verified.releaseVersion, "0.2.1-rc.1");
+    assert.equal(verified.bundleDigest, digestBytes(bundle));
+    assert.throws(
+      () =>
+        verifySignedVisionSupplierCandidate({
+          bundle: Buffer.from("tampered"),
+          documents,
+          signatures,
+          expectedSignerIdentity: supplierIdentity,
+        }),
+      /bundle does not match/i,
     );
   });
 

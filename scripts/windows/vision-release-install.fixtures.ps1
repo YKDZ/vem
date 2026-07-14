@@ -624,7 +624,7 @@ Write-Output ("aggregate failure fixture passed parentId={0} descendantId={1}" -
     }
     Write-Output "launcher fixtures passed"
   } elseif ($Case -eq "protocol") {
-    Test-SourceBoundary @("vision.hello", "vision.ready", "ClientWebSocket", "vem-machine-vision-health/v1")
+    Test-SourceBoundary @("vision.hello", "vision.ready", "ClientWebSocket", "mockScenario", "modelReady", "Descriptor.releaseVersion")
     Write-Output "protocol fixtures passed"
   } elseif ($Case -eq "rollback") {
     Test-SourceBoundary @('Rollback-PreviousRelease', 'Assert-InstalledRelease $metadata $Previous', 'Test-VisionProtocol $Previous')
