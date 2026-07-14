@@ -329,6 +329,9 @@ async function main() {
           environment,
           salePrepareCommandJson: readOption("--sale-prepare-command-json"),
           saleCompleteCommandJson: readOption("--sale-complete-command-json"),
+          runtimeRecoveryCommandJson: readOption(
+            "--runtime-recovery-command-json",
+          ),
         });
   } catch (error) {
     primaryError = error;
@@ -458,13 +461,30 @@ function runFailedDispenseCommand(commandJson) {
   };
 }
 
-function runBlockedSaleCommand(commandJson, failureMode, runId) {
+function adapterSessionEvidence(startReport) {
+  return {
+    serialSessionId: startReport.serialSession.serialSessionId,
+    startOperationReference: startReport.serialSession.startOperationReference,
+    deviceMappingDigest: startReport.serialSession.deviceMappingDigest,
+    faultStartedAt: startReport.timestamps.startedAt,
+  };
+}
+
+function runBlockedSaleCommand(commandJson, failureMode, runId, startReport) {
   const command = JSON.parse(commandJson);
   if (!Array.isArray(command) || command.length < 2)
     throw new Error(`${failureMode} blocked-sale command must be a JSON array`);
   const result = spawnSync(command[0], command.slice(1), {
     cwd: process.cwd(),
-    env: process.env,
+    env: {
+      ...process.env,
+      VEM_VM_HOST_FAULT_SESSION_ID: startReport.serialSession.serialSessionId,
+      VEM_VM_HOST_FAULT_START_OPERATION_REFERENCE:
+        startReport.serialSession.startOperationReference,
+      VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST:
+        startReport.serialSession.deviceMappingDigest,
+      VEM_VM_HOST_FAULT_STARTED_AT: startReport.timestamps.startedAt,
+    },
     encoding: "utf8",
   });
   let output;
@@ -480,7 +500,43 @@ function runBlockedSaleCommand(commandJson, failureMode, runId) {
     output,
     failureMode,
     runId,
+    expectedAdapterSession: adapterSessionEvidence(startReport),
   });
+}
+
+function runRuntimeRecoveryCommand(commandJson, failureMode) {
+  const command = JSON.parse(commandJson);
+  if (!Array.isArray(command) || command.length < 2)
+    throw new Error(`${failureMode} recovery command must be a JSON array`);
+  const result = spawnSync(command[0], command.slice(1), {
+    cwd: process.cwd(),
+    env: process.env,
+    encoding: "utf8",
+  });
+  let output;
+  try {
+    output = JSON.parse(result.stdout || "null");
+  } catch {
+    throw new Error(`${failureMode} recovery command returned invalid JSON`);
+  }
+  const report = output?.runtimeAcceptanceReport;
+  if (
+    result.status !== 0 ||
+    output?.ok !== true ||
+    report?.result?.runtimeReady?.status !== "passed" ||
+    report?.daemonRuntime?.healthz?.hardwareOnline !== true ||
+    report?.daemonRuntime?.healthz?.scannerOnline !== true ||
+    report?.daemonRuntime?.readyz?.ready !== true
+  )
+    throw new Error(
+      `${failureMode} did not restore healthy daemon runtime after serial stop`,
+    );
+  return {
+    runtimeReady: "passed",
+    hardwareOnline: true,
+    scannerOnline: true,
+    ready: true,
+  };
 }
 
 function isNonEmptyString(value) {
@@ -492,6 +548,7 @@ export function assertBlockedSaleEvidence({
   output,
   failureMode,
   runId,
+  expectedAdapterSession = null,
 }) {
   const flow = output?.simulatedHardwareSaleFlow;
   const sale = flow?.sale;
@@ -526,6 +583,9 @@ export function assertBlockedSaleEvidence({
     mappingFault?.healthzObserved !== true ||
     mappingFault?.readyzObserved !== true ||
     mappingFault?.hardwareOnline !== false ||
+    (expectedAdapterSession !== null &&
+      JSON.stringify(mappingFault?.adapterSession) !==
+        JSON.stringify(expectedAdapterSession)) ||
     JSON.stringify(mappingFault?.readinessBlockingCodes) !==
       JSON.stringify(readinessBlockingCodes) ||
     Object.hasOwn(mappingFault ?? {}, "adapterDiagnosticCode") ||
@@ -576,6 +636,7 @@ export function assertBlockedSaleEvidence({
     hardwareOnline: healthz.hardwareOnline,
     scannerOnline: healthz.scannerOnline,
     readyzObserved: readyz.observed,
+    adapterSession: mappingFault.adapterSession ?? null,
     readinessBlockingCodes,
     responseBlockingCodes,
     transactionEntry,
@@ -588,6 +649,7 @@ export function observedMappingFailureCase({
   startReport,
   expectedDiagnosticCode,
   daemonFailClosed,
+  recovery,
 }) {
   const serialSession = startReport?.serialSession;
   const diagnosticCode = startReport?.diagnostics?.find(
@@ -598,7 +660,14 @@ export function observedMappingFailureCase({
     diagnosticCode !== expectedDiagnosticCode ||
     !isNonEmptyString(serialSession?.serialSessionId) ||
     !isNonEmptyString(serialSession?.startOperationReference) ||
-    !isNonEmptyString(serialSession?.deviceMappingDigest)
+    !isNonEmptyString(serialSession?.deviceMappingDigest) ||
+    !isNonEmptyString(startReport?.timestamps?.startedAt) ||
+    JSON.stringify(daemonFailClosed?.adapterSession) !==
+      JSON.stringify(adapterSessionEvidence(startReport)) ||
+    recovery?.runtimeReady !== "passed" ||
+    recovery?.hardwareOnline !== true ||
+    recovery?.scannerOnline !== true ||
+    recovery?.ready !== true
   ) {
     throw new Error(
       `${failureMode} did not bind its fail-closed evidence to the observed start-serial-session report`,
@@ -616,6 +685,7 @@ export function observedMappingFailureCase({
       deviceMappingDigest: serialSession.deviceMappingDigest,
     },
     daemonFailClosed,
+    recovery,
   };
 }
 
@@ -631,6 +701,8 @@ async function runProductionFailureMatrix(options) {
     ["missing-device", "serial_missing_device"],
   ]) {
     let mappingSession;
+    let failureCase;
+    let recovery;
     try {
       const faultEnvironment = {
         ...options.environment,
@@ -656,19 +728,24 @@ async function runProductionFailureMatrix(options) {
         options.salePrepareCommandJson,
         failureMode,
         options.runId,
+        start,
       );
-      cases.push(
-        observedMappingFailureCase({
-          failureMode,
-          startReport: start,
-          expectedDiagnosticCode: diagnosticCode,
-          daemonFailClosed: failClosed,
-        }),
-      );
+      failureCase = {
+        failureMode,
+        startReport: start,
+        expectedDiagnosticCode: diagnosticCode,
+        daemonFailClosed: failClosed,
+      };
     } finally {
-      if (mappingSession)
+      if (mappingSession) {
         await stopFailureSession(options, mappingSession, null);
+        recovery = runRuntimeRecoveryCommand(
+          options.runtimeRecoveryCommandJson,
+          failureMode,
+        );
+      }
     }
+    cases.push(observedMappingFailureCase({ ...failureCase, recovery }));
   }
 
   let pendingSale;

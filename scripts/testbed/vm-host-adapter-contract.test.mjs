@@ -65,6 +65,12 @@ function blockedSaleOutput(overrides = {}) {
       readyzObserved: true,
       hardwareOnline: false,
       readinessBlockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      adapterSession: {
+        serialSessionId: "serial-session-001",
+        startOperationReference: "vm-operation://start-001",
+        deviceMappingDigest: `sha256:${"b".repeat(64)}`,
+        faultStartedAt: "2026-07-11T00:00:00.000Z",
+      },
     },
     transactionEntry: {
       endpoint: "/v1/intents/create-order",
@@ -2663,6 +2669,9 @@ describe("VM Host Adapter contract", () => {
     );
     assert.match(source, /paymentOption\?\.method === "payment_code"/);
     assert.match(source, /startSerialSession/);
+    assert.match(source, /runtimeRecoveryCommandJson/);
+    assert.match(source, /did not restore healthy daemon runtime/);
+    assert.match(source, /VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST/);
     assert.doesNotMatch(source, /hardware-mapping-fault-code/);
     assert.match(
       source,
@@ -2787,12 +2796,24 @@ describe("VM Host Adapter contract", () => {
         startOperationReference: "vm-operation://start-001",
         deviceMappingDigest: `sha256:${"b".repeat(64)}`,
       },
+      timestamps: { startedAt: "2026-07-11T00:00:00.000Z" },
     };
     const failureCase = observedMappingFailureCase({
       failureMode: "swapped-roles",
       startReport,
       expectedDiagnosticCode: "serial_swapped_roles",
-      daemonFailClosed: { saleBindingCreated: false },
+      daemonFailClosed: {
+        saleBindingCreated: false,
+        adapterSession:
+          blockedSaleOutput().simulatedHardwareSaleFlow.hardwareMappingFault
+            .adapterSession,
+      },
+      recovery: {
+        runtimeReady: "passed",
+        hardwareOnline: true,
+        scannerOnline: true,
+        ready: true,
+      },
     });
     assert.equal(failureCase.diagnosticCode, "serial_swapped_roles");
     assert.deepEqual(failureCase.startSerialSession, startReport.serialSession);
@@ -2804,6 +2825,12 @@ describe("VM Host Adapter contract", () => {
           startReport: { ...startReport, serialSession: null },
           expectedDiagnosticCode: "serial_swapped_roles",
           daemonFailClosed: { saleBindingCreated: false },
+          recovery: {
+            runtimeReady: "passed",
+            hardwareOnline: true,
+            scannerOnline: true,
+            ready: true,
+          },
         }),
       /did not bind its fail-closed evidence/,
     );

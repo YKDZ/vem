@@ -2645,6 +2645,8 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     JSON.stringify(salePrepareCommand),
     "--sale-complete-command-json",
     JSON.stringify(saleCompleteCommand),
+    "--runtime-recovery-command-json",
+    JSON.stringify(runtimeCommand),
     "--out",
     `${evidenceRoot}/serial-com-scanner-sale-conformance.json`,
   ];
@@ -6524,6 +6526,12 @@ function Invoke-HardwareMappingFaultProbe(
     exactLowerControllerBlocker =
       $readinessBlockingCodes.Count -eq 1 -and
       $readinessBlockingCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
+    adapterSession = [ordered]@{
+      serialSessionId = ${psString(process.env.VEM_VM_HOST_FAULT_SESSION_ID ?? "")}
+      startOperationReference = ${psString(process.env.VEM_VM_HOST_FAULT_START_OPERATION_REFERENCE ?? "")}
+      deviceMappingDigest = ${psString(process.env.VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST ?? "")}
+      faultStartedAt = ${psString(process.env.VEM_VM_HOST_FAULT_STARTED_AT ?? "")}
+    }
   }
   $transactionEntry = [ordered]@{
     endpoint = "/v1/intents/create-order"
