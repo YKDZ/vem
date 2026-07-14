@@ -833,6 +833,13 @@ function Ensure-VisionTask {
 }
 
 function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
+  $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$Descriptor.health.timeoutMs)
+  while (-not (Test-Path -LiteralPath $processPath -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 150
+  }
+  if (-not (Test-Path -LiteralPath $processPath -PathType Leaf)) {
+    Throw-InstallError "Vision launcher did not commit its process record"
+  }
   $active = (Read-StrictJson $processPath "Vision process record").value
   $entrypoint = Join-TrustedRelativePath ([string]$Selection.installDirectory) ([string]$Selection.entrypoint) "Vision selected entrypoint"
   $process = Get-Process -Id ([int]$active.processId) -ErrorAction Stop
@@ -844,7 +851,6 @@ function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
     $process.Path -cne $entrypoint -or
     ("sha256:" + (Get-FileHash -LiteralPath $process.Path -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $active.executableDigest
   ) { Throw-InstallError "Vision launched process does not bind the selected executable" }
-  $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$Descriptor.health.timeoutMs)
   do {
     try {
       $response = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}{1}" -f $Descriptor.health.port, $Descriptor.health.path) -TimeoutSec 2

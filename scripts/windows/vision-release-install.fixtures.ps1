@@ -625,6 +625,52 @@ Write-Output ("aggregate failure fixture passed parentId={0} descendantId={1}" -
     Write-Output "launcher fixtures passed"
   } elseif ($Case -eq "protocol") {
     Test-SourceBoundary @("vision.hello", "vision.ready", "ClientWebSocket", "mockScenario", "modelReady", "Descriptor.releaseVersion")
+    Add-Type -TypeDefinition @'
+using System.IO;
+using System.Text;
+using System.Threading;
+public static class VisionFixtureDelayedFile {
+  public static Thread Write(string path, string content, int delayMilliseconds) {
+    var thread = new Thread(() => {
+      Thread.Sleep(delayMilliseconds);
+      File.WriteAllText(path, content, new UTF8Encoding(false));
+    });
+    thread.IsBackground = true;
+    thread.Start();
+    return thread;
+  }
+}
+'@
+    $processStateRoot = Join-Path $root "process-state"; New-Item -ItemType Directory -Path $processStateRoot | Out-Null
+    $processPath = Join-Path $processStateRoot "active-process.json"
+    $fixtureProcess = Microsoft.PowerShell.Management\Get-Process -Id $PID
+    try {
+      $entrypoint = [IO.Path]::GetFullPath($fixtureProcess.Path)
+      $selection = [pscustomobject]@{ revision="revision-1"; bundleDigest=("sha256:" + "a" * 64); installDirectory=(Split-Path -Parent $entrypoint); entrypoint=(Split-Path -Leaf $entrypoint) }
+      $descriptor = [pscustomobject]@{ health=[pscustomobject]@{ timeoutMs=1500; port=1; path="/health" }; protocol=[pscustomobject]@{ version="vem.vision.v1"; webSocketPath="/ws" }; releaseVersion="fixture" }
+      $record = @{ bundleDigest=$selection.bundleDigest; processId=$fixtureProcess.Id; creationTimeUtcTicks=$fixtureProcess.StartTime.ToUniversalTime().Ticks; executablePath=$entrypoint; executableDigest=("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()); selectionRevision=$selection.revision } | ConvertTo-Json -Compress
+      function Invoke-RestMethod { throw "fixture health unavailable" }
+      $writer = [VisionFixtureDelayedFile]::Write($processPath, $record, 500)
+      $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+      try {
+        Assert-ThrowsMessage { Test-VisionProtocol $selection $descriptor } "Vision health did not bind to launched approved process" "delayed process record"
+      } finally {
+        $stopwatch.Stop(); $writer.Join()
+      }
+      if ($stopwatch.ElapsedMilliseconds -lt 1250 -or $stopwatch.ElapsedMilliseconds -gt 1800) { throw "Vision protocol did not share one deadline across process-record and health waits: $($stopwatch.ElapsedMilliseconds)ms" }
+
+      Remove-Item -LiteralPath $processPath -Force
+      $descriptor.health.timeoutMs = 300
+      $stopwatch.Restart()
+      try {
+        Assert-ThrowsMessage { Test-VisionProtocol $selection $descriptor } "Vision launcher did not commit its process record" "missing process record"
+      } finally {
+        $stopwatch.Stop()
+      }
+      if ($stopwatch.ElapsedMilliseconds -lt 200 -or $stopwatch.ElapsedMilliseconds -gt 800) { throw "Vision process-record timeout did not honor its deadline: $($stopwatch.ElapsedMilliseconds)ms" }
+    } finally {
+      $fixtureProcess.Dispose()
+    }
     Write-Output "protocol fixtures passed"
   } elseif ($Case -eq "rollback") {
     Test-SourceBoundary @('Rollback-PreviousRelease', 'Assert-InstalledRelease $metadata $Previous', 'Test-VisionProtocol $Previous')
