@@ -491,15 +491,20 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  if (url.pathname === "/v1/config") {
+  if (url.pathname === "/v1/config/summary") {
     const provisioned = scenario !== "provisioning";
     const payload = {
-      public: publicConfig,
-      machineSecretConfigured: provisioned,
-      mqttSigningSecretConfigured: provisioned,
-      mqttPasswordConfigured: provisioned,
-      provisioned,
-      provisioningIssues: provisioned ? [] : ["machine_not_claimed"],
+      configuredState: {
+        factoryManifest: true,
+        localBringUpSettings: true,
+        provisioningProfileCache: provisioned,
+        machineSecretConfigured: provisioned,
+        mqttSigningSecretConfigured: provisioned,
+        mqttPasswordConfigured: provisioned,
+        maintenancePinConfigured: provisioned,
+      },
+      provisioningProfileCache: provisioned ? { machineCode: "M001" } : null,
+      effectivePublic: publicConfig,
     };
     expectNoSecretFields(payload);
     respondJson(res, payload);

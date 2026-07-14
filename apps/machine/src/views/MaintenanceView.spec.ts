@@ -25,6 +25,7 @@ const {
   downloadLogExportMock,
   beginMaintenanceSessionMock,
   clearMaintenanceSessionMock,
+  onMaintenanceSessionInvalidatedMock,
   callTauriCommandMock,
   openVisionTryOnSessionMock,
   machineAudioPlaybackFactoryOverride,
@@ -48,6 +49,7 @@ const {
   downloadLogExportMock: vi.fn(),
   beginMaintenanceSessionMock: vi.fn(),
   clearMaintenanceSessionMock: vi.fn(),
+  onMaintenanceSessionInvalidatedMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
   machineAudioPlaybackFactoryOverride: {
@@ -87,6 +89,7 @@ vi.mock("@/daemon/client", () => ({
     downloadLogExport: downloadLogExportMock,
     beginMaintenanceSession: beginMaintenanceSessionMock,
     clearMaintenanceSession: clearMaintenanceSessionMock,
+    onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
   },
 }));
 
@@ -129,6 +132,7 @@ import MaintenanceView from "./MaintenanceView.vue";
 
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
+let maintenanceSessionInvalidationListener: (() => void) | null = null;
 
 function saleViewFixture() {
   return {
@@ -268,6 +272,7 @@ function provisionedConfigSummary(): ConfigSummary {
     machineSecretConfigured: true,
     mqttSigningSecretConfigured: true,
     mqttPasswordConfigured: true,
+    maintenancePinConfigured: true,
     provisioned: true,
     provisioningIssues: [],
   };
@@ -277,6 +282,7 @@ beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.clearAllMocks();
+  maintenanceSessionInvalidationListener = null;
   routeMock.query = { source: "operator" };
   initializeMock.mockResolvedValue({
     baseUrl: "http://127.0.0.1:7891",
@@ -387,6 +393,16 @@ beforeEach(() => {
     expiresAt: "2030-07-14T12:00:00.000Z",
     scopes: ["maintenance.mutate"],
   });
+  onMaintenanceSessionInvalidatedMock.mockImplementation(
+    (listener: () => void) => {
+      maintenanceSessionInvalidationListener = listener;
+      return () => {
+        if (maintenanceSessionInvalidationListener === listener) {
+          maintenanceSessionInvalidationListener = null;
+        }
+      };
+    },
+  );
   callTauriCommandMock.mockResolvedValue(undefined);
   openVisionTryOnSessionMock.mockResolvedValue({
     sessionId: "maintenance-session-1",
@@ -457,6 +473,48 @@ it("verifies the PIN through daemon IPC before enabling protected maintenance ac
       ["maintenance.reclaim"],
       "operator-console",
     );
+  });
+});
+
+it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {
+  const host = await mountView();
+  await unlockMaintenance(host);
+
+  maintenanceSessionInvalidationListener?.();
+  await nextTick();
+
+  expect(host.textContent).toContain("只读");
+  expect(host.textContent).toContain("守护进程连接已更新");
+  expect(clearMaintenanceSessionMock).toHaveBeenCalled();
+});
+
+it("makes MACHINE_AUTH_MISSING recovery usable in production after PIN verification", async () => {
+  routeMock.query = {};
+  getReadyMock.mockResolvedValue({
+    ...maintenanceReadyFixture(),
+    blockingCodes: ["MACHINE_AUTH_MISSING"],
+    blockingReasons: [
+      {
+        code: "MACHINE_AUTH_MISSING",
+        component: "machine_authentication",
+        message: "machine identity is not configured",
+      },
+    ],
+  });
+  const host = await mountView();
+
+  const lockedRecovery = buttonByText(host, "先验证 PIN");
+  expect(lockedRecovery.disabled).toBe(true);
+  await unlockMaintenance(host);
+
+  const unlockedRecovery = buttonByText(host, "打开首次部署控制台");
+  expect(unlockedRecovery.disabled).toBe(false);
+  unlockedRecovery.click();
+  await vi.waitFor(() => {
+    expect(routerReplaceMock).toHaveBeenCalledWith({
+      path: "/bring-up",
+      query: { source: "protected-maintenance" },
+    });
   });
 });
 
@@ -634,7 +692,7 @@ describe("MaintenanceView hardware config", () => {
     ).toBeNull();
   });
 
-  it("does not save a machine-owned try-on camera device id", async () => {
+  it("blocks the retired direct configuration save entrypoint", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -646,13 +704,14 @@ describe("MaintenanceView hardware config", () => {
     });
     const host = await mountView();
     await unlockMaintenance(host);
-    buttonByText(host, "保存配置并重新自检").click();
-    await vi.waitFor(() => {
-      expect(saveConfigMock).toHaveBeenCalled();
-    });
-    const publicConfig = saveConfigMock.mock.calls[0]?.[0].public;
-    expect(publicConfig).not.toHaveProperty("tryOnCameraDeviceId");
-    expect(publicConfig).not.toHaveProperty("tryOnCameraLabel");
+    const button = buttonByText(
+      host,
+      "直接配置编辑已禁用；请使用首次部署控制台",
+    );
+    expect(button.disabled).toBe(true);
+    button.click();
+    await nextTick();
+    expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
   it("releases the vision try-on preview diagnostic session on unmount", async () => {
@@ -914,7 +973,7 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).not.toContain("Presence audio cues");
   });
 
-  it("edits Machine Audio volume as a percent and saves normalized config", async () => {
+  it("keeps direct audio configuration saves unavailable", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -940,17 +999,12 @@ describe("MaintenanceView hardware config", () => {
 
     expect(input.value).toBe("35");
 
-    input.value = "42";
-    input.dispatchEvent(new Event("input"));
-    await nextTick();
-    buttonByText(host, "保存配置并重新自检").click();
-
-    await vi.waitFor(() => {
-      expect(saveConfigMock).toHaveBeenCalled();
-    });
-    expect(saveConfigMock.mock.calls[0]?.[0].public).toMatchObject({
-      machineAudioVolume: 0.42,
-    });
+    const button = buttonByText(
+      host,
+      "直接配置编辑已禁用；请使用首次部署控制台",
+    );
+    expect(button.disabled).toBe(true);
+    expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
   it("plays protected maintenance Machine Audio test playback with mock diagnostics and global volume", async () => {
@@ -1319,6 +1373,7 @@ describe("MaintenanceView hardware config", () => {
       },
     });
     const host = await mountView();
+    await unlockMaintenance(host);
 
     buttonByText(host, "首次部署控制台").click();
 

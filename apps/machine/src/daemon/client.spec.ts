@@ -51,6 +51,7 @@ beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockReset();
   daemonClient["connection"] = null;
   daemonClient["maintenanceSession"] = null;
+  daemonClient["maintenanceSessionInvalidationListeners"].clear();
   daemonClient["seenEventIds"].clear();
   daemonClient["seenEventIdQueue"].length = 0;
 });
@@ -83,6 +84,67 @@ function healthFixture() {
 }
 
 describe("DaemonApiClient", () => {
+  it("reads the safe runtime configuration summary instead of legacy config IPC", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          configuredState: {
+            factoryManifest: true,
+            localBringUpSettings: true,
+            provisioningProfileCache: false,
+            machineSecretConfigured: false,
+            mqttSigningSecretConfigured: false,
+            mqttPasswordConfigured: false,
+            maintenancePinConfigured: false,
+          },
+          provisioningProfileCache: null,
+          effectivePublic: {
+            machineCode: null,
+            apiBaseUrl: "http://127.0.0.1:26849/api",
+            mqttUrl: "mqtt://127.0.0.1:1883",
+            mqttUsername: null,
+            hardwareAdapter: "mock",
+            serialPortPath: null,
+            scannerAdapter: "disabled",
+            scannerSerialPortPath: null,
+            scannerBaudRate: 9600,
+            scannerFrameSuffix: "crlf",
+            visionEnabled: false,
+            visionWsUrl: "ws://127.0.0.1:7892/ws",
+            visionRequestTimeoutMs: 8000,
+            kioskMode: true,
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(daemonClient.getConfig()).resolves.toMatchObject({
+      provisioned: false,
+      provisioningIssues: [
+        "provisioning_profile_cache_missing",
+        "maintenance_pin_not_configured",
+      ],
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/config/summary",
+      expect.any(Object),
+    );
+  });
+
+  it("never sends a mutable legacy configuration request", async () => {
+    await expect(
+      daemonClient.saveConfig({ machineCode: "M001" }),
+    ).rejects.toThrow("直接配置编辑已禁用");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it("issues a daemon-maintained scoped session and attaches its opaque id only to later IPC calls", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",
@@ -1078,6 +1140,85 @@ describe("DaemonApiClient", () => {
     await daemonClient.getHealth();
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears and notifies the UI about a maintenance session before retrying a daemon 401", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    const invalidated = vi.fn();
+    daemonClient.onMaintenanceSessionInvalidated(invalidated);
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "restart-session",
+            expiresAt: "2030-07-14T12:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response("no", { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(healthFixture()), { status: 200 }),
+      );
+
+    await daemonClient.beginMaintenanceSession("2468");
+    await daemonClient.getHealth();
+
+    expect(daemonClient.currentMaintenanceSession).toBeNull();
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(
+      "http://127.0.0.1:7891/healthz",
+      expect.objectContaining({
+        headers: {
+          Authorization: "Bearer token-1",
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+  });
+
+  it("clears and notifies the UI when the daemon event stream closes", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          sessionId: "event-session",
+          expiresAt: "2030-07-14T12:00:00.000Z",
+          scopes: ["maintenance.mutate"],
+        }),
+        { status: 201 },
+      ),
+    );
+    const invalidated = vi.fn();
+    const onStale = vi.fn();
+    daemonClient.onMaintenanceSessionInvalidated(invalidated);
+    await daemonClient.beginMaintenanceSession("2468");
+    const subscription = daemonClient.subscribeEvents({
+      onEvent: vi.fn(),
+      onError: vi.fn(),
+      onStale,
+    });
+
+    await vi.waitFor(() => {
+      expect(MockWebSocket.openCount).toBe(1);
+    });
+    MockWebSocket.instances[0]?.onclose?.();
+
+    expect(daemonClient.currentMaintenanceSession).toBeNull();
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    expect(onStale).toHaveBeenCalledTimes(1);
+    subscription.close();
   });
 
   it("subscribes events with query token and deduplicates", async () => {

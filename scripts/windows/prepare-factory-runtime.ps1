@@ -558,9 +558,14 @@ function Assert-FactoryPersonalizationMedia {
   ) { throw "Factory maintenance PIN verifier is invalid" }
   foreach ($part in @(@{ name = "salt"; bytes = 16 }, @{ name = "digest"; bytes = 32 })) {
     $encoded = [string](Get-RequiredOwnProperty -Value $maintenancePinVerifier -Name $part.name -Label "Factory maintenance PIN verifier")
-    if ($encoded -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw "Factory maintenance PIN verifier is invalid" }
+    $base64Pattern = if ($part.name -ceq "salt") {
+      '^(?:[A-Za-z0-9+/]{4}){5}[A-Za-z0-9+/][AQgw]==$'
+    } else {
+      '^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=$'
+    }
+    if ($encoded -notmatch $base64Pattern) { throw "Factory maintenance PIN verifier is invalid" }
     try { $decoded = [Convert]::FromBase64String($encoded) } catch { throw "Factory maintenance PIN verifier is invalid" }
-    if ($decoded.Length -ne $part.bytes) { throw "Factory maintenance PIN verifier is invalid" }
+    if ($decoded.Length -ne $part.bytes -or [Convert]::ToBase64String($decoded) -cne $encoded) { throw "Factory maintenance PIN verifier is invalid" }
   }
   $serialized = $media | ConvertTo-Json -Depth 20 -Compress
   if ($serialized -match "(?i)private.?key|wireguard|wg|peer|certificate|token|secret") {
@@ -1443,6 +1448,26 @@ function Write-FactoryRuntimeFiles {
   [IO.File]::WriteAllText($maintenancePinVerifierPath, [string]$Preflight.MaintenancePinVerifierJson, [Text.UTF8Encoding]::new($false))
   icacls.exe $maintenancePinVerifierPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Factory maintenance PIN verifier staging ACL setup failed" }
+  # The bootstrap capability is not a maintenance PIN. It is a random,
+  # single-use proof readable only by the local maintenance account, exchanged
+  # for a daemon-memory session, then removed by the daemon before claim.
+  $bootstrapCapabilityBytes = [byte[]]::new(32)
+  [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bootstrapCapabilityBytes)
+  $bootstrapCapability = [Convert]::ToBase64String($bootstrapCapabilityBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+  $bootstrapDigest = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($bootstrapCapability))
+  $bootstrapVerifier = [ordered]@{
+    version = 1
+    algorithm = "sha256"
+    digest = ([Convert]::ToHexString($bootstrapDigest)).ToLowerInvariant()
+  } | ConvertTo-Json -Compress
+  $bootstrapCapabilityPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability"
+  $bootstrapVerifierPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability-verifier.json"
+  [IO.File]::WriteAllText($bootstrapCapabilityPath, $bootstrapCapability, [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($bootstrapVerifierPath, $bootstrapVerifier, [Text.UTF8Encoding]::new($false))
+  icacls.exe $bootstrapCapabilityPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" "$ExpectedMaintenanceUser:R" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Factory bootstrap capability ACL setup failed" }
+  icacls.exe $bootstrapVerifierPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Factory bootstrap verifier ACL setup failed" }
   Mark-FactoryPersonalizationConsumed -Preflight $Preflight
 
   $baselineApplication = Apply-FactoryWindowsBaseline -Policy $Plan.factoryWindowsBaselinePolicy

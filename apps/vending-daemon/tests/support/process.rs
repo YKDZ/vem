@@ -54,6 +54,14 @@ impl DaemonHarness {
         public_config: serde_json::Value,
         secrets: &[(&str, &str)],
     ) -> Result<Self, String> {
+        Self::start_with_file_secrets_and_env(public_config, secrets, &[]).await
+    }
+
+    pub async fn start_with_file_secrets_and_env(
+        public_config: serde_json::Value,
+        secrets: &[(&str, &str)],
+        extra_env: &[(&str, &str)],
+    ) -> Result<Self, String> {
         let temp_dir = TempDir::new().map_err(|error| error.to_string())?;
         let data_dir = temp_dir.path().join("vending-daemon");
         let secret_dir = data_dir.join("secrets");
@@ -67,7 +75,7 @@ impl DaemonHarness {
         }
 
         let mut harness =
-            Self::start_at_with_secret_store(data_dir, public_config, &[], "file").await?;
+            Self::start_at_with_secret_store(data_dir, public_config, extra_env, "file").await?;
         harness._temp_dir = Some(temp_dir);
         Ok(harness)
     }

@@ -110,6 +110,14 @@ async fn run_console_cycle(
         .await
         .map_err(|error| format!("factory maintenance PIN verifier import failed: {error}"))?;
     config_store
+        .import_factory_bootstrap_capability_verifier()
+        .await
+        .map_err(|error| format!("factory bootstrap capability verifier import failed: {error}"))?;
+    config_store
+        .migrate_legacy_raw_maintenance_pin()
+        .await
+        .map_err(|error| format!("legacy maintenance PIN migration failed: {error}"))?;
+    config_store
         .recover_maintenance_from_cache()
         .await
         .map_err(|error| format!("secure decommission startup recovery failed: {error}"))?;

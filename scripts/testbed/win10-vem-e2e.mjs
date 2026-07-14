@@ -4198,36 +4198,28 @@ function Assert-FirstClaimConfig($Config) {
   }
 }
 
-function New-PreClaimPublicConfig($Public) {
-  return [ordered]@{
-    machineCode = $null
-    machineId = $null
-    machineName = $null
-    machineStatus = $null
-    machineLocationLabel = $null
-    apiBaseUrl = ${psString(platform.apiBaseUrl)}
-    mqttUrl = ${psString(platform.mqttUrl)}
-    mqttUsername = $null
-    mqttClientId = $null
-    hardwareAdapter = $Public.hardwareAdapter
-    serialPortPath = $Public.serialPortPath
-    lowerControllerUsbIdentity = $Public.lowerControllerUsbIdentity
-    scannerAdapter = $Public.scannerAdapter
-    scannerSerialPortPath = $Public.scannerSerialPortPath
-    scannerUsbIdentity = $Public.scannerUsbIdentity
-    scannerBaudRate = $Public.scannerBaudRate
-    scannerFrameSuffix = $Public.scannerFrameSuffix
-    visionEnabled = $Public.visionEnabled
-    visionWsUrl = $Public.visionWsUrl
-    visionRequestTimeoutMs = $Public.visionRequestTimeoutMs
-    machineAudioVolume = $Public.machineAudioVolume
-    audioCueSettings = $Public.audioCueSettings
-    kioskMode = $Public.kioskMode
-    stockMovementRetentionDays = $Public.stockMovementRetentionDays
-    runtimeEndpoints = $null
-    hardwareProfile = $null
-    paymentCapability = $null
-    provisioningMetadata = $null
+function Get-ConfigSnapshotFromRuntimeSummary($Summary) {
+  if ($null -eq $Summary -or $null -eq $Summary.effectivePublic -or $null -eq $Summary.configuredState) {
+    throw "daemon runtime configuration summary is incomplete"
+  }
+  $state = $Summary.configuredState
+  $public = $Summary.effectivePublic
+  $issues = [System.Collections.Generic.List[string]]::new()
+  if (-not [bool]$state.provisioningProfileCache) { $issues.Add("provisioning_profile_cache_missing") }
+  if ([string]::IsNullOrWhiteSpace([string]$public.machineCode)) { $issues.Add("machine_code_missing") }
+  if (-not [bool]$state.machineSecretConfigured) { $issues.Add("machine_secret_missing") }
+  if (-not [bool]$state.mqttSigningSecretConfigured) { $issues.Add("mqtt_signing_secret_missing") }
+  if ($null -ne $public.mqttUsername -and -not [bool]$state.mqttPasswordConfigured) { $issues.Add("mqtt_password_missing") }
+  if (-not [bool]$state.maintenancePinConfigured) { $issues.Add("maintenance_pin_not_configured") }
+  return [pscustomobject]@{
+    public = $public
+    machineSecretConfigured = [bool]$state.machineSecretConfigured
+    mqttSigningSecretConfigured = [bool]$state.mqttSigningSecretConfigured
+    mqttPasswordConfigured = [bool]$state.mqttPasswordConfigured
+    maintenancePinConfigured = [bool]$state.maintenancePinConfigured
+    provisioned = $issues.Count -eq 0
+    provisioningIssues = @($issues)
+    factoryManifestConfigured = [bool]$state.factoryManifest
   }
 }
 
@@ -4410,7 +4402,8 @@ function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
     }
     $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
     try {
-      $evidence.config = Convert-ConfigSnapshotEvidence (Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers)
+      $summary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
+      $evidence.config = Convert-ConfigSnapshotEvidence (Get-ConfigSnapshotFromRuntimeSummary $summary)
     } catch {
       $failed = Get-FailedIpcEvidence $_
       $evidence.config.error = $failed.error
@@ -4488,8 +4481,13 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     platformTarget = ${psString(platformTarget)}
     apiBaseUrl = ${psString(platform.apiBaseUrl)}
     mqttUrl = ${psString(platform.mqttUrl)}
-    preClaimConfigApplied = $false
+    preClaimFactoryConfigVerified = $false
     networkProbe = [ordered]@{
+      endpoint = $null
+      status = "not_attempted"
+      httpStatus = $null
+    }
+    bootstrapMaintenanceSession = [ordered]@{
       endpoint = $null
       status = "not_attempted"
       httpStatus = $null
@@ -4534,17 +4532,49 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $baseUrl = $daemonIpc.baseUrl
     $headers = $daemonIpc.headers
 
-    $configBefore = Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers
+    # Factory writes a random single-use capability readable only by the
+    # maintenance account. Exchange it for the daemon's ordinary in-memory
+    # session before any protected Bring-Up task; never use mutable config IPC.
+    $bootstrapCapabilityPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability"
+    if (-not (Test-Path -LiteralPath $bootstrapCapabilityPath -PathType Leaf)) {
+      throw "Factory bootstrap maintenance capability is missing"
+    }
+    $bootstrapCapability = [IO.File]::ReadAllText($bootstrapCapabilityPath, [Text.UTF8Encoding]::new($false)).Trim()
+    if ([string]::IsNullOrWhiteSpace($bootstrapCapability)) {
+      throw "Factory bootstrap maintenance capability is empty"
+    }
+    $bootstrapHeaders = @{}
+    foreach ($entry in $headers.GetEnumerator()) { $bootstrapHeaders[[string]$entry.Key] = [string]$entry.Value }
+    $bootstrapHeaders["x-vem-factory-bootstrap-capability"] = $bootstrapCapability
+    $evidence.bootstrapMaintenanceSession.endpoint = "$baseUrl/v1/factory/bootstrap/maintenance-session"
+    try {
+      $bootstrapSession = Invoke-IpcJson "POST" "$baseUrl/v1/factory/bootstrap/maintenance-session" $bootstrapHeaders
+      if ([string]::IsNullOrWhiteSpace([string]$bootstrapSession.sessionId)) {
+        throw "Factory bootstrap session response has no session id"
+      }
+      $headers["x-vem-maintenance-session"] = [string]$bootstrapSession.sessionId
+      $evidence.bootstrapMaintenanceSession.status = "issued"
+      $evidence.bootstrapMaintenanceSession.httpStatus = 201
+    } catch {
+      $bootstrapError = Get-HttpErrorInfo $_
+      $evidence.bootstrapMaintenanceSession.status = "failed"
+      $evidence.bootstrapMaintenanceSession.httpStatus = $bootstrapError.statusCode
+      throw "Factory bootstrap maintenance session failed"
+    } finally {
+      $bootstrapCapability = $null
+      $bootstrapHeaders.Remove("x-vem-factory-bootstrap-capability")
+    }
+
+    $configBefore = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers)
     $public = $configBefore.public
     Assert-FirstClaimConfig $configBefore
-
-    $public = New-PreClaimPublicConfig $public
-    $configPayload = [ordered]@{
-      public = $public
-      secrets = $null
+    if (-not [bool]$configBefore.factoryManifestConfigured) {
+      throw "Factory bootstrap configuration is missing before Testbed claim"
     }
-    $configBeforeClaim = Invoke-IpcJson "PUT" "$baseUrl/v1/config" $headers $configPayload
-    $evidence.preClaimConfigApplied = $true
+    if ([string]$public.apiBaseUrl -ne ${psString(platform.apiBaseUrl)}) {
+      throw "Factory bootstrap provisioning endpoint does not match the isolated Testbed platform"
+    }
+    $evidence.preClaimFactoryConfigVerified = $true
 
     $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
     $currentTask = $bringUp.currentTask
@@ -4657,7 +4687,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
 
     $evidence.healthzAfterClaim = Get-SafeHealthzEvidence $baseUrl
     $evidence.readyzAfterClaim = Get-SafeReadyzEvidence $baseUrl
-    $configAfter = Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers
+    $configAfter = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers)
     $configEvidence = Convert-ConfigSnapshotEvidence $configAfter
     $evidence.provisioned = $configEvidence.provisioned
     $evidence.credentialFlags.machineSecretConfigured = $configEvidence.machineSecretConfigured

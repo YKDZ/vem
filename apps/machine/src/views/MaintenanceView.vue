@@ -19,7 +19,6 @@ import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import {
   machineConfigDefaults,
-  normalizeMachineConfig,
   type HardwareAdapter,
   type MachineConfig,
   type ScannerAdapter,
@@ -66,6 +65,7 @@ const maintenanceSessionAuthorized = computed(
     Date.parse(maintenanceSession.value.expiresAt) > Date.now(),
 );
 let maintenanceSessionExpiryTimer: number | null = null;
+let removeMaintenanceSessionInvalidationListener: (() => void) | null = null;
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
 const DIAGNOSTIC_DISPLAY_MAX_CHARS = 12_000;
 const DIAGNOSTIC_DISPLAY_MAX_DEPTH = 8;
@@ -473,6 +473,12 @@ function boundDiagnosticString(
 
 onMounted(async () => {
   maintenanceViewMounted = true;
+  removeMaintenanceSessionInvalidationListener =
+    daemonClient.onMaintenanceSessionInvalidated(() => {
+      clearMaintenanceSession();
+      maintenanceAuthentication.message =
+        "守护进程连接已更新，维护会话已失效，请重新验证 PIN。";
+    });
   try {
     const connection = await daemonClient.initialize();
     runtimeFlags.advancedMaintenanceConfig =
@@ -506,6 +512,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   maintenanceViewMounted = false;
+  removeMaintenanceSessionInvalidationListener?.();
+  removeMaintenanceSessionInvalidationListener = null;
   stopDiagnosticsAutoRefresh();
   activeMachineAudioPlayback?.stop();
   clearMaintenanceSession();
@@ -744,34 +752,6 @@ async function stopTryOnPreviewDiagnostic(): Promise<void> {
   }
 }
 
-async function saveAndReboot(): Promise<void> {
-  if (
-    !runtimeFlags.advancedMaintenanceConfig ||
-    !maintenanceSessionAuthorized.value
-  ) {
-    return;
-  }
-  try {
-    const normalized = normalizeMachineConfig({
-      ...form,
-      machineAudioVolume: form.machineAudioVolumePercent / 100,
-      machineSecret: form.machineSecretInput.trim() || null,
-      mqttSigningSecret: form.mqttSigningSecretInput.trim() || null,
-      mqttPassword: form.mqttPasswordInput.trim() || null,
-    });
-    await machineStore.saveConfig(normalized);
-    syncFormFromStore();
-    await router.replace("/boot");
-  } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
-    machineStore.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    form.machineSecretInput = "";
-    form.mqttSigningSecretInput = "";
-    form.mqttPasswordInput = "";
-  }
-}
-
 async function runHardwareCheck(): Promise<void> {
   if (!maintenanceSessionAuthorized.value) return;
   hardwareMaintenance.loading = true;
@@ -971,6 +951,7 @@ function blockerRecoveryLabel(code: string): string {
 
 function blockerRecoveryRequiresSession(code: string): boolean {
   return (
+    code === "MACHINE_AUTH_MISSING" ||
     code === "LOWER_CONTROLLER_UNAVAILABLE" ||
     code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
     code.startsWith("PRODUCTION_DISPENSE_PATH_")
@@ -987,16 +968,16 @@ function blockerRecoveryDisabled(code: string): boolean {
 }
 
 async function runBlockerRecovery(code: string): Promise<void> {
+  if (code === "MACHINE_AUTH_MISSING") {
+    await openProtectedBringUpConsole();
+    return;
+  }
   if (blockerRecoveryRequiresSession(code)) {
     await runHardwareCheck();
     return;
   }
   if (code === "NO_SALEABLE_SLOTS") {
     stockMaintenance.message = "请使用下方库存维护完成补货或盘点修正。";
-    return;
-  }
-  if (code === "MACHINE_AUTH_MISSING") {
-    await openProtectedBringUpConsole();
     return;
   }
   await refreshDiagnostics();
@@ -1141,7 +1122,7 @@ async function returnToDesktop(): Promise<void> {
 }
 
 async function openProtectedBringUpConsole(): Promise<void> {
-  if (!showAdvancedDebugConfig.value) {
+  if (!maintenanceSessionAuthorized.value) {
     return;
   }
   await router.replace({
@@ -1517,11 +1498,14 @@ async function submitStockMovement(): Promise<void> {
             </button>
             <button
               v-if="showAdvancedDebugConfig"
-              class="kiosk-touch-target rounded-2xl border border-amber-200/30 px-4 py-3 font-bold text-amber-100"
+              class="kiosk-touch-target rounded-2xl border border-amber-200/30 px-4 py-3 font-bold text-amber-100 disabled:opacity-50"
               type="button"
+              :disabled="!maintenanceSessionAuthorized"
               @click="openProtectedBringUpConsole"
             >
-              首次部署控制台
+              {{
+                maintenanceSessionAuthorized ? "首次部署控制台" : "先验证 PIN"
+              }}
             </button>
             <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
@@ -1835,11 +1819,7 @@ async function submitStockMovement(): Promise<void> {
         {{ mqttStore.outboxWarning }}
       </div>
 
-      <form
-        v-if="showAdvancedDebugConfig"
-        class="mt-8 grid gap-5"
-        @submit.prevent="saveAndReboot"
-      >
+      <section v-if="showAdvancedDebugConfig" class="mt-8 grid gap-5">
         <label class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200">机器编号</span>
           <input
@@ -2354,11 +2334,11 @@ async function submitStockMovement(): Promise<void> {
         </div>
 
         <button
-          class="kiosk-touch-target rounded-2xl bg-sky-400 px-6 py-4 text-lg font-bold text-slate-950 shadow-lg shadow-sky-950/40"
-          type="submit"
-          :disabled="!maintenanceSessionAuthorized || machineStore.loading"
+          class="kiosk-touch-target rounded-2xl bg-slate-600 px-6 py-4 text-lg font-bold text-slate-200"
+          type="button"
+          disabled
         >
-          保存配置并重新自检
+          直接配置编辑已禁用；请使用首次部署控制台
         </button>
 
         <p
@@ -2367,7 +2347,7 @@ async function submitStockMovement(): Promise<void> {
         >
           {{ machineStore.error }}
         </p>
-      </form>
+      </section>
       <div
         v-if="showAdvancedDebugConfig && form.hardwareAdapter === 'mock'"
         class="mt-6"

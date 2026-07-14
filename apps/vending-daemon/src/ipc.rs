@@ -28,10 +28,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     backend::BackendClient,
-    config::{
-        ConfigStore, MachineConfigUpdateRequest, MachinePublicConfig,
-        ProductionMachinePaymentCapability,
-    },
+    config::{ConfigStore, MachinePublicConfig, ProductionMachinePaymentCapability},
     events::{scanner_runtime_status_contract, DaemonEvent},
     hardware::HardwareSupervisor,
     logs,
@@ -235,8 +232,24 @@ impl DaemonMaintenanceAuthorization {
         throttle.record_success();
         drop(throttle);
         let operator_id = normalize_maintenance_operator_id(request.operator_id)?;
+        self.issue_verified(operator_id, request.scopes).await
+    }
+
+    /// Factory bootstrap does not know an operator PIN. It can reach this
+    /// method only after ConfigStore atomically consumes a random,
+    /// ACL-protected, single-use Factory capability.
+    async fn issue_factory_bootstrap(&self) -> Result<MaintenanceSessionResponse, String> {
+        self.issue_verified("factory-bootstrap".to_string(), Vec::new())
+            .await
+    }
+
+    async fn issue_verified(
+        &self,
+        operator_id: String,
+        requested_scopes: Vec<String>,
+    ) -> Result<MaintenanceSessionResponse, String> {
         let mut scopes = HashSet::from([MAINTENANCE_SCOPE_MUTATE.to_string()]);
-        for scope in request.scopes {
+        for scope in requested_scopes {
             if matches!(
                 scope.as_str(),
                 MAINTENANCE_SCOPE_RECLAIM | MAINTENANCE_SCOPE_DESKTOP_EXIT
@@ -652,11 +665,22 @@ pub fn build_router(ctx: IpcContext) -> Router {
         )
         .route("/v1/network/settings", post(apply_network_settings))
         .route("/v1/network/available", get(available_wifi_networks))
-        .route("/v1/config", get(get_config).put(put_config))
+        // Factory and Testbed bootstrap are declared in the protected Factory
+        // layer and then advanced only through the daemon-owned Bring-Up
+        // cursor. Keeping the old mutable config surface would let any IPC
+        // token bypass that lifecycle.
+        .route(
+            "/v1/config",
+            get(legacy_config_endpoint_disabled).put(legacy_config_endpoint_disabled),
+        )
         .route("/v1/config/summary", get(get_config_summary))
         .route("/v1/provisioning/claim", post(claim_machine))
         .route("/v1/maintenance/status", get(maintenance_status))
         .route("/v1/maintenance/sessions", post(create_maintenance_session))
+        .route(
+            "/v1/factory/bootstrap/maintenance-session",
+            post(create_factory_bootstrap_maintenance_session),
+        )
         .route("/v1/maintenance/desktop-exit", post(authorize_desktop_exit))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
@@ -748,6 +772,85 @@ async fn create_maintenance_session(
             StatusCode::FORBIDDEN,
             Json(ErrorMessage {
                 code: "maintenance_pin_invalid",
+                message,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Exchange the Factory's one-shot local-account capability for the same
+/// daemon-owned, memory-only maintenance session used by the UI. This route
+/// never returns configuration and cannot be reached with an IPC token alone.
+async fn create_factory_bootstrap_maintenance_session(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let Some(authority) = ctx
+        .maintenance_authorization
+        .as_any()
+        .downcast_ref::<DaemonMaintenanceAuthorization>()
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorMessage {
+                code: "protected_maintenance_unavailable",
+                message: "protected maintenance session issuer is unavailable".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let capability = headers
+        .get("x-vem-factory-bootstrap-capability")
+        .and_then(|value| value.to_str().ok());
+    let consumed = {
+        // Sharing the Bring-Up cursor lock makes capability verification and
+        // removal one indivisible one-shot exchange under concurrent IPC.
+        let _bootstrap_guard = ctx.bring_up_execution_lock.lock().await;
+        match capability {
+            Some(capability) => {
+                ctx.config_store
+                    .consume_factory_bootstrap_capability(capability)
+                    .await
+            }
+            None => Ok(false),
+        }
+    };
+    let Ok(true) = consumed else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage {
+                code: "factory_bootstrap_authorization_denied",
+                message:
+                    "Factory bootstrap authorization is unavailable, invalid, or already consumed"
+                        .to_string(),
+            }),
+        )
+            .into_response();
+    };
+    match authority.issue_factory_bootstrap().await {
+        Ok(session) => {
+            append_local_diagnostic_log(
+                &ctx,
+                "info",
+                "maintenance_audit",
+                "Factory bootstrap maintenance session issued",
+                Some(serde_json::json!({
+                    "sessionCorrelationId": maintenance_session_correlation_id(&session.session_id),
+                    "operatorId": "factory-bootstrap",
+                    "scopes": session.scopes.clone(),
+                })),
+            )
+            .await;
+            (StatusCode::CREATED, Json(session)).into_response()
+        }
+        Err(message) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorMessage {
+                code: "protected_maintenance_unavailable",
                 message,
             }),
         )
@@ -1360,22 +1463,23 @@ fn block_ready_snapshot(
     ready.suggested_route = vending_core::health::SuggestedRoute::Maintenance;
 }
 
-async fn get_config(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+async fn legacy_config_endpoint_disabled(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-
-    match ctx.config_store.load_runtime_config().await {
-        Ok(config) => (StatusCode::OK, Json(config.to_public())).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorMessage {
-                code: "config_load_failed",
-                message: error,
-            }),
-        )
-            .into_response(),
-    }
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorMessage {
+            code: "ordinary_config_endpoint_disabled",
+            message:
+                "ordinary IPC config access is disabled; use the daemon-owned Bring-Up task or config summary"
+                    .to_string(),
+        }),
+    )
+        .into_response()
 }
 
 async fn get_config_summary(
@@ -2054,33 +2158,6 @@ fn sale_component_string(
         .and_then(|value| value.get(field))
         .and_then(|value| value.as_str())
         .map(ToString::to_string)
-}
-
-async fn put_config(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(payload): Json<MachineConfigUpdateRequest>,
-) -> impl IntoResponse {
-    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
-        return (status, error).into_response();
-    }
-    if let Err(response) =
-        require_non_bring_up_maintenance_authorization(&ctx, &headers, "config.update").await
-    {
-        return response;
-    }
-
-    match ctx.config_store.save_config_update(payload).await {
-        Ok(config) => (StatusCode::OK, Json(config)).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorMessage {
-                code: "config_invalid",
-                message: error,
-            }),
-        )
-            .into_response(),
-    }
 }
 
 async fn claim_machine(
@@ -5486,7 +5563,7 @@ mod tests {
             test_ipc_context(temp.path(), "token-1", Some("M1".to_string()), "http://api").await;
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/environment/control",
             "token-1",
@@ -5518,7 +5595,8 @@ mod tests {
             test_ipc_context(temp.path(), "token-1", Some("M1".to_string()), "http://api").await;
         let app = build_router(ctx);
 
-        let response = post_json(&app, "/v1/environment/control", "token-1", json!({})).await;
+        let response =
+            post_json_with_maintenance(&app, "/v1/environment/control", "token-1", json!({})).await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
@@ -5597,7 +5675,8 @@ mod tests {
             json!({ "ssid": "VEM-Lab", "password": control_password.clone(), "hidden": false }),
             json!({ "ssid": "VEM-Lab", "password": valid_password.clone(), "hidden": false, "extra": true }),
         ] {
-            let response = post_json(&app, "/v1/network/settings", "token-1", payload).await;
+            let response =
+                post_json_with_maintenance(&app, "/v1/network/settings", "token-1", payload).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             let body = body::to_bytes(response.into_body(), usize::MAX)
                 .await
@@ -5915,7 +5994,7 @@ mod tests {
         slot_id: &str,
         quantity: i64,
     ) {
-        let response = post_json(
+        let response = post_json_with_maintenance(
             app,
             "/v1/stock/attestation",
             "token-1",
@@ -6026,7 +6105,7 @@ mod tests {
         })
     }
 
-    async fn post_json(
+    async fn post_json_with_maintenance(
         app: &Router,
         uri: &str,
         token: &str,
@@ -6038,6 +6117,7 @@ mod tests {
                     .method(Method::POST)
                     .uri(uri)
                     .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header("x-vem-maintenance-session", "protected-session-1")
                     .header(CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(payload.to_string()))
                     .unwrap(),
@@ -6079,7 +6159,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6149,7 +6229,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6171,7 +6251,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/v1/config")
+                    .uri("/v1/config/summary")
                     .header(AUTHORIZATION, "Bearer token-1")
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -6183,12 +6263,18 @@ mod tests {
             .await
             .unwrap();
         let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(config["public"]["machineCode"], "M001");
-        assert_eq!(config["public"]["mqttUrl"], "mqtt://broker.example:1883");
-        assert_eq!(config["public"]["mqttUsername"], "machine-client");
-        assert_eq!(config["machineSecretConfigured"], true);
-        assert_eq!(config["mqttSigningSecretConfigured"], true);
-        assert_eq!(config["mqttPasswordConfigured"], true);
+        assert_eq!(config["effectivePublic"]["machineCode"], "M001");
+        assert_eq!(
+            config["effectivePublic"]["mqttUrl"],
+            "mqtt://broker.example:1883"
+        );
+        assert_eq!(config["effectivePublic"]["mqttUsername"], "machine-client");
+        assert_eq!(config["configuredState"]["machineSecretConfigured"], true);
+        assert_eq!(
+            config["configuredState"]["mqttSigningSecretConfigured"],
+            true
+        );
+        assert_eq!(config["configuredState"]["mqttPasswordConfigured"], true);
         let config_text = serde_json::to_string(&config).unwrap();
         assert!(!config_text.contains("vms_local-machine"));
         assert!(!config_text.contains("vms_local-mqtt"));
@@ -6236,7 +6322,7 @@ mod tests {
         );
         let _ = tokio::fs::remove_file(root.join("bringup").join("local-settings.json")).await;
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6280,7 +6366,7 @@ mod tests {
         let data_dir = temp_dir.path().join("vending-daemon");
         let app = build_router(test_ipc_context(&data_dir, "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6323,41 +6409,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_put_rejects_legacy_machine_location_text() {
+    async fn ordinary_config_endpoint_is_disabled_even_for_a_typed_maintenance_session() {
         let temp_dir = tempdir().expect("tmp");
         let app = build_router(
             test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await,
         );
 
-        let response = put_json(
-            &app,
-            "/v1/config",
-            "token-1",
-            json!({
-                "public": {
-                    "machineCode": "M001",
-                    "machineLocationText": "Legacy lobby",
-                    "apiBaseUrl": "http://127.0.0.1:3000/api",
-                    "mqttUrl": "mqtt://127.0.0.1:1883",
-                    "mqttUsername": null,
-                    "hardwareAdapter": "mock",
-                    "serialPortPath": null,
-                    "lowerControllerUsbIdentity": null,
-                    "scannerAdapter": "disabled",
-                    "scannerSerialPortPath": null,
-                    "scannerBaudRate": 9600,
-                    "scannerFrameSuffix": "crlf",
-                    "visionEnabled": false,
-                    "visionWsUrl": "ws://127.0.0.1:7892/ws",
-                    "visionRequestTimeoutMs": 8000,
-                    "kioskMode": false
-                },
-                "secrets": null
-            }),
-        )
-        .await;
+        let response = put_json(&app, "/v1/config", "token-1", json!({})).await;
 
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(payload["code"], "ordinary_config_endpoint_disabled");
     }
 
     #[tokio::test]
@@ -6373,7 +6438,7 @@ mod tests {
         let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
         let app = build_router(ctx.clone());
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6505,7 +6570,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -6516,7 +6581,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -6558,7 +6623,7 @@ mod tests {
         assert_eq!(snapshot["currentTask"]["kind"], "reclaim_machine");
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/bring-up/tasks/execute",
                 "token-1",
@@ -6620,7 +6685,7 @@ mod tests {
         let app = build_router(ctx);
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/provisioning/claim",
                 "token-1",
@@ -6635,7 +6700,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-4466554400f1";
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400f2";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -6668,7 +6733,7 @@ mod tests {
         assert_eq!(sale_view["items"][0]["slotSalesState"], "needs_count");
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -6708,7 +6773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_does_not_treat_machine_code_alone_as_provisioned() {
+    async fn config_summary_does_not_treat_machine_code_alone_as_provisioned() {
         let temp_dir = tempdir().expect("tmp");
         let app = build_router(
             test_ipc_context(
@@ -6724,7 +6789,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/v1/config")
+                    .uri("/v1/config/summary")
                     .header(AUTHORIZATION, "Bearer token-1")
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -6736,12 +6801,8 @@ mod tests {
             .await
             .unwrap();
         let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(config["provisioned"], false);
-        assert!(config["provisioningIssues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| issue == "machine_secret_missing"));
+        assert_eq!(config["configuredState"]["provisioningProfileCache"], false);
+        assert_eq!(config["configuredState"]["machineSecretConfigured"], false);
     }
 
     #[tokio::test]
@@ -6759,7 +6820,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6798,7 +6859,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6832,7 +6893,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6863,7 +6924,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6892,7 +6953,7 @@ mod tests {
             test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:9").await,
         );
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6916,7 +6977,7 @@ mod tests {
         *ctx.ui.status_cache.network.write().await = None;
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6948,7 +7009,7 @@ mod tests {
         let mut events = ctx.events.subscribe();
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -6987,7 +7048,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -7017,7 +7078,7 @@ mod tests {
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/provisioning/claim",
                 "token-1",
@@ -7032,7 +7093,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/v1/config")
+                    .uri("/v1/config/summary")
                     .header(AUTHORIZATION, "Bearer token-1")
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -7044,33 +7105,33 @@ mod tests {
             .await
             .unwrap();
         let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(config["provisioned"], true);
+        assert_eq!(config["configuredState"]["provisioningProfileCache"], true);
         assert_eq!(
-            config["public"]["machineId"],
+            config["effectivePublic"]["machineId"],
             "550e8400-e29b-41d4-a716-446655440000"
         );
         assert_eq!(
-            config["public"]["provisioningMetadata"]["claimCodeId"],
+            config["effectivePublic"]["provisioningMetadata"]["claimCodeId"],
             "550e8400-e29b-41d4-a716-446655440111"
         );
         assert_eq!(
-            config["public"]["provisioningMetadata"]["profileVersion"],
+            config["effectivePublic"]["provisioningMetadata"]["profileVersion"],
             1
         );
         assert_eq!(
-            config["public"]["provisioningMetadata"]["claimedAt"],
+            config["effectivePublic"]["provisioningMetadata"]["claimedAt"],
             "2026-06-08T16:30:00.000Z"
         );
         assert_eq!(
-            config["public"]["runtimeEndpoints"]["machineApiBasePath"],
+            config["effectivePublic"]["runtimeEndpoints"]["machineApiBasePath"],
             "/api/machines/M001"
         );
         assert_eq!(
-            config["public"]["paymentCapability"]["paymentCodeEnabled"],
+            config["effectivePublic"]["paymentCapability"]["paymentCodeEnabled"],
             true
         );
         assert_eq!(
-            config["public"]["hardwareProfile"]["paymentScanner"]["supportsPaymentCode"],
+            config["effectivePublic"]["hardwareProfile"]["paymentScanner"]["supportsPaymentCode"],
             true
         );
     }
@@ -7090,7 +7151,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -7112,7 +7173,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/v1/config")
+                    .uri("/v1/config/summary")
                     .header(AUTHORIZATION, "Bearer token-1")
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -7123,8 +7184,11 @@ mod tests {
             .await
             .unwrap();
         let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(config["public"]["machineCode"], serde_json::Value::Null);
-        assert_eq!(config["provisioned"], false);
+        assert_eq!(
+            config["effectivePublic"]["machineCode"],
+            serde_json::Value::Null
+        );
+        assert_eq!(config["configuredState"]["provisioningProfileCache"], false);
     }
 
     #[tokio::test]
@@ -7142,7 +7206,7 @@ mod tests {
         let app =
             build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -7247,7 +7311,7 @@ mod tests {
             .await
             .expect("replace logs dir with file");
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -7269,7 +7333,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/v1/config")
+                    .uri("/v1/config/summary")
                     .header(AUTHORIZATION, "Bearer token-1")
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -7281,9 +7345,12 @@ mod tests {
             .await
             .unwrap();
         let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(config["machineSecretConfigured"], false);
-        assert_eq!(config["mqttSigningSecretConfigured"], false);
-        assert_eq!(config["mqttPasswordConfigured"], false);
+        assert_eq!(config["configuredState"]["machineSecretConfigured"], false);
+        assert_eq!(
+            config["configuredState"]["mqttSigningSecretConfigured"],
+            false
+        );
+        assert_eq!(config["configuredState"]["mqttPasswordConfigured"], false);
         let config_text = serde_json::to_string(&config).unwrap();
         assert!(!config_text.contains("vms_local-machine"));
         assert!(!config_text.contains("vms_local-mqtt"));
@@ -7959,7 +8026,7 @@ mod tests {
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx);
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -8136,7 +8203,7 @@ mod tests {
         let ctx = test_ipc_context(&data_dir, "token-1", None, &server.uri()).await;
         let app = build_router(ctx.clone());
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/provisioning/claim",
                 "token-1",
@@ -8337,7 +8404,7 @@ mod tests {
             let inventory_id = format!("550e8400-e29b-41d4-a716-44665545{slot_suffix}");
             let planogram_version = format!("PLAN-TRY-ON-{slot_suffix}");
             assert_eq!(
-                post_json(
+                post_json_with_maintenance(
                     &app,
                     "/v1/stock/planogram",
                     "token-1",
@@ -8349,7 +8416,7 @@ mod tests {
                 "{case_name}: planogram should apply"
             );
             assert_eq!(
-                post_json(
+                post_json_with_maintenance(
                     &app,
                     "/v1/stock/movements",
                     "token-1",
@@ -8715,7 +8782,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655440901";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440902";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -8726,7 +8793,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -8832,7 +8899,7 @@ mod tests {
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -8915,7 +8982,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655440701";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440702";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -8926,7 +8993,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -8946,7 +9013,7 @@ mod tests {
         );
         record_attested_stock(&app, "PLAN-SINGLE-ITEM-ONLY", slot_id, 3).await;
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -9038,7 +9105,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655440301";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440302";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -9049,7 +9116,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -9273,7 +9340,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-446655440902";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -9284,7 +9351,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -9328,7 +9395,7 @@ mod tests {
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/stock/planogram",
             "token-1",
@@ -9405,7 +9472,7 @@ mod tests {
         .await;
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/bring-up/tasks/execute",
             "token-1",
@@ -9449,7 +9516,7 @@ mod tests {
         assert_eq!(snapshot["currentTask"]["taskVersion"], 2);
         assert_eq!(snapshot["currentTask"]["intent"], "refresh_network");
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/bring-up/tasks/execute",
             "token-1",
@@ -9494,7 +9561,7 @@ mod tests {
         assert_eq!(before["state"], "network_required");
         assert_eq!(before["currentTask"]["kind"], "configure_network");
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/bring-up/tasks/execute",
             "token-1",
@@ -9540,7 +9607,7 @@ mod tests {
         let app = build_router(ctx);
 
         let before = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/bring-up/tasks/execute",
             "token-1",
@@ -9639,7 +9706,7 @@ mod tests {
             ),
             ("/v1/hardware/self-check", json!({})),
         ] {
-            let response = post_json(&app, path, "token-1", body).await;
+            let response = post_json_with_maintenance(&app, path, "token-1", body).await;
             assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
         }
     }
@@ -9748,6 +9815,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn factory_bootstrap_session_requires_a_one_shot_capability_and_never_a_config_bypass() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx =
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let capability = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde";
+        let digest = Sha256::digest(capability.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let verifier_path = ctx
+            .config_store
+            .factory_bootstrap_capability_verifier_path();
+        let capability_path = ctx.config_store.factory_bootstrap_capability_path();
+        tokio::fs::create_dir_all(verifier_path.parent().expect("factory dir"))
+            .await
+            .expect("create factory dir");
+        tokio::fs::write(
+            &verifier_path,
+            json!({ "version": 1, "algorithm": "sha256", "digest": digest }).to_string(),
+        )
+        .await
+        .expect("stage verifier");
+        tokio::fs::write(&capability_path, capability)
+            .await
+            .expect("stage capability");
+        ctx.config_store
+            .import_factory_bootstrap_capability_verifier()
+            .await
+            .expect("import capability verifier");
+        let data_dir = ctx.data_dir.clone();
+        ctx.maintenance_authorization = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let app = build_router(ctx);
+
+        let without_capability = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/factory/bootstrap/maintenance-session")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(without_capability.status(), StatusCode::FORBIDDEN);
+
+        let issued = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/factory/bootstrap/maintenance-session")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-factory-bootstrap-capability", capability)
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(issued.status(), StatusCode::CREATED);
+        let body = body::to_bytes(issued.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let session: serde_json::Value = serde_json::from_slice(&body).expect("session");
+        assert_eq!(session["scopes"], json!(["maintenance.mutate"]));
+        assert!(!capability_path.exists());
+
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/factory/bootstrap/maintenance-session")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-factory-bootstrap-capability", capability)
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        let logs = tokio::fs::read_to_string(data_dir.join("logs").join("machine-events.jsonl"))
+            .await
+            .expect("audit logs");
+        assert!(logs.contains("factory-bootstrap"));
+        assert!(!logs.contains(capability));
+    }
+
+    #[tokio::test]
     async fn maintenance_session_and_mutation_audits_correlate_without_recording_a_replayable_session(
     ) {
         let temp_dir = tempdir().expect("tmp");
@@ -9764,7 +9923,7 @@ mod tests {
         ));
         let app = build_router(ctx);
 
-        let issued = post_json(
+        let issued = post_json_with_maintenance(
             &app,
             "/v1/maintenance/sessions",
             "token-1",
@@ -9824,7 +9983,7 @@ mod tests {
         let app = build_router(ctx);
 
         for _ in 0..3 {
-            let response = post_json(
+            let response = post_json_with_maintenance(
                 &app,
                 "/v1/maintenance/sessions",
                 "token-1",
@@ -9834,7 +9993,7 @@ mod tests {
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
 
-        let throttled = post_json(
+        let throttled = post_json_with_maintenance(
             &app,
             "/v1/maintenance/sessions",
             "token-1",
@@ -9913,7 +10072,7 @@ mod tests {
         ));
         let app = build_router(ctx);
 
-        let ordinary = post_json(
+        let ordinary = post_json_with_maintenance(
             &app,
             "/v1/maintenance/sessions",
             "token-1",
@@ -9942,7 +10101,7 @@ mod tests {
             .expect("response");
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
 
-        let privileged = post_json(
+        let privileged = post_json_with_maintenance(
             &app,
             "/v1/maintenance/sessions",
             "token-1",
@@ -10075,7 +10234,7 @@ mod tests {
         mark_claim_task_available(&ctx).await;
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/provisioning/claim",
             "token-1",
@@ -10107,13 +10266,13 @@ mod tests {
         let app = build_router(ctx);
 
         let (legacy, typed) = tokio::join!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/provisioning/claim",
                 "token-1",
                 json!({ "claimCode": "ABCD-2345" }),
             ),
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/bring-up/tasks/execute",
                 "token-1",
@@ -10181,7 +10340,7 @@ mod tests {
         assert_eq!(snapshot["currentTask"]["kind"], "reclaim_machine");
         assert_eq!(snapshot["currentTask"]["rotateMaintenanceIdentity"], true);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/bring-up/tasks/execute",
             "token-1",
@@ -10227,7 +10386,7 @@ mod tests {
                 Some(completed_preclaim_network_response("field-network"));
             ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow });
             let app = build_router(ctx);
-            let response = post_json(
+            let response = post_json_with_maintenance(
                 &app,
                 "/v1/bring-up/tasks/execute",
                 "token-1",
@@ -10328,22 +10487,20 @@ mod tests {
         )
         .await;
         let public = ctx.config_store.load_public_config().await.expect("config");
+        ctx.config_store
+            .save_config_update(crate::config::MachineConfigUpdateRequest {
+                public,
+                secrets: Some(crate::config::MachineConfigSecretsUpdate {
+                    machine_secret: Some("SENTINEL_MACHINE_SECRET_DO_NOT_LEAK_174".to_string()),
+                    mqtt_signing_secret: Some(
+                        "SENTINEL_MQTT_SIGNING_SECRET_DO_NOT_LEAK_174".to_string(),
+                    ),
+                    mqtt_password: Some("SENTINEL_MQTT_PASSWORD_DO_NOT_LEAK_174".to_string()),
+                }),
+            })
+            .await
+            .expect("seed secret sentinel fixture");
         let app = build_router(ctx);
-        let response = put_json(
-            &app,
-            "/v1/config",
-            "token-1",
-            json!({
-                "public": public,
-                "secrets": {
-                    "machineSecret": "SENTINEL_MACHINE_SECRET_DO_NOT_LEAK_174",
-                    "mqttSigningSecret": "SENTINEL_MQTT_SIGNING_SECRET_DO_NOT_LEAK_174",
-                    "mqttPassword": "SENTINEL_MQTT_PASSWORD_DO_NOT_LEAK_174"
-                }
-            }),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
 
         let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
         let serialized = serde_json::to_string(&snapshot).expect("snapshot json");
@@ -10368,7 +10525,7 @@ mod tests {
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/stock/planogram",
             "token-1",
@@ -10402,7 +10559,7 @@ mod tests {
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/stock/planogram",
             "token-1",
@@ -10497,7 +10654,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655440201";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440202";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -10508,7 +10665,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -10528,7 +10685,7 @@ mod tests {
         );
         record_attested_stock(&app, "PLAN-FROZEN-CREATE", slot_id, 2).await;
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/slot-sales-state",
                 "token-1",
@@ -10544,7 +10701,7 @@ mod tests {
             StatusCode::OK
         );
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -10643,7 +10800,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655440301";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440302";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -10654,7 +10811,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -10701,7 +10858,7 @@ mod tests {
             .expect("payment_code option");
         assert_eq!(payment_code_method["ready"], false);
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -10809,7 +10966,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655440401";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440402";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -10820,7 +10977,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -10840,7 +10997,7 @@ mod tests {
         );
         record_attested_stock(&app, "PLAN-SCANNER-QR", slot_id, 2).await;
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -10926,7 +11083,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655440601";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440602";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -10937,7 +11094,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -10957,7 +11114,7 @@ mod tests {
         );
         record_attested_stock(&app, "PLAN-SCANNER-RACE", slot_id, 2).await;
 
-        let create_response = post_json(
+        let create_response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -10982,7 +11139,7 @@ mod tests {
             scanner.message = "open serial port /dev/vem-secret-scanner failed".to_string();
         }
 
-        let submit_response = post_json(
+        let submit_response = post_json_with_maintenance(
             &app,
             "/v1/intents/dev-submit-payment-code",
             "token-1",
@@ -11062,7 +11219,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655440501";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440502";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -11073,7 +11230,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -11093,7 +11250,7 @@ mod tests {
         );
         record_attested_stock(&app, "PLAN-SCANNER-MOCK", slot_id, 2).await;
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -11178,7 +11335,7 @@ mod tests {
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx);
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -11189,7 +11346,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -11209,7 +11366,7 @@ mod tests {
         );
         record_attested_stock(&app, "PLAN-NETWORK-AUTH", slot_id, 2).await;
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -11273,7 +11430,7 @@ mod tests {
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx);
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -11284,7 +11441,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -11304,7 +11461,7 @@ mod tests {
         );
         record_attested_stock(&app, "PLAN-PLATFORM-REFUSAL", slot_id, 2).await;
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/intents/create-order",
             "token-1",
@@ -11491,7 +11648,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400b2";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -11590,7 +11747,7 @@ mod tests {
         let saleable_slot_id = "550e8400-e29b-41d4-a716-4466554400e1";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -11655,7 +11812,7 @@ mod tests {
             ("MOVE-FROZEN-PARTIAL-2", saleable_slot_id),
         ] {
             assert_eq!(
-                post_json(
+                post_json_with_maintenance(
                     &app,
                     "/v1/stock/movements",
                     "token-1",
@@ -11675,7 +11832,7 @@ mod tests {
             );
         }
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/slot-sales-state",
                 "token-1",
@@ -11812,7 +11969,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-446655441002";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -11940,7 +12097,7 @@ mod tests {
             )
             .await
             .expect("production recovery evidence");
-        let clear_response = post_json(
+        let clear_response = post_json_with_maintenance(
             &app,
             "/v1/maintenance/whole-machine-lock/clear",
             "token-1",
@@ -12023,7 +12180,7 @@ mod tests {
             .expect("lock");
 
         let app = build_router(ctx.clone());
-        let clear_response = post_json(
+        let clear_response = post_json_with_maintenance(
             &app,
             "/v1/maintenance/whole-machine-lock/clear",
             "token-1",
@@ -12085,7 +12242,7 @@ mod tests {
             .expect("lock");
 
         let app = build_router(ctx.clone());
-        let clear_response = post_json(
+        let clear_response = post_json_with_maintenance(
             &app,
             "/v1/maintenance/whole-machine-lock/clear",
             "token-1",
@@ -12160,7 +12317,7 @@ mod tests {
                 .expect("evidence");
 
             let app = build_router(ctx.clone());
-            let clear_response = post_json(
+            let clear_response = post_json_with_maintenance(
                 &app,
                 "/v1/maintenance/whole-machine-lock/clear",
                 "token-1",
@@ -12235,7 +12392,7 @@ mod tests {
                 .await
                 .expect("evidence");
 
-            let clear_response = post_json(
+            let clear_response = post_json_with_maintenance(
                 &app,
                 "/v1/maintenance/whole-machine-lock/clear",
                 "token-1",
@@ -12298,7 +12455,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-446655441101";
         let inventory_id = "550e8400-e29b-41d4-a716-446655441102";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -12309,7 +12466,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -12359,7 +12516,7 @@ mod tests {
             )
             .await
             .expect("evidence");
-        let clear_response = post_json(
+        let clear_response = post_json_with_maintenance(
             &app,
             "/v1/maintenance/whole-machine-lock/clear",
             "token-1",
@@ -12623,7 +12780,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400c2";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -12715,7 +12872,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -12752,7 +12909,7 @@ mod tests {
             .unwrap()
             .contains(&json!("PHYSICAL_STOCK_ATTESTATION_MISSING")));
 
-        let attestation = post_json(
+        let attestation = post_json_with_maintenance(
             &app,
             "/v1/stock/attestation",
             "token-1",
@@ -12819,7 +12976,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-4466554400e1";
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400e2";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -12831,7 +12988,7 @@ mod tests {
         );
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -13000,7 +13157,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -13011,7 +13168,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -13125,7 +13282,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400f2";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -13136,7 +13293,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -13259,7 +13416,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-446655440092";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -13270,7 +13427,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -13289,7 +13446,7 @@ mod tests {
             StatusCode::CREATED
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/slot-sales-state",
                 "token-1",
@@ -13344,7 +13501,7 @@ mod tests {
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400b2";
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -13355,7 +13512,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -13424,7 +13581,7 @@ mod tests {
             }),
         ] {
             assert_eq!(
-                post_json(&app, "/v1/stock/movements", "token-1", movement)
+                post_json_with_maintenance(&app, "/v1/stock/movements", "token-1", movement)
                     .await
                     .status(),
                 StatusCode::CREATED
@@ -13480,7 +13637,7 @@ mod tests {
         planogram["slots"].as_array_mut().unwrap().push(second_slot);
 
         assert_eq!(
-            post_json(&app, "/v1/stock/planogram", "token-1", planogram.clone())
+            post_json_with_maintenance(&app, "/v1/stock/planogram", "token-1", planogram.clone())
                 .await
                 .status(),
             StatusCode::OK
@@ -13490,7 +13647,7 @@ mod tests {
             (platform_review_slot, "needs_platform_review"),
         ] {
             assert_eq!(
-                post_json(
+                post_json_with_maintenance(
                     &app,
                     "/v1/stock/slot-sales-state",
                     "token-1",
@@ -13509,7 +13666,7 @@ mod tests {
 
         planogram["planogramVersion"] = json!("PLAN-BLOCKER-NEW");
         assert_eq!(
-            post_json(&app, "/v1/stock/planogram", "token-1", planogram)
+            post_json_with_maintenance(&app, "/v1/stock/planogram", "token-1", planogram)
                 .await
                 .status(),
             StatusCode::OK
@@ -14111,7 +14268,7 @@ mod tests {
         let old_inventory_id = "550e8400-e29b-41d4-a716-446655440092";
         let new_inventory_id = "550e8400-e29b-41d4-a716-4466554400a2";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -14122,7 +14279,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -14147,7 +14304,7 @@ mod tests {
         remapped["slots"][0]["productName"] = json!("苏打水");
         remapped["slots"][0]["sku"] = json!("SODA-REFILL");
         assert_eq!(
-            post_json(&app, "/v1/stock/planogram", "token-1", remapped)
+            post_json_with_maintenance(&app, "/v1/stock/planogram", "token-1", remapped)
                 .await
                 .status(),
             StatusCode::OK
@@ -14176,7 +14333,7 @@ mod tests {
         assert_eq!(payload["items"][0]["saleableStock"], 0);
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -14231,7 +14388,7 @@ mod tests {
         let slot_id = "550e8400-e29b-41d4-a716-4466554400b1";
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400b2";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -14241,7 +14398,7 @@ mod tests {
             .status(),
             StatusCode::OK
         );
-        let blocked_response = post_json(
+        let blocked_response = post_json_with_maintenance(
             &app,
             "/v1/stock/slot-sales-state",
             "token-1",
@@ -14264,7 +14421,7 @@ mod tests {
             "needs_platform_review"
         );
 
-        let response = post_json(
+        let response = post_json_with_maintenance(
             &app,
             "/v1/stock/movements",
             "token-1",
@@ -14307,7 +14464,7 @@ mod tests {
         let old_inventory_id = "550e8400-e29b-41d4-a716-446655440072";
         let new_inventory_id = "550e8400-e29b-41d4-a716-446655440082";
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/planogram",
                 "token-1",
@@ -14318,7 +14475,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",
@@ -14343,7 +14500,7 @@ mod tests {
         remapped["slots"][0]["productName"] = json!("苏打水");
         remapped["slots"][0]["sku"] = json!("SODA-REMAP");
         assert_eq!(
-            post_json(&app, "/v1/stock/planogram", "token-1", remapped)
+            post_json_with_maintenance(&app, "/v1/stock/planogram", "token-1", remapped)
                 .await
                 .status(),
             StatusCode::OK
@@ -14375,7 +14532,7 @@ mod tests {
         );
 
         assert_eq!(
-            post_json(
+            post_json_with_maintenance(
                 &app,
                 "/v1/stock/movements",
                 "token-1",

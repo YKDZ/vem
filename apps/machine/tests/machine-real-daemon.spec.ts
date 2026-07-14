@@ -141,7 +141,7 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
     timeout: DAEMON_START_TIMEOUT_MS - 10_000,
   });
   await expect(async () => {
-    const response = await fetch(`${DAEMON_HTTP_BASE_URL}/v1/config`, {
+    const response = await fetch(`${DAEMON_HTTP_BASE_URL}/v1/config/summary`, {
       headers: { Authorization: "Bearer dev-token" },
     }).catch((error: unknown) => {
       throw new Error(
@@ -152,10 +152,13 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
     });
     expect(response.ok).toBe(true);
     const config = (await response.json()) as {
-      public?: unknown;
+      effectivePublic?: unknown;
+      configuredState?: unknown;
     };
-    expect(typeof config.public).toBe("object");
-    expect(config.public).not.toBeNull();
+    expect(typeof config.effectivePublic).toBe("object");
+    expect(config.effectivePublic).not.toBeNull();
+    expect(typeof config.configuredState).toBe("object");
+    expect(config.configuredState).not.toBeNull();
   }).toPass({
     intervals: [250, 500, 1000],
     timeout: DAEMON_START_TIMEOUT_MS - 10_000,

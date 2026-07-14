@@ -19,8 +19,13 @@ pub const MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT: &str = "machine_maintenance_lif
 /// The field-maintenance PIN is deliberately a daemon-only secret.  It is
 /// never part of the IPC config summary or a UI runtime flag.
 pub const MACHINE_MAINTENANCE_PIN_ACCOUNT: &str = "machine_maintenance_pin";
+/// One-shot Factory bootstrap capability verifier. The raw capability is
+/// delivered only to the local maintenance account and is consumed before
+/// any provisioning mutation is accepted.
+pub const MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT: &str =
+    "machine_factory_bootstrap_capability";
 
-const SECRET_ACCOUNTS: [&str; 7] = [
+const SECRET_ACCOUNTS: [&str; 8] = [
     MACHINE_SECRET_ACCOUNT,
     MQTT_SIGNING_SECRET_ACCOUNT,
     MQTT_PASSWORD_ACCOUNT,
@@ -28,6 +33,7 @@ const SECRET_ACCOUNTS: [&str; 7] = [
     MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
     MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
     MACHINE_MAINTENANCE_PIN_ACCOUNT,
+    MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT,
 ];
 
 #[cfg(any(windows, test))]
@@ -100,6 +106,7 @@ impl FileSecretStore {
             }
             MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle",
             MACHINE_MAINTENANCE_PIN_ACCOUNT => "machine_maintenance_pin",
+            MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => "machine_factory_bootstrap_capability",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -124,6 +131,9 @@ impl ProtectedLocalSecretStore {
             }
             MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle.dpapi",
             MACHINE_MAINTENANCE_PIN_ACCOUNT => "machine_maintenance_pin.dpapi",
+            MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => {
+                "machine_factory_bootstrap_capability.dpapi"
+            }
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -198,6 +208,7 @@ fn env_account_name(account: &str) -> Option<&'static str> {
         MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => None,
         MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => None,
         MACHINE_MAINTENANCE_PIN_ACCOUNT => None,
+        MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => None,
         _ => None,
     }
 }

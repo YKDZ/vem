@@ -158,6 +158,58 @@ export const configSummarySchema = z.object({
   provisioningIssues: z.array(z.string()).default([]),
 });
 
+const runtimeConfigurationStateSchema = z.object({
+  factoryManifest: z.boolean(),
+  localBringUpSettings: z.boolean(),
+  provisioningProfileCache: z.boolean(),
+  machineSecretConfigured: z.boolean(),
+  mqttSigningSecretConfigured: z.boolean(),
+  mqttPasswordConfigured: z.boolean(),
+  maintenancePinConfigured: z.boolean(),
+});
+
+const runtimeConfigurationSummarySchema = z.object({
+  configuredState: runtimeConfigurationStateSchema,
+  provisioningProfileCache: z.unknown().nullable(),
+  effectivePublic: configSummaryPublicSchema,
+});
+
+/**
+ * `/v1/config/summary` is the read-only configuration projection.  The
+ * legacy `/v1/config` mutation endpoint is deliberately unavailable, so the
+ * browser must derive its existing UI summary from this safe runtime view.
+ */
+export function configSummaryFromRuntimeConfigurationSummary(
+  value: unknown,
+): z.infer<typeof configSummarySchema> {
+  const summary = runtimeConfigurationSummarySchema.parse(value);
+  const { configuredState } = summary;
+  const provisioned =
+    summary.provisioningProfileCache !== null &&
+    summary.effectivePublic.machineCode !== null &&
+    configuredState.maintenancePinConfigured;
+  const provisioningIssues: string[] = [];
+  if (
+    summary.provisioningProfileCache === null ||
+    summary.effectivePublic.machineCode === null
+  ) {
+    provisioningIssues.push("provisioning_profile_cache_missing");
+  }
+  if (!configuredState.maintenancePinConfigured) {
+    provisioningIssues.push("maintenance_pin_not_configured");
+  }
+
+  return configSummarySchema.parse({
+    public: summary.effectivePublic,
+    machineSecretConfigured: configuredState.machineSecretConfigured,
+    mqttSigningSecretConfigured: configuredState.mqttSigningSecretConfigured,
+    mqttPasswordConfigured: configuredState.mqttPasswordConfigured,
+    maintenancePinConfigured: configuredState.maintenancePinConfigured,
+    provisioned,
+    provisioningIssues,
+  });
+}
+
 export const maintenanceSessionSchema = z.object({
   sessionId: z.string().min(1),
   expiresAt: z.iso.datetime(),

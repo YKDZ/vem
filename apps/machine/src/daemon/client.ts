@@ -6,7 +6,7 @@ import {
 import {
   catalogSnapshotSchema,
   bringUpSnapshotSchema,
-  configSummarySchema,
+  configSummaryFromRuntimeConfigurationSummary,
   daemonEventSchema,
   hardwareSelfCheckSchema,
   environmentControlResultSchema,
@@ -152,6 +152,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
   private maintenanceSession: MaintenanceSession | null = null;
+  private readonly maintenanceSessionInvalidationListeners = new Set<
+    () => void
+  >();
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventIdQueue: string[] = [];
 
@@ -177,6 +180,9 @@ export class DaemonApiClient {
     });
 
     if (response.status === 401 && options.retry401 !== false) {
+      // A 401 means the daemon connection has changed (normally a restart).
+      // Maintenance capabilities are daemon-memory state and cannot survive it.
+      this.clearMaintenanceSession();
       await this.initialize(true);
       return this.request(path, { ...options, retry401: false });
     }
@@ -355,15 +361,14 @@ export class DaemonApiClient {
   }
 
   async getConfig(): Promise<ConfigSummary> {
-    return configSummarySchema.parse(await this.request("/v1/config"));
+    return configSummaryFromRuntimeConfigurationSummary(
+      await this.request("/v1/config/summary"),
+    );
   }
 
-  async saveConfig(body: unknown): Promise<ConfigSummary> {
-    return configSummarySchema.parse(
-      await this.request("/v1/config", {
-        method: "PUT",
-        body,
-      }),
+  async saveConfig(_body: unknown): Promise<never> {
+    throw new DaemonUnavailableError(
+      "直接配置编辑已禁用；请通过守护进程 Bring-Up 流程完成部署。",
     );
   }
 
@@ -397,8 +402,20 @@ export class DaemonApiClient {
     return session;
   }
 
+  onMaintenanceSessionInvalidated(listener: () => void): () => void {
+    this.maintenanceSessionInvalidationListeners.add(listener);
+    return () => {
+      this.maintenanceSessionInvalidationListeners.delete(listener);
+    };
+  }
+
   clearMaintenanceSession(): void {
+    const hadSession = this.maintenanceSession !== null;
     this.maintenanceSession = null;
+    if (!hadSession) return;
+    for (const listener of this.maintenanceSessionInvalidationListeners) {
+      listener();
+    }
   }
 
   async getCatalog(): Promise<CatalogSnapshot> {
@@ -540,6 +557,9 @@ export class DaemonApiClient {
       headers: { Authorization: `Bearer ${connection.token}` },
     });
     if (!response.ok) {
+      if (response.status === 401) {
+        this.clearMaintenanceSession();
+      }
       throw new DaemonUnavailableError(
         `/v1/logs/export returned HTTP ${response.status}`,
       );
@@ -589,8 +609,11 @@ export class DaemonApiClient {
       };
       socket.onclose = () => {
         if (closed) return;
+        // WebSocket disconnect is the only direct restart signal the kiosk
+        // receives. Treat it as an invalidated daemon-owned session.
+        this.clearMaintenanceSession();
         handlers.onStale();
-        window.setTimeout(() => {
+        globalThis.setTimeout(() => {
           void connect().catch((error: unknown) => {
             handlers.onError(
               error instanceof Error

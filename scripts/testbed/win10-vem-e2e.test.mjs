@@ -1672,12 +1672,17 @@ describe("win10-vem-e2e reset planning", () => {
       /C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready\.json/,
     );
     assert.match(script, /Authorization = "Bearer \$\(\$ready\.ipcToken\)"/);
-    assert.match(script, /Invoke-IpcJson "PUT" "\$baseUrl\/v1\/config"/);
     assert.match(
       script,
-      /apiBaseUrl = 'http:\/\/118\.25\.104\.160:26849\/api'/,
+      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/config\/summary" \$headers/,
     );
-    assert.match(script, /mqttUrl = 'mqtt:\/\/118\.25\.104\.160:1883'/);
+    assert.match(script, /Get-ConfigSnapshotFromRuntimeSummary/);
+    assert.doesNotMatch(script, /"\$baseUrl\/v1\/config" \$headers/);
+    assert.match(
+      script,
+      /Factory bootstrap provisioning endpoint does not match the isolated Testbed platform/,
+    );
+    assert.match(script, /preClaimFactoryConfigVerified = \$true/);
     assert.match(
       script,
       /Invoke-IpcJson "GET" "\$baseUrl\/v1\/bring-up" \$headers/,
@@ -1729,7 +1734,7 @@ describe("win10-vem-e2e reset planning", () => {
       provisioningStart,
     );
     const configRead = script.indexOf(
-      'Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers',
+      'Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers',
       provisioningStart,
     );
     const taskSnapshot = script.indexOf(

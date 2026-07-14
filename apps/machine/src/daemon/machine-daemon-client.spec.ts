@@ -323,12 +323,19 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     respondJson(res, fixtures.ready);
     return;
   }
-  if (url.pathname === "/v1/config") {
+  if (url.pathname === "/v1/config/summary") {
     const payload = {
-      public: publicConfig,
-      machineSecretConfigured: true,
-      mqttSigningSecretConfigured: true,
-      mqttPasswordConfigured: true,
+      configuredState: {
+        factoryManifest: true,
+        localBringUpSettings: true,
+        provisioningProfileCache: true,
+        machineSecretConfigured: true,
+        mqttSigningSecretConfigured: true,
+        mqttPasswordConfigured: true,
+        maintenancePinConfigured: true,
+      },
+      provisioningProfileCache: { machineCode: "M001" },
+      effectivePublic: publicConfig,
     };
     expectNoSecretFields(payload);
     respondJson(res, payload);

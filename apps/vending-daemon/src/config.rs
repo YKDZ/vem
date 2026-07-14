@@ -7,7 +7,7 @@ use std::{
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hmac::{Hmac, Mac};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use tokio::fs;
 use vending_core::serial::SerialPortUsbIdentity;
 
@@ -18,6 +18,8 @@ const MAINTENANCE_PIN_KDF_MIN_ITERATIONS: u32 = 120_000;
 const MAINTENANCE_PIN_KDF_MAX_ITERATIONS: u32 = 1_000_000;
 const MAINTENANCE_PIN_KDF_SALT_BYTES: usize = 16;
 const MAINTENANCE_PIN_KDF_DIGEST_BYTES: usize = 32;
+const LEGACY_MAINTENANCE_PIN_MIN_DIGITS: usize = 4;
+const LEGACY_MAINTENANCE_PIN_MAX_DIGITS: usize = 12;
 
 /// A Factory-provisioned verifier. The protected secret store holds this
 /// salted derivation record, never the operator's original maintenance PIN.
@@ -31,6 +33,45 @@ struct MaintenancePinVerifier {
     digest: String,
 }
 
+/// The Factory bootstrap capability is random high-entropy material rather
+/// than an operator PIN. Only its SHA-256 verifier enters the daemon secret
+/// store; the raw value is readable solely by the designated local
+/// maintenance account and is deleted once exchanged for an in-memory
+/// maintenance session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FactoryBootstrapCapabilityVerifier {
+    version: u8,
+    algorithm: String,
+    digest: String,
+}
+
+impl FactoryBootstrapCapabilityVerifier {
+    fn valid(&self) -> bool {
+        self.version == 1
+            && self.algorithm == "sha256"
+            && self.digest.len() == 64
+            && self.digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && self.digest.bytes().all(|byte| !byte.is_ascii_uppercase())
+    }
+
+    fn verifies(&self, capability: &str) -> bool {
+        if !self.valid()
+            || capability.len() != 43
+            || !capability
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return false;
+        }
+        let digest = Sha256::digest(capability.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        constant_time_bytes_equal(digest.as_bytes(), self.digest.as_bytes())
+    }
+}
+
 impl MaintenancePinVerifier {
     fn decode(&self) -> Option<(Vec<u8>, Vec<u8>)> {
         if self.version != 1
@@ -42,6 +83,9 @@ impl MaintenancePinVerifier {
         }
         let salt = STANDARD.decode(self.salt.as_bytes()).ok()?;
         let digest = STANDARD.decode(self.digest.as_bytes()).ok()?;
+        if STANDARD.encode(&salt) != self.salt || STANDARD.encode(&digest) != self.digest {
+            return None;
+        }
         if salt.len() != MAINTENANCE_PIN_KDF_SALT_BYTES
             || digest.len() != MAINTENANCE_PIN_KDF_DIGEST_BYTES
         {
@@ -60,6 +104,26 @@ impl MaintenancePinVerifier {
         let actual = pbkdf2_hmac_sha256(supplied.as_bytes(), &salt, self.iterations);
         constant_time_bytes_equal(&actual, &expected)
     }
+}
+
+fn legacy_raw_maintenance_pin(value: &str) -> bool {
+    let length = value.len();
+    (LEGACY_MAINTENANCE_PIN_MIN_DIGITS..=LEGACY_MAINTENANCE_PIN_MAX_DIGITS).contains(&length)
+        && value.as_bytes().iter().all(u8::is_ascii_digit)
+}
+
+fn new_maintenance_pin_verifier(pin: &str) -> Result<MaintenancePinVerifier, String> {
+    let mut salt = [0u8; MAINTENANCE_PIN_KDF_SALT_BYTES];
+    getrandom::getrandom(&mut salt)
+        .map_err(|_| "generate maintenance PIN verifier randomness failed".to_string())?;
+    let digest = pbkdf2_hmac_sha256(pin.as_bytes(), &salt, MAINTENANCE_PIN_KDF_MIN_ITERATIONS);
+    Ok(MaintenancePinVerifier {
+        version: 1,
+        algorithm: MAINTENANCE_PIN_KDF_ALGORITHM.to_string(),
+        iterations: MAINTENANCE_PIN_KDF_MIN_ITERATIONS,
+        salt: STANDARD.encode(salt),
+        digest: STANDARD.encode(digest),
+    })
 }
 
 fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
@@ -1558,6 +1622,104 @@ impl ConfigStore {
             .join("maintenance-pin-verifier.json")
     }
 
+    pub fn factory_bootstrap_capability_path(&self) -> PathBuf {
+        self.data_dir
+            .join("factory")
+            .join("bootstrap-provisioning-capability")
+    }
+
+    pub fn factory_bootstrap_capability_verifier_path(&self) -> PathBuf {
+        self.data_dir
+            .join("factory")
+            .join("bootstrap-provisioning-capability-verifier.json")
+    }
+
+    /// Import the Factory-produced verifier without ever reading or retaining
+    /// its raw companion capability. The latter remains ACL-protected for the
+    /// local maintenance account until it is exchanged exactly once.
+    pub async fn import_factory_bootstrap_capability_verifier(&self) -> Result<bool, String> {
+        let path = self.factory_bootstrap_capability_verifier_path();
+        let serialized = match fs::read_to_string(&path).await {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "read factory bootstrap verifier staging failed: {error}"
+                ))
+            }
+        };
+        let verifier = serde_json::from_str::<FactoryBootstrapCapabilityVerifier>(&serialized)
+            .map_err(|_| "factory bootstrap verifier is invalid".to_string())?;
+        if !verifier.valid() {
+            return Err("factory bootstrap verifier is invalid".to_string());
+        }
+        if let Some(existing) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT)
+            .await?
+        {
+            if existing != serialized {
+                return Err(
+                    "factory bootstrap verifier conflicts with the protected verifier".to_string(),
+                );
+            }
+        } else {
+            self.secrets
+                .write_secret(
+                    crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT,
+                    &serialized,
+                )
+                .await?;
+        }
+        fs::remove_file(path).await.map_err(|error| {
+            format!("remove factory bootstrap verifier staging failed: {error}")
+        })?;
+        Ok(true)
+    }
+
+    /// Consume a Factory-only capability atomically enough for the daemon
+    /// boundary: remove the protected verifier before the caller receives a
+    /// session, and best-effort erase its local-account delivery file.
+    pub async fn consume_factory_bootstrap_capability(
+        &self,
+        capability: &str,
+    ) -> Result<bool, String> {
+        if self
+            .load_provisioning_profile_cache_summary()
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        let Some(serialized) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let Ok(verifier) = serde_json::from_str::<FactoryBootstrapCapabilityVerifier>(&serialized)
+        else {
+            return Ok(false);
+        };
+        if !verifier.verifies(capability) {
+            return Ok(false);
+        }
+        self.secrets
+            .write_secret(
+                crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT,
+                "",
+            )
+            .await?;
+        match fs::remove_file(self.factory_bootstrap_capability_path()).await {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(format!(
+                "remove consumed factory bootstrap capability failed: {error}"
+            )),
+        }
+    }
+
     pub async fn import_factory_maintenance_pin_verifier(&self) -> Result<bool, String> {
         let path = self.factory_maintenance_pin_verifier_path();
         let serialized = match fs::read_to_string(&path).await {
@@ -1593,6 +1755,37 @@ impl ConfigStore {
         fs::remove_file(&path).await.map_err(|error| {
             format!("remove factory maintenance PIN verifier staging failed: {error}")
         })?;
+        Ok(true)
+    }
+
+    /// Earlier daemon builds stored only a numeric field PIN in the protected
+    /// machine store. This is the sole migration path: it accepts that narrow
+    /// legacy shape, replaces it atomically with a freshly salted verifier,
+    /// and never exposes the source PIN outside this process.
+    pub async fn migrate_legacy_raw_maintenance_pin(&self) -> Result<bool, String> {
+        let Some(raw_pin) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if serde_json::from_str::<MaintenancePinVerifier>(&raw_pin)
+            .ok()
+            .is_some_and(|verifier| verifier.decode().is_some())
+        {
+            return Ok(false);
+        }
+        if !legacy_raw_maintenance_pin(&raw_pin) {
+            return Ok(false);
+        }
+
+        let verifier = new_maintenance_pin_verifier(&raw_pin)?;
+        let serialized = serde_json::to_string(&verifier)
+            .map_err(|_| "serialize maintenance PIN verifier failed".to_string())?;
+        self.secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, &serialized)
+            .await?;
         Ok(true)
     }
 
@@ -3905,6 +4098,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn factory_bootstrap_capability_is_imported_and_consumed_once_without_storing_raw_value()
+    {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let store = ConfigStore::new(data_dir, state, secrets.clone());
+        let capability = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde";
+        assert_eq!(capability.len(), 43);
+        let digest = Sha256::digest(capability.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let verifier = serde_json::json!({
+            "version": 1,
+            "algorithm": "sha256",
+            "digest": digest,
+        })
+        .to_string();
+        let verifier_path = store.factory_bootstrap_capability_verifier_path();
+        let capability_path = store.factory_bootstrap_capability_path();
+        tokio::fs::create_dir_all(verifier_path.parent().expect("parent"))
+            .await
+            .expect("factory dir");
+        tokio::fs::write(&verifier_path, &verifier)
+            .await
+            .expect("stage verifier");
+        tokio::fs::write(&capability_path, capability)
+            .await
+            .expect("stage capability");
+
+        assert!(store
+            .import_factory_bootstrap_capability_verifier()
+            .await
+            .expect("import verifier"));
+        assert!(!verifier_path.exists());
+        let stored = secrets
+            .read_secret(crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT)
+            .await
+            .expect("read verifier")
+            .expect("verifier present");
+        assert_eq!(stored, verifier);
+        assert!(!stored.contains(capability));
+        assert!(!store
+            .consume_factory_bootstrap_capability("wrong-capability")
+            .await
+            .expect("wrong capability"));
+        assert!(store
+            .consume_factory_bootstrap_capability(capability)
+            .await
+            .expect("consume capability"));
+        assert!(!capability_path.exists());
+        assert!(secrets
+            .read_secret(crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT)
+            .await
+            .expect("read consumed verifier")
+            .is_none());
+        assert!(!store
+            .consume_factory_bootstrap_capability(capability)
+            .await
+            .expect("cannot replay capability"));
+    }
+
+    #[tokio::test]
     async fn raw_or_malformed_maintenance_pin_is_a_provisioning_blocker() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("vending-daemon");
@@ -3924,6 +4183,62 @@ mod tests {
             .expect("summary");
 
         assert!(summary.secret_store.maintenance_pin_configured);
+        assert!(!summary.configured_state.maintenance_pin_configured);
+    }
+
+    #[tokio::test]
+    async fn migrates_a_legacy_raw_maintenance_pin_once_to_a_random_salted_verifier() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, "2468")
+            .await
+            .expect("seed legacy PIN");
+        let store = ConfigStore::new(data_dir, state, secrets.clone());
+
+        assert!(store
+            .migrate_legacy_raw_maintenance_pin()
+            .await
+            .expect("migrate legacy PIN"));
+        let stored = secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await
+            .expect("read verifier")
+            .expect("verifier stored");
+        assert!(!stored.contains("2468"));
+        assert!(store.verify_maintenance_pin("2468").await.expect("verify"));
+        assert!(!store
+            .migrate_legacy_raw_maintenance_pin()
+            .await
+            .expect("migration is one shot"));
+    }
+
+    #[tokio::test]
+    async fn rejects_noncanonical_padded_base64_in_a_maintenance_pin_verifier() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(
+                crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT,
+                r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/x==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#,
+            )
+            .await
+            .expect("seed ambiguous verifier");
+        let store = ConfigStore::new(data_dir, state, secrets);
+
+        assert!(!store.verify_maintenance_pin("2468").await.expect("verify"));
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
         assert!(!summary.configured_state.maintenance_pin_configured);
     }
 

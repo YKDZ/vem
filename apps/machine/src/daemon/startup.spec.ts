@@ -57,6 +57,7 @@ describe("routeForStartup", () => {
     machineSecretConfigured: true,
     mqttSigningSecretConfigured: true,
     mqttPasswordConfigured: false,
+    maintenancePinConfigured: false,
     provisioned: true,
     provisioningIssues: [],
   };
