@@ -22,6 +22,13 @@ export. The runner hashes the exported bytes, parses PCM, and requires its
 format, measurements, threshold, non-silent-frame count, and peak sample to
 equal the semantic report.
 
+`capture.source` is a platform-neutral provenance label, not an adapter or
+hypervisor identity. It must be non-empty lowercase hyphenated text (for
+example, `windows-loopback-wav`); the deterministic fixture uses
+`contract-test-generated-wav`. The report separately binds the capture to the
+adapter through `capture.adapterIdentity`, so production adapters are not
+required to claim a QEMU-specific source.
+
 The adapter client rejects missing endpoints, browser-only cues, stale kiosk
 session bindings, malformed WAV data, digest mismatches, silent samples, and
 measurements below the declared threshold. A rejected capture invokes the same

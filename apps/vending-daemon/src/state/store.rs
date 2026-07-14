@@ -4007,28 +4007,33 @@ fn to_current_transaction_snapshot(
         payment_id: backend
             .as_ref()
             .and_then(|v| v.pointer("/payment/paymentId"))
+            .or_else(|| backend.as_ref().and_then(|v| v.get("paymentId")))
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
         payment_no: backend
             .as_ref()
             .and_then(|v| v.pointer("/payment/paymentNo"))
+            .or_else(|| backend.as_ref().and_then(|v| v.get("paymentNo")))
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
         payment_method: backend
             .as_ref()
             .and_then(|v| v.pointer("/payment/method"))
+            .or_else(|| backend.as_ref().and_then(|v| v.get("paymentMethod")))
             .and_then(|v| v.as_str())
             .map(ToString::to_string)
             .or(Some(row.payment_method)),
         payment_provider: backend
             .as_ref()
             .and_then(|v| v.pointer("/payment/providerCode"))
+            .or_else(|| backend.as_ref().and_then(|v| v.get("paymentProviderCode")))
             .and_then(|v| v.as_str())
             .map(ToString::to_string)
             .or(row.payment_provider),
         payment_url: backend
             .as_ref()
             .and_then(|v| v.pointer("/payment/paymentUrl"))
+            .or_else(|| backend.as_ref().and_then(|v| v.get("paymentUrl")))
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
         payment_status: backend
@@ -4065,6 +4070,7 @@ fn to_current_transaction_snapshot(
         expires_at: backend
             .as_ref()
             .and_then(|v| v.pointer("/payment/expiresAt"))
+            .or_else(|| backend.as_ref().and_then(|v| v.get("expiresAt")))
             .and_then(|v| v.as_str())
             .map(ToString::to_string)
             .or(row.expires_at),

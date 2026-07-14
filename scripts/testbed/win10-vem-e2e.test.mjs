@@ -2163,6 +2163,14 @@ describe("win10-vem-e2e reset planning", () => {
     );
     assert.match(
       script,
+      /\$preparedPaymentId = if \(-not \[string\]::IsNullOrWhiteSpace\(\[string\]\$createOrder\.paymentId\)\)/,
+    );
+    assert.match(
+      script,
+      /throw "successful sale prepare did not return order and payment IDs"/,
+    );
+    assert.match(
+      script,
       /Invoke-IpcJson "GET" "\$baseUrl\/v1\/stock\/movements\/dispense-confirmation\?orderId=\$orderQuery&vendingCommandId=\$commandQuery" \$headers/,
     );
     assert.match(script, /\$attempt -lt 30/);

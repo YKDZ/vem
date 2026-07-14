@@ -315,8 +315,8 @@ function semanticRecords(request) {
     saleBinding: event.startsWith("dispense-") ? saleBinding : null,
     capturedFrame: capturedFrame((sequence += 1)),
   }));
-  return [
-    ...lower,
+  const records = [
+    ...lower.slice(0, 2),
     {
       role: "scanner",
       event: "scanner-injection",
@@ -343,7 +343,12 @@ function semanticRecords(request) {
       saleBinding,
       capturedFrame: capturedFrame((sequence += 1)),
     })),
+    ...lower.slice(2),
   ];
+  return records.map((record, index) => ({
+    ...record,
+    capturedFrame: capturedFrame(index + 1),
+  }));
 }
 
 function fakeReport(request, scenario, state, observedSerialFaultCode = null) {

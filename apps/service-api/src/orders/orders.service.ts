@@ -422,6 +422,7 @@ export class OrdersService {
       return {
         orderId: draft.orderId,
         orderNo: draft.orderNo,
+        paymentId: draft.paymentId,
         paymentNo: draft.paymentNo,
         paymentUrl: null,
         expiresAt: draft.expiresAt,
@@ -484,6 +485,7 @@ export class OrdersService {
     return {
       orderId: draft.orderId,
       orderNo: draft.orderNo,
+      paymentId: draft.paymentId,
       paymentNo: draft.paymentNo,
       paymentUrl:
         (intent.initialStatus ?? "pending") === "pending"

@@ -37,6 +37,7 @@ const AUDIO_ENCODING = new Set([
   "pcm_s24le",
   "pcm_s32le",
 ]);
+const AUDIO_CAPTURE_SOURCE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+){0,15}$/;
 
 export const VM_HOST_ADAPTER_REQUEST_SCHEMA_VERSION = REQUEST_SCHEMA_VERSION;
 export const VM_HOST_ADAPTER_REPORT_SCHEMA_VERSION = REPORT_SCHEMA_VERSION;
@@ -950,6 +951,26 @@ function assertSerialEvidence(report, request, issues) {
   evidence.records.forEach((record, index) =>
     assertSemanticRecord(record, index, request, issues),
   );
+  const capturedFrameSequences = new Set();
+  let previousFrameSequence = 0;
+  evidence.records.forEach((record, index) => {
+    const sequence = record?.capturedFrame?.sequence;
+    if (!Number.isInteger(sequence) || sequence < 1) return;
+    if (capturedFrameSequences.has(sequence))
+      issue(
+        issues,
+        `report.serialEvidence.records[${index}].capturedFrame.sequence`,
+        "must be globally unique across serial evidence",
+      );
+    if (sequence <= previousFrameSequence)
+      issue(
+        issues,
+        `report.serialEvidence.records[${index}].capturedFrame.sequence`,
+        "must be strictly increasing in evidence order",
+      );
+    capturedFrameSequences.add(sequence);
+    previousFrameSequence = sequence;
+  });
   const lowerEvents = new Set(
     evidence.records
       .filter((record) => record?.role === "lower-controller")
@@ -980,12 +1001,7 @@ function assertSerialEvidence(report, request, issues) {
       "must include scanner injection evidence",
     );
   for (const saleCorrelationId of request.serialSession.saleCorrelationIds) {
-    const eventsForSale = new Set(
-      evidence.records
-        .filter((record) => record?.saleCorrelationId === saleCorrelationId)
-        .map((record) => `${record.role}:${record.event}`),
-    );
-    for (const event of [
+    const requiredEvents = [
       "scanner:scanner-injection",
       "payment:payment-request",
       "payment:payment-ack",
@@ -993,13 +1009,34 @@ function assertSerialEvidence(report, request, issues) {
       "lower-controller:dispense-request",
       "lower-controller:dispense-ack",
       "lower-controller:dispense-result",
-    ])
-      if (!eventsForSale.has(event))
+    ];
+    const recordsForSale = evidence.records.filter(
+      (record) => record?.saleCorrelationId === saleCorrelationId,
+    );
+    const eventsForSale = recordsForSale.map(
+      (record) => `${record.role}:${record.event}`,
+    );
+    for (const event of requiredEvents) {
+      const eventCount = eventsForSale.filter((value) => value === event).length;
+      if (eventCount === 0)
         issue(
           issues,
           "report.serialEvidence.records",
           `must bind ${event} to every requested sale correlation identity`,
         );
+      else if (eventCount !== 1)
+        issue(
+          issues,
+          "report.serialEvidence.records",
+          `must bind ${event} exactly once to ${saleCorrelationId}`,
+        );
+    }
+    if (JSON.stringify(eventsForSale) !== JSON.stringify(requiredEvents))
+      issue(
+        issues,
+        "report.serialEvidence.records",
+        `must preserve scanner-to-dispense causal order for ${saleCorrelationId}`,
+      );
   }
 }
 
@@ -1565,15 +1602,11 @@ function assertAudioCaptureResult(value, request, report, issues) {
     )
   )
     return;
-  const expectedAudioSource =
-    report.adapter?.identity === "vm-host-adapter://deterministic-fake@1.0.0"
-      ? "contract-test-generated-wav"
-      : "qemu-default-audio-wav";
-  if (value.capture.source !== expectedAudioSource)
+  if (!AUDIO_CAPTURE_SOURCE.test(value.capture.source ?? ""))
     issue(
       issues,
       `${path}.capture.source`,
-      `must be ${expectedAudioSource} for this adapter`,
+      "must be a non-empty, lowercase hyphenated capture source",
     );
   if (value.capture.adapterIdentity !== report.adapter?.identity)
     issue(

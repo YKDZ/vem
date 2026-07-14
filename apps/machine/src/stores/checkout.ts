@@ -223,10 +223,11 @@ function orderResponseFromSnapshot(
   snapshot: TransactionSnapshot,
   fallbackAmountCents: number,
 ): CreateMachineOrderResponse | null {
-  if (!snapshot.orderNo) return null;
+  if (!snapshot.orderNo || !snapshot.paymentId) return null;
   return {
     orderId: snapshot.orderId ?? snapshot.orderNo,
     orderNo: snapshot.orderNo,
+    paymentId: snapshot.paymentId,
     paymentNo: snapshot.paymentNo ?? "-",
     paymentUrl: snapshot.paymentUrl,
     expiresAt: snapshot.expiresAt ?? snapshot.updatedAt,

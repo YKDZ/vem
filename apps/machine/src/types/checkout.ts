@@ -1,5 +1,6 @@
 import {
   createMachineOrderSchema,
+  createMachineOrderResponseSchema,
   machineOrderStatusResponseSchema,
   paymentCodeSubmitResponseSchema,
   paymentCodeSubmitSchema,
@@ -13,18 +14,7 @@ import { z } from "zod";
 
 import type { MachineCatalogItem } from "./catalog";
 
-export const createMachineOrderResponseSchema = z.object({
-  orderId: z.uuid(),
-  orderNo: z.string().min(1),
-  paymentNo: z.string().min(1),
-  paymentUrl: z.string().nullable(),
-  expiresAt: z.iso.datetime(),
-  totalAmountCents: z.int().nonnegative(),
-  paymentProviderCode: z
-    .enum(["mock", "wechat_pay", "alipay"])
-    .nullable()
-    .optional(),
-});
+export { createMachineOrderResponseSchema } from "@vem/shared";
 
 export type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
 export type CreateMachineOrderResponse = z.infer<

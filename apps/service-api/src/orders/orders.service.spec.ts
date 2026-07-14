@@ -1655,6 +1655,7 @@ describe("OrdersService", () => {
 
       expect(createPaymentIntent).not.toHaveBeenCalled();
       expect(result.paymentUrl).toBeNull();
+      expect(result.paymentId).toBe("pay-001");
       expect(db.updatedPaymentStatus).toBe("pending");
     });
 

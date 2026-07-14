@@ -364,8 +364,8 @@ function serialEvidenceRecords(request) {
     saleBinding: event.startsWith("dispense-") ? saleBinding : null,
     capturedFrame: capturedFrame(),
   }));
-  return [
-    ...lower,
+  const records = [
+    ...lower.slice(0, 2),
     {
       role: "scanner",
       event: "scanner-injection",
@@ -395,7 +395,12 @@ function serialEvidenceRecords(request) {
       saleBinding,
       capturedFrame: capturedFrame(),
     })),
+    ...lower.slice(2),
   ];
+  return records.map((record, index) => ({
+    ...record,
+    capturedFrame: capturedFrame(index + 1),
+  }));
 }
 
 function cleanInstallRequest() {
@@ -993,6 +998,60 @@ describe("VM Host Adapter contract", () => {
         validateVmHostAdapterReport(
           reportFor(collect, {
             serialEvidence: { ...report.serialEvidence, records },
+          }),
+          collect,
+        ),
+      );
+  });
+
+  it("rejects duplicate, non-monotonic, and causally inverted sale frames", () => {
+    const collect = createVmHostAdapterRequest(
+      serialSessionRequest("collect-serial-evidence"),
+    );
+    const report = reportFor(collect);
+    const records = report.serialEvidence.records;
+    const scannerIndex = records.findIndex(
+      (record) => record.role === "scanner",
+    );
+    const paymentRequestIndex = records.findIndex(
+      (record) => record.event === "payment-request",
+    );
+    const dispenseRequestIndex = records.findIndex(
+      (record) => record.event === "dispense-request",
+    );
+    const cases = [
+      records.map((record, index) =>
+        index === paymentRequestIndex
+          ? {
+              ...record,
+              capturedFrame: {
+                ...record.capturedFrame,
+                sequence: records[scannerIndex].capturedFrame.sequence,
+              },
+            }
+          : record,
+      ),
+      records.map((record, index) =>
+        index === paymentRequestIndex
+          ? {
+              ...record,
+              capturedFrame: { ...record.capturedFrame, sequence: 1 },
+            }
+          : record,
+      ),
+      records.map((record, index) =>
+        index === dispenseRequestIndex
+          ? { ...record, event: "payment-request", role: "payment" }
+          : index === paymentRequestIndex
+            ? { ...record, event: "dispense-request", role: "lower-controller" }
+            : record,
+      ),
+    ];
+    for (const invalidRecords of cases)
+      assert.throws(() =>
+        validateVmHostAdapterReport(
+          reportFor(collect, {
+            serialEvidence: { ...report.serialEvidence, records: invalidRecords },
           }),
           collect,
         ),
@@ -1701,7 +1760,7 @@ describe("VM Host Adapter contract", () => {
           ...report.defaultAudioCapture,
           capture: {
             ...report.defaultAudioCapture.capture,
-            source: "qemu-default-audio-wav",
+            source: "",
           },
         },
       },
@@ -1727,6 +1786,20 @@ describe("VM Host Adapter contract", () => {
       assert.throws(() =>
         validateVmHostAdapterReport(reportFor(request, override), request),
       );
+    assert.doesNotThrow(() =>
+      validateVmHostAdapterReport(
+        reportFor(request, {
+          defaultAudioCapture: {
+            ...report.defaultAudioCapture,
+            capture: {
+              ...report.defaultAudioCapture.capture,
+              source: "windows-loopback-wav",
+            },
+          },
+        }),
+        request,
+      ),
+    );
   });
 
   it("treats a silent exported WAV as evidence-invalid and recovers the active lifecycle", async () => {

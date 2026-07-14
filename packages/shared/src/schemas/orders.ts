@@ -513,6 +513,17 @@ export const createMachineOrderSchema = z
     });
   });
 
+export const createMachineOrderResponseSchema = z.object({
+  orderId: z.uuid(),
+  orderNo: z.string().min(1).max(64),
+  paymentId: z.uuid(),
+  paymentNo: z.string().min(1).max(64),
+  paymentUrl: z.string().nullable(),
+  expiresAt: z.iso.datetime(),
+  totalAmountCents: z.int().nonnegative(),
+  paymentProviderCode: machinePaymentProviderCodeSchema.nullable().optional(),
+});
+
 export const machineOrderStatusQuerySchema = z.object({
   machineCode: z.string().min(1).max(64),
 });
@@ -580,6 +591,9 @@ export const machinePaymentOptionsResponseSchema = z.object({
 
 export type MachinePaymentProviderCode = z.infer<
   typeof machinePaymentProviderCodeSchema
+>;
+export type CreateMachineOrderResponse = z.infer<
+  typeof createMachineOrderResponseSchema
 >;
 export type MachinePaymentOptionKey = z.infer<
   typeof machinePaymentOptionKeySchema

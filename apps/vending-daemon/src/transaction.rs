@@ -851,6 +851,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_order_keeps_create_response_payment_id_when_initial_status_refresh_fails() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "token-123"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/machine-orders"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderId": "550e8400-e29b-41d4-a716-446655440010",
+                "orderNo": "ORDER-CREATE-RESPONSE",
+                "paymentId": "550e8400-e29b-41d4-a716-446655440011",
+                "paymentNo": "PAY-CREATE-RESPONSE",
+                "paymentUrl": null,
+                "expiresAt": "2026-06-10T00:05:00.000Z",
+                "totalAmountCents": 300,
+                "paymentProviderCode": "mock"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/ORDER-CREATE-RESPONSE/status"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let backend = Arc::new(BackendClient::new(server.uri()));
+        backend.authenticate("M-1", "S-1").await.expect("auth");
+        let (events_tx, _) = broadcast::channel(8);
+        let machine =
+            TransactionStateMachine::new(state, backend, Some("M-1".to_string()), events_tx);
+
+        let current = machine
+            .create_order(
+                "mock",
+                Some("mock".to_string()),
+                json!([{ "slotCode": "A1", "quantity": 1 }]),
+                None,
+            )
+            .await
+            .expect("create response remains usable");
+
+        assert_eq!(
+            current.payment_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440011")
+        );
+    }
+
+    #[tokio::test]
     async fn mark_mock_payment_refreshes_current_order_from_backend() {
         let temp = tempfile::tempdir().expect("temp");
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
