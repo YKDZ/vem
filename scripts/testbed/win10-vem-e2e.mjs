@@ -3348,14 +3348,29 @@ function evaluateCleanBasePreparationStep(step) {
 
 function evaluateApprovedPreclaimBaseStep(step) {
   const report = step?.parsed;
-  const verified =
-    step?.status === "passed" &&
+  const validEvidence =
     report?.ok === true &&
     report?.schemaVersion === "factory-preclaim-verification/v1" &&
     report?.kind === "factory-preclaim-verification";
+  if (step?.status === "passed" && validEvidence) {
+    return { status: "passed", asserted: true, diagnostic: null };
+  }
+  const status = step?.status === "blocked" ? "blocked" : "failed";
+  const evidenceInvalid = step?.status === "passed" && !validEvidence;
   return {
-    status: verified ? "passed" : (step?.status ?? "missing"),
-    asserted: verified,
+    status,
+    asserted: false,
+    diagnostic: {
+      code: evidenceInvalid
+        ? "factory-preclaim-verify_invalid"
+        : `factory-preclaim-verify_${status}`,
+      message: evidenceInvalid
+        ? "approved preclaim base verification returned invalid evidence"
+        : "approved preclaim base verification failed",
+      detail: evidenceInvalid
+        ? "expected ok=true and factory-preclaim-verification/v1 schema and kind"
+        : (step?.error ?? "approved preclaim base verification is missing"),
+    },
   };
 }
 
@@ -3373,9 +3388,12 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     evaluateApprovedPreclaimBaseStep(approvedPreclaimBase);
   const diagnostics = [
     ...(cleanBaseEvaluation.diagnostic ? [cleanBaseEvaluation.diagnostic] : []),
+    ...(approvedPreclaimBaseEvaluation.diagnostic
+      ? [approvedPreclaimBaseEvaluation.diagnostic]
+      : []),
     ...steps
       .filter((step) => step.status !== "passed")
-      .filter((step) => step !== cleanBase)
+      .filter((step) => step !== cleanBase && step !== approvedPreclaimBase)
       .map((step) => ({
         code:
           step.status === "blocked"

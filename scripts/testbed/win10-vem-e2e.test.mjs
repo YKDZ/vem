@@ -3518,6 +3518,65 @@ describe("win10-vem-e2e reset planning", () => {
     assert.equal(report.finalReadiness.approvedPreclaimBase.status, "passed");
   });
 
+  it("fails runtime acceptance when approved preclaim evidence lacks the expected schema or kind", () => {
+    const plan = buildVmRuntimeAcceptancePlan({
+      runId: "RUN-184",
+      platformTarget: "ephemeral-run-184",
+      ephemeralDatabaseUrl:
+        "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_184",
+      ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+      ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+
+    for (const parsed of [
+      { ok: true, kind: "factory-preclaim-verification" },
+      { ok: true, schemaVersion: "factory-preclaim-verification/v1" },
+      {
+        ok: true,
+        schemaVersion: "factory-preclaim-verification/v0",
+        kind: "factory-preclaim-verification",
+      },
+      {
+        ok: true,
+        schemaVersion: "factory-preclaim-verification/v1",
+        kind: "unexpected-preclaim-evidence",
+      },
+    ]) {
+      const report = buildVmRuntimeAcceptanceReport({
+        plan,
+        steps: [
+          {
+            ...plan.steps[0],
+            status: "passed",
+            parsed,
+            error: null,
+          },
+        ],
+      });
+
+      assert.deepEqual(report.finalReadiness.approvedPreclaimBase, {
+        status: "failed",
+        asserted: false,
+        diagnostic: {
+          code: "factory-preclaim-verify_invalid",
+          message:
+            "approved preclaim base verification returned invalid evidence",
+          detail:
+            "expected ok=true and factory-preclaim-verification/v1 schema and kind",
+        },
+      });
+      assert.equal(report.preparationVerifierStatus, "failed");
+      assert.equal(report.ok, false);
+      assert.ok(
+        report.diagnostics.some(
+          (diagnostic) => diagnostic.code === "factory-preclaim-verify_invalid",
+        ),
+      );
+    }
+  });
+
   it("propagates run-scoped certificate SSH trust to every VM acceptance child command", () => {
     const plan = buildVmRuntimeAcceptancePlan({
       runId: "RUN-183",
