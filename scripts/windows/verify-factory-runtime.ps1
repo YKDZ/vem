@@ -1142,6 +1142,8 @@ try {
     schemaVersion = $manifest.schemaVersion
     layoutVersion = $manifest.layoutVersion
     factoryProfile = $manifest.factoryProfile
+    environmentName = $manifest.environmentName
+    deploymentBatch = $manifest.deploymentBatch
     hardwareMode = $manifest.hardware.mode
     hardwareModel = $manifest.hardware.model
     topologyIdentity = $manifest.topology.identity
@@ -1153,6 +1155,10 @@ try {
   }
   if ([string]$manifest.factoryProfile -notin @("production", "testbed")) {
     Add-Failure $failures "factory manifest must declare production or testbed profile"
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$manifest.environmentName) -or
+      [string]::IsNullOrWhiteSpace([string]$manifest.deploymentBatch)) {
+    Add-Failure $failures "factory runtime manifest must retain non-empty EnvironmentName and DeploymentBatch trace metadata"
   }
   if ($null -eq $manifest.packages.openSsh -or $null -eq $manifest.packages.wireGuard) {
     Add-Failure $failures "factory manifest must declare pinned OpenSSH and WireGuard packages"
@@ -1222,10 +1228,15 @@ if ($null -ne $manifest) {
       path = $settingsPath
       schemaVersion = $settings.schemaVersion
       environmentName = $settings.environmentName
+      deploymentBatch = $settings.deploymentBatch
       provisioningEndpoint = $settings.provisioningEndpoint
     }
     if ([string]$settings.schemaVersion -ne "vem-local-bringup-settings/v1") {
       Add-Failure $failures "unexpected local bring-up settings schema: $($settings.schemaVersion)"
+    }
+    if ([string]$settings.environmentName -cne [string]$manifest.environmentName -or
+        [string]$settings.deploymentBatch -cne [string]$manifest.deploymentBatch) {
+      Add-Failure $failures "local bring-up settings trace metadata must match factory runtime manifest"
     }
   } else {
     Add-Failure $failures "local bring-up settings missing: $settingsPath"
@@ -1237,15 +1248,9 @@ if ($null -ne $manifest) {
     $checks.daemonFactoryManifest = [ordered]@{
       path = $daemonFactoryManifestPath
       environment = $daemonFactoryManifest.environment
-      environmentName = $daemonFactoryManifest.environmentName
-      deploymentBatch = $daemonFactoryManifest.deploymentBatch
     }
     if ([string]$daemonFactoryManifest.environment -cne [string]$manifest.factoryProfile) {
       Add-Failure $failures "daemon factory manifest environment must match FactoryProfile"
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$daemonFactoryManifest.environmentName) -or
-        [string]::IsNullOrWhiteSpace([string]$daemonFactoryManifest.deploymentBatch)) {
-      Add-Failure $failures "daemon factory manifest must retain EnvironmentName and deploymentBatch metadata"
     }
   } else {
     Add-Failure $failures "daemon factory manifest missing: $daemonFactoryManifestPath"

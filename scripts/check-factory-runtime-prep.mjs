@@ -132,6 +132,17 @@ const verifierConcerns = [
 
 const prepareTail = topLevelTail(prepare, "Assert-RequiredInputs");
 const writeFilesBlock = functionBlock(prepare, "Write-FactoryRuntimeFiles");
+const daemonManifestStart = writeFilesBlock.indexOf(
+  "$daemonManifest = [ordered]@{",
+);
+const daemonManifestEnd = writeFilesBlock.indexOf(
+  "Write-JsonFile -Path ([string]$Plan.layout.daemonFactoryManifestPath)",
+  daemonManifestStart,
+);
+const daemonManifestBlock =
+  daemonManifestStart === -1 || daemonManifestEnd === -1
+    ? ""
+    : writeFilesBlock.slice(daemonManifestStart, daemonManifestEnd);
 const existingStateBlock = functionBlock(prepare, "Get-ExistingVemState");
 const removeStateBlock = functionBlock(prepare, "Remove-ExistingVemState");
 const verifierTaskBlock = functionBlock(verifier, "Get-ScheduledTaskEvidence");
@@ -148,9 +159,28 @@ addCheck(
   ) &&
     prepare.includes("environment = $Preflight.FactoryProfile") &&
     !prepare.includes("environment = $EnvironmentName") &&
-    prepare.includes("deploymentBatch = $DeploymentBatch") &&
-    verifier.includes("daemon factory manifest environment must match FactoryProfile"),
-  "Factory preparation must preserve FactoryProfile as the strict daemon environment while carrying human-readable name and batch metadata separately",
+    !daemonManifestBlock.includes("environmentName") &&
+    !daemonManifestBlock.includes("deploymentBatch") &&
+    verifier.includes(
+      "daemon factory manifest environment must match FactoryProfile",
+    ) &&
+    !verifier.includes("daemon factory manifest must retain EnvironmentName") &&
+    verifier.includes(
+      "factory runtime manifest must retain non-empty EnvironmentName and DeploymentBatch trace metadata",
+    ) &&
+    verifier.includes(
+      "local bring-up settings trace metadata must match factory runtime manifest",
+    ),
+  "FactoryProfile must be the daemon's only environment source; trace metadata belongs in factory-runtime and local bring-up records",
+);
+
+addCheck(
+  "direct-factory-preparation-supplies-deterministic-deployment-batches",
+  testbedRunner.includes('DeploymentBatch = "dirty-host-reset-v1"') &&
+    testbedRunner.includes(
+      "DeploymentBatch = ${psString(`clean-base-${cleanBaseFactoryProfile}-v1`)}",
+    ),
+  "Dirty-host and clean-base direct preparation must pass non-empty deterministic DeploymentBatch values",
 );
 
 addCheck(

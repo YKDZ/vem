@@ -5534,6 +5534,7 @@ function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
       MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
       MachineUiSha256 = [string]$staged.machineUiSha256
       EnvironmentName = "machine-runtime-testbed"
+      DeploymentBatch = "dirty-host-reset-v1"
       ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
       MqttUrl = ${psString(platform.mqttUrl)}
       HardwareMode = "simulated"
@@ -5892,6 +5893,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
       MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
       MachineUiSha256 = [string]$staged.machineUiSha256
       EnvironmentName = ${psString(`factory-${cleanBaseFactoryProfile}`)}
+      DeploymentBatch = ${psString(`clean-base-${cleanBaseFactoryProfile}-v1`)}
       ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
       MqttUrl = ${psString(platform.mqttUrl)}
       HardwareMode = ${psString(cleanBaseHardwareMode)}
