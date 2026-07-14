@@ -1425,7 +1425,7 @@ describe("Factory Manifest and media workflow contract", () => {
       /throw "llvm-readobj\.exe failed to inspect \$\{daemonExe\}: \$coffImports"/,
     );
     assert.match(importGateStep.run, /\$\{daemonExe\}:/);
-    const dynamicCrtImportPattern = String.raw`(?im)^\s*Name:\s*(?:(?:VCRUNTIME|MSVCP|CONCRT)\d+[A-Z0-9_]*|ucrtbase|api-ms-win-crt-[A-Z0-9-]+)\.dll\s*$`;
+    const dynamicCrtImportPattern = String.raw`(?im)^\s*Name:\s*(?:(?:VCRUNTIME|MSVCR|MSVCP|CONCRT)\d+[A-Z0-9_]*|ucrtbase|ucrtbased|api-ms-win-crt-[A-Z0-9-]+)\.dll\s*$`;
     assert.ok(
       importGateStep.run.includes(
         `$coffImports -match '${dynamicCrtImportPattern}'`,
@@ -1437,13 +1437,15 @@ describe("Factory Manifest and media workflow contract", () => {
       "im",
     );
     for (const dll of [
-      "VCRUNTIME100.dll",
+      "MSVCR100.dll",
+      "MSVCR120.dll",
       "vcruntime140_1.DLL",
       "MSVCP999.dll",
       "msvcp140_ATOMIC_WAIT.dll",
       "CONCRT120.dll",
       "concrt140d.DLL",
       "ucrtbase.dll",
+      "ucrtbased.dll",
       "API-MS-WIN-CRT-RUNTIME-L1-1-0.DLL",
     ]) {
       assert.match(`  Name: ${dll}`, dynamicCrtImportRegex);
