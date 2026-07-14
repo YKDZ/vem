@@ -76,15 +76,39 @@ async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
     let pty = PtyHarness::open();
     let scanner_path = pty.slave_path.to_string_lossy().to_string();
     pty.spawn_scanner_writer(b"621234567890123456\r\n621234567890123456\r\n");
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = DaemonHarness::start_with_file_secrets(
         scanner_config(scanner_path),
-        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+        &[
+            ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
+            ("machine_secret", sensitive::TEST_MACHINE_SECRET),
+        ],
     )
     .await
     .expect("start daemon");
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let scanner = daemon.get_json("/v1/scanner/status").await;
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+    let client = Client::new();
+    let without_session = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .send()
+        .await
+        .expect("scanner status without maintenance session");
+    assert_eq!(without_session.status(), reqwest::StatusCode::FORBIDDEN);
+    let session_id = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
+    let scanner = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
+        .send()
+        .await
+        .expect("scanner status with maintenance session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("scanner status JSON");
     assert_eq!(scanner["adapter"], "serial_text");
     assert_eq!(scanner["online"], true);
     assert_eq!(scanner["code"], "SCANNER_READY");
@@ -111,15 +135,32 @@ async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
 #[tokio::test]
 async fn scanner_open_failure_reports_offline() {
     let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = DaemonHarness::start_with_file_secrets(
         scanner_config("/dev/vem-missing-scanner".to_string()),
-        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+        &[
+            ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
+            ("machine_secret", sensitive::TEST_MACHINE_SECRET),
+        ],
     )
     .await
     .expect("start daemon");
 
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+    let client = Client::new();
+    let session_id = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
     for _ in 0..40 {
-        let scanner = daemon.get_json("/v1/scanner/status").await;
+        let scanner = client
+            .get(format!("{base}/v1/scanner/status"))
+            .header("Authorization", daemon.bearer())
+            .header("x-vem-maintenance-session", &session_id)
+            .send()
+            .await
+            .expect("scanner status with maintenance session")
+            .json::<serde_json::Value>()
+            .await
+            .expect("scanner status JSON");
         if scanner["code"] == "SCANNER_OPEN_FAILED" {
             assert_eq!(scanner["online"], false);
             assert_eq!(scanner["adapter"], "serial_text");
@@ -131,7 +172,16 @@ async fn scanner_open_failure_reports_offline() {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
 
-    let scanner = daemon.get_json("/v1/scanner/status").await;
+    let scanner = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
+        .send()
+        .await
+        .expect("scanner status with maintenance session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("scanner status JSON");
     daemon.terminate().await;
     panic!("scanner did not report open failure: {scanner}");
 }
@@ -579,7 +629,7 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
     let planogram = client
         .post(format!("{base}/v1/stock/planogram"))
         .header("Authorization", daemon.bearer())
-        .header("x-vem-maintenance-session", session_id)
+        .header("x-vem-maintenance-session", &session_id)
         .json(&json!({
             "planogramVersion": "PLAN-SCAN",
             "source": "local_seed",
@@ -621,6 +671,7 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
     let attestation = client
         .post(format!("{base}/v1/bring-up/tasks/execute"))
         .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
         .json(&json!({
             "contractVersion": 1,
             "taskId": "bring_up.attest_stock",
@@ -721,12 +772,35 @@ async fn wait_for_transaction(
 }
 
 async fn wait_for_scanner_code(daemon: &DaemonHarness, code: &str) -> serde_json::Value {
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+    let client = Client::new();
+    let session_id = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
     for _ in 0..40 {
-        let scanner = daemon.get_json("/v1/scanner/status").await;
+        let scanner = client
+            .get(format!("{base}/v1/scanner/status"))
+            .header("Authorization", daemon.bearer())
+            .header("x-vem-maintenance-session", &session_id)
+            .send()
+            .await
+            .expect("scanner status with maintenance session")
+            .json::<serde_json::Value>()
+            .await
+            .expect("scanner status JSON");
         if scanner["code"] == code {
             return scanner;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    daemon.get_json("/v1/scanner/status").await
+    client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
+        .send()
+        .await
+        .expect("scanner status with maintenance session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("scanner status JSON")
 }

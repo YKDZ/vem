@@ -12,12 +12,14 @@ function readText(path) {
 
 const smokePath = "scripts/windows/vending-daemon-smoke.ps1";
 const examplePath = "scripts/windows/machine-config.bringup.example.json";
+const machineClientPath = "apps/machine/src/daemon/client.ts";
 const runbookPath =
-  "docs/runbooks/machine-provisioning-default-api-base-url.md";
+  "public/machine-provisioning-default-api-base-url.md";
 
 const smoke = readText(smokePath);
 const example = readText(examplePath);
 const runbook = readText(runbookPath);
+const machineClient = readText(machineClientPath);
 
 addCheck(
   "smoke-script-accepts-default-api-base-url",
@@ -30,25 +32,43 @@ addCheck(
   `${smokePath} should set VEM_DEFAULT_API_BASE_URL for service bring-up`,
 );
 addCheck(
-  "smoke-script-verifies-configured-endpoint",
+  "smoke-script-verifies-runtime-configuration-summary",
   smoke.includes("default-api-base-url-configured") &&
-    smoke.includes("/v1/config"),
-  `${smokePath} should verify daemon config exposes the default API Base URL`,
+    smoke.includes("/v1/config/summary") &&
+    smoke.includes("effectivePublic"),
+  `${smokePath} should verify the safe runtime configuration summary exposes the default API Base URL`,
 );
 addCheck(
-  "smoke-script-exercises-provisioning-claim-endpoint",
-  smoke.includes("/v1/provisioning/claim") &&
+  "smoke-script-executes-typed-claim-with-maintenance-session",
+  smoke.includes("/v1/bring-up") &&
+    smoke.includes("/tasks/execute") &&
+    smoke.includes("x-vem-maintenance-session") &&
     smoke.includes("claimCode") &&
     smoke.includes("WXYZ-2345"),
-  `${smokePath} should POST a deliberately invalid test claim code through daemon IPC`,
+  `${smokePath} should POST a deliberately invalid test claim through the typed Bring-Up cursor with a maintenance session`,
 );
 addCheck(
-  "smoke-script-distinguishes-invalid-claim-from-backend-unavailable",
+  "smoke-script-distinguishes-typed-invalid-claim-from-backend-unavailable",
   smoke.includes("claim-endpoint-reachable-invalid-claim") &&
     smoke.includes("claim-endpoint-backend-unavailable-fails-smoke") &&
     smoke.includes("machine_claim_invalid_or_expired") &&
     smoke.includes("machine_claim_backend_unavailable"),
   `${smokePath} should pass only after a service API invalid-claim response, not backend unavailable`,
+);
+addCheck(
+  "release-path-has-no-legacy-config-or-claim-endpoints",
+  !smoke.includes('"$baseUrl/v1/config"') &&
+    !smoke.includes("/v1/provisioning/claim") &&
+    !machineClient.includes('"/v1/provisioning/claim"') &&
+    !machineClient.includes('"/v1/config"'),
+  `${smokePath} and ${machineClientPath} must not retain mutable legacy config or direct claim release paths`,
+);
+addCheck(
+  "machine-client-uses-summary-and-typed-bring-up",
+  machineClient.includes('"/v1/config/summary"') &&
+    machineClient.includes('"/v1/bring-up/tasks/execute"') &&
+    machineClient.includes('"x-vem-maintenance-session"'),
+  `${machineClientPath} should consume configuration summary and protected typed Bring-Up tasks`,
 );
 addCheck(
   "smoke-script-verifies-first-boot-claim-code-page",

@@ -51,6 +51,11 @@ beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockReset();
   daemonClient["connection"] = null;
   daemonClient["maintenanceSession"] = null;
+  daemonClient["maintenanceSessionRouteScope"] = null;
+  if (daemonClient["maintenanceSessionExpiryTimer"] !== null) {
+    globalThis.clearTimeout(daemonClient["maintenanceSessionExpiryTimer"]);
+  }
+  daemonClient["maintenanceSessionExpiryTimer"] = null;
   daemonClient["maintenanceSessionInvalidationListeners"].clear();
   daemonClient["seenEventIds"].clear();
   daemonClient["seenEventIdQueue"].length = 0;
@@ -230,6 +235,43 @@ describe("DaemonApiClient", () => {
     expect(daemonClient.currentMaintenanceSession).toBeNull();
   });
 
+  it("clears a route-scoped maintenance session at expiry without another IPC request", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-07-14T12:00:00.000Z"));
+    try {
+      vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+        baseUrl: "http://127.0.0.1:7891",
+        token: "token-1",
+        source: "browser_env",
+        mock: true,
+      });
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "soon-expired-session",
+            expiresAt: "2030-07-14T12:00:01.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      );
+      const invalidated = vi.fn();
+      daemonClient.onMaintenanceSessionInvalidated(invalidated);
+
+      await daemonClient.beginMaintenanceSession("2468");
+      expect(daemonClient.handoffMaintenanceSessionToBringUp()).toBe(true);
+      vi.advanceTimersByTime(1_000);
+
+      expect(invalidated).toHaveBeenCalledOnce();
+      expect(daemonClient.currentMaintenanceSession).toBeNull();
+      expect(daemonClient.hasMaintenanceSessionForRoute("bring-up")).toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clears a maintenance session when the daemon rejects it", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",
@@ -307,6 +349,103 @@ describe("DaemonApiClient", () => {
         ),
       }),
     );
+  });
+
+  it("hands a maintenance capability to Bring-Up and sends it with each protected task", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "route-scoped-session",
+            expiresAt: "2030-07-14T12:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockImplementation(() =>
+        Promise.resolve(new Response("{}", { status: 200 })),
+      );
+
+    await daemonClient.beginMaintenanceSession("2468");
+    expect(daemonClient.handoffMaintenanceSessionToBringUp()).toBe(true);
+    expect(daemonClient.hasMaintenanceSessionForRoute("bring-up")).toBe(true);
+
+    await daemonClient.executeBringUpTask(
+      {
+        contractVersion: 1,
+        taskId: "bring_up.configure_network",
+        taskVersion: 1,
+        kind: "configure_network",
+        intent: "refresh_network",
+        rotateMaintenanceIdentity: false,
+        projection: {
+          type: "network_settings",
+          supportsHiddenNetwork: true,
+          supportsExistingNetworkProbe: true,
+        },
+      },
+      {
+        type: "configure_network",
+        ssid: "Store-WiFi",
+        password: "secret-pass",
+        hidden: false,
+      },
+    );
+    await daemonClient.executeBringUpTask(
+      {
+        contractVersion: 1,
+        taskId: "bring_up.claim_machine",
+        taskVersion: 1,
+        kind: "claim_machine",
+        intent: "claim_machine",
+        rotateMaintenanceIdentity: false,
+        projection: { type: "claim_code", rotateMaintenanceIdentity: false },
+      },
+      { type: "claim_machine", claimCode: "ABCD-2345" },
+    );
+    await daemonClient.executeBringUpTask(
+      {
+        contractVersion: 1,
+        taskId: "bring_up.attest_stock",
+        taskVersion: 1,
+        kind: "attest_stock",
+        intent: "record_stock",
+        rotateMaintenanceIdentity: false,
+        projection: {
+          type: "stock_attestation",
+          entryMode: "final_actual_quantities",
+        },
+      },
+      {
+        type: "record_stock",
+        attestation: { planogramVersion: "PLAN-1", slots: [] },
+      },
+    );
+
+    const taskCalls = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.slice(1)
+      .map(([, options]) => options);
+    expect(taskCalls).toHaveLength(3);
+    for (const options of taskCalls) {
+      expect(options).toEqual(
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            "x-vem-maintenance-session": "route-scoped-session",
+          }),
+        }),
+      );
+    }
+
+    daemonClient.releaseMaintenanceSessionRoute("bring-up");
+    expect(daemonClient.currentMaintenanceSession).toBeNull();
   });
 
   it("adds Authorization header to requests", async () => {
@@ -387,62 +526,12 @@ describe("DaemonApiClient", () => {
     );
   });
 
-  it("submits machine claim code through daemon IPC without extra deployment fields", async () => {
-    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "browser_env",
-      mock: true,
-    });
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status: "provisioned",
-          machineCode: "M001",
-          restartRequested: true,
-          config: {
-            public: {
-              machineCode: "M001",
-              apiBaseUrl: "http://localhost:3000/api",
-              mqttUrl: "mqtt://localhost:1883",
-              mqttUsername: null,
-              hardwareAdapter: "mock",
-              serialPortPath: null,
-              lowerControllerUsbIdentity: null,
-              scannerAdapter: "disabled",
-              scannerSerialPortPath: null,
-              scannerBaudRate: 9600,
-              scannerFrameSuffix: "crlf",
-              visionEnabled: true,
-              visionWsUrl: "ws://127.0.0.1:7892/ws",
-              visionRequestTimeoutMs: 8000,
-              kioskMode: false,
-              stockMovementRetentionDays: 30,
-            },
-            machineSecretConfigured: true,
-            mqttSigningSecretConfigured: true,
-            mqttPasswordConfigured: false,
-            provisioned: true,
-            provisioningIssues: [],
-          },
-        }),
-        { status: 200 },
-      ),
-    );
-
-    const result = await daemonClient.claimMachine("ABCD-2345");
-
-    expect(result.status).toBe("provisioned");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7891/v1/provisioning/claim",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ claimCode: "ABCD-2345" }),
-      }),
-    );
-    const requestBody = vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.body;
-    expect(typeof requestBody).toBe("string");
-    expect(requestBody).not.toContain("machineSecret");
+  it("does not expose legacy direct claim, network, or mutable config clients", async () => {
+    expect(daemonClient).not.toHaveProperty("claimMachine");
+    expect(daemonClient).not.toHaveProperty("applyNetworkSettings");
+    await expect(
+      daemonClient.saveConfig({ machineCode: "M001" }),
+    ).rejects.toThrow("直接配置编辑已禁用");
   });
 
   it("reads maintenance enrollment diagnostics without private key material", async () => {
@@ -478,59 +567,6 @@ describe("DaemonApiClient", () => {
       }),
     );
     expect(JSON.stringify(status)).not.toContain("private");
-  });
-
-  it("does not let the legacy claim client select maintenance rotation", async () => {
-    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "browser_env",
-      mock: true,
-    });
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status: "provisioned",
-          machineCode: "M001",
-          restartRequested: true,
-          config: {
-            public: {
-              machineCode: "M001",
-              apiBaseUrl: "http://localhost:3000/api",
-              mqttUrl: "mqtt://localhost:1883",
-              mqttUsername: null,
-              hardwareAdapter: "mock",
-              serialPortPath: null,
-              lowerControllerUsbIdentity: null,
-              scannerAdapter: "disabled",
-              scannerSerialPortPath: null,
-              scannerBaudRate: 9600,
-              scannerFrameSuffix: "crlf",
-              visionEnabled: true,
-              visionWsUrl: "ws://127.0.0.1:7892/ws",
-              visionRequestTimeoutMs: 8000,
-              kioskMode: false,
-              stockMovementRetentionDays: 30,
-            },
-            machineSecretConfigured: true,
-            mqttSigningSecretConfigured: true,
-            mqttPasswordConfigured: false,
-            provisioned: true,
-            provisioningIssues: [],
-          },
-        }),
-        { status: 200 },
-      ),
-    );
-
-    await daemonClient.claimMachine("RECL-2345");
-
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7891/v1/provisioning/claim",
-      expect.objectContaining({
-        body: JSON.stringify({ claimCode: "RECL-2345" }),
-      }),
-    );
   });
 
   it("loads bring-up snapshot through daemon IPC without secret fields", async () => {

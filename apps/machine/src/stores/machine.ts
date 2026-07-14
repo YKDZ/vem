@@ -86,47 +86,6 @@ export const useMachineStore = defineStore("machine", {
         this.loading = false;
       }
     },
-    async saveConfig(config: MachineConfig): Promise<void> {
-      this.loading = true;
-      this.error = null;
-      try {
-        this.configSummary = await daemonClient.saveConfig({
-          public: {
-            machineCode: config.machineCode,
-            machineLocationLabel: config.machineLocationLabel,
-            apiBaseUrl: config.apiBaseUrl,
-            mqttUrl: config.mqttUrl,
-            mqttUsername: config.mqttUsername,
-            hardwareAdapter: config.hardwareAdapter,
-            serialPortPath: config.serialPortPath,
-            lowerControllerUsbIdentity: config.lowerControllerUsbIdentity,
-            scannerAdapter: config.scannerAdapter,
-            scannerSerialPortPath: config.scannerSerialPortPath,
-            scannerBaudRate: config.scannerBaudRate,
-            scannerFrameSuffix: config.scannerFrameSuffix,
-            visionEnabled: config.visionEnabled,
-            visionWsUrl: config.visionWsUrl,
-            visionRequestTimeoutMs: config.visionRequestTimeoutMs,
-            machineAudioVolume: config.machineAudioVolume,
-            audioCueSettings: config.audioCueSettings,
-            kioskMode: config.kioskMode,
-            stockMovementRetentionDays: config.stockMovementRetentionDays,
-          },
-          secrets: {
-            machineSecret: config.machineSecret,
-            mqttSigningSecret: config.mqttSigningSecret,
-            mqttPassword: config.mqttPassword,
-          },
-        });
-        applyRuntimeAudioCueSettings(this.configSummary);
-        this.configLoaded = true;
-      } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
-        throw error;
-      } finally {
-        this.loading = false;
-      }
-    },
   },
 });
 

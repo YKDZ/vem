@@ -1454,11 +1454,19 @@ function Write-FactoryRuntimeFiles {
   $bootstrapCapabilityBytes = [byte[]]::new(32)
   [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bootstrapCapabilityBytes)
   $bootstrapCapability = [Convert]::ToBase64String($bootstrapCapabilityBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-  $bootstrapDigest = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($bootstrapCapability))
+  # Windows PowerShell 5.1 runs the Factory entrypoint. HashData and
+  # Convert.ToHexString require newer .NET APIs, so use the long-lived APIs
+  # exposed by both Windows PowerShell 5.1 and PowerShell 7.
+  $bootstrapSha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    $bootstrapDigest = $bootstrapSha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($bootstrapCapability))
+  } finally {
+    $bootstrapSha256.Dispose()
+  }
   $bootstrapVerifier = [ordered]@{
     version = 1
     algorithm = "sha256"
-    digest = ([Convert]::ToHexString($bootstrapDigest)).ToLowerInvariant()
+    digest = ([BitConverter]::ToString($bootstrapDigest).Replace("-", "").ToLowerInvariant())
   } | ConvertTo-Json -Compress
   $bootstrapCapabilityPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability"
   $bootstrapVerifierPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability-verifier.json"

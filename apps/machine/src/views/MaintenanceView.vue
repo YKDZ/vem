@@ -213,7 +213,7 @@ async function beginProtectedMaintenance(): Promise<void> {
 }
 
 function setMaintenanceSession(session: MaintenanceSession): void {
-  clearMaintenanceSession();
+  clearRenderedMaintenanceSession();
   maintenanceSession.value = session;
   const delayMs = Date.parse(session.expiresAt) - Date.now();
   if (delayMs <= 0) {
@@ -229,12 +229,16 @@ function setMaintenanceSession(session: MaintenanceSession): void {
   );
 }
 
-function clearMaintenanceSession(): void {
+function clearRenderedMaintenanceSession(): void {
   if (maintenanceSessionExpiryTimer !== null) {
     window.clearTimeout(maintenanceSessionExpiryTimer);
     maintenanceSessionExpiryTimer = null;
   }
   maintenanceSession.value = null;
+}
+
+function clearMaintenanceSession(): void {
+  clearRenderedMaintenanceSession();
   daemonClient.clearMaintenanceSession();
 }
 
@@ -516,7 +520,8 @@ onUnmounted(() => {
   removeMaintenanceSessionInvalidationListener = null;
   stopDiagnosticsAutoRefresh();
   activeMachineAudioPlayback?.stop();
-  clearMaintenanceSession();
+  clearRenderedMaintenanceSession();
+  daemonClient.releaseMaintenanceSessionRoute("maintenance");
   void stopTryOnPreviewDiagnostic();
 });
 
@@ -1125,10 +1130,21 @@ async function openProtectedBringUpConsole(): Promise<void> {
   if (!maintenanceSessionAuthorized.value) {
     return;
   }
-  await router.replace({
-    path: "/bring-up",
-    query: { source: "protected-maintenance" },
-  });
+  if (!daemonClient.handoffMaintenanceSessionToBringUp()) {
+    clearMaintenanceSession();
+    maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
+    return;
+  }
+  try {
+    await router.replace({
+      path: "/bring-up",
+      query: { source: "protected-maintenance" },
+    });
+  } catch (error) {
+    clearMaintenanceSession();
+    maintenanceAuthentication.message =
+      error instanceof Error ? error.message : "无法打开首次部署控制台";
+  }
 }
 
 async function exportLogs(): Promise<void> {

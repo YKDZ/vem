@@ -4394,6 +4394,11 @@ async fn scanner_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "scanner.status").await
+    {
+        return response;
+    }
 
     let snapshot = ctx.ui.status_cache.scanner.read().await;
     (

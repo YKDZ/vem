@@ -8,6 +8,7 @@ param(
   [string]$ComPort = "COM3",
   [string]$ScannerPort = "COM4",
   [string]$SensitivePaymentCode = "",
+  [string]$MaintenancePin = "",
   [switch]$FirstBootMachineClaimCodePageObserved,
   [switch]$FirstBootBackendUrlInputAbsent
 )
@@ -94,6 +95,48 @@ function Get-HttpErrorInfo($ErrorRecord) {
   }
 }
 
+function Get-ProtectedMaintenanceHeaders {
+  param(
+    [string]$BaseUrl,
+    [hashtable]$DaemonHeaders,
+    [string]$RuntimeDataDir,
+    [string]$Pin
+  )
+
+  $headers = @{}
+  foreach ($entry in $DaemonHeaders.GetEnumerator()) {
+    $headers[[string]$entry.Key] = [string]$entry.Value
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Pin)) {
+    $session = Invoke-RestMethod "$BaseUrl/v1/maintenance/sessions" -Method Post -Headers $headers -ContentType "application/json" -Body (@{
+      pin = $Pin
+      scopes = @()
+      operatorId = "windows-smoke"
+    } | ConvertTo-Json -Compress)
+  } else {
+    $capabilityPath = Join-Path $RuntimeDataDir "factory\bootstrap-provisioning-capability"
+    if (-not (Test-Path -LiteralPath $capabilityPath -PathType Leaf)) {
+      throw "MaintenancePin is required after the one-time Factory bootstrap capability has been consumed"
+    }
+    $capability = [IO.File]::ReadAllText($capabilityPath, [Text.UTF8Encoding]::new($false)).Trim()
+    if ([string]::IsNullOrWhiteSpace($capability)) {
+      throw "Factory bootstrap maintenance capability is empty"
+    }
+    try {
+      $headers["x-vem-factory-bootstrap-capability"] = $capability
+      $session = Invoke-RestMethod "$BaseUrl/v1/factory/bootstrap/maintenance-session" -Method Post -Headers $headers
+    } finally {
+      $capability = $null
+      $headers.Remove("x-vem-factory-bootstrap-capability")
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$session.sessionId)) {
+    throw "daemon did not issue a protected maintenance session"
+  }
+  $headers["x-vem-maintenance-session"] = [string]$session.sessionId
+  return $headers
+}
+
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $targetConfig = Join-Path $DataDir "machine-config.json"
 if ($MachineConfig.Length -gt 0) {
@@ -143,7 +186,10 @@ $health = Invoke-RestMethod $ready.healthzUrl
 Add-Check "healthz-json" ($null -ne $health.status) ($health | ConvertTo-Json -Compress)
 $baseUrl = $ready.healthzUrl -replace "/healthz$", ""
 $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
-$config = Invoke-RestMethod "$baseUrl/v1/config" -Headers $headers
+$maintenanceHeaders = Get-ProtectedMaintenanceHeaders -BaseUrl $baseUrl -DaemonHeaders $headers -RuntimeDataDir $DataDir -Pin $MaintenancePin
+$configSummary = Invoke-RestMethod "$baseUrl/v1/config/summary" -Headers $headers
+Add-Check "runtime-config-summary" ($null -ne $configSummary.effectivePublic -and $null -ne $configSummary.configuredState) ($configSummary | ConvertTo-Json -Compress)
+$config = $configSummary.effectivePublic
 if ($DefaultApiBaseUrl.Length -gt 0) {
   $expectedApiBaseUrl = $DefaultApiBaseUrl.Trim().TrimEnd("/")
   if (Test-Path $targetConfig) {
@@ -152,11 +198,21 @@ if ($DefaultApiBaseUrl.Length -gt 0) {
       $expectedApiBaseUrl = $seededConfig.apiBaseUrl.Trim().TrimEnd("/")
     }
   }
-  Add-Check "default-api-base-url-configured" ($config.public.apiBaseUrl -eq $expectedApiBaseUrl) ($config.public | ConvertTo-Json -Compress)
+  Add-Check "default-api-base-url-configured" ($config.apiBaseUrl -eq $expectedApiBaseUrl) ($config | ConvertTo-Json -Compress)
 
-  $claimPayload = @{ claimCode = "WXYZ-2345" } | ConvertTo-Json -Compress
+  $bringUp = Invoke-RestMethod "$baseUrl/v1/bring-up" -Headers $headers
+  $claimTask = $bringUp.currentTask
+  Add-Check "claim-task-is-current" ($null -ne $claimTask -and $claimTask.kind -eq "claim_machine") ($bringUp | ConvertTo-Json -Compress)
+  $claimPayload = @{
+    contractVersion = $claimTask.contractVersion
+    taskId = $claimTask.taskId
+    taskVersion = $claimTask.taskVersion
+    kind = $claimTask.kind
+    intent = $claimTask.intent
+    mutation = @{ type = "claim_machine"; claimCode = "WXYZ-2345" }
+  } | ConvertTo-Json -Compress
   try {
-    $claimResponse = Invoke-RestMethod "$baseUrl/v1/provisioning/claim" -Method Post -Headers $headers -ContentType "application/json" -Body $claimPayload
+    $claimResponse = Invoke-RestMethod "$baseUrl/v1/bring-up/tasks/execute" -Method Post -Headers $maintenanceHeaders -ContentType "application/json" -Body $claimPayload
     Add-Check "claim-endpoint-reachable-invalid-claim" $false "unexpectedly provisioned with invalid smoke claim: $($claimResponse | ConvertTo-Json -Compress)"
   } catch {
     $claimError = Get-HttpErrorInfo $_
@@ -177,7 +233,7 @@ if ($DefaultApiBaseUrl.Length -gt 0) {
     Add-Check "claim-endpoint-reachable-invalid-claim" (($claimError.StatusCode -ge 400 -and $claimError.StatusCode -lt 500) -and ($businessClaimErrors -contains $claimCode)) $claimDetail
   }
 }
-$scanner = Invoke-RestMethod "$baseUrl/v1/scanner/status" -Headers $headers
+$scanner = Invoke-RestMethod "$baseUrl/v1/scanner/status" -Headers $maintenanceHeaders
 Add-Check "scanner-adapter-serial-text" ($scanner.adapter -eq "serial_text") ($scanner | ConvertTo-Json -Compress)
 Add-Check "scanner-status-diagnostic" ($scanner.code.Length -gt 0 -and $scanner.message.Length -gt 0) ($scanner | ConvertTo-Json -Compress)
 

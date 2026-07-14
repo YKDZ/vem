@@ -9,12 +9,22 @@ const {
   getBringUpMock,
   executeBringUpTaskMock,
   scanWifiNetworksMock,
+  beginMaintenanceSessionMock,
+  hasMaintenanceSessionForRouteMock,
+  handoffMaintenanceSessionToBringUpMock,
+  onMaintenanceSessionInvalidatedMock,
+  releaseMaintenanceSessionRouteMock,
 } = vi.hoisted(() => ({
   DaemonUnavailableErrorMock: class DaemonUnavailableError extends Error {},
   routerReplaceMock: vi.fn(),
   getBringUpMock: vi.fn(),
   executeBringUpTaskMock: vi.fn(),
   scanWifiNetworksMock: vi.fn(),
+  beginMaintenanceSessionMock: vi.fn(),
+  hasMaintenanceSessionForRouteMock: vi.fn(),
+  handoffMaintenanceSessionToBringUpMock: vi.fn(),
+  onMaintenanceSessionInvalidatedMock: vi.fn(),
+  releaseMaintenanceSessionRouteMock: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
@@ -29,6 +39,11 @@ vi.mock("@/daemon/client", () => ({
     getBringUp: getBringUpMock,
     executeBringUpTask: executeBringUpTaskMock,
     scanWifiNetworks: scanWifiNetworksMock,
+    beginMaintenanceSession: beginMaintenanceSessionMock,
+    hasMaintenanceSessionForRoute: hasMaintenanceSessionForRouteMock,
+    handoffMaintenanceSessionToBringUp: handoffMaintenanceSessionToBringUpMock,
+    onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
+    releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
   },
 }));
 
@@ -140,6 +155,17 @@ beforeEach(() => {
       },
     ],
   });
+  hasMaintenanceSessionForRouteMock.mockReturnValue(true);
+  handoffMaintenanceSessionToBringUpMock.mockReturnValue(true);
+  onMaintenanceSessionInvalidatedMock.mockReturnValue(() => undefined);
+  beginMaintenanceSessionMock.mockImplementation(async () => {
+    hasMaintenanceSessionForRouteMock.mockReturnValue(true);
+    return {
+      sessionId: "bring-up-session",
+      expiresAt: "2030-07-14T12:00:00.000Z",
+      scopes: ["maintenance.mutate"],
+    };
+  });
 });
 
 afterEach(() => {
@@ -149,6 +175,47 @@ afterEach(() => {
 });
 
 describe("Bring-Up Console", () => {
+  it("requires a PIN-issued maintenance session before a cold-start network mutation", async () => {
+    hasMaintenanceSessionForRouteMock.mockReturnValue(false);
+    const host = await mountView();
+    const select = host.querySelector("select");
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error("network selector not found");
+    }
+    await vi.waitFor(() => {
+      expect(select.options).toHaveLength(2);
+    });
+    select.value = "Store-WiFi";
+    select.dispatchEvent(new Event("change"));
+    const password = inputByLabel(host, "无线网络密码");
+    password.value = "secret-pass";
+    password.dispatchEvent(new Event("input"));
+    await nextTick();
+
+    expect(host.textContent).toContain("验证维护 PIN");
+    expect(buttonByText(host, "提交网络设置").disabled).toBe(true);
+
+    const pin = inputByLabel(host, "维护 PIN");
+    pin.value = "2468";
+    pin.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "验证维护 PIN").click();
+    await vi.waitFor(() => {
+      expect(beginMaintenanceSessionMock).toHaveBeenCalledWith("2468", []);
+    });
+    await vi.waitFor(() => {
+      expect(buttonByText(host, "提交网络设置").disabled).toBe(false);
+    });
+
+    buttonByText(host, "提交网络设置").click();
+    await vi.waitFor(() => {
+      expect(executeBringUpTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "configure_network" }),
+        expect.objectContaining({ type: "configure_network" }),
+      );
+    });
+  });
+
   it("renders exactly the daemon-projected current task without disabled pseudo-actions", async () => {
     const host = await mountView();
 

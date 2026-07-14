@@ -93,9 +93,12 @@ async fn execute_existing_network_probe_task(
 
 #[tokio::test]
 async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
-    let mut daemon = DaemonHarness::start(configured_daemon(), &[])
-        .await
-        .expect("start");
+    let mut daemon = DaemonHarness::start_with_file_secrets(
+        configured_daemon(),
+        &[("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER)],
+    )
+    .await
+    .expect("start");
     let base = daemon
         .ready
         .healthz_url
@@ -126,7 +129,6 @@ async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
         "/v1/config/summary",
         "/v1/transactions/current",
         "/v1/sync/status",
-        "/v1/scanner/status",
         "/v1/vision/status",
         "/v1/remote-ops/status",
     ] {
@@ -157,7 +159,27 @@ async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
         .and_then(|value| value.as_array())
         .is_some());
 
-    let scanner = daemon.get_json("/v1/scanner/status").await;
+    let scanner_without_session = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .send()
+        .await
+        .expect("scanner status without maintenance session");
+    assert_eq!(scanner_without_session.status(), StatusCode::FORBIDDEN);
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
+    let scanner = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", maintenance_session)
+        .send()
+        .await
+        .expect("scanner status with maintenance session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("scanner status JSON");
     let scanner_contract: daemon_ipc_contracts::ScannerRuntimeStatus =
         serde_json::from_value(scanner.clone()).expect("scanner status matches contract crate");
     assert!(scanner.get("port").is_some());

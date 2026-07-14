@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import type {
@@ -27,6 +27,15 @@ const wifiNetworks = ref<WifiNetwork[]>([]);
 const statusMessage = ref<string | null>(null);
 const loading = ref(false);
 const submitting = ref(false);
+const maintenanceAuthentication = reactive({
+  pin: "",
+  loading: false,
+  message: null as string | null,
+});
+const maintenanceSessionAuthorized = ref(
+  daemonClient.hasMaintenanceSessionForRoute("bring-up"),
+);
+let removeMaintenanceSessionInvalidationListener: (() => void) | null = null;
 type BringUpProgressStep = NonNullable<BringUpSnapshot["progress"]>[number];
 
 const currentTask = computed(() => bringUp.value?.currentTask ?? null);
@@ -34,6 +43,55 @@ const currentTaskLabel = computed(() =>
   currentTask.value ? taskLabel(currentTask.value.kind) : "正在确认本机状态",
 );
 const progress = computed(() => bringUp.value?.progress ?? []);
+const currentTaskNeedsMaintenanceSession = computed(() =>
+  [
+    "configure_network",
+    "claim_machine",
+    "reclaim_machine",
+    "attest_stock",
+  ].includes(currentTask.value?.kind ?? ""),
+);
+const maintenanceSessionRequiredForReclaim = computed(
+  () => currentTask.value?.kind === "reclaim_machine",
+);
+
+function canExecuteCurrentTask(): boolean {
+  return (
+    !currentTaskNeedsMaintenanceSession.value ||
+    maintenanceSessionAuthorized.value
+  );
+}
+
+async function beginProtectedMaintenance(): Promise<void> {
+  if (
+    maintenanceAuthentication.loading ||
+    !maintenanceAuthentication.pin.trim()
+  ) {
+    return;
+  }
+  maintenanceAuthentication.loading = true;
+  maintenanceAuthentication.message = null;
+  try {
+    await daemonClient.beginMaintenanceSession(
+      maintenanceAuthentication.pin,
+      maintenanceSessionRequiredForReclaim.value ? ["maintenance.reclaim"] : [],
+    );
+    if (!daemonClient.handoffMaintenanceSessionToBringUp()) {
+      throw new Error("维护会话无法交接到首次部署控制台");
+    }
+    maintenanceSessionAuthorized.value =
+      daemonClient.hasMaintenanceSessionForRoute("bring-up");
+    maintenanceAuthentication.pin = "";
+    maintenanceAuthentication.message =
+      "维护会话已验证，可以继续当前部署任务。";
+  } catch {
+    maintenanceSessionAuthorized.value = false;
+    maintenanceAuthentication.message = "PIN 验证失败，请重新输入。";
+  } finally {
+    maintenanceAuthentication.pin = "";
+    maintenanceAuthentication.loading = false;
+  }
+}
 
 function rejectedNetworkResult(error: unknown): NetworkSettingsResponse | null {
   if (!(error instanceof DaemonUnavailableError) || !error.responseBody) {
@@ -124,6 +182,7 @@ async function submitNetworkSettings(): Promise<void> {
   if (
     currentTask.value?.kind !== "configure_network" ||
     !networkForm.ssid.trim() ||
+    !canExecuteCurrentTask() ||
     submitting.value
   ) {
     return;
@@ -184,6 +243,7 @@ async function submitClaim(): Promise<void> {
     !task ||
     !["claim_machine", "reclaim_machine"].includes(task.intent) ||
     !claimForm.claimCode.trim() ||
+    !canExecuteCurrentTask() ||
     submitting.value
   ) {
     return;
@@ -214,7 +274,8 @@ async function submitClaim(): Promise<void> {
 }
 
 async function submitCurrentTask(): Promise<void> {
-  if (!currentTask.value || submitting.value) return;
+  if (!currentTask.value || submitting.value || !canExecuteCurrentTask())
+    return;
   if (
     currentTask.value.intent === "open_maintenance" ||
     currentTask.value.intent === "record_stock"
@@ -231,10 +292,22 @@ async function submitCurrentTask(): Promise<void> {
 }
 
 onMounted(async () => {
+  removeMaintenanceSessionInvalidationListener =
+    daemonClient.onMaintenanceSessionInvalidated(() => {
+      maintenanceSessionAuthorized.value = false;
+      maintenanceAuthentication.message =
+        "守护进程连接已更新，维护会话已失效，请重新验证 PIN。";
+    });
   await refreshBringUp();
   if (currentTask.value?.kind === "configure_network") {
     await loadWifiNetworks();
   }
+});
+
+onUnmounted(() => {
+  removeMaintenanceSessionInvalidationListener?.();
+  removeMaintenanceSessionInvalidationListener = null;
+  daemonClient.releaseMaintenanceSessionRoute("bring-up");
 });
 </script>
 
@@ -252,6 +325,43 @@ onMounted(async () => {
       <main>
         <section class="current-task" aria-live="polite">
           <p>当前任务：{{ currentTaskLabel }}</p>
+
+          <form
+            v-if="
+              currentTaskNeedsMaintenanceSession &&
+              !maintenanceSessionAuthorized
+            "
+            class="maintenance-session-gate"
+            @submit.prevent="beginProtectedMaintenance"
+          >
+            <label>
+              <span>维护 PIN</span>
+              <input
+                v-model="maintenanceAuthentication.pin"
+                autocomplete="one-time-code"
+                class="kiosk-touch-target"
+                inputmode="numeric"
+                type="password"
+              />
+            </label>
+            <button
+              class="kiosk-touch-target primary-action"
+              type="submit"
+              :disabled="
+                maintenanceAuthentication.loading ||
+                !maintenanceAuthentication.pin.trim()
+              "
+            >
+              {{
+                maintenanceAuthentication.loading
+                  ? "正在验证 PIN"
+                  : "验证维护 PIN"
+              }}
+            </button>
+            <p v-if="maintenanceAuthentication.message">
+              {{ maintenanceAuthentication.message }}
+            </p>
+          </form>
 
           <form
             v-if="currentTask?.kind === 'configure_network'"
@@ -278,7 +388,11 @@ onMounted(async () => {
                 type="password"
               />
             </label>
-            <button class="kiosk-touch-target primary-action" type="submit">
+            <button
+              class="kiosk-touch-target primary-action"
+              type="submit"
+              :disabled="!canExecuteCurrentTask() || submitting"
+            >
               {{ submitting ? "正在提交网络" : "提交网络设置" }}
             </button>
             <button
@@ -310,7 +424,11 @@ onMounted(async () => {
                 class="kiosk-touch-target"
               />
             </label>
-            <button class="kiosk-touch-target primary-action" type="submit">
+            <button
+              class="kiosk-touch-target primary-action"
+              type="submit"
+              :disabled="!canExecuteCurrentTask() || submitting"
+            >
               {{ submitting ? "正在领取" : "提交领取码" }}
             </button>
           </form>
@@ -319,6 +437,7 @@ onMounted(async () => {
             v-else-if="currentTask"
             class="kiosk-touch-target primary-action"
             type="button"
+            :disabled="!canExecuteCurrentTask() || submitting"
             @click="submitCurrentTask"
           >
             {{

@@ -14,11 +14,9 @@ import {
   machinePaymentOptionsResponseSchema,
   machineSaleReadinessSchema,
   naturalContextSnapshotSchema,
-  networkSettingsResponseSchema,
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
-  provisioningClaimResponseSchema,
   maintenanceEnrollmentStatusSchema,
   maintenanceSessionSchema,
   scannerStatusSchema,
@@ -35,8 +33,6 @@ import {
   type EnvironmentControlResult,
   type MachineSaleReadiness,
   type NaturalContextSnapshot,
-  type NetworkSettingsResponse,
-  type ProvisioningClaimResponse,
   type MaintenanceEnrollmentStatus,
   type MaintenanceSession,
   type ReadySnapshot,
@@ -83,15 +79,11 @@ type RequestOptions = {
   retry401?: boolean;
 };
 
-export type NetworkSettingsRequest = {
-  ssid: string;
-  password: string;
-  hidden: boolean;
-};
-
 type Subscription = {
   close(): void;
 };
+
+export type MaintenanceSessionRouteScope = "maintenance" | "bring-up";
 
 const MAX_SEEN_EVENT_IDS = 1000;
 // Network setup failures carry five independently typed diagnostics.  Leave
@@ -144,6 +136,7 @@ async function readDaemonResponseText(
   }
   return { exceeded: false, text: new TextDecoder().decode(body) };
 }
+const MAX_TIMEOUT_MS = 2_147_483_647;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -152,6 +145,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
   private maintenanceSession: MaintenanceSession | null = null;
+  // A session is daemon-owned state, but this route scope makes the browser
+  // handoff explicit: Maintenance may issue it and only Bring-Up may receive
+  // it. A normal route departure drops the browser-side bearer immediately.
+  private maintenanceSessionRouteScope: MaintenanceSessionRouteScope | null =
+    null;
+  private maintenanceSessionExpiryTimer: ReturnType<
+    typeof globalThis.setTimeout
+  > | null = null;
   private readonly maintenanceSessionInvalidationListeners = new Set<
     () => void
   >();
@@ -287,6 +288,13 @@ export class DaemonApiClient {
     return this.maintenanceSession;
   }
 
+  hasMaintenanceSessionForRoute(route: MaintenanceSessionRouteScope): boolean {
+    return (
+      this.currentMaintenanceSession !== null &&
+      this.maintenanceSessionRouteScope === route
+    );
+  }
+
   async getHealth(): Promise<HealthSnapshot> {
     return healthSnapshotSchema.parse(await this.request("/healthz"));
   }
@@ -303,15 +311,16 @@ export class DaemonApiClient {
     task: NonNullable<BringUpSnapshot["currentTask"]>,
     mutation: unknown,
   ): Promise<unknown> {
+    const maintenanceSession = this.currentMaintenanceSession;
     const protectedMutation =
       task.kind === "reclaim_machine" &&
       isRecord(mutation) &&
       mutation.type === "claim_machine" &&
-      this.maintenanceSession
+      maintenanceSession
         ? {
             ...mutation,
             maintenanceAuthorization: {
-              sessionId: this.maintenanceSession.sessionId,
+              sessionId: maintenanceSession.sessionId,
             },
           }
         : mutation;
@@ -337,23 +346,6 @@ export class DaemonApiClient {
     }
   }
 
-  async applyNetworkSettings(
-    body: NetworkSettingsRequest,
-  ): Promise<NetworkSettingsResponse> {
-    try {
-      return networkSettingsResponseSchema.parse(
-        await this.request("/v1/network/settings", {
-          method: "POST",
-          body,
-        }),
-      );
-    } catch (error: unknown) {
-      const structured = parseNetworkSettingsRejection(error);
-      if (structured) return structured;
-      throw error;
-    }
-  }
-
   async scanWifiNetworks(): Promise<WifiScanResponse> {
     return wifiScanResponseSchema.parse(
       await this.request("/v1/network/available"),
@@ -369,15 +361,6 @@ export class DaemonApiClient {
   async saveConfig(_body: unknown): Promise<never> {
     throw new DaemonUnavailableError(
       "直接配置编辑已禁用；请通过守护进程 Bring-Up 流程完成部署。",
-    );
-  }
-
-  async claimMachine(claimCode: string): Promise<ProvisioningClaimResponse> {
-    return provisioningClaimResponseSchema.parse(
-      await this.request("/v1/provisioning/claim", {
-        method: "POST",
-        body: { claimCode },
-      }),
     );
   }
 
@@ -399,7 +382,23 @@ export class DaemonApiClient {
       }),
     );
     this.maintenanceSession = session;
+    this.maintenanceSessionRouteScope = "maintenance";
+    this.scheduleMaintenanceSessionExpiry();
     return session;
+  }
+
+  handoffMaintenanceSessionToBringUp(): boolean {
+    if (!this.hasMaintenanceSessionForRoute("maintenance")) {
+      return false;
+    }
+    this.maintenanceSessionRouteScope = "bring-up";
+    return true;
+  }
+
+  releaseMaintenanceSessionRoute(route: MaintenanceSessionRouteScope): void {
+    if (this.maintenanceSessionRouteScope === route) {
+      this.clearMaintenanceSession();
+    }
   }
 
   onMaintenanceSessionInvalidated(listener: () => void): () => void {
@@ -410,12 +409,39 @@ export class DaemonApiClient {
   }
 
   clearMaintenanceSession(): void {
+    if (this.maintenanceSessionExpiryTimer !== null) {
+      globalThis.clearTimeout(this.maintenanceSessionExpiryTimer);
+      this.maintenanceSessionExpiryTimer = null;
+    }
     const hadSession = this.maintenanceSession !== null;
     this.maintenanceSession = null;
+    this.maintenanceSessionRouteScope = null;
     if (!hadSession) return;
     for (const listener of this.maintenanceSessionInvalidationListeners) {
       listener();
     }
+  }
+
+  private scheduleMaintenanceSessionExpiry(): void {
+    if (this.maintenanceSessionExpiryTimer !== null) {
+      globalThis.clearTimeout(this.maintenanceSessionExpiryTimer);
+      this.maintenanceSessionExpiryTimer = null;
+    }
+    const session = this.maintenanceSession;
+    if (!session) return;
+    const remainingMs = Date.parse(session.expiresAt) - Date.now();
+    if (remainingMs <= 0) {
+      this.clearMaintenanceSession();
+      return;
+    }
+    this.maintenanceSessionExpiryTimer = globalThis.setTimeout(
+      () => {
+        this.maintenanceSessionExpiryTimer = null;
+        if (this.currentMaintenanceSession === null) return;
+        this.scheduleMaintenanceSessionExpiry();
+      },
+      Math.min(remainingMs, MAX_TIMEOUT_MS),
+    );
   }
 
   async getCatalog(): Promise<CatalogSnapshot> {

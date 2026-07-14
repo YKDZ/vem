@@ -162,6 +162,8 @@ function bringUpSnapshot(
       attestStock: false,
       startSales: state === "sell_ready",
     },
+    currentTask: null,
+    progress: [],
     updatedAt: "2026-07-04T00:00:00Z",
   };
 }
@@ -284,6 +286,10 @@ function transactionSnapshot(
 }
 
 let scenario: ScenarioName = "catalog";
+const protectedBringUpRequests: Array<{
+  maintenanceSession: string | undefined;
+  body: unknown;
+}> = [];
 let server: {
   close(callback: (error?: Error | null) => void): void;
   closeAllConnections(): void;
@@ -428,7 +434,21 @@ function currentFixtures(): Record<string, unknown> {
           },
         ],
       }),
-      bringUp: bringUpSnapshot("claim_required"),
+      bringUp: {
+        ...bringUpSnapshot("claim_required"),
+        currentTask: {
+          contractVersion: 1,
+          taskId: "bring_up.claim_machine",
+          taskVersion: 1,
+          kind: "claim_machine",
+          intent: "claim_machine",
+          rotateMaintenanceIdentity: false,
+          projection: {
+            type: "claim_code",
+            rotateMaintenanceIdentity: false,
+          },
+        },
+      },
       transaction: emptyTransaction,
     };
   }
@@ -451,7 +471,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(204, {
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET,POST,PUT,OPTIONS",
-      "access-control-allow-headers": "Authorization,Content-Type",
+      "access-control-allow-headers":
+        "Authorization,Content-Type,X-Vem-Maintenance-Session",
     });
     res.end();
     return;
@@ -511,8 +532,32 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  if (url.pathname === "/v1/provisioning/claim") {
-    const respondClaimLocked = () => {
+  if (url.pathname === "/v1/maintenance/sessions" && req.method === "POST") {
+    req.on("end", () => {
+      respondJson(
+        res,
+        {
+          sessionId: "e2e-maintenance-session",
+          expiresAt: "2030-01-01T00:00:00.000Z",
+          scopes: ["maintenance.mutate"],
+        },
+        201,
+      );
+    });
+    req.resume();
+    return;
+  }
+
+  if (url.pathname === "/v1/bring-up/tasks/execute" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk: Buffer) => {
+      body += chunk.toString();
+    });
+    req.on("end", () => {
+      protectedBringUpRequests.push({
+        maintenanceSession: req.headers["x-vem-maintenance-session"],
+        body: JSON.parse(body) as unknown,
+      });
       respondJson(
         res,
         {
@@ -521,13 +566,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         },
         400,
       );
-    };
-    if (req.method === "POST") {
-      req.on("end", respondClaimLocked);
-      req.resume();
-    } else {
-      respondClaimLocked();
-    }
+    });
     return;
   }
 
@@ -778,10 +817,15 @@ test("routes missing config to maintenance", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
 });
 
-test("routes not-ready daemon to offline", async ({ page }) => {
+test("routes not-ready daemon to maintenance without an authoritative task", async ({
+  page,
+}) => {
   scenario = "offline";
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "设备离线" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
+  await expect(
+    page.getByText("network_unavailable", { exact: true }),
+  ).toBeVisible();
 });
 
 test("restores active payment transaction", async ({ page }) => {
@@ -843,17 +887,33 @@ test("daemon snapshots never expose secret fields to browser storage", async ({
   expect(storage).not.toContain("621234567890123456");
 });
 
-test("provisioning UI maps real daemon claim error contract without echoing code", async ({
+test("provisioning UI sends a PIN-gated typed claim without echoing the code", async ({
   page,
 }) => {
   scenario = "provisioning";
-  await page.goto("/");
+  protectedBringUpRequests.length = 0;
+  await page.goto("/#/bring-up");
+  await page.getByLabel("维护 PIN").fill("2468");
+  await page.getByRole("button", { name: "验证维护 PIN" }).click();
   await page.getByLabel("领取码").fill("ABCD-2345");
   await freezeMotion(page);
   await page.getByRole("button", { name: "提交领取码", exact: true }).click();
 
-  await expect(page.getByText("领取码已使用")).toBeVisible();
+  await expect(page.getByText("本机服务暂不可用，请稍后重试")).toBeVisible();
   await expect(page.getByText("ABCD-2345")).toHaveCount(0);
+  expect(protectedBringUpRequests).toEqual([
+    {
+      maintenanceSession: "e2e-maintenance-session",
+      body: {
+        contractVersion: 1,
+        taskId: "bring_up.claim_machine",
+        taskVersion: 1,
+        kind: "claim_machine",
+        intent: "claim_machine",
+        mutation: { type: "claim_machine", claimCode: "ABCD-2345" },
+      },
+    },
+  ]);
 });
 
 test("sync backlog routes to catalog but displays degraded sync status", async ({

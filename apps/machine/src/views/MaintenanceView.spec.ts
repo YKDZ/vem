@@ -25,6 +25,8 @@ const {
   downloadLogExportMock,
   beginMaintenanceSessionMock,
   clearMaintenanceSessionMock,
+  handoffMaintenanceSessionToBringUpMock,
+  releaseMaintenanceSessionRouteMock,
   onMaintenanceSessionInvalidatedMock,
   callTauriCommandMock,
   openVisionTryOnSessionMock,
@@ -49,6 +51,8 @@ const {
   downloadLogExportMock: vi.fn(),
   beginMaintenanceSessionMock: vi.fn(),
   clearMaintenanceSessionMock: vi.fn(),
+  handoffMaintenanceSessionToBringUpMock: vi.fn(),
+  releaseMaintenanceSessionRouteMock: vi.fn(),
   onMaintenanceSessionInvalidatedMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
@@ -89,6 +93,8 @@ vi.mock("@/daemon/client", () => ({
     downloadLogExport: downloadLogExportMock,
     beginMaintenanceSession: beginMaintenanceSessionMock,
     clearMaintenanceSession: clearMaintenanceSessionMock,
+    handoffMaintenanceSessionToBringUp: handoffMaintenanceSessionToBringUpMock,
+    releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
     onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
   },
 }));
@@ -393,6 +399,7 @@ beforeEach(() => {
     expiresAt: "2030-07-14T12:00:00.000Z",
     scopes: ["maintenance.mutate"],
   });
+  handoffMaintenanceSessionToBringUpMock.mockReturnValue(true);
   onMaintenanceSessionInvalidatedMock.mockImplementation(
     (listener: () => void) => {
       maintenanceSessionInvalidationListener = listener;
@@ -474,6 +481,7 @@ it("verifies the PIN through daemon IPC before enabling protected maintenance ac
       "operator-console",
     );
   });
+  expect(clearMaintenanceSessionMock).not.toHaveBeenCalled();
 });
 
 it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {
@@ -1377,6 +1385,7 @@ describe("MaintenanceView hardware config", () => {
 
     buttonByText(host, "首次部署控制台").click();
 
+    expect(handoffMaintenanceSessionToBringUpMock).toHaveBeenCalledOnce();
     expect(routerReplaceMock).toHaveBeenCalledWith({
       path: "/bring-up",
       query: { source: "protected-maintenance" },
