@@ -26,6 +26,28 @@ function stepBlock(workflow, stepName) {
 }
 
 describe("VM runtime acceptance workflow maintenance relay path", () => {
+  it("checks out the dispatched commit before using repository validation code", () => {
+    const workflow = readWorkflow();
+    const checkout = stepBlock(workflow, "Checkout Trusted Commit");
+    const guard = stepBlock(
+      workflow,
+      "Guard Protected Maintenance Trust Boundary",
+    );
+
+    assert.ok(
+      workflow.indexOf("- name: Checkout Trusted Commit") <
+        workflow.indexOf("- name: Guard Protected Maintenance Trust Boundary"),
+      "checkout must happen before the repository validation script",
+    );
+    assert.match(checkout, /ref:\s*\$\{\{ github\.sha \}\}/);
+    assert.match(checkout, /persist-credentials:\s*false/);
+    assert.match(guard, /git rev-parse HEAD/);
+    assert.match(
+      guard,
+      /node scripts\/testbed\/validate-vm-runtime-acceptance-inputs\.mjs/,
+    );
+  });
+
   it("downloads Windows runtime artifacts with bounded curl retries on the self-hosted runner", () => {
     const workflow = readWorkflow();
     const download = stepBlock(workflow, "Download Windows Runtime Artifacts");
@@ -82,7 +104,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
 
     assert.match(
       serviceApi,
-      /curl -fsS http:\/\/127\.0\.0\.1:26849\/api\/health/,
+      /curl --globoff -fsS http:\/\/127\.0\.0\.1:26849\/api\/health/,
     );
     assert.match(serviceApi, /SERVICE_PORT:\s+"26849"/);
     assert.doesNotMatch(serviceApi, /\n\s+PORT:\s+"26849"/);
@@ -158,7 +180,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(
       acceptanceBlock,
-      /--remote\s+"\$\{\{\s*inputs\.windows_ssh_user\s*\}\}@\$VM_GUEST_MAINTENANCE_HOST"/,
+      /--remote\s+"\$WINDOWS_SSH_USER@\$VM_GUEST_MAINTENANCE_HOST"/,
     );
     assert.match(
       acceptanceBlock,

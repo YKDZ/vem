@@ -516,6 +516,9 @@ branch. It supplies these non-secret protected environment variables:
 
 - `VEM_MAINTENANCE_CONTROL_PLANE_URL`: credential-free HTTPS base URL for the
   deployed Maintenance control-plane API;
+- `VEM_MAINTENANCE_ALLOW_INSECURE_HTTP`: omit for production; the exact value
+  `true` permits a credential-free HTTP URL only in the protected testbed while
+  the first relay prototype has no domain or certificate;
 - `VEM_MAINTENANCE_RUNNER_PEER_ID`: the registered runner peer UUID;
 - `VEM_MAINTENANCE_TARGET_MACHINE_ID`: the permitted testbed Platform Machine
   UUID.
