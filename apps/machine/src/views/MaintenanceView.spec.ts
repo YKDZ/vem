@@ -3,7 +3,6 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-import { DaemonUnavailableError } from "@/daemon/client";
 import {
   deviceBindingSnapshotSchema,
   type ConfigSummary,
