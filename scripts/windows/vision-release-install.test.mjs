@@ -284,6 +284,17 @@ describe("Vision release installer fixtures", () => {
       assert.match(source, /\[IO\.File\]::Open\(/);
       assert.match(source, /\.ComputeHash\(\$stream\)/);
       assert.match(source, /\$stream\.Dispose\(\)/);
+      assert.match(
+        source,
+        /lock-target\.bin[\s\S]*\[IO\.FileShare\]::None[\s\S]*Assert-CandidateFailureReport/,
+      );
+      for (const code of [
+        "preapproval-delivery-digest-invalid",
+        "reparse-path-rejected",
+        "entrypoint-process-binding-failed",
+      ]) {
+        assert.match(source, new RegExp(`"${code}"`));
+      }
     },
   );
 
@@ -665,9 +676,26 @@ describe("Vision release installer fixtures", () => {
         source,
         /\$restored\.processId\s+-eq\s+\$Runtime\.processId|\$restored\.creationTimeUtcTicks\s+-eq\s+\$Runtime\.creationTimeUtcTicks/,
       );
+      assert.match(source, /\$primaryFailure = \$null/);
       assert.match(
         source,
-        /\$report\.ok\s*=\s*\$false[\s\S]*Write-AtomicJson \$ReportPath \$report[\s\S]*throw "Vision Candidate cleanup failed"/,
+        /catch \{\s*\$primaryFailure = \$_[\s\S]*\$report\.primaryFailureCode = Get-CandidateFailureCode/,
+      );
+      assert.match(
+        source,
+        /taskkill\.exe" \/PID \(\[string\]\$candidateProcess\.Id\) \/T \/F/,
+      );
+      assert.match(
+        source,
+        /\$report\.cleanupFailureCodes = @\(\$cleanupFailureCodes\)/,
+      );
+      assert.match(
+        source,
+        /if \(\$null -ne \$primaryFailure\) \{ throw \$primaryFailure \}[\s\S]*if \(-not \$cleanupOk\) \{ throw "Vision Candidate cleanup failed" \}/,
+      );
+      assert.doesNotMatch(
+        source,
+        /finally \{[\s\S]*if \(-not \$cleanupOk\) \{ throw "Vision Candidate cleanup failed" \}[\s\S]*\}\s*$/,
       );
       assert.match(source, /Assert-CandidateNonReparsePath/);
       assert.match(

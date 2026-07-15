@@ -46,15 +46,32 @@ function Assert-ExpectedFailure([scriptblock]$Action, [string]$ExpectedMessage) 
   throw "expected Candidate entrypoint failure: $ExpectedMessage"
 }
 
+function Assert-CandidateFailureReport([string]$Path, [string]$PrimaryFailureCode) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "Candidate entrypoint did not emit its failure report"
+  }
+  $report = [IO.File]::ReadAllText($Path) | ConvertFrom-Json
+  if ($report.ok -ne $false -or $report.primaryFailureCode -cne $PrimaryFailureCode) {
+    throw "Candidate failure report did not preserve its primary failure code"
+  }
+  if ($report.cleanupOk -ne $true) {
+    throw "Candidate failure report recorded cleanup failure codes: $(@($report.cleanupFailureCodes) -join ','); residuals: $(@($report.cleanupResidualCodes) -join ',')"
+  }
+  if (@($report.cleanupFailureCodes).Count -ne 0 -or @($report.cleanupResidualCodes).Count -ne 0) {
+    throw "Candidate failure report contains cleanup diagnostics despite cleanupOk=true"
+  }
+}
+
 function New-CandidateHarnessInputs([string]$Root) {
   $content = Join-Path $Root "bundle source"
   $bundle = Join-Path $Root "candidate bundle.zip"
   New-Item -ItemType Directory -Path (Join-Path $content "bin") -Force | Out-Null
-  [IO.File]::WriteAllText(
-    (Join-Path $content "bin\runtime.cmd"),
-    "@echo off`r`nping -n 4 127.0.0.1 > nul`r`n",
-    [Text.UTF8Encoding]::new($false)
-  )
+  $lockedEntrypoint = @'
+@echo off
+> "%~dp0lock-target.bin" echo locked
+powershell.exe -NoProfile -Command "$stream=[IO.File]::Open($args[0],[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None);try{[Threading.Thread]::Sleep(30000)}finally{$stream.Dispose()}" "%~dp0lock-target.bin"
+'@
+  [IO.File]::WriteAllText((Join-Path $content "bin\runtime.cmd"), $lockedEntrypoint, [Text.UTF8Encoding]::new($false))
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   [IO.Compression.ZipFile]::CreateFromDirectory($content, $bundle)
   $bundleDigest = Get-HarnessSha256 $bundle
@@ -126,9 +143,11 @@ try {
   $markerLiteral = $markerPath.Replace("'", "''")
   $injectedMaterializer = "[IO.File]::WriteAllText('$markerLiteral', 'executed')`r`n" + [Text.UTF8Encoding]::new($false).GetString($originalMaterializer)
   [IO.File]::WriteAllText($materializerPath, $injectedMaterializer, [Text.UTF8Encoding]::new($false))
+  $tamperedReportPath = Join-Path $root "tampered report.json"
   Assert-ExpectedFailure {
-    & $delivery.entrypoint -BundlePath $delivery.bundle -ExpectedDigest $inputs.digest -DescriptorPath $delivery.descriptor -PreapprovalManifestPath $delivery.manifest -ConformanceEvidencePath (Join-Path $root "tampered conformance.json") -ReportPath (Join-Path $root "tampered report.json") -WorkRoot (Join-Path $root "tampered work root")
+    & $delivery.entrypoint -BundlePath $delivery.bundle -ExpectedDigest $inputs.digest -DescriptorPath $delivery.descriptor -PreapprovalManifestPath $delivery.manifest -ConformanceEvidencePath (Join-Path $root "tampered conformance.json") -ReportPath $tamperedReportPath -WorkRoot (Join-Path $root "tampered work root")
   } "Vision preapproval delivery file digest is invalid"
+  Assert-CandidateFailureReport $tamperedReportPath "preapproval-delivery-digest-invalid"
   if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
     throw "Candidate imported a tampered delivery module before manifest verification"
   }
@@ -141,9 +160,11 @@ try {
   New-Item -ItemType Directory -Path $reparseTarget,$replacedWorkRoot -Force | Out-Null
   Remove-Item -LiteralPath $replacedWorkRoot -Force
   New-Item -ItemType Junction -Path $replacedWorkRoot -Target $reparseTarget | Out-Null
+  $reparseReportPath = Join-Path $root "reparse report.json"
   Assert-ExpectedFailure {
-    & $delivery.entrypoint -BundlePath $delivery.bundle -ExpectedDigest $inputs.digest -DescriptorPath $delivery.descriptor -PreapprovalManifestPath $delivery.manifest -ConformanceEvidencePath (Join-Path $root "reparse conformance.json") -ReportPath (Join-Path $root "reparse report.json") -WorkRoot $replacedWorkRoot
+    & $delivery.entrypoint -BundlePath $delivery.bundle -ExpectedDigest $inputs.digest -DescriptorPath $delivery.descriptor -PreapprovalManifestPath $delivery.manifest -ConformanceEvidencePath (Join-Path $root "reparse conformance.json") -ReportPath $reparseReportPath -WorkRoot $replacedWorkRoot
   } "must not traverse a reparse point"
+  Assert-CandidateFailureReport $reparseReportPath "reparse-path-rejected"
 
   # Execute the entrypoint again through a normal path with spaces.  The
   # harmless .cmd bundle deliberately fails its process-path binding only after
@@ -153,9 +174,7 @@ try {
   Assert-ExpectedFailure {
     & $delivery.entrypoint -BundlePath $delivery.bundle -ExpectedDigest $inputs.digest -DescriptorPath $delivery.descriptor -PreapprovalManifestPath $delivery.manifest -ConformanceEvidencePath (Join-Path $root "candidate conformance with spaces.json") -ReportPath $reportPath -WorkRoot $workRoot
   } "Vision Candidate did not remain at the exact extracted entrypoint"
-  if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
-    throw "Candidate entrypoint did not emit its report through a spaced path"
-  }
+  Assert-CandidateFailureReport $reportPath "entrypoint-process-binding-failed"
   Write-Output "candidate entrypoint harness passed"
 } finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

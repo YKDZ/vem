@@ -72,6 +72,12 @@ function Sanitize([string]$Message) {
   # redacted without allowing an unverified module to influence the report.
   return "Vision candidate preapproval failed; inspect protected local diagnostics"
 }
+function Get-CandidateFailureCode([string]$Message) {
+  if ($Message -match 'Vision preapproval delivery file digest is invalid') { return "preapproval-delivery-digest-invalid" }
+  if ($Message -match 'must not traverse a reparse point') { return "reparse-path-rejected" }
+  if ($Message -match 'Vision Candidate did not remain at the exact extracted entrypoint') { return "entrypoint-process-binding-failed" }
+  return "candidate-preapproval-failed"
+}
 function Resolve-CandidateEntrypoint([string]$Root, [string]$Relative) {
   if ([string]::IsNullOrWhiteSpace($Relative) -or $Relative -match '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)') { throw "Vision Candidate entrypoint is unsafe" }
   $trustedRoot = Assert-CandidateNonReparsePath $Root "Vision Candidate staging root"
@@ -207,6 +213,10 @@ $staging = Join-Path $WorkRoot ([guid]::NewGuid().ToString("N"))
 $previousRuntime = $null
 $previousRuntimeStopped = $false
 $previousTaskWasRunning = $false
+$primaryFailure = $null
+$reportWriteFailure = $null
+$cleanupFailureCodes = [Collections.Generic.List[string]]::new()
+$cleanupResidualCodes = [Collections.Generic.List[string]]::new()
 $report = [ordered]@{
   schemaVersion = "vem-vision-experimental-conformance-report/v1"
   kind = "vision-experimental-conformance-report"
@@ -223,6 +233,9 @@ $report = [ordered]@{
   previousRuntimeStopped = $false
   previousRuntimeRestored = $false
   cleanupOk = $false
+  primaryFailureCode = ""
+  cleanupFailureCodes = @()
+  cleanupResidualCodes = @()
   failure = ""
 }
 
@@ -368,37 +381,83 @@ try {
   Write-AtomicJson $ConformanceEvidencePath $conformance
   $report.ok = $true
 } catch {
+  $primaryFailure = $_
+  $report.primaryFailureCode = Get-CandidateFailureCode $_.Exception.Message
   $report.failure = Sanitize $_.Exception.Message
-  throw
 } finally {
   $cleanupOk = $true
   if ($null -ne $candidateProcess) {
     try {
-      if (-not $candidateProcess.HasExited) { $candidateProcess.Kill(); $candidateProcess.WaitForExit(10000) | Out-Null }
-    } catch { $cleanupOk = $false }
-    $candidateProcess.Dispose()
+      $candidateProcess.Refresh()
+      if (-not $candidateProcess.HasExited) {
+        & "$env:WINDIR\System32\taskkill.exe" /PID ([string]$candidateProcess.Id) /T /F | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Vision Candidate process tree cleanup failed" }
+        if (-not $candidateProcess.WaitForExit(10000)) { throw "Vision Candidate process tree did not stop" }
+        $candidateProcess.Refresh()
+      }
+      if (-not $candidateProcess.HasExited) {
+        $cleanupResidualCodes.Add("candidate-process-retained")
+        throw "Vision Candidate process remained after cleanup"
+      }
+    } catch {
+      $cleanupOk = $false
+      $cleanupFailureCodes.Add("candidate-process-tree-termination-failed")
+    }
+    try { $candidateProcess.Dispose() } catch {
+      $cleanupOk = $false
+      $cleanupFailureCodes.Add("candidate-process-disposal-failed")
+    }
   }
   try {
     if (Test-Path -LiteralPath $staging) {
       Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop
     }
-  } catch { $cleanupOk = $false }
+  } catch {
+    $cleanupOk = $false
+    $cleanupFailureCodes.Add("staging-removal-failed")
+  }
+  try {
+    if (Test-Path -LiteralPath $staging) {
+      $cleanupOk = $false
+      $cleanupResidualCodes.Add("staging-retained")
+    }
+  } catch {
+    $cleanupOk = $false
+    $cleanupFailureCodes.Add("staging-residual-inspection-failed")
+  }
   if (($previousRuntimeStopped -or $previousTaskWasRunning) -and $null -ne $previousRuntime) {
     try {
       $report.previousRuntimeRestored = Restore-VerifiedPreviousVisionRuntime $previousRuntime $selectionPathForPrevious $processPathForPrevious
       if (-not $report.previousRuntimeRestored) {
         $cleanupOk = $false
+        $cleanupResidualCodes.Add("previous-runtime-not-restored")
         if ([string]::IsNullOrWhiteSpace($report.failure)) {
           $report.failure = "previous Vision release did not restore with its verified active identity"
         }
       }
-    } catch { $cleanupOk = $false }
+    } catch {
+      $cleanupOk = $false
+      $cleanupFailureCodes.Add("previous-runtime-restoration-failed")
+    }
   }
   $report.cleanupOk = $cleanupOk
+  $report.cleanupFailureCodes = @($cleanupFailureCodes)
+  $report.cleanupResidualCodes = @($cleanupResidualCodes)
   if (-not $cleanupOk) {
     $report.ok = $false
     if ([string]::IsNullOrWhiteSpace($report.failure)) { $report.failure = Sanitize "Vision Candidate cleanup failed" }
   }
-  Write-AtomicJson $ReportPath $report
-  if (-not $cleanupOk) { throw "Vision Candidate cleanup failed" }
+  try { Write-AtomicJson $ReportPath $report } catch { $reportWriteFailure = $_ }
 }
+
+if ($null -ne $reportWriteFailure) {
+  if ($null -ne $primaryFailure) {
+    throw [AggregateException]::new(
+      $primaryFailure.Exception.Message,
+      [Exception[]]@($primaryFailure.Exception, $reportWriteFailure.Exception)
+    )
+  }
+  throw $reportWriteFailure
+}
+if ($null -ne $primaryFailure) { throw $primaryFailure }
+if (-not $cleanupOk) { throw "Vision Candidate cleanup failed" }
