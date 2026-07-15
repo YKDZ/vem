@@ -2,7 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import { resolveManagedMediaReference } from "@/catalog/managed-media";
+import {
+  managedMediaDiagnosticKey,
+  resolveManagedMediaReference,
+} from "@/catalog/managed-media";
 import { useTryOnPreview } from "@/composables/useTryOnPreview";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
@@ -23,6 +26,17 @@ const selectedVariant = computed(
       (variant) => variant.variantId === variantId.value,
     ) ?? null,
 );
+const silhouetteSlotId = computed(
+  () =>
+    catalogStore.saleableVariantItemFor(catalogKey.value, variantId.value)
+      ?.slotId ??
+    selectedVariant.value?.slotCandidates[0]?.slotId ??
+    item.value?.slotId ??
+    "missing",
+);
+const silhouetteDiagnosticLocation = computed(
+  () => `media:${silhouetteSlotId.value}:tryOnSilhouetteUrl`,
+);
 const silhouetteResolution = computed(() =>
   resolveManagedMediaReference(
     selectedVariant.value?.tryOnSilhouetteUrl,
@@ -32,16 +46,21 @@ const silhouetteResolution = computed(() =>
 const silhouetteUrl = computed(() => silhouetteResolution.value.url);
 const silhouetteAvailable = ref(true);
 
+function recordSilhouetteDiagnostic(message: string): void {
+  const reference = selectedVariant.value?.tryOnSilhouetteUrl;
+  catalogStore.recordMediaDiagnostic(
+    reference,
+    message,
+    managedMediaDiagnosticKey(silhouetteDiagnosticLocation.value, reference),
+  );
+}
+
 watch(
   silhouetteResolution,
   (resolution) => {
     silhouetteAvailable.value = true;
     if (resolution.diagnostic) {
-      catalogStore.recordCatalogDiagnostic(
-        "try_on",
-        selectedVariant.value?.tryOnSilhouetteUrl,
-        resolution.diagnostic,
-      );
+      recordSilhouetteDiagnostic(resolution.diagnostic);
     }
   },
   { immediate: true },
@@ -71,11 +90,7 @@ async function exitTryOn(): Promise<void> {
 function useSilhouettePlaceholder(): void {
   if (!silhouetteAvailable.value) return;
   silhouetteAvailable.value = false;
-  catalogStore.recordCatalogDiagnostic(
-    "try_on",
-    selectedVariant.value?.tryOnSilhouetteUrl,
-    "managed try-on silhouette failed to load",
-  );
+  recordSilhouetteDiagnostic("managed try-on silhouette failed to load");
 }
 </script>
 

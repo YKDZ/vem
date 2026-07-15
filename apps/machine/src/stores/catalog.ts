@@ -26,7 +26,7 @@ export type CatalogMediaDiagnostic = {
 };
 
 export type CatalogOperatorDiagnostic = CatalogMediaDiagnostic & {
-  kind: "media" | "category" | "try_on";
+  kind: "media" | "category";
 };
 
 let refreshInFlight: Promise<void> | null = null;

@@ -445,4 +445,63 @@ describe("catalog store sale view", () => {
     ]);
     expect(store.operatorDiagnostics).toHaveLength(2);
   });
+
+  it("keys try-on media diagnostics by slot and managed image identity within the bounded history", () => {
+    const store = useCatalogStore();
+    const sharedReference =
+      "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content";
+    const replacementReference =
+      "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content";
+    const firstLocation =
+      "media:550e8400-e29b-41d4-a716-446655440001:tryOnSilhouetteUrl";
+    const secondLocation =
+      "media:550e8400-e29b-41d4-a716-446655440011:tryOnSilhouetteUrl";
+
+    store.recordMediaDiagnostic(
+      sharedReference,
+      "managed try-on silhouette failed to load",
+      `${firstLocation}:managed:${sharedReference}`,
+    );
+    store.recordMediaDiagnostic(
+      sharedReference,
+      "managed try-on silhouette failed to load again",
+      `${firstLocation}:managed:${sharedReference}`,
+    );
+    expect(store.mediaDiagnostics).toHaveLength(1);
+
+    store.recordMediaDiagnostic(
+      sharedReference,
+      "the same managed silhouette failed in another slot",
+      `${secondLocation}:managed:${sharedReference}`,
+    );
+    store.recordMediaDiagnostic(
+      replacementReference,
+      "the replacement managed silhouette failed in the first slot",
+      `${firstLocation}:managed:${replacementReference}`,
+    );
+    expect(
+      store.mediaDiagnostics.map(({ diagnosticKey }) => diagnosticKey),
+    ).toEqual([
+      `${firstLocation}:managed:${sharedReference}`,
+      `${secondLocation}:managed:${sharedReference}`,
+      `${firstLocation}:managed:${replacementReference}`,
+    ]);
+
+    for (let index = 0; index < 20; index += 1) {
+      const reference = `/api/media-assets/550e8400-e29b-41d4-a716-${String(index).padStart(12, "0")}/content`;
+      store.recordMediaDiagnostic(
+        reference,
+        "managed try-on silhouette failed to load",
+        `${firstLocation}:managed:${reference}`,
+      );
+    }
+
+    expect(store.mediaDiagnostics).toHaveLength(20);
+    expect(store.operatorDiagnostics).toHaveLength(20);
+    expect(store.mediaDiagnostics[store.mediaDiagnostics.length - 1]).toEqual(
+      expect.objectContaining({
+        diagnosticKey: `${firstLocation}:managed:/api/media-assets/550e8400-e29b-41d4-a716-000000000019/content`,
+      }),
+    );
+  });
 });

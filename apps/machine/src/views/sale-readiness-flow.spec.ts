@@ -1581,9 +1581,16 @@ describe("sale readiness UI flow", () => {
     ).toBeTruthy();
     expect(useCatalogStore().operatorDiagnostics).toEqual([
       expect.objectContaining({
-        kind: "try_on",
+        kind: "media",
         reference: item.tryOnSilhouetteUrl,
+        diagnosticKey: `media:${item.slotId}:tryOnSilhouetteUrl:managed:${item.tryOnSilhouetteUrl}`,
         message: "managed try-on silhouette failed to load",
+      }),
+    ]);
+    expect(useCatalogStore().mediaDiagnostics).toEqual([
+      expect.objectContaining({
+        reference: item.tryOnSilhouetteUrl,
+        diagnosticKey: `media:${item.slotId}:tryOnSilhouetteUrl:managed:${item.tryOnSilhouetteUrl}`,
       }),
     ]);
   });
