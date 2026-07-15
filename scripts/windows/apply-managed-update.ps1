@@ -156,8 +156,85 @@ function Assert-NoPlatformPaymentSecretBytes {
       throw "artifact contains platform private-key material: $Label"
     }
 
-    if ($Bytes.Length -ge 4 -and [BitConverter]::ToUInt32($Bytes, 0) -eq 0x04034b50) {
-      $invalidArchive = { throw "artifact contains an invalid archive structure: $Label" }
+    $invalidArchive = { throw "artifact contains an invalid archive structure: $Label" }
+    $startsWithLocalHeader =
+      $Bytes.Length -ge 4 -and
+      [BitConverter]::ToUInt32($Bytes, 0) -eq 0x04034b50
+    $findRecognizableZipContainer = {
+      $searchFrom = $Bytes.Length - 4
+      while ($searchFrom -ge 0) {
+        $candidate = [Array]::LastIndexOf($Bytes, [byte]0x50, $searchFrom)
+        if ($candidate -lt 0) { return $null }
+        $searchFrom = $candidate - 1
+        if (
+          $candidate + 22 -gt $Bytes.Length -or
+          [BitConverter]::ToUInt32($Bytes, $candidate) -ne 0x06054b50
+        ) {
+          continue
+        }
+        $archiveEnd =
+          $candidate + 22 + [BitConverter]::ToUInt16($Bytes, $candidate + 20)
+        if ($archiveEnd -gt $Bytes.Length) { continue }
+        $detectedDisk = [BitConverter]::ToUInt16($Bytes, $candidate + 4)
+        $detectedCentralDisk = [BitConverter]::ToUInt16($Bytes, $candidate + 6)
+        $detectedDiskEntries = [BitConverter]::ToUInt16($Bytes, $candidate + 8)
+        $detectedEntries = [BitConverter]::ToUInt16($Bytes, $candidate + 10)
+        $detectedCentralSize = [BitConverter]::ToUInt32($Bytes, $candidate + 12)
+        $detectedCentralStart = [BitConverter]::ToUInt32($Bytes, $candidate + 16)
+        if (
+          $detectedDisk -ne 0 -or
+          $detectedCentralDisk -ne 0 -or
+          $detectedDiskEntries -ne $detectedEntries -or
+          $detectedEntries -eq 0xffff -or
+          $detectedCentralSize -eq 0xffffffff -or
+          $detectedCentralStart -eq 0xffffffff -or
+          [long]$detectedCentralStart + $detectedCentralSize -ne $candidate
+        ) {
+          continue
+        }
+        $detectedCentralOffset = [long]$detectedCentralStart
+        $recognizable = $true
+        $entriesToCheck = [Math]::Min($detectedEntries, 257)
+        for ($detectedIndex = 0; $detectedIndex -lt $entriesToCheck; $detectedIndex += 1) {
+          if (
+            $detectedCentralOffset + 46 -gt $candidate -or
+            [BitConverter]::ToUInt32($Bytes, [int]$detectedCentralOffset) -ne 0x02014b50
+          ) {
+            $recognizable = $false
+            break
+          }
+          $detectedNameLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 28)
+          $detectedExtraLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 30)
+          $detectedCommentLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 32)
+          $detectedLocalOffset = [BitConverter]::ToUInt32($Bytes, [int]$detectedCentralOffset + 42)
+          if (
+            $detectedLocalOffset + 30 -gt $detectedCentralStart -or
+            [BitConverter]::ToUInt32($Bytes, [int]$detectedLocalOffset) -ne 0x04034b50
+          ) {
+            $recognizable = $false
+            break
+          }
+          $detectedCentralOffset +=
+            46 + $detectedNameLength + $detectedExtraLength + $detectedCommentLength
+        }
+        if (
+          $recognizable -and
+          ($detectedEntries -gt 256 -or $detectedCentralOffset -eq $candidate)
+        ) {
+          return [pscustomobject]@{ archiveEnd = $archiveEnd }
+        }
+      }
+      return $null
+    }
+    $recognizableZipContainer = & $findRecognizableZipContainer
+    if (
+      $null -ne $recognizableZipContainer -and
+      (-not $startsWithLocalHeader -or $recognizableZipContainer.archiveEnd -ne $Bytes.Length)
+    ) {
+      & $invalidArchive
+    }
+
+    if ($startsWithLocalHeader) {
       $assertExtraFields = {
         param([long]$Start, [long]$Length)
         $extraOffset = $Start

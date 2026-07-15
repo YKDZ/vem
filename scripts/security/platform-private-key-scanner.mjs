@@ -93,10 +93,80 @@ function textRepresentations(bytes) {
 }
 
 function scanZipEntries(bytes, label, state, depth) {
-  if (bytes.length < 30 || bytes.readUInt32LE(0) !== 0x04034b50) return;
   const invalidArchive = () => {
     throw new Error(`${label} contains an invalid archive structure`);
   };
+  const startsWithLocalHeader =
+    bytes.length >= 4 && bytes.readUInt32LE(0) === 0x04034b50;
+  const findRecognizableContainer = () => {
+    const endSignature = Buffer.from("504b0506", "hex");
+    let searchFrom = bytes.length - 4;
+    while (searchFrom >= 0) {
+      const endOffset = bytes.lastIndexOf(endSignature, searchFrom);
+      if (endOffset < 0) return null;
+      searchFrom = endOffset - 1;
+      if (endOffset + 22 > bytes.length) continue;
+      const archiveEnd = endOffset + 22 + bytes.readUInt16LE(endOffset + 20);
+      if (archiveEnd > bytes.length) continue;
+      const diskNumber = bytes.readUInt16LE(endOffset + 4);
+      const centralDisk = bytes.readUInt16LE(endOffset + 6);
+      const diskEntryCount = bytes.readUInt16LE(endOffset + 8);
+      const entryCount = bytes.readUInt16LE(endOffset + 10);
+      const centralSize = bytes.readUInt32LE(endOffset + 12);
+      const centralStart = bytes.readUInt32LE(endOffset + 16);
+      if (
+        diskNumber !== 0 ||
+        centralDisk !== 0 ||
+        diskEntryCount !== entryCount ||
+        centralSize === 0xffffffff ||
+        centralStart === 0xffffffff ||
+        centralStart + centralSize !== endOffset
+      ) {
+        continue;
+      }
+      let centralOffset = centralStart;
+      let recognizable = true;
+      const entriesToCheck = Math.min(entryCount, MAX_ARCHIVE_ENTRIES + 1);
+      for (let index = 0; index < entriesToCheck; index += 1) {
+        if (
+          centralOffset + 46 > endOffset ||
+          bytes.readUInt32LE(centralOffset) !== 0x02014b50
+        ) {
+          recognizable = false;
+          break;
+        }
+        const nameLength = bytes.readUInt16LE(centralOffset + 28);
+        const extraLength = bytes.readUInt16LE(centralOffset + 30);
+        const commentLength = bytes.readUInt16LE(centralOffset + 32);
+        const localOffset = bytes.readUInt32LE(centralOffset + 42);
+        if (
+          localOffset + 30 > centralStart ||
+          bytes.readUInt32LE(localOffset) !== 0x04034b50
+        ) {
+          recognizable = false;
+          break;
+        }
+        centralOffset += 46 + nameLength + extraLength + commentLength;
+      }
+      if (
+        recognizable &&
+        (entryCount > MAX_ARCHIVE_ENTRIES || centralOffset === endOffset)
+      ) {
+        return { archiveEnd };
+      }
+    }
+    return null;
+  };
+  const recognizableContainer = findRecognizableContainer();
+  if (
+    recognizableContainer &&
+    (!startsWithLocalHeader ||
+      recognizableContainer.archiveEnd !== bytes.length)
+  ) {
+    invalidArchive();
+  }
+  if (!startsWithLocalHeader) return;
+  if (bytes.length < 30) invalidArchive();
   const parseExtraFields = (extra) => {
     let offset = 0;
     while (offset < extra.length) {
