@@ -3594,14 +3594,19 @@ export function evaluateSimulatedHardwareSerialEvidence({
         sourceSale[0]?.orderId === failure?.orderId &&
         sourceSale[0]?.paymentId === failure?.paymentId &&
         (failureMode === "scanner-timeout"
-          ? !Object.hasOwn(failure ?? {}, "vendingCommandId")
+          ? !Object.hasOwn(failure ?? {}, "vendingCommandId") &&
+            sourceSale[0]?.vendingCommandId === null
           : sourceSale[0]?.vendingCommandId ===
             (failure?.vendingCommandId ?? null));
       const hasMappingRecoveryEvidence =
         failure?.source?.start?.request?.operation === "start-serial-session" &&
-        ["start-serial-session", "collect-serial-evidence"].includes(
-          failure?.source?.fault?.request?.operation,
+        failure?.source?.fault?.request?.operation === "start-serial-session" &&
+        Array.isArray(
+          failure?.source?.start?.request?.serialSession?.saleBindings,
         ) &&
+        failure.source.start.request.serialSession.saleBindings.length === 0 &&
+        Array.isArray(sourceSale) &&
+        sourceSale.length === 0 &&
         failure?.daemonFailClosed?.commandExitStatus > 0 &&
         failure?.daemonFailClosed?.simulatedHardwareReady === "failed" &&
         failure?.daemonFailClosed?.daemonHealthObserved === true &&

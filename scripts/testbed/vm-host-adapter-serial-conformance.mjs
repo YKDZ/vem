@@ -497,9 +497,8 @@ function validateFailureMatrix(
     );
     assertConformance(
       (failureMode === "swapped-roles" || failureMode === "missing-device"
-        ? ["start-serial-session", "collect-serial-evidence"].includes(
-            entry.source.fault.request.operation,
-          )
+        ? entry.source.fault.request.operation === "start-serial-session" &&
+          sameJson(entry.source.fault.request.serialSession.saleBindings, [])
         : entry.source.fault.request.operation === operation) &&
         entry.source.fault.report.diagnostics?.some(
           (diagnostic) => diagnostic?.code === diagnosticCode,
@@ -532,7 +531,8 @@ function validateFailureMatrix(
       scannerTimeout.paymentId === scannerSale?.paymentId &&
       scannerTimeout.orderId === dispenseFailed.orderId &&
       scannerTimeout.paymentId === dispenseFailed.paymentId &&
-      scannerTimeout.vendingCommandId == null &&
+      !Object.hasOwn(scannerTimeout, "vendingCommandId") &&
+      scannerSale?.vendingCommandId === null &&
       typeof dispenseFailed.vendingCommandId === "string" &&
       dispenseFailed.orderId === dispenseSale?.orderId &&
       dispenseFailed.paymentId === dispenseSale?.paymentId &&
@@ -553,15 +553,14 @@ function validateFailureMatrix(
       expectedLifecycleIdentity,
     );
     const session = entry.startSerialSession;
-    const faultSession =
-      fault.request.operation === "start-serial-session"
-        ? fault.serialSession
-        : fault.request.serialSession;
+    const faultSession = fault.serialSession;
     const failClosed = entry.daemonFailClosed;
     assertConformance(
       !Object.hasOwn(entry, "orderId") &&
         !Object.hasOwn(entry, "paymentId") &&
         !Object.hasOwn(entry, "vendingCommandId") &&
+        sameJson(entry.source.start, entry.source.fault) &&
+        sameJson(fault.request.serialSession.saleBindings, []) &&
         sameJson(session, {
           serialSessionId: start.serialSession?.serialSessionId,
           startOperationReference: start.serialSession?.startOperationReference,
@@ -609,7 +608,7 @@ function validateFailureMatrix(
   }
 }
 
-function readFailureMatrixCommands(commandJson) {
+export function readFailureMatrixCommands(commandJson) {
   let commands;
   try {
     commands = JSON.parse(commandJson);
@@ -627,8 +626,12 @@ function readFailureMatrixCommands(commandJson) {
     if (!entry || typeof entry !== "object")
       throw new Error(`${failureMode} failure matrix commands are required`);
     for (const key of keys)
-      if (typeof entry[key] !== "string")
-        throw new Error(`${failureMode} ${key} is required`);
+      if (
+        !Array.isArray(entry[key]) ||
+        entry[key].length < 2 ||
+        !entry[key].every((argument) => typeof argument === "string")
+      )
+        throw new Error(`${failureMode} ${key} must be a command array`);
   }
   return commands;
 }
@@ -938,7 +941,10 @@ async function main() {
           paymentId: readOption("--payment-id"),
           vendingCommandId: null,
         }
-      : runSaleCommand(readOption("--sale-prepare-command-json"), "prepare");
+      : runSaleCommand(
+          readCommandJson("--sale-prepare-command-json"),
+          "prepare",
+        );
     const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
     injectRequest = requestFor({
       operation: "inject-scanner-code",
@@ -967,7 +973,10 @@ async function main() {
           ...preparedSale,
           vendingCommandId: readOption("--vending-command-id"),
         }
-      : runSaleCommand(readOption("--sale-complete-command-json"), "complete");
+      : runSaleCommand(
+          readCommandJson("--sale-complete-command-json"),
+          "complete",
+        );
     if (
       completedSale.orderId !== preparedSale.orderId ||
       completedSale.paymentId !== preparedSale.paymentId
@@ -1070,8 +1079,6 @@ async function main() {
           scannerCode,
           workDirectory,
           environment,
-          salePrepareCommandJson: readOption("--sale-prepare-command-json"),
-          saleCompleteCommandJson: readOption("--sale-complete-command-json"),
           failureCommands: readFailureMatrixCommands(
             readOption("--failure-matrix-commands-json"),
           ),
@@ -1152,13 +1159,19 @@ async function main() {
   if (primaryError) throw primaryError;
 }
 
-function runSaleCommand(commandJson, expectedPhase) {
+function readCommandJson(option) {
   let command;
   try {
-    command = JSON.parse(commandJson);
+    command = JSON.parse(readOption(option));
   } catch {
-    throw new Error(`${expectedPhase} sale command must be a JSON array`);
+    throw new Error(`${option} must be a JSON command array`);
   }
+  if (!Array.isArray(command) || command.length < 2)
+    throw new Error(`${option} must be a JSON command array`);
+  return command;
+}
+
+function runSaleCommand(command, expectedPhase) {
   if (!Array.isArray(command) || command.length < 2)
     throw new Error(`${expectedPhase} sale command must be a JSON array`);
   const result = spawnSync(command[0], command.slice(1), {
@@ -1193,8 +1206,10 @@ function runSaleCommand(commandJson, expectedPhase) {
   };
 }
 
-function runFailedDispenseCommand(commandJson) {
-  const command = JSON.parse(commandJson);
+export function runFailedDispenseCommand(
+  command,
+  saleCorrelationId = readOption("--sale-correlation-id"),
+) {
   if (!Array.isArray(command) || command.length < 2)
     throw new Error("failed-dispense sale command must be a JSON array");
   const result = spawnSync(command[0], command.slice(1), {
@@ -1216,7 +1231,7 @@ function runFailedDispenseCommand(commandJson) {
       "dispense-failed sale did not prove an actual failed command",
     );
   return {
-    saleCorrelationId: readOption("--sale-correlation-id"),
+    saleCorrelationId,
     orderId: sale.orderId,
     paymentId: sale.paymentId,
     vendingCommandId: sale.vendingCommandId,
@@ -1232,8 +1247,7 @@ function adapterSessionEvidence(startReport) {
   };
 }
 
-function runBlockedSaleCommand(commandJson, failureMode, runId, startReport) {
-  const command = JSON.parse(commandJson);
+function runBlockedSaleCommand(command, failureMode, runId, startReport) {
   if (!Array.isArray(command) || command.length < 2)
     throw new Error(`${failureMode} blocked-sale command must be a JSON array`);
   const result = spawnSync(command[0], command.slice(1), {
@@ -1266,8 +1280,7 @@ function runBlockedSaleCommand(commandJson, failureMode, runId, startReport) {
   });
 }
 
-function runRuntimeRecoveryCommand(commandJson, failureMode) {
-  const command = JSON.parse(commandJson);
+function runRuntimeRecoveryCommand(command, failureMode) {
   if (!Array.isArray(command) || command.length < 2)
     throw new Error(`${failureMode} recovery command must be a JSON array`);
   const result = spawnSync(command[0], command.slice(1), {
@@ -1507,7 +1520,11 @@ async function runProductionFailureMatrix(options) {
       };
     } finally {
       if (mappingSession) {
-        await stopFailureSession(options, mappingSession, null);
+        await stopFailureSession(
+          options,
+          mappingSession,
+          options.successfulSaleBinding,
+        );
         recovery = runRuntimeRecoveryCommand(
           options.failureCommands[failureMode].runtimeRecoveryCommand,
           failureMode,
@@ -1818,6 +1835,14 @@ async function runFailureMatrix({
       "swapped-roles": "serial_swapped_roles",
       "missing-device": "serial_missing_device",
     }[failureMode];
+    const mappingFailure = ["swapped-roles", "missing-device"].includes(
+      failureMode,
+    );
+    const failureSaleBinding = mappingFailure
+      ? null
+      : failureMode === "scanner-timeout"
+        ? { ...saleBinding, vendingCommandId: null }
+        : saleBinding;
     let session;
     try {
       const startRequest = requestFor({
@@ -1827,7 +1852,7 @@ async function runFailureMatrix({
         lifecycleReference,
         approvedRuntimeBase,
         saleCorrelationId,
-        saleBinding,
+        saleBinding: failureSaleBinding,
       });
       const start = await runVmHostAdapter({
         request: startRequest,
@@ -1840,6 +1865,26 @@ async function runFailureMatrix({
           : environment,
       });
       session = start.serialSession;
+      if (mappingFailure) {
+        const diagnosticCode = assertObservedDeviceFault(
+          start,
+          failureMode,
+          expectedCode,
+          null,
+        );
+        cases.push(
+          contractMappingFailureCase({
+            failureMode,
+            startRequest,
+            startReport: start,
+            faultRequest: startRequest,
+            faultReport: start,
+            adapterResult: start.result,
+            diagnosticCode,
+          }),
+        );
+        continue;
+      }
       const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
       const injectRequest = requestFor({
         operation: "inject-scanner-code",
@@ -1850,7 +1895,7 @@ async function runFailureMatrix({
         session,
         scannerDescriptor,
         saleCorrelationId,
-        saleBinding,
+        saleBinding: failureSaleBinding,
       });
       const inject = await runVmHostAdapter({
         request: injectRequest,
@@ -1879,7 +1924,7 @@ async function runFailureMatrix({
                 ...scannerDescriptor,
               },
               saleCorrelationId,
-              saleBinding,
+              saleBinding: failureSaleBinding,
             });
       const observation =
         failureMode === "scanner-timeout"
@@ -1896,34 +1941,21 @@ async function runFailureMatrix({
         observation,
         failureMode,
         expectedCode,
-        saleBinding,
+        failureSaleBinding,
       );
-      const mappingFailure = ["swapped-roles", "missing-device"].includes(
+      const failureCase = observedFailureCase({
         failureMode,
-      );
-      const failureCase = mappingFailure
-        ? contractMappingFailureCase({
-            failureMode,
-            startRequest,
-            startReport: start,
-            faultRequest: observationRequest,
-            faultReport: observation,
-            adapterResult: observation.result,
-            diagnosticCode,
-          })
-        : observedFailureCase({
-            failureMode,
-            operation:
-              failureMode === "scanner-timeout"
-                ? "inject-scanner-code"
-                : "collect-serial-evidence",
-            report: observation,
-            saleBinding,
-            diagnosticCode,
-            source: {
-              fault: { request: observationRequest, report: observation },
-            },
-          });
+        operation:
+          failureMode === "scanner-timeout"
+            ? "inject-scanner-code"
+            : "collect-serial-evidence",
+        report: observation,
+        saleBinding: failureSaleBinding,
+        diagnosticCode,
+        source: {
+          fault: { request: observationRequest, report: observation },
+        },
+      });
       if (failureMode === "scanner-timeout")
         delete failureCase.vendingCommandId;
       cases.push(failureCase);
@@ -1940,7 +1972,7 @@ async function runFailureMatrix({
             environment,
           },
           session,
-          saleBinding,
+          mappingFailure ? saleBinding : failureSaleBinding,
         );
         if (stop.serialSession.simulatorCleanup.survivingProcessCount !== 0)
           throw new Error(

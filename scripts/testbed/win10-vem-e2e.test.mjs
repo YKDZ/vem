@@ -17,6 +17,8 @@ import { describe, it } from "node:test";
 
 import {
   deriveSerialConformanceReportDigest,
+  readFailureMatrixCommands,
+  runFailedDispenseCommand,
   validateSerialConformanceReport,
 } from "./vm-host-adapter-serial-conformance.mjs";
 import {
@@ -496,6 +498,55 @@ describe("transient SSH operation retry", () => {
 });
 
 describe("simulated hardware serial acceptance evidence", () => {
+  it("parses nested production failure commands and executes the command array", () => {
+    const failedSaleOutput = JSON.stringify({
+      ok: false,
+      simulatedHardwareSaleFlow: {
+        phase: "complete",
+        sale: {
+          orderId: "ORDER-FAILED",
+          paymentId: "PAYMENT-FAILED",
+          vendingCommandId: "VEND-FAILED",
+          dispenseResult: "failed",
+        },
+      },
+    });
+    const executable = [process.execPath, "-e", "process.exit(0)"];
+    const failureCommands = readFailureMatrixCommands(
+      JSON.stringify({
+        "swapped-roles": {
+          salePrepareCommand: executable,
+          runtimeRecoveryCommand: executable,
+        },
+        "missing-device": {
+          salePrepareCommand: executable,
+          runtimeRecoveryCommand: executable,
+        },
+        "scanner-timeout": { salePrepareCommand: executable },
+        "dispense-failed": {
+          saleCompleteCommand: [
+            process.execPath,
+            "-e",
+            `process.stdout.write(${JSON.stringify(failedSaleOutput)}); process.exit(1)`,
+          ],
+        },
+      }),
+    );
+
+    assert.deepEqual(
+      runFailedDispenseCommand(
+        failureCommands["dispense-failed"].saleCompleteCommand,
+        "sale-correlation://failed-sale",
+      ),
+      {
+        saleCorrelationId: "sale-correlation://failed-sale",
+        orderId: "ORDER-FAILED",
+        paymentId: "PAYMENT-FAILED",
+        vendingCommandId: "VEND-FAILED",
+      },
+    );
+  });
+
   it("binds the completed sale to real Windows COM mappings and guest frames", () => {
     const evidence = evaluateSimulatedHardwareSerialEvidence(
       completedSerialSaleEvidence(),
@@ -792,6 +843,84 @@ describe("simulated hardware serial acceptance evidence", () => {
           expectedAdapterIdentity: input.expectedAdapterIdentity,
         }),
       /mapping failure is not fail-closed and recovered/,
+    );
+
+    const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+    assert.equal(evidence.status, "failed");
+    assert.ok(
+      evidence.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_conformance_report_invalid",
+      ),
+    );
+  });
+
+  it("rejects a runner-resigned scanner timeout source that already has a vending command", () => {
+    const input = completedSerialSaleEvidence();
+    const scannerTimeout = input.serialConformance.failureMatrix.find(
+      (entry) => entry.failureMode === "scanner-timeout",
+    );
+    scannerTimeout.source.fault.request.serialSession.saleBindings[0].vendingCommandId =
+      "VEND-ATTACKER";
+    scannerTimeout.source.fault.report.request.serialSession.saleBindings[0].vendingCommandId =
+      "VEND-ATTACKER";
+    resignSerialConformance(input.serialConformance);
+
+    assert.throws(
+      () =>
+        validateSerialConformanceReport(input.serialConformance, {
+          expectedRunnerPublicKey: input.expectedRunnerPublicKey,
+          expectedAdapterIdentity: input.expectedAdapterIdentity,
+        }),
+      /scanner timeout and failed dispense must bind one failed sale/,
+    );
+
+    const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+    assert.equal(evidence.status, "failed");
+    assert.ok(
+      evidence.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_conformance_report_invalid",
+      ),
+    );
+  });
+
+  it("rejects a runner-resigned mapping fault backed by completed-sale collect evidence", () => {
+    const input = completedSerialSaleEvidence();
+    const conformance = input.serialConformance;
+    const mappingFailure = conformance.failureMatrix.find(
+      (entry) => entry.failureMode === "missing-device",
+    );
+    mappingFailure.source = {
+      start: {
+        request: structuredClone(conformance.requests.start),
+        report: structuredClone(conformance.reports.start),
+      },
+      fault: {
+        request: structuredClone(conformance.requests.collect),
+        report: structuredClone(conformance.reports.collect),
+      },
+    };
+    mappingFailure.source.fault.report.diagnostics = [
+      { code: mappingFailure.diagnosticCode },
+    ];
+    const mainSession = conformance.reports.start.serialSession;
+    mappingFailure.startSerialSession = {
+      serialSessionId: mainSession.serialSessionId,
+      startOperationReference: mainSession.startOperationReference,
+      deviceMappingDigest: mainSession.deviceMappingDigest,
+    };
+    mappingFailure.daemonFailClosed.adapterSession = {
+      ...mappingFailure.startSerialSession,
+      faultStartedAt: conformance.reports.start.timestamps.startedAt,
+    };
+    resignSerialConformance(conformance);
+
+    assert.throws(
+      () =>
+        validateSerialConformanceReport(conformance, {
+          expectedRunnerPublicKey: input.expectedRunnerPublicKey,
+          expectedAdapterIdentity: input.expectedAdapterIdentity,
+        }),
+      /missing-device source does not prove the declared fault/,
     );
 
     const evidence = evaluateSimulatedHardwareSerialEvidence(input);
@@ -4708,7 +4837,7 @@ try {
       "expected-serial-runner-public-key-required",
     );
     const failureArtifacts = plan.artifacts.failureMatrix;
-    const failureCommands = JSON.parse(
+    const failureCommands = readFailureMatrixCommands(
       commandArg(saleStep.command, "--failure-matrix-commands-json"),
     );
     assert.deepEqual(
