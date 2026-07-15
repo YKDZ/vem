@@ -245,6 +245,14 @@ function prefixedZipWithCorruptFiniteCentralSize(content) {
   return archive;
 }
 
+function nestedBase64Payload(layers) {
+  let payload = Buffer.from("neutral nested runtime payload with separators");
+  for (let layer = 0; layer < layers; layer += 1) {
+    payload = Buffer.from(payload.toString("base64"));
+  }
+  return payload;
+}
+
 describe("Factory runtime payment secret boundary", () => {
   it("allows ordinary public certificates but rejects private-key PEM encodings", () => {
     assert.doesNotThrow(() =>
@@ -642,6 +650,17 @@ describe("Factory runtime payment secret boundary", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("fails closed when a Base64 candidate exceeds the recursion depth", () => {
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          nestedBase64Payload(4),
+          "nested-runtime-config",
+        ),
+      /bounded private-key scan budget/i,
+    );
   });
 
   it("applies the scanner to every resolved Factory payload including Vision", async () => {

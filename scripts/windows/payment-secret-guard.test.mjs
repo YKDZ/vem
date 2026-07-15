@@ -253,6 +253,14 @@ function prefixedZipWithCorruptFiniteCentralSize(content) {
   return archive;
 }
 
+function nestedBase64Payload(layers) {
+  let payload = Buffer.from("neutral nested runtime payload with separators");
+  for (let layer = 0; layer < layers; layer += 1) {
+    payload = Buffer.from(payload.toString("base64"));
+  }
+  return payload;
+}
+
 async function runGuards(value, artifactBytes = "machine-runtime") {
   const root = await mkdtemp(join(tmpdir(), "vem-payment-secret-guard-"));
   try {
@@ -379,6 +387,15 @@ describe("managed-update payment secret guard", () => {
 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /scan budget/i);
+  });
+
+  it("fails closed when a Base64 candidate exceeds the recursion depth", async () => {
+    const result = await runGuards(
+      { updateId: "field-depth-limit", components: [] },
+      nestedBase64Payload(4),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /bounded platform private-key/i);
   });
 
   it("rejects encrypted local entries hidden by an empty central directory", async () => {

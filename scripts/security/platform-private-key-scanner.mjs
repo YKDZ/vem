@@ -456,6 +456,9 @@ function scanZipEntries(bytes, label, state, depth) {
 }
 
 function scanBytes(bytes, label, state, depth) {
+  if (depth > MAX_RECURSION_DEPTH) {
+    throw new Error(`${label} exceeds the bounded private-key scan budget`);
+  }
   if (depth > 0) state.decodedBytes += bytes.length;
   if (state.decodedBytes > MAX_DECODED_BYTES) {
     throw new Error(`${label} exceeds the bounded private-key scan budget`);
@@ -467,15 +470,12 @@ function scanBytes(bytes, label, state, depth) {
   ) {
     throw new Error(`${label} contains platform private-key material`);
   }
-  if (depth < MAX_RECURSION_DEPTH) {
-    scanZipEntries(bytes, label, state, depth);
-  }
+  scanZipEntries(bytes, label, state, depth);
 
   for (const text of textRepresentations(bytes)) {
     if (privateKeyPemPattern.test(text)) {
       throw new Error(`${label} contains platform private-key material`);
     }
-    if (depth >= MAX_RECURSION_DEPTH) continue;
     for (const match of text.matchAll(base64Pattern)) {
       const encoded = match[0];
       if (encoded.length > MAX_BASE64_CANDIDATE_BYTES * 2) continue;
