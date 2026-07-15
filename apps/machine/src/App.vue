@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 
 import ProtectedTouchKeyboard from "@/components/ProtectedTouchKeyboard.vue";
-import TransactionRecoveryOverlay from "@/components/TransactionRecoveryOverlay.vue";
+import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
 import { installCustomerEventSources } from "@/composables/useCustomerEventSources";
 import { useReturnHomeOnCustomerDeparture } from "@/composables/usePresenceInteraction";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
@@ -50,10 +50,11 @@ onMounted(async () => {
 </script>
 
 <template>
-  <RouterView />
-  <TransactionRecoveryOverlay />
-  <ProtectedTouchKeyboard
-    :route-name="typeof route.name === 'string' ? route.name : ''"
-    :maintenance-session="maintenanceTouchKeyboardSession"
-  />
+  <TransactionRecoveryBoundary>
+    <RouterView />
+    <ProtectedTouchKeyboard
+      :route-name="typeof route.name === 'string' ? route.name : ''"
+      :maintenance-session="maintenanceTouchKeyboardSession"
+    />
+  </TransactionRecoveryBoundary>
 </template>
