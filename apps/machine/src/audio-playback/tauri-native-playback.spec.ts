@@ -91,9 +91,9 @@ describe("Tauri native Machine Audio playback driver", () => {
     completionListener({ payload: { requestId: "another-request" } });
     expect(diagnostics).toEqual(["requested", "started"]);
 
-    const requestId = (
-      callTauriCommandMock.mock.calls[0]?.[1] as { requestId: string }
-    ).requestId;
+    const firstCall = callTauriCommandMock.mock.calls[0];
+    if (!firstCall) throw new Error("native playback command was not called");
+    const requestId = (firstCall[1] as { requestId: string }).requestId;
     completionListener({ payload: { requestId } });
 
     expect(diagnostics).toEqual(["requested", "started", "completed"]);

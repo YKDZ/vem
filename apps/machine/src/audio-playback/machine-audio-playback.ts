@@ -456,7 +456,9 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
         if (activePlayback !== playback) return;
         playback.commandAccepted = true;
         if (playback.completed) {
-          setTimeout(() => completeActivePlayback(playback), 0);
+          setTimeout(() => {
+            completeActivePlayback(playback);
+          }, 0);
         }
       } catch (error) {
         if (activePlayback === playback) {
