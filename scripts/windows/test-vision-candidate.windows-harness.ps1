@@ -62,6 +62,120 @@ function Assert-CandidateFailureReport([string]$Path, [string]$PrimaryFailureCod
   }
 }
 
+function Get-CandidateFunctionSource([string]$Path, [string]$Name) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+  if (@($errors).Count -ne 0) { throw "Candidate terminal fixture source does not parse" }
+  $functionAst = @($ast.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $Name
+  }, $false))[0]
+  if ($null -eq $functionAst) { throw "Candidate terminal fixture function is missing: $Name" }
+  return $functionAst.Extent.Text
+}
+
+function Assert-CandidateTerminalFailureProcesses([string]$CandidatePath, [string]$Root) {
+  $functionSource = (@(
+    "New-CandidateEvidenceException",
+    "Get-CandidatePublicFailureMessage",
+    "New-CandidateTerminalFailure"
+  ) | ForEach-Object { Get-CandidateFunctionSource $CandidatePath $_ }) -join [Environment]::NewLine
+  $template = @'
+[CmdletBinding()]
+param([Parameter(Mandatory = $true)][string]$Scenario, [Parameter(Mandatory = $true)][string]$Root)
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+__CANDIDATE_FUNCTIONS__
+
+$scenarioRoot = [IO.Path]::Combine($Root, ("terminal-" + $Scenario))
+[IO.Directory]::CreateDirectory($scenarioRoot) | Out-Null
+$lockedPath = [IO.Path]::Combine($scenarioRoot, "locked-residual.bin")
+$blockerPath = [IO.Path]::Combine($scenarioRoot, "report-parent-is-a-file")
+[IO.File]::WriteAllText($lockedPath, "locked")
+[IO.File]::WriteAllText($blockerPath, "blocker")
+$stream = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+try {
+  $cleanupFailures = [Collections.Generic.List[Exception]]::new()
+  $cleanupResiduals = [Collections.Generic.List[Exception]]::new()
+  try { [IO.File]::Delete($lockedPath) } catch {
+    $cleanupFailures.Add((New-CandidateEvidenceException "locked-residual-cleanup-failed" "cleanup" $_.Exception))
+  }
+  if ([IO.File]::Exists($lockedPath)) {
+    $cleanupResiduals.Add((New-CandidateEvidenceException "locked-residual-retained" "residual" $null))
+  } else {
+    throw "terminal fixture did not create a locked residual"
+  }
+  $reportWriteFailure = $null
+  try { [IO.File]::WriteAllText([IO.Path]::Combine($blockerPath, "report.json"), "report") } catch {
+    $reportWriteFailure = $_.Exception
+  }
+  if ($null -eq $reportWriteFailure) { throw "terminal fixture did not create a report write failure" }
+  $primaryFailure = if ($Scenario -ceq "primary-cleanup-report") {
+    [InvalidOperationException]::new("DO-NOT-LEAK primary C:\sensitive")
+  } else {
+    $null
+  }
+  $primaryCode = if ($null -ne $primaryFailure) { "entrypoint-process-binding-failed" } else { "" }
+  $terminalFailure = New-CandidateTerminalFailure `
+    -PrimaryFailure $primaryFailure `
+    -PrimaryFailureCode $primaryCode `
+    -CleanupFailures ([Exception[]]$cleanupFailures.ToArray()) `
+    -CleanupResiduals ([Exception[]]$cleanupResiduals.ToArray()) `
+    -ReportWriteFailure $reportWriteFailure
+  $parts = [Collections.Generic.List[string]]::new()
+  foreach ($inner in $terminalFailure.InnerExceptions) {
+    $kind = [string]$inner.Data["kind"]
+    if ($kind -ne "residual" -and [string]::IsNullOrWhiteSpace([string]$inner.Data["sourceType"])) {
+      throw "terminal fixture inner evidence lost its source exception type"
+    }
+    if ($kind -ne "residual" -and $null -eq $inner.Data["sourceException"]) {
+      throw "terminal fixture inner evidence lost its source exception"
+    }
+    $parts.Add(($kind + ":" + [string]$inner.Data["code"]))
+  }
+  [Console]::Out.WriteLine("CANDIDATE_TERMINAL_EVIDENCE=" + ($parts -join ","))
+  throw $terminalFailure
+} finally {
+  $stream.Dispose()
+  [IO.File]::Delete($lockedPath)
+  [IO.File]::Delete($blockerPath)
+  [IO.Directory]::Delete($scenarioRoot)
+}
+'@
+  $fixturePath = Join-Path $Root "candidate terminal failure fixture.ps1"
+  [IO.File]::WriteAllText($fixturePath, $template.Replace("__CANDIDATE_FUNCTIONS__", $functionSource), [Text.UTF8Encoding]::new($false))
+  foreach ($scenario in @("primary-cleanup-report", "cleanup-report")) {
+    $priorErrorActionPreference = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = "Continue"
+      $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fixturePath -Scenario $scenario -Root $Root 2>&1)
+      $exitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $priorErrorActionPreference
+    }
+    $text = $output -join [Environment]::NewLine
+    if ($exitCode -eq 0) { throw "Candidate terminal failure fixture unexpectedly succeeded: $scenario" }
+    $expected = if ($scenario -ceq "primary-cleanup-report") {
+      "primary:entrypoint-process-binding-failed,cleanup:locked-residual-cleanup-failed,residual:locked-residual-retained,report-write:report-write-failed"
+    } else {
+      "cleanup:locked-residual-cleanup-failed,residual:locked-residual-retained,report-write:report-write-failed"
+    }
+    if ($text -notmatch [regex]::Escape("CANDIDATE_TERMINAL_EVIDENCE=$expected")) {
+      throw "Candidate terminal failure fixture lost ordered inner evidence: $scenario; $text"
+    }
+    $expectedMessage = if ($scenario -ceq "primary-cleanup-report") {
+      "Vision Candidate did not remain at the exact extracted entrypoint"
+    } else {
+      "Vision Candidate cleanup failed"
+    }
+    if ($text -notmatch [regex]::Escape($expectedMessage)) { throw "Candidate terminal failure fixture lost message priority: $scenario" }
+    if ($text -match 'DO-NOT-LEAK|C:\\sensitive|locked-residual\.bin|report-parent-is-a-file') {
+      throw "Candidate terminal failure fixture leaked protected diagnostics: $scenario"
+    }
+  }
+}
+
 function New-CandidateHarnessInputs([string]$Root) {
   $content = Join-Path $Root "bundle source"
   $bundle = Join-Path $Root "candidate bundle.zip"
@@ -134,6 +248,7 @@ try {
   New-Item -ItemType Directory -Path $root -Force | Out-Null
   $inputs = New-CandidateHarnessInputs $root
   $delivery = New-PreapprovalDeliveryUnit $root $CandidatePath $inputs
+  Assert-CandidateTerminalFailureProcesses $delivery.entrypoint $root
 
   # A delivery module is executable code.  Its digest must be checked before
   # Import-Module can run its top-level statements, even on the failure path.

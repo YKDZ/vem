@@ -295,6 +295,14 @@ describe("Vision release installer fixtures", () => {
       ]) {
         assert.match(source, new RegExp(`"${code}"`));
       }
+      for (const scenario of ["primary-cleanup-report", "cleanup-report"]) {
+        assert.match(source, new RegExp(`"${scenario}"`));
+      }
+      assert.match(source, /CANDIDATE_TERMINAL_EVIDENCE=/);
+      assert.match(
+        source,
+        /\[IO\.File\]::Delete\(\$lockedPath\)[\s\S]*report-parent-is-a-file/,
+      );
     },
   );
 
@@ -679,6 +687,14 @@ describe("Vision release installer fixtures", () => {
       assert.match(source, /\$primaryFailure = \$null/);
       assert.match(
         source,
+        /\$cleanupFailures = \[Collections\.Generic\.List\[Exception\]\]::new\(\)/,
+      );
+      assert.match(
+        source,
+        /\$cleanupResiduals = \[Collections\.Generic\.List\[Exception\]\]::new\(\)/,
+      );
+      assert.match(
+        source,
         /catch \{\s*\$primaryFailure = \$_[\s\S]*\$report\.primaryFailureCode = Get-CandidateFailureCode/,
       );
       assert.match(
@@ -687,15 +703,27 @@ describe("Vision release installer fixtures", () => {
       );
       assert.match(
         source,
-        /\$report\.cleanupFailureCodes = @\(\$cleanupFailureCodes\)/,
+        /\$report\.cleanupFailureCodes = @\(Get-CandidateEvidenceCodes \$cleanupFailures\)/,
       );
       assert.match(
         source,
-        /if \(\$null -ne \$primaryFailure\) \{ throw \$primaryFailure \}[\s\S]*if \(-not \$cleanupOk\) \{ throw "Vision Candidate cleanup failed" \}/,
+        /New-CandidateTerminalFailure[\s\S]*\[AggregateException\]::new/,
+      );
+      const evidenceException = source.slice(
+        source.indexOf("function New-CandidateEvidenceException"),
+        source.indexOf("function Get-CandidateEvidenceCodes"),
+      );
+      assert.doesNotMatch(
+        evidenceException,
+        /SourceException\.(?:Message|StackTrace)|InnerException/,
       );
       assert.doesNotMatch(
         source,
         /finally \{[\s\S]*if \(-not \$cleanupOk\) \{ throw "Vision Candidate cleanup failed" \}[\s\S]*\}\s*$/,
+      );
+      assert.match(
+        source,
+        /\$terminalFailure = New-CandidateTerminalFailure[\s\S]*if \(\$null -ne \$terminalFailure\) \{ throw \$terminalFailure \}/,
       );
       assert.match(source, /Assert-CandidateNonReparsePath/);
       assert.match(

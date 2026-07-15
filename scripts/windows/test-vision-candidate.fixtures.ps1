@@ -20,9 +20,44 @@ function Assert-Throws([scriptblock]$Action, [string]$Label) {
   throw "expected rejection: $Label"
 }
 
-foreach ($functionName in @("Assert-CandidateNonReparsePath", "Assert-CandidateContainedPath", "Get-CandidateSha256Hex", "Read-StrictJson", "Resolve-CandidateEntrypoint", "Get-VerifiedPreviousVisionRuntime", "Restore-VerifiedPreviousVisionRuntime", "Sanitize", "ConvertTo-CanonicalVisionJson", "Assert-PreapprovalDeliveryManifest")) {
+foreach ($functionName in @("Assert-CandidateNonReparsePath", "Assert-CandidateContainedPath", "Get-CandidateSha256Hex", "Read-StrictJson", "Resolve-CandidateEntrypoint", "Get-VerifiedPreviousVisionRuntime", "Restore-VerifiedPreviousVisionRuntime", "Sanitize", "ConvertTo-CanonicalVisionJson", "Assert-PreapprovalDeliveryManifest", "New-CandidateEvidenceException", "Get-CandidatePublicFailureMessage", "New-CandidateTerminalFailure")) {
   Import-CandidateFunction $functionName
 }
+
+function Assert-TerminalFailureEvidence([bool]$WithPrimary) {
+  $cleanup = @(
+    New-CandidateEvidenceException "locked-residual-cleanup-failed" "cleanup" ([IO.IOException]::new("SECRET cleanup path"))
+  )
+  $residuals = @(
+    New-CandidateEvidenceException "locked-residual-retained" "residual" $null
+  )
+  $primary = if ($WithPrimary) { [InvalidOperationException]::new("SECRET primary path") } else { $null }
+  $primaryCode = if ($WithPrimary) { "entrypoint-process-binding-failed" } else { "" }
+  $failure = New-CandidateTerminalFailure `
+    -PrimaryFailure $primary `
+    -PrimaryFailureCode $primaryCode `
+    -CleanupFailures $cleanup `
+    -CleanupResiduals $residuals `
+    -ReportWriteFailure ([UnauthorizedAccessException]::new("SECRET report path"))
+  $expectedCodes = if ($WithPrimary) {
+    @("entrypoint-process-binding-failed", "locked-residual-cleanup-failed", "locked-residual-retained", "report-write-failed")
+  } else {
+    @("locked-residual-cleanup-failed", "locked-residual-retained", "report-write-failed")
+  }
+  $actualCodes = @($failure.InnerExceptions | ForEach-Object { [string]$_.Data["code"] })
+  if (($actualCodes -join ",") -cne ($expectedCodes -join ",")) { throw "candidate terminal failure lost ordered inner evidence" }
+  foreach ($inner in @($failure.InnerExceptions | Where-Object { $_.Data["kind"] -ne "residual" })) {
+    if ($null -eq $inner.Data["sourceException"] -or [string]::IsNullOrWhiteSpace([string]$inner.Data["sourceType"])) {
+      throw "candidate terminal failure lost its source exception structure"
+    }
+  }
+  $expectedMessage = if ($WithPrimary) { "Vision Candidate did not remain at the exact extracted entrypoint" } else { "Vision Candidate cleanup failed" }
+  if ($failure.Message -notmatch [regex]::Escape($expectedMessage)) { throw "candidate terminal failure did not preserve message priority" }
+  if ($failure.ToString() -match 'SECRET|C:\\') { throw "candidate terminal failure leaked protected diagnostics" }
+}
+
+Assert-TerminalFailureEvidence $true
+Assert-TerminalFailureEvidence $false
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-candidate-fixture-" + [guid]::NewGuid().ToString("N"))
 try {

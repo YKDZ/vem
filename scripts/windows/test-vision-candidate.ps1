@@ -78,6 +78,51 @@ function Get-CandidateFailureCode([string]$Message) {
   if ($Message -match 'Vision Candidate did not remain at the exact extracted entrypoint') { return "entrypoint-process-binding-failed" }
   return "candidate-preapproval-failed"
 }
+function New-CandidateEvidenceException([string]$Code, [string]$Kind, [Exception]$SourceException) {
+  $evidence = [InvalidOperationException]::new($Code)
+  $evidence.Data["kind"] = $Kind
+  $evidence.Data["code"] = $Code
+  if ($null -ne $SourceException) {
+    $evidence.Data["sourceException"] = $SourceException
+    $evidence.Data["sourceType"] = $SourceException.GetType().FullName
+  }
+  return $evidence
+}
+function Get-CandidateEvidenceCodes([Exception[]]$Failures) {
+  return @($Failures | ForEach-Object { [string]$_.Data["code"] })
+}
+function Get-CandidatePublicFailureMessage([string]$PrimaryFailureCode) {
+  if ($PrimaryFailureCode -ceq "preapproval-delivery-digest-invalid") { return "Vision preapproval delivery file digest is invalid" }
+  if ($PrimaryFailureCode -ceq "reparse-path-rejected") { return "Vision Candidate path must not traverse a reparse point" }
+  if ($PrimaryFailureCode -ceq "entrypoint-process-binding-failed") { return "Vision Candidate did not remain at the exact extracted entrypoint" }
+  return "Vision Candidate preapproval failed"
+}
+function New-CandidateTerminalFailure(
+  [Exception]$PrimaryFailure,
+  [string]$PrimaryFailureCode,
+  [Exception[]]$CleanupFailures,
+  [Exception[]]$CleanupResiduals,
+  [Exception]$ReportWriteFailure
+) {
+  $inner = [Collections.Generic.List[Exception]]::new()
+  if ($null -ne $PrimaryFailure) {
+    $inner.Add((New-CandidateEvidenceException $PrimaryFailureCode "primary" $PrimaryFailure))
+  }
+  foreach ($failure in @($CleanupFailures)) { $inner.Add($failure) }
+  foreach ($residual in @($CleanupResiduals)) { $inner.Add($residual) }
+  if ($null -ne $ReportWriteFailure) {
+    $inner.Add((New-CandidateEvidenceException "report-write-failed" "report-write" $ReportWriteFailure))
+  }
+  if ($inner.Count -eq 0) { return $null }
+  $message = if ($null -ne $PrimaryFailure) {
+    Get-CandidatePublicFailureMessage $PrimaryFailureCode
+  } elseif (@($CleanupFailures).Count -gt 0 -or @($CleanupResiduals).Count -gt 0) {
+    "Vision Candidate cleanup failed"
+  } else {
+    "Vision Candidate report write failed"
+  }
+  return [AggregateException]::new($message, [Exception[]]$inner.ToArray())
+}
 function Resolve-CandidateEntrypoint([string]$Root, [string]$Relative) {
   if ([string]::IsNullOrWhiteSpace($Relative) -or $Relative -match '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)') { throw "Vision Candidate entrypoint is unsafe" }
   $trustedRoot = Assert-CandidateNonReparsePath $Root "Vision Candidate staging root"
@@ -215,8 +260,8 @@ $previousRuntimeStopped = $false
 $previousTaskWasRunning = $false
 $primaryFailure = $null
 $reportWriteFailure = $null
-$cleanupFailureCodes = [Collections.Generic.List[string]]::new()
-$cleanupResidualCodes = [Collections.Generic.List[string]]::new()
+$cleanupFailures = [Collections.Generic.List[Exception]]::new()
+$cleanupResiduals = [Collections.Generic.List[Exception]]::new()
 $report = [ordered]@{
   schemaVersion = "vem-vision-experimental-conformance-report/v1"
   kind = "vision-experimental-conformance-report"
@@ -401,11 +446,11 @@ try {
       }
     } catch {
       $cleanupOk = $false
-      $cleanupFailureCodes.Add("candidate-process-tree-termination-failed")
+      $cleanupFailures.Add((New-CandidateEvidenceException "candidate-process-tree-termination-failed" "cleanup" $_.Exception))
     }
     try { $candidateProcess.Dispose() } catch {
       $cleanupOk = $false
-      $cleanupFailureCodes.Add("candidate-process-disposal-failed")
+      $cleanupFailures.Add((New-CandidateEvidenceException "candidate-process-disposal-failed" "cleanup" $_.Exception))
     }
   }
   try {
@@ -414,50 +459,51 @@ try {
     }
   } catch {
     $cleanupOk = $false
-    $cleanupFailureCodes.Add("staging-removal-failed")
+    $cleanupFailures.Add((New-CandidateEvidenceException "staging-removal-failed" "cleanup" $_.Exception))
   }
   try {
     if (Test-Path -LiteralPath $staging) {
       $cleanupOk = $false
-      $cleanupResidualCodes.Add("staging-retained")
+      $cleanupResiduals.Add((New-CandidateEvidenceException "staging-retained" "residual" $null))
     }
   } catch {
     $cleanupOk = $false
-    $cleanupFailureCodes.Add("staging-residual-inspection-failed")
+    $cleanupFailures.Add((New-CandidateEvidenceException "staging-residual-inspection-failed" "cleanup" $_.Exception))
   }
   if (($previousRuntimeStopped -or $previousTaskWasRunning) -and $null -ne $previousRuntime) {
     try {
       $report.previousRuntimeRestored = Restore-VerifiedPreviousVisionRuntime $previousRuntime $selectionPathForPrevious $processPathForPrevious
       if (-not $report.previousRuntimeRestored) {
         $cleanupOk = $false
-        $cleanupResidualCodes.Add("previous-runtime-not-restored")
+        $cleanupResiduals.Add((New-CandidateEvidenceException "previous-runtime-not-restored" "residual" $null))
         if ([string]::IsNullOrWhiteSpace($report.failure)) {
           $report.failure = "previous Vision release did not restore with its verified active identity"
         }
       }
     } catch {
       $cleanupOk = $false
-      $cleanupFailureCodes.Add("previous-runtime-restoration-failed")
+      $cleanupFailures.Add((New-CandidateEvidenceException "previous-runtime-restoration-failed" "cleanup" $_.Exception))
     }
   }
   $report.cleanupOk = $cleanupOk
-  $report.cleanupFailureCodes = @($cleanupFailureCodes)
-  $report.cleanupResidualCodes = @($cleanupResidualCodes)
+  $report.cleanupFailureCodes = @(Get-CandidateEvidenceCodes $cleanupFailures)
+  $report.cleanupResidualCodes = @(Get-CandidateEvidenceCodes $cleanupResiduals)
   if (-not $cleanupOk) {
     $report.ok = $false
     if ([string]::IsNullOrWhiteSpace($report.failure)) { $report.failure = Sanitize "Vision Candidate cleanup failed" }
   }
-  try { Write-AtomicJson $ReportPath $report } catch { $reportWriteFailure = $_ }
+  try { Write-AtomicJson $ReportPath $report } catch { $reportWriteFailure = $_.Exception }
 }
 
-if ($null -ne $reportWriteFailure) {
-  if ($null -ne $primaryFailure) {
-    throw [AggregateException]::new(
-      $primaryFailure.Exception.Message,
-      [Exception[]]@($primaryFailure.Exception, $reportWriteFailure.Exception)
-    )
-  }
-  throw $reportWriteFailure
+$primaryException = if ($null -ne $primaryFailure) { $primaryFailure.Exception } else { $null }
+$terminalFailure = $null
+if ($null -ne $reportWriteFailure -or $cleanupFailures.Count -gt 0 -or $cleanupResiduals.Count -gt 0) {
+  $terminalFailure = New-CandidateTerminalFailure `
+    -PrimaryFailure $primaryException `
+    -PrimaryFailureCode $report.primaryFailureCode `
+    -CleanupFailures ([Exception[]]$cleanupFailures.ToArray()) `
+    -CleanupResiduals ([Exception[]]$cleanupResiduals.ToArray()) `
+    -ReportWriteFailure $reportWriteFailure
 }
+if ($null -ne $terminalFailure) { throw $terminalFailure }
 if ($null -ne $primaryFailure) { throw $primaryFailure }
-if (-not $cleanupOk) { throw "Vision Candidate cleanup failed" }
