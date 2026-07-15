@@ -1140,7 +1140,6 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(bios, new RegExp(`<${setting}>true</${setting}>`));
     }
     assert.match(bios, /<UserAccounts>[\s\S]*?<Name>VEMOobeBootstrap<\/Name>/);
-    assert.match(bios, /<Group>Users<\/Group>/);
     const autoLogon = singleXmlBlockForTest(
       bios,
       "AutoLogon",
@@ -1150,6 +1149,15 @@ describe("real deterministic Factory ISO builder", () => {
       bios,
       "LocalAccount",
       "Factory unattended has exactly one temporary OOBE local account",
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        localAccount,
+        "Group",
+        "temporary OOBE bootstrap account has one group",
+      ),
+      "Administrators",
+      "temporary OOBE bootstrap account is intentionally elevated so Win10 FirstLogonCommands can remove HKLM AutoLogonCount",
     );
     assert.equal(
       singleXmlTextForTest(autoLogon, "Username", "AutoLogon has one username"),
@@ -1832,7 +1840,11 @@ describe("real deterministic Factory ISO builder", () => {
         /if \(-not \(Test-Path -LiteralPath \$kioskAutologonStatePath -PathType Leaf\)\) \{ throw 'Factory OOBE kiosk autologon handoff is unavailable' \}/,
       );
       assert.match(completeOobe, /Write-CleanupStatus 'autologon-restored'/);
-      assert.match(completeOobe, /Remove-LocalUser[^\n]+VEMOobeBootstrap/);
+      assert.match(
+        completeOobe,
+        /Remove-LocalUser[^\n]+VEMOobeBootstrap/,
+        "temporary elevated OOBE bootstrap account is removed by cleanup",
+      );
       assert.match(completeOobe, /AddMinutes\(30\)/);
       assert.match(completeOobe, /OOBEInProgress/);
       assert.match(completeOobe, /SystemSetupInProgress/);
