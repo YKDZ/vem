@@ -40,6 +40,7 @@ import {
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { admitFactoryAcceptance } from "./factory-acceptance-admission.mjs";
 import { canonicalJson, createFactoryManifest } from "./factory-manifest.mjs";
+import { factoryOobePrivacySuppressionScript } from "./oobe-registry.mjs";
 import { createSignedAssetEvidence } from "./verify-asset-evidence.mjs";
 import { verifyFactoryVisionDelivery } from "./verify-vision-delivery-assembly.mjs";
 import {
@@ -106,6 +107,24 @@ function decodeWimXmlForTest(value) {
     return swapped.toString("utf16le");
   }
   return bytes.toString("utf8");
+}
+
+function singleXmlBlockForTest(xml, tag, message) {
+  const blocks = [
+    ...xml.matchAll(
+      new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "g"),
+    ),
+  ];
+  assert.equal(blocks.length, 1, message);
+  return blocks[0][1];
+}
+
+function singleXmlTextForTest(xml, tag, message) {
+  const values = [
+    ...xml.matchAll(new RegExp(`<${tag}>([^<]+)</${tag}>`, "g")),
+  ].map((match) => match[1]);
+  assert.equal(values.length, 1, message);
+  return values[0];
 }
 
 function expectedFirstWimImage(path) {
@@ -185,6 +204,60 @@ describe("7-Zip banner version parsing", () => {
       ),
       false,
     );
+  });
+});
+
+describe("Factory OOBE registry suppression", () => {
+  it("marks the Default User profile as having seen the China local-account data-transfer notice", () => {
+    const script = factoryOobePrivacySuppressionScript();
+    assert.match(
+      script,
+      /\$defaultUserHivePath = 'C:\\Users\\Default\\NTUSER\.DAT'/,
+    );
+    assert.match(
+      script,
+      /\$defaultUserHiveRegPath = 'HKU\\VEM_FACTORY_DEFAULT_USER'/,
+    );
+    assert.match(
+      script,
+      /\$defaultUserPdePath = 'Registry::HKEY_USERS\\VEM_FACTORY_DEFAULT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CloudExperienceHost\\Intent\\PersonalDataExport'/,
+    );
+    assert.match(
+      script,
+      /reg\.exe load \$defaultUserHiveRegPath \$defaultUserHivePath/,
+    );
+    assert.match(
+      script,
+      /New-ItemProperty -Path \$defaultUserPdePath -Name PDEShown -Value 1 -PropertyType DWord -Force/,
+    );
+    assert.match(
+      script,
+      /finally \{[\s\S]+if \(\$defaultUserHiveLoaded\)[\s\S]+reg\.exe unload \$defaultUserHiveRegPath/,
+    );
+    assert.doesNotMatch(script, /\$env:|COMPUTERNAME|USERNAME|HKCU:/);
+  });
+
+  it("escapes caller-provided registry literals without deriving host-specific paths", () => {
+    const script = factoryOobePrivacySuppressionScript({
+      policyPath: "HKLM:\\SOFTWARE\\VEM\\O'BEE",
+      statePath: "HKLM:\\SOFTWARE\\VEM\\OOBEState",
+      defaultUserHivePath: "D:\\Factory\\Default's\\NTUSER.DAT",
+      defaultUserHiveName: "VEM_FACTORY_TEST_HIVE",
+    });
+    assert.match(script, /\$oobePolicyPath = 'HKLM:\\SOFTWARE\\VEM\\O''BEE'/);
+    assert.match(
+      script,
+      /\$defaultUserHivePath = 'D:\\Factory\\Default''s\\NTUSER\.DAT'/,
+    );
+    assert.match(
+      script,
+      /\$defaultUserHiveRegPath = 'HKU\\VEM_FACTORY_TEST_HIVE'/,
+    );
+    assert.match(
+      script,
+      /Registry::HKEY_USERS\\VEM_FACTORY_TEST_HIVE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CloudExperienceHost\\Intent\\PersonalDataExport/,
+    );
+    assert.doesNotMatch(script, /\$env:|COMPUTERNAME|USERNAME|HKCU:/);
   });
 });
 
@@ -1067,8 +1140,94 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(bios, new RegExp(`<${setting}>true</${setting}>`));
     }
     assert.match(bios, /<UserAccounts>[\s\S]*?<Name>VEMOobeBootstrap<\/Name>/);
-    assert.match(bios, /<Group>Users<\/Group>/);
-    assert.doesNotMatch(bios, /<AutoLogon>|<FirstLogonCommands>/);
+    const autoLogon = singleXmlBlockForTest(
+      bios,
+      "AutoLogon",
+      "Factory unattended has exactly one temporary OOBE AutoLogon",
+    );
+    const localAccount = singleXmlBlockForTest(
+      bios,
+      "LocalAccount",
+      "Factory unattended has exactly one temporary OOBE local account",
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        localAccount,
+        "Group",
+        "temporary OOBE bootstrap account has one group",
+      ),
+      "Administrators",
+      "temporary OOBE bootstrap account is intentionally elevated so Win10 FirstLogonCommands can set HKLM AutoLogonCount to the documented zero workaround",
+    );
+    assert.equal(
+      singleXmlTextForTest(autoLogon, "Username", "AutoLogon has one username"),
+      singleXmlTextForTest(
+        localAccount,
+        "Name",
+        "temporary local account has one name",
+      ),
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        autoLogon,
+        "Value",
+        "AutoLogon has one password value",
+      ),
+      singleXmlTextForTest(
+        localAccount,
+        "Value",
+        "temporary local account has one password value",
+      ),
+    );
+    assert.equal(
+      singleXmlTextForTest(autoLogon, "Username", "AutoLogon has one username"),
+      "VEMOobeBootstrap",
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        autoLogon,
+        "Value",
+        "AutoLogon has one password value",
+      ),
+      "VEM-Factory-OOBE-v1!",
+    );
+    assert.equal(
+      singleXmlTextForTest(autoLogon, "Enabled", "AutoLogon has one Enabled"),
+      "true",
+    );
+    assert.deepEqual(
+      [...bios.matchAll(/<LogonCount>([^<]+)<\/LogonCount>/g)].map(
+        (match) => match[1],
+      ),
+      ["1"],
+      "Factory unattended AutoLogon is one logon only",
+    );
+    const firstLogonCommands = singleXmlBlockForTest(
+      bios,
+      "FirstLogonCommands",
+      "Factory unattended sets the temporary OOBE AutoLogon counter to the documented zero workaround on its first bootstrap login",
+    );
+    const resetAutoLogonCount = singleXmlBlockForTest(
+      firstLogonCommands,
+      "SynchronousCommand",
+      "Factory unattended has one synchronous first-logon cleanup command",
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        resetAutoLogonCount,
+        "Order",
+        "first-logon AutoLogonCount cleanup has one order",
+      ),
+      "1",
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        resetAutoLogonCount,
+        "CommandLine",
+        "first-logon AutoLogonCount workaround has one exact command",
+      ),
+      "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command &quot;Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -Type DWord -Value 0 -Force&quot;",
+    );
     assert.doesNotMatch(bios, /YKDZ/);
 
     const production = factoryAutounattendXml(
@@ -1399,8 +1558,8 @@ describe("real deterministic Factory ISO builder", () => {
         [...unattended.matchAll(/<Password><Value>([^<]+)<\/Value>/g)].map(
           (match) => match[1],
         ),
-        ["VEM-Factory-OOBE-v1!"],
-        "Factory unattended media may embed only the disposable OOBE bootstrap password",
+        ["VEM-Factory-OOBE-v1!", "VEM-Factory-OOBE-v1!"],
+        "Factory unattended media may embed only the disposable OOBE bootstrap password for account creation and one-time AutoLogon",
       );
       const baseline = JSON.parse(
         await readFile(
@@ -1582,12 +1741,50 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.ok(prepareOobe.includes("^[\\x20-\\x7E]+$"));
       assert.match(prepareOobe, /bootstrap-factory-runtime\.ps1/);
+      assert.match(prepareOobe, /preserve-kiosk-autologon/);
+      assert.match(
+        prepareOobe,
+        /Get-ItemProperty -Path \$winlogonPath -Name DefaultUserName, DefaultPassword -ErrorAction Stop/,
+      );
+      assert.match(
+        prepareOobe,
+        /\$kioskAutologonPassword -cne \[string\]\$kiosk\.password/,
+      );
+      assert.match(prepareOobe, /oobe-kiosk-autologon-password/);
+      assert.match(
+        prepareOobe,
+        /Remove-Item -LiteralPath \$temporaryKioskAutologonStatePath -Force -ErrorAction SilentlyContinue[\s\S]+New-Item -ItemType File -Path \$temporaryKioskAutologonStatePath -Force -ErrorAction Stop[\s\S]+icacls\.exe \$temporaryKioskAutologonStatePath \/inheritance:r \/grant:r "\*S-1-5-18:F" "\*S-1-5-32-544:F"[\s\S]+\$LASTEXITCODE -ne 0[\s\S]+WriteAllText\(\$temporaryKioskAutologonStatePath[\s\S]+Move-Item -LiteralPath \$temporaryKioskAutologonStatePath -Destination \$kioskAutologonStatePath -Force/,
+        "kiosk autologon handoff temp file is restricted before its password is written or moved",
+      );
+      assert.match(
+        prepareOobe,
+        /catch \{[\s\S]+Remove-Item[^\n]+\$temporaryKioskAutologonStatePath[\s\S]+Remove-Item[^\n]+\$kioskAutologonStatePath[\s\S]+Remove-Item[^\n]+\$personalizationPath/,
+        "handoff failure cleanup removes both staged and final password paths",
+      );
       assert.match(prepareOobe, /VEMFactoryOobeCleanup/);
       assert.match(prepareOobe, /oobe-bootstrap-status\.json/);
       assert.match(prepareOobe, /'ingest-personalization'/);
       assert.match(prepareOobe, /'suppress-oobe-privacy'/);
       assert.match(prepareOobe, /DisablePrivacyExperience/);
       assert.match(prepareOobe, /PrivacyConsentStatus/);
+      assert.match(prepareOobe, /C:\\Users\\Default\\NTUSER\.DAT/);
+      assert.match(prepareOobe, /HKU\\VEM_FACTORY_DEFAULT_USER/);
+      assert.match(
+        prepareOobe,
+        /CloudExperienceHost\\Intent\\PersonalDataExport/,
+      );
+      assert.match(
+        prepareOobe,
+        /New-ItemProperty -Path \$defaultUserPdePath -Name PDEShown -Value 1 -PropertyType DWord -Force/,
+      );
+      assert.match(
+        prepareOobe,
+        /reg\.exe load \$defaultUserHiveRegPath \$defaultUserHivePath[\s\S]+finally \{[\s\S]+reg\.exe unload \$defaultUserHiveRegPath/,
+      );
+      assert.doesNotMatch(
+        prepareOobe,
+        /CloudExperienceHost[\s\S]{0,240}\$env:|HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CloudExperienceHost/,
+      );
       assert.match(
         prepareOobe,
         /Test-Path -LiteralPath \$oobeStatePath -PathType Container/,
@@ -1603,6 +1800,11 @@ describe("real deterministic Factory ISO builder", () => {
         /Exception\.Message|ScriptStackTrace|FullyQualifiedErrorId|errorId/,
       );
       assert.match(prepareOobe, /New-ScheduledTaskTrigger -AtStartup/);
+      assert.match(
+        prepareOobe,
+        /New-ScheduledTaskSettingsSet -RestartCount 2 -RestartInterval \(New-TimeSpan -Minutes 1\)[\s\S]+Register-ScheduledTask[\s\S]+-Settings \$cleanupSettings/,
+        "cleanup task must have bounded scheduler-managed restart retries",
+      );
       assert.match(
         prepareOobe,
         /Write-BootstrapStatus 'succeeded' 'complete'[\s\S]+Start-ScheduledTask -TaskName 'VEMFactoryOobeCleanup'/,
@@ -1634,10 +1836,22 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
       assert.match(
         completeOobe,
-        /DefaultUserName -Value 'VEMKiosk'[\s\S]+DefaultDomainName -Value \$env:COMPUTERNAME/,
+        /Set-ItemProperty -Path \$winlogonPath -Name DefaultPassword -Value \$kioskAutologonPassword -Force[\s\S]+Remove-ItemProperty -Path \$winlogonPath -Name AutoLogonCount/,
+      );
+      assert.match(
+        completeOobe,
+        /DefaultUserName -Value 'VEMKiosk'[\s\S]+DefaultDomainName -Value \$env:COMPUTERNAME[\s\S]+DefaultPassword -Value \$kioskAutologonPassword/,
+      );
+      assert.match(
+        completeOobe,
+        /if \(-not \(Test-Path -LiteralPath \$kioskAutologonStatePath -PathType Leaf\)\) \{ throw 'Factory OOBE kiosk autologon handoff is unavailable' \}/,
       );
       assert.match(completeOobe, /Write-CleanupStatus 'autologon-restored'/);
-      assert.match(completeOobe, /Remove-LocalUser[^\n]+VEMOobeBootstrap/);
+      assert.match(
+        completeOobe,
+        /Remove-LocalUser[^\n]+VEMOobeBootstrap/,
+        "temporary elevated OOBE bootstrap account is removed by cleanup",
+      );
       assert.match(completeOobe, /AddMinutes\(30\)/);
       assert.match(completeOobe, /OOBEInProgress/);
       assert.match(completeOobe, /SystemSetupInProgress/);
@@ -1645,10 +1859,42 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(completeOobe, /vem-factory-oobe-cleanup-status\/v1/);
       assert.match(
         completeOobe,
-        /Write-CleanupStatus 'ready'[\s\S]+Write-CleanupStatus 'autologon-restored'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'/,
+        /Write-CleanupStatus 'ready'[\s\S]+Write-CleanupStatus 'autologon-restored'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'[\s\S]+Remove-Item[^\n]+\$kioskAutologonStatePath[^\n]+ErrorAction Stop[\s\S]+Test-Path -LiteralPath \$kioskAutologonStatePath[\s\S]+handoff remains after cleanup[\s\S]+Remove-Item[^\n]+\$personalizationPath[\s\S]+Write-CleanupStatus 'credentials-removed'/,
+      );
+      assert.match(
+        completeOobe,
+        /\$cleanupStatus\.phase -in @\('ready', 'autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected', 'reboot-pending', 'complete'\)/,
+      );
+      assert.match(
+        completeOobe,
+        /if \(\$cleanupPhase -eq 'complete'\) \{[\s\S]+Remove-CleanupTask[\s\S]+exit 0\s+\}/,
       );
       assert.match(completeOobe, /Write-CleanupStatus 'media-ejected'/);
-      assert.match(completeOobe, /Write-CleanupStatus 'complete'/);
+      assert.match(
+        completeOobe,
+        /Get-BootIdentity[\s\S]+Write-CleanupStatus 'reboot-pending' \$rebootOriginBootIdentity[\s\S]+Request-HandoffReboot \$rebootOriginBootIdentity \$cleanupStatus/,
+        "cleanup persists its pre-reboot boot identity before requesting the kiosk handoff reboot",
+      );
+      assert.match(
+        completeOobe,
+        /\[string\]::Equals\(\$currentBootIdentity, \$rebootOriginBootIdentity, \[StringComparison\]::Ordinal\)[\s\S]+Request-HandoffReboot \$rebootOriginBootIdentity \$cleanupStatus/,
+        "same-boot reboot-pending cleanup must use the scheduler-bounded handoff retry",
+      );
+      assert.match(
+        completeOobe,
+        /Get-ActiveVemKioskConsoleSession[\s\S]+did not observe an active VEMKiosk console session after reboot[\s\S]+Write-CleanupStatus 'complete' \$rebootOriginBootIdentity \$currentBootIdentity \$kioskConsoleSession[\s\S]+Remove-CleanupTask/,
+        "only a post-reboot VEMKiosk console session may complete and unregister cleanup",
+      );
+      assert.match(
+        completeOobe,
+        /function Request-HandoffReboot[\s\S]+\$previousAttempts -ge 3[\s\S]+Restart-Computer -Force -ErrorAction Stop/,
+        "restart failures must persist bounded task-managed handoff state",
+      );
+      assert.match(
+        completeOobe,
+        /rebootAttemptCount[\s\S]+lastRebootFailure/,
+        "cleanup status must retain the bounded reboot attempt and failure evidence",
+      );
       assert.match(
         completeOobe,
         /if \(-not \$oobeComplete\) \{ throw 'VEM Factory OOBE did not complete before cleanup deadline' \}[\s\S]+Remove-LocalUser/,
@@ -1779,6 +2025,42 @@ describe("real deterministic Factory ISO builder", () => {
       ).toString("utf8");
       assert.doesNotMatch(specialized, /YKDZ/);
     }
+  });
+
+  it("passes the combined validated maintenance role pools to controlled ingress setup", async () => {
+    const prepareFactoryRuntime = await readFile(
+      new URL("../windows/prepare-factory-runtime.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      prepareFactoryRuntime,
+      /RolePools = @\(\$rolePools\.All\)[\s\S]+RunnerSourceAllowlist = @\(\$rolePools\.Runner\)[\s\S]+MaintainerSourceAllowlist = @\(\$rolePools\.Maintainer\)/,
+    );
+    const setupArguments =
+      /\$setupArguments = @\{([\s\S]*?)\n  \}/.exec(
+        prepareFactoryRuntime,
+      )?.[1] ?? "";
+    assert.ok(setupArguments, "prepare-factory-runtime has setup arguments");
+    assert.match(
+      setupArguments,
+      /MaintenanceIngressSourceAllowlist = @\(\$Preflight\.RolePools\)/,
+    );
+    assert.match(
+      setupArguments,
+      /MaintenanceRunnerSourceAllowlist = @\(\$Preflight\.RunnerSourceAllowlist\)/,
+    );
+    assert.match(
+      setupArguments,
+      /MaintenanceMaintainerSourceAllowlist = @\(\$Preflight\.MaintainerSourceAllowlist\)/,
+    );
+    assert.match(
+      setupArguments,
+      /MaintenanceIngressSourceAllowlist = @\(\$Preflight\.RolePools\)[\s\S]+MaintenanceRunnerSourceAllowlist = @\(\$Preflight\.RunnerSourceAllowlist\)[\s\S]+MaintenanceMaintainerSourceAllowlist = @\(\$Preflight\.MaintainerSourceAllowlist\)/,
+    );
+    assert.match(
+      prepareFactoryRuntime,
+      /Invoke-NamedPowerShellScript -ScriptPath \(Join-Path \$scriptsRoot "setup-scheduled-tasks\.ps1"\) -Arguments \$setupArguments/,
+    );
   });
 
   it("replays the source boot configuration and injects OEM media into a deterministic Windows ISO", async () => {

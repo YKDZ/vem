@@ -4243,8 +4243,12 @@ export function buildFactoryPreclaimVerificationScript(options = {}) {
     "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json";
   const oobeStatusPath =
     "C:\\ProgramData\\VEM\\factory\\oobe-bootstrap-status.json";
+  const cleanupStatusPath =
+    "C:\\ProgramData\\VEM\\factory\\oobe-cleanup-status.json";
   const deprecatedOobeAnswerPath =
     "C:\\ProgramData\\VEM\\factory\\oobe-unattend.xml";
+  const retainedKioskAutologonHandoffPath =
+    "C:\\ProgramData\\VEM\\factory\\oobe-kiosk-autologon-password";
   const identityPaths = [
     "C:\\ProgramData\\VEM\\provisioning\\machine-profile.json",
     "C:\\ProgramData\\VEM\\provisioning\\provisioning-profile.json",
@@ -4255,10 +4259,16 @@ $verifierPath = ${psString(verifierPath)}
 $verifierEvidencePath = ${psString(verifierEvidencePath)}
 $machineConfigPath = ${psString(machineConfigPath)}
 $oobeStatusPath = ${psString(oobeStatusPath)}
+$cleanupStatusPath = ${psString(cleanupStatusPath)}
 $deprecatedOobeAnswerPath = ${psString(deprecatedOobeAnswerPath)}
+$retainedKioskAutologonHandoffPath = ${psString(retainedKioskAutologonHandoffPath)}
 $identityPaths = ${psString(JSON.stringify(identityPaths))} | ConvertFrom-Json
 if (-not (Test-Path -LiteralPath $verifierPath -PathType Leaf)) {
   throw "Factory ISO verifier is missing: $verifierPath"
+}
+function ConvertTo-BootIdentity($Value) {
+  if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return $null }
+  return ([DateTime]$Value).ToUniversalTime().ToString('o')
 }
 
 try {
@@ -4267,9 +4277,35 @@ try {
     $oobeStatus = if (Test-Path -LiteralPath $oobeStatusPath -PathType Leaf) {
       Get-Content -LiteralPath $oobeStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
     } else { $null }
+    $cleanupStatus = if (Test-Path -LiteralPath $cleanupStatusPath -PathType Leaf) {
+      Get-Content -LiteralPath $cleanupStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    } else { $null }
     $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
     $cleanupTask = Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue
     $personalizationVolumes = @(Get-Volume -FileSystemLabel 'VEM_PERSONALIZATION' -ErrorAction SilentlyContinue)
+    $retainedKioskAutologonHandoffPresent = Test-Path -LiteralPath $retainedKioskAutologonHandoffPath
+    $currentBoot = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    $currentBootIdentity = ConvertTo-BootIdentity $currentBoot.LastBootUpTime
+    $console = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+    $consoleUser = [string]$console.UserName
+    $consoleUserName = if ([string]::IsNullOrWhiteSpace($consoleUser)) { $null } else { $consoleUser.Split('\\')[-1] }
+    $activeVemKioskConsoleSession = $consoleUserName -ceq 'VEMKiosk'
+    $rebootOriginBootIdentity = if ($null -ne $cleanupStatus) { ConvertTo-BootIdentity $cleanupStatus.rebootOriginBootIdentity } else { $null }
+    $completedBootIdentity = if ($null -ne $cleanupStatus) { ConvertTo-BootIdentity $cleanupStatus.completedBootIdentity } else { $null }
+    $completedBootProofIsPostReboot =
+      -not [string]::IsNullOrWhiteSpace($completedBootIdentity) -and
+      $completedBootIdentity -cne $rebootOriginBootIdentity
+    $currentBootIsPostReboot =
+      -not [string]::IsNullOrWhiteSpace([string]$currentBootIdentity) -and
+      $currentBootIdentity -cne $rebootOriginBootIdentity
+    $cleanupComplete =
+      $null -ne $cleanupStatus -and
+      $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1' -and
+      $cleanupStatus.phase -ceq 'complete' -and
+      -not [string]::IsNullOrWhiteSpace($rebootOriginBootIdentity) -and
+      $completedBootProofIsPostReboot -and
+      $currentBootIsPostReboot -and
+      [string]$cleanupStatus.kioskConsoleSession.user -ceq 'VEMKiosk'
     $oobeComplete =
       $null -ne $oobeStatus -and
       $oobeStatus.state -eq 'succeeded' -and
@@ -4279,9 +4315,12 @@ try {
       [int]$setupState.SetupType -eq 0 -and
     [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
     -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
-    $null -eq (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue) -and
+      -not $retainedKioskAutologonHandoffPresent -and
+      $null -eq (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue) -and
       $null -eq $cleanupTask -and
-      $personalizationVolumes.Count -eq 0
+      $personalizationVolumes.Count -eq 0 -and
+      $cleanupComplete -and
+      $activeVemKioskConsoleSession
     if ($oobeComplete) { break }
     Start-Sleep -Seconds 10
   } while ((Get-Date) -lt $oobeDeadline)
@@ -4388,9 +4427,20 @@ try {
         setupType = $setupState.SetupType
         unattendOverride = $setupState.UnattendFile
         deprecatedAnswerPresent = Test-Path -LiteralPath $deprecatedOobeAnswerPath
+        retainedKioskAutologonHandoffPresent = $retainedKioskAutologonHandoffPresent
+        retainedKioskAutologonHandoffPath = $retainedKioskAutologonHandoffPath
         bootstrapAccountPresent = $null -ne (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue)
         cleanupTaskPresent = $null -ne $cleanupTask
         personalizationVolumeCount = $personalizationVolumes.Count
+        cleanupPhase = if ($null -ne $cleanupStatus) { [string]$cleanupStatus.phase } else { $null }
+        rebootOriginBootIdentity = $rebootOriginBootIdentity
+        completedBootIdentity = $completedBootIdentity
+        currentBootIdentity = $currentBootIdentity
+        completedBootProofIsPostReboot = $completedBootProofIsPostReboot
+        currentBootIsPostReboot = $currentBootIsPostReboot
+        postRebootBootIdentityChanged = $cleanupComplete
+        activeVemKioskConsoleSession = $activeVemKioskConsoleSession
+        consoleUser = $consoleUser
       }
     }
   }
@@ -8376,15 +8426,32 @@ function buildEncodedPowerShellCommand(script) {
 const TRANSIENT_SSH_TRANSPORT_FAILURE =
   /(?:kex_exchange_identification|ssh_exchange_identification|connection (?:closed|refused|reset|timed out)|no route to host|operation timed out)/i;
 
-function spawnSshOperation(command, args, { signal } = {}) {
+export function parseStructuredSshVerifierEvidence(stdout) {
+  try {
+    const parsed = JSON.parse(String(stdout ?? ""));
+    return parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function spawnSshOperation(command, args, { input, signal } = {}) {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
     const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       signal,
     });
+    if (input !== undefined) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -8408,6 +8475,7 @@ export async function runTransientSshOperation(
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
     maxAttempts = 24,
     retryDelayMs = 5000,
+    input,
     signal,
   } = {},
 ) {
@@ -8422,9 +8490,14 @@ export async function runTransientSshOperation(
   };
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfAborted();
-    const result = await run(command, args, { signal });
+    const result = await run(command, args, { input, signal });
     throwIfAborted();
     if (result.status === 0) return result;
+    // A remote verifier can finish and emit its evidence before an SSH transport
+    // reset. Preserve that first result for the caller instead of replacing it.
+    if (parseStructuredSshVerifierEvidence(result.stdout) !== null) {
+      return result;
+    }
     const diagnostic = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
     if (
       attempt === maxAttempts ||
@@ -9004,20 +9077,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           const sshCommand = buildSshCommand(options);
           const remoteScript = buildRemotePowerShellScript(options);
           const remoteCommand = buildStdinPowerShellCommand();
-          const result = spawnSync(
+          const result = await runTransientSshOperation(
             sshCommand[0],
             [...sshCommand.slice(1), remoteCommand],
             {
-              encoding: "utf8",
               input: `${remoteScript}\n`,
-              stdio: ["pipe", "pipe", "pipe"],
+              maxAttempts: 72,
+              retryDelayMs: 5000,
             },
           );
           if (result.stderr) process.stderr.write(result.stderr);
-          let report;
-          try {
-            report = JSON.parse(result.stdout);
-          } catch {
+          const report = parseStructuredSshVerifierEvidence(result.stdout);
+          if (report === null) {
             throw new Error(
               "factory-preclaim-verify did not return structured verifier evidence",
             );
