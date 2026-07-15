@@ -6,81 +6,250 @@ import { describe, it } from "node:test";
 import {
   CdpClient,
   activateVisibleSelector,
+  captureScreenshot,
   discoverMachineUiTarget,
   openMachineUiCdpSidecar,
   rewriteWebSocketDebuggerUrl,
   runVisibleMachineSaleScenario,
-  waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 
+const BINDING = {
+  targetId: "machine-target",
+  processId: "machine.exe:4242",
+  sessionId: "windows-session:1",
+};
+
 describe("machine-ui-cdp-driver", () => {
-  it("selects only strict tauri hash route targets", async () => {
+  it("binds discovery to the caller-observed target, process, and session", async () => {
     await withFakeHttpTargets(
-      [
-        {
-          id: "wrong-host",
-          url: "http://localhost/#/sale",
-          webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/wrong",
-        },
-        {
-          id: "strict",
-          url: "http://tauri.localhost/#/sale",
-          webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/strict",
-        },
-      ],
+      [target("machine-target", "#/sale")],
       async (endpoint) => {
-        const target = await discoverMachineUiTarget({ endpoint });
-        assert.equal(target.id, "strict");
-        assert.equal(target.route, "#/sale");
+        const selected = await discoverMachineUiTarget({
+          endpoint,
+          expectedTargetBinding: BINDING,
+        });
+        assert.equal(selected.id, "machine-target");
+        assert.deepEqual(selected.binding, BINDING);
       },
     );
   });
 
-  it("rejects target discovery without a strict tauri route", async () => {
-    await withFakeHttpTargets(
+  for (const [name, targets, binding, pattern] of [
+    [
+      "zero strict targets",
       [
         {
           id: "devtools",
           url: "devtools://devtools/bundled/inspector.html",
-          webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/devtools",
+          webSocketDebuggerUrl: "ws://127.0.0.1/devtools/page/devtools",
         },
       ],
-      async (endpoint) => {
+      BINDING,
+      /exactly one strict tauri target; found 0/,
+    ],
+    [
+      "multiple strict targets",
+      [target("machine-target", "#/sale"), target("stale", "#/checkout")],
+      BINDING,
+      /exactly one strict tauri target; found 2/,
+    ],
+    [
+      "a stale target id",
+      [target("stale", "#/sale")],
+      BINDING,
+      /target binding is stale/,
+    ],
+    [
+      "an incomplete external binding",
+      [target("machine-target", "#/sale")],
+      { targetId: "machine-target", processId: "machine.exe:4242" },
+      /expectedTargetBinding\.sessionId is required/,
+    ],
+  ]) {
+    it(`rejects ${name}`, async () => {
+      await withFakeHttpTargets(targets, async (endpoint) => {
         await assert.rejects(
-          discoverMachineUiTarget({ endpoint }),
-          /no strict tauri hash route/,
+          discoverMachineUiTarget({
+            endpoint,
+            expectedTargetBinding: binding,
+          }),
+          pattern,
         );
-      },
-    );
-  });
+      });
+    });
+  }
 
-  it("rewrites debugger websocket URLs to the forwarded endpoint", () => {
+  it("rewrites ws/wss debugger URLs, including an IPv6 forward", () => {
     assert.equal(
       rewriteWebSocketDebuggerUrl(
         "ws://127.0.0.1:9222/devtools/page/ABC?token=remote",
-        "http://127.0.0.1:49152",
+        "http://[::1]:49152",
       ),
-      "ws://127.0.0.1:49152/devtools/page/ABC?token=remote",
+      "ws://[::1]:49152/devtools/page/ABC?token=remote",
+    );
+    assert.equal(
+      rewriteWebSocketDebuggerUrl(
+        "wss://remote.test/devtools/page/ABC",
+        "https://127.0.0.1:49153",
+      ),
+      "wss://127.0.0.1:49153/devtools/page/ABC",
+    );
+    assert.throws(
+      () =>
+        rewriteWebSocketDebuggerUrl(
+          "http://127.0.0.1/devtools/page/ABC",
+          "http://127.0.0.1:49152",
+        ),
+      /must use ws or wss/,
     );
   });
 
-  it("dispatches physical touch input to visible selector bounds", async () => {
+  it("opens an SSH tunnel only after readiness and drains stderr", async () => {
+    const child = new FakeChildProcess();
+    let ready = false;
+    const sidecar = await openMachineUiCdpSidecar({
+      remote: "user@example.test",
+      localPort: 49222,
+      processAdapter: {
+        spawn(command, args, options) {
+          child.command = command;
+          child.args = args;
+          child.options = options;
+          return child;
+        },
+        async waitForReady(details) {
+          assert.equal(details.endpoint, "http://127.0.0.1:49222");
+          child.stderr.emit("data", "ssh diagnostic");
+          ready = true;
+        },
+      },
+    });
+
+    assert.equal(ready, true);
+    assert.equal(child.stderr.resumed, true);
+    assert.deepEqual(child.args.slice(0, 6), [
+      "-N",
+      "-o",
+      "ExitOnForwardFailure=yes",
+      "-L",
+      "127.0.0.1:49222:127.0.0.1:9222",
+      "user@example.test",
+    ]);
+    const closing = sidecar.close();
+    assert.deepEqual(child.killSignals, ["SIGTERM"]);
+    assert.equal(child.exitCode, null);
+    child.finish(0, "SIGTERM");
+    await closing;
+  });
+
+  it("rejects child process spawn errors and exits before readiness", async () => {
+    await assert.rejects(
+      openMachineUiCdpSidecar({
+        remote: "user@example.test",
+        localPort: 49223,
+        processAdapter: {
+          spawn() {
+            throw new Error("ENOENT");
+          },
+        },
+      }),
+      /SSH tunnel spawn failed: ENOENT/,
+    );
+
+    const child = new FakeChildProcess();
+    const opening = openMachineUiCdpSidecar({
+      remote: "user@example.test",
+      localPort: 49224,
+      processAdapter: {
+        spawn() {
+          queueMicrotask(() => {
+            child.stderr.emit("data", "bind failed");
+            child.finish(255, null);
+          });
+          return child;
+        },
+        waitForReady() {
+          return new Promise(() => {});
+        },
+      },
+    });
+    await assert.rejects(opening, /exited before readiness.*bind failed/);
+  });
+
+  it("uses browser WebSocket semantics and cleans up synchronous send throws", async () => {
+    assert.throws(
+      () =>
+        new CdpClient("http://127.0.0.1/devtools/page/1", {
+          webSocketFactory: () => ({}),
+        }),
+      /must use ws or wss/,
+    );
+    const { factory, sockets } = createFakeWebSocketFactory(() => null);
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/1", {
+      webSocketFactory: factory,
+    });
+    await client.connect();
+    sockets[0].sendError = new Error("socket write failed");
+    await assert.rejects(client.send("Runtime.evaluate"), /send failed/);
+    assert.equal(client.pending.size, 0);
+    await client.close();
+
+    const emitterClient = new CdpClient("ws://127.0.0.1/devtools/page/2", {
+      webSocketFactory: () => new EventEmitter(),
+    });
+    await assert.rejects(
+      emitterClient.connect(),
+      /browser WebSocket EventTarget interface/,
+    );
+  });
+
+  it("times out requests and awaits WebSocket close", async () => {
+    const { factory, sockets } = createFakeWebSocketFactory(() => null, {
+      autoClose: false,
+    });
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/timeout", {
+      webSocketFactory: factory,
+      defaultTimeoutMs: 50,
+    });
+    await client.connect();
+    await assert.rejects(
+      client.send("Runtime.evaluate", {}, { timeoutMs: 5 }),
+      /timed out/,
+    );
+    assert.equal(client.pending.size, 0);
+    let closed = false;
+    const closing = client.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    assert.equal(closed, false);
+    sockets[0].finishClose();
+    await closing;
+    assert.equal(closed, true);
+  });
+
+  it("dispatches only physically actionable touch input and always ends it", async () => {
     const { factory, sockets } = createFakeWebSocketFactory((message) => {
       if (message.method === "Runtime.evaluate") {
-        return {
-          id: message.id,
-          result: {
-            result: {
-              value: {
-                selector: "[data-testid='buy']",
-                exists: true,
-                visible: true,
-                bounds: { x: 10, y: 20, width: 40, height: 60 },
-                center: { x: 30, y: 50 },
-              },
-            },
+        return cdpValue(
+          {
+            selector: "[data-testid='buy']",
+            exists: true,
+            actionable: true,
+            inViewport: true,
+            pointerEvents: "auto",
+            hitTarget: true,
+            bounds: { x: 10, y: 20, width: 40, height: 60 },
+            center: { x: 30, y: 50 },
           },
-        };
+          message.id,
+        );
+      }
+      if (
+        message.method === "Input.dispatchTouchEvent" &&
+        message.params.type === "touchStart"
+      ) {
+        return { id: message.id, error: { message: "press failed" } };
       }
       return { id: message.id, result: {} };
     });
@@ -88,180 +257,370 @@ describe("machine-ui-cdp-driver", () => {
       webSocketFactory: factory,
     });
     await client.connect();
-
-    const probe = await activateVisibleSelector(client, "[data-testid='buy']", {
-      kind: "touch",
-    });
-
-    const sent = sockets[0].sent;
-    assert.equal(probe.center.x, 30);
+    await assert.rejects(
+      activateVisibleSelector(client, "[data-testid='buy']"),
+      /press failed/,
+    );
     assert.deepEqual(
-      sent.map((message) => message.method),
+      sockets[0].sent.map((message) => [message.method, message.params.type]),
       [
-        "Runtime.evaluate",
-        "Input.dispatchTouchEvent",
-        "Input.dispatchTouchEvent",
+        ["Runtime.evaluate", undefined],
+        ["Input.dispatchTouchEvent", "touchStart"],
+        ["Input.dispatchTouchEvent", "touchEnd"],
       ],
     );
-    assert.equal(sent[1].params.type, "touchStart");
-    assert.deepEqual(sent[1].params.touchPoints[0], {
-      x: 30,
-      y: 50,
-      radiusX: 1,
-      radiusY: 1,
-      force: 1,
-    });
-    assert.equal(sent[2].params.type, "touchEnd");
-    assert.doesNotMatch(sent[0].params.expression, /\.click\s*\(/);
+    assert.doesNotMatch(sockets[0].sent[0].params.expression, /\.click\s*\(/);
     await client.close();
   });
 
-  it("rejects stale or wrong initial target route before driving input", async () => {
+  it("rejects off-viewport, pointer-disabled, or occluded selectors", async () => {
+    for (const probe of [
+      {
+        actionable: false,
+        inViewport: false,
+        pointerEvents: "auto",
+        hitTarget: true,
+      },
+      {
+        actionable: false,
+        inViewport: true,
+        pointerEvents: "none",
+        hitTarget: true,
+      },
+      {
+        actionable: false,
+        inViewport: true,
+        pointerEvents: "auto",
+        hitTarget: false,
+      },
+    ]) {
+      const { factory, sockets } = createFakeWebSocketFactory((message) =>
+        cdpValue({ selector: "#buy", exists: true, ...probe }, message.id),
+      );
+      const client = new CdpClient("ws://127.0.0.1/devtools/page/probe", {
+        webSocketFactory: factory,
+      });
+      await client.connect();
+      await assert.rejects(
+        activateVisibleSelector(client, "#buy"),
+        /not physically actionable/,
+      );
+      assert.deepEqual(
+        sockets[0].sent.map((message) => message.method),
+        ["Runtime.evaluate"],
+      );
+      await client.close();
+    }
+  });
+
+  it("requires a named nonempty sale sequence with customer routes and actions", async () => {
+    const common = {
+      endpoint: "http://127.0.0.1:1",
+      expectedTargetBinding: BINDING,
+      expectedInitialRoute: "#/sale",
+    };
+    await assert.rejects(
+      runVisibleMachineSaleScenario({ ...common, sequenceName: "", steps: [] }),
+      /sequenceName is required/,
+    );
+    await assert.rejects(
+      runVisibleMachineSaleScenario({
+        ...common,
+        sequenceName: "sale",
+        steps: [],
+      }),
+      /nonempty step sequence/,
+    );
+    await assert.rejects(
+      runVisibleMachineSaleScenario({
+        ...common,
+        sequenceName: "sale",
+        steps: [{ type: "observation", name: "look", run() {} }],
+      }),
+      /at least one customer activation/,
+    );
+    await assert.rejects(
+      runVisibleMachineSaleScenario({
+        ...common,
+        sequenceName: "sale",
+        steps: [
+          {
+            type: "customer-activation",
+            name: "buy",
+            selector: "#buy",
+            routeBefore: "#/sale",
+            routeAfter: "#/checkout",
+            action() {},
+          },
+        ],
+      }),
+      /cannot use a custom action/,
+    );
+  });
+
+  it("records Input evidence and bounded chronological checkpoints", async () => {
     await withFakeHttpTargets(
-      [
-        {
-          id: "stale",
-          url: "http://tauri.localhost/#/maintenance",
-          webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/stale",
-        },
-      ],
+      [target("machine-target", "#/sale")],
       async (endpoint) => {
-        const { factory, sockets } = createFakeWebSocketFactory((message) => ({
-          id: message.id,
-          result: {},
-        }));
-        await assert.rejects(
-          runVisibleMachineSaleScenario({
-            endpoint,
-            webSocketFactory: factory,
-            expectedInitialRoute: "#/sale",
-            steps: [
-              {
-                name: "buy",
-                selector: "[data-testid='buy']",
-              },
-            ],
-            continuousCapture: false,
-          }),
-          /initial CDP target route mismatch/,
+        let route = "#/sale";
+        const screenshotBytes = Buffer.from("fake-png");
+        const { factory, sockets } = createFakeWebSocketFactory(
+          (message, socket) => {
+            if (message.method === "Runtime.evaluate") {
+              if (message.params.expression.includes("querySelector")) {
+                return cdpValue(
+                  {
+                    selector: "#buy",
+                    exists: true,
+                    actionable: true,
+                    inViewport: true,
+                    pointerEvents: "auto",
+                    hitTarget: true,
+                    bounds: { x: 1, y: 2, width: 10, height: 20 },
+                    center: { x: 6, y: 12 },
+                  },
+                  message.id,
+                );
+              }
+              return cdpValue(identity(route), message.id);
+            }
+            if (
+              message.method === "Input.dispatchTouchEvent" &&
+              message.params.type === "touchStart"
+            ) {
+              route = "#/checkout";
+              socket.emitMessage({
+                method: "Page.navigatedWithinDocument",
+                params: { url: `http://tauri.localhost/${route}` },
+              });
+            }
+            if (message.method === "Page.captureScreenshot") {
+              return {
+                id: message.id,
+                result: { data: screenshotBytes.toString("base64") },
+              };
+            }
+            return { id: message.id, result: {} };
+          },
         );
-        assert.equal(sockets.length, 0);
+        const result = await runVisibleMachineSaleScenario({
+          endpoint,
+          expectedTargetBinding: BINDING,
+          expectedInitialRoute: "#/sale",
+          sequenceName: "single-product-sale",
+          webSocketFactory: factory,
+          continuousCapture: false,
+          screenshotCheckpoints: true,
+          adapter: {
+            async screenshotSink({ sha256 }) {
+              return { ref: `evidence/${sha256}.png` };
+            },
+          },
+          steps: [
+            {
+              type: "customer-activation",
+              name: "buy",
+              selector: "#buy",
+              routeBefore: "#/sale",
+              routeAfter: "#/checkout",
+            },
+          ],
+        });
+
+        const activation = result.evidence.find(
+          (entry) => entry.type === "customer-activation",
+        );
+        assert.equal(activation.input.method, "Input.dispatchTouchEvent");
+        assert.equal(result.webSocketUrl, undefined);
+        assert.equal(
+          JSON.stringify(result).includes(screenshotBytes.toString("base64")),
+          false,
+        );
+        assert.ok(
+          result.evidence
+            .filter((entry) => entry.screenshot)
+            .every(
+              (entry) =>
+                /^[a-f0-9]{64}$/.test(entry.screenshot.sha256) &&
+                entry.screenshot.ref.startsWith("evidence/"),
+            ),
+        );
+        assert.deepEqual(
+          result.evidence.map((entry) => entry.capturedAt),
+          [...result.evidence]
+            .map((entry) => entry.capturedAt)
+            .sort((left, right) => left.localeCompare(right)),
+        );
+        assert.ok(
+          sockets[0].sent.some((message) =>
+            message.method.startsWith("Input."),
+          ),
+        );
       },
     );
   });
 
-  it("times out CDP requests and removes the pending request", async () => {
-    const { factory } = createFakeWebSocketFactory(() => null);
-    const client = new CdpClient("ws://127.0.0.1/devtools/page/timeout", {
-      webSocketFactory: factory,
-      defaultTimeoutMs: 20,
-    });
-    await client.connect();
-
-    await assert.rejects(
-      client.send("Runtime.evaluate", {}, { timeoutMs: 10 }),
-      /CDP Runtime\.evaluate timed out/,
-    );
-    assert.equal(client.pending.size, 0);
-    await client.close();
-  });
-
-  it("rejects route waits that remain on the wrong route", async () => {
-    const { factory } = createFakeWebSocketFactory((message) => {
-      if (message.method === "Runtime.evaluate") {
-        return {
-          id: message.id,
-          result: {
-            result: {
-              value: {
-                url: "http://tauri.localhost/#/checkout",
-                route: "#/checkout",
-                domHash: "deadbeef",
-              },
-            },
-          },
-        };
-      }
-      return { id: message.id, result: {} };
-    });
-    const client = new CdpClient("ws://127.0.0.1/devtools/page/route", {
-      webSocketFactory: factory,
-    });
-    await client.connect();
-
-    await assert.rejects(
-      waitForRoute(client, "#/success", { timeoutMs: 30, pollMs: 1 }),
-      /last route was #\/checkout/,
-    );
-    await client.close();
-  });
-
-  it("cleans up websocket and sidecar process resources", async () => {
+  it("installs route listeners before actions and rejects forbidden routes", async () => {
     await withFakeHttpTargets(
-      [
-        {
-          id: "strict",
-          url: "http://tauri.localhost/#/sale",
-          webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/strict",
-        },
-      ],
+      [target("machine-target", "#/sale")],
       async (endpoint) => {
+        let routeListener;
+        let subscribed = false;
         const { factory, sockets } = createFakeWebSocketFactory((message) => {
           if (message.method === "Runtime.evaluate") {
-            return {
-              id: message.id,
-              result: {
-                result: {
-                  value: {
-                    url: "http://tauri.localhost/#/sale",
-                    route: "#/sale",
-                    domHash: "11111111",
-                  },
+            if (message.params.expression.includes("querySelector")) {
+              return cdpValue(
+                {
+                  selector: "#buy",
+                  actionable: true,
+                  bounds: { x: 0, y: 0, width: 10, height: 10 },
+                  center: { x: 5, y: 5 },
                 },
-              },
-            };
+                message.id,
+              );
+            }
+            return cdpValue(identity("#/sale"), message.id);
+          }
+          if (
+            message.method === "Input.dispatchTouchEvent" &&
+            message.params.type === "touchStart"
+          ) {
+            assert.equal(subscribed, true);
+            routeListener(identity("#/maintenance"));
           }
           return { id: message.id, result: {} };
         });
-
-        const result = await runVisibleMachineSaleScenario({
-          endpoint,
-          webSocketFactory: factory,
-          expectedInitialRoute: "#/sale",
-          steps: [],
-          continuousCapture: false,
-        });
-
-        assert.equal(result.status, "passed");
-        assert.equal(sockets[0].closeCalls, 1);
+        await assert.rejects(
+          runVisibleMachineSaleScenario({
+            endpoint,
+            expectedTargetBinding: BINDING,
+            expectedInitialRoute: "#/sale",
+            sequenceName: "forbidden-route",
+            webSocketFactory: factory,
+            continuousCapture: false,
+            adapter: {
+              subscribeRouteChanges(listener) {
+                subscribed = true;
+                routeListener = listener;
+                return () => {
+                  subscribed = false;
+                };
+              },
+            },
+            steps: [
+              {
+                type: "customer-activation",
+                name: "buy",
+                selector: "#buy",
+                routeBefore: "#/sale",
+                routeAfter: "#/checkout",
+              },
+            ],
+          }),
+          /route capture failed: forbidden customer route observed: #\/maintenance/,
+        );
+        assert.equal(subscribed, false);
       },
     );
+  });
 
-    const child = new FakeChildProcess();
-    const processAdapter = {
-      spawn(command, args) {
-        child.command = command;
-        child.args = args;
-        return child;
+  it("fails the scenario when continuous identity capture fails", async () => {
+    await withFakeHttpTargets(
+      [target("machine-target", "#/sale")],
+      async (endpoint) => {
+        let evaluations = 0;
+        const { factory, sockets } = createFakeWebSocketFactory((message) => {
+          if (message.method === "Runtime.evaluate") {
+            evaluations += 1;
+            if (evaluations >= 3) {
+              return { id: message.id, error: { message: "capture broke" } };
+            }
+            return cdpValue(identity("#/sale"), message.id);
+          }
+          return { id: message.id, result: {} };
+        });
+        await assert.rejects(
+          runVisibleMachineSaleScenario({
+            endpoint,
+            expectedTargetBinding: BINDING,
+            expectedInitialRoute: "#/sale",
+            sequenceName: "capture-failure",
+            webSocketFactory: factory,
+            continuousCapture: true,
+            continuousCaptureIntervalMs: 1,
+            steps: [
+              {
+                type: "infrastructure",
+                name: "let-capture-run",
+                async run() {
+                  await new Promise((resolve) => setTimeout(resolve, 10));
+                },
+              },
+              {
+                type: "customer-activation",
+                name: "buy",
+                selector: "#buy",
+                routeBefore: "#/sale",
+                routeAfter: "#/checkout",
+              },
+            ],
+          }),
+          /continuous capture failed: CDP Runtime\.evaluate failed: capture broke/,
+        );
+        assert.equal(sockets[0].closeCalls, 1);
+        assert.equal(sockets[0].readyState, 3);
       },
-    };
-    const sidecar = await openMachineUiCdpSidecar({
-      remote: "user@example.test",
-      localPort: 49222,
-      processAdapter,
+    );
+  });
+
+  it("returns screenshot digests and sink refs, never base64", async () => {
+    const image = Buffer.from("bounded-image");
+    const { factory } = createFakeWebSocketFactory((message) => ({
+      id: message.id,
+      result: { data: image.toString("base64") },
+    }));
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/screenshot", {
+      webSocketFactory: factory,
     });
-    assert.equal(sidecar.endpoint, "http://127.0.0.1:49222");
-    assert.equal(child.command, "ssh");
-    assert.deepEqual(child.args.slice(0, 3), [
-      "-N",
-      "-L",
-      "127.0.0.1:49222:127.0.0.1:9222",
-    ]);
-    await sidecar.close();
-    await sidecar.close();
-    assert.deepEqual(child.killSignals, ["SIGTERM"]);
+    await client.connect();
+    const evidence = await captureScreenshot(client, {
+      screenshotSink: ({ sha256 }) => `sink://${sha256}`,
+    });
+    assert.equal(evidence.byteLength, image.length);
+    assert.match(evidence.sha256, /^[a-f0-9]{64}$/);
+    assert.equal("data" in evidence, false);
+    assert.equal(
+      JSON.stringify(evidence).includes(image.toString("base64")),
+      false,
+    );
+    await client.close();
   });
 });
+
+function target(id, route) {
+  return {
+    id,
+    url: `http://tauri.localhost/${route}`,
+    webSocketDebuggerUrl: `ws://127.0.0.1:9222/devtools/page/${id}`,
+  };
+}
+
+function identity(route) {
+  return {
+    url: `http://tauri.localhost/${route}`,
+    route,
+    pathname: "/",
+    title: "Machine",
+    readyState: "complete",
+    activeElement: "body",
+    domLength: 42,
+    domHash: "deadbeef",
+  };
+}
+
+function cdpValue(value, id) {
+  return { id, result: { result: { value } } };
+}
 
 async function withFakeHttpTargets(targets, callback) {
   const server = createServer((request, response) => {
@@ -287,12 +646,12 @@ async function withFakeHttpTargets(targets, callback) {
   }
 }
 
-function createFakeWebSocketFactory(handler) {
+function createFakeWebSocketFactory(handler, options = {}) {
   const sockets = [];
   return {
     sockets,
     factory(url) {
-      const socket = new FakeWebSocket(url, handler);
+      const socket = new FakeWebSocket(url, handler, options);
       sockets.push(socket);
       return socket;
     },
@@ -300,9 +659,10 @@ function createFakeWebSocketFactory(handler) {
 }
 
 class FakeWebSocket {
-  constructor(url, handler) {
+  constructor(url, handler, options) {
     this.url = url;
     this.handler = handler;
+    this.options = options;
     this.readyState = 0;
     this.sent = [];
     this.closeCalls = 0;
@@ -315,22 +675,38 @@ class FakeWebSocket {
 
   addEventListener(type, handler, options = {}) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
-    const entry = { handler, once: options.once === true };
-    this.listeners.get(type).push(entry);
+    this.listeners.get(type).push({ handler, once: options.once === true });
+  }
+
+  removeEventListener(type, handler) {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter(
+        (entry) => entry.handler !== handler,
+      ),
+    );
   }
 
   send(raw) {
+    if (this.sendError) throw this.sendError;
     const message = JSON.parse(raw);
     this.sent.push(message);
     const response = this.handler(message, this);
     if (response == null) return;
-    queueMicrotask(() =>
-      this.#emit("message", { data: JSON.stringify(response) }),
-    );
+    queueMicrotask(() => this.emitMessage(response));
+  }
+
+  emitMessage(message) {
+    this.#emit("message", { data: JSON.stringify(message) });
   }
 
   close() {
     this.closeCalls += 1;
+    this.readyState = 2;
+    if (this.options.autoClose !== false) this.finishClose();
+  }
+
+  finishClose() {
     this.readyState = 3;
     this.#emit("close", {});
   }
@@ -345,21 +721,30 @@ class FakeWebSocket {
   }
 }
 
+class FakeStream extends EventEmitter {
+  resumed = false;
+
+  resume() {
+    this.resumed = true;
+  }
+}
+
 class FakeChildProcess extends EventEmitter {
   constructor() {
     super();
     this.exitCode = null;
-    this.killed = false;
     this.killSignals = [];
+    this.stderr = new FakeStream();
   }
 
   kill(signal) {
-    this.killed = true;
     this.killSignals.push(signal);
-    queueMicrotask(() => {
-      this.exitCode = 0;
-      this.emit("exit", 0, signal);
-      this.emit("close", 0, signal);
-    });
+    return true;
+  }
+
+  finish(code, signal) {
+    this.exitCode = code;
+    this.emit("exit", code, signal);
+    this.emit("close", code, signal);
   }
 }

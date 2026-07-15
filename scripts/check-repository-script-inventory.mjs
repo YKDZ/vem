@@ -17,6 +17,18 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_INVENTORY = [
   {
+    path: "scripts/testbed/machine-ui-cdp-driver.mjs",
+    owner: "machine-runtime-console",
+    category: "test support operation",
+    workflows: ["runtime acceptance"],
+  },
+  {
+    path: "scripts/testbed/machine-ui-cdp-driver.test.mjs",
+    owner: "machine-runtime-console",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance"],
+  },
+  {
     path: "scripts/check-machine-customer-payment-copy.mjs",
     owner: "machine-runtime-console",
     category: "verifier-test guard",
