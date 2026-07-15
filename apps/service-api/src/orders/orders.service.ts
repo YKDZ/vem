@@ -314,6 +314,10 @@ export async function claimReconciledPaymentForIntentCreation(
         eq(payments.status, "pending"),
         isNull(payments.paymentUrl),
         eq(payments.failedReason, reconciliationState),
+        or(
+          isNull(payments.intentCreationLeaseExpiresAt),
+          lt(payments.intentCreationLeaseExpiresAt, new Date()),
+        ),
       ),
     )
     .returning({ id: payments.id });

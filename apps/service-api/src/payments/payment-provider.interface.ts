@@ -190,6 +190,7 @@ export type ProviderWebhookInput = {
   /** Immutable config binding found from the untrusted payment number before
    * signature verification. Providers must verify with this exact config. */
   expectedConfigId?: string | null;
+  expectedConfig?: PaymentProviderRuntimeConfig | null;
 };
 
 export interface PaymentProvider {

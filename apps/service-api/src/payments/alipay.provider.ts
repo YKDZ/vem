@@ -553,12 +553,15 @@ function selectAlipayConfig(
   configs: PaymentProviderRuntimeConfig[],
   body: Record<string, string>,
   expectedConfigId?: string | null,
+  expectedConfig?: PaymentProviderRuntimeConfig | null,
 ): PaymentProviderRuntimeConfig {
   const appId = body["app_id"] ?? null;
-  const selected = expectedConfigId
-    ? configs.find((config) => config.id === expectedConfigId)
-    : ((appId ? configs.find((config) => config.appId === appId) : null) ??
-      configs[0]);
+  const selected =
+    expectedConfig ??
+    (expectedConfigId
+      ? configs.find((config) => config.id === expectedConfigId)
+      : ((appId ? configs.find((config) => config.appId === appId) : null) ??
+        configs[0]));
   if (!selected) {
     throw new UnauthorizedException("Alipay config not found for webhook");
   }
@@ -958,6 +961,7 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
       configs,
       body,
       input.expectedConfigId,
+      input.expectedConfig,
     );
     const config = parseAlipayConfig(matchedRuntimeConfig);
     const sdk = createAlipaySdk(this.sdkFactory, config);

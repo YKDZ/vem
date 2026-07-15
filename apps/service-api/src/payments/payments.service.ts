@@ -6,6 +6,7 @@ import {
   NotFoundException,
   OnApplicationShutdown,
   OnModuleInit,
+  UnauthorizedException,
 } from "@nestjs/common";
 import {
   and,
@@ -14,7 +15,10 @@ import {
   eq,
   gt,
   inArray,
+  isNull,
   inventoryReservations,
+  lt,
+  or,
   orderStatusEvents,
   orders,
   paymentEvents,
@@ -49,6 +53,7 @@ import {
   alipayPublicConfigSchema,
   wechatPayPublicConfigSchema,
 } from "@vem/shared";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { PaymentProviderRuntimeConfig } from "./payment-provider.interface";
@@ -214,6 +219,7 @@ function buildReconciliationPayloadFields(rawPayload: unknown): {
 }
 
 const MACHINE_STATUS_POLL_MIN_INTERVAL_MS = 5_000;
+const MACHINE_STATUS_RECONCILIATION_LEASE_MS = 30_000;
 
 @Injectable()
 export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
@@ -1484,10 +1490,33 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     const candidateConfigs = await this.paymentProviderConfigService
       .listWebhookCandidateConfigsForProvider(providerCode)
       .catch(() => []);
-    const expectedConfigId = await this.findWebhookExpectedConfigId(
+    const expectedBinding = await this.findWebhookExpectedConfigBinding(
       providerCode,
       body,
     );
+    const expectedConfig = expectedBinding
+      ? await this.paymentProviderConfigService
+          .resolveForExistingPayment({
+            providerCode,
+            providerConfigId: expectedBinding.providerConfigId,
+            machineId: "",
+            providerConfigSnapshotJson:
+              expectedBinding.providerConfigSnapshotJson,
+          })
+          .catch(() => undefined)
+      : undefined;
+    if (expectedBinding && !expectedConfig) {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        eventKind: "unknown",
+        signatureValid: false,
+        handled: false,
+        failureReason: "payment_config_binding_unavailable",
+      });
+      throw new UnauthorizedException(
+        "Payment config binding is unavailable for signature verification",
+      );
+    }
 
     let webhook: Awaited<
       ReturnType<NonNullable<typeof provider.handleWebhook>>
@@ -1498,7 +1527,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         body,
         rawBodyText: computedRawBodyText,
         candidateConfigs,
-        expectedConfigId,
+        expectedConfigId: expectedBinding?.providerConfigId,
+        expectedConfig,
       });
     } catch (err) {
       const isUnauthorized =
@@ -1548,10 +1578,16 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return { handled: false, reason: "unknown_event_kind" };
   }
 
-  private async findWebhookExpectedConfigId(
+  private async findWebhookExpectedConfigBinding(
     providerCode: string,
     body: unknown,
-  ): Promise<string | null | undefined> {
+  ): Promise<
+    | {
+        providerConfigId: string | null;
+        providerConfigSnapshotJson: unknown;
+      }
+    | undefined
+  > {
     if (
       providerCode !== "alipay" ||
       typeof body !== "object" ||
@@ -1567,7 +1603,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return undefined;
     }
     const [binding] = await this.db
-      .select({ providerConfigId: payments.paymentProviderConfigId })
+      .select({
+        providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
+      })
       .from(payments)
       .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
       .where(
@@ -1577,7 +1616,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         ),
       )
       .limit(1);
-    return binding?.providerConfigId;
+    return binding;
   }
 
   private async handlePaymentWebhook(
@@ -2157,6 +2196,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           inArray(payments.status, ["pending", "processing"]),
           eq(payments.isDrill, false),
           eq(orders.isDrill, false),
+          or(
+            isNull(payments.intentCreationLeaseExpiresAt),
+            lt(payments.intentCreationLeaseExpiresAt, now),
+          ),
           sql`${payments.createdAt} >= ${cutoff}`,
           sql`${payments.expiresAt} IS NULL OR ${payments.expiresAt} > ${now}`,
           sql`not exists (
@@ -2401,6 +2444,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
         providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
+        intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
+        intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
         isDrill: payments.isDrill,
         orderIsDrill: orders.isDrill,
       })
@@ -2415,6 +2460,19 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: "not_found",
         reconciled: false,
         reason: "payment_not_found",
+      };
+    }
+
+    const now = new Date();
+    if (
+      payment.intentCreationLeaseOwnerToken &&
+      payment.intentCreationLeaseExpiresAt &&
+      payment.intentCreationLeaseExpiresAt.getTime() > now.getTime()
+    ) {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "payment_intent_creation_active",
       };
     }
 
@@ -2442,7 +2500,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       };
     }
 
-    const now = new Date();
     const [latestAttempt] = await this.db
       .select({ startedAt: paymentReconciliationAttempts.startedAt })
       .from(paymentReconciliationAttempts)
@@ -2464,6 +2521,37 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: payment.status,
         reconciled: false,
         reason: "throttled",
+      };
+    }
+
+    const reconciliationOwnerToken = randomUUID();
+    const reconciliationLeaseExpiresAt = new Date(
+      now.getTime() + MACHINE_STATUS_RECONCILIATION_LEASE_MS,
+    );
+    const [reconciliationLease] = await this.db
+      .update(payments)
+      .set({
+        intentCreationLeaseOwnerToken: reconciliationOwnerToken,
+        intentCreationLeaseExpiresAt: reconciliationLeaseExpiresAt,
+        intentCreationLeaseFence: sql`${payments.intentCreationLeaseFence} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(payments.id, payment.id),
+          inArray(payments.status, ["pending", "processing", "unknown"]),
+          or(
+            isNull(payments.intentCreationLeaseExpiresAt),
+            lt(payments.intentCreationLeaseExpiresAt, now),
+          ),
+        ),
+      )
+      .returning({ fence: payments.intentCreationLeaseFence });
+    if (!reconciliationLease) {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "payment_reconciliation_active",
       };
     }
 
@@ -2522,6 +2610,23 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      await this.db
+        .update(payments)
+        .set({
+          intentCreationLeaseOwnerToken: null,
+          intentCreationLeaseExpiresAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(payments.id, payment.id),
+            eq(
+              payments.intentCreationLeaseOwnerToken,
+              reconciliationOwnerToken,
+            ),
+            eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
+          ),
+        );
       this.logger.warn(
         `reconcilePendingPaymentOnRead query failed for ${payment.paymentNo}: ${errMsg}`,
       );
@@ -2537,16 +2642,29 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       const rawPayloadFields = buildReconciliationPayloadFields(
         result.rawPayload,
       );
-      await this.db
+      const persisted = await this.db
         .update(payments)
         .set({
           status: providerStatus,
           providerTradeNo:
             result.providerTradeNo ?? payment.providerTradeNo ?? null,
           failedReason: result.reconciliationState ?? null,
+          intentCreationLeaseOwnerToken: null,
+          intentCreationLeaseExpiresAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(payments.id, payment.id));
+        .where(
+          and(
+            eq(payments.id, payment.id),
+            eq(
+              payments.intentCreationLeaseOwnerToken,
+              reconciliationOwnerToken,
+            ),
+            eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
+            gt(payments.intentCreationLeaseExpiresAt, new Date()),
+          ),
+        )
+        .returning({ id: payments.id });
       await this.db
         .update(paymentReconciliationAttempts)
         .set({
@@ -2560,6 +2678,13 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      if (persisted.length === 0) {
+        return {
+          status: payment.status,
+          reconciled: false,
+          reason: "payment_reconciliation_lease_lost",
+        };
+      }
       return {
         status: providerStatus,
         reconciled: false,
@@ -2569,6 +2694,25 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     const finalStatus: "succeeded" | "failed" =
       providerStatus === "succeeded" ? "succeeded" : "failed";
+    const [stillOwnsReconciliation] = await this.db
+      .select({ id: payments.id })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.id, payment.id),
+          eq(payments.intentCreationLeaseOwnerToken, reconciliationOwnerToken),
+          eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
+          gt(payments.intentCreationLeaseExpiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    if (!stillOwnsReconciliation) {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "payment_reconciliation_lease_lost",
+      };
+    }
     const providerEventId = `machine_status_poll:${payment.paymentNo}:${providerStatus}:${now.getTime()}`;
     const applied = await this.applyPaymentStatusUpdate(
       payment.id,
@@ -2581,6 +2725,21 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       result.paidAt ?? now,
       result.failedReason ?? null,
     );
+
+    await this.db
+      .update(payments)
+      .set({
+        intentCreationLeaseOwnerToken: null,
+        intentCreationLeaseExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(payments.id, payment.id),
+          eq(payments.intentCreationLeaseOwnerToken, reconciliationOwnerToken),
+          eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
+        ),
+      );
 
     await this.db
       .update(paymentReconciliationAttempts)

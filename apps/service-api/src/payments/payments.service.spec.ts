@@ -1606,14 +1606,26 @@ describe("PaymentsService", () => {
         paymentStatus: null,
         rawPayload: {},
       });
+      const immutableBinding = {
+        id: "cfg-payment-bound",
+        providerCode: "alipay",
+        merchantNo: "seller-bound",
+        appId: "app-bound",
+        publicConfigJson: {},
+        sensitiveConfigJson: { alipayPublicCertPem: "old-cert" },
+      };
       const db = makeDb();
       db.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi
-                .fn()
-                .mockResolvedValue([{ providerConfigId: "cfg-payment-bound" }]),
+              limit: vi.fn().mockResolvedValue([
+                {
+                  providerConfigId: "cfg-payment-bound",
+                  providerConfigSnapshotJson: { version: 1 },
+                  machineId: "machine-bound",
+                },
+              ]),
             }),
           }),
         }),
@@ -1625,6 +1637,9 @@ describe("PaymentsService", () => {
         } as unknown as PaymentProviderRegistry,
         configService: {
           listWebhookCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
+          resolveForExistingPayment: vi
+            .fn()
+            .mockResolvedValue(immutableBinding),
         },
       });
 
@@ -1636,7 +1651,10 @@ describe("PaymentsService", () => {
       );
 
       expect(handleWebhook).toHaveBeenCalledWith(
-        expect.objectContaining({ expectedConfigId: "cfg-payment-bound" }),
+        expect.objectContaining({
+          expectedConfigId: "cfg-payment-bound",
+          expectedConfig: immutableBinding,
+        }),
       );
     });
 
