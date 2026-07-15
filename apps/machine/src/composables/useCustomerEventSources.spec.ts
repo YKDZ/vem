@@ -1204,4 +1204,52 @@ describe("customer event sources", () => {
       type: "system.hardware_fault",
     });
   });
+
+  it("does not repeat hardware fault events when only readiness polling timestamps change", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerEventSources();
+
+    const connectivityStore = useConnectivityStore();
+    connectivityStore.applyReady({
+      ready: false,
+      canSell: false,
+      mode: "offline",
+      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      blockingReasons: [
+        {
+          code: "LOWER_CONTROLLER_UNAVAILABLE",
+          component: "hardware",
+          message: "lower controller unavailable",
+        },
+      ],
+      degradedReasons: [],
+      suggestedRoute: "offline",
+      updatedAt: "2026-07-05T12:40:00.000Z",
+    });
+    connectivityStore.applyReady({
+      ready: false,
+      canSell: false,
+      mode: "offline",
+      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      blockingReasons: [
+        {
+          code: "LOWER_CONTROLLER_UNAVAILABLE",
+          component: "hardware",
+          message: "lower controller unavailable",
+        },
+      ],
+      degradedReasons: [],
+      suggestedRoute: "offline",
+      updatedAt: "2026-07-05T12:40:05.000Z",
+    });
+
+    unsubscribe();
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({
+      type: "system.hardware_fault",
+    });
+  });
 });
