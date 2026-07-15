@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -322,6 +322,62 @@ CREATE TABLE IF NOT EXISTS stock_maintenance_task_identities (
   identity_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+"#;
+
+pub const MIGRATION_V15: &str = r#"
+PRAGMA foreign_keys = OFF;
+
+INSERT OR IGNORE INTO stock_maintenance_task_identities(task_id,identity_json,created_at)
+SELECT
+  task_id,
+  json_object(
+    'planogramVersion', planogram_version,
+    'planogramRevision', planogram_revision,
+    'mode', mode,
+    'slots', json(slot_set_json),
+    'taskId', task_id,
+    'predecessorTaskId', NULL
+  ),
+  created_at
+FROM stock_maintenance_batches;
+
+ALTER TABLE stock_maintenance_batches RENAME TO stock_maintenance_batches_v14;
+
+CREATE TABLE stock_maintenance_batches (
+  task_id TEXT PRIMARY KEY,
+  mode TEXT NOT NULL CHECK (mode IN ('routine_refill')),
+  planogram_version TEXT NOT NULL,
+  planogram_revision TEXT NOT NULL,
+  slot_set_json TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_fingerprint TEXT NOT NULL,
+  operator_id TEXT NOT NULL,
+  capacity_snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES stock_maintenance_task_identities(task_id) ON DELETE RESTRICT
+);
+
+INSERT INTO stock_maintenance_batches(
+  task_id,mode,planogram_version,planogram_revision,slot_set_json,payload_json,
+  payload_fingerprint,operator_id,capacity_snapshot_json,created_at
+)
+SELECT
+  task_id,mode,planogram_version,planogram_revision,slot_set_json,payload_json,
+  payload_fingerprint,operator_id,capacity_snapshot_json,created_at
+FROM stock_maintenance_batches_v14;
+
+DROP TABLE stock_maintenance_batches_v14;
+
+CREATE TABLE IF NOT EXISTS stock_maintenance_task_tombstones (
+  task_id TEXT PRIMARY KEY,
+  pruned_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_maintenance_task_tombstones_expires
+  ON stock_maintenance_task_tombstones(expires_at);
+
+PRAGMA foreign_keys = ON;
 "#;
 
 pub const MIGRATION_V4: &str = r#"

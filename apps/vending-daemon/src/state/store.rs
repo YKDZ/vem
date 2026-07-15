@@ -16,8 +16,8 @@ use vending_core::domain::{
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
-    MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
-    MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V15, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
+    MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -825,7 +825,31 @@ impl LocalStateStore {
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
+        if current_version < 15 {
+            sqlx::query(MIGRATION_V15)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        self.backfill_current_stock_maintenance_task_identities()
+            .await?;
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
+        Ok(())
+    }
+
+    async fn backfill_current_stock_maintenance_task_identities(&self) -> Result<(), StoreError> {
+        for key in [
+            STOCK_MAINTENANCE_COUNT_TASK_KEY,
+            STOCK_MAINTENANCE_REFILL_TASK_KEY,
+        ] {
+            if let Some(identity) = self
+                .get_metadata::<StockMaintenanceTaskIdentity>(key)
+                .await?
+            {
+                self.remember_stock_maintenance_task_identity(&identity)
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -2816,6 +2840,15 @@ impl LocalStateStore {
                     duplicate: true,
                 });
             }
+            if self
+                .stock_maintenance_task_was_pruned(&input.task_id)
+                .await?
+            {
+                return Err(StoreError::InvalidStockInput(
+                    "stock maintenance task expired from retained history; refresh the current task"
+                        .to_string(),
+                ));
+            }
             if let Some(identity) = self
                 .stock_maintenance_task_identity_by_id(&input.task_id)
                 .await?
@@ -3153,6 +3186,18 @@ impl LocalStateStore {
         };
         Ok(payload_json == serde_json::to_string(&normalized)?
             && fingerprint == stock_maintenance_batch_fingerprint(&normalized)?)
+    }
+
+    async fn stock_maintenance_task_was_pruned(&self, task_id: &str) -> Result<bool, StoreError> {
+        let tombstone: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM stock_maintenance_task_tombstones
+             WHERE task_id=?1 AND expires_at >= ?2",
+        )
+        .bind(task_id)
+        .bind(now_iso())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(tombstone.is_some())
     }
 
     async fn freeze_stale_stock_task_slots(
@@ -4889,19 +4934,127 @@ impl LocalStateStore {
         );
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_immediate_write_transaction().await?;
         let pending_attestation: Option<(String,)> =
             sqlx::query_as("SELECT value_json FROM runtime_metadata WHERE key = ?1")
                 .bind(PENDING_PHYSICAL_STOCK_ATTESTATION_KEY)
                 .fetch_optional(tx.as_mut())
                 .await?;
-        let protected_movement_ids: HashSet<String> = pending_attestation
+        let pending_attestation = pending_attestation
             .map(|(value_json,)| {
                 serde_json::from_str::<PendingPhysicalStockAttestation>(&value_json)
-                    .map(|pending| pending.movement_ids.into_iter().collect())
             })
-            .transpose()?
+            .transpose()?;
+        let protected_movement_ids: HashSet<String> = pending_attestation
+            .as_ref()
+            .map(|pending| pending.movement_ids.iter().cloned().collect())
             .unwrap_or_default();
+        let mut protected_task_ids = HashSet::new();
+        for key in [
+            STOCK_MAINTENANCE_COUNT_TASK_KEY,
+            STOCK_MAINTENANCE_REFILL_TASK_KEY,
+        ] {
+            let current: Option<(String,)> =
+                sqlx::query_as("SELECT value_json FROM runtime_metadata WHERE key=?1")
+                    .bind(key)
+                    .fetch_optional(tx.as_mut())
+                    .await?;
+            if let Some((value,)) = current {
+                protected_task_ids
+                    .insert(serde_json::from_str::<StockMaintenanceTaskIdentity>(&value)?.task_id);
+            }
+        }
+        let mut pending_generations = HashSet::new();
+        if let Some(pending) = pending_attestation.as_ref() {
+            protected_task_ids.insert(pending.input.attestation_id.clone());
+            pending_generations.insert(pending.input.attestation_id.clone());
+            for generation in &pending.slot_generations {
+                protected_task_ids.insert(generation.generation.clone());
+                pending_generations.insert(generation.generation.clone());
+            }
+        }
+        let old_identities: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT task_id,identity_json,created_at
+             FROM stock_maintenance_task_identities WHERE created_at < ?1",
+        )
+        .bind(&cutoff)
+        .fetch_all(tx.as_mut())
+        .await?;
+        let mut task_ids_to_prune = Vec::new();
+        for (task_id, identity_json, _) in old_identities {
+            let identity: StockMaintenanceTaskIdentity = serde_json::from_str(&identity_json)?;
+            if protected_task_ids.contains(&task_id)
+                || identity
+                    .predecessor_task_id
+                    .as_ref()
+                    .is_some_and(|predecessor| pending_generations.contains(predecessor))
+            {
+                continue;
+            }
+            let recent_batch: Option<(i64,)> = sqlx::query_as(
+                "SELECT 1 FROM stock_maintenance_batches
+                 WHERE task_id=?1 AND created_at >= ?2",
+            )
+            .bind(&task_id)
+            .bind(&cutoff)
+            .fetch_optional(tx.as_mut())
+            .await?;
+            if recent_batch.is_some() {
+                continue;
+            }
+            let sync_counts: (i64, i64) = sqlx::query_as(
+                "SELECT COUNT(1),
+                        COALESCE(SUM(CASE WHEN status != 'accepted' THEN 1 ELSE 0 END),0)
+                 FROM stock_movement_sync WHERE movement_id LIKE ?1",
+            )
+            .bind(format!("{}:%", task_id))
+            .fetch_one(tx.as_mut())
+            .await?;
+            if sync_counts.0 == 0 || sync_counts.1 != 0 {
+                continue;
+            }
+            let upload_outbox: Option<(i64,)> = sqlx::query_as(
+                "SELECT 1 FROM outbox_events
+                 WHERE kind='stock_movement_upload' AND id LIKE ?1 LIMIT 1",
+            )
+            .bind(format!("stock-movement:{}:%", task_id))
+            .fetch_optional(tx.as_mut())
+            .await?;
+            if upload_outbox.is_some() {
+                continue;
+            }
+            task_ids_to_prune.push(task_id);
+        }
+
+        let pruned_at = now_iso();
+        let tombstone_expires_at = (Utc::now() + chrono::Duration::days(retention_days))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        sqlx::query("DELETE FROM stock_maintenance_task_tombstones WHERE expires_at < ?1")
+            .bind(&pruned_at)
+            .execute(tx.as_mut())
+            .await?;
+        for task_id in task_ids_to_prune {
+            sqlx::query(
+                "INSERT INTO stock_maintenance_task_tombstones(task_id,pruned_at,expires_at)
+                 VALUES (?1,?2,?3)
+                 ON CONFLICT(task_id) DO UPDATE SET pruned_at=excluded.pruned_at,expires_at=excluded.expires_at",
+            )
+            .bind(&task_id)
+            .bind(&pruned_at)
+            .bind(&tombstone_expires_at)
+            .execute(tx.as_mut())
+            .await?;
+            // The v15 FK is RESTRICT: delete the dependent immutable batch
+            // first so an interrupted or reordered cleanup cannot orphan it.
+            sqlx::query("DELETE FROM stock_maintenance_batches WHERE task_id=?1")
+                .bind(&task_id)
+                .execute(tx.as_mut())
+                .await?;
+            sqlx::query("DELETE FROM stock_maintenance_task_identities WHERE task_id=?1")
+                .bind(&task_id)
+                .execute(tx.as_mut())
+                .await?;
+        }
         let movement_ids: Vec<(String,)> = sqlx::query_as(
             "SELECT movement_id
              FROM stock_movement_sync
@@ -6579,6 +6732,68 @@ mod tests {
                     enabled: true,
                 },
             ],
+        }
+    }
+
+    async fn seed_old_maintenance_history(
+        store: &LocalStateStore,
+        base: &StockMaintenanceTaskIdentity,
+        task_id: &str,
+        status: &str,
+        predecessor_task_id: Option<&str>,
+        with_upload_outbox: bool,
+    ) {
+        let mut identity = base.clone();
+        identity.task_id = task_id.to_string();
+        identity.predecessor_task_id = predecessor_task_id.map(ToString::to_string);
+        store
+            .remember_stock_maintenance_task_identity(&identity)
+            .await
+            .expect("remember synthetic identity");
+        sqlx::query(
+            "UPDATE stock_maintenance_task_identities
+             SET created_at='2026-05-01T00:00:00.000Z' WHERE task_id=?1",
+        )
+        .bind(task_id)
+        .execute(store.pool())
+        .await
+        .expect("age synthetic identity");
+        sqlx::query(
+            "INSERT INTO stock_maintenance_batches(
+               task_id,mode,planogram_version,planogram_revision,slot_set_json,payload_json,
+               payload_fingerprint,operator_id,capacity_snapshot_json,created_at
+             ) VALUES (?1,'routine_refill',?2,?3,?4,'{}','sha256:test','operator','[]','2026-05-01T00:00:00.000Z')",
+        )
+        .bind(task_id)
+        .bind(&identity.planogram_version)
+        .bind(&identity.planogram_revision)
+        .bind(serde_json::to_string(&identity.slots).expect("slot set"))
+        .execute(store.pool())
+        .await
+        .expect("synthetic batch");
+        let movement_id = format!("{}:{}", task_id, "550e8400-e29b-41d4-a716-446655440001");
+        let outbox_event_id = format!("stock-movement:{movement_id}");
+        sqlx::query(
+            "INSERT INTO stock_movement_sync(
+               movement_id,status,outbox_event_id,attempt_count,accepted_at,created_at,updated_at
+             ) VALUES (?1,?2,?3,0,?4,'2026-05-01T00:00:00.000Z','2026-05-01T00:00:00.000Z')",
+        )
+        .bind(&movement_id)
+        .bind(status)
+        .bind(&outbox_event_id)
+        .bind((status == "accepted").then_some("2026-05-01T00:00:00.000Z"))
+        .execute(store.pool())
+        .await
+        .expect("synthetic sync");
+        if with_upload_outbox {
+            store
+                .enqueue_outbox(&OutboxInput::stock_movement_upload(
+                    &movement_id,
+                    "https://platform.example/api/machine-stock-movements".to_string(),
+                    json!({"movementId":movement_id}),
+                ))
+                .await
+                .expect("synthetic upload outbox");
         }
     }
 
@@ -9779,6 +9994,475 @@ mod tests {
             .expect("refill after prune");
         assert_eq!(refilled.items[0].physical_stock, 5);
         assert_eq!(refilled.items[0].saleable_stock, 5);
+    }
+
+    #[tokio::test]
+    async fn maintenance_task_history_prunes_only_old_unreferenced_terminal_rounds_after_restart() {
+        let temp = TempDir::new().expect("temp");
+        let database = temp.path().join("state.db");
+        let store = LocalStateStore::open(&database).await.expect("open");
+        seed_two_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation(two_slot_attestation("ATT-READY", 2))
+            .await
+            .expect("initial stock");
+
+        let mut rounds = Vec::new();
+        for addition in [1_i64, 1_i64] {
+            let task = store.stock_maintenance_task().await.expect("refill task");
+            let input = StockMaintenanceBatchInput {
+                task_id: task.task_id.clone(),
+                mode: task.mode,
+                slots: vec![StockMaintenanceBatchSlotInput {
+                    slot_code: "A1".to_string(),
+                    quantity: None,
+                    addition: Some(addition),
+                }],
+            };
+            store
+                .submit_stock_maintenance_batch(
+                    input.clone(),
+                    "operator",
+                    "MACHINE-1",
+                    "https://platform.example/api",
+                )
+                .await
+                .expect("submit round");
+            let movement_id = format!(
+                "{}:{}",
+                task.task_id, "550e8400-e29b-41d4-a716-446655440001"
+            );
+            let event = store
+                .outbox_record(&format!("stock-movement:{movement_id}"))
+                .await
+                .expect("outbox lookup")
+                .expect("outbox event");
+            store
+                .record_stock_movement_upload_response(
+                    &event,
+                    &crate::backend::StockMovementUploadResponse {
+                        movement_id,
+                        status: "accepted".to_string(),
+                        accepted_at: Some(now_iso()),
+                        receipt: Some(json!({"rawMovementId":format!("raw-{addition}")})),
+                        rejection: None,
+                        reconciliation: None,
+                    },
+                )
+                .await
+                .expect("accept round");
+            rounds.push((task.task_id, input));
+        }
+        let current = store.stock_maintenance_task().await.expect("current task");
+        let (old_task_id, old_input) = rounds[0].clone();
+        let (recent_task_id, recent_input) = rounds[1].clone();
+        sqlx::query(
+            "UPDATE stock_maintenance_task_identities SET created_at='2026-05-01T00:00:00.000Z'
+             WHERE task_id IN (?1,?2)",
+        )
+        .bind(&old_task_id)
+        .bind(&recent_task_id)
+        .execute(store.pool())
+        .await
+        .expect("age terminal identities");
+        sqlx::query(
+            "UPDATE stock_maintenance_batches SET created_at='2026-05-01T00:00:00.000Z'
+             WHERE task_id=?1",
+        )
+        .bind(&old_task_id)
+        .execute(store.pool())
+        .await
+        .expect("age old batch");
+        sqlx::query(
+            "UPDATE stock_movement_sync
+             SET accepted_at='2026-05-01T00:00:00.000Z',updated_at='2026-05-01T00:00:00.000Z'
+             WHERE movement_id LIKE ?1",
+        )
+        .bind(format!("{}:%", old_task_id))
+        .execute(store.pool())
+        .await
+        .expect("age old terminal receipt");
+        drop(store);
+
+        let restarted = LocalStateStore::open(&database).await.expect("restart");
+        restarted
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune maintenance task history");
+        for (task_id, expected_identity, expected_batch) in [
+            (old_task_id.as_str(), 0_i64, 0_i64),
+            (recent_task_id.as_str(), 1_i64, 1_i64),
+            (current.task_id.as_str(), 1_i64, 0_i64),
+        ] {
+            let counts: (i64, i64) = sqlx::query_as(
+                "SELECT
+                   (SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id=?1),
+                   (SELECT COUNT(1) FROM stock_maintenance_batches WHERE task_id=?1)",
+            )
+            .bind(task_id)
+            .fetch_one(restarted.pool())
+            .await
+            .expect("history counts");
+            assert_eq!(counts, (expected_identity, expected_batch), "{task_id}");
+        }
+        let replay = restarted
+            .submit_stock_maintenance_batch(
+                recent_input,
+                "renewed-operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("retained exact lost-response replay");
+        assert!(replay.duplicate);
+
+        let before = restarted
+            .sale_view(None)
+            .await
+            .expect("before late request");
+        let late = restarted
+            .submit_stock_maintenance_batch(
+                old_input,
+                "late-operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect_err("pruned task must fail closed");
+        assert!(late.to_string().contains("expired"));
+        let after = restarted.sale_view(None).await.expect("after late request");
+        let stock_state = |snapshot: &SaleViewSnapshot| {
+            snapshot
+                .items
+                .iter()
+                .map(|item| {
+                    (
+                        item.slot_code.clone(),
+                        item.physical_stock,
+                        item.saleable_stock,
+                        item.slot_sales_state.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(stock_state(&after), stock_state(&before));
+        let late_writes: (i64, i64) = sqlx::query_as(
+            "SELECT
+               (SELECT COUNT(1) FROM stock_movement_sync WHERE movement_id LIKE ?1),
+               (SELECT COUNT(1) FROM outbox_events WHERE id LIKE ?2)",
+        )
+        .bind(format!("{}:%", old_task_id))
+        .bind(format!("stock-movement:{}:%", old_task_id))
+        .fetch_one(restarted.pool())
+        .await
+        .expect("late write count");
+        assert_eq!(late_writes, (0, 0));
+    }
+
+    #[tokio::test]
+    async fn maintenance_task_prune_protects_every_live_reference() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        let current = store.stock_maintenance_task().await.expect("current task");
+        let base = store
+            .stock_maintenance_task_identity_by_id(&current.task_id)
+            .await
+            .expect("load identity")
+            .expect("identity");
+
+        for (task_id, status, predecessor, with_outbox) in [
+            ("protected-by-metadata", "accepted", None, false),
+            ("protected-by-attestation", "accepted", None, false),
+            (
+                "protected-by-predecessor-generation",
+                "accepted",
+                Some("pending-generation"),
+                false,
+            ),
+            ("protected-pending", "pending", None, false),
+            ("protected-failed", "failed", None, false),
+            ("protected-rejected", "rejected", None, false),
+            ("protected-reconciliation", "reconciliation", None, false),
+            ("protected-outbox", "accepted", None, true),
+            ("prune-terminal", "accepted", None, false),
+        ] {
+            seed_old_maintenance_history(&store, &base, task_id, status, predecessor, with_outbox)
+                .await;
+        }
+
+        let mut metadata_identity = base.clone();
+        metadata_identity.task_id = "protected-by-metadata".to_string();
+        store
+            .put_metadata(STOCK_MAINTENANCE_COUNT_TASK_KEY, &metadata_identity)
+            .await
+            .expect("protect current metadata identity");
+        let attestation = two_slot_attestation("protected-by-attestation", 2);
+        let pending = PendingPhysicalStockAttestation {
+            input: attestation.clone(),
+            attested_at: now_iso(),
+            movement_ids: vec![format!(
+                "{}:{}",
+                attestation.attestation_id, attestation.slots[0].slot_id
+            )],
+            slot_generations: vec![PendingPhysicalStockAttestationSlotGeneration {
+                slot_id: attestation.slots[0].slot_id.clone(),
+                movement_id: format!(
+                    "{}:{}",
+                    attestation.attestation_id, attestation.slots[0].slot_id
+                ),
+                generation: "pending-generation".to_string(),
+                before_quantity: 0,
+                after_quantity: attestation.slots[0].quantity,
+                occurred_at: now_iso(),
+            }],
+        };
+        store
+            .put_metadata(PENDING_PHYSICAL_STOCK_ATTESTATION_KEY, &pending)
+            .await
+            .expect("protect pending generations");
+
+        store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune");
+
+        for task_id in [
+            "protected-by-metadata",
+            "protected-by-attestation",
+            "protected-by-predecessor-generation",
+            "protected-pending",
+            "protected-failed",
+            "protected-rejected",
+            "protected-reconciliation",
+            "protected-outbox",
+        ] {
+            let counts: (i64, i64) = sqlx::query_as(
+                "SELECT
+                   (SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id=?1),
+                   (SELECT COUNT(1) FROM stock_maintenance_batches WHERE task_id=?1)",
+            )
+            .bind(task_id)
+            .fetch_one(store.pool())
+            .await
+            .expect("protected history counts");
+            assert_eq!(counts, (1, 1), "{task_id}");
+        }
+        let pruned: (i64, i64) = sqlx::query_as(
+            "SELECT
+               (SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id='prune-terminal'),
+               (SELECT COUNT(1) FROM stock_maintenance_batches WHERE task_id='prune-terminal')",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("pruned history counts");
+        assert_eq!(pruned, (0, 0));
+    }
+
+    #[tokio::test]
+    async fn maintenance_task_prune_rolls_back_all_history_on_delete_failure() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        let current = store.stock_maintenance_task().await.expect("current task");
+        let base = store
+            .stock_maintenance_task_identity_by_id(&current.task_id)
+            .await
+            .expect("load identity")
+            .expect("identity");
+        seed_old_maintenance_history(&store, &base, "atomic-terminal", "accepted", None, false)
+            .await;
+        sqlx::query(
+            "CREATE TRIGGER fail_maintenance_identity_delete
+             BEFORE DELETE ON stock_maintenance_task_identities
+             WHEN OLD.task_id='atomic-terminal'
+             BEGIN SELECT RAISE(ABORT,'injected identity delete failure'); END",
+        )
+        .execute(store.pool())
+        .await
+        .expect("failure trigger");
+
+        store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect_err("delete failure must abort prune transaction");
+
+        let counts: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT
+               (SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id='atomic-terminal'),
+               (SELECT COUNT(1) FROM stock_maintenance_batches WHERE task_id='atomic-terminal'),
+               (SELECT COUNT(1) FROM stock_movement_sync WHERE movement_id LIKE 'atomic-terminal:%'),
+               (SELECT COUNT(1) FROM stock_maintenance_task_tombstones WHERE task_id='atomic-terminal')",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("atomic history counts");
+        assert_eq!(counts, (1, 1, 1, 0));
+    }
+
+    #[tokio::test]
+    async fn maintenance_task_prune_clamps_retention_to_supported_bounds() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        let current = store.stock_maintenance_task().await.expect("current task");
+        let base = store
+            .stock_maintenance_task_identity_by_id(&current.task_id)
+            .await
+            .expect("load identity")
+            .expect("identity");
+        seed_old_maintenance_history(&store, &base, "minimum-clamp", "accepted", None, false).await;
+        let half_day_ago =
+            (Utc::now() - chrono::Duration::hours(12)).to_rfc3339_opts(SecondsFormat::Millis, true);
+        for table in [
+            "stock_maintenance_task_identities",
+            "stock_maintenance_batches",
+        ] {
+            sqlx::query(&format!(
+                "UPDATE {table} SET created_at=?1 WHERE task_id=?2"
+            ))
+            .bind(&half_day_ago)
+            .bind("minimum-clamp")
+            .execute(store.pool())
+            .await
+            .expect("age minimum-clamp history");
+        }
+        sqlx::query(
+            "UPDATE stock_movement_sync SET accepted_at=?1,updated_at=?1
+             WHERE movement_id LIKE 'minimum-clamp:%'",
+        )
+        .bind(&half_day_ago)
+        .execute(store.pool())
+        .await
+        .expect("age minimum-clamp sync");
+        store
+            .prune_accepted_stock_movement_history(0)
+            .await
+            .expect("minimum clamp prune");
+        let minimum_retained: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id='minimum-clamp'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("minimum retained");
+        assert_eq!(minimum_retained.0, 1);
+
+        seed_old_maintenance_history(&store, &base, "maximum-clamp", "accepted", None, false).await;
+        let four_hundred_days_ago =
+            (Utc::now() - chrono::Duration::days(400)).to_rfc3339_opts(SecondsFormat::Millis, true);
+        for table in [
+            "stock_maintenance_task_identities",
+            "stock_maintenance_batches",
+        ] {
+            sqlx::query(&format!(
+                "UPDATE {table} SET created_at=?1 WHERE task_id=?2"
+            ))
+            .bind(&four_hundred_days_ago)
+            .bind("maximum-clamp")
+            .execute(store.pool())
+            .await
+            .expect("age maximum-clamp history");
+        }
+        sqlx::query(
+            "UPDATE stock_movement_sync SET accepted_at=?1,updated_at=?1
+             WHERE movement_id LIKE 'maximum-clamp:%'",
+        )
+        .bind(&four_hundred_days_ago)
+        .execute(store.pool())
+        .await
+        .expect("age maximum-clamp sync");
+        store
+            .prune_accepted_stock_movement_history(i64::MAX)
+            .await
+            .expect("maximum clamp prune");
+        let maximum_pruned: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id='maximum-clamp'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("maximum pruned");
+        assert_eq!(maximum_pruned.0, 0);
+    }
+
+    #[tokio::test]
+    async fn v13_upgrade_backfills_current_maintenance_identity_and_enforces_batch_fk() {
+        let temp = TempDir::new().expect("temp");
+        let database = temp.path().join("state.db");
+        let store = LocalStateStore::open(&database).await.expect("open");
+        seed_two_slot_planogram(&store).await;
+        let current = store.stock_maintenance_task().await.expect("current task");
+        let base = store
+            .stock_maintenance_task_identity_by_id(&current.task_id)
+            .await
+            .expect("load identity")
+            .expect("identity");
+        seed_old_maintenance_history(&store, &base, "legacy-v13-batch", "accepted", None, false)
+            .await;
+        store
+            .put_metadata("schema_version", &13_i64)
+            .await
+            .expect("simulate v13 schema cursor");
+        let mut connection = store
+            .pool()
+            .acquire()
+            .await
+            .expect("migration fixture connection");
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&mut *connection)
+            .await
+            .expect("simulate v13 without identity FK");
+        sqlx::query(
+            "DELETE FROM stock_maintenance_task_identities
+             WHERE task_id IN (?1,'legacy-v13-batch')",
+        )
+        .bind(&current.task_id)
+        .execute(&mut *connection)
+        .await
+        .expect("simulate v13 missing identity history");
+        drop(connection);
+        drop(store);
+
+        let upgraded = LocalStateStore::open(&database).await.expect("upgrade");
+        let restored: (i64, i64) = sqlx::query_as(
+            "SELECT
+               (SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id=?1),
+               (SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id='legacy-v13-batch')",
+        )
+        .bind(&current.task_id)
+        .fetch_one(upgraded.pool())
+        .await
+        .expect("restored migration identities");
+        assert_eq!(restored, (1, 1));
+        let fk: Vec<(i64, i64, String, String, String, String, String, String)> =
+            sqlx::query_as("PRAGMA foreign_key_list(stock_maintenance_batches)")
+                .fetch_all(upgraded.pool())
+                .await
+                .expect("batch foreign keys");
+        assert!(fk.iter().any(|row| {
+            row.2 == "stock_maintenance_task_identities"
+                && row.3 == "task_id"
+                && row.4 == "task_id"
+                && row.6 == "RESTRICT"
+        }));
+        sqlx::query(
+            "INSERT INTO stock_maintenance_batches(
+               task_id,mode,planogram_version,planogram_revision,slot_set_json,payload_json,
+               payload_fingerprint,operator_id,capacity_snapshot_json,created_at
+             ) VALUES (
+               'missing-parent','routine_refill','PLAN-PARTIAL-ACK','revision','[]','{}',
+               'sha256:test','operator','[]',?1
+             )",
+        )
+        .bind(now_iso())
+        .execute(upgraded.pool())
+        .await
+        .expect_err("batch FK must reject a missing task identity");
     }
 
     #[tokio::test]
