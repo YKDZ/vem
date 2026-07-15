@@ -264,14 +264,24 @@ pub struct OrderSessionUpsert<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct ManualDispenseDiagnostic {
     pub diagnostic_id: String,
+    pub idempotency_key: String,
+    pub status: String,
     pub operator_id: String,
     pub session_correlation_id: String,
     pub controller: serde_json::Value,
     pub command: serde_json::Value,
     pub started_at: String,
-    pub completed_at: String,
-    pub raw_result: serde_json::Value,
-    pub normalized_result: serde_json::Value,
+    pub completed_at: Option<String>,
+    pub raw_result: Option<serde_json::Value>,
+    pub normalized_result: Option<serde_json::Value>,
+    pub reconciliation_status: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ManualDispenseReservation {
+    Reserved(ManualDispenseDiagnostic),
+    Existing(ManualDispenseDiagnostic),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -879,22 +889,101 @@ impl LocalStateStore {
     ) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO manual_dispense_diagnostics(
-                diagnostic_id,operator_id,session_correlation_id,controller_json,command_json,
-                started_at,completed_at,raw_result_json,normalized_result_json
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
+                controller_json,command_json,started_at,completed_at,raw_result_json,
+                normalized_result_json,reconciliation_status,expires_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         )
         .bind(&record.diagnostic_id)
+        .bind(&record.idempotency_key)
+        .bind(&record.status)
         .bind(&record.operator_id)
         .bind(&record.session_correlation_id)
         .bind(record.controller.to_string())
         .bind(record.command.to_string())
         .bind(&record.started_at)
         .bind(&record.completed_at)
-        .bind(record.raw_result.to_string())
-        .bind(record.normalized_result.to_string())
+        .bind(record.raw_result.as_ref().map(ToString::to_string))
+        .bind(record.normalized_result.as_ref().map(ToString::to_string))
+        .bind(&record.reconciliation_status)
+        .bind(&record.expires_at)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn reserve_manual_dispense_diagnostic(
+        &self,
+        record: &ManualDispenseDiagnostic,
+    ) -> Result<ManualDispenseReservation, StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        let existing =
+            manual_dispense_by_idempotency_in_tx(&mut tx, &record.idempotency_key).await?;
+        if let Some(existing) = existing {
+            tx.commit().await?;
+            return Ok(ManualDispenseReservation::Existing(existing));
+        }
+        sqlx::query(
+            "INSERT INTO manual_dispense_diagnostics(
+              diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
+              controller_json,command_json,started_at,reconciliation_status,expires_at
+             ) VALUES (?1,?2,'pending',?3,?4,?5,?6,?7,'open',?8)",
+        )
+        .bind(&record.diagnostic_id)
+        .bind(&record.idempotency_key)
+        .bind(&record.operator_id)
+        .bind(&record.session_correlation_id)
+        .bind(record.controller.to_string())
+        .bind(record.command.to_string())
+        .bind(&record.started_at)
+        .bind(&record.expires_at)
+        .execute(tx.as_mut())
+        .await?;
+        tx.commit().await?;
+        Ok(ManualDispenseReservation::Reserved(record.clone()))
+    }
+
+    pub async fn finish_manual_dispense_diagnostic(
+        &self,
+        id: &str,
+        status: &str,
+        raw: serde_json::Value,
+        normalized: serde_json::Value,
+    ) -> Result<ManualDispenseDiagnostic, StoreError> {
+        let completed_at = now_iso();
+        let result = sqlx::query(
+            "UPDATE manual_dispense_diagnostics SET status=?2,completed_at=?3,
+             raw_result_json=?4,normalized_result_json=?5
+             WHERE diagnostic_id=?1 AND status='pending'",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(&completed_at)
+        .bind(raw.to_string())
+        .bind(normalized.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(StoreError::Sqlx(sqlx::Error::RowNotFound));
+        }
+        self.manual_dispense_diagnostic(id)
+            .await?
+            .ok_or(StoreError::Sqlx(sqlx::Error::RowNotFound))
+    }
+
+    pub async fn manual_dispense_diagnostic(
+        &self,
+        id: &str,
+    ) -> Result<Option<ManualDispenseDiagnostic>, StoreError> {
+        let mut tx = self.pool.begin().await?;
+        let row = manual_dispense_by_id_in_tx(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    pub async fn prune_manual_dispense_diagnostics(&self) -> Result<u64, StoreError> {
+        Ok(sqlx::query("DELETE FROM manual_dispense_diagnostics WHERE expires_at < ?1 AND reconciliation_status='reconciled'")
+            .bind(now_iso()).execute(&self.pool).await?.rows_affected())
     }
 
     async fn record_stock_ledger_quarantine(
@@ -6508,6 +6597,74 @@ fn to_command_record(row: CommandRecordRow) -> Result<CommandLogRecord, StoreErr
     })
 }
 
+type ManualDispenseRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
+
+async fn manual_dispense_by_idempotency_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+) -> Result<Option<ManualDispenseDiagnostic>, StoreError> {
+    let row: Option<ManualDispenseRow> = sqlx::query_as(
+        "SELECT diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
+         controller_json,command_json,started_at,completed_at,raw_result_json,
+         normalized_result_json,reconciliation_status,expires_at
+         FROM manual_dispense_diagnostics WHERE idempotency_key=?1",
+    )
+    .bind(key)
+    .fetch_optional(tx.as_mut())
+    .await?;
+    row.map(to_manual_dispense_diagnostic).transpose()
+}
+
+async fn manual_dispense_by_id_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<Option<ManualDispenseDiagnostic>, StoreError> {
+    let row: Option<ManualDispenseRow> = sqlx::query_as(
+        "SELECT diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
+         controller_json,command_json,started_at,completed_at,raw_result_json,
+         normalized_result_json,reconciliation_status,expires_at
+         FROM manual_dispense_diagnostics WHERE diagnostic_id=?1",
+    )
+    .bind(id)
+    .fetch_optional(tx.as_mut())
+    .await?;
+    row.map(to_manual_dispense_diagnostic).transpose()
+}
+
+fn to_manual_dispense_diagnostic(
+    row: ManualDispenseRow,
+) -> Result<ManualDispenseDiagnostic, StoreError> {
+    Ok(ManualDispenseDiagnostic {
+        diagnostic_id: row.0,
+        idempotency_key: row.1,
+        status: row.2,
+        operator_id: row.3,
+        session_correlation_id: row.4,
+        controller: serde_json::from_str(&row.5)?,
+        command: serde_json::from_str(&row.6)?,
+        started_at: row.7,
+        completed_at: row.8,
+        raw_result: row.9.map(|v| serde_json::from_str(&v)).transpose()?,
+        normalized_result: row.10.map(|v| serde_json::from_str(&v)).transpose()?,
+        reconciliation_status: row.11,
+        expires_at: row.12,
+    })
+}
+
 fn to_stock_movement_sync_record(
     row: StockMovementSyncRecordRow,
 ) -> Result<StockMovementSyncRecord, StoreError> {
@@ -8167,14 +8324,18 @@ mod tests {
             .expect("open");
         let record = ManualDispenseDiagnostic {
             diagnostic_id: "manual-1".to_string(),
+            idempotency_key: "operator-request-1".to_string(),
+            status: "completed".to_string(),
             operator_id: "operator-1".to_string(),
             session_correlation_id: "session-hash".to_string(),
             controller: json!({"adapter":"serial","portPath":"COM5"}),
             command: json!({"slotCode":"A1","quantity":1}),
             started_at: "2026-07-15T00:00:00.000Z".to_string(),
-            completed_at: "2026-07-15T00:00:01.000Z".to_string(),
-            raw_result: json!({"success":true,"message":"controller completed"}),
-            normalized_result: json!({"outcome":"completed"}),
+            completed_at: Some("2026-07-15T00:00:01.000Z".to_string()),
+            raw_result: Some(json!({"success":true,"message":"controller completed"})),
+            normalized_result: Some(json!({"outcome":"completed"})),
+            reconciliation_status: "open".to_string(),
+            expires_at: "2026-10-15T00:00:00.000Z".to_string(),
         };
         store
             .record_manual_dispense_diagnostic(&record)
@@ -8198,6 +8359,55 @@ mod tests {
         assert_eq!(audit_count.0, 1);
         assert_eq!(order_count.0, 0);
         assert_eq!(movement_count.0, 0);
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_idempotency_reserves_once_before_hardware_and_survives_restart() {
+        let temp = TempDir::new().expect("temp");
+        let path = temp.path().join("state.db");
+        let store = LocalStateStore::open(&path).await.expect("open");
+        let pending = ManualDispenseDiagnostic {
+            diagnostic_id: "manual-pending-1".to_string(),
+            idempotency_key: "key-1".to_string(),
+            status: "pending".to_string(),
+            operator_id: "operator".to_string(),
+            session_correlation_id: "correlation".to_string(),
+            controller: json!({"stableIdentity":{"containerId":"controller-1"}}),
+            command: json!({"namespace":"manual_diagnostic","quantity":1}),
+            started_at: now_iso(),
+            completed_at: None,
+            raw_result: None,
+            normalized_result: None,
+            reconciliation_status: "open".to_string(),
+            expires_at: (Utc::now() + chrono::Duration::days(90)).to_rfc3339(),
+        };
+        assert!(matches!(
+            store
+                .reserve_manual_dispense_diagnostic(&pending)
+                .await
+                .unwrap(),
+            ManualDispenseReservation::Reserved(_)
+        ));
+        drop(store);
+        let reopened = LocalStateStore::open(&path).await.expect("reopen");
+        let duplicate = reopened
+            .reserve_manual_dispense_diagnostic(&ManualDispenseDiagnostic {
+                diagnostic_id: "manual-pending-2".to_string(),
+                ..pending
+            })
+            .await
+            .unwrap();
+        let ManualDispenseReservation::Existing(existing) = duplicate else {
+            panic!("must replay existing reservation")
+        };
+        assert_eq!(existing.diagnostic_id, "manual-pending-1");
+        assert_eq!(existing.status, "pending");
+        assert_eq!(existing.reconciliation_status, "open");
+        let business_outbox: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM outbox_events")
+            .fetch_one(reopened.pool())
+            .await
+            .unwrap();
+        assert_eq!(business_outbox.0, 0);
     }
 
     #[tokio::test]
