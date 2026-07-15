@@ -1,19 +1,26 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
 import {
   CdpClient,
   activateVisibleSelector,
+  assertTargetDebuggerWebSocketUrl,
   captureScreenshot,
   bindMachineUiRuntimeEvidence,
   discoverMachineUiTarget,
-  inspectWindowsMachineUiRuntime,
+  inspectWindowsMachineUiRuntimeForTest,
   normalizeMachineRoute,
   openMachineUiCdpSidecar,
   rewriteWebSocketDebuggerUrl,
   runVisibleMachineSaleScenario,
+  runVisibleMachineSaleScenarioForTest,
+  runWindowsPowerShellOverSshForTest,
+  startContinuousIdentityCapture,
 } from "./machine-ui-cdp-driver.mjs";
 
 const ATTESTATION = {
@@ -22,7 +29,7 @@ const ATTESTATION = {
     processId: 4242,
     executablePath: "C:\\VEM\\bringup\\machine.exe",
     sessionId: 1,
-    user: "VEMKiosk",
+    principal: "VEM\\VEMKiosk",
   },
 };
 
@@ -31,14 +38,14 @@ const OBSERVED_RUNTIME = {
     processId: 4242,
     executablePath: "C:\\VEM\\bringup\\machine.exe",
     sessionId: 1,
-    user: "VEMKiosk",
+    principal: "VEM\\VEMKiosk",
   },
   cdpListener: {
     processId: 5151,
     executablePath:
       "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\msedgewebview2.exe",
     sessionId: 1,
-    user: "VEMKiosk",
+    principal: "VEM\\VEMKiosk",
     machineAncestorProcessId: 4242,
     localAddress: "127.0.0.1",
     localPort: 9222,
@@ -53,6 +60,18 @@ async function fakeWindowsCommandRunner() {
   return OBSERVED_RUNTIME;
 }
 
+function runScenarioForTest(options) {
+  const {
+    webSocketFactory,
+    remoteCommandRunner = fakeWindowsCommandRunner,
+    ...scenarioOptions
+  } = options;
+  return runVisibleMachineSaleScenarioForTest(scenarioOptions, {
+    webSocketFactory,
+    remoteCommandRunner,
+  });
+}
+
 describe("machine-ui-cdp-driver", () => {
   it("discovers the one expected strict CDP target", async () => {
     await withFakeHttpTargets(
@@ -63,6 +82,35 @@ describe("machine-ui-cdp-driver", () => {
           expectedTargetId: ATTESTATION.targetId,
         });
         assert.equal(selected.id, "machine-target");
+      },
+    );
+  });
+
+  it("rejects a debugger websocket pathname that does not exactly bind its target id", async () => {
+    assert.throws(
+      () =>
+        assertTargetDebuggerWebSocketUrl(
+          "ws://127.0.0.1:9222/devtools/page/machine-target/extra",
+          "machine-target",
+        ),
+      /pathname does not match target id/,
+    );
+    await withFakeHttpTargets(
+      [
+        {
+          ...target("machine-target", "#/sale"),
+          webSocketDebuggerUrl:
+            "ws://127.0.0.1:9222/devtools/page/other-target",
+        },
+      ],
+      async (endpoint) => {
+        await assert.rejects(
+          discoverMachineUiTarget({
+            endpoint,
+            expectedTargetId: ATTESTATION.targetId,
+          }),
+          /pathname does not match target id/,
+        );
       },
     );
   });
@@ -114,14 +162,18 @@ describe("machine-ui-cdp-driver", () => {
 
   it("derives Windows process facts remotely and binds them to the live CDP target", async () => {
     let invocation;
-    const observed = await inspectWindowsMachineUiRuntime({
-      remote: "YKDZ@win10.test",
-      expectedMachinePath: ATTESTATION.machine.executablePath,
-      commandRunner: async (input) => {
-        invocation = input;
-        return OBSERVED_RUNTIME;
+    const observed = await inspectWindowsMachineUiRuntimeForTest(
+      {
+        remote: "YKDZ@win10.test",
+        expectedMachinePath: ATTESTATION.machine.executablePath,
       },
-    });
+      {
+        commandRunner: async (input) => {
+          invocation = input;
+          return OBSERVED_RUNTIME;
+        },
+      },
+    );
     const evidence = bindMachineUiRuntimeEvidence({
       expectedRuntimeAttestation: ATTESTATION,
       observedRuntime: observed,
@@ -132,6 +184,8 @@ describe("machine-ui-cdp-driver", () => {
     assert.match(invocation.script, /Get-NetTCPConnection/);
     assert.match(invocation.script, /Win32_Process/);
     assert.match(invocation.script, /GetOwner/);
+    assert.match(invocation.script, /machineOwner\.Domain/);
+    assert.match(invocation.script, /listenerOwner\.Domain/);
     assert.equal(evidence.observed.machine.processId, 4242);
     assert.equal(evidence.observed.cdpTarget.route, "#/checkout?a=1&b=2");
   });
@@ -150,6 +204,13 @@ describe("machine-ui-cdp-driver", () => {
         observed.cdpListener.sessionId = 2;
       },
       /listener session does not match/,
+    ],
+    [
+      "a listener principal that differs only by case",
+      (_attestation, observed) => {
+        observed.cdpListener.principal = "VEM\\vemkiosk";
+      },
+      /listener principal does not match/,
     ],
     [
       "a CDP target that differs from the expected target",
@@ -187,6 +248,20 @@ describe("machine-ui-cdp-driver", () => {
     );
   });
 
+  it("requires exact Domain\\User principals in runtime attestation", () => {
+    const attestation = structuredClone(ATTESTATION);
+    attestation.machine.principal = "VEMKiosk";
+    assert.throws(
+      () =>
+        bindMachineUiRuntimeEvidence({
+          expectedRuntimeAttestation: attestation,
+          observedRuntime: OBSERVED_RUNTIME,
+          target: target("machine-target", "#/sale"),
+        }),
+      /exact Domain\\User/,
+    );
+  });
+
   it("rewrites ws/wss debugger URLs, including an IPv6 forward", () => {
     assert.equal(
       rewriteWebSocketDebuggerUrl(
@@ -210,6 +285,28 @@ describe("machine-ui-cdp-driver", () => {
         ),
       /must use ws or wss/,
     );
+  });
+
+  it("rejects production acceptance transport injection before it can run", async () => {
+    await assert.rejects(
+      runVisibleMachineSaleScenario({ endpoint: "http://127.0.0.1:9222" }),
+      /endpoint is test-only/,
+    );
+    await assert.rejects(
+      runVisibleMachineSaleScenario({ remoteCommandRunner() {} }),
+      /remoteCommandRunner is test-only/,
+    );
+    const cli = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./machine-ui-cdp-driver.mjs", import.meta.url)),
+        "--endpoint",
+        "http://127.0.0.1:9222",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(cli.status, 1);
+    assert.match(cli.stderr, /unknown argument: --endpoint/);
   });
 
   it("opens an SSH tunnel only after readiness and drains stderr", async () => {
@@ -248,6 +345,21 @@ describe("machine-ui-cdp-driver", () => {
     assert.equal(child.exitCode, null);
     child.finish(0, "SIGTERM");
     await closing;
+  });
+
+  it("rejects non-loopback tunnel destinations before spawning SSH", async () => {
+    await assert.rejects(
+      openMachineUiCdpSidecar({
+        remote: "user@example.test",
+        remoteCdpHost: "10.0.0.15",
+        processAdapter: {
+          spawn() {
+            throw new Error("must not spawn");
+          },
+        },
+      }),
+      /remote CDP tunnel host must be inspected loopback/,
+    );
   });
 
   it("rejects child process spawn errors and exits before readiness", async () => {
@@ -423,7 +535,6 @@ describe("machine-ui-cdp-driver", () => {
 
   it("requires a named nonempty sale sequence with customer routes and actions", async () => {
     const common = {
-      endpoint: "http://127.0.0.1:1",
       expectedRuntimeAttestation: ATTESTATION,
       expectedInitialRoute: "#/sale",
     };
@@ -443,9 +554,9 @@ describe("machine-ui-cdp-driver", () => {
       runVisibleMachineSaleScenario({
         ...common,
         sequenceName: "sale",
-        steps: [{ type: "observation", name: "look" }],
+        steps: [{ type: "infrastructure", name: "look" }],
       }),
-      /unsupported step type observation/,
+      /unsupported step type infrastructure/,
     );
     await assert.rejects(
       runVisibleMachineSaleScenario({
@@ -462,7 +573,7 @@ describe("machine-ui-cdp-driver", () => {
           },
         ],
       }),
-      /cannot use a custom action/,
+      /unsupported field action/,
     );
   });
 
@@ -511,7 +622,7 @@ describe("machine-ui-cdp-driver", () => {
             return { id: message.id, result: {} };
           },
         );
-        const result = await runVisibleMachineSaleScenario({
+        const result = await runScenarioForTest({
           endpoint,
           tunnelOptions: { remote: "test@win10.test" },
           expectedRuntimeAttestation: ATTESTATION,
@@ -533,6 +644,11 @@ describe("machine-ui-cdp-driver", () => {
               selector: "#buy",
               routeBefore: "#/sale",
               routeAfter: "#/checkout",
+            },
+            {
+              type: "observation",
+              name: "checkout-visible",
+              route: "#/checkout",
             },
           ],
         });
@@ -566,6 +682,10 @@ describe("machine-ui-cdp-driver", () => {
             message.method.startsWith("Input."),
           ),
         );
+        assert.deepEqual(result.execution, {
+          planned: { customerActivations: 1, observations: 1 },
+          executed: { customerActivations: 1, observations: 1 },
+        });
       },
     );
   });
@@ -605,7 +725,7 @@ describe("machine-ui-cdp-driver", () => {
           },
         );
         await assert.rejects(
-          runVisibleMachineSaleScenario({
+          runScenarioForTest({
             endpoint,
             tunnelOptions: { remote: "test@win10.test" },
             expectedRuntimeAttestation: ATTESTATION,
@@ -636,7 +756,7 @@ describe("machine-ui-cdp-driver", () => {
       [target("machine-target", "#/catalog")],
       async (endpoint) => {
         await assert.rejects(
-          runVisibleMachineSaleScenario({
+          runScenarioForTest({
             endpoint,
             tunnelOptions: { remote: "test@win10.test" },
             expectedRuntimeAttestation: ATTESTATION,
@@ -677,7 +797,7 @@ describe("machine-ui-cdp-driver", () => {
           return { id: message.id, result: {} };
         });
         await assert.rejects(
-          runVisibleMachineSaleScenario({
+          runScenarioForTest({
             endpoint,
             tunnelOptions: { remote: "test@win10.test" },
             expectedRuntimeAttestation: ATTESTATION,
@@ -704,6 +824,177 @@ describe("machine-ui-cdp-driver", () => {
         assert.equal(sockets[0].readyState, 3);
       },
     );
+  });
+
+  it("runs an immutable copy of closed scenario steps and reports execution counts", async () => {
+    await withFakeHttpTargets(
+      [target("machine-target", "#/sale")],
+      async (endpoint) => {
+        let route = "#/sale";
+        let releaseInspection;
+        let sidecarOptions;
+        const inspection = new Promise((resolve) => {
+          releaseInspection = resolve;
+        });
+        const { factory } = createFakeWebSocketFactory((message) => {
+          if (message.method === "Runtime.evaluate") {
+            if (message.params.expression.includes("querySelector")) {
+              return cdpValue(
+                {
+                  selector: "#buy",
+                  actionable: true,
+                  inViewport: true,
+                  pointerEvents: "auto",
+                  hitTarget: true,
+                  bounds: { x: 0, y: 0, width: 10, height: 10 },
+                  center: { x: 5, y: 5 },
+                },
+                message.id,
+              );
+            }
+            return cdpValue(identity(route), message.id);
+          }
+          if (
+            message.method === "Input.dispatchTouchEvent" &&
+            message.params.type === "touchStart"
+          ) {
+            route = "#/checkout";
+          }
+          return { id: message.id, result: {} };
+        });
+        const steps = [
+          {
+            type: "customer-activation",
+            name: "buy",
+            selector: "#buy",
+            routeBefore: "#/sale",
+            routeAfter: "#/checkout",
+          },
+          {
+            type: "observation",
+            name: "checkout",
+            route: "#/checkout",
+          },
+        ];
+        const running = runVisibleMachineSaleScenarioForTest(
+          {
+            endpoint,
+            tunnelOptions: { remote: "test@win10.test" },
+            expectedRuntimeAttestation: ATTESTATION,
+            expectedInitialRoute: "#/sale",
+            sequenceName: "immutable-sequence",
+            continuousCapture: false,
+            steps,
+          },
+          {
+            webSocketFactory: factory,
+            remoteCommandRunner: async () => inspection,
+            async openSidecar(options) {
+              sidecarOptions = options;
+              return { endpoint, async close() {} };
+            },
+          },
+        );
+        steps[0].routeAfter = "#/maintenance";
+        steps.push({ type: "observation", name: "injected", route: "#/sale" });
+        releaseInspection(OBSERVED_RUNTIME);
+
+        const result = await running;
+        assert.deepEqual(result.execution, {
+          planned: { customerActivations: 1, observations: 1 },
+          executed: { customerActivations: 1, observations: 1 },
+        });
+        assert.equal(sidecarOptions.remoteCdpPort, 9222);
+        assert.equal("remoteCdpHost" in sidecarOptions, false);
+      },
+    );
+  });
+
+  it("fails closed when route or continuous evidence cardinality overflows", async () => {
+    await withFakeHttpTargets(
+      [target("machine-target", "#/sale")],
+      async (endpoint) => {
+        const { factory } = createFakeWebSocketFactory((message, socket) => {
+          if (message.method === "Page.enable") {
+            for (let index = 0; index <= 128; index += 1) {
+              socket.emitMessage({
+                method: "Page.navigatedWithinDocument",
+                params: { url: "http://tauri.localhost/#/sale" },
+              });
+            }
+          }
+          if (message.method === "Runtime.evaluate") {
+            return cdpValue(identity("#/sale"), message.id);
+          }
+          return { id: message.id, result: {} };
+        });
+        await assert.rejects(
+          runScenarioForTest({
+            endpoint,
+            tunnelOptions: { remote: "test@win10.test" },
+            expectedRuntimeAttestation: ATTESTATION,
+            expectedInitialRoute: "#/sale",
+            sequenceName: "route-overflow",
+            continuousCapture: false,
+            webSocketFactory: factory,
+            steps: [
+              {
+                type: "customer-activation",
+                name: "buy",
+                selector: "#buy",
+                routeBefore: "#/sale",
+                routeAfter: "#/checkout",
+              },
+            ],
+          }),
+          /route evidence exceeded maximum entries/,
+        );
+      },
+    );
+
+    const { factory } = createFakeWebSocketFactory((message) =>
+      cdpValue(identity("#/sale"), message.id),
+    );
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/overflow", {
+      webSocketFactory: factory,
+    });
+    await client.connect();
+    const capture = startContinuousIdentityCapture(client, {
+      intervalMs: 1,
+      maxCheckpoints: 1,
+    });
+    await sleep(20);
+    await assert.rejects(capture.stop(), /exceeded maximum evidence entries/);
+    await client.close();
+  });
+
+  it("escalates a timed-out runtime inspection from TERM to KILL and awaits exit", async () => {
+    const child = new FakeChildProcess();
+    child.onKill = (signal) => {
+      if (signal === "SIGKILL") {
+        queueMicrotask(() => child.finish(1, "SIGKILL"));
+      }
+    };
+    await assert.rejects(
+      runWindowsPowerShellOverSshForTest(
+        {
+          remote: "user@example.test",
+          timeoutMs: 1,
+          script: "Write-Output '{}'",
+        },
+        {
+          processAdapter: {
+            spawn() {
+              return child;
+            },
+          },
+          shutdownTimeoutMs: 1,
+        },
+      ),
+      /Windows runtime inspection timed out/,
+    );
+    assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(child.exitCode, 1);
   });
 
   it("returns screenshot digests and sink refs, never base64", async () => {
@@ -867,11 +1158,13 @@ class FakeChildProcess extends EventEmitter {
     super();
     this.exitCode = null;
     this.killSignals = [];
+    this.stdout = new FakeStream();
     this.stderr = new FakeStream();
   }
 
   kill(signal) {
     this.killSignals.push(signal);
+    this.onKill?.(signal);
     return true;
   }
 
