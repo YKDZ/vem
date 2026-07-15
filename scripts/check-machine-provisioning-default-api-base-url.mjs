@@ -13,8 +13,7 @@ function readText(path) {
 const smokePath = "scripts/windows/vending-daemon-smoke.ps1";
 const examplePath = "scripts/windows/machine-config.bringup.example.json";
 const machineClientPath = "apps/machine/src/daemon/client.ts";
-const runbookPath =
-  "public/machine-provisioning-default-api-base-url.md";
+const runbookPath = "public/machine-provisioning-default-api-base-url.md";
 
 const smoke = readText(smokePath);
 const example = readText(examplePath);

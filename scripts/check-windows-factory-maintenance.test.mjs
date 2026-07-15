@@ -246,17 +246,26 @@ test("Factory bootstrap capability hashing stays compatible with Windows PowerSh
     preparation.indexOf("function Write-FactoryRuntimeFiles"),
   );
 
-  assert.doesNotMatch(factoryWriter, /\[Security\.Cryptography\.SHA256\]::HashData/);
+  assert.doesNotMatch(
+    factoryWriter,
+    /\[Security\.Cryptography\.SHA256\]::HashData/,
+  );
   assert.doesNotMatch(factoryWriter, /\[Convert\]::ToHexString/);
   assert.match(factoryWriter, /\[Security\.Cryptography\.SHA256\]::Create\(\)/);
   assert.match(factoryWriter, /\.ComputeHash\(/);
-  assert.match(factoryWriter, /\[BitConverter\]::ToString\([^)]*\)\.Replace\("-", ""\)\.ToLowerInvariant\(\)/);
+  assert.match(
+    factoryWriter,
+    /\[BitConverter\]::ToString\([^)]*\)\.Replace\("-", ""\)\.ToLowerInvariant\(\)/,
+  );
 
   // The target applies this entrypoint through inbox Windows PowerShell, while
   // CI's parser check keeps the source syntactically valid before it reaches a
   // Windows acceptance host.
   const testbed = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
-  assert.match(testbed, /& powershell\.exe -NoProfile -ExecutionPolicy Bypass -File \$verifierPath/);
+  assert.match(
+    testbed,
+    /& powershell\.exe -NoProfile -ExecutionPolicy Bypass -File \$verifierPath/,
+  );
   assertPowerShellParses("scripts/windows/prepare-factory-runtime.ps1");
 });
 
