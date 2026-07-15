@@ -254,99 +254,186 @@ function linkedSale() {
   };
 }
 
-function saleScenario(input, runtimeDigest) {
-  const sale = linkedSale();
+function saleScenario(input, _runtimeDigest) {
   return {
-    schemaVersion: "machine-ui-cdp-sale-scenario/v3",
+    schemaVersion: "installed-kiosk-sale-acceptance/v2",
+    kind: "installed-kiosk-sale-acceptance",
     status: "passed",
-    sequenceName: "factory-installed-kiosk-sale",
-    target: {
-      id: "machine-ui-cdp-target-1",
-      route: "#/sale",
-      attestation: {
-        expected: {
-          targetId: "machine-ui-cdp-target-1",
-          machine: {
-            processId: 4242,
-            executablePath: "C:\\VEM\\bringup\\machine.exe",
-            sessionId: 1,
-            principal: "VEM\\VEMKiosk",
-          },
-        },
-        observed: {
-          machine: {
-            processId: 4242,
-            executablePath: "C:\\VEM\\bringup\\machine.exe",
-            sessionId: 1,
-            principal: "VEM\\VEMKiosk",
-          },
-          cdpListener: {
-            processId: 5151,
-            executablePath: "C:\\Program Files\\WebView\\msedgewebview2.exe",
-            sessionId: 1,
-            principal: "VEM\\VEMKiosk",
-            machineAncestorProcessId: 4242,
-            localAddress: "127.0.0.1",
-            localPort: 9222,
-          },
-          cdpTarget: {
-            id: "machine-ui-cdp-target-1",
-            url: "http://tauri.localhost/#/sale",
-            route: "#/sale",
-          },
-        },
-      },
-    },
-    execution: {
-      planned: { customerActivations: 1, observations: 1 },
-      executed: { customerActivations: 1, observations: 1 },
-    },
-    evidence: [
-      {
-        type: "customer-activation",
-        label: "start-sale",
-        selector: "[data-testid='start-sale']",
-        input: {
-          method: "Input.dispatchTouchEvent",
-          kind: "touch",
-          x: 10,
-          y: 20,
-          released: true,
-        },
-        routeBefore: "#/sale",
-      },
-      {
-        type: "observation",
-        label: "result",
-        identity: {
-          url: "http://tauri.localhost/#/result",
-          route: "#/result",
-        },
-      },
-    ],
-    sale: { linkedTransaction: sale },
-    factoryProfile: {
-      routeCompetitionCases: ["catalog_refresh"],
-    },
-    factoryBindings: {
-      runtimeAcceptance: {
-        evidencePath: "verifier/runtime-acceptance.json",
-        evidenceDigest: `sha256:${runtimeDigest}`,
-        cdpTargetId: "machine-ui-cdp-target-1",
+    ok: true,
+    runId: input.runId,
+    profile: "factory-route-competition",
+    runtimeBinding: {
+      normal: {
+        normalTargetId: "machine-ui-cdp-target-1",
         sessionUser: "VEMKiosk",
         sessionId: 1,
-        tauriRoute: "http://tauri.localhost/#/sale",
+        url: "http://tauri.localhost/#/sale",
+        route: "#/sale",
       },
-      simulatedHardware: {
-        status: "passed",
-        saleCorrelationId: `sale-correlation://factory-${input.runId.toLowerCase()}`,
+      prelaunch: {
+        processId: 4241,
+        executablePath: "C:\\VEM\\bringup\\machine.exe",
+        sessionId: 1,
+        principal: "VEM\\VEMKiosk",
+      },
+      debug: {
+        targetId: "machine-ui-cdp-debug-target-2",
+        targetUrl: "http://tauri.localhost/#/catalog",
+        machine: {
+          processId: 4242,
+          executablePath: "C:\\VEM\\bringup\\machine.exe",
+          sessionId: 1,
+          principal: "VEM\\VEMKiosk",
+        },
+      },
+    },
+    machineUiCdpScenario: {
+      schemaVersion: "machine-ui-cdp-sale-scenario/v3",
+      status: "passed",
+      sequenceName: "factory-installed-kiosk-sale",
+      target: {
+        id: "machine-ui-cdp-debug-target-2",
+        route: "#/catalog",
+        attestation: {
+          expected: {
+            targetId: "machine-ui-cdp-debug-target-2",
+            machine: {
+              processId: 4242,
+              executablePath: "C:\\VEM\\bringup\\machine.exe",
+              sessionId: 1,
+              principal: "VEM\\VEMKiosk",
+            },
+          },
+          observed: {
+            machine: {
+              processId: 4242,
+              executablePath: "C:\\VEM\\bringup\\machine.exe",
+              sessionId: 1,
+              principal: "VEM\\VEMKiosk",
+            },
+            cdpListener: {
+              processId: 5151,
+              executablePath: "C:\\Program Files\\WebView\\msedgewebview2.exe",
+              sessionId: 1,
+              principal: "VEM\\VEMKiosk",
+              machineAncestorProcessId: 4242,
+              localAddress: "127.0.0.1",
+              localPort: 9222,
+            },
+            cdpTarget: {
+              id: "machine-ui-cdp-debug-target-2",
+              url: "http://tauri.localhost/#/catalog",
+              route: "#/catalog",
+            },
+          },
+        },
+      },
+      execution: {
+        planned: { customerActivations: 1, observations: 1, routeActions: 1 },
+        executed: { customerActivations: 1, observations: 1, routeActions: 1 },
+      },
+      evidence: [
+        {
+          type: "customer-activation",
+          label: "start-sale",
+          selector: "[data-testid='start-sale']",
+          input: {
+            method: "Input.dispatchTouchEvent",
+            kind: "touch",
+            x: 10,
+            y: 20,
+            released: true,
+          },
+          routeBefore: "#/catalog",
+        },
+        {
+          type: "route-barrier",
+          label: "payment option",
+          forbiddenRoutes: ["/catalog", "/home", "/maintenance"],
+        },
+        {
+          type: "route-action",
+          label: "catalog competition during payment",
+          attemptRoute: "#/catalog",
+          routeBefore: "#/payment",
+          routeReportedByHook: "#/payment",
+        },
+        {
+          type: "checkpoint",
+          label: "continuous",
+          identity: {
+            url: "http://tauri.localhost/#/payment",
+            route: "#/payment",
+          },
+        },
+        {
+          type: "observation",
+          label: "result",
+          identity: {
+            url: "http://tauri.localhost/#/result",
+            route: "#/result",
+          },
+        },
+      ],
+    },
+    correlation: {
+      saleCorrelationId: `sale-correlation://factory-${input.runId.toLowerCase()}`,
+      rendered: {
+        orderId: "order-factory-1",
+        paymentId: "payment-factory-1",
+        transactionId: "transaction-factory-1",
+        commandId: "command-factory-1",
+      },
+      platform: {
         orderId: "order-factory-1",
         paymentId: "payment-factory-1",
         transactionId: "transaction-factory-1",
         commandId: "command-factory-1",
         stockMovementId: "movement-factory-1",
-        dispense: { status: "succeeded" },
-        stock: { status: "accepted" },
+        stockDelta: -1,
+        status: "accepted",
+        observations: {
+          orderIds: {
+            occurrences: ["order-factory-1", "order-factory-1"],
+            unique: ["order-factory-1"],
+            count: 1,
+          },
+          paymentIds: {
+            occurrences: ["payment-factory-1"],
+            unique: ["payment-factory-1"],
+            count: 1,
+          },
+          transactionIds: {
+            occurrences: ["transaction-factory-1"],
+            unique: ["transaction-factory-1"],
+            count: 1,
+          },
+          commandIds: {
+            occurrences: ["command-factory-1", "command-factory-1"],
+            unique: ["command-factory-1"],
+            count: 1,
+          },
+          movementIds: {
+            occurrences: ["movement-factory-1"],
+            unique: ["movement-factory-1"],
+            count: 1,
+          },
+        },
+      },
+      serial: {
+        collected: {
+          orderId: "order-factory-1",
+          paymentId: "payment-factory-1",
+          vendingCommandId: "command-factory-1",
+        },
+      },
+      exactOnce: {
+        orderCount: 1,
+        paymentCount: 1,
+        commandCount: 1,
+        movementCount: 1,
+        stockDelta: -1,
+        serialSaleBindingCount: { injected: 1, collected: 1 },
       },
     },
   };
@@ -501,11 +588,9 @@ describe("Factory Image Acceptance lifecycle", () => {
       sshKnownHostsPath,
     );
 
-    assert.deepEqual(invocation.slice(0, 4), [
+    assert.deepEqual(invocation.slice(0, 2), [
       "node",
-      "scripts/testbed/win10-vem-e2e.mjs",
-      "--mode",
-      "installed-kiosk-sale-acceptance",
+      "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
     ]);
     assert.equal(
       invocation[invocation.indexOf("--out") + 1],
@@ -516,36 +601,37 @@ describe("Factory Image Acceptance lifecycle", () => {
       join(input.evidence.root, "verifier", "runtime-acceptance.json"),
     );
     assert.equal(
-      invocation[invocation.indexOf("--expected-cdp-target-id") + 1],
-      "machine-ui-cdp-target-1",
+      invocation[invocation.indexOf("--target-identity") + 1],
+      input.targetIdentity,
     );
     assert.equal(
-      invocation[invocation.indexOf("--expected-kiosk-session-user") + 1],
-      "VEMKiosk",
+      invocation[invocation.indexOf("--approved-runtime-base") + 1],
+      input.factory.isoIdentity,
     );
     assert.equal(
-      invocation[invocation.indexOf("--expected-kiosk-session-id") + 1],
-      "1",
-    );
-    assert.equal(
-      invocation[invocation.indexOf("--expected-tauri-route") + 1],
-      "http://tauri.localhost/#/sale",
-    );
-    assert.equal(
-      invocation[invocation.indexOf("--factory-profile") + 1],
-      "factory",
-    );
-    assert.equal(
-      invocation[invocation.indexOf("--route-competition-case") + 1],
-      "catalog_refresh",
-    );
-    assert.equal(
-      invocation[invocation.indexOf("--business-assertion-retries") + 1],
-      "0",
+      invocation[invocation.indexOf("--profile") + 1],
+      "factory-route-competition",
     );
     assert.equal(
       invocation[invocation.indexOf("--ssh-known-hosts-path") + 1],
       sshKnownHostsPath,
+    );
+    const dryRun = spawnSync(
+      invocation[0],
+      [...invocation.slice(1), "--dry-run"],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+    assert.equal(dryRun.status, 0, dryRun.stderr);
+    const plan = JSON.parse(dryRun.stdout);
+    assert.equal(
+      plan.interface,
+      "installed-kiosk-sale-acceptance",
+      "Factory invocation must execute against the callable host CLI",
+    );
+    assert.equal(plan.profile, "factory-route-competition");
+    assert.equal(
+      plan.artifacts.report,
+      join(input.evidence.root, "verifier", "customer-ui-sale-scenario.json"),
     );
   });
 
@@ -569,10 +655,10 @@ describe("Factory Image Acceptance lifecycle", () => {
       ),
       {
         status: "passed",
-        schemaVersion: "machine-ui-cdp-sale-scenario/v3",
+        schemaVersion: "installed-kiosk-sale-acceptance/v2",
         target: {
-          id: "machine-ui-cdp-target-1",
-          route: "#/sale",
+          id: "machine-ui-cdp-debug-target-2",
+          route: "#/catalog",
           sessionUser: "VEMKiosk",
           sessionId: 1,
         },
@@ -583,12 +669,13 @@ describe("Factory Image Acceptance lifecycle", () => {
           commandId: "command-factory-1",
           stockMovementId: "movement-factory-1",
         },
-        routeCompetitionCase: "catalog_refresh",
+        routeCompetitionCase: "catalog_during_payment",
       },
     );
 
     const missingInput = saleScenario(input, digest);
-    missingInput.evidence[0].input.method = "HTMLElement.click";
+    missingInput.machineUiCdpScenario.evidence[0].input.method =
+      "HTMLElement.click";
     writeFileSync(output, `${JSON.stringify(missingInput)}\n`);
     assert.throws(
       () =>
@@ -601,7 +688,7 @@ describe("Factory Image Acceptance lifecycle", () => {
     );
 
     const wrongStock = saleScenario(input, digest);
-    wrongStock.sale.linkedTransaction.stockMovement.movementId = "unbound";
+    wrongStock.correlation.platform.stockDelta = 0;
     writeFileSync(output, `${JSON.stringify(wrongStock)}\n`);
     assert.throws(
       () =>
@@ -610,7 +697,7 @@ describe("Factory Image Acceptance lifecycle", () => {
           input,
           runtimeAcceptanceSummary(),
         ),
-      /order\/payment\/transaction\/command\/stock/,
+      /rendered payment, serial command, and stock movement/,
     );
   });
 

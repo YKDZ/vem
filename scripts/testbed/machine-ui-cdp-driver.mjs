@@ -19,12 +19,12 @@ const MAX_SCENARIO_STEPS = 32;
 const MAX_ROUTE_EVIDENCE_ENTRIES = 128;
 const MAX_EVIDENCE_ENTRIES = 512;
 const MAX_CONTINUOUS_CHECKPOINTS = 64;
-const FORBIDDEN_CUSTOMER_ROUTES = [
-  "/catalog",
+const INITIAL_FORBIDDEN_CUSTOMER_ROUTES = [
   "/maintenance",
   "/offline",
   "/bring-up",
 ];
+const PAYMENT_BARRIER_FORBIDDEN_ROUTES = ["/catalog", "/home", "/maintenance"];
 const PRODUCTION_TUNNEL_OPTION_KEYS = new Set([
   "remote",
   "sshPort",
@@ -1062,7 +1062,10 @@ export function startContinuousIdentityCapture(client, options = {}) {
           );
         }
         checkpoint.ordinal = ordinal++;
-        assertAllowedRoute(checkpoint.identity.route, options.forbiddenRoutes);
+        assertAllowedRoute(
+          checkpoint.identity.route,
+          resolveForbiddenRoutes(options.forbiddenRoutes),
+        );
         checkpoints.push(checkpoint);
       })
       .catch((error) => {
@@ -1145,6 +1148,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     inputKind = "touch",
     continuousCapture = true,
     continuousCaptureIntervalMs = 500,
+    initialForbiddenRoutes = INITIAL_FORBIDDEN_CUSTOMER_ROUTES,
     screenshotCheckpoints = false,
     clock,
   } = options;
@@ -1160,7 +1164,12 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     tunnelTransport.remoteCdpPort ?? DEFAULT_REMOTE_CDP_PORT;
 
   const plannedExecution = countScenarioSteps(sequence);
-  const executedExecution = { customerActivations: 0, observations: 0 };
+  const executedExecution = {
+    customerActivations: 0,
+    observations: 0,
+    routeActions: 0,
+  };
+  let activeForbiddenRoutes = validateForbiddenRoutes(initialForbiddenRoutes);
   const observedRuntime = await dependencies.inspectRuntime({
     remote: tunnelTransport.remote,
     sshPort: tunnelTransport.sshPort,
@@ -1208,7 +1217,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     if (fatalError) return;
     try {
       const identity = boundIdentity(event?.identity ?? event);
-      assertAllowedRoute(identity.route, FORBIDDEN_CUSTOMER_ROUTES);
+      assertAllowedRoute(identity.route, activeForbiddenRoutes);
       record({ type: "route-changed", source, identity });
     } catch (error) {
       fatalError = new Error(`route capture failed: ${error.message}`, {
@@ -1239,7 +1248,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         `initial CDP target route mismatch: expected ${formatExpectedRoute(expectedInitialRoute)}, got ${target.route}`,
       );
     }
-    assertAllowedRoute(target.route, FORBIDDEN_CUSTOMER_ROUTES);
+    assertAllowedRoute(target.route, activeForbiddenRoutes);
     const webSocketUrl = rewriteWebSocketDebuggerUrl(
       target.webSocketDebuggerUrl,
       sidecar.endpoint,
@@ -1273,7 +1282,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           intervalMs: continuousCaptureIntervalMs,
           screenshot: screenshotCheckpoints,
           screenshotSink: adapter.screenshotSink,
-          forbiddenRoutes: FORBIDDEN_CUSTOMER_ROUTES,
+          forbiddenRoutes: () => activeForbiddenRoutes,
           timeoutMs,
           clock,
           startOrdinal: 1_000_000,
@@ -1287,7 +1296,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       screenshotSink: adapter.screenshotSink,
       clock,
     });
-    assertAllowedRoute(initial.identity.route, FORBIDDEN_CUSTOMER_ROUTES);
+    assertAllowedRoute(initial.identity.route, activeForbiddenRoutes);
     assertRouteIdentity(initial.identity, expectedInitialRoute, "initial");
     record(initial);
 
@@ -1297,7 +1306,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         const before = await waitForRoute(client, step.routeBefore, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
           pollMs: routePollMs,
-          forbiddenRoutes: FORBIDDEN_CUSTOMER_ROUTES,
+          forbiddenRoutes: activeForbiddenRoutes,
           assertHealthy,
         });
         assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
@@ -1325,11 +1334,22 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           routeBefore: before.route,
         });
         executedExecution.customerActivations += 1;
+        if (step.activatesRouteBarrier) {
+          activeForbiddenRoutes = mergeForbiddenRoutes(
+            activeForbiddenRoutes,
+            PAYMENT_BARRIER_FORBIDDEN_ROUTES,
+          );
+          record({
+            type: "route-barrier",
+            label: step.name,
+            forbiddenRoutes: activeForbiddenRoutes,
+          });
+        }
         assertHealthy();
         const after = await waitForRoute(client, step.routeAfter, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
           pollMs: routePollMs,
-          forbiddenRoutes: FORBIDDEN_CUSTOMER_ROUTES,
+          forbiddenRoutes: activeForbiddenRoutes,
           assertHealthy,
         });
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
@@ -1345,10 +1365,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           screenshotSink: adapter.screenshotSink,
           clock,
         });
-        assertAllowedRoute(
-          observation.identity.route,
-          FORBIDDEN_CUSTOMER_ROUTES,
-        );
+        assertAllowedRoute(observation.identity.route, activeForbiddenRoutes);
         assertRouteIdentity(
           observation.identity,
           step.route,
@@ -1357,6 +1374,44 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         record({ ...observation, type: "observation" });
         executedExecution.observations += 1;
         continue;
+      } else if (step.type === "route-action") {
+        const before = await captureDomIdentity(client, {
+          timeoutMs: step.timeoutMs ?? timeoutMs,
+        });
+        assertAllowedRoute(before.route, activeForbiddenRoutes);
+        assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
+        record({
+          type: "checkpoint",
+          label: `${step.name}:before`,
+          identity: before,
+        });
+        const routeAttempt = await evaluateExpression(
+          client,
+          `(() => { location.hash = ${JSON.stringify(step.attemptRoute)}; return location.hash; })()`,
+          { timeoutMs: step.timeoutMs ?? timeoutMs },
+        );
+        record({
+          type: "route-action",
+          label: step.name,
+          attemptRoute: step.attemptRoute,
+          routeBefore: before.route,
+          routeReportedByHook: normalizeMachineRoute(routeAttempt),
+        });
+        executedExecution.routeActions += 1;
+        assertHealthy();
+        const after = await waitForRoute(client, step.routeAfter, {
+          timeoutMs: step.timeoutMs ?? timeoutMs,
+          pollMs: routePollMs,
+          forbiddenRoutes: activeForbiddenRoutes,
+          assertHealthy,
+        });
+        assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
+        record({
+          type: "checkpoint",
+          label: `${step.name}:after`,
+          identity: after,
+        });
+        continue;
       }
       const checkpoint = await captureCheckpoint(client, step.name, {
         timeoutMs: step.timeoutMs ?? timeoutMs,
@@ -1364,7 +1419,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         screenshotSink: adapter.screenshotSink,
         clock,
       });
-      assertAllowedRoute(checkpoint.identity.route, FORBIDDEN_CUSTOMER_ROUTES);
+      assertAllowedRoute(checkpoint.identity.route, activeForbiddenRoutes);
       record(checkpoint);
     }
 
@@ -1374,7 +1429,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       screenshotSink: adapter.screenshotSink,
       clock,
     });
-    assertAllowedRoute(final.identity.route, FORBIDDEN_CUSTOMER_ROUTES);
+    assertAllowedRoute(final.identity.route, activeForbiddenRoutes);
     record(final);
     assertHealthy();
     const continuous = capture ? await capture.stop() : [];
@@ -1485,6 +1540,15 @@ function validateScenarioSequence({ sequenceName, steps }) {
           routeBefore,
           routeAfter,
           ...(inputKind == null ? {} : { inputKind }),
+          ...(step.activatesRouteBarrier == null
+            ? {}
+            : {
+                activatesRouteBarrier: requiredStepBoolean(
+                  step,
+                  "activatesRouteBarrier",
+                  index,
+                ),
+              }),
         }),
       );
     } else if (type === "observation") {
@@ -1494,6 +1558,21 @@ function validateScenarioSequence({ sequenceName, steps }) {
           ...common,
           route: normalizeMachineRoute(
             requiredStepString(step, "route", index),
+          ),
+        }),
+      );
+    } else if (type === "route-action") {
+      validatedSteps.push(
+        Object.freeze({
+          ...common,
+          attemptRoute: normalizeMachineRoute(
+            requiredStepString(step, "attemptRoute", index),
+          ),
+          routeBefore: normalizeMachineRoute(
+            requiredStepString(step, "routeBefore", index),
+          ),
+          routeAfter: normalizeMachineRoute(
+            requiredStepString(step, "routeAfter", index),
           ),
         }),
       );
@@ -1522,10 +1601,21 @@ function assertClosedStep(step, index, type) {
           "timeoutMs",
           "inputKind",
           "screenshot",
+          "activatesRouteBarrier",
         ])
       : type === "observation"
         ? new Set(["type", "name", "route", "timeoutMs", "screenshot"])
-        : null;
+        : type === "route-action"
+          ? new Set([
+              "type",
+              "name",
+              "attemptRoute",
+              "routeBefore",
+              "routeAfter",
+              "timeoutMs",
+              "screenshot",
+            ])
+          : null;
   if (!allowed) return;
   for (const key of Object.keys(step)) {
     if (!allowed.has(key)) {
@@ -1582,11 +1672,13 @@ function countScenarioSteps(sequence) {
       (step) => step.type === "customer-activation",
     ).length,
     observations: sequence.filter((step) => step.type === "observation").length,
+    routeActions: sequence.filter((step) => step.type === "route-action")
+      .length,
   };
 }
 
 function assertScenarioExecutionCounts(planned, executed) {
-  for (const field of ["customerActivations", "observations"]) {
+  for (const field of ["customerActivations", "observations", "routeActions"]) {
     if (planned[field] !== executed[field]) {
       throw new Error(
         `scenario executed ${executed[field]} ${field}, expected ${planned[field]}`,
@@ -1597,8 +1689,9 @@ function assertScenarioExecutionCounts(planned, executed) {
 
 function assertAllowedRoute(
   route,
-  forbiddenRoutes = FORBIDDEN_CUSTOMER_ROUTES,
+  forbiddenRoutes = INITIAL_FORBIDDEN_CUSTOMER_ROUTES,
 ) {
+  forbiddenRoutes = resolveForbiddenRoutes(forbiddenRoutes);
   const normalized = normalizeMachineRoute(route);
   const path = routePath(normalized);
   if (
@@ -1614,6 +1707,32 @@ function assertAllowedRoute(
   ) {
     throw new Error(`forbidden customer route observed: ${normalized}`);
   }
+}
+
+function validateForbiddenRoutes(routes) {
+  if (!Array.isArray(routes)) {
+    throw new Error("forbiddenRoutes must be an array");
+  }
+  return Object.freeze(
+    routes.map((route) => {
+      if (typeof route !== "string") {
+        throw new Error("forbiddenRoutes must contain route strings");
+      }
+      return route.startsWith("#")
+        ? normalizeMachineRoute(route)
+        : normalizeForbiddenRoutePath(route);
+    }),
+  );
+}
+
+function mergeForbiddenRoutes(current, additions) {
+  return validateForbiddenRoutes([...current, ...additions]);
+}
+
+function resolveForbiddenRoutes(routes) {
+  return typeof routes === "function"
+    ? validateForbiddenRoutes(routes())
+    : validateForbiddenRoutes(routes ?? INITIAL_FORBIDDEN_CUSTOMER_ROUTES);
 }
 
 function boundIdentity(identity) {
@@ -1730,6 +1849,30 @@ function boundEvidenceEntry(entry) {
       type: "route-changed",
       source: "cdp",
       identity: boundIdentity(entry.identity),
+    };
+  }
+  if (entry.type === "route-barrier") {
+    return {
+      type: "route-barrier",
+      label: boundedRequiredString(
+        entry.label,
+        "route barrier label",
+        MAX_LABEL_LENGTH,
+      ),
+      forbiddenRoutes: validateForbiddenRoutes(entry.forbiddenRoutes),
+    };
+  }
+  if (entry.type === "route-action") {
+    return {
+      type: "route-action",
+      label: boundedRequiredString(
+        entry.label,
+        "route action label",
+        MAX_LABEL_LENGTH,
+      ),
+      attemptRoute: normalizeMachineRoute(entry.attemptRoute),
+      routeBefore: normalizeMachineRoute(entry.routeBefore),
+      routeReportedByHook: normalizeMachineRoute(entry.routeReportedByHook),
     };
   }
   if (entry.type === "runtime-attestation") {

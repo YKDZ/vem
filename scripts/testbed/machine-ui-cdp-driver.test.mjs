@@ -717,8 +717,12 @@ describe("machine-ui-cdp-driver", () => {
           ),
         );
         assert.deepEqual(result.execution, {
-          planned: { customerActivations: 1, observations: 1 },
-          executed: { customerActivations: 1, observations: 1 },
+          planned: { customerActivations: 1, observations: 1, routeActions: 0 },
+          executed: {
+            customerActivations: 1,
+            observations: 1,
+            routeActions: 0,
+          },
         });
       },
     );
@@ -785,32 +789,58 @@ describe("machine-ui-cdp-driver", () => {
     );
   });
 
-  it("rejects the actual catalog Home route before a customer action", async () => {
+  it("allows catalog before the checkout route barrier", async () => {
     await withFakeHttpTargets(
       [target("machine-target", "#/catalog")],
       async (endpoint) => {
-        await assert.rejects(
-          runScenarioForTest({
-            endpoint,
-            tunnelOptions: { remote: "test@win10.test" },
-            expectedRuntimeAttestation: ATTESTATION,
-            expectedInitialRoute: "#/catalog",
-            sequenceName: "catalog-is-not-an-acceptance-state",
-            forbiddenRoutes: [],
-            adapter: acceptanceAdapter(),
-            remoteCommandRunner: fakeWindowsCommandRunner,
-            steps: [
-              {
-                type: "customer-activation",
-                name: "buy",
-                selector: "#buy",
-                routeBefore: "#/catalog",
-                routeAfter: "#/checkout",
-              },
-            ],
-          }),
-          /forbidden customer route observed: #\/catalog/,
-        );
+        let route = "#/catalog";
+        const { factory } = createFakeWebSocketFactory((message) => {
+          if (message.method === "Runtime.evaluate") {
+            if (message.params.expression.includes("querySelector")) {
+              return cdpValue(
+                {
+                  selector: "#buy",
+                  actionable: true,
+                  inViewport: true,
+                  pointerEvents: "auto",
+                  hitTarget: true,
+                  bounds: { x: 0, y: 0, width: 10, height: 10 },
+                  center: { x: 5, y: 5 },
+                },
+                message.id,
+              );
+            }
+            return cdpValue(identity(route), message.id);
+          }
+          if (
+            message.method === "Input.dispatchTouchEvent" &&
+            message.params.type === "touchStart"
+          ) {
+            route = "#/checkout";
+          }
+          return { id: message.id, result: {} };
+        });
+        const result = await runScenarioForTest({
+          endpoint,
+          tunnelOptions: { remote: "test@win10.test" },
+          expectedRuntimeAttestation: ATTESTATION,
+          expectedInitialRoute: "#/catalog",
+          sequenceName: "catalog-before-barrier",
+          adapter: acceptanceAdapter(),
+          remoteCommandRunner: fakeWindowsCommandRunner,
+          webSocketFactory: factory,
+          continuousCapture: false,
+          steps: [
+            {
+              type: "customer-activation",
+              name: "buy",
+              selector: "#buy",
+              routeBefore: "#/catalog",
+              routeAfter: "#/checkout",
+            },
+          ],
+        });
+        assert.equal(result.status, "passed");
       },
     );
   });
@@ -935,8 +965,12 @@ describe("machine-ui-cdp-driver", () => {
 
         const result = await running;
         assert.deepEqual(result.execution, {
-          planned: { customerActivations: 1, observations: 1 },
-          executed: { customerActivations: 1, observations: 1 },
+          planned: { customerActivations: 1, observations: 1, routeActions: 0 },
+          executed: {
+            customerActivations: 1,
+            observations: 1,
+            routeActions: 0,
+          },
         });
         assert.deepEqual(sidecarOptions, {
           remote: "test@win10.test",

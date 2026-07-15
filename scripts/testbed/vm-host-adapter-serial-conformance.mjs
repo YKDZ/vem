@@ -446,9 +446,10 @@ export function validateSerialConformanceReport(
         conformance.customerUiSale?.paymentId === collectedSale.paymentId &&
         conformance.customerUiSale?.transactionId &&
         conformance.customerUiSale?.scenarioSha256 &&
-        conformance.customerUiSale?.businessRetryCount === 0 &&
+        inject.request.serialSession.saleBindings?.length === 1 &&
+        collect.request.serialSession.saleBindings?.length === 1 &&
         !Object.hasOwn(conformance, "failureMatrix"),
-      "installed kiosk sale conformance must bind one rendered customer sale without business retry",
+      "installed kiosk sale conformance must derive one rendered customer sale from exact serial operations",
     );
   } else {
     validateFailureMatrix(
@@ -779,8 +780,6 @@ function readCustomerUiSaleBinding() {
     if (typeof binding?.[field] !== "string" || binding[field].trim() === "")
       throw new Error(`customer UI sale binding requires ${field}`);
   }
-  if (binding.businessRetryCount !== 0)
-    throw new Error("customer UI sale binding must prove no business retry");
   return binding;
 }
 
@@ -1170,7 +1169,6 @@ async function main() {
               paymentId: customerUiSale.paymentId,
               transactionId: customerUiSale.transactionId,
               scenarioSha256: customerUiSale.scenarioSha256,
-              businessRetryCount: 0,
             },
           }
         : {}),

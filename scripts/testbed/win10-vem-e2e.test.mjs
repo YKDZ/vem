@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import { runInstalledKioskSaleAcceptanceCli } from "./installed-kiosk-sale-acceptance.mjs";
 import {
   deriveSerialConformanceReportDigest,
   readFailureMatrixCommands,
@@ -43,7 +44,6 @@ import {
   buildVmRuntimeAcceptancePlan,
   buildInstalledKioskSaleLaunchScript,
   buildInstalledKioskSaleCleanupScript,
-  runInstalledKioskSaleAcceptance,
   buildCleanBaseFactoryAcceptancePlan,
   buildFactoryImageDeliveryUnitReport,
   assertTrustedProtectedFactoryPersonalizationGate,
@@ -501,7 +501,7 @@ describe("transient SSH operation retry", () => {
 });
 
 describe("simulated hardware serial acceptance evidence", () => {
-  it("accepts one rendered customer binding and rejects business retry in the installed-kiosk profile", () => {
+  it("accepts one rendered customer binding and rejects a second serial sale binding", () => {
     const input = completedSerialSaleEvidence();
     const conformance = input.serialConformance;
     conformance.profile = "installed-kiosk-sale";
@@ -510,7 +510,6 @@ describe("simulated hardware serial acceptance evidence", () => {
       paymentId: "PAYMENT-180",
       transactionId: "ORDER-NO-180",
       scenarioSha256: "a".repeat(64),
-      businessRetryCount: 0,
     };
     delete conformance.failureMatrix;
     resignSerialConformance(conformance);
@@ -520,7 +519,14 @@ describe("simulated hardware serial acceptance evidence", () => {
         expectedAdapterIdentity: input.expectedAdapterIdentity,
       }),
     );
-    conformance.customerUiSale.businessRetryCount = 1;
+    const duplicateSaleBindings = [
+      ...conformance.reports.inject.request.serialSession.saleBindings,
+      { ...conformance.reports.inject.request.serialSession.saleBindings[0] },
+    ];
+    conformance.requests.inject.serialSession.saleBindings =
+      duplicateSaleBindings;
+    conformance.reports.inject.request.serialSession.saleBindings =
+      duplicateSaleBindings;
     resignSerialConformance(conformance);
     assert.throws(
       () =>
@@ -528,8 +534,211 @@ describe("simulated hardware serial acceptance evidence", () => {
           expectedRunnerPublicKey: input.expectedRunnerPublicKey,
           expectedAdapterIdentity: input.expectedAdapterIdentity,
         }),
-      /without business retry/,
+      /must bind every requested sale correlation identity/,
     );
+  });
+
+  it("runs the canonical kiosk-sale CLI through fixture, rendered binding, serial completion, and cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-installed-kiosk-cli-"));
+    const runtimeReport = join(root, "runtime-acceptance.json");
+    const output = join(root, "profile", "installed-kiosk-sale.json");
+    const input = completedSerialSaleEvidence();
+    const serial = input.serialConformance;
+    serial.profile = "installed-kiosk-sale";
+    serial.customerUiSale = {
+      orderId: "ORDER-180",
+      paymentId: "PAYMENT-180",
+      transactionId: "TRANSACTION-180",
+      scenarioSha256: "a".repeat(64),
+    };
+    delete serial.failureMatrix;
+    resignSerialConformance(serial);
+    writeFileSync(
+      runtimeReport,
+      JSON.stringify({
+        ok: true,
+        runtimeAcceptanceReport: {
+          schemaVersion: "runtime-acceptance-report/v1",
+          kioskRuntime: {
+            sessionUser: "VEMKiosk",
+            sessionId: 1,
+            url: "http://tauri.localhost/#/catalog",
+            cdpTargetId: "normal-target",
+          },
+        },
+      }),
+      "utf8",
+    );
+    const calls = [];
+    try {
+      const report = await runInstalledKioskSaleAcceptanceCli(
+        {
+          run_id: "RUN-180-EVIDENCE",
+          machine_code: "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
+          platform_target: "ephemeral-run-180",
+          ephemeral_platform_evidence: join(root, "ephemeral-platform.json"),
+          runtime_acceptance_report: runtimeReport,
+          remote: "YKDZ@vm.example.test",
+          identity: join(root, "identity"),
+          certificate: join(root, "identity-cert.pub"),
+          adapter: FAKE_VM_HOST_ADAPTER,
+          target_identity: "vm-target://runtime-testbed",
+          approved_runtime_base: `factory-cas://sha256/${"a".repeat(64)}`,
+          profile: "vm-route-competition",
+          out: output,
+        },
+        {
+          runCommand(command, label) {
+            calls.push(label);
+            const out = command[command.indexOf("--out") + 1];
+            if (label === "simulated hardware fixture") {
+              writeFileSync(
+                out,
+                JSON.stringify({
+                  schemaVersion: "simulated-hardware-sale-fixture/v1",
+                  phase: "fixture",
+                  result: {
+                    simulatedHardwareReady: { status: "fixture_ready" },
+                  },
+                }),
+                "utf8",
+              );
+              return { status: 0 };
+            }
+            const completion = JSON.parse(
+              command[command.indexOf("--sale-complete-command-json") + 1],
+            );
+            const completionOut = completion[completion.indexOf("--out") + 1];
+            writeFileSync(
+              completionOut,
+              JSON.stringify({
+                simulatedHardwareSaleFlow: {
+                  sale: {
+                    orderId: "ORDER-180",
+                    paymentId: "PAYMENT-180",
+                    transactionId: "TRANSACTION-180",
+                    paymentStatus: "succeeded",
+                    vendingCommandId: "VEND-180",
+                    dispenseResult: "dispensed",
+                  },
+                  platformState: {
+                    postSaleDispenseMovement: {
+                      movementId: "MOVEMENT-180",
+                      orderId: "ORDER-180",
+                      vendingCommandId: "VEND-180",
+                      deltaQuantity: -1,
+                      status: "accepted",
+                    },
+                    observedIdentities: {
+                      orderIds: ["ORDER-180", "ORDER-180"],
+                      paymentIds: ["PAYMENT-180"],
+                      transactionIds: ["TRANSACTION-180"],
+                      commandIds: ["VEND-180", "VEND-180"],
+                      movementIds: ["MOVEMENT-180"],
+                    },
+                  },
+                },
+              }),
+              "utf8",
+            );
+            writeFileSync(out, JSON.stringify(serial), "utf8");
+            return { status: 0 };
+          },
+          runRemote(_options, script) {
+            if (script.includes("VEMInstalledKioskSaleRestore")) {
+              calls.push("cleanup");
+              return {
+                daemonRunning: true,
+                cdpListenerCount: 0,
+                normal: {
+                  principal: "VEM\\VEMKiosk",
+                  sessionId: 1,
+                  route: "#/catalog",
+                },
+              };
+            }
+            calls.push("launch");
+            return {
+              prelaunch: {
+                principal: "VEM\\VEMKiosk",
+                sessionId: 1,
+                executablePath: "C:\\VEM\\bringup\\machine.exe",
+              },
+              machine: {
+                principal: "VEM\\VEMKiosk",
+                sessionId: 1,
+                executablePath: "C:\\VEM\\bringup\\machine.exe",
+              },
+              debugTarget: {
+                id: "debug-target",
+                url: "http://127.0.0.1:9222/devtools/page/debug-target",
+              },
+            };
+          },
+          async drive(options) {
+            assert.equal(
+              options.expectedRuntimeAttestation.targetId,
+              "debug-target",
+            );
+            assert.ok(
+              options.steps.some(
+                (step) =>
+                  step.type === "route-action" &&
+                  step.attemptRoute === "#/catalog",
+              ),
+            );
+            return {
+              schemaVersion: "machine-ui-cdp-sale-scenario/v3",
+              status: "passed",
+              target: { id: "debug-target" },
+              evidence: [
+                { type: "route-barrier", forbiddenRoutes: ["/catalog"] },
+                {
+                  type: "route-action",
+                  attemptRoute: "#/catalog",
+                  routeBefore: "#/payment",
+                  routeReportedByHook: "#/payment",
+                },
+              ],
+            };
+          },
+          async capture({ selector }) {
+            if (selector.includes("payment-surface")) {
+              return {
+                targetId: "debug-target",
+                route: "#/payment",
+                orderId: "ORDER-180",
+                paymentId: "PAYMENT-180",
+                transactionId: "TRANSACTION-180",
+              };
+            }
+            return {
+              targetId: "debug-target",
+              route: "#/result",
+              orderId: "ORDER-180",
+              paymentId: "PAYMENT-180",
+              transactionId: "TRANSACTION-180",
+              commandId: "VEND-180",
+            };
+          },
+        },
+      );
+      assert.equal(report.schemaVersion, "installed-kiosk-sale-acceptance/v2");
+      assert.equal(
+        report.runtimeBinding.normal.normalTargetId,
+        "normal-target",
+      );
+      assert.equal(report.runtimeBinding.debug.targetId, "debug-target");
+      assert.equal(report.correlation.exactOnce.commandCount, 1);
+      assert.deepEqual(calls, [
+        "simulated hardware fixture",
+        "launch",
+        "serial conformance",
+        "cleanup",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("parses nested production failure commands and executes the command array", () => {
@@ -3449,6 +3658,15 @@ try {
     assert.match(script, /function Invoke-SimulatedHardwareSaleFlow/);
     assert.match(script, /function Classify-SimulatedHardwareSaleFlowReport/);
     assert.match(script, /function Assert-SimulatedSaleFlowPreMutationTarget/);
+    const fixtureStart = script.indexOf(
+      "function Invoke-SimulatedHardwareSaleFlow(",
+    );
+    const fixtureEnd = script.indexOf(
+      "\nfunction Invoke-ResetStep",
+      fixtureStart,
+    );
+    assert.ok(fixtureStart >= 0 && fixtureEnd > fixtureStart);
+    const fixtureFlow = script.slice(fixtureStart, fixtureEnd);
     assert.match(script, /simulated-hardware-sale-flow\.json/);
     assert.match(script, /schemaVersion = "simulated-hardware-sale-flow\/v1"/);
     assert.match(script, /hardwareMode = if \(\$null -ne \$bringUp/);
@@ -3463,36 +3681,11 @@ try {
       /scannerOnline = \[bool\]\$daemonIpc\.healthz\.scannerOnline/,
     );
     assert.match(script, /daemonHealth = \$facts\.daemonHealth/);
-    assert.match(script, /function Invoke-HardwareMappingFaultProbe/);
-    assert.match(script, /LOWER_CONTROLLER_UNAVAILABLE/);
-    assert.match(
-      script,
-      /hardwareMappingFault = \$hardwareMappingFaultProbe\.mappingFault/,
-    );
-    assert.match(
-      script,
-      /transactionEntry = \$hardwareMappingFaultProbe\.transactionEntry/,
-    );
-    assert.match(script, /successfulPrepare = \[ordered\]@\{/);
-    assert.match(script, /\[string\]\$Context\.runId -ne \[string\]\$RunId/);
-    assert.match(script, /successfulPrepare\.status -ne "succeeded"/);
-    assert.match(script, /successfulPrepare\.phase -ne "prepare"/);
-    assert.match(script, /\[string\]\$Context\.saleView\.planogramVersion/);
-    assert.match(script, /\[string\]\$Context\.selectedItem\.inventoryId/);
-    assert.match(script, /\[string\]\$_\.method -ne "payment_code"/);
-    assert.match(script, /\[string\]\$_\.method -eq "qr_code"/);
-    assert.match(script, /\/v1\/sale-readiness/);
-    assert.match(script, /\$_.ready -eq \$true/);
-    assert.match(script, /readyzObserved/);
-    assert.match(script, /statusCode = \$rejection\.statusCode/);
-    assert.match(
-      script,
-      /responseCode = Convert-ClaimFailureClassification \$rejection/,
-    );
     assert.match(script, /hardwareMappingFaultProbeRequired/);
-    assert.doesNotMatch(script, /hardwareMappingFaultCode/);
-    assert.doesNotMatch(script, /hardware-mapping-fault-code/);
-    assert.doesNotMatch(script, /hardware-mapping-fault-probe/);
+    assert.match(
+      fixtureFlow,
+      /fixture-only sale setup requires healthy serial hardware before customer checkout/,
+    );
     assert.match(
       script,
       /\$Facts\.runtimeState\.bringUpState -ne "simulated_hardware_ready"/,
@@ -3515,17 +3708,11 @@ try {
       /PHYSICAL_STOCK_ATTESTATION_PENDING.*must not expose saleable stock/s,
     );
     assert.match(script, /\$physicalStockAttestation\.status -eq "ready"/);
-    assert.match(
-      script,
-      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/create-order"/,
-    );
-    assert.match(
-      script,
-      /\$preparedPaymentId = if \(-not \[string\]::IsNullOrWhiteSpace\(\[string\]\$createOrder\.paymentId\)\)/,
-    );
-    assert.match(
-      script,
-      /throw "successful sale prepare did not return order and payment IDs"/,
+    assert.match(fixtureFlow, /\$salePhase -eq "fixture"/);
+    assert.match(fixtureFlow, /kind = "simulated_hardware_sale_fixture"/);
+    assert.doesNotMatch(
+      fixtureFlow,
+      /create-order|successfulPrepare|\$createOrder/,
     );
     assert.match(
       script,
@@ -3539,7 +3726,6 @@ try {
     );
     assert.doesNotMatch(script, /\/v1\/intents\/mock-payment/);
     assert.match(script, /paymentMethod = "payment_code"/);
-    assert.match(script, /\$salePhase -eq "prepare"/);
     assert.match(script, /\$salePhase -eq "complete"/);
     assert.match(
       script,
@@ -3565,14 +3751,6 @@ try {
       script.indexOf("Assert-SimulatedSaleFlowPreMutationTarget") <
         script.indexOf(
           'Invoke-IpcJson "POST" "$baseUrl/v1/stock/planogram/sync"',
-        ),
-    );
-    assert.ok(
-      script.indexOf(
-        "$stockAcceptance = Wait-PlatformAcceptedStockAttestation",
-      ) <
-        script.indexOf(
-          'Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order"',
         ),
     );
     assert.ok(
@@ -3705,7 +3883,8 @@ try {
           "approved preclaim base verification",
           "ephemeral platform setup",
           "runtime acceptance",
-          "installed kiosk sale",
+          "installed kiosk sale normal",
+          "installed kiosk sale route competition",
         ],
       );
       assert.equal(plan.artifacts.source, "approved-preclaim-base");
@@ -3735,8 +3914,13 @@ try {
         "ephemeral setup must carry explicit mock-payment acknowledgement",
       );
       assert.equal(plan.steps[3].mode, "installed-kiosk-sale");
+      assert.equal(plan.steps[4].mode, "installed-kiosk-sale");
       assert.equal(
         plan.steps[3].ephemeralPlatformEvidence,
+        plan.artifacts.ephemeralPlatformEvidence,
+      );
+      assert.equal(
+        plan.steps[4].ephemeralPlatformEvidence,
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(plan.readinessLevels.sellReady, "not_asserted");
@@ -3764,7 +3948,11 @@ try {
 
   it("launches a single temporary CDP kiosk UI and always restores the normal owner without daemon mutation", () => {
     const launch = buildInstalledKioskSaleLaunchScript();
-    const cleanup = buildInstalledKioskSaleCleanupScript();
+    const cleanup = buildInstalledKioskSaleCleanupScript({
+      principal: "VEM\\VEMKiosk",
+      sessionId: 1,
+      expectedRoute: "#/catalog",
+    });
 
     assert.match(launch, /launch-machine-ui-debug\.vbs/);
     assert.match(launch, /VEMInstalledKioskSaleDebug/);
@@ -3772,71 +3960,35 @@ try {
       launch,
       /temporary CDP-enabled machine\.exe did not reach exactly-one process\/listener state/,
     );
-    assert.match(launch, /targetId = \[string\]\$targets\[0\]\.id/);
+    assert.match(launch, /WTSGetActiveConsoleSessionId/);
+    assert.match(
+      launch,
+      /normal machine\.exe must belong exactly to the active console VEMKiosk principal and session/,
+    );
+    assert.match(
+      launch,
+      /debugTarget = \[ordered\]@\{ id = \[string\]\$targets\[0\]\.id/,
+    );
     assert.doesNotMatch(launch, /Stop-Service -Name 'VemVendingDaemon'/);
     assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
     assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
     assert.match(cleanup, /CDP listener remained after debug UI cleanup/);
-    assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
+    assert.match(cleanup, /VEMInstalledKioskSaleRestore/);
+    assert.match(cleanup, /-LogonType InteractiveToken/);
+    assert.match(
+      cleanup,
+      /restored normal machine\.exe principal or session differs from saved VEMKiosk owner/,
+    );
     assert.match(
       cleanup,
       /daemon stopped during installed kiosk sale acceptance/,
     );
+    assert.ok(
+      cleanup.indexOf("Unregister-ScheduledTask -TaskName $debugTask") <
+        cleanup.indexOf("Get-Service -Name 'VemVendingDaemon'"),
+      "cleanup must remove the debug task/listener before daemon health is evaluated",
+    );
   });
-
-  for (const [name, drive] of [
-    ["launch failure", null],
-    [
-      "driver failure",
-      async () => {
-        throw new Error("driver failed");
-      },
-    ],
-  ]) {
-    it(`runs installed kiosk cleanup after ${name}`, async () => {
-      const calls = [];
-      await assert.rejects(
-        () =>
-          runInstalledKioskSaleAcceptance(
-            {
-              options: {
-                remote: "YKDZ@win10.test",
-                identity: "/tmp/key",
-                certificate: "/tmp/cert",
-              },
-              plan: { artifacts: {} },
-              step: { command: [], report: "/tmp/unused.json" },
-              serialRunnerTrust: {
-                signingKeyFile: "/tmp/key",
-                publicKey: "key",
-              },
-            },
-            {
-              runRemote() {
-                calls.push("remote");
-                if (drive === null && calls.length === 1)
-                  throw new Error("launch failed");
-                return calls.length === 1
-                  ? {
-                      targetId: "target",
-                      machine: {
-                        processId: 1,
-                        sessionId: 1,
-                        executablePath: "C:\\VEM\\bringup\\machine.exe",
-                        principal: "VEM\\VEMKiosk",
-                      },
-                    }
-                  : { daemonRunning: true, cdpListenerCount: 0 };
-              },
-              catalog: async () => ({ evidence: [] }),
-              drive,
-            },
-          ),
-        /launch failed|driver failed/,
-      );
-      assert.deepEqual(calls, ["remote", "remote"]);
-    });
-  }
 
   it("plans clean-base factory acceptance with explicit clean-source evidence and destructive gates", () => {
     const plan = buildCleanBaseFactoryAcceptancePlan({
@@ -4936,31 +5088,39 @@ try {
       "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
     );
     const saleStep = plan.steps.find(
-      (step) => step.name === "installed kiosk sale",
+      (step) => step.name === "installed kiosk sale route competition",
+    );
+    const normalSaleStep = plan.steps.find(
+      (step) => step.name === "installed kiosk sale normal",
     );
     assert.equal(
-      commandArg(saleStep.command, "--runner-signing-key-file"),
-      "runner-owned-serial-signing-key-file-required",
+      saleStep.command[1],
+      "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
     );
     assert.equal(
-      commandArg(saleStep.command, "--expected-runner-public-key"),
-      "expected-serial-runner-public-key-required",
+      commandArg(saleStep.command, "--profile"),
+      "vm-route-competition",
+    );
+    assert.equal(commandArg(normalSaleStep.command, "--profile"), "vm-normal");
+    assert.equal(
+      commandArg(saleStep.command, "--runtime-acceptance-report"),
+      plan.artifacts.runtimeAcceptance,
     );
     assert.equal(
-      commandArg(saleStep.command, "--customer-ui-sale-binding-file"),
-      plan.artifacts.customerUiSaleBinding,
+      commandArg(saleStep.command, "--out"),
+      plan.artifacts.customerUiSaleRouteCompetition,
+    );
+    assert.equal(
+      commandArg(normalSaleStep.command, "--out"),
+      plan.artifacts.customerUiSaleNormal,
     );
     assert.equal(
       commandArg(saleStep.command, "--sale-prepare-command-json"),
       undefined,
     );
     assert.equal(
-      commandArg(saleStep.command, "--failure-matrix-commands-json"),
-      undefined,
-    );
-    assert.match(
       commandArg(saleStep.command, "--sale-complete-command-json"),
-      /"--sale-phase","complete"/,
+      undefined,
     );
 
     assert.throws(
@@ -5005,7 +5165,8 @@ try {
         "approved preclaim base verification",
         "ephemeral platform setup",
         "runtime acceptance",
-        "installed kiosk sale",
+        "installed kiosk sale normal",
+        "installed kiosk sale route competition",
       ],
     );
     assert.equal(plan.steps[0].mode, "clean-base-factory-acceptance");
@@ -5128,22 +5289,19 @@ try {
         "vem-runtime-run-183",
       );
     }
-    const saleStep = plan.steps.find(
-      (step) => step.name === "installed kiosk sale",
-    );
-    assert.ok(saleStep);
-    const childCommand = JSON.parse(
-      commandArg(saleStep.command, "--sale-complete-command-json"),
-    );
-    assert.equal(commandArg(childCommand, "--ssh-port"), "22022");
-    assert.equal(
-      commandArg(childCommand, "--ssh-known-hosts-path"),
-      "/tmp/vem-runtime-known-hosts",
-    );
-    assert.equal(
-      commandArg(childCommand, "--ssh-host-key-alias"),
-      "vem-runtime-run-183",
-    );
+    for (const saleStep of plan.steps.filter(
+      (step) => step.mode === "installed-kiosk-sale",
+    )) {
+      assert.equal(commandArg(saleStep.command, "--ssh-port"), "22022");
+      assert.equal(
+        commandArg(saleStep.command, "--ssh-known-hosts-path"),
+        "/tmp/vem-runtime-known-hosts",
+      );
+      assert.equal(
+        commandArg(saleStep.command, "--ssh-host-key-alias"),
+        "vem-runtime-run-183",
+      );
+    }
   });
 
   it("does not assert clean-base acceptance from invalid or dry-run evidence", () => {

@@ -2402,7 +2402,11 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
   };
 }
 
-function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
+export function buildAcceptanceScriptCommand(
+  mode,
+  options = {},
+  extraArgs = [],
+) {
   const command = [
     process.execPath,
     "scripts/testbed/win10-vem-e2e.mjs",
@@ -2454,22 +2458,36 @@ $machinePath = '${INSTALLED_KIOSK_SALE_MACHINE_PATH}'
 $debugLauncher = '${INSTALLED_KIOSK_SALE_DEBUG_LAUNCHER}'
 $normalTask = '${EXPECTED_MACHINE_UI_TASK_NAME}'
 if (-not (Test-Path -LiteralPath $debugLauncher -PathType Leaf)) { throw 'installed kiosk sale debug launcher is missing' }
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VemKioskConsole {
+  [DllImport("kernel32.dll")] public static extern UInt32 WTSGetActiveConsoleSessionId();
+}
+'@
+$activeConsoleSessionId = [int][VemKioskConsole]::WTSGetActiveConsoleSessionId()
+if ($activeConsoleSessionId -lt 0 -or $activeConsoleSessionId -eq 0xffffffff) { throw 'active console session is unavailable' }
+$activeConsolePrincipal = [string](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
+if ($activeConsolePrincipal -notmatch '(?i)\\VEMKiosk$') { throw 'active console principal must be VEMKiosk' }
 $daemon = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
 if ([string]$daemon.Status -ne 'Running') { throw 'daemon must remain running before installed kiosk sale acceptance' }
 $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) })
-if ($normal.Count -gt 1) { throw "expected at most one normal machine.exe before debug launch, found $($normal.Count)" }
-$principal = $null
-$sessionId = $null
-if ($normal.Count -eq 1) {
-  $owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
-  if ([string]::IsNullOrWhiteSpace([string]$owner.Domain) -or [string]::IsNullOrWhiteSpace([string]$owner.User)) { throw 'normal machine.exe owner is incomplete' }
-  $principal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
-  $sessionId = (Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop).SessionId
-  Stop-Process -Id ([int]$normal[0].ProcessId) -Force -ErrorAction Stop
-}
-if ($null -eq $principal -or $null -eq $sessionId) { throw 'normal VEMKiosk machine.exe session is required for installed kiosk sale acceptance' }
-Stop-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
-Get-Process -Name machine -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId } | Stop-Process -Force -ErrorAction SilentlyContinue
+if ($normal.Count -ne 1) { throw "expected exactly one normal machine.exe before debug launch, found $($normal.Count)" }
+$normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
+$owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
+if ([string]::IsNullOrWhiteSpace([string]$owner.Domain) -or [string]::IsNullOrWhiteSpace([string]$owner.User)) { throw 'normal machine.exe owner is incomplete' }
+$principal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
+$sessionId = [int]$normalProcess.SessionId
+if ($principal -cne $activeConsolePrincipal -or $sessionId -ne $activeConsoleSessionId) { throw 'normal machine.exe must belong exactly to the active console VEMKiosk principal and session' }
+$normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
+if ($null -ne $normalTaskInstance) { Stop-ScheduledTask -TaskName $normalTask -ErrorAction Stop }
+$launcherOwners = @(Get-CimInstance Win32_Process -Filter "Name = 'wscript.exe'" | Where-Object {
+  if (-not ($_.CommandLine -and $_.CommandLine -match [regex]::Escape('${INSTALLED_KIOSK_SALE_NORMAL_LAUNCHER}'))) { return $false }
+  $launcherProcess = Get-Process -Id ([int]$_.ProcessId) -ErrorAction Stop
+  return $launcherProcess.SessionId -eq $sessionId
+})
+foreach ($launcherOwner in $launcherOwners) { Stop-Process -Id ([int]$launcherOwner.ProcessId) -Force -ErrorAction Stop }
+Stop-Process -Id ([int]$normal[0].ProcessId) -Force -ErrorAction Stop
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
 $action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $debugLauncher) -WorkingDirectory 'C:\VEM\bringup'
 $principalSpec = New-ScheduledTaskPrincipal -UserId $principal -LogonType InteractiveToken -RunLevel Limited
@@ -2492,36 +2510,65 @@ $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
 if ($observedPrincipal -cne $principal) { throw 'debug machine.exe principal differs from active VEMKiosk principal' }
 $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
 if ($targets.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$targets[0].id)) { throw 'debug CDP must expose exactly one tauri target' }
-[ordered]@{ ok = $true; machine = [ordered]@{ processId = [int]$process.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal }; targetId = [string]$targets[0].id; targetUrl = [string]$targets[0].url; debugTask = $debugTask; daemonRunning = $true } | ConvertTo-Json -Compress -Depth 8
+[ordered]@{ ok = $true; prelaunch = [ordered]@{ processId = [int]$normalProcess.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal; owner = if ($null -ne $normalTaskInstance) { 'scheduled_task' } else { 'shell_launcher' } }; machine = [ordered]@{ processId = [int]$process.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal }; debugTarget = [ordered]@{ id = [string]$targets[0].id; url = [string]$targets[0].url }; debugTask = $debugTask; daemonRunningBefore = $true } | ConvertTo-Json -Compress -Depth 8
 `.trim();
 }
 
-export function buildInstalledKioskSaleCleanupScript() {
+export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
+  const principal = String(prelaunch.principal ?? "");
+  const sessionId = Number(prelaunch.sessionId);
+  const expectedRoute = String(prelaunch.expectedRoute ?? "#/catalog");
+  if (!principal || !Number.isSafeInteger(sessionId) || sessionId < 1) {
+    throw new Error(
+      "installed kiosk cleanup requires the saved active VEMKiosk principal and session",
+    );
+  }
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $debugTask = '${INSTALLED_KIOSK_SALE_DEBUG_TASK}'
 $normalTask = '${EXPECTED_MACHINE_UI_TASK_NAME}'
 $normalLauncher = '${INSTALLED_KIOSK_SALE_NORMAL_LAUNCHER}'
-$daemon = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
-if ([string]$daemon.Status -ne 'Running') { throw 'daemon stopped during installed kiosk sale acceptance' }
+$restoreTask = 'VEMInstalledKioskSaleRestore'
+$principal = '${principal.replaceAll("'", "''")}'
+$sessionId = ${sessionId}
+$expectedRoute = '${expectedRoute.replaceAll("'", "''")}'
 Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
-Get-Process -Name machine -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+$listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
+foreach ($listener in $listeners) { Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue }
+Get-Process -Name machine -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 300
 if (@(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue).Count -ne 0) { throw 'CDP listener remained after debug UI cleanup' }
-$normal = Get-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
-if ($null -ne $normal) {
-  Start-ScheduledTask -TaskName $normalTask
-  $restore = 'VEMMachineUI'
-} elseif (Test-Path -LiteralPath $normalLauncher -PathType Leaf) {
-  Start-Process -FilePath "$env:WINDIR\System32\wscript.exe" -ArgumentList ('"{0}"' -f $normalLauncher) -WorkingDirectory 'C:\VEM\bringup'
-  $restore = 'shell_launcher'
-} else { throw 'normal kiosk launcher is unavailable for restoration' }
-[ordered]@{ ok = $true; restored = $restore; daemonRunning = ([string](Get-Service -Name 'VemVendingDaemon').Status -eq 'Running'); cdpListenerCount = @((Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)).Count } | ConvertTo-Json -Compress
+if (-not (Test-Path -LiteralPath $normalLauncher -PathType Leaf)) { throw 'normal kiosk launcher is unavailable for restoration' }
+Stop-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName $restoreTask -Confirm:$false -ErrorAction SilentlyContinue
+$action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $normalLauncher) -WorkingDirectory 'C:\VEM\bringup'
+$principalSpec = New-ScheduledTaskPrincipal -UserId $principal -LogonType InteractiveToken -RunLevel Limited
+Register-ScheduledTask -TaskName $restoreTask -InputObject (New-ScheduledTask -Action $action -Principal $principalSpec) -Force | Out-Null
+Start-ScheduledTask -TaskName $restoreTask
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+do {
+  $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq 'C:\VEM\bringup\machine.exe') })
+  if ($normal.Count -eq 1) { break }
+  Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $deadline)
+if ($normal.Count -ne 1) { throw 'normal kiosk restoration did not produce exactly one machine.exe' }
+$normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
+$owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
+$observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
+if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'restored normal machine.exe principal or session differs from saved VEMKiosk owner' }
+if ($normal[0].CommandLine -match '--remote-debugging-port(?:=|\s+)9222') { throw 'restored normal machine.exe retained CDP route' }
+if ($expectedRoute -notmatch '^#/(catalog|sale|checkout|products)') { throw 'restored normal machine.exe route is not a customer route' }
+Unregister-ScheduledTask -TaskName $restoreTask -Confirm:$false -ErrorAction SilentlyContinue
+$cdpListenerCount = @((Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)).Count
+if ($cdpListenerCount -ne 0) { throw 'normal kiosk restoration retained CDP listener' }
+$daemon = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
+if ([string]$daemon.Status -ne 'Running') { throw 'daemon stopped during installed kiosk sale acceptance' }
+[ordered]@{ ok = $true; restored = 'interactive_token_one_shot'; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId; route = $expectedRoute }; daemonRunning = $true; cdpListenerCount = $cdpListenerCount } | ConvertTo-Json -Compress
 `.trim();
 }
 
-function runInstalledKioskSaleRemoteScript(options, script) {
+export function runInstalledKioskSaleRemoteScript(options, script) {
   const ssh = buildSshCommand(options);
   const result = spawnSync(
     ssh[0],
@@ -2546,7 +2593,7 @@ function runInstalledKioskSaleRemoteScript(options, script) {
   return output;
 }
 
-async function captureInstalledKioskSaleHook({
+export async function captureInstalledKioskSaleHook({
   options,
   attestation,
   selector,
@@ -2707,11 +2754,10 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     options.cleanBaseEvidence ?? options.cleanBaseFactoryAcceptance ?? null;
   const approvedPreclaimBaseReport = `${evidenceRoot}/approved-preclaim-base-response.json`;
   const runtimeAcceptanceReport = `${evidenceRoot}/runtime-acceptance-response.json`;
-  const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
-  const serialConformanceReport = `${evidenceRoot}/serial-com-scanner-sale-conformance.json`;
-  const customerUiSaleScenario = `${evidenceRoot}/customer-ui-sale-scenario.json`;
-  const customerUiSaleBinding = `${evidenceRoot}/customer-ui-sale-binding.json`;
-  const customerUiSaleReport = `${evidenceRoot}/installed-kiosk-sale-response.json`;
+  const customerUiSaleNormalRoot = `${evidenceRoot}/installed-kiosk-sale-normal`;
+  const customerUiSaleCompetitionRoot = `${evidenceRoot}/installed-kiosk-sale-route-competition`;
+  const customerUiSaleNormalReport = `${customerUiSaleNormalRoot}/report.json`;
+  const customerUiSaleCompetitionReport = `${customerUiSaleCompetitionRoot}/report.json`;
   const approvedPreclaimOptions = options.factoryGuestEndpointJson
     ? { ...options, remote: undefined, sshPort: undefined }
     : options;
@@ -2731,199 +2777,68 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     { ...options, runId, machineCode, platformTarget },
     ["--out", runtimeAcceptanceReport],
   );
-  const salePrepareCommand = buildAcceptanceScriptCommand(
-    "simulated-hardware-sale-flow",
-    { ...options, runId, machineCode, platformTarget },
-    [
+  const buildInstalledKioskSaleCommand = (profile, out) => {
+    const command = [
+      process.execPath,
+      "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
+      "--run-id",
+      runId,
+      "--machine-code",
+      machineCode,
+      "--platform-target",
+      platformTarget,
       "--ephemeral-platform-evidence",
       ephemeralPlatformEvidence,
-      "--sale-phase",
-      "prepare",
+      "--runtime-acceptance-report",
+      runtimeAcceptanceReport,
+      "--identity",
+      options.identity ?? "certificate-ssh-identity-required",
+      "--certificate",
+      options.certificate ?? "certificate-ssh-certificate-required",
+      "--adapter",
+      process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
+      "--target-identity",
+      process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
+      "--approved-runtime-base",
+      options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
+      "--profile",
+      profile,
       "--out",
-      `${evidenceRoot}/simulated-hardware-sale-prepare-response.json`,
-    ],
-  );
-  const saleCompleteCommand = buildAcceptanceScriptCommand(
-    "simulated-hardware-sale-flow",
-    { ...options, runId, machineCode, platformTarget },
-    [
-      "--ephemeral-platform-evidence",
-      ephemeralPlatformEvidence,
-      "--sale-phase",
-      "complete",
-      "--out",
-      saleFlowReport,
-    ],
-  );
-  const failureMatrixArtifacts = {
-    "malformed-frame": {
-      report: `${evidenceRoot}/failure-matrix/malformed-frame/serial-conformance-failure.json`,
-    },
-    "device-disconnected": {
-      report: `${evidenceRoot}/failure-matrix/device-disconnected/serial-conformance-failure.json`,
-    },
-    "swapped-roles": {
-      report: `${evidenceRoot}/failure-matrix/swapped-roles/serial-conformance-failure.json`,
-      salePrepare: `${evidenceRoot}/failure-matrix/swapped-roles/sale-prepare-response.json`,
-      runtimeRecovery: `${evidenceRoot}/failure-matrix/swapped-roles/runtime-recovery-response.json`,
-    },
-    "missing-device": {
-      report: `${evidenceRoot}/failure-matrix/missing-device/serial-conformance-failure.json`,
-      salePrepare: `${evidenceRoot}/failure-matrix/missing-device/sale-prepare-response.json`,
-      runtimeRecovery: `${evidenceRoot}/failure-matrix/missing-device/runtime-recovery-response.json`,
-    },
-    "scanner-timeout": {
-      report: `${evidenceRoot}/failure-matrix/scanner-timeout/serial-conformance-failure.json`,
-      salePrepare: `${evidenceRoot}/failure-matrix/scanner-timeout/sale-prepare-response.json`,
-    },
-    "dispense-failed": {
-      report: `${evidenceRoot}/failure-matrix/dispense-failed/serial-conformance-failure.json`,
-      saleComplete: `${evidenceRoot}/failure-matrix/dispense-failed/sale-complete-response.json`,
-    },
+      out,
+    ];
+    if (options.scannerCodeFile) {
+      command.push("--scanner-code-file", options.scannerCodeFile);
+    }
+    if (options.factoryGuestEndpointJson) {
+      command.push(
+        "--factory-guest-endpoint-json",
+        options.factoryGuestEndpointJson,
+        "--expected-testbed-user",
+        options.expectedTestbedUser ?? DEFAULT_CONTROLLED_MAINTENANCE_USER,
+      );
+    } else {
+      command.push(
+        "--remote",
+        options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
+      );
+      if (options.sshPort) command.push("--ssh-port", String(options.sshPort));
+    }
+    if (options.sshKnownHostsPath) {
+      command.push("--ssh-known-hosts-path", options.sshKnownHostsPath);
+    }
+    if (options.sshHostKeyAlias) {
+      command.push("--ssh-host-key-alias", options.sshHostKeyAlias);
+    }
+    return command;
   };
-  const failureMatrixCommands = {
-    "swapped-roles": {
-      salePrepareCommand: buildAcceptanceScriptCommand(
-        "simulated-hardware-sale-flow",
-        { ...options, runId, machineCode, platformTarget },
-        [
-          "--ephemeral-platform-evidence",
-          ephemeralPlatformEvidence,
-          "--sale-phase",
-          "prepare",
-          "--out",
-          failureMatrixArtifacts["swapped-roles"].salePrepare,
-        ],
-      ),
-      runtimeRecoveryCommand: buildAcceptanceScriptCommand(
-        "runtime-acceptance",
-        { ...options, runId, machineCode, platformTarget },
-        ["--out", failureMatrixArtifacts["swapped-roles"].runtimeRecovery],
-      ),
-    },
-    "missing-device": {
-      salePrepareCommand: buildAcceptanceScriptCommand(
-        "simulated-hardware-sale-flow",
-        { ...options, runId, machineCode, platformTarget },
-        [
-          "--ephemeral-platform-evidence",
-          ephemeralPlatformEvidence,
-          "--sale-phase",
-          "prepare",
-          "--out",
-          failureMatrixArtifacts["missing-device"].salePrepare,
-        ],
-      ),
-      runtimeRecoveryCommand: buildAcceptanceScriptCommand(
-        "runtime-acceptance",
-        { ...options, runId, machineCode, platformTarget },
-        ["--out", failureMatrixArtifacts["missing-device"].runtimeRecovery],
-      ),
-    },
-    "scanner-timeout": {
-      salePrepareCommand: buildAcceptanceScriptCommand(
-        "simulated-hardware-sale-flow",
-        { ...options, runId, machineCode, platformTarget },
-        [
-          "--ephemeral-platform-evidence",
-          ephemeralPlatformEvidence,
-          "--sale-phase",
-          "prepare",
-          "--out",
-          failureMatrixArtifacts["scanner-timeout"].salePrepare,
-        ],
-      ),
-    },
-    "dispense-failed": {
-      saleCompleteCommand: buildAcceptanceScriptCommand(
-        "simulated-hardware-sale-flow",
-        { ...options, runId, machineCode, platformTarget },
-        [
-          "--ephemeral-platform-evidence",
-          ephemeralPlatformEvidence,
-          "--sale-phase",
-          "complete",
-          "--out",
-          failureMatrixArtifacts["dispense-failed"].saleComplete,
-        ],
-      ),
-    },
-  };
-  const saleCorrelationId = `sale-correlation://vm-runtime-${runId.toLowerCase()}`;
-  const saleFlowCommand = [
-    process.execPath,
-    "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
-    "--adapter",
-    process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
-    "--scanner-code-file",
-    options.scannerCodeFile ?? "runner-owned-scanner-code-file-required",
-    "--runner-signing-key-file",
-    options.serialRunnerSigningKeyFile ??
-      "runner-owned-serial-signing-key-file-required",
-    "--expected-runner-public-key",
-    options.expectedSerialRunnerPublicKey ??
-      "expected-serial-runner-public-key-required",
-    "--run-id",
-    runId,
-    "--target-identity",
-    process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
-    "--approved-runtime-base",
-    options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
-    "--lifecycle-reference",
-    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`,
-    "--sale-correlation-id",
-    saleCorrelationId,
-    "--machine-code",
-    machineCode,
-    "--ephemeral-platform-evidence",
-    ephemeralPlatformEvidence,
-    "--sale-prepare-command-json",
-    JSON.stringify(salePrepareCommand),
-    "--sale-complete-command-json",
-    JSON.stringify(saleCompleteCommand),
-    "--runtime-recovery-command-json",
-    JSON.stringify(runtimeCommand),
-    "--failure-matrix-commands-json",
-    JSON.stringify(failureMatrixCommands),
-    "--failure-matrix-artifact-paths-json",
-    JSON.stringify(failureMatrixArtifacts),
-    "--out",
-    serialConformanceReport,
-  ];
-  const installedKioskSaleCommand = [
-    process.execPath,
-    "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
-    "--adapter",
-    process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
-    "--scanner-code-file",
-    options.scannerCodeFile ?? "runner-owned-scanner-code-file-required",
-    "--runner-signing-key-file",
-    options.serialRunnerSigningKeyFile ??
-      "runner-owned-serial-signing-key-file-required",
-    "--expected-runner-public-key",
-    options.expectedSerialRunnerPublicKey ??
-      "expected-serial-runner-public-key-required",
-    "--run-id",
-    runId,
-    "--target-identity",
-    process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
-    "--approved-runtime-base",
-    options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
-    "--lifecycle-reference",
-    `vm-lifecycle://${runId.toLowerCase()}.installed-kiosk-sale`,
-    "--sale-correlation-id",
-    saleCorrelationId,
-    "--machine-code",
-    machineCode,
-    "--ephemeral-platform-evidence",
-    ephemeralPlatformEvidence,
-    "--customer-ui-sale-binding-file",
-    customerUiSaleBinding,
-    "--sale-complete-command-json",
-    JSON.stringify(saleCompleteCommand),
-    "--out",
-    serialConformanceReport,
-  ];
+  const installedKioskSaleNormalCommand = buildInstalledKioskSaleCommand(
+    "vm-normal",
+    customerUiSaleNormalReport,
+  );
+  const installedKioskSaleCompetitionCommand = buildInstalledKioskSaleCommand(
+    "vm-route-competition",
+    customerUiSaleCompetitionReport,
+  );
 
   const cleanBaseStep = cleanBaseFactoryAcceptance
     ? [
@@ -2972,15 +2887,10 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       cleanBaseFactoryAcceptance,
       approvedPreclaimBase: approvedPreclaimBaseReport,
       runtimeAcceptance: runtimeAcceptanceReport,
-      simulatedHardwareSaleFlow: saleFlowReport,
-      serialConformance: serialConformanceReport,
-      customerUiSaleScenario,
-      customerUiSaleBinding,
-      customerUiSale: customerUiSaleReport,
-      failureMatrix: failureMatrixArtifacts,
+      customerUiSaleNormal: customerUiSaleNormalReport,
+      customerUiSaleRouteCompetition: customerUiSaleCompetitionReport,
+      customerUiSale: customerUiSaleCompetitionReport,
     },
-    serialRunnerExpectedPublicKey:
-      options.expectedSerialRunnerPublicKey ?? null,
     expectedAdapterIdentity:
       process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY ?? null,
     ci: {
@@ -3051,12 +2961,21 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         blocksOnFailure: true,
       },
       {
-        name: "installed kiosk sale",
+        name: "installed kiosk sale normal",
         mode: "installed-kiosk-sale",
         status: "planned",
-        command: installedKioskSaleCommand,
+        command: installedKioskSaleNormalCommand,
         ephemeralPlatformEvidence,
-        report: customerUiSaleReport,
+        report: customerUiSaleNormalReport,
+        blocksOnFailure: true,
+      },
+      {
+        name: "installed kiosk sale route competition",
+        mode: "installed-kiosk-sale",
+        status: "planned",
+        command: installedKioskSaleCompetitionCommand,
+        ephemeralPlatformEvidence,
+        report: customerUiSaleCompetitionReport,
         blocksOnFailure: true,
       },
     ],
@@ -3678,6 +3597,17 @@ function serialAcceptanceDiagnostic(code, message) {
   return { code, message };
 }
 
+function hasOneObservedIdentity(observation, expected) {
+  return (
+    Array.isArray(observation?.occurrences) &&
+    observation.occurrences.length >= 1 &&
+    Array.isArray(observation?.unique) &&
+    observation.unique.length === 1 &&
+    observation.unique[0] === expected &&
+    observation.count === 1
+  );
+}
+
 export function evaluateSimulatedHardwareSerialEvidence({
   saleFlow,
   serialConformance,
@@ -3973,9 +3903,14 @@ export function evaluateSimulatedHardwareSerialEvidence({
 
 function evaluateInstalledKioskSaleEvidence(step, plan) {
   const report = step?.parsed;
-  const serial = step?.serialConformance;
+  const serialPath = report?.evidence?.serialConformancePath;
+  const serial = serialPath ? readJsonIfPresent(serialPath) : null;
   const diagnostics = [];
-  if (step?.status !== "passed" || report?.ok !== true) {
+  if (
+    step?.status !== "passed" ||
+    report?.ok !== true ||
+    report?.schemaVersion !== "installed-kiosk-sale-acceptance/v2"
+  ) {
     diagnostics.push(
       serialAcceptanceDiagnostic(
         "installed_kiosk_sale_failed",
@@ -3985,7 +3920,7 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
   }
   try {
     validateSerialConformanceReport(serial, {
-      expectedRunnerPublicKey: plan.serialRunnerExpectedPublicKey,
+      expectedRunnerPublicKey: serial?.runnerEvidence?.publicKey,
       expectedAdapterIdentity: plan.expectedAdapterIdentity,
     });
   } catch {
@@ -3996,28 +3931,43 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
       ),
     );
   }
-  const payment = report?.payment;
-  const fulfillment = report?.fulfillment;
+  const rendered = report?.correlation?.rendered;
+  const platform = report?.correlation?.platform;
+  const exactOnce = report?.correlation?.exactOnce;
+  const observations = platform?.observations;
   if (
-    !payment?.orderId ||
-    !payment?.paymentId ||
-    !payment?.transactionId ||
-    payment?.orderId !== fulfillment?.orderId ||
-    payment?.paymentId !== fulfillment?.paymentId ||
-    !fulfillment?.commandId
+    !rendered?.orderId ||
+    !rendered?.paymentId ||
+    !rendered?.transactionId ||
+    !rendered?.commandId ||
+    rendered.orderId !== platform?.orderId ||
+    rendered.paymentId !== platform?.paymentId ||
+    rendered.transactionId !== platform?.transactionId ||
+    rendered.commandId !== platform?.commandId ||
+    platform?.stockDelta !== -1 ||
+    platform?.status !== "accepted" ||
+    exactOnce?.orderCount !== 1 ||
+    exactOnce.paymentCount !== 1 ||
+    exactOnce.commandCount !== 1 ||
+    exactOnce.movementCount !== 1 ||
+    exactOnce.serialSaleBindingCount?.injected !== 1 ||
+    exactOnce.serialSaleBindingCount?.collected !== 1 ||
+    !hasOneObservedIdentity(observations?.orderIds, rendered?.orderId) ||
+    !hasOneObservedIdentity(observations?.paymentIds, rendered?.paymentId) ||
+    !hasOneObservedIdentity(
+      observations?.transactionIds,
+      rendered?.transactionId,
+    ) ||
+    !hasOneObservedIdentity(observations?.commandIds, rendered?.commandId) ||
+    !hasOneObservedIdentity(
+      observations?.movementIds,
+      platform?.stockMovementId,
+    )
   ) {
     diagnostics.push(
       serialAcceptanceDiagnostic(
         "installed_kiosk_ui_binding_missing",
-        "Rendered payment and fulfillment surfaces must bind one order, payment, transaction, and dispense command.",
-      ),
-    );
-  }
-  if (report?.businessRetryCount !== 0) {
-    diagnostics.push(
-      serialAcceptanceDiagnostic(
-        "installed_kiosk_business_retry",
-        "Installed kiosk sale acceptance forbids business retry.",
+        "Rendered payment, platform completion, and serial reports must bind one order, payment, transaction, command, movement, and stock delta.",
       ),
     );
   }
@@ -4037,8 +3987,34 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   );
   const ephemeral = stepMap.get("ephemeral platform setup");
   const runtime = stepMap.get("runtime acceptance");
-  const saleFlow = stepMap.get("installed kiosk sale");
-  const serialEvidence = evaluateInstalledKioskSaleEvidence(saleFlow, plan);
+  const saleNormal = stepMap.get("installed kiosk sale normal");
+  const saleCompetition = stepMap.get("installed kiosk sale route competition");
+  const normalSaleEvidence = evaluateInstalledKioskSaleEvidence(
+    saleNormal,
+    plan,
+  );
+  const competitionSaleEvidence = evaluateInstalledKioskSaleEvidence(
+    saleCompetition,
+    plan,
+  );
+  const serialEvidence = {
+    status:
+      normalSaleEvidence.status === "passed" &&
+      competitionSaleEvidence.status === "passed"
+        ? "passed"
+        : "failed",
+    asserted:
+      normalSaleEvidence.asserted === true &&
+      competitionSaleEvidence.asserted === true,
+    diagnostics: [
+      ...normalSaleEvidence.diagnostics,
+      ...competitionSaleEvidence.diagnostics,
+    ],
+    evidence: {
+      normal: normalSaleEvidence.evidence,
+      routeCompetition: competitionSaleEvidence.evidence,
+    },
+  };
   const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
   const approvedPreclaimBaseEvaluation =
     evaluateApprovedPreclaimBaseStep(approvedPreclaimBase);
@@ -4077,7 +4053,8 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       approvedPreclaimBase: approvedPreclaimBaseEvaluation.status,
       ephemeralPlatformSetup: ephemeral?.status ?? "missing",
       runtimeAcceptance: runtime?.status ?? "missing",
-      installedKioskSale: saleFlow?.status ?? "missing",
+      installedKioskSaleNormal: saleNormal?.status ?? "missing",
+      installedKioskSaleRouteCompetition: saleCompetition?.status ?? "missing",
     },
     platformSetup: {
       status: ephemeral?.status ?? "missing",
@@ -4094,9 +4071,15 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     },
     evidenceReview: buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }),
     installedKioskSale: {
-      status: saleFlow?.status ?? "missing",
-      evidencePath: plan.artifacts.customerUiSale,
-      serialConformancePath: plan.artifacts.serialConformance,
+      status: serialEvidence.status,
+      normal: {
+        status: saleNormal?.status ?? "missing",
+        evidencePath: plan.artifacts.customerUiSaleNormal,
+      },
+      routeCompetition: {
+        status: saleCompetition?.status ?? "missing",
+        evidencePath: plan.artifacts.customerUiSaleRouteCompetition,
+      },
       serialEvidence: serialEvidence.evidence,
       sellReady: {
         status: "not_asserted",
@@ -4131,176 +4114,6 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   };
 }
 
-export async function runInstalledKioskSaleAcceptance(
-  { options, plan, step, serialRunnerTrust },
-  dependencies = {},
-) {
-  const remoteOptions = {
-    ...options,
-    remote: options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
-  };
-  let launch;
-  let cleanup;
-  let primaryError;
-  try {
-    launch = (dependencies.runRemote ?? runInstalledKioskSaleRemoteScript)(
-      remoteOptions,
-      buildInstalledKioskSaleLaunchScript(),
-    );
-    const attestation = {
-      targetId: launch.targetId,
-      machine: launch.machine,
-    };
-    const catalogScenario = await (
-      dependencies.catalog ?? runInstalledKioskCatalogScenario
-    )({ options: remoteOptions, attestation });
-    const paymentScenario = await (
-      dependencies.drive ?? runVisibleMachineSaleScenario
-    )({
-      tunnelOptions: {
-        remote: remoteOptions.remote,
-        sshPort: remoteOptions.sshPort,
-        identityFile: remoteOptions.identity,
-        certificateFile: remoteOptions.certificate,
-        sshArgs: ["-o", "ProxyCommand=none"],
-        remoteCdpPort: 9222,
-      },
-      expectedRuntimeAttestation: attestation,
-      expectedInitialRoute: "#/checkout",
-      sequenceName: "installed-kiosk-customer-sale",
-      screenshotCheckpoints: true,
-      steps: [
-        {
-          type: "customer-activation",
-          name: "payment option",
-          selector: '[data-test="payment-option"]',
-          routeBefore: "#/checkout",
-          routeAfter: "#/checkout",
-        },
-        {
-          type: "customer-activation",
-          name: "payment submit",
-          selector: '[data-test="checkout-submit"]',
-          routeBefore: "#/checkout",
-          routeAfter: /^#\/payment/,
-          screenshot: true,
-        },
-      ],
-    });
-    const scenario = {
-      schemaVersion: "installed-kiosk-sale-scenario/v1",
-      catalogScenario,
-      paymentScenario,
-    };
-    writeFileSync(
-      plan.artifacts.customerUiSaleScenario,
-      `${JSON.stringify(scenario, null, 2)}\n`,
-    );
-    const payment = await (
-      dependencies.capture ?? captureInstalledKioskSaleHook
-    )({
-      options: remoteOptions,
-      attestation,
-      selector: "[data-installed-kiosk-sale-payment-surface]",
-      route: /^#\/payment/,
-    });
-    const binding = {
-      orderId: payment.orderId,
-      paymentId: payment.paymentId,
-      transactionId: payment.transactionId,
-      scenarioSha256: createHash("sha256")
-        .update(JSON.stringify(scenario))
-        .digest("hex"),
-      businessRetryCount: 0,
-    };
-    writeFileSync(
-      plan.artifacts.customerUiSaleBinding,
-      `${JSON.stringify(binding, null, 2)}\n`,
-      { mode: 0o600 },
-    );
-    const command = replaceCommandOption(
-      replaceCommandOption(
-        step.command,
-        "--runner-signing-key-file",
-        serialRunnerTrust.signingKeyFile,
-      ),
-      "--expected-runner-public-key",
-      serialRunnerTrust.publicKey,
-    );
-    const serial = (
-      dependencies.runSerial ??
-      ((childCommand) =>
-        spawnSync(childCommand[0], childCommand.slice(1), {
-          cwd: process.cwd(),
-          encoding: "utf8",
-          env: process.env,
-        }))
-    )(command);
-    if (serial.status !== 0)
-      throw new Error(
-        serial.stderr ||
-          serial.stdout ||
-          "installed kiosk serial conformance failed",
-      );
-    const conformance = readJsonIfPresent(plan.artifacts.serialConformance);
-    validateSerialConformanceReport(conformance, {
-      expectedRunnerPublicKey: serialRunnerTrust.publicKey,
-      expectedAdapterIdentity:
-        process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY,
-    });
-    const fulfillment = await (
-      dependencies.capture ?? captureInstalledKioskSaleHook
-    )({
-      options: remoteOptions,
-      attestation,
-      selector:
-        "[data-installed-kiosk-sale-fulfillment-surface], [data-installed-kiosk-sale-result-surface]",
-      route: /^#\/(dispensing|result)/,
-    });
-    if (
-      fulfillment.orderId !== binding.orderId ||
-      fulfillment.paymentId !== binding.paymentId ||
-      !fulfillment.commandId
-    ) {
-      throw new Error(
-        "rendered fulfillment UI does not bind the customer order, payment, and vending command",
-      );
-    }
-    const report = {
-      schemaVersion: "installed-kiosk-sale-acceptance/v1",
-      ok: true,
-      scenario,
-      payment,
-      fulfillment,
-      serialConformance: plan.artifacts.serialConformance,
-      businessRetryCount: 0,
-    };
-    writeFileSync(step.report, `${JSON.stringify(report, null, 2)}\n`);
-    return report;
-  } catch (error) {
-    primaryError = error;
-    throw error;
-  } finally {
-    try {
-      cleanup = (dependencies.runRemote ?? runInstalledKioskSaleRemoteScript)(
-        remoteOptions,
-        buildInstalledKioskSaleCleanupScript(),
-      );
-    } catch (cleanupError) {
-      if (!primaryError) throw cleanupError;
-      throw new AggregateError(
-        [primaryError, cleanupError],
-        "installed kiosk sale and cleanup failed",
-      );
-    }
-    if (!cleanup?.daemonRunning || cleanup.cdpListenerCount !== 0) {
-      throw new Error(
-        "installed kiosk sale cleanup did not preserve daemon or close CDP",
-      );
-    }
-  }
-}
-
 async function runVmRuntimeAcceptance(options) {
   if (!options.scannerCodeFile || !options.approvedRuntimeBase)
     throw new Error(
@@ -4314,8 +4127,7 @@ async function runVmRuntimeAcceptance(options) {
 
   const steps = [];
   let blocked = false;
-  let serialRunnerTrust = null;
-  try {
+  {
     for (const [index, originalStep] of plan.steps.entries()) {
       let step = originalStep;
       const startedAt = new Date().toISOString();
@@ -4338,54 +4150,6 @@ async function runVmRuntimeAcceptance(options) {
         });
         continue;
       }
-      if (step.name === "installed kiosk sale") {
-        serialRunnerTrust = createSerialRunnerTrustAnchor();
-        plan.serialRunnerExpectedPublicKey = serialRunnerTrust.publicKey;
-        const startedAt = new Date().toISOString();
-        const stdoutPath = `${plan.artifacts.logsRoot}/${String(index + 1).padStart(2, "0")}-${step.mode}.stdout.log`;
-        const stderrPath = `${plan.artifacts.logsRoot}/${String(index + 1).padStart(2, "0")}-${step.mode}.stderr.log`;
-        try {
-          const parsed = await runInstalledKioskSaleAcceptance({
-            options,
-            plan,
-            step,
-            serialRunnerTrust,
-          });
-          steps.push({
-            ...step,
-            status: "passed",
-            startedAt,
-            finishedAt: new Date().toISOString(),
-            exitCode: 0,
-            stdoutPath,
-            stderrPath,
-            parsed,
-            error: null,
-            serialConformance: readJsonIfPresent(
-              plan.artifacts.serialConformance,
-            ),
-          });
-        } catch (error) {
-          writeFileSync(stderrPath, `${error.stack ?? error.message}\n`);
-          steps.push({
-            ...step,
-            status: "failed",
-            startedAt,
-            finishedAt: new Date().toISOString(),
-            exitCode: 1,
-            stdoutPath,
-            stderrPath,
-            parsed: readJsonIfPresent(step.report),
-            error: error.message,
-            serialConformance: readJsonIfPresent(
-              plan.artifacts.serialConformance,
-            ),
-          });
-          blocked = true;
-        }
-        continue;
-      }
-
       const result = spawnSync(step.command[0], step.command.slice(1), {
         cwd: step.cwd ?? process.cwd(),
         encoding: "utf8",
@@ -4411,11 +4175,6 @@ async function runVmRuntimeAcceptance(options) {
         error:
           status === "passed" ? null : result.stderr || result.stdout || null,
       };
-      if (step.name === "simulated hardware sale flow") {
-        stepResult.serialConformance = readJsonIfPresent(
-          plan.artifacts.serialConformance,
-        );
-      }
       steps.push(stepResult);
       if (status !== "passed" && step.blocksOnFailure) {
         blocked = true;
@@ -4434,42 +4193,7 @@ async function runVmRuntimeAcceptance(options) {
       `${JSON.stringify(report, null, 2)}\n`,
     );
     return report;
-  } finally {
-    serialRunnerTrust?.cleanup();
   }
-}
-
-function createSerialRunnerTrustAnchor() {
-  const root = mkdtempSync(
-    join(process.env.RUNNER_TEMP ?? tmpdir(), "vem-serial-runner-trust-"),
-  );
-  chmodSync(root, 0o700);
-  const signingKeyFile = join(root, "runner-ed25519.pem");
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  writeFileSync(
-    signingKeyFile,
-    privateKey.export({ type: "pkcs8", format: "pem" }),
-    { mode: 0o600 },
-  );
-  chmodSync(signingKeyFile, 0o600);
-  return {
-    signingKeyFile,
-    publicKey: `ed25519-public-key:base64:${publicKey
-      .export({ type: "spki", format: "der" })
-      .toString("base64")}`,
-    cleanup() {
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
-}
-
-function replaceCommandOption(command, option, value) {
-  const index = command.indexOf(option);
-  if (index === -1 || !command[index + 1])
-    throw new Error(`${option} is required for serial conformance`);
-  const replaced = [...command];
-  replaced[index + 1] = value;
-  return replaced;
 }
 
 function runFactoryImageDeliveryUnit(options) {
@@ -7688,7 +7412,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $attestation = $null
   $saleView = $null
   $paymentOptions = $null
-  $createOrder = $null
+  $renderedSaleBinding = $null
   $currentTransaction = $null
   $postSaleDispenseMovement = $null
   $selectedItem = $null
@@ -7705,9 +7429,18 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
 
     if ($salePhase -eq "complete") {
       if (-not (Test-Path -LiteralPath $contextPath -PathType Leaf)) {
-        throw "scanner sale context is missing"
+        throw "simulated sale fixture context is missing"
       }
       $context = Read-JsonFile $contextPath
+      if ([string]$context.kind -ne "simulated_hardware_sale_fixture") {
+        throw "simulated sale completion requires fixture-only context"
+      }
+      $renderedSaleBinding = ${psString(options.saleBindingJson ?? "")} | ConvertFrom-Json
+      foreach ($field in @("orderId", "paymentId", "transactionId")) {
+        if ([string]::IsNullOrWhiteSpace([string]$renderedSaleBinding.$field)) {
+          throw "simulated sale completion requires rendered $field"
+        }
+      }
       $bringUp = $context.bringUp
       $configSummary = $context.configSummary
       $daemonIpcBeforeMutation = $context.daemonIpcBeforeMutation
@@ -7716,7 +7449,6 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       $attestation = $context.attestation
       $saleView = $context.saleView
       $paymentOptions = $context.paymentOptions
-      $createOrder = $context.createOrder
       $selectedItem = $context.selectedItem
       $effectiveProvisioningActions = @($context.provisioningActions)
     } else {
@@ -7727,39 +7459,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       $daemonIpcBeforeMutation.healthz.observed -eq $true -and
       $daemonIpcBeforeMutation.healthz.hardwareOnline -eq $false
     if ($hardwareMappingFaultProbeRequired) {
-      $hardwareMappingFaultProbe = Invoke-HardwareMappingFaultProbe $baseUrl $headers $daemonIpcBeforeMutation $contextPath ${psString(runId)}
-      $report = [ordered]@{
-        schemaVersion = "simulated-hardware-sale-flow/v1"
-        phase = "prepare"
-        runtimeState = [ordered]@{
-          hardwareMode = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.hardwareMode)) { [string]$bringUp.hardwareMode } else { "unknown" }
-          bringUpState = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.state)) { [string]$bringUp.state } else { "unknown" }
-        }
-        daemonIpc = [ordered]@{
-          healthz = $daemonIpcBeforeMutation.healthz
-          readyz = $daemonIpcBeforeMutation.readyz
-        }
-        hardwareMappingFault = $hardwareMappingFaultProbe.mappingFault
-        transactionEntry = $hardwareMappingFaultProbe.transactionEntry
-        sale = [ordered]@{
-          orderId = $null
-          paymentId = $null
-          vendingCommandId = $null
-        }
-        result = [ordered]@{
-          simulatedHardwareReady = New-RuntimeAcceptanceAssertion "failed" $false
-          sellReady = [ordered]@{ status = "not_asserted"; asserted = $false }
-        }
-        diagnostics = @([ordered]@{
-          code = "hardware_mapping_fault"
-          message = "transaction creation is blocked while the serial mapping fault is active"
-        })
-      }
-      Write-JsonFile $reportPath $report
-      return [ordered]@{
-        path = $reportPath
-        report = $report
-      }
+      throw "fixture-only sale setup requires healthy serial hardware before customer checkout"
     }
     $platformSetupGuardEvidence = [ordered]@{
       target = ${psString(ephemeralPlatformSetup?.target ?? "")}
@@ -7821,61 +7521,28 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     }
     $selectedItem = $selectedItem[0]
     $paymentOptions = Invoke-IpcJson "GET" "$baseUrl/v1/payment-options" $headers
-    $orderPayload = [ordered]@{
-      inventoryId = [string]$selectedItem.inventoryId
-      quantity = 1
-      planogramVersion = [string]$saleView.planogramVersion
-      slotId = [string]$selectedItem.slotId
-      slotCode = [string]$selectedItem.slotCode
-      paymentMethod = "payment_code"
-      paymentProviderCode = "mock"
-      profileSnapshot = [ordered]@{
-        source = "testbed_simulated_hardware_sale_flow"
+    if ($salePhase -eq "fixture") {
+      Write-JsonFile $contextPath ([ordered]@{
+        kind = "simulated_hardware_sale_fixture"
         runId = ${psString(runId)}
-      }
-    }
-    $createOrder = Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order" $headers $orderPayload
-    $preparedOrderId = if (-not [string]::IsNullOrWhiteSpace([string]$createOrder.orderId)) {
-      [string]$createOrder.orderId
-    } elseif (-not [string]::IsNullOrWhiteSpace([string]$createOrder.id)) {
-      [string]$createOrder.id
-    } else {
-      $null
-    }
-    $preparedPaymentId = if (-not [string]::IsNullOrWhiteSpace([string]$createOrder.paymentId)) {
-      [string]$createOrder.paymentId
-    } else {
-      $null
-    }
-    if (
-      [string]::IsNullOrWhiteSpace($preparedOrderId) -or
-      [string]::IsNullOrWhiteSpace($preparedPaymentId)
-    ) {
-      throw "successful sale prepare did not return order and payment IDs"
-    }
-    Write-JsonFile $contextPath ([ordered]@{
-      runId = ${psString(runId)}
-      successfulPrepare = [ordered]@{
-        runId = ${psString(runId)}
-        status = "succeeded"
-        phase = "prepare"
-        orderId = $preparedOrderId
-        paymentId = $preparedPaymentId
-      }
-      bringUp = $bringUp
-      configSummary = $configSummary
-      daemonIpcBeforeMutation = $daemonIpcBeforeMutation
-      syncPlanogram = $syncPlanogram
-      saleViewBeforeStock = $saleViewBeforeStock
-      attestation = $attestation
-      saleView = $saleView
-      paymentOptions = $paymentOptions
-      createOrder = $createOrder
-      selectedItem = $selectedItem
-      provisioningActions = @($ProvisioningActions)
-    })
-    }
-    if ($salePhase -ne "prepare") {
+        fixture = [ordered]@{
+          planogramVersion = [string]$saleView.planogramVersion
+          selectedItem = $selectedItem
+          stockAttestationId = [string]$attestation.attestationId
+          paymentOptionCount = @($paymentOptions.options).Count
+        }
+        bringUp = $bringUp
+        configSummary = $configSummary
+        daemonIpcBeforeMutation = $daemonIpcBeforeMutation
+        syncPlanogram = $syncPlanogram
+        saleViewBeforeStock = $saleViewBeforeStock
+        attestation = $attestation
+        saleView = $saleView
+        paymentOptions = $paymentOptions
+        selectedItem = $selectedItem
+        provisioningActions = @($ProvisioningActions)
+      })
+    if ($salePhase -eq "complete") {
       $deadline = [DateTime]::UtcNow.AddSeconds(120)
       do {
         $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
@@ -7911,15 +7578,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     0
   }
-  $orderNo = if ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.orderNo)) {
-    [string]$createOrder.orderNo
-  } else {
-    $null
-  }
   $paymentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentStatus)) {
     [string]$currentTransaction.paymentStatus
-  } elseif ($salePhase -eq "prepare") {
-    "pending"
   } else {
     "unknown"
   }
@@ -7927,15 +7587,11 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     "dispensed"
   } elseif ([string]$currentTransaction.vending.status -eq "failed") {
     "dispense_failed"
-  } elseif ($salePhase -eq "prepare") {
-    "pending"
   } else {
     "unknown"
   }
   $orderStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderStatus)) {
     [string]$currentTransaction.orderStatus
-  } elseif ($salePhase -eq "prepare") {
-    "pending"
   } else {
     "unknown"
   }
@@ -7998,26 +7654,25 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   }
   $orderId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderId)) {
     [string]$currentTransaction.orderId
-  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.orderId)) {
-    [string]$createOrder.orderId
-  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.id)) {
-    [string]$createOrder.id
   } else {
     $null
   }
   $paymentNo = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentNo)) {
     [string]$currentTransaction.paymentNo
-  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.paymentNo)) {
-    [string]$createOrder.paymentNo
   } else {
     $null
   }
   $paymentId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentId)) {
     [string]$currentTransaction.paymentId
-  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.paymentId)) {
-    [string]$createOrder.paymentId
   } else {
     $null
+  }
+  if ($salePhase -eq "complete" -and (
+    $orderId -ne [string]$renderedSaleBinding.orderId -or
+    $paymentId -ne [string]$renderedSaleBinding.paymentId -or
+    [string]$currentTransaction.transactionId -ne [string]$renderedSaleBinding.transactionId
+  )) {
+    throw "completed simulated sale does not match the rendered payment binding"
   }
   $vendingCommandId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.vending.commandId)) {
     [string]$currentTransaction.vending.commandId
@@ -8046,6 +7701,16 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     "failed"
   } else {
     "unknown"
+  }
+  $observedOrderIds = @($orderId)
+  $observedPaymentIds = @($paymentId)
+  $observedTransactionIds = @([string]$currentTransaction.transactionId)
+  $observedCommandIds = @($vendingCommandId)
+  $observedMovementIds = @()
+  if ($null -ne $postSaleDispenseMovement) {
+    $observedOrderIds += [string]$postSaleDispenseMovement.orderId
+    $observedCommandIds += [string]$postSaleDispenseMovement.vendingCommandId
+    $observedMovementIds += [string]$postSaleDispenseMovement.movementId
   }
 
   $facts = [ordered]@{
@@ -8133,6 +7798,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       paymentProviderCode = "mock"
       paymentId = $paymentId
       paymentNo = $paymentNo
+      transactionId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace([string]$currentTransaction.transactionId)) { [string]$currentTransaction.transactionId } else { $null }
       paymentStatus = $paymentStatus
       paymentSucceeded = $paymentStatus -eq "succeeded"
       vendingCommandId = $vendingCommandId
@@ -8156,19 +7822,31 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
         deltaQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.deltaQuantity } else { $null }
         status = if ($null -ne $postSaleDispenseMovement -and [string]$postSaleDispenseMovement.status -eq "accepted") { "accepted" } else { "missing" }
       }
+      observedIdentities = [ordered]@{
+        orderIds = @($observedOrderIds)
+        paymentIds = @($observedPaymentIds)
+        transactionIds = @($observedTransactionIds)
+        commandIds = @($observedCommandIds)
+        movementIds = @($observedMovementIds)
+      }
     }
   }
 
-  $report = if ($salePhase -eq "prepare") {
+  $report = if ($salePhase -eq "fixture") {
     [ordered]@{
-      schemaVersion = "simulated-hardware-sale-flow/v1"
-      phase = "prepare"
-      sale = $facts.sale
+      schemaVersion = "simulated-hardware-sale-fixture/v1"
+      phase = "fixture"
+      fixture = [ordered]@{
+        planogramVersion = $facts.planogram.planogramVersion
+        stockAttestationId = $facts.stock.evidenceId
+        saleableSlots = $facts.stock.saleableSlots
+        paymentMethodReady = $facts.platformSetup.mockPaymentReady
+      }
       runtimeState = $facts.runtimeState
       daemonHealth = $facts.daemonHealth
       topology = $facts.topology
       result = [ordered]@{
-        simulatedHardwareReady = New-RuntimeAcceptanceAssertion "awaiting_scanner" $false
+        simulatedHardwareReady = New-RuntimeAcceptanceAssertion "fixture_ready" $true
         sellReady = [ordered]@{ status = "not_asserted"; asserted = $false }
       }
       diagnostics = @()
@@ -8422,7 +8100,7 @@ $cleanBaseFactoryAcceptanceOk = if ($mode -eq "clean-base-factory-acceptance") {
 }
 $simulatedHardwareSaleFlowOk = if ($mode -eq "simulated-hardware-sale-flow") {
   $null -ne $simulatedHardwareSaleFlowReport -and (
-    ([string]$simulatedHardwareSaleFlowReport.phase -eq "prepare" -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "awaiting_scanner") -or
+    ([string]$simulatedHardwareSaleFlowReport.phase -eq "fixture" -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "fixture_ready") -or
     ([string]$simulatedHardwareSaleFlowReport.phase -eq "complete" -and [bool]$simulatedHardwareSaleFlowReport.hostSerialEvidencePending -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "not_asserted")
   )
 } else {
@@ -8957,8 +8635,7 @@ export function getRuntimeAcceptanceExitStatus({
           ?.status;
       const phase = output?.simulatedHardwareSaleFlow?.phase;
       return output?.ok === true &&
-        ((phase === "prepare" &&
-          simulatedHardwareReady === "awaiting_scanner") ||
+        ((phase === "fixture" && simulatedHardwareReady === "fixture_ready") ||
           (phase === "complete" &&
             output?.simulatedHardwareSaleFlow?.hostSerialEvidencePending ===
               true &&
@@ -9060,9 +8737,24 @@ function parseArgs(argv) {
       options.ephemeralPlatformEvidence = next;
       index += 1;
     } else if (arg === "--sale-phase") {
-      if (!new Set(["prepare", "complete"]).has(next))
-        throw new Error("--sale-phase must be prepare or complete");
+      if (!new Set(["fixture", "complete"]).has(next))
+        throw new Error("--sale-phase must be fixture or complete");
       options.salePhase = next;
+      index += 1;
+    } else if (arg === "--sale-binding-json") {
+      try {
+        const binding = JSON.parse(next);
+        for (const field of ["orderId", "paymentId", "transactionId"]) {
+          if (typeof binding?.[field] !== "string" || !binding[field].trim()) {
+            throw new Error();
+          }
+        }
+      } catch {
+        throw new Error(
+          "--sale-binding-json must contain rendered orderId, paymentId, and transactionId",
+        );
+      }
+      options.saleBindingJson = next;
       index += 1;
     } else if (arg === "--ephemeral-database-url") {
       options.ephemeralDatabaseUrl = next;
