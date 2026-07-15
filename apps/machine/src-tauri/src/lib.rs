@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 mod native_audio;
-use native_audio::{
-    play_machine_audio, stop_machine_audio, test_machine_audio_output, MachineAudioState,
-};
+use native_audio::{play_machine_audio, stop_machine_audio, MachineAudioState};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,7 +125,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_daemon_connection,
             play_machine_audio,
-            test_machine_audio_output,
             stop_machine_audio,
             return_to_desktop
         ])

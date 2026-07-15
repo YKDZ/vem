@@ -246,6 +246,7 @@ async fn run_console_cycle(
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
         audio_output_platform: Arc::new(crate::audio_output::WindowsAudioOutputPlatform),
+        audio_output_playback: Arc::new(crate::audio_output::WindowsAudioOutputPlayback::default()),
         audio_output_test_evidence: Arc::new(ipc::AudioOutputTestEvidenceStore::default()),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
         sale_binding_gate: Arc::new(ipc::SaleBindingOperationGate::default()),

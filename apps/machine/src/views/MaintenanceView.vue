@@ -2,7 +2,6 @@
 import {
   type DaemonIpcAudioOutputBindingSnapshot,
   type DaemonIpcAudioOutputTestResponse,
-  type DaemonIpcNativeAudioPlaybackEvidence,
   formatMachineSlotCoordinate,
   type StockMaintenanceTask,
 } from "@vem/shared";
@@ -15,7 +14,6 @@ import type {
   MaintenanceSession,
 } from "@/daemon/schemas";
 
-import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
@@ -790,6 +788,7 @@ const machineAudioTestPlayback = reactive({
   diagnostic: null as MachineAudioPlaybackDiagnostic | null,
   volume: machineStore.config.machineAudioVolume,
 });
+const daemonAudioCalibrationSource = "daemon://audio-output-calibration";
 
 function clearMachineAudioTestEvidence(): void {
   machineAudioOutputMaintenance.testEvidence = null;
@@ -928,15 +927,6 @@ async function playMachineAudioTestPlayback(): Promise<void> {
   clearMachineAudioTestEvidence();
   try {
     const volume = form.machineAudioVolumePercent / 100;
-    const nativePlaybackEvidence =
-      await callTauriCommand<DaemonIpcNativeAudioPlaybackEvidence>(
-        "test_machine_audio_output",
-        {
-          sourceUrl: maintenanceTestToneUrl,
-          volume,
-          outputDeviceId: selected.endpointId,
-        },
-      );
     const testEvidence = await daemonClient.testAudioOutput({
       endpointId: selected.endpointId,
       audioCueSettings: {
@@ -947,7 +937,6 @@ async function playMachineAudioTestPlayback(): Promise<void> {
         },
       },
       machineAudioVolume: volume,
-      nativePlaybackEvidence,
     });
     machineAudioOutputMaintenance.testEvidence = testEvidence;
     machineAudioTestPlayback.volume = volume;
@@ -956,7 +945,7 @@ async function playMachineAudioTestPlayback(): Promise<void> {
       requestId: testEvidence.testEvidenceToken,
       status: "started",
       driver: "native",
-      sourceUrl: maintenanceTestToneUrl,
+      sourceUrl: daemonAudioCalibrationSource,
       message: null,
       recordedAt: new Date().toISOString(),
     };
@@ -969,10 +958,6 @@ async function playMachineAudioTestPlayback(): Promise<void> {
   } finally {
     machineAudioTestPlayback.loading = false;
   }
-}
-
-function stopMachineAudioTestPlayback(): void {
-  void callTauriCommand<void>("stop_machine_audio").catch(() => undefined);
 }
 
 async function startTryOnPreviewDiagnostic(): Promise<void> {
@@ -2862,13 +2847,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
                   @click="playMachineAudioTestPlayback"
                 >
                   播放测试音频
-                </button>
-                <button
-                  class="kiosk-touch-target rounded-2xl border border-cyan-100/40 px-4 py-3 font-bold text-cyan-50 disabled:opacity-50"
-                  type="button"
-                  @click="stopMachineAudioTestPlayback"
-                >
-                  停止当前播放
                 </button>
               </div>
 
