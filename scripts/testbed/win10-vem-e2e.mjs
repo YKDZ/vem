@@ -11,6 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -1783,10 +1784,32 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
     openSshPackageSha256: packageInputs[0].hash,
     wireGuardPackageSha256: packageInputs[1].hash,
     maintenanceCaPublicKeySha256: packageInputs[2].hash,
-    wireGuardListenAddress: String(options.maintenanceWireGuardListenAddress),
+    wireGuardListenAddress: normalizeWireGuardHostAddress(
+      options.maintenanceWireGuardListenAddress,
+    ),
     runnerSources,
     maintainerSources,
   };
+}
+
+function normalizeWireGuardHostAddress(value) {
+  const parts = String(value ?? "")
+    .trim()
+    .split("/");
+  const address = parts[0];
+  const version = isIP(address);
+  const expectedPrefix = version === 6 ? "128" : "32";
+  if (
+    version === 0 ||
+    ["0.0.0.0", "::", "127.0.0.1", "::1"].includes(address) ||
+    parts.length > 2 ||
+    (parts.length === 2 && parts[1] !== expectedPrefix)
+  ) {
+    throw new Error(
+      "maintenance WireGuard listen address must be a concrete bare IP or single-host CIDR",
+    );
+  }
+  return address;
 }
 
 function resolveCleanBaseArtifactInputs(options = {}) {
@@ -8796,10 +8819,10 @@ function applyFactoryGuestEndpoint(options) {
   if (
     endpoint?.protocol !== "ssh" ||
     typeof endpoint.host !== "string" ||
-    !endpoint.host ||
+    isIP(endpoint.host) === 0 ||
+    ["0.0.0.0", "::", "127.0.0.1", "::1"].includes(endpoint.host) ||
     !Number.isInteger(endpoint.port) ||
-    endpoint.port < 1 ||
-    endpoint.port > 65535 ||
+    endpoint.port !== 22 ||
     !["discovered", "authenticated"].includes(endpoint.reachability) ||
     !options.expectedTestbedUser ||
     options.remote ||
@@ -8807,6 +8830,25 @@ function applyFactoryGuestEndpoint(options) {
   ) {
     throw new Error(
       "Factory verification and post-claim acceptance require an adapter-discovered SSH endpoint, --expected-testbed-user, and no caller-supplied remote or SSH port",
+    );
+  }
+  if (endpoint.transport === "testbed-runner-direct") {
+    if (
+      endpoint.relayProof !== undefined ||
+      ![
+        "factory-preclaim-verify",
+        "provision",
+        "runtime-acceptance",
+        "vm-runtime-acceptance",
+      ].includes(options.mode)
+    ) {
+      throw new Error(
+        "testbed runner-direct Factory endpoint is valid only for Factory lifecycle SSH without Relay proof",
+      );
+    }
+  } else if (endpoint.transport !== "wireguard") {
+    throw new Error(
+      "Factory endpoint transport must be wireguard or testbed-runner-direct",
     );
   }
   return {

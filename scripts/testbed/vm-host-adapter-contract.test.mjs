@@ -164,6 +164,11 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
       "cancellation",
       "cleanup",
     ],
+    "create-disposable-overlay": [
+      "disposable-overlay",
+      "cancellation",
+      "cleanup",
+    ],
     "capture-display": ["display-capture", "cancellation", "cleanup"],
     "capture-default-audio": [
       "default-audio-capture",
@@ -427,7 +432,7 @@ function serialEvidenceRecords(request) {
   });
 }
 
-function cleanInstallRequest() {
+function cleanInstallRequest(overrides = {}) {
   const isoHash = "d".repeat(64);
   const personalizationHash = "e".repeat(64);
   const provenanceHash = "c".repeat(64);
@@ -453,6 +458,7 @@ function cleanInstallRequest() {
         digest: `sha256:${personalizationHash}`,
       },
     ],
+    ...overrides,
   });
 }
 
@@ -528,6 +534,7 @@ function reportFor(request, overrides = {}) {
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
       maintenanceRelaySession: request.maintenanceRelaySession ?? null,
+      maintenanceEndpointPolicy: request.maintenanceEndpointPolicy ?? null,
       ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result: "succeeded",
@@ -552,6 +559,7 @@ function reportFor(request, overrides = {}) {
     guest: {
       maintenanceEndpointIdentity: "guest-maintenance://runtime-testbed-001",
       maintenanceEndpoint: {
+        transport: "wireguard",
         protocol: "ssh",
         host:
           request.maintenanceRelaySession?.endpointTunnelAddress ??
@@ -1315,7 +1323,7 @@ describe("VM Host Adapter contract", () => {
     const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
     const personalization = `factory-cas://sha256/${"e".repeat(64)}`;
     const request = createVmHostAdapterRequest(
-      requestFor("clean-install", {
+      cleanInstallRequest({
         assets: [
           {
             role: "factory-iso",
@@ -1431,6 +1439,7 @@ describe("VM Host Adapter contract", () => {
         maintenanceEndpointIdentity:
           "guest-maintenance://unreachable-runtime-testbed-001",
         maintenanceEndpoint: {
+          transport: "wireguard",
           protocol: "ssh",
           host: "guest-unreachable.invalid",
           port: 22,
@@ -1605,7 +1614,7 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
-  it("requires the discovered maintenance endpoint to be a concrete SSH tunnel address", () => {
+  it("requires the discovered maintenance endpoint to be a concrete SSH address", () => {
     const request = createVmHostAdapterRequest(requestFor());
     const report = reportFor(request);
 
@@ -1619,7 +1628,7 @@ describe("VM Host Adapter contract", () => {
       invalid.guest.maintenanceEndpoint.host = host;
       assert.throws(
         () => validateVmHostAdapterReport(invalid, request),
-        /maintenanceEndpoint\.host must be a concrete WireGuard tunnel IP address/,
+        /maintenanceEndpoint\.host must be a concrete IP address/,
       );
     }
 
@@ -1628,6 +1637,114 @@ describe("VM Host Adapter contract", () => {
     assert.throws(
       () => validateVmHostAdapterReport(wrongPort, request),
       /maintenanceEndpoint\.port must be the SSH port 22/,
+    );
+  });
+
+  it("permits a clean-install testbed runner-direct DHCP SSH endpoint only with explicit sources", () => {
+    const maintenanceRelaySession = {
+      sessionId: "550e8400-e29b-41d4-a716-446655440000",
+      relayPeer: {
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
+      sourceTunnelAddress: "10.91.2.10",
+      endpointTunnelAddress: "10.91.16.10",
+    };
+    const request = createVmHostAdapterRequest(
+      cleanInstallRequest({
+        maintenanceRelaySession,
+        maintenanceEndpointPolicy: {
+          transport: "testbed-runner-direct",
+          runnerSourceAllowlist: ["192.0.2.10/32"],
+          lifecycleReference: "vm-lifecycle://run-12-contract.runtime-testbed",
+        },
+      }),
+    );
+    const report = reportFor(request);
+    report.guest.maintenanceEndpoint = {
+      transport: "testbed-runner-direct",
+      protocol: "ssh",
+      host: "192.0.2.42",
+      port: 22,
+      reachability: "discovered",
+    };
+    assert.equal(
+      validateVmHostAdapterReport(report, request).guest.maintenanceEndpoint
+        .host,
+      "192.0.2.42",
+    );
+
+    const directEndpoint = {
+      transport: "testbed-runner-direct",
+      protocol: "ssh",
+      host: "192.0.2.42",
+      port: 22,
+      reachability: "discovered",
+    };
+    const captureRequest = createVmHostAdapterRequest(
+      requestFor("capture-approved-base", {
+        factoryMedia: request.factoryMedia,
+        assets: [request.assets[0]],
+        maintenanceRelaySession,
+        maintenanceEndpointPolicy: request.maintenanceEndpointPolicy,
+      }),
+    );
+    const captureReport = reportFor(captureRequest);
+    captureReport.guest.maintenanceEndpoint = directEndpoint;
+    assert.equal(
+      validateVmHostAdapterReport(captureReport, captureRequest).result,
+      "succeeded",
+    );
+    const overlayRequest = createVmHostAdapterRequest(
+      requestFor("create-disposable-overlay", {
+        maintenanceRelaySession,
+        maintenanceEndpointPolicy: request.maintenanceEndpointPolicy,
+      }),
+    );
+    const overlayReport = reportFor(overlayRequest);
+    overlayReport.guest.maintenanceEndpoint = directEndpoint;
+    assert.equal(
+      validateVmHostAdapterReport(overlayReport, overlayRequest).result,
+      "succeeded",
+    );
+    for (const operation of [
+      "start-serial-session",
+      "collect-serial-evidence",
+      "stop-serial-session",
+    ]) {
+      const serialRequest = createVmHostAdapterRequest(
+        serialSessionRequest(operation, {
+          maintenanceRelaySession,
+          maintenanceEndpointPolicy: request.maintenanceEndpointPolicy,
+        }),
+      );
+      const serialReport = reportFor(serialRequest);
+      serialReport.guest.maintenanceEndpoint = directEndpoint;
+      assert.equal(
+        validateVmHostAdapterReport(serialReport, serialRequest).result,
+        "succeeded",
+        `${operation} must retain the lifecycle-bound direct endpoint`,
+      );
+    }
+
+    const missingSources = structuredClone(request);
+    missingSources.maintenanceEndpointPolicy.runnerSourceAllowlist = [];
+    assert.throws(
+      () => validateVmHostAdapterRequest(missingSources),
+      /runnerSourceAllowlist must contain explicit runner host addresses/,
+    );
+
+    const wrongOperation = requestFor("restore-approved-base", {
+      maintenanceRelaySession,
+      maintenanceEndpointPolicy: {
+        transport: "testbed-runner-direct",
+        runnerSourceAllowlist: ["192.0.2.10"],
+        lifecycleReference: "vm-lifecycle://run-12-contract.runtime-testbed",
+      },
+    });
+    assert.throws(
+      () => validateVmHostAdapterRequest(wrongOperation),
+      /Factory lifecycle guest-endpoint operations/,
     );
   });
 
@@ -1668,6 +1785,7 @@ describe("VM Host Adapter contract", () => {
         maintenanceEndpointIdentity:
           "guest-maintenance://unreachable-runtime-testbed-001",
         maintenanceEndpoint: {
+          transport: "wireguard",
           protocol: "ssh",
           host: "guest-unreachable.invalid",
           port: 22,

@@ -3672,6 +3672,7 @@ try {
           "mqtt://127.0.0.1:1883",
           "--factory-guest-endpoint-json",
           JSON.stringify({
+            transport: "testbed-runner-direct",
             protocol: "ssh",
             host: "10.91.2.10",
             port: 22,
@@ -3730,6 +3731,7 @@ try {
       assert.equal(
         commandArg(plan.steps[0].command, "--factory-guest-endpoint-json"),
         JSON.stringify({
+          transport: "testbed-runner-direct",
           protocol: "ssh",
           host: "10.91.2.10",
           port: 22,

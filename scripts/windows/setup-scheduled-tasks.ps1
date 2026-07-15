@@ -368,19 +368,33 @@ function Assert-WireGuardListenAddress {
     [string]$ListenAddress
   )
 
-  $parsedAddress = [System.Net.IPAddress]::None
   if ([string]::IsNullOrWhiteSpace($InterfaceAlias)) {
     throw "Controlled Maintenance Ingress requires a WireGuard interface alias"
   }
-  if ([string]::IsNullOrWhiteSpace($ListenAddress) -or -not [System.Net.IPAddress]::TryParse($ListenAddress, [ref]$parsedAddress) -or
-      $parsedAddress.Equals([System.Net.IPAddress]::Any) -or $parsedAddress.Equals([System.Net.IPAddress]::IPv6Any) -or
-      $parsedAddress.Equals([System.Net.IPAddress]::Loopback) -or $parsedAddress.Equals([System.Net.IPAddress]::IPv6Loopback)) {
-    throw "WireGuard tunnel ListenAddress must not be wildcard or loopback"
-  }
-  $address = Get-NetIPAddress -InterfaceAlias $InterfaceAlias -IPAddress $parsedAddress.IPAddressToString -ErrorAction SilentlyContinue
+  $normalized = ConvertTo-WireGuardHostAddress -Value $ListenAddress
+  $address = Get-NetIPAddress -InterfaceAlias $InterfaceAlias -IPAddress $normalized.address -ErrorAction SilentlyContinue
   if ($null -eq $address) {
-    throw "WireGuard interface $InterfaceAlias does not own required SSH ListenAddress $ListenAddress"
+    throw "WireGuard interface $InterfaceAlias does not own required SSH ListenAddress $($normalized.address)"
   }
+  return $normalized
+}
+
+function ConvertTo-WireGuardHostAddress {
+  param([string]$Value)
+
+  $parts = @([string]$Value -split "/", 2)
+  $address = [System.Net.IPAddress]::None
+  if ($parts.Count -eq 0 -or [string]::IsNullOrWhiteSpace($parts[0]) -or
+      -not [System.Net.IPAddress]::TryParse($parts[0], [ref]$address) -or
+      $address.Equals([System.Net.IPAddress]::Any) -or $address.Equals([System.Net.IPAddress]::IPv6Any) -or
+      $address.Equals([System.Net.IPAddress]::Loopback) -or $address.Equals([System.Net.IPAddress]::IPv6Loopback)) {
+    throw "WireGuard tunnel ListenAddress must be a concrete bare IP or single-host CIDR"
+  }
+  $prefixLength = if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+  if ($parts.Count -eq 2 -and ([string]::IsNullOrWhiteSpace($parts[1]) -or $parts[1] -ne [string]$prefixLength)) {
+    throw "WireGuard tunnel ListenAddress must use the single-host /$prefixLength prefix"
+  }
+  return [pscustomobject]@{ address = [string]$address.IPAddressToString; prefixLength = $prefixLength }
 }
 
 function Get-ControlledMaintenanceIngressPolicy {
@@ -393,7 +407,7 @@ function Get-ControlledMaintenanceIngressPolicy {
   if ($Profile -ne "production" -and $Profile -ne "testbed") {
     throw "FactoryProfile must be production or testbed"
   }
-  Assert-WireGuardListenAddress -InterfaceAlias $WireGuardInterfaceAlias -ListenAddress $WireGuardListenAddress
+  $wireGuardAddress = Assert-WireGuardListenAddress -InterfaceAlias $WireGuardInterfaceAlias -ListenAddress $WireGuardListenAddress
   if ($Profile -eq "testbed") {
     return [ordered]@{
       mode = "testbed-runner-direct-plus-wireguard"
@@ -404,7 +418,7 @@ function Get-ControlledMaintenanceIngressPolicy {
   }
   return [ordered]@{
     mode = "wireguard-only"
-    sshListenAddresses = @($WireGuardListenAddress)
+    sshListenAddresses = @([string]$wireGuardAddress.address)
     firewallInterfaceScope = $WireGuardInterfaceAlias
     runnerDirectEnabled = $false
   }

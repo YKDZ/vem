@@ -626,8 +626,13 @@ and maintainer role pools. The testbed additionally uses the explicit
 on non-WireGuard guest interfaces so a platform-neutral VM adapter can reach
 its discovered DHCP endpoint, but the direct TCP/22 firewall rule permits only
 the existing exact `MaintenanceRunnerSourceAllowlist`. A separate WireGuard
-rule retains the combined runner and maintainer role pools. Testbed direct mode
-fails without a non-empty runner allowlist; it does not encode a host bridge,
+rule retains the combined runner and maintainer role pools. The explicit direct
+endpoint may be reused only for the same clean-install Factory lifecycle's
+preclaim, claim, runtime, capture, and serial acceptance SSH work; it is not a
+production or ordinary restore transport. Machine Claim still converges and
+independently verifies WireGuard after enrollment, without pretending that the
+already selected SSH endpoint changed transport. Testbed direct mode fails
+without a non-empty runner allowlist; it does not encode a host bridge,
 platform, or address assumption. Every other enabled inbound TCP/22 rule is
 removed. No profile authorizes a `SYSTEM` principal or creates a default SYSTEM SSH
 entrypoint. SYSTEM-only work requires explicit elevation from the authenticated

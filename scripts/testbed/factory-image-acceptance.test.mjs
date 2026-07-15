@@ -56,6 +56,10 @@ function typedInput(root) {
     },
     endpoint: {
       expectedTestbedUser: "YKDZ",
+      bootstrap: {
+        transport: "testbed-runner-direct",
+        runnerSourceAllowlist: ["192.0.2.10/32"],
+      },
       maintenanceRelaySession: {
         sessionId: "550e8400-e29b-41d4-a716-446655440001",
         relayPeer: {
@@ -164,7 +168,15 @@ describe("Factory Image Acceptance lifecycle", () => {
   it("verifies the installed Factory runtime before base capture and binds claim to the discovered endpoint", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-factory-image-command-"));
     const input = typedInput(root);
+    const bootstrapEndpoint = {
+      transport: "testbed-runner-direct",
+      protocol: "ssh",
+      host: "192.0.2.42",
+      port: 22,
+      reachability: "discovered",
+    };
     const endpoint = {
+      transport: "wireguard",
       protocol: "ssh",
       host: "10.91.16.10",
       port: 22,
@@ -182,17 +194,17 @@ describe("Factory Image Acceptance lifecycle", () => {
     const sshKnownHostsPath = join(root, "lifecycle-known-hosts");
     const preclaimInvocation = buildFactoryPreclaimVerifyInvocation(
       input,
-      endpoint,
+      bootstrapEndpoint,
       sshKnownHostsPath,
     );
     const claimInvocation = buildFactoryMachineClaimInvocation(
       input,
-      endpoint,
+      bootstrapEndpoint,
       sshKnownHostsPath,
     );
     const runtimeInvocation = buildFactoryRuntimeAcceptanceInvocation(
       input,
-      endpoint,
+      bootstrapEndpoint,
       sshKnownHostsPath,
     );
     assert.deepEqual(preclaimInvocation.slice(0, 4), [
@@ -233,7 +245,16 @@ describe("Factory Image Acceptance lifecycle", () => {
           preclaimInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.16.10",
+      "192.0.2.42",
+    );
+    assert.equal(
+      "relayProof" in
+        JSON.parse(
+          preclaimInvocation[
+            preclaimInvocation.indexOf("--factory-guest-endpoint-json") + 1
+          ],
+        ),
+      false,
     );
     assert.equal(
       JSON.parse(
@@ -241,7 +262,7 @@ describe("Factory Image Acceptance lifecycle", () => {
           claimInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.16.10",
+      "192.0.2.42",
     );
     assert.equal(
       JSON.parse(
@@ -249,7 +270,19 @@ describe("Factory Image Acceptance lifecycle", () => {
           runtimeInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.16.10",
+      "192.0.2.42",
+    );
+    assert.throws(
+      () =>
+        buildFactoryPreclaimVerifyInvocation(
+          input,
+          {
+            ...bootstrapEndpoint,
+            relayProof: endpoint.relayProof,
+          },
+          sshKnownHostsPath,
+        ),
+      /testbed runner-direct endpoint/,
     );
     assert.throws(
       () =>
@@ -773,9 +806,10 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
           lifecycleKnownHosts,
           "--factory-guest-endpoint-json",
           JSON.stringify({
+            transport: "testbed-runner-direct",
             protocol: "ssh",
             host: "10.91.2.10",
-            port: 2222,
+            port: 22,
             reachability: "discovered",
           }),
           "--out",
@@ -796,7 +830,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       );
       const sshArgs = readFileSync(join(root, "ssh-args.txt"), "utf8");
       const sshStdin = readFileSync(join(root, "ssh-stdin.ps1"), "utf8");
-      assert.match(sshArgs, /-p\n2222\n/);
+      assert.match(sshArgs, /-p\n22\n/);
       assert.match(sshArgs, /YKDZ@10\.91\.2\.10/);
       assert.match(sshArgs, /powershell -NoLogo -NoProfile -NonInteractive/);
       assert.match(sshArgs, /-Command -/);

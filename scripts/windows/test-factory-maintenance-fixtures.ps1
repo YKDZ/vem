@@ -154,7 +154,7 @@ function Get-CimInstance {
 }
 $wireGuardResult = Ensure-LocalWireGuardTunnelService -Plan ([pscustomobject]@{
     layout = [pscustomobject]@{ wireGuardRoot = "C:\VEM\maintenance"; wireGuardConfigPath = "C:\VEM\maintenance\VEM-Maintenance.conf" }
-    inputs = [pscustomobject]@{ wireGuardInterfaceAlias = "VEM-Maintenance" }
+    inputs = [pscustomobject]@{ wireGuardInterfaceAlias = "VEM-Maintenance"; wireGuardListenAddress = "10.77.0.10/32" }
   })
 $expectedServiceName = 'WireGuardTunnel$VEM-Maintenance'
 Assert-Fixture ($wireGuardResult.serviceName -ceq $expectedServiceName) "WireGuard evidence must use the exact SCM service name"
@@ -429,18 +429,23 @@ function Get-NetIPAddress {
   return $null
 }
 $script:FactoryProfile = "production"
-$productionIngress = Get-ControlledMaintenanceIngressPolicy -Profile "production" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "10.77.0.10"
+$normalizedWireGuardAddress = ConvertTo-WireGuardHostAddress -Value "10.77.0.10/32"
+Assert-Fixture ($normalizedWireGuardAddress.address -ceq "10.77.0.10" -and $normalizedWireGuardAddress.prefixLength -eq 32) "single-host CIDR must normalize to a bare WireGuard host address"
+$productionIngress = Get-ControlledMaintenanceIngressPolicy -Profile "production" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "10.77.0.10/32"
 Assert-Fixture ($productionIngress.mode -ceq "wireguard-only") "production must use WireGuard-only maintenance ingress"
 Assert-Fixture ($productionIngress.sshListenAddresses[0] -ceq "10.77.0.10" -and $productionIngress.firewallInterfaceScope -ceq "VEM-Maintenance") "production ingress must retain the WireGuard listener and interface scope"
 Assert-ThrowsLike -Action {
   Get-ControlledMaintenanceIngressPolicy -Profile "production" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "0.0.0.0"
-} -Pattern "must not be wildcard or loopback" -Message "production must reject a wildcard SSH listener"
-$testbedIngress = Get-ControlledMaintenanceIngressPolicy -Profile "testbed" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "10.77.0.10"
+} -Pattern "concrete bare IP or single-host CIDR" -Message "production must reject a wildcard SSH listener"
+$testbedIngress = Get-ControlledMaintenanceIngressPolicy -Profile "testbed" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "10.77.0.10/32"
 Assert-Fixture ($testbedIngress.mode -ceq "testbed-runner-direct-plus-wireguard") "testbed must enable runner-direct SSH bootstrap alongside WireGuard"
 Assert-Fixture ($testbedIngress.sshListenAddresses[0] -ceq "0.0.0.0" -and $testbedIngress.firewallInterfaceScope -ceq "Any" -and [bool]$testbedIngress.runnerDirectEnabled) "testbed ingress must listen on non-WireGuard guest interfaces while preserving the declared WireGuard path"
 Assert-ThrowsLike -Action {
   Get-ControlledMaintenanceIngressPolicy -Profile "testbed" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "0.0.0.0"
-} -Pattern "must not be wildcard or loopback" -Message "testbed must reject a wildcard SSH listener"
+} -Pattern "concrete bare IP or single-host CIDR" -Message "testbed must reject a wildcard SSH listener"
+Assert-ThrowsLike -Action {
+  Get-ControlledMaintenanceIngressPolicy -Profile "testbed" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "10.77.0.0/24"
+} -Pattern "single-host /32" -Message "testbed must reject a broad WireGuard CIDR"
 
 $script:MaintenanceRunnerSourceAllowlist = @("10.77.0.2/32")
 $script:MaintenanceMaintainerSourceAllowlist = @("fd00:77::3/128")
@@ -572,7 +577,7 @@ $testbedManifest = [pscustomobject]@{
     runnerSourceAllowlist = @("10.77.0.2")
     maintainerSourceAllowlist = @("10.77.0.3")
     wireGuardInterfaceAlias = "VEM-Maintenance"
-    wireGuardListenAddress = "10.77.0.10"
+    wireGuardListenAddress = "10.77.0.10/32"
     ingressMode = "testbed-runner-direct-plus-wireguard"
     effectiveListenAddress = "0.0.0.0"
     effectiveFirewallInterfaceScope = "Any"
@@ -585,8 +590,10 @@ $script:fixtureFirewallInterfaceAlias = "VEM-Maintenance"
 $script:fixtureListeners = @([pscustomobject]@{ LocalAddress = "0.0.0.0"; LocalPort = 22; OwningProcess = 100 })
 $testbedFirewallEvidence = Get-MaintenanceFirewallEvidence -Manifest $testbedManifest
 $testbedIngressEvidence = Get-MaintenanceIngressEvidence -Manifest $testbedManifest
+$testbedWireGuardEvidence = Get-WireGuardListenAddressEvidence -Manifest $testbedManifest
 Assert-Fixture ([bool]$testbedFirewallEvidence.roleScopedRulesMatch -and @($testbedFirewallEvidence.unexpectedListeners).Count -eq 0) "testbed verifier must require a runner-only direct rule and the WireGuard role-pool rule"
 Assert-Fixture ([bool]$testbedIngressEvidence.profileBound -and [bool]$testbedIngressEvidence.runnerDirectPlusWireGuard) "testbed verifier must require runner-direct plus WireGuard ingress"
+Assert-Fixture ($testbedWireGuardEvidence.wireGuardListenAddress -ceq "10.77.0.10" -and [bool]$testbedWireGuardEvidence.addressOwnedByInterface) "verifier must query the WireGuard interface with the bare address from a single-host CIDR"
 $adapterDiscoveredDhcpGuestAddress = "192.0.2.42"
 $adapterGuestAddress = [System.Net.IPAddress]::None
 Assert-Fixture ([System.Net.IPAddress]::TryParse($adapterDiscoveredDhcpGuestAddress, [ref]$adapterGuestAddress) -and $adapterGuestAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $testbedFirewallEvidence.listeners[0].localAddress -ceq "0.0.0.0" -and $testbedFirewallEvidence.listeners[0].localPort -eq 22) "testbed runner-direct listener must accept an adapter-discovered DHCP guest address on TCP/22"

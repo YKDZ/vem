@@ -778,10 +778,13 @@ function Get-MaintenanceIngressEvidence {
   $mode = [string]$policy.ingressMode
   $listenAddress = [string]$policy.effectiveListenAddress
   $interfaceScope = [string]$policy.effectiveFirewallInterfaceScope
+  $wireGuardAddress = $null
+  try { $wireGuardAddress = ConvertTo-WireGuardHostAddress -Value ([string]$policy.wireGuardListenAddress) } catch { }
+  $normalizedWireGuardListenAddress = if ($null -ne $wireGuardAddress) { [string]$wireGuardAddress.address } else { [string]$policy.wireGuardListenAddress }
   $expected = if ($profile -eq "production") {
     [ordered]@{
       mode = "wireguard-only"
-      listenAddress = [string]$policy.wireGuardListenAddress
+      listenAddress = $normalizedWireGuardListenAddress
       interfaceScope = [string]$policy.wireGuardInterfaceAlias
     }
   } elseif ($profile -eq "testbed") {
@@ -807,12 +810,12 @@ function Get-MaintenanceIngressEvidence {
       $interfaceScope -ceq [string]$expected.interfaceScope
     wireGuardOnly = $mode -ceq "wireguard-only" -and
       -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardInterfaceAlias) -and
-      -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardListenAddress)
+      $null -ne $wireGuardAddress
     runnerDirectPlusWireGuard = $mode -ceq "testbed-runner-direct-plus-wireguard" -and
       [bool]$policy.runnerDirectEnabled -and
       @($policy.runnerSourceAllowlist).Count -gt 0 -and
       -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardInterfaceAlias) -and
-      -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardListenAddress)
+      $null -ne $wireGuardAddress
   }
 }
 
@@ -821,16 +824,12 @@ function Get-WireGuardListenAddressEvidence {
 
   $policy = $Manifest.maintenanceSsh
   $interfaceAlias = [string]$policy.wireGuardInterfaceAlias
-  $listenAddress = [string]$policy.wireGuardListenAddress
-  $parsedAddress = [System.Net.IPAddress]::None
-  $validAddress = -not [string]::IsNullOrWhiteSpace($listenAddress) -and
-    [System.Net.IPAddress]::TryParse($listenAddress, [ref]$parsedAddress) -and
-    -not $parsedAddress.Equals([System.Net.IPAddress]::Any) -and
-    -not $parsedAddress.Equals([System.Net.IPAddress]::IPv6Any) -and
-    -not $parsedAddress.Equals([System.Net.IPAddress]::Loopback) -and
-    -not $parsedAddress.Equals([System.Net.IPAddress]::IPv6Loopback)
+  $normalized = $null
+  try { $normalized = ConvertTo-WireGuardHostAddress -Value ([string]$policy.wireGuardListenAddress) } catch { }
+  $listenAddress = if ($null -ne $normalized) { [string]$normalized.address } else { [string]$policy.wireGuardListenAddress }
+  $validAddress = $null -ne $normalized
   $ownedAddress = if ($validAddress -and -not [string]::IsNullOrWhiteSpace($interfaceAlias)) {
-    Get-NetIPAddress -InterfaceAlias $interfaceAlias -IPAddress $parsedAddress.IPAddressToString -ErrorAction SilentlyContinue | Select-Object -First 1
+    Get-NetIPAddress -InterfaceAlias $interfaceAlias -IPAddress $listenAddress -ErrorAction SilentlyContinue | Select-Object -First 1
   } else {
     $null
   }
@@ -842,6 +841,24 @@ function Get-WireGuardListenAddressEvidence {
     effectiveListenerMatchesWireGuardAddress = [string]$Manifest.factoryProfile -eq "production" -and [string]$policy.effectiveListenAddress -ceq $listenAddress
     effectiveFirewallMatchesWireGuardInterface = [string]$Manifest.factoryProfile -eq "production" -and [string]$policy.effectiveFirewallInterfaceScope -ceq $interfaceAlias
   }
+}
+
+function ConvertTo-WireGuardHostAddress {
+  param([string]$Value)
+
+  $parts = @([string]$Value -split "/", 2)
+  $address = [System.Net.IPAddress]::None
+  if ($parts.Count -eq 0 -or [string]::IsNullOrWhiteSpace($parts[0]) -or
+      -not [System.Net.IPAddress]::TryParse($parts[0], [ref]$address) -or
+      $address.Equals([System.Net.IPAddress]::Any) -or $address.Equals([System.Net.IPAddress]::IPv6Any) -or
+      $address.Equals([System.Net.IPAddress]::Loopback) -or $address.Equals([System.Net.IPAddress]::IPv6Loopback)) {
+    throw "WireGuard tunnel ListenAddress must be a concrete bare IP or single-host CIDR"
+  }
+  $prefixLength = if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+  if ($parts.Count -eq 2 -and ([string]::IsNullOrWhiteSpace($parts[1]) -or $parts[1] -ne [string]$prefixLength)) {
+    throw "WireGuard tunnel ListenAddress must use the single-host /$prefixLength prefix"
+  }
+  return [pscustomobject]@{ address = [string]$address.IPAddressToString; prefixLength = $prefixLength }
 }
 
 function Get-SshdEffectiveConfigEvidence {

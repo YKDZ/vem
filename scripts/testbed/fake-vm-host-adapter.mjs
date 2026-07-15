@@ -476,6 +476,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
       maintenanceRelaySession: request.maintenanceRelaySession ?? null,
+      maintenanceEndpointPolicy: request.maintenanceEndpointPolicy ?? null,
       ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result,
@@ -504,13 +505,22 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       maintenanceEndpointIdentity:
         "guest-maintenance://fake-runtime-testbed-001",
       maintenanceEndpoint: {
+        transport:
+          request.maintenanceEndpointPolicy?.transport ===
+          "testbed-runner-direct"
+            ? "testbed-runner-direct"
+            : "wireguard",
         protocol: "ssh",
         host:
-          request.maintenanceRelaySession?.endpointTunnelAddress ??
-          "10.91.2.10",
+          request.maintenanceEndpointPolicy?.transport ===
+          "testbed-runner-direct"
+            ? "192.0.2.42"
+            : (request.maintenanceRelaySession?.endpointTunnelAddress ??
+              "10.91.2.10"),
         port: 22,
         reachability: "discovered",
-        ...(request.maintenanceRelaySession
+        ...(request.maintenanceEndpointPolicy?.transport !==
+          "testbed-runner-direct" && request.maintenanceRelaySession
           ? {
               relayProof: {
                 ...request.maintenanceRelaySession,
