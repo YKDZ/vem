@@ -9,6 +9,7 @@ import {
 } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
+import { useCheckoutStore } from "@/stores/checkout";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useVisionStore } from "@/stores/vision";
 
@@ -484,6 +485,7 @@ export function useReturnHomeOnCustomerDeparture(
   const route = useRoute();
   const router = useRouter();
   const session = useCustomerPresenceSession();
+  const checkoutStore = useCheckoutStore();
   const routeNames = options.routeNames ?? RETURN_HOME_ROUTE_NAMES;
   const returnRoute = options.returnRoute ?? { name: "catalog" };
 
@@ -491,6 +493,7 @@ export function useReturnHomeOnCustomerDeparture(
     () => session.state.value.personPresent,
     (personPresent, wasPresent) => {
       if (personPresent || !wasPresent) return;
+      if (checkoutStore.customerCheckoutView.stage !== "none") return;
       const routeName =
         typeof route.name === "string" ? route.name : String(route.name ?? "");
       if (!routeNames.has(routeName)) return;

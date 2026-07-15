@@ -15,11 +15,38 @@ vi.mock("vue-router", () => ({
   useRouter: () => ({ replace: routerReplaceMock }),
 }));
 
+import { useCheckoutStore } from "@/stores/checkout";
+
 import {
   resetCustomerPresenceSessionForTests,
   useCustomerPresenceSession,
   useReturnHomeOnCustomerDeparture,
 } from "./usePresenceInteraction";
+
+function applyActivePaymentTransaction(): void {
+  useCheckoutStore().applyTransaction({
+    orderId: "550e8400-e29b-41d4-a716-446655440012",
+    orderNo: "ORD-PRESENCE-ACTIVE",
+    productSummary: null,
+    paymentId: "550e8400-e29b-41d4-a716-446655440013",
+    paymentNo: "PAY-PRESENCE-ACTIVE",
+    paymentMethod: "qr_code",
+    paymentProvider: "alipay",
+    paymentUrl: "https://pay.example/active",
+    paymentStatus: "pending",
+    orderStatus: "pending_payment",
+    totalAmountCents: 4900,
+    vending: null,
+    nextAction: "wait_payment",
+    maskedAuthCode: null,
+    paymentCodeAttempt: null,
+    expiresAt: "2099-06-30T08:15:00.000Z",
+    errorCode: null,
+    errorMessage: null,
+    operatorHint: null,
+    updatedAt: "2026-06-30T08:10:00.000Z",
+  });
+}
 
 function emitPresence(personPresent: boolean, detectedAt: string): void {
   useVisionStore().applyPresenceStatus({
@@ -110,6 +137,20 @@ describe("customer presence navigation", () => {
     emitPresence(true, "2026-06-30T08:10:00.000Z");
     await nextTick();
     emitPresence(false, "2026-06-30T08:10:05.000Z");
+    await nextTick();
+
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("lets the daemon transaction projection outrank the current browsing route when the customer leaves", async () => {
+    routeName.value = "product-detail";
+    const unmount = await mountReturnHomeController();
+    applyActivePaymentTransaction();
+
+    emitPresence(true, "2026-06-30T08:20:00.000Z");
+    await nextTick();
+    emitPresence(false, "2026-06-30T08:20:05.000Z");
     await nextTick();
 
     expect(routerReplaceMock).not.toHaveBeenCalled();
