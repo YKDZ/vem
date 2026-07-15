@@ -393,6 +393,20 @@ async function responseForExisting(
         saleSafetyBlockerSlotId: existing.saleSafetyBlockerSlotId,
       });
     }
+    if (
+      existing.status === "accepted" &&
+      isOrderBoundDispenseMovement(input) &&
+      !(await repository.repairAcceptedOrderBoundDispenseCommand(
+        machineId,
+        input,
+      ))
+    ) {
+      return rejectedResponse(
+        input.movementId,
+        payloadHash,
+        "order_confirmation_failed",
+      );
+    }
     return acceptedResponse(input.movementId, existing, "already_accepted");
   }
 

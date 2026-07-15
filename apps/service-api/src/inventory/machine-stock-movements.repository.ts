@@ -481,6 +481,40 @@ export class MachineStockMovementsRepository {
     return row ?? null;
   }
 
+  async repairAcceptedOrderBoundDispenseCommand(
+    machineId: string,
+    input: RawMachineStockMovement & { movementType: "dispense_succeeded" },
+  ): Promise<boolean> {
+    const commandNo = input.orderContext?.vendingCommandNo;
+    if (!commandNo) return false;
+    return await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(vendingCommands)
+        .set({
+          status: "succeeded",
+          resultAt: new Date(input.occurredAt),
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(vendingCommands.machineId, machineId),
+            eq(vendingCommands.commandNo, commandNo),
+            inArray(vendingCommands.status, [
+              "pending",
+              "sent",
+              "acknowledged",
+              "result_unknown",
+              "timeout",
+              "succeeded",
+            ]),
+          ),
+        )
+        .returning({ id: vendingCommands.id });
+      return Boolean(updated);
+    });
+  }
+
   async insertAcceptedWithOrderBoundDispenseConfirmation(
     input: Omit<InsertRawMachineStockMovement, "input"> & {
       input: RawMachineStockMovement & { movementType: "dispense_succeeded" };
@@ -496,18 +530,12 @@ export class MachineStockMovementsRepository {
           saleSafetyBlockerState: null,
           saleSafetyBlockerSlotId: null,
         });
-        const confirmed =
-          await this.confirmOrderBoundDispenseSucceededInTransaction(tx, {
-            machineId: input.machineId,
-            rawMovementId: stored.id,
-            input: input.input,
-            context: input.context,
-          });
-        if (!confirmed) {
-          throw new OrderBoundDispenseConfirmationFailedError(
-            "Order-bound dispense confirmation failed",
-          );
-        }
+        await this.confirmOrderBoundDispenseSucceededInTransaction(tx, {
+          machineId: input.machineId,
+          rawMovementId: stored.id,
+          input: input.input,
+          context: input.context,
+        });
         return stored;
       });
     } catch (error) {
@@ -521,15 +549,50 @@ export class MachineStockMovementsRepository {
   async confirmOrderBoundDispenseSucceeded(
     input: ConfirmOrderBoundDispenseInput,
   ): Promise<boolean> {
-    return await this.db.transaction(async (tx) =>
-      this.confirmOrderBoundDispenseSucceededInTransaction(tx, input),
-    );
+    try {
+      return await this.db.transaction(async (tx) => {
+        await this.confirmOrderBoundDispenseSucceededInTransaction(tx, input);
+        return true;
+      });
+    } catch (error) {
+      if (error instanceof OrderBoundDispenseConfirmationFailedError) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   private async confirmOrderBoundDispenseSucceededInTransaction(
     tx: DrizzleTransaction,
     input: ConfirmOrderBoundDispenseInput,
-  ): Promise<boolean> {
+  ): Promise<void> {
+    const [claimedCommand] = await tx
+      .update(vendingCommands)
+      .set({
+        status: "succeeded",
+        resultAt: new Date(input.input.occurredAt),
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(vendingCommands.id, input.context.vendingCommandId),
+          inArray(vendingCommands.status, [
+            "pending",
+            "sent",
+            "acknowledged",
+            "result_unknown",
+            "timeout",
+          ]),
+        ),
+      )
+      .returning({ id: vendingCommands.id });
+    if (!claimedCommand) {
+      throw new OrderBoundDispenseConfirmationFailedError(
+        "Vending command is not claimable for success",
+      );
+    }
+
     const result = await tx.execute(sql`
       update inventories
       set
@@ -551,10 +614,12 @@ export class MachineStockMovementsRepository {
       returning id
     `);
     if ((result.rowCount ?? 0) !== 1) {
-      return false;
+      throw new OrderBoundDispenseConfirmationFailedError(
+        "Reserved inventory could not be confirmed",
+      );
     }
 
-    await tx
+    const [confirmedReservation] = await tx
       .update(inventoryReservations)
       .set({ status: "confirmed", updatedAt: new Date() })
       .where(
@@ -564,7 +629,13 @@ export class MachineStockMovementsRepository {
           eq(inventoryReservations.orderItemId, input.context.orderItemId),
           eq(inventoryReservations.status, "active"),
         ),
+      )
+      .returning({ id: inventoryReservations.id });
+    if (!confirmedReservation) {
+      throw new OrderBoundDispenseConfirmationFailedError(
+        "Inventory reservation could not be confirmed",
       );
+    }
 
     await tx.insert(inventoryMovements).values({
       inventoryId: input.context.inventoryId,
@@ -574,35 +645,20 @@ export class MachineStockMovementsRepository {
       note: `machine_stock_movement:${input.rawMovementId}`,
     });
 
-    await tx
-      .update(vendingCommands)
-      .set({
-        status: "succeeded",
-        resultAt: new Date(input.input.occurredAt),
-        lastError: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(vendingCommands.id, input.context.vendingCommandId),
-          inArray(vendingCommands.status, [
-            "sent",
-            "acknowledged",
-            "result_unknown",
-            "timeout",
-            "succeeded",
-          ]),
-        ),
-      );
-
-    await tx
+    const [fulfilledOrderItem] = await tx
       .update(orderItems)
       .set({
         fulfillmentStatus: "dispensed",
         refundStatus: "not_required",
         fulfilledAt: new Date(input.input.occurredAt),
       })
-      .where(eq(orderItems.id, input.context.orderItemId));
+      .where(eq(orderItems.id, input.context.orderItemId))
+      .returning({ id: orderItems.id });
+    if (!fulfilledOrderItem) {
+      throw new OrderBoundDispenseConfirmationFailedError(
+        "Order item could not be fulfilled",
+      );
+    }
 
     await this.syncOrderFulfillmentStateFromLines(tx, {
       orderId: input.context.orderId,
@@ -610,8 +666,6 @@ export class MachineStockMovementsRepository {
       metadata: { rawMovementId: input.rawMovementId },
       dispensedAt: new Date(input.input.occurredAt),
     });
-
-    return true;
   }
 
   private async syncOrderFulfillmentStateFromLines(

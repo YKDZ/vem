@@ -732,7 +732,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     }
 
     if (input.result === "dispensed") {
-      return await this.resolveCommandAsDispensed(command, input.note);
+      return await this.resolveCommandAsDispensed(command);
     }
 
     const failureContext = await this.db.transaction(async (tx) => {
@@ -980,7 +980,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       payloadJson: Record<string, unknown>;
       orderNo: string;
     },
-    note?: string,
     options: {
       movementId?: string;
       source?: string;
@@ -1049,16 +1048,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         `Manual dispense confirmation could not be accepted: ${result.status}`,
       );
     }
-
-    await this.db
-      .update(vendingCommands)
-      .set({
-        status: "succeeded",
-        resultAt: new Date(),
-        lastError: note ?? null,
-        updatedAt: new Date(),
-      })
-      .where(eq(vendingCommands.id, command.id));
 
     return {
       commandId: command.id,
@@ -1451,15 +1440,11 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (resultContext?.kind === "success") {
-      await this.resolveCommandAsDispensed(
-        resultContext.command,
-        payload.message,
-        {
-          movementId: `mqtt-dispense:${payload.commandNo}`,
-          source: "vending_command",
-          occurredAt: payload.reportedAt,
-        },
-      );
+      await this.resolveCommandAsDispensed(resultContext.command, {
+        movementId: `mqtt-dispense:${payload.commandNo}`,
+        source: "vending_command",
+        occurredAt: payload.reportedAt,
+      });
       // Success projection is itself idempotent (movementId + command CAS).
       // Persist the inbox receipt only after it commits, so a crash or
       // transient failure is resumed by the same messageId instead of being

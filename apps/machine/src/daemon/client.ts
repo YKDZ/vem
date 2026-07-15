@@ -150,6 +150,7 @@ type RequestOptions = {
   body?: unknown;
   retry401?: boolean;
   maintenanceSessionOverride?: MaintenanceSession | null;
+  signal?: AbortSignal;
 };
 
 type Subscription = {
@@ -212,6 +213,7 @@ async function readDaemonResponseText(
   return { exceeded: false, text: new TextDecoder().decode(body) };
 }
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const MAINTENANCE_REVOKE_TIMEOUT_MS = 2_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -258,6 +260,7 @@ export class DaemonApiClient {
       },
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal,
     }).catch((error: unknown) => {
       throw new DaemonUnavailableError("daemon request failed", error);
     });
@@ -365,7 +368,7 @@ export class DaemonApiClient {
       this.maintenanceSession &&
       Date.parse(this.maintenanceSession.expiresAt) <= Date.now()
     ) {
-      this.clearMaintenanceSession();
+      return null;
     }
     return this.maintenanceSession;
   }
@@ -542,13 +545,19 @@ export class DaemonApiClient {
   private async revokeCapturedMaintenanceSession(
     session: MaintenanceSession,
   ): Promise<void> {
+    const abort = new AbortController();
+    const timeout = globalThis.setTimeout(() => {
+      abort.abort();
+    }, MAINTENANCE_REVOKE_TIMEOUT_MS);
     try {
       await this.request("/v1/maintenance/sessions/revoke", {
         method: "POST",
         retry401: false,
         maintenanceSessionOverride: session,
+        signal: abort.signal,
       });
     } finally {
+      globalThis.clearTimeout(timeout);
       this.clearMaintenanceSessionForId(session.sessionId);
     }
   }

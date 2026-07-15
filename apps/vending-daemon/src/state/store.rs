@@ -1459,16 +1459,21 @@ impl LocalStateStore {
     }
 
     pub async fn prune_command_log(&self) -> Result<(u64, u64), StoreError> {
-        let deleted_expired = sqlx::query("DELETE FROM command_log WHERE expires_at < ?1")
-            .bind(now_iso())
-            .execute(&self.pool)
-            .await?
-            .rows_affected();
+        let deleted_expired = sqlx::query(
+            "DELETE FROM command_log
+             WHERE expires_at < ?1
+               AND (result_payload_json IS NULL OR side_effects_committed_at IS NOT NULL)",
+        )
+        .bind(now_iso())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
 
         let deleted_oversize = sqlx::query(
             "DELETE FROM command_log
              WHERE command_no IN (
                SELECT command_no FROM command_log
+               WHERE result_payload_json IS NULL OR side_effects_committed_at IS NOT NULL
                ORDER BY updated_at DESC
                LIMIT -1 OFFSET ?1
              )",
@@ -8907,6 +8912,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v17_terminal_journal_migrates_to_recoverable_v18_and_survives_prune() {
+        let temp = TempDir::new().expect("temp");
+        let path = temp.path().join("state-v17-terminal.db");
+        let store = LocalStateStore::open(&path)
+            .await
+            .expect("seed current database");
+        let command = dispense_command_for_slot("CMD-V17-TERMINAL-JOURNAL");
+        let result = DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "F2 reset completed before v18 migration".to_string(),
+            reported_at: now_iso(),
+        };
+        store
+            .record_command_result_journal(&command, &result)
+            .await
+            .expect("seed v17 terminal journal");
+        sqlx::query("ALTER TABLE command_log DROP COLUMN side_effects_committed_at")
+            .execute(store.pool())
+            .await
+            .expect("restore exact v17 command_log shape");
+        store
+            .put_metadata("schema_version", &17_i64)
+            .await
+            .expect("mark v17");
+        drop(store);
+
+        let upgraded = LocalStateStore::open(&path)
+            .await
+            .expect("upgrade v17 to v18");
+        let columns: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM pragma_table_info('command_log')")
+                .fetch_all(upgraded.pool())
+                .await
+                .unwrap();
+        assert!(columns
+            .iter()
+            .any(|(name,)| name == "side_effects_committed_at"));
+        let pending = upgraded
+            .list_journaled_commands_pending_side_effects()
+            .await
+            .expect("migrated pending journal");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].result_payload, Some(result.clone()));
+
+        sqlx::query(
+            "UPDATE command_log SET updated_at='2000-01-01T00:00:00Z',expires_at='2000-01-02T00:00:00Z' WHERE command_no=?1",
+        )
+        .bind(&command.command_no)
+        .execute(upgraded.pool())
+        .await
+        .unwrap();
+        upgraded.prune_command_log().await.expect("prune");
+        assert_eq!(
+            upgraded
+                .get_command(&command.command_no)
+                .await
+                .unwrap()
+                .unwrap()
+                .result_payload,
+            Some(result)
+        );
+    }
+
+    #[tokio::test]
     async fn manual_dispense_diagnostic_is_a_separate_audit_ledger() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
@@ -10759,6 +10830,67 @@ mod tests {
             .expect("command")
             .expect("command record");
         assert_eq!(command_record.status, CommandLogStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn command_log_prune_never_deletes_a_terminal_journal_with_pending_side_effects() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let command = dispense_command_for_slot("CMD-PENDING-SIDE-EFFECTS");
+        let result = DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "F2 reset completed".to_string(),
+            reported_at: now_iso(),
+        };
+        store
+            .record_command_result_journal(&command, &result)
+            .await
+            .expect("journal");
+        sqlx::query(
+            "UPDATE command_log SET updated_at='2000-01-01T00:00:00Z',expires_at='2000-01-02T00:00:00Z' WHERE command_no=?1",
+        )
+        .bind(&command.command_no)
+        .execute(store.pool())
+        .await
+        .expect("age pending journal");
+        let mut tx = store.begin_immediate_write_transaction().await.unwrap();
+        for index in 0..COMMAND_LOG_MAX_ENTRIES {
+            sqlx::query(
+                "INSERT INTO command_log(command_no,order_no,command_payload_json,status,result_payload_json,updated_at,expires_at,side_effects_committed_at)
+                 VALUES (?1,?2,?3,'failed',?4,'2030-01-01T00:00:00Z','2030-02-01T00:00:00Z','2030-01-01T00:00:00Z')",
+            )
+            .bind(format!("CMD-PRUNE-FILLER-{index:04}"))
+            .bind(format!("ORDER-PRUNE-FILLER-{index:04}"))
+            .bind(serde_json::to_string(&dispense_command_for_slot(&format!(
+                "CMD-PRUNE-FILLER-{index:04}"
+            )))
+            .unwrap())
+            .bind(serde_json::to_string(&DispenseResultPayload {
+                command_no: format!("CMD-PRUNE-FILLER-{index:04}"),
+                success: false,
+                error_code: Some("TEST".to_string()),
+                message: "committed history".to_string(),
+                reported_at: "2030-01-01T00:00:00Z".to_string(),
+            })
+            .unwrap())
+            .execute(tx.as_mut())
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        store.prune_command_log().await.expect("prune");
+
+        let pending = store
+            .get_command(&command.command_no)
+            .await
+            .expect("pending journal")
+            .expect("pending journal retained");
+        assert_eq!(pending.result_payload, Some(result));
     }
 
     #[tokio::test]
