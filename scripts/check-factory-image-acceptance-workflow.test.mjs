@@ -83,6 +83,8 @@ describe("Factory Image Acceptance workflow", () => {
       workflow,
       /^permissions:\n\s+contents: read\n\s+id-token: write/m,
     );
+    assert.match(workflow, /audience=vem-maintenance/);
+    assert.match(workflow, /maintenance-automation\/exchange/);
   });
 
   it("starts a same-run ephemeral platform and writes the typed lifecycle input at runtime", () => {

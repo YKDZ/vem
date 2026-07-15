@@ -100,15 +100,24 @@ describe(
         policyPath,
         JSON.stringify({
           repositoryId: "123456789",
-          workflowIdentity: {
-            claimModel: "direct",
-            workflowRef:
-              "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
-            allowedWorkflowShas: [TEST_SHA],
-          },
+          workflowIdentities: [
+            {
+              claimModel: "direct",
+              workflowRef:
+                "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+              allowedWorkflowShas: [TEST_SHA],
+              allowedEnvironments: ["vem-maintenance-testbed"],
+            },
+            {
+              claimModel: "direct",
+              workflowRef:
+                "vem/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+              allowedWorkflowShas: [TEST_SHA],
+              allowedEnvironments: ["vem-factory-production"],
+            },
+          ],
           refs: ["refs/heads/main"],
           events: ["workflow_dispatch"],
-          environments: ["vem-maintenance-testbed"],
           requireRefProtected: true,
           allowedRunnerPeerIds: ["11111111-1111-4111-8111-111111111111"],
           targetMachineCodes: [TEST_MACHINE_CODE, TEST_SECOND_MACHINE_CODE],
@@ -241,6 +250,30 @@ describe(
         exchange.accessToken,
       );
       expect(persisted[0]?.automationTokenDigest).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it("exchanges a Factory assertion through the same multi-workflow policy", async () => {
+      const scope = await provisionMaintenanceScope();
+      const response = await api
+        .post("/api/maintenance-automation/exchange")
+        .send({
+          idToken: signedOidcToken({
+            issuedAt: fakeNow,
+            workflow: "Factory Image Acceptance",
+            workflowRef:
+              "vem/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+            environment: "vem-factory-production",
+          }),
+          runId: TEST_RUN_ID,
+          runAttempt: TEST_RUN_ATTEMPT,
+          sha: TEST_SHA,
+          sourcePeerId: scope.sourcePeerId,
+          targetMachineId: scope.targetMachineId,
+          reason: "Run Factory Image Acceptance",
+        })
+        .expect(201);
+
+      expect(response.body.data.accessToken).toEqual(expect.any(String));
     });
 
     it("rolls back the exchange when its success audit cannot be persisted", async () => {
@@ -716,15 +749,24 @@ describe(
         policyPath,
         JSON.stringify({
           repositoryId: "123456789",
-          workflowIdentity: {
-            claimModel: "direct",
-            workflowRef:
-              "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
-            allowedWorkflowShas: [TEST_SHA],
-          },
+          workflowIdentities: [
+            {
+              claimModel: "direct",
+              workflowRef:
+                "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+              allowedWorkflowShas: [TEST_SHA],
+              allowedEnvironments: ["vem-maintenance-testbed"],
+            },
+            {
+              claimModel: "direct",
+              workflowRef:
+                "vem/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+              allowedWorkflowShas: [TEST_SHA],
+              allowedEnvironments: ["vem-factory-production"],
+            },
+          ],
           refs: ["refs/heads/main"],
           events: ["workflow_dispatch"],
-          environments: ["vem-maintenance-testbed"],
           requireRefProtected: true,
           allowedRunnerPeerIds: [...allowedRunnerPeerIds],
           targetMachineCodes: [TEST_MACHINE_CODE, TEST_SECOND_MACHINE_CODE],
@@ -739,12 +781,16 @@ describe(
       runAttempt = TEST_RUN_ATTEMPT,
       jti,
       workflow = "VM Runtime Acceptance",
+      workflowRef = "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+      environment = "vem-maintenance-testbed",
     }: {
       issuedAt: Date;
       runId?: string;
       runAttempt?: string;
       jti?: string;
       workflow?: string;
+      workflowRef?: string;
+      environment?: string;
     }): string {
       const now = Math.floor(issuedAt.getTime() / 1_000);
       const header = encode({
@@ -757,8 +803,7 @@ describe(
         aud: "vem-maintenance",
         repository_id: "123456789",
         workflow,
-        workflow_ref:
-          "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+        workflow_ref: workflowRef,
         workflow_sha: TEST_SHA,
         ref: "refs/heads/main",
         ref_protected: true,
@@ -766,7 +811,7 @@ describe(
         sha: TEST_SHA,
         run_id: runId,
         run_attempt: runAttempt,
-        environment: "vem-maintenance-testbed",
+        environment,
         jti: jti ?? `e2e-${runId}-${runAttempt}-${issuedAt.getTime()}`,
         iat: now - 1,
         nbf: now - 1,

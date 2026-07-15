@@ -67,6 +67,7 @@ const githubOidcWorkflowIdentitySchema = z.discriminatedUnion("claimModel", [
     claimModel: z.literal("direct"),
     workflowRef: z.string().min(1).max(1_024),
     allowedWorkflowShas: allowedWorkflowShasSchema,
+    allowedEnvironments: z.array(z.string().min(1).max(255)).min(1).max(16),
   }),
   z.strictObject({
     claimModel: z.literal("reusable"),
@@ -74,15 +75,15 @@ const githubOidcWorkflowIdentitySchema = z.discriminatedUnion("claimModel", [
     jobWorkflowRef: z.string().min(1).max(1_024),
     allowedWorkflowShas: allowedWorkflowShasSchema,
     allowedJobWorkflowShas: allowedWorkflowShasSchema,
+    allowedEnvironments: z.array(z.string().min(1).max(255)).min(1).max(16),
   }),
 ]);
 
 const githubOidcTrustPolicySchema = z.strictObject({
   repositoryId: z.string().regex(/^[1-9][0-9]{0,19}$/),
-  workflowIdentity: githubOidcWorkflowIdentitySchema,
+  workflowIdentities: z.array(githubOidcWorkflowIdentitySchema).min(1).max(32),
   refs: z.array(z.string().min(1).max(512)).min(1).max(32),
   events: z.array(z.string().min(1).max(128)).min(1).max(16),
-  environments: z.array(z.string().min(1).max(255)).min(1).max(16),
   requireRefProtected: z.boolean(),
   allowedRunnerPeerIds: z.array(z.uuid()).min(1).max(64),
   targetMachineCodes: z.array(z.string().min(1).max(64)).min(1).max(64),
@@ -210,7 +211,10 @@ export async function validateGithubActionsOidcToken(
   if (claims.repository_id !== policy.data.repositoryId) {
     throw new GithubActionsOidcValidationError("repository");
   }
-  validateWorkflowIdentity(claims, policy.data.workflowIdentity);
+  const workflowIdentity = findMatchingWorkflowIdentity(
+    claims,
+    policy.data.workflowIdentities,
+  );
   if (!policy.data.refs.includes(claims.ref)) {
     throw new GithubActionsOidcValidationError("ref");
   }
@@ -220,15 +224,11 @@ export async function validateGithubActionsOidcToken(
   if (!policy.data.events.includes(claims.event_name)) {
     throw new GithubActionsOidcValidationError("event");
   }
-  if (!policy.data.environments.includes(claims.environment)) {
-    throw new GithubActionsOidcValidationError("environment");
-  }
-
   return {
     issuer: claims.iss,
     repositoryId: claims.repository_id,
     workflow: claims.workflow,
-    claimModel: policy.data.workflowIdentity.claimModel,
+    claimModel: workflowIdentity.claimModel,
     workflowRef: claims.workflow_ref,
     workflowSha: claims.workflow_sha,
     ...(claims.job_workflow_ref
@@ -250,6 +250,26 @@ export async function validateGithubActionsOidcToken(
   };
 }
 
+function findMatchingWorkflowIdentity(
+  claims: z.infer<typeof githubActionsOidcClaimsSchema>,
+  workflowIdentities: z.infer<typeof githubOidcWorkflowIdentitySchema>[],
+): z.infer<typeof githubOidcWorkflowIdentitySchema> {
+  let firstFailure: GithubActionsOidcValidationError | undefined;
+  for (const workflowIdentity of workflowIdentities) {
+    try {
+      validateWorkflowIdentity(claims, workflowIdentity);
+      return workflowIdentity;
+    } catch (error) {
+      if (error instanceof GithubActionsOidcValidationError) {
+        firstFailure ??= error;
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw firstFailure ?? new GithubActionsOidcValidationError("workflow_ref");
+}
+
 function validateWorkflowIdentity(
   claims: z.infer<typeof githubActionsOidcClaimsSchema>,
   policy: z.infer<typeof githubOidcWorkflowIdentitySchema>,
@@ -265,6 +285,9 @@ function validateWorkflowIdentity(
     !policy.allowedWorkflowShas.includes(claims.workflow_sha)
   ) {
     throw new GithubActionsOidcValidationError("workflow_sha");
+  }
+  if (!policy.allowedEnvironments.includes(claims.environment)) {
+    throw new GithubActionsOidcValidationError("environment");
   }
   if (policy.claimModel === "direct") {
     if (claims.job_workflow_ref || claims.job_workflow_sha) {
