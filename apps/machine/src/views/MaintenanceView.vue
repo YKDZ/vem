@@ -1597,7 +1597,7 @@ async function submitStockMovement(): Promise<void> {
             {{ operatorMessageLabel(role.message) }}
           </p>
           <div
-            v-if="role.ambiguous"
+            v-if="role.ambiguityKind === 'duplicate_observation'"
             class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200/20 bg-amber-500/10 p-3"
           >
             <p class="text-sm font-semibold text-amber-100">

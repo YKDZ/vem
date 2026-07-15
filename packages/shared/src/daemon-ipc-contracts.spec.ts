@@ -45,6 +45,7 @@ describe("Daemon IPC Contract Area", () => {
           code: "DEVICE_BINDING_SELECTION_REQUIRED",
           message: "operator selection required",
           ambiguous: true,
+          ambiguityKind: "candidate_selection",
           ambiguityPorts: ["COM5", "COM9"],
           legacyPortHint: "COM5",
           candidates: [
@@ -62,6 +63,20 @@ describe("Daemon IPC Contract Area", () => {
               readinessCode: "ROLE_TEST_REQUIRED",
               readinessMessage: "test required",
             },
+            {
+              identity: {
+                identityKey: "container:22222222-3333-4444-5555-666666666666",
+                instanceId: "USB\\SCANNER-1",
+                containerId: "22222222-3333-4444-5555-666666666666",
+                hardwareIds: ["USB\\VID_1234&PID_5678"],
+                serialNumber: "SCANNER-1",
+              },
+              currentPort: "COM3",
+              friendlyName: "scanner",
+              readiness: "candidate",
+              readinessCode: "ROLE_TEST_REQUIRED",
+              readinessMessage: "test required",
+            },
           ],
           discoveryDiagnostics: [],
         },
@@ -73,6 +88,7 @@ describe("Daemon IPC Contract Area", () => {
           code: "DEVICE_BINDING_REQUIRED",
           message: "binding required",
           ambiguous: false,
+          ambiguityKind: null,
           ambiguityPorts: [],
           legacyPortHint: "COM3",
           candidates: [],
@@ -101,6 +117,66 @@ describe("Daemon IPC Contract Area", () => {
             ],
           },
           snapshot.roles[1],
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("keeps candidate selection distinct from duplicate observations", () => {
+    const candidate = {
+      identity: {
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
+        instanceId: "USB\\CONTROLLER-1",
+        containerId: "11111111-2222-3333-4444-555555555555",
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: null,
+      },
+      currentPort: "COM5",
+      friendlyName: "lower controller",
+      readiness: "candidate" as const,
+      readinessCode: "ROLE_TEST_REQUIRED",
+      readinessMessage: "test required",
+    };
+    const base = {
+      role: "lower_controller" as const,
+      binding: null,
+      currentPort: null,
+      ready: false,
+      message: "operator action required",
+      legacyPortHint: "COM5",
+      discoveryDiagnostics: [],
+    };
+
+    expect(() =>
+      daemonIpcDeviceBindingSnapshotSchema.parse({
+        roles: [
+          {
+            ...base,
+            code: "DEVICE_BINDING_AMBIGUOUS",
+            ambiguous: true,
+            ambiguityKind: "candidate_selection",
+            ambiguityPorts: ["COM5", "COM9"],
+            candidates: [
+              candidate,
+              {
+                ...candidate,
+                identity: {
+                  ...candidate.identity,
+                  identityKey: "container:22222222-3333-4444-5555-666666666666",
+                },
+                currentPort: "COM9",
+              },
+            ],
+          },
+          {
+            ...base,
+            role: "scanner",
+            code: "DEVICE_BINDING_REQUIRED",
+            ambiguous: false,
+            ambiguityKind: null,
+            ambiguityPorts: [],
+            candidates: [],
+          },
         ],
       }),
     ).toThrow();

@@ -31,3 +31,16 @@ fn scanner_framer_drops_control_chars_and_debounces_duplicates() {
     assert!(framer.push_bytes(b"621234567890123456\n", 2_000).is_empty());
     assert_eq!(framer.push_bytes(b"621234567890123456\n", 3_000).len(), 1);
 }
+
+#[test]
+fn scanner_framer_rejects_oversized_frame_without_emitting_a_truncated_code() {
+    let mut framer = ScannerFramer::new(ScannerFrameSuffix::Lf);
+    let mut oversized = vec![b'1'; 257];
+    oversized.push(b'\n');
+
+    assert!(framer.push_bytes(&oversized, 1_000).is_empty());
+    assert_eq!(
+        framer.push_bytes(b"621234567890123456\n", 2_000)[0].auth_code,
+        "621234567890123456"
+    );
+}

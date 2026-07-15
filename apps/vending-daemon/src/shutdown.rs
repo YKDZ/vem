@@ -1116,6 +1116,7 @@ mod tests {
             &self,
             role: crate::device_binding::LocalDeviceRole,
             candidate: &crate::device_binding::ObservedSerialDevice,
+            _probe_config: &crate::device_binding::SerialDeviceRoleProbeConfig,
         ) -> crate::device_binding::DeviceBindingTestResult {
             crate::device_binding::DeviceBindingTestResult {
                 role,

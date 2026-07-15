@@ -59,6 +59,13 @@ pub enum DeviceCandidateReadiness {
     Blocked,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceBindingAmbiguityKind {
+    CandidateSelection,
+    DuplicateObservation,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceBindingCandidate {
@@ -97,6 +104,7 @@ pub struct DeviceRoleBindingSnapshot {
     pub code: String,
     pub message: String,
     pub ambiguous: bool,
+    pub ambiguity_kind: Option<DeviceBindingAmbiguityKind>,
     pub ambiguity_ports: Vec<String>,
     pub legacy_port_hint: Option<String>,
     pub candidates: Vec<DeviceBindingCandidate>,
@@ -115,6 +123,30 @@ pub struct DeviceBindingTestResult {
     pub tested_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SerialDeviceRoleProbeConfig {
+    pub scanner_baud_rate: u32,
+    pub scanner_frame_suffix: vending_core::scanner::ScannerFrameSuffix,
+}
+
+impl Default for SerialDeviceRoleProbeConfig {
+    fn default() -> Self {
+        Self {
+            scanner_baud_rate: 9_600,
+            scanner_frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+        }
+    }
+}
+
+impl From<&crate::config::MachinePublicConfig> for SerialDeviceRoleProbeConfig {
+    fn from(config: &crate::config::MachinePublicConfig) -> Self {
+        Self {
+            scanner_baud_rate: config.scanner_baud_rate,
+            scanner_frame_suffix: config.scanner_frame_suffix,
+        }
+    }
+}
+
 #[async_trait]
 pub trait SerialDevicePlatform: Send + Sync {
     async fn discover(&self) -> Result<Vec<ObservedSerialDevice>, String>;
@@ -123,6 +155,7 @@ pub trait SerialDevicePlatform: Send + Sync {
         &self,
         role: LocalDeviceRole,
         candidate: &ObservedSerialDevice,
+        probe_config: &SerialDeviceRoleProbeConfig,
     ) -> DeviceBindingTestResult;
 }
 
@@ -163,6 +196,7 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
         &self,
         role: LocalDeviceRole,
         candidate: &ObservedSerialDevice,
+        probe_config: &SerialDeviceRoleProbeConfig,
     ) -> DeviceBindingTestResult {
         let tested_at = crate::state::store::now_iso();
         let stable_identity = StableSerialDeviceIdentity::try_from_observation(candidate);
@@ -194,11 +228,15 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
                 LocalDeviceRole::Scanner => {
                     use tokio::io::AsyncReadExt as _;
                     use tokio_serial::SerialPortBuilderExt as _;
-                    match tokio_serial::new(&candidate.current_port, 9_600).open_native_async() {
+                    match tokio_serial::new(&candidate.current_port, probe_config.scanner_baud_rate)
+                        .open_native_async()
+                    {
                         Ok(mut port) => {
                             let probe =
                                 tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                                    let mut frame = Vec::with_capacity(64);
+                                    let mut framer = vending_core::scanner::ScannerFramer::new(
+                                        probe_config.scanner_frame_suffix,
+                                    );
                                     let mut chunk = [0_u8; 64];
                                     loop {
                                         let read =
@@ -211,17 +249,14 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
                                             tokio::task::yield_now().await;
                                             continue;
                                         }
-                                        for byte in &chunk[..read] {
-                                            if matches!(byte, b'\r' | b'\n') {
-                                                if is_scanner_protocol_frame(&frame) {
-                                                    return Ok(());
-                                                }
-                                                frame.clear();
-                                            } else if frame.len() < 256 {
-                                                frame.push(*byte);
-                                            } else {
-                                                frame.clear();
-                                            }
+                                        if !framer
+                                            .push_bytes(
+                                                &chunk[..read],
+                                                crate::state::store::now_millis(),
+                                            )
+                                            .is_empty()
+                                        {
+                                            return Ok(());
                                         }
                                     }
                                 })
@@ -264,10 +299,6 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
             tested_at,
         }
     }
-}
-
-fn is_scanner_protocol_frame(frame: &[u8]) -> bool {
-    (4..=256).contains(&frame.len()) && frame.iter().all(u8::is_ascii_graphic)
 }
 
 const WINDOWS_SERIAL_DISCOVERY_SCRIPT: &str = r#"
@@ -505,6 +536,21 @@ pub fn project_role_binding(
             }),
         }
     }
+    let mut identity_observation_counts = std::collections::HashMap::new();
+    for candidate in &candidates {
+        *identity_observation_counts
+            .entry(candidate.identity.identity_key.as_str())
+            .or_insert(0_usize) += 1;
+    }
+    let duplicate_observation_ports = candidates
+        .iter()
+        .filter(|candidate| {
+            identity_observation_counts
+                .get(candidate.identity.identity_key.as_str())
+                .is_some_and(|count| *count > 1)
+        })
+        .map(|candidate| candidate.current_port.clone())
+        .collect::<Vec<_>>();
 
     let (current_port, ready, code, message, ambiguous, ambiguity_ports) =
         match binding.as_ref() {
@@ -568,6 +614,17 @@ pub fn project_role_binding(
                     ports,
                 ),
             },
+            None if !duplicate_observation_ports.is_empty() => (
+                None,
+                false,
+                "DEVICE_BINDING_AMBIGUOUS".to_string(),
+                format!(
+                    "{} discovery returned duplicate observations for the same stable identity",
+                    role.as_str()
+                ),
+                true,
+                duplicate_observation_ports,
+            ),
             None if candidates.len() > 1 => (
                 None,
                 false,
@@ -592,6 +649,12 @@ pub fn project_role_binding(
             ),
         };
 
+    let ambiguity_kind = match code.as_str() {
+        "DEVICE_BINDING_SELECTION_REQUIRED" => Some(DeviceBindingAmbiguityKind::CandidateSelection),
+        "DEVICE_BINDING_AMBIGUOUS" => Some(DeviceBindingAmbiguityKind::DuplicateObservation),
+        _ => None,
+    };
+
     DeviceRoleBindingSnapshot {
         role,
         binding,
@@ -600,6 +663,7 @@ pub fn project_role_binding(
         code,
         message,
         ambiguous,
+        ambiguity_kind,
         ambiguity_ports,
         legacy_port_hint,
         candidates,
@@ -643,9 +707,12 @@ mod tests {
 
     #[tokio::test]
     #[cfg(unix)]
-    async fn scanner_candidate_open_without_a_protocol_frame_is_not_ready() {
+    async fn scanner_candidate_rejects_an_oversized_protocol_frame() {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+
         use nix::fcntl::OFlag;
         use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+        use tokio::io::AsyncWriteExt as _;
 
         let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
         grantpt(&master).expect("grant pty");
@@ -658,9 +725,27 @@ mod tests {
             serial_number: Some("SCANNER-1".to_string()),
             friendly_name: Some("USB scanner".to_string()),
         };
+        let fd = master.into_raw_fd();
+        // SAFETY: ownership of the freshly extracted PTY file descriptor is transferred once.
+        let mut master = tokio::fs::File::from_std(unsafe { std::fs::File::from_raw_fd(fd) });
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let mut oversized = vec![b'1'; vending_core::scanner::SCANNER_MAX_FRAME_BYTES + 1];
+            oversized.extend_from_slice(b"\r\n");
+            master
+                .write_all(&oversized)
+                .await
+                .expect("write oversized scanner frame");
+            master.flush().await.expect("flush scanner frame");
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        });
 
         let result = WindowsSerialDevicePlatform
-            .test_candidate(LocalDeviceRole::Scanner, &candidate)
+            .test_candidate(
+                LocalDeviceRole::Scanner,
+                &candidate,
+                &SerialDeviceRoleProbeConfig::default(),
+            )
             .await;
 
         assert!(!result.success);
@@ -701,7 +786,111 @@ mod tests {
         });
 
         let result = WindowsSerialDevicePlatform
-            .test_candidate(LocalDeviceRole::Scanner, &candidate)
+            .test_candidate(
+                LocalDeviceRole::Scanner,
+                &candidate,
+                &SerialDeviceRoleProbeConfig::default(),
+            )
+            .await;
+
+        assert!(result.success, "unexpected probe failure: {result:?}");
+        assert_eq!(result.code, "SCANNER_PROTOCOL_FRAME_READY");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn scanner_candidate_probe_supports_lf_and_cr_production_suffixes() {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+        use tokio::io::AsyncWriteExt as _;
+
+        for (suffix, bytes) in [
+            (
+                vending_core::scanner::ScannerFrameSuffix::Lf,
+                b"6901234567892\n".as_slice(),
+            ),
+            (
+                vending_core::scanner::ScannerFrameSuffix::Cr,
+                b"6901234567892\r".as_slice(),
+            ),
+        ] {
+            let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+            grantpt(&master).expect("grant pty");
+            unlockpt(&master).expect("unlock pty");
+            let candidate = ObservedSerialDevice {
+                current_port: ptsname_r(&master).expect("slave path"),
+                instance_id: Some("USB\\VID_1234&PID_5678\\SCANNER-SUFFIX".to_string()),
+                container_id: Some("{dddddddd-eeee-ffff-1111-222222222222}".to_string()),
+                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                serial_number: Some("SCANNER-SUFFIX".to_string()),
+                friendly_name: Some("USB scanner".to_string()),
+            };
+            let fd = master.into_raw_fd();
+            // SAFETY: ownership of the freshly extracted PTY file descriptor is transferred once.
+            let mut master = tokio::fs::File::from_std(unsafe { std::fs::File::from_raw_fd(fd) });
+            let bytes = bytes.to_vec();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                master.write_all(&bytes).await.expect("write scanner frame");
+                master.flush().await.expect("flush scanner frame");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            });
+            let result = WindowsSerialDevicePlatform
+                .test_candidate(
+                    LocalDeviceRole::Scanner,
+                    &candidate,
+                    &SerialDeviceRoleProbeConfig {
+                        scanner_baud_rate: 115_200,
+                        scanner_frame_suffix: suffix,
+                    },
+                )
+                .await;
+
+            assert!(result.success, "suffix {suffix:?}: {result:?}");
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn scanner_candidate_none_suffix_completes_at_the_production_read_boundary() {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+        use tokio::io::AsyncWriteExt as _;
+
+        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+        grantpt(&master).expect("grant pty");
+        unlockpt(&master).expect("unlock pty");
+        let candidate = ObservedSerialDevice {
+            current_port: ptsname_r(&master).expect("slave path"),
+            instance_id: Some("USB\\VID_1234&PID_5678\\SCANNER-NONE".to_string()),
+            container_id: Some("{cccccccc-dddd-eeee-ffff-111111111111}".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SCANNER-NONE".to_string()),
+            friendly_name: Some("USB scanner".to_string()),
+        };
+        let fd = master.into_raw_fd();
+        // SAFETY: ownership of the freshly extracted PTY file descriptor is transferred once.
+        let mut master = tokio::fs::File::from_std(unsafe { std::fs::File::from_raw_fd(fd) });
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            master
+                .write_all(b"6901234567892")
+                .await
+                .expect("write scanner frame without delimiter");
+            master.flush().await.expect("flush scanner frame");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        });
+        let probe_config = SerialDeviceRoleProbeConfig {
+            scanner_baud_rate: 115_200,
+            scanner_frame_suffix: vending_core::scanner::ScannerFrameSuffix::None,
+        };
+
+        let result = WindowsSerialDevicePlatform
+            .test_candidate(LocalDeviceRole::Scanner, &candidate, &probe_config)
             .await;
 
         assert!(result.success, "unexpected probe failure: {result:?}");

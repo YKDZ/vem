@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const PAYMENT_CODE_SOURCE_SERIAL_TEXT: &str = "serial_text";
+pub const SCANNER_MAX_FRAME_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +44,7 @@ pub struct PublicScannerEvent {
 pub struct ScannerFramer {
     suffix: ScannerFrameSuffix,
     frame: Vec<u8>,
+    overflowed: bool,
     last_code: String,
     last_at_ms: u128,
 }
@@ -58,6 +60,7 @@ impl ScannerFramer {
         Self {
             suffix,
             frame: Vec::new(),
+            overflowed: false,
             last_code: String::new(),
             last_at_ms: 0,
         }
@@ -75,7 +78,13 @@ impl ScannerFramer {
                 }
                 ScannerFrameSuffix::Crlf if *byte == b'\r' => {}
                 ScannerFrameSuffix::None if byte.is_ascii_control() => {}
-                _ if !byte.is_ascii_control() => self.frame.push(*byte),
+                _ if !byte.is_ascii_control()
+                    && !self.overflowed
+                    && self.frame.len() < SCANNER_MAX_FRAME_BYTES =>
+                {
+                    self.frame.push(*byte)
+                }
+                _ if !byte.is_ascii_control() => self.overflowed = true,
                 _ => {}
             }
         }
@@ -86,6 +95,11 @@ impl ScannerFramer {
     }
 
     fn flush(&mut self, now_ms: u128, out: &mut Vec<RawPaymentCode>) {
+        if self.overflowed {
+            self.frame.clear();
+            self.overflowed = false;
+            return;
+        }
         let code = String::from_utf8_lossy(&self.frame).trim().to_string();
         self.frame.clear();
         if code.is_empty() {

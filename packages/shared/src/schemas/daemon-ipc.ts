@@ -161,12 +161,56 @@ export const daemonIpcDeviceRoleBindingSnapshotSchema = z
     code: z.string(),
     message: z.string(),
     ambiguous: z.boolean(),
+    ambiguityKind: z
+      .enum(["candidate_selection", "duplicate_observation"])
+      .nullable(),
     ambiguityPorts: z.array(z.string()),
     legacyPortHint: z.string().nullable(),
     candidates: z.array(daemonIpcDeviceBindingCandidateSchema),
     discoveryDiagnostics: z.array(daemonIpcDeviceDiscoveryDiagnosticSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((role, context) => {
+    const identities = role.candidates.map(
+      (candidate) => candidate.identity.identityKey,
+    );
+    const uniqueIdentities = new Set(identities);
+    const invalid = (message: string) => {
+      context.addIssue({ code: "custom", path: ["ambiguityKind"], message });
+    };
+
+    if (role.ambiguityKind === "candidate_selection") {
+      if (
+        !role.ambiguous ||
+        role.code !== "DEVICE_BINDING_SELECTION_REQUIRED" ||
+        uniqueIdentities.size < 2 ||
+        uniqueIdentities.size !== identities.length
+      ) {
+        invalid(
+          "candidate_selection requires multiple distinct stable identities and DEVICE_BINDING_SELECTION_REQUIRED",
+        );
+      }
+    } else if (role.ambiguityKind === "duplicate_observation") {
+      if (
+        !role.ambiguous ||
+        role.code !== "DEVICE_BINDING_AMBIGUOUS" ||
+        identities.length < 2 ||
+        uniqueIdentities.size === identities.length
+      ) {
+        invalid(
+          "duplicate_observation requires repeated stable identity observations and DEVICE_BINDING_AMBIGUOUS",
+        );
+      }
+    } else if (
+      role.ambiguous ||
+      [
+        "DEVICE_BINDING_SELECTION_REQUIRED",
+        "DEVICE_BINDING_AMBIGUOUS",
+      ].includes(role.code)
+    ) {
+      invalid("non-ambiguous binding state requires a null ambiguityKind");
+    }
+  });
 
 export const daemonIpcDeviceBindingSnapshotSchema = z
   .object({

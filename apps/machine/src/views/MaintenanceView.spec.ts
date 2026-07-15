@@ -3,9 +3,11 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-import type { ConfigSummary } from "@/daemon/schemas";
-
 import { DaemonUnavailableError } from "@/daemon/client";
+import {
+  deviceBindingSnapshotSchema,
+  type ConfigSummary,
+} from "@/daemon/schemas";
 
 const {
   routeMock,
@@ -344,50 +346,69 @@ beforeEach(() => {
     message: "scanner ready",
     updatedAt: "2026-06-05T00:00:00.000Z",
   });
-  getDeviceBindingsMock.mockResolvedValue({
-    roles: [
-      {
-        role: "lower_controller",
-        binding: null,
-        currentPort: null,
-        ready: false,
-        code: "DEVICE_BINDING_SELECTION_REQUIRED",
-        message: "select lower controller",
-        ambiguous: false,
-        ambiguityPorts: [],
-        legacyPortHint: "COM5",
-        candidates: [
-          {
-            identity: {
-              identityKey: "container:11111111-2222-3333-4444-555555555555",
-              instanceId: "USB\\CONTROLLER-1",
-              containerId: "11111111-2222-3333-4444-555555555555",
-              hardwareIds: ["USB\\VID_1A86&PID_55D3"],
-              serialNumber: null,
+  getDeviceBindingsMock.mockResolvedValue(
+    deviceBindingSnapshotSchema.parse({
+      roles: [
+        {
+          role: "lower_controller",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_SELECTION_REQUIRED",
+          message: "select lower controller",
+          ambiguous: true,
+          ambiguityKind: "candidate_selection",
+          ambiguityPorts: ["COM5", "COM3"],
+          legacyPortHint: "COM5",
+          candidates: [
+            {
+              identity: {
+                identityKey: "container:11111111-2222-3333-4444-555555555555",
+                instanceId: "USB\\CONTROLLER-1",
+                containerId: "11111111-2222-3333-4444-555555555555",
+                hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+                serialNumber: null,
+              },
+              currentPort: "COM5",
+              friendlyName: "下位机串口",
+              readiness: "candidate",
+              readinessCode: "ROLE_TEST_REQUIRED",
+              readinessMessage: "test required",
             },
-            currentPort: "COM5",
-            friendlyName: "下位机串口",
-            readiness: "candidate",
-            readinessCode: "ROLE_TEST_REQUIRED",
-            readinessMessage: "test required",
-          },
-        ],
-      },
-      {
-        role: "scanner",
-        binding: null,
-        currentPort: null,
-        ready: false,
-        code: "DEVICE_BINDING_REQUIRED",
-        message: "select scanner",
-        ambiguous: false,
-        ambiguityPorts: [],
-        legacyPortHint: "COM3",
-        candidates: [],
-        discoveryDiagnostics: [],
-      },
-    ],
-  });
+            {
+              identity: {
+                identityKey: "container:22222222-3333-4444-5555-666666666666",
+                instanceId: "USB\\VID_1234&PID_5678\\SCANNER-1",
+                containerId: "22222222-3333-4444-5555-666666666666",
+                hardwareIds: ["USB\\VID_1234&PID_5678"],
+                serialNumber: "SCANNER-1",
+              },
+              currentPort: "COM3",
+              friendlyName: "扫码器串口",
+              readiness: "candidate",
+              readinessCode: "ROLE_TEST_REQUIRED",
+              readinessMessage: "test required",
+            },
+          ],
+          discoveryDiagnostics: [],
+        },
+        {
+          role: "scanner",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_REQUIRED",
+          message: "select scanner",
+          ambiguous: false,
+          ambiguityKind: null,
+          ambiguityPorts: [],
+          legacyPortHint: "COM3",
+          candidates: [],
+          discoveryDiagnostics: [],
+        },
+      ],
+    }),
+  );
   testDeviceBindingMock.mockResolvedValue({
     role: "lower_controller",
     identityKey: "container:11111111-2222-3333-4444-555555555555",
@@ -724,6 +745,7 @@ describe("MaintenanceView hardware config", () => {
           code: "DEVICE_BINDING_AMBIGUOUS",
           message: "same identity observed more than once",
           ambiguous: true,
+          ambiguityKind: "duplicate_observation",
           ambiguityPorts: ["COM5", "COM5"],
           legacyPortHint: "COM5",
           candidates: [duplicateCandidate, { ...duplicateCandidate }],
