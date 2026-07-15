@@ -122,6 +122,25 @@ function mockUpdateSetCapture(
   });
 }
 
+function mockRefundWebhookSelect(
+  db: ReturnType<typeof makeDb>,
+  row: Record<string, unknown>,
+) {
+  db.select.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([row]),
+            }),
+          }),
+        }),
+      }),
+    }),
+  });
+}
+
 describe("RefundsService.requestFullRefund", () => {
   it("succeeded refund: updates refund.status=succeeded, payment.status=refunded, order.status=refunded", async () => {
     const db = makeDb();
@@ -911,6 +930,114 @@ describe("RefundsService partial refund terminal states", () => {
     expect(updateSets).not.toContainEqual(
       expect.objectContaining({ paymentState: "refunded" }),
     );
+  });
+});
+
+describe("RefundsService.applyProviderRefundWebhook", () => {
+  function makeWebhookRow(providerConfigId: string | null) {
+    return {
+      refundId: "rfd-001",
+      refundNo: "RFD001",
+      status: "processing",
+      paymentId: "pay-001",
+      orderId: "ord-001",
+      providerId: "provider-001",
+      providerConfigId,
+      providerRefundNo: "WX-RFD001",
+      reason: "admin_refund",
+      fulfillmentState: "manual_handling",
+      isDrill: false,
+      paymentIsDrill: false,
+      orderIsDrill: false,
+    };
+  }
+
+  it.each([
+    ["current", "cfg-current"],
+    ["historical", "cfg-historical"],
+  ])(
+    "accepts a %s payment configuration binding",
+    async (_kind, providerConfigId) => {
+      const db = makeDb();
+      mockRefundWebhookSelect(db, makeWebhookRow(providerConfigId));
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "event-1" }]),
+          }),
+        }),
+      });
+      mockUpdateSetCapture(db, []);
+      const service = makeService({ db });
+
+      await expect(
+        service.applyProviderRefundWebhook({
+          providerCode: "wechat_pay",
+          refundNo: "RFD001",
+          providerRefundNo: "WX-RFD001",
+          paymentNo: "PAY_WX_001",
+          providerEventId: `wechat-${providerConfigId}`,
+          eventType: "wechat_pay.refund",
+          refundStatus: "processing",
+          rawPayload: {},
+          signatureValid: true,
+          matchedConfigId: providerConfigId,
+        }),
+      ).resolves.toMatchObject({ handled: true, refundId: "rfd-001" });
+    },
+  );
+
+  it("fails closed when a bound WeChat refund has no matched config", async () => {
+    const db = makeDb();
+    mockRefundWebhookSelect(db, makeWebhookRow("cfg-bound"));
+    const service = makeService({ db });
+
+    await expect(
+      service.applyProviderRefundWebhook({
+        providerCode: "wechat_pay",
+        refundNo: "RFD001",
+        providerRefundNo: "WX-RFD001",
+        paymentNo: "PAY_WX_001",
+        providerEventId: "wechat-no-config",
+        eventType: "wechat_pay.refund",
+        refundStatus: "succeeded",
+        rawPayload: {},
+        signatureValid: true,
+      }),
+    ).resolves.toEqual({
+      handled: false,
+      reason: "refund_config_binding_mismatch",
+    });
+
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects an Alipay refund verified by a different payment config binding", async () => {
+    const db = makeDb();
+    mockRefundWebhookSelect(db, makeWebhookRow("cfg-alipay-bound"));
+    const service = makeService({ db });
+
+    await expect(
+      service.applyProviderRefundWebhook({
+        providerCode: "alipay",
+        refundNo: "RFD001",
+        providerRefundNo: "ALI-RFD001",
+        paymentNo: "PAY_ALI_001",
+        providerEventId: "alipay-wrong-config",
+        eventType: "alipay.refund",
+        refundStatus: "succeeded",
+        rawPayload: {},
+        signatureValid: true,
+        matchedConfigId: "cfg-alipay-rotated",
+      }),
+    ).resolves.toEqual({
+      handled: false,
+      reason: "refund_config_binding_mismatch",
+    });
+
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 });
 

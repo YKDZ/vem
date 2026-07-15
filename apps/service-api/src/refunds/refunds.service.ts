@@ -1413,6 +1413,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
     refundStatus: "processing" | "succeeded" | "failed" | "canceled" | null;
     rawPayload: Record<string, unknown>;
     signatureValid: boolean;
+    matchedConfigId?: string | null;
   }): Promise<{
     handled: boolean;
     duplicate?: boolean;
@@ -1442,6 +1443,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         paymentId: refunds.paymentId,
         orderId: refunds.orderId,
         providerId: paymentProviders.id,
+        providerConfigId: payments.paymentProviderConfigId,
         providerRefundNo: refunds.providerRefundNo,
         reason: refunds.reason,
         fulfillmentState: orders.fulfillmentState,
@@ -1459,6 +1461,16 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
     if (!row) return { handled: false, reason: "refund_not_found" };
     if (row.isDrill || row.paymentIsDrill || row.orderIsDrill) {
       return { handled: false, reason: "protected_payment_drill" };
+    }
+
+    // A provider webhook is verified by one merchant configuration. It must
+    // match the immutable configuration binding captured for this payment.
+    if (
+      row.providerConfigId === null ||
+      (row.providerConfigId !== undefined &&
+        input.matchedConfigId !== row.providerConfigId)
+    ) {
+      return { handled: false, reason: "refund_config_binding_mismatch" };
     }
 
     const eventStatus =

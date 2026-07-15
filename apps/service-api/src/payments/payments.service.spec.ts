@@ -1558,7 +1558,15 @@ describe("PaymentsService", () => {
       });
     });
 
-    it("passes webhook candidate configs that can include payment-time bindings", async () => {
+    it("passes a historically matched config from a refund webhook to RefundsService", async () => {
+      const currentConfig = {
+        id: "cfg-current",
+        providerCode: "wechat_pay",
+        merchantNo: "MCH-CURRENT",
+        appId: "APP-CURRENT",
+        publicConfigJson: {},
+        sensitiveConfigJson: { apiV3Key: "current-secret" },
+      };
       const oldBoundConfig = {
         id: "cfg-old-bound",
         providerCode: "wechat_pay",
@@ -1568,13 +1576,20 @@ describe("PaymentsService", () => {
         sensitiveConfigJson: { apiV3Key: "old-secret" },
       };
       const handleWebhook = vi.fn().mockResolvedValue({
-        paymentNo: null,
-        eventType: "wechat_pay.webhook",
+        eventKind: "refund",
+        refundNo: "RFD001",
+        providerRefundNo: "WX-RFD001",
+        paymentNo: "PAY_WX_001",
+        refundStatus: "succeeded",
+        eventType: "wechat_pay.refund",
         providerEventId: "WX_EVT_OLD",
         signatureValid: true,
-        paymentStatus: "succeeded",
         rawPayload: {},
+        matchedConfigId: oldBoundConfig.id,
       });
+      const applyProviderRefundWebhook = vi
+        .fn()
+        .mockResolvedValue({ handled: true });
       const service = makeService({
         registry: {
           get: vi.fn().mockReturnValue({ handleWebhook }),
@@ -1582,15 +1597,24 @@ describe("PaymentsService", () => {
         configService: {
           listWebhookCandidateConfigsForProvider: vi
             .fn()
-            .mockResolvedValue([oldBoundConfig]),
+            .mockResolvedValue([currentConfig, oldBoundConfig]),
         },
+        refundsService: { applyProviderRefundWebhook },
       });
 
       await service.handleProviderWebhook("wechat_pay", {}, {}, "");
 
       expect(handleWebhook).toHaveBeenCalledWith(
         expect.objectContaining({
-          candidateConfigs: [oldBoundConfig],
+          candidateConfigs: [currentConfig, oldBoundConfig],
+        }),
+      );
+      expect(applyProviderRefundWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerCode: "wechat_pay",
+          refundNo: "RFD001",
+          paymentNo: "PAY_WX_001",
+          matchedConfigId: "cfg-old-bound",
         }),
       );
     });

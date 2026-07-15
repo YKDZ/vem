@@ -2008,6 +2008,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           : null,
       rawPayload: webhook.rawPayload,
       signatureValid: webhook.signatureValid,
+      matchedConfigId: webhook.matchedConfigId,
     });
 
     await this.webhookAttemptRecorder.finish({
