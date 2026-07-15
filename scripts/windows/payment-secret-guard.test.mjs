@@ -19,11 +19,12 @@ function powershellFunction(source, name) {
   return output.join("\n");
 }
 
-function storedZip(name, content, declaredSize = content.length) {
+function storedZip(name, content, declaredSize = content.length, flags = 0) {
   const fileName = Buffer.from(name);
   const local = Buffer.alloc(30);
   local.writeUInt32LE(0x04034b50, 0);
   local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(flags, 6);
   local.writeUInt32LE(content.length, 18);
   local.writeUInt32LE(declaredSize, 22);
   local.writeUInt16LE(fileName.length, 26);
@@ -31,6 +32,7 @@ function storedZip(name, content, declaredSize = content.length) {
   central.writeUInt32LE(0x02014b50, 0);
   central.writeUInt16LE(20, 4);
   central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(flags, 8);
   central.writeUInt32LE(content.length, 20);
   central.writeUInt32LE(declaredSize, 24);
   central.writeUInt16LE(fileName.length, 28);
@@ -58,7 +60,7 @@ async function runGuards(value, artifactBytes = "machine-runtime") {
     await writeFile(artifactPath, artifactBytes);
     await writeFile(
       harnessPath,
-      `${powershellFunction(source, "Assert-NoPlatformPaymentSecrets")}\n${powershellFunction(source, "Assert-NoPlatformPaymentSecretFile")}\n$manifest = Get-Content -LiteralPath '${manifestPath}' -Raw | ConvertFrom-Json\nAssert-NoPlatformPaymentSecrets -Value $manifest -Path manifest\nAssert-NoPlatformPaymentSecretFile -Path '${artifactPath}'\n`,
+      `${powershellFunction(source, "Assert-NoPlatformPaymentSecretBytes")}\n${powershellFunction(source, "Assert-NoPlatformPaymentSecrets")}\n${powershellFunction(source, "Assert-NoPlatformPaymentSecretFile")}\n$manifest = Get-Content -LiteralPath '${manifestPath}' -Raw | ConvertFrom-Json\nAssert-NoPlatformPaymentSecrets -Value $manifest -Path manifest\nAssert-NoPlatformPaymentSecretFile -Path '${artifactPath}'\n`,
       "utf8",
     );
     return spawnSync("pwsh", ["-NoProfile", "-File", harnessPath], {
@@ -112,6 +114,18 @@ describe("managed-update payment secret guard", () => {
     assert.notEqual(derArtifact.status, 0);
     assert.match(derArtifact.stderr, /platform private-key material/i);
 
+    const encryptedDerArtifact = await runGuards(
+      { updateId: "field-encrypted-der", components: [] },
+      privateKey.export({
+        format: "der",
+        type: "pkcs8",
+        cipher: "aes-256-cbc",
+        passphrase: "terra-regression",
+      }),
+    );
+    assert.notEqual(encryptedDerArtifact.status, 0);
+    assert.match(encryptedDerArtifact.stderr, /platform private-key material/i);
+
     const zipArtifact = await runGuards(
       { updateId: "field-zip", components: [] },
       storedZip("nested/private.pem", Buffer.from(privatePem)),
@@ -125,5 +139,38 @@ describe("managed-update payment secret guard", () => {
     );
     assert.notEqual(zipBomb.status, 0);
     assert.match(zipBomb.stderr, /scan budget/i);
+
+    const encryptedZip = await runGuards(
+      { updateId: "field-encrypted-zip", components: [] },
+      storedZip("encrypted.bin", Buffer.from("ciphertext"), 10, 0x01),
+    );
+    assert.notEqual(encryptedZip.status, 0);
+    assert.match(encryptedZip.stderr, /encrypted archive/i);
+  });
+
+  it("scans every recursive manifest string for encoded private-key bytes", async () => {
+    const privatePem =
+      "-----BEGIN PRIVATE KEY-----\nmetadata-bypass\n-----END PRIVATE KEY-----";
+    const result = await runGuards({
+      updateId: "field-metadata",
+      components: [],
+      metadata: {
+        releaseNote: Buffer.from(privatePem).toString("base64"),
+      },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /platform private-key material/i);
+  });
+
+  it("fails closed when recursive base64 decoding exceeds the cumulative budget", async () => {
+    const oneMiBCandidate = Buffer.alloc(1024 * 1024, 0xff).toString("base64");
+    const result = await runGuards(
+      { updateId: "field-base64-budget", components: [] },
+      Array.from({ length: 17 }, () => oneMiBCandidate).join(":"),
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /scan budget/i);
   });
 });

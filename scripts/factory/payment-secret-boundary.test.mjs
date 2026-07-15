@@ -8,17 +8,37 @@ import { describe, it } from "node:test";
 
 import { assertNoPlatformPrivateKeyMaterial } from "../security/platform-private-key-scanner.mjs";
 
-function storedZip(name, content, declaredUncompressedSize = content.length) {
+function storedZip(
+  name,
+  content,
+  declaredUncompressedSize = content.length,
+  flags = 0,
+) {
   const fileName = Buffer.from(name);
   const header = Buffer.alloc(30);
   header.writeUInt32LE(0x04034b50, 0);
   header.writeUInt16LE(20, 4);
-  header.writeUInt16LE(0, 6);
+  header.writeUInt16LE(flags, 6);
   header.writeUInt16LE(0, 8);
   header.writeUInt32LE(content.length, 18);
   header.writeUInt32LE(declaredUncompressedSize, 22);
   header.writeUInt16LE(fileName.length, 26);
-  return Buffer.concat([header, fileName, content]);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(flags, 8);
+  central.writeUInt32LE(content.length, 20);
+  central.writeUInt32LE(declaredUncompressedSize, 24);
+  central.writeUInt16LE(fileName.length, 28);
+  const centralOffset = header.length + fileName.length + content.length;
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + fileName.length, 12);
+  end.writeUInt32LE(centralOffset, 16);
+  return Buffer.concat([header, fileName, content, central, fileName, end]);
 }
 
 describe("Factory runtime payment secret boundary", () => {
@@ -67,10 +87,24 @@ describe("Factory runtime payment secret boundary", () => {
       modulusLength: 2048,
     });
     const privateDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const encryptedPrivateDer = privateKey.export({
+      format: "der",
+      type: "pkcs8",
+      cipher: "aes-256-cbc",
+      passphrase: "terra-regression",
+    });
     const publicDer = publicKey.export({ format: "der", type: "spki" });
 
     assert.throws(
       () => assertNoPlatformPrivateKeyMaterial(privateDer, "private.der"),
+      /private-key material/i,
+    );
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          encryptedPrivateDer,
+          "opaque-runtime-payload.bin",
+        ),
       /private-key material/i,
     );
     assert.doesNotThrow(() =>
@@ -166,6 +200,14 @@ describe("Factory runtime payment secret boundary", () => {
           "oversized.zip",
         ),
       /scan budget/i,
+    );
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          storedZip("encrypted.bin", Buffer.from("ciphertext"), 10, 0x01),
+          "encrypted.zip",
+        ),
+      /encrypted archive/i,
     );
   });
 
