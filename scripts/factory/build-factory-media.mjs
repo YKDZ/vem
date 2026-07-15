@@ -174,9 +174,9 @@ async function assertRuntimeAssetsContainNoPlatformPaymentSecrets(
           asset.sourcePath,
           path,
         );
-      } else {
-        await store.stageVerified(asset.reference, path);
+        continue;
       }
+      await store.stageVerified(asset.reference, path);
       await assertNoPlatformPrivateKeyMaterialFile(path, asset.reference.role);
     }
   } finally {

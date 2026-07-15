@@ -160,6 +160,23 @@ function Assert-NoPlatformPaymentSecretBytes {
     $startsWithLocalHeader =
       $Bytes.Length -ge 4 -and
       [BitConverter]::ToUInt32($Bytes, 0) -eq 0x04034b50
+    $findPriorZipSignature = {
+      param([uint32]$Signature, [int]$Before)
+      $signatureSearchFrom = $Before
+      while ($signatureSearchFrom -ge 0) {
+        $signatureOffset =
+          [Array]::LastIndexOf($Bytes, [byte]0x50, $signatureSearchFrom)
+        if ($signatureOffset -lt 0) { return -1 }
+        if (
+          $signatureOffset + 4 -le $Bytes.Length -and
+          [BitConverter]::ToUInt32($Bytes, $signatureOffset) -eq $Signature
+        ) {
+          return $signatureOffset
+        }
+        $signatureSearchFrom = $signatureOffset - 1
+      }
+      return -1
+    }
     $findRecognizableZipContainer = {
       $searchFrom = $Bytes.Length - 4
       while ($searchFrom -ge 0) {
@@ -181,27 +198,40 @@ function Assert-NoPlatformPaymentSecretBytes {
         $detectedEntries = [BitConverter]::ToUInt16($Bytes, $candidate + 10)
         $detectedCentralSize = [BitConverter]::ToUInt32($Bytes, $candidate + 12)
         $detectedCentralStart = [BitConverter]::ToUInt32($Bytes, $candidate + 16)
-        $detectedPrefixBias =
-          [long]$candidate - $detectedCentralSize - $detectedCentralStart
+        $detectedCentralPhysicalEnd = [long]$candidate
+        $detectedPrefixBias = $null
+        $detectedCentralAbsoluteStart = -1L
         if (
-          $detectedDisk -ne 0 -or
-          $detectedCentralDisk -ne 0 -or
-          $detectedDiskEntries -ne $detectedEntries -or
-          $detectedEntries -eq 0xffff -or
-          $detectedCentralSize -eq 0xffffffff -or
-          $detectedCentralStart -eq 0xffffffff -or
-          $detectedPrefixBias -lt 0
+          $detectedCentralSize -ne 0xffffffff -and
+          $detectedCentralStart -ne 0xffffffff
         ) {
-          continue
+          $candidatePrefixBias =
+            [long]$candidate - $detectedCentralSize - $detectedCentralStart
+          if ($candidatePrefixBias -ge 0) {
+            $detectedPrefixBias = $candidatePrefixBias
+            $detectedCentralAbsoluteStart =
+              $candidatePrefixBias + $detectedCentralStart
+          }
         }
-        $detectedCentralAbsoluteStart =
-          $detectedPrefixBias + $detectedCentralStart
+        if ($detectedCentralAbsoluteStart -lt 0) {
+          $zip64EndOffset =
+            & $findPriorZipSignature 0x06064b50 ($candidate - 1)
+          if ($zip64EndOffset -ge 0) {
+            $detectedCentralPhysicalEnd = $zip64EndOffset
+          }
+          $detectedCentralAbsoluteStart =
+            & $findPriorZipSignature 0x02014b50 ([int]$detectedCentralPhysicalEnd - 1)
+          if ($detectedCentralAbsoluteStart -lt 0) { continue }
+        }
         $detectedCentralOffset = $detectedCentralAbsoluteStart
         $recognizable = $true
-        $entriesToCheck = [Math]::Min($detectedEntries, 257)
-        for ($detectedIndex = 0; $detectedIndex -lt $entriesToCheck; $detectedIndex += 1) {
+        $detectedPhysicalEntries = 0
+        while (
+          $detectedCentralOffset -lt $detectedCentralPhysicalEnd -and
+          $detectedPhysicalEntries -le 256
+        ) {
           if (
-            $detectedCentralOffset + 46 -gt $candidate -or
+            $detectedCentralOffset + 46 -gt $detectedCentralPhysicalEnd -or
             [BitConverter]::ToUInt32($Bytes, [int]$detectedCentralOffset) -ne 0x02014b50
           ) {
             $recognizable = $false
@@ -210,30 +240,55 @@ function Assert-NoPlatformPaymentSecretBytes {
           $detectedNameLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 28)
           $detectedExtraLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 30)
           $detectedCommentLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 32)
-          $detectedEntryDisk = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 34)
           $detectedLocalOffset = [BitConverter]::ToUInt32($Bytes, [int]$detectedCentralOffset + 42)
           $detectedCentralEnd =
             $detectedCentralOffset + 46 + $detectedNameLength +
             $detectedExtraLength + $detectedCommentLength
-          $detectedLocalAbsoluteOffset =
-            $detectedPrefixBias + $detectedLocalOffset
+          $detectedLocalShape = $false
           if (
-            $detectedCentralEnd -gt $candidate -or
-            $detectedEntryDisk -ne 0 -or
-            $detectedLocalOffset -eq 0xffffffff -or
-            $detectedLocalAbsoluteOffset + 30 -gt $detectedCentralAbsoluteStart -or
-            [BitConverter]::ToUInt32($Bytes, [int]$detectedLocalAbsoluteOffset) -ne 0x04034b50
+            $null -ne $detectedPrefixBias -and
+            $detectedLocalOffset -ne 0xffffffff
+          ) {
+            $detectedLocalAbsoluteOffset =
+              $detectedPrefixBias + $detectedLocalOffset
+            $detectedLocalShape =
+              $detectedLocalAbsoluteOffset + 30 -le $detectedCentralAbsoluteStart -and
+              [BitConverter]::ToUInt32($Bytes, [int]$detectedLocalAbsoluteOffset) -eq 0x04034b50
+          }
+          if (-not $detectedLocalShape) {
+            $fallbackLocalOffset =
+              & $findPriorZipSignature 0x04034b50 ([int]$detectedCentralAbsoluteStart - 1)
+            $detectedLocalShape =
+              $fallbackLocalOffset -ge 0 -and
+              $fallbackLocalOffset + 30 -le $detectedCentralAbsoluteStart
+          }
+          if (
+            $detectedCentralEnd -gt $detectedCentralPhysicalEnd -or
+            -not $detectedLocalShape
           ) {
             $recognizable = $false
             break
           }
           $detectedCentralOffset = $detectedCentralEnd
+          $detectedPhysicalEntries += 1
         }
         if (
           $recognizable -and
-          ($detectedEntries -gt 256 -or $detectedCentralOffset -eq $candidate)
+          (
+            $detectedPhysicalEntries -gt 256 -or
+            $detectedCentralOffset -eq $detectedCentralPhysicalEnd
+          )
         ) {
-          return [pscustomobject]@{ archiveEnd = $archiveEnd }
+          return [pscustomobject]@{
+            archiveEnd = $archiveEnd
+            invalidMetadata =
+              $detectedDisk -ne 0 -or
+              $detectedCentralDisk -ne 0 -or
+              $detectedDiskEntries -ne $detectedEntries -or
+              $detectedEntries -eq 0xffff -or
+              $detectedCentralSize -eq 0xffffffff -or
+              $detectedCentralStart -eq 0xffffffff
+          }
         }
       }
       return $null
@@ -241,7 +296,11 @@ function Assert-NoPlatformPaymentSecretBytes {
     $recognizableZipContainer = & $findRecognizableZipContainer
     if (
       $null -ne $recognizableZipContainer -and
-      (-not $startsWithLocalHeader -or $recognizableZipContainer.archiveEnd -ne $Bytes.Length)
+      (
+        $recognizableZipContainer.invalidMetadata -or
+        -not $startsWithLocalHeader -or
+        $recognizableZipContainer.archiveEnd -ne $Bytes.Length
+      )
     ) {
       & $invalidArchive
     }

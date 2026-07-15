@@ -215,6 +215,22 @@ function prefixedZipWithUnadjustedOffsets(content) {
   ]);
 }
 
+function prefixedMultiDiskZip(content) {
+  const archive = prefixedZipWithUnadjustedOffsets(content);
+  const endOffset = archive.length - 22;
+  archive.writeUInt16LE(1, endOffset + 4);
+  archive.writeUInt16LE(1, endOffset + 6);
+  return archive;
+}
+
+function prefixedZip64Sentinel(content) {
+  const archive = prefixedZipWithUnadjustedOffsets(content);
+  const endOffset = archive.length - 22;
+  archive.writeUInt16LE(0xffff, endOffset + 8);
+  archive.writeUInt16LE(0xffff, endOffset + 10);
+  return archive;
+}
+
 async function runGuards(value, artifactBytes = "machine-runtime") {
   const root = await mkdtemp(join(tmpdir(), "vem-payment-secret-guard-"));
   try {
@@ -472,6 +488,24 @@ describe("managed-update payment secret guard", () => {
     );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /invalid archive|private-key material/i);
+  });
+
+  it("rejects a prefixed multidisk-shaped ZIP before trusting disk fields", async () => {
+    const result = await runGuards(
+      { updateId: "field-prefixed-multidisk", components: [] },
+      prefixedMultiDiskZip(Buffer.from("neutral prefixed multidisk payload")),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid archive/i);
+  });
+
+  it("rejects a prefixed ZIP64-shaped archive before trusting sentinel fields", async () => {
+    const result = await runGuards(
+      { updateId: "field-prefixed-zip64", components: [] },
+      prefixedZip64Sentinel(Buffer.from("neutral prefixed ZIP64 payload")),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid archive/i);
   });
 
   it("rejects recognizable ZIP trailing structures without flagging incidental PK bytes", async () => {

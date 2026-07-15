@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { deflateRawSync } from "node:zlib";
 
-import { assertNoPlatformPrivateKeyMaterial } from "../security/platform-private-key-scanner.mjs";
+import {
+  assertNoPlatformPrivateKeyMaterial,
+  assertNoPlatformPrivateKeyMaterialFile,
+} from "../security/platform-private-key-scanner.mjs";
 
 function storedZip(
   name,
@@ -202,6 +205,22 @@ function prefixedZipWithUnadjustedOffsets(content) {
     Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x56, 0x45, 0x4d]),
     deflatedZip("nested/private.pem", content),
   ]);
+}
+
+function prefixedMultiDiskZip(content) {
+  const archive = prefixedZipWithUnadjustedOffsets(content);
+  const endOffset = archive.length - 22;
+  archive.writeUInt16LE(1, endOffset + 4);
+  archive.writeUInt16LE(1, endOffset + 6);
+  return archive;
+}
+
+function prefixedZip64Sentinel(content) {
+  const archive = prefixedZipWithUnadjustedOffsets(content);
+  const endOffset = archive.length - 22;
+  archive.writeUInt16LE(0xffff, endOffset + 8);
+  archive.writeUInt16LE(0xffff, endOffset + 10);
+  return archive;
 }
 
 describe("Factory runtime payment secret boundary", () => {
@@ -498,6 +517,30 @@ describe("Factory runtime payment secret boundary", () => {
     );
   });
 
+  it("rejects a prefixed multidisk-shaped ZIP before trusting disk fields", () => {
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          prefixedMultiDiskZip(
+            Buffer.from("neutral prefixed multidisk payload"),
+          ),
+          "prefixed-multidisk.zip",
+        ),
+      /invalid archive/i,
+    );
+  });
+
+  it("rejects a prefixed ZIP64-shaped archive before trusting sentinel fields", () => {
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          prefixedZip64Sentinel(Buffer.from("neutral prefixed ZIP64 payload")),
+          "prefixed-zip64.zip",
+        ),
+      /invalid archive/i,
+    );
+  });
+
   it("rejects recognizable ZIP trailing structures without flagging incidental PK bytes", () => {
     assert.throws(
       () =>
@@ -534,6 +577,27 @@ describe("Factory runtime payment secret boundary", () => {
     );
   });
 
+  it("fails closed for oversized Vision and machine runtime artifacts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-oversized-runtime-"));
+    const artifact = join(root, "oversized-runtime.bin");
+    try {
+      const handle = await open(artifact, "w");
+      try {
+        await handle.truncate(256 * 1024 * 1024 + 1);
+      } finally {
+        await handle.close();
+      }
+      for (const role of ["vision-release", "vem-machine-ui"]) {
+        await assert.rejects(
+          () => assertNoPlatformPrivateKeyMaterialFile(artifact, role),
+          /input limit/i,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("applies the scanner to every resolved Factory payload including Vision", async () => {
     const source = await readFile(
       "scripts/factory/build-factory-media.mjs",
@@ -546,6 +610,14 @@ describe("Factory runtime payment secret boundary", () => {
       source.indexOf("async function collectImportedModuleInputs"),
     );
     assert.match(boundary, /for \(const asset of resolvedAssets\)/);
+    assert.match(
+      boundary,
+      /if \(asset\.reference\.role === "windows-source-iso"\) \{[\s\S]*stageUncachedVerified[\s\S]*continue;/,
+    );
+    assert.match(
+      boundary,
+      /stageVerified[\s\S]*assertNoPlatformPrivateKeyMaterialFile/,
+    );
     assert.match(boundary, /assertNoPlatformPrivateKeyMaterialFile/);
     assert.doesNotMatch(boundary, /vem-daemon.*vem-machine-ui/s);
   });
