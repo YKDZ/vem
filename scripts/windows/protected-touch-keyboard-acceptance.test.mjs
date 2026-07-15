@@ -1,19 +1,78 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 
+const MACHINE_UI_TARGET = "C:\\VEM\\bringup\\machine.exe";
+const DAEMON_TARGET = "C:\\VEM\\bringup\\vending-daemon.exe";
+const WEBVIEW_SIDECAR_TARGET = "C:\\VEM\\bringup\\WebView2Loader.dll";
+const LIVE_FILE_CONTENTS = {
+  [MACHINE_UI_TARGET]: Buffer.from("machine-ui-live-bytes"),
+  [DAEMON_TARGET]: Buffer.from("daemon-live-bytes"),
+  [WEBVIEW_SIDECAR_TARGET]: Buffer.from("webview-sidecar-live-bytes"),
+};
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+const MACHINE_UI_SHA256 = sha256(LIVE_FILE_CONTENTS[MACHINE_UI_TARGET]);
+const DAEMON_SHA256 = sha256(LIVE_FILE_CONTENTS[DAEMON_TARGET]);
+const WEBVIEW_SIDECAR_SHA256 = sha256(
+  LIVE_FILE_CONTENTS[WEBVIEW_SIDECAR_TARGET],
+);
+
 function validationFixture() {
-  const sha256 = "a".repeat(64);
   const manifestSha256 = "b".repeat(64);
+  const daemonComponent = {
+    component: "daemon",
+    targetPath: DAEMON_TARGET,
+    sha256: DAEMON_SHA256,
+  };
+  const uiComponent = {
+    component: "ui",
+    targetPath: MACHINE_UI_TARGET,
+    sha256: MACHINE_UI_SHA256,
+    sidecars: [
+      {
+        targetPath: WEBVIEW_SIDECAR_TARGET,
+        sha256: WEBVIEW_SIDECAR_SHA256,
+      },
+    ],
+  };
   return {
+    fixtureFiles: [
+      {
+        targetPath: MACHINE_UI_TARGET,
+        relativePath: "live/machine.exe",
+        contentBase64: LIVE_FILE_CONTENTS[MACHINE_UI_TARGET].toString("base64"),
+      },
+      {
+        targetPath: DAEMON_TARGET,
+        relativePath: "live/vending-daemon.exe",
+        contentBase64: LIVE_FILE_CONTENTS[DAEMON_TARGET].toString("base64"),
+      },
+      {
+        targetPath: WEBVIEW_SIDECAR_TARGET,
+        relativePath: "live/WebView2Loader.dll",
+        contentBase64:
+          LIVE_FILE_CONTENTS[WEBVIEW_SIDECAR_TARGET].toString("base64"),
+      },
+    ],
     host: { computerName: "DESKTOP-2STVS5B" },
     artifact: {
-      path: "C:\\VEM\\bringup\\machine.exe",
-      sizeBytes: 123456,
-      sha256,
+      path: MACHINE_UI_TARGET,
+      sizeBytes: LIVE_FILE_CONTENTS[MACHINE_UI_TARGET].length,
+      sha256: MACHINE_UI_SHA256,
     },
     liveRuntime: {
       cdpEndpoint: "http://127.0.0.1:9222",
@@ -37,7 +96,10 @@ function validationFixture() {
     },
     runtimeAcceptance: {
       target: { machineCode: "VEM-TESTBED-WINVM-01" },
-      artifacts: { machineUiSha256: sha256 },
+      artifacts: {
+        daemonSha256: DAEMON_SHA256,
+        machineUiSha256: MACHINE_UI_SHA256,
+      },
       kioskRuntime: {
         webviewRunning: true,
         sessionUser: "VEMKiosk",
@@ -60,13 +122,7 @@ function validationFixture() {
       manifest: {
         updateId: "touch-keyboard-acceptance",
         sourceCommit: "5".repeat(40),
-        components: [
-          {
-            component: "ui",
-            targetPath: "C:\\VEM\\bringup\\machine.exe",
-            sha256,
-          },
-        ],
+        components: [daemonComponent, uiComponent],
       },
       evidence: {
         ok: true,
@@ -78,21 +134,29 @@ function validationFixture() {
           manifestSha256,
           sourceCommit: "5".repeat(40),
           updateId: "touch-keyboard-acceptance",
-          components: [
-            {
-              component: "ui",
-              targetPath: "C:\\VEM\\bringup\\machine.exe",
-              sha256,
-            },
-          ],
+          components: [daemonComponent, uiComponent],
         },
         components: [
           {
-            component: "ui",
-            targetPath: "C:\\VEM\\bringup\\machine.exe",
-            expectedSha256: sha256,
-            installedSha256: sha256,
+            component: "daemon",
+            targetPath: DAEMON_TARGET,
+            expectedSha256: DAEMON_SHA256,
+            installedSha256: DAEMON_SHA256,
             ok: true,
+          },
+          {
+            component: "ui",
+            targetPath: MACHINE_UI_TARGET,
+            expectedSha256: MACHINE_UI_SHA256,
+            installedSha256: MACHINE_UI_SHA256,
+            ok: true,
+            sidecars: [
+              {
+                targetPath: WEBVIEW_SIDECAR_TARGET,
+                expectedSha256: WEBVIEW_SIDECAR_SHA256,
+                installedSha256: WEBVIEW_SIDECAR_SHA256,
+              },
+            ],
           },
         ],
       },
@@ -103,6 +167,27 @@ function validationFixture() {
 function validateFixture(fixture) {
   const root = mkdtempSync(join(tmpdir(), "vem-touch-keyboard-"));
   const fixturePath = join(root, "fixture.json");
+  const fixtureFiles = fixture.fixtureFiles ?? [];
+  fixture.testInstallRoot = join(root, "live");
+  fixture.testFileMappings = [];
+  for (const file of fixtureFiles) {
+    const livePath = join(root, file.relativePath);
+    mkdirSync(dirname(livePath), { recursive: true });
+    if (!file.omit) {
+      if (file.kind === "symlink") {
+        const backingPath = `${livePath}.backing`;
+        writeFileSync(backingPath, Buffer.from(file.contentBase64, "base64"));
+        symlinkSync(backingPath, livePath);
+      } else {
+        writeFileSync(livePath, Buffer.from(file.contentBase64, "base64"));
+      }
+    }
+    fixture.testFileMappings.push({
+      targetPath: file.targetPath,
+      livePath,
+    });
+  }
+  delete fixture.fixtureFiles;
   writeFileSync(fixturePath, JSON.stringify(fixture));
   const result = spawnSync(
     "pwsh",
@@ -165,11 +250,115 @@ test("Windows touch-keyboard evidence accepts aligned authoritative runtime and 
   assert.deepEqual(JSON.parse(result.stdout), {
     status: "passed",
     sourceCommit: "5".repeat(40),
-    machineUiSha256: "a".repeat(64),
+    machineUiSha256: MACHINE_UI_SHA256,
     machineProcessId: 500,
     cdpListenerProcessId: 600,
     sessionId: 3,
+    installedComponents: [
+      {
+        component: "daemon",
+        targetPath: DAEMON_TARGET,
+        sha256: DAEMON_SHA256,
+        sidecars: [],
+      },
+      {
+        component: "ui",
+        targetPath: MACHINE_UI_TARGET,
+        sha256: MACHINE_UI_SHA256,
+        sidecars: [
+          {
+            targetPath: WEBVIEW_SIDECAR_TARGET,
+            sha256: WEBVIEW_SIDECAR_SHA256,
+          },
+        ],
+      },
+    ],
   });
+});
+
+test("Windows touch-keyboard evidence rejects daemon bytes that drifted after an otherwise consistent update", () => {
+  const fixture = validationFixture();
+  fixture.fixtureFiles.find(
+    (file) => file.targetPath === DAEMON_TARGET,
+  ).contentBase64 = Buffer.from("drifted-daemon-live-bytes").toString("base64");
+
+  const result = validateFixture(fixture);
+
+  assert.notEqual(result.status, 0, result.stdout);
+});
+
+test("Windows touch-keyboard evidence rejects live sidecar bytes that drifted after deployment", () => {
+  const fixture = validationFixture();
+  fixture.fixtureFiles.find(
+    (file) => file.targetPath === WEBVIEW_SIDECAR_TARGET,
+  ).contentBase64 = Buffer.from("drifted-webview-sidecar-bytes").toString(
+    "base64",
+  );
+
+  const result = validateFixture(fixture);
+
+  assert.notEqual(result.status, 0, result.stdout);
+});
+
+test("Windows touch-keyboard evidence rejects a consistently rewritten target outside the allowed install root", () => {
+  const fixture = validationFixture();
+  const escapedTarget = "C:\\Temp\\vending-daemon.exe";
+  fixture.delivery.manifest.components.find(
+    (component) => component.component === "daemon",
+  ).targetPath = escapedTarget;
+  fixture.delivery.evidence.sourceBinding.components.find(
+    (component) => component.component === "daemon",
+  ).targetPath = escapedTarget;
+  fixture.delivery.evidence.components.find(
+    (component) => component.component === "daemon",
+  ).targetPath = escapedTarget;
+  fixture.fixtureFiles.find(
+    (file) => file.targetPath === DAEMON_TARGET,
+  ).targetPath = escapedTarget;
+
+  const result = validateFixture(fixture);
+
+  assert.notEqual(result.status, 0, result.stdout);
+});
+
+test("Windows touch-keyboard evidence rejects a missing installed target", () => {
+  const fixture = validationFixture();
+  fixture.fixtureFiles.find(
+    (file) => file.targetPath === WEBVIEW_SIDECAR_TARGET,
+  ).omit = true;
+
+  const result = validateFixture(fixture);
+
+  assert.notEqual(result.status, 0, result.stdout);
+});
+
+test("Windows touch-keyboard evidence rejects a reparse-point installed target even when bytes match", () => {
+  const fixture = validationFixture();
+  fixture.fixtureFiles.find(
+    (file) => file.targetPath === MACHINE_UI_TARGET,
+  ).kind = "symlink";
+
+  const result = validateFixture(fixture);
+
+  assert.notEqual(result.status, 0, result.stdout);
+});
+
+test("Windows touch-keyboard evidence rejects a runtime daemon hash that drifted from live bytes", () => {
+  const fixture = validationFixture();
+  fixture.runtimeAcceptance.artifacts.daemonSha256 = "f".repeat(64);
+
+  const result = validateFixture(fixture);
+
+  assert.notEqual(result.status, 0, result.stdout);
+});
+
+test("Windows touch-keyboard evidence fails closed when runtime omits a delivered component hash", () => {
+  for (const artifactName of ["daemonSha256", "machineUiSha256"]) {
+    const fixture = validationFixture();
+    delete fixture.runtimeAcceptance.artifacts[artifactName];
+    const result = validateFixture(fixture);
+    assert.notEqual(result.status, 0, result.stdout);
+  }
 });
 
 test("Windows touch-keyboard evidence rejects a remote CDP endpoint even when the same local port is bound", () => {
@@ -257,23 +446,9 @@ test("Windows touch-keyboard production evidence rejects legacy unbound managed 
 
 test("Windows touch-keyboard evidence verifies every delivered component hash, not only the UI", () => {
   const fixture = validationFixture();
-  const daemonSha256 = "d".repeat(64);
-  const daemonManifestComponent = {
-    component: "daemon",
-    targetPath: "C:\\VEM\\bringup\\vending-daemon.exe",
-    sha256: daemonSha256,
-  };
-  fixture.delivery.manifest.components.unshift(daemonManifestComponent);
-  fixture.delivery.evidence.sourceBinding.components.unshift({
-    ...daemonManifestComponent,
-  });
-  fixture.delivery.evidence.components.unshift({
-    component: "daemon",
-    targetPath: "C:\\VEM\\bringup\\vending-daemon.exe",
-    expectedSha256: daemonSha256,
-    installedSha256: "e".repeat(64),
-    ok: true,
-  });
+  fixture.delivery.evidence.components.find(
+    (component) => component.component === "daemon",
+  ).installedSha256 = "e".repeat(64);
 
   const result = validateFixture(fixture);
 

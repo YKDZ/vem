@@ -180,7 +180,132 @@ function Assert-InstalledComponentBindings([object]$BoundComponents, [object]$In
   }
 }
 
-function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost) {
+function Resolve-LiveTargetPath([object]$Fixture, [object]$TargetPath, [bool]$AllowTestFileMappings) {
+  if (-not $AllowTestFileMappings) {
+    return [string]$TargetPath
+  }
+  $matches = @($Fixture.testFileMappings | Where-Object {
+      (Normalize-WindowsPath $_.targetPath) -ceq (Normalize-WindowsPath $TargetPath)
+    })
+  if ($matches.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$matches[0].livePath)) {
+    throw "test fixture must map every installed target to exactly one live file"
+  }
+  return [string]$matches[0].livePath
+}
+
+function Assert-AllowedInstalledTargetPath([string]$Component, [object]$TargetPath, [bool]$Sidecar) {
+  $expectedPath = if ($Sidecar) {
+    if ($Component -cne "ui") {
+      throw "managed-update sidecars are allowed only for the UI component"
+    }
+    "C:\VEM\bringup\WebView2Loader.dll"
+  } elseif ($Component -ceq "daemon") {
+    "C:\VEM\bringup\vending-daemon.exe"
+  } elseif ($Component -ceq "ui") {
+    "C:\VEM\bringup\machine.exe"
+  } else {
+    throw "unsupported managed-update component in acceptance: $Component"
+  }
+  if ((Normalize-WindowsPath $TargetPath) -cne (Normalize-WindowsPath $expectedPath)) {
+    throw "installed $Component target escapes the allowed VEM bringup path"
+  }
+}
+
+function Assert-SafeInstalledLivePath([object]$Fixture, [string]$LivePath, [bool]$AllowTestFileMappings) {
+  $installRoot = if ($AllowTestFileMappings) {
+    [string]$Fixture.testInstallRoot
+  } else {
+    "C:\VEM\bringup"
+  }
+  if ([string]::IsNullOrWhiteSpace($installRoot)) {
+    throw "installed target safety boundary is missing"
+  }
+  $fullRoot = [System.IO.Path]::GetFullPath($installRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  $fullTarget = [System.IO.Path]::GetFullPath($LivePath)
+  $rootPrefix = "$fullRoot$([System.IO.Path]::DirectorySeparatorChar)"
+  if (-not $fullTarget.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "installed target escapes its allowed live install root"
+  }
+  $targetItem = Get-Item -LiteralPath $fullTarget -Force
+  if (
+    ($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+    -not [string]::IsNullOrWhiteSpace([string]$targetItem.LinkType)
+  ) {
+    throw "installed target path must not contain a reparse point"
+  }
+  $cursor = $targetItem.Directory
+  $reachedInstallRoot = $false
+  while ($null -ne $cursor) {
+    if (
+      ($cursor.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      -not [string]::IsNullOrWhiteSpace([string]$cursor.LinkType)
+    ) {
+      throw "installed target path must not contain a reparse point"
+    }
+    if ([string]$cursor.FullName -ieq $fullRoot) {
+      $reachedInstallRoot = $true
+    }
+    $cursor = $cursor.Parent
+  }
+  if (-not $reachedInstallRoot) {
+    throw "installed target did not resolve within its allowed live install root"
+  }
+}
+
+function Get-LiveTargetSha256([object]$Fixture, [object]$TargetPath, [bool]$AllowTestFileMappings) {
+  $livePath = Resolve-LiveTargetPath $Fixture $TargetPath $AllowTestFileMappings
+  if (-not (Test-Path -LiteralPath $livePath -PathType Leaf)) {
+    throw "installed target is missing: $TargetPath"
+  }
+  Assert-SafeInstalledLivePath $Fixture $livePath $AllowTestFileMappings
+  return (Get-FileHash -LiteralPath $livePath -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Assert-LiveInstalledComponentHashes([object]$Fixture, [object]$BoundComponents, [object]$Runtime, [bool]$AllowTestFileMappings) {
+  $liveComponents = @()
+  foreach ($boundComponent in @($BoundComponents)) {
+    $componentName = [string]$boundComponent.component
+    Assert-AllowedInstalledTargetPath $componentName $boundComponent.targetPath $false
+    $boundSha256 = Normalize-Sha256 $boundComponent.sha256 "source-bound component"
+    $liveSha256 = Get-LiveTargetSha256 $Fixture $boundComponent.targetPath $AllowTestFileMappings
+    if ($liveSha256 -cne $boundSha256) {
+      throw "installed $componentName bytes do not match managed-update evidence"
+    }
+    $runtimeSha256 = if ($componentName -ceq "daemon") {
+      Normalize-Sha256 $Runtime.artifacts.daemonSha256 "runtime acceptance daemon"
+    } elseif ($componentName -ceq "ui") {
+      Normalize-Sha256 $Runtime.artifacts.machineUiSha256 "runtime acceptance machine UI"
+    } else {
+      throw "unsupported managed-update component in acceptance: $componentName"
+    }
+    if ($runtimeSha256 -cne $liveSha256) {
+      throw "runtime acceptance $componentName hash does not match live installed bytes"
+    }
+    $liveSidecars = @()
+    $boundSidecars = if ($null -eq $boundComponent.sidecars) { @() } else { @($boundComponent.sidecars) }
+    foreach ($boundSidecar in $boundSidecars) {
+      Assert-AllowedInstalledTargetPath $componentName $boundSidecar.targetPath $true
+      $boundSidecarSha256 = Normalize-Sha256 $boundSidecar.sha256 "source-bound sidecar"
+      $liveSidecarSha256 = Get-LiveTargetSha256 $Fixture $boundSidecar.targetPath $AllowTestFileMappings
+      if ($liveSidecarSha256 -cne $boundSidecarSha256) {
+        throw "installed sidecar bytes do not match managed-update evidence"
+      }
+      $liveSidecars += [pscustomobject][ordered]@{
+        targetPath = [string]$boundSidecar.targetPath
+        sha256 = $liveSidecarSha256
+      }
+    }
+    $liveComponents += [pscustomobject][ordered]@{
+      component = $componentName
+      targetPath = [string]$boundComponent.targetPath
+      sha256 = $liveSha256
+      sidecars = $liveSidecars
+    }
+  }
+  return $liveComponents
+}
+
+function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost, [bool]$AllowTestFileMappings) {
   if ([string]$Fixture.host.computerName -cne $ExpectedHost) {
     throw "acceptance fixture host does not match the dedicated testbed"
   }
@@ -264,6 +389,7 @@ function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost) {
   }
   Assert-ComponentSourceBindings $manifest.components $sourceBinding.components
   Assert-InstalledComponentBindings $sourceBinding.components $managedUpdate.components
+  $liveInstalledComponents = @(Assert-LiveInstalledComponentHashes $Fixture $sourceBinding.components $runtime $AllowTestFileMappings)
   if (
     [string]::IsNullOrWhiteSpace([string]$manifest.updateId) -or
     [string]$managedUpdate.updateId -cne [string]$manifest.updateId -or
@@ -294,6 +420,7 @@ function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost) {
     machineProcessId = [int]$machine.processId
     cdpListenerProcessId = [int]$listener.processId
     sessionId = [int]$machine.sessionId
+    installedComponents = $liveInstalledComponents
   }
 }
 
@@ -304,7 +431,7 @@ if ($PrintPlan) {
 
 if (-not [string]::IsNullOrWhiteSpace($ValidateFixturePath)) {
   $fixture = Read-JsonFile $ValidateFixturePath
-  $validation = Assert-AcceptanceFixture $fixture $ExpectedTestbedHost
+  $validation = Assert-AcceptanceFixture $fixture $ExpectedTestbedHost $true
   $validation | ConvertTo-Json -Depth 8 -Compress
   exit 0
 }
@@ -409,7 +536,7 @@ $fixture = [ordered]@{
     evidence = $managedUpdateEvidence
   }
 }
-$validation = Assert-AcceptanceFixture $fixture $ExpectedTestbedHost
+$validation = Assert-AcceptanceFixture $fixture $ExpectedTestbedHost $false
 
 Write-Host "受保护触摸键盘 Windows 交互验收"
 Write-Host "仅在专用 testbed 的临时身份/数据上执行；敏感值只可输入 kiosk 表单，禁止在本脚本终端输入或回显。"
@@ -444,6 +571,7 @@ $evidence = [ordered]@{
   }
   host = $fixture.host
   artifact = $fixture.artifact
+  installedComponents = $validation.installedComponents
   interactiveRuntime = [ordered]@{
     processId = $validation.machineProcessId
     sessionId = $validation.sessionId
