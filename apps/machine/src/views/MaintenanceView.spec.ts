@@ -5,6 +5,8 @@ import { createApp, nextTick, type App } from "vue";
 
 import type { ConfigSummary } from "@/daemon/schemas";
 
+import { DaemonUnavailableError } from "@/daemon/client";
+
 const {
   routeMock,
   routerReplaceMock,
@@ -76,31 +78,36 @@ vi.mock("@/components/MockHardwareControls.vue", () => ({
   default: { template: "<div>MockHardwareControls</div>" },
 }));
 
-vi.mock("@/daemon/client", () => ({
-  daemonClient: {
-    initialize: initializeMock,
-    getHealth: getHealthMock,
-    getReady: getReadyMock,
-    getSyncStatus: getSyncStatusMock,
-    getScannerStatus: getScannerStatusMock,
-    getVisionStatus: getVisionStatusMock,
-    getNaturalContext: getNaturalContextMock,
-    getRemoteOpsStatus: getRemoteOpsStatusMock,
-    getSaleView: getSaleViewMock,
-    recordStockMovement: recordStockMovementMock,
-    clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
-    runHardwareSelfCheck: runHardwareSelfCheckMock,
-    getConfig: getConfigMock,
-    saveConfig: saveConfigMock,
-    downloadLogExport: downloadLogExportMock,
-    beginMaintenanceSession: beginMaintenanceSessionMock,
-    clearMaintenanceSession: clearMaintenanceSessionMock,
-    handoffMaintenanceSessionToBringUp: handoffMaintenanceSessionToBringUpMock,
-    getMaintenanceSessionForRoute: getMaintenanceSessionForRouteMock,
-    releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
-    onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
-  },
-}));
+vi.mock("@/daemon/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/daemon/client")>();
+  return {
+    ...actual,
+    daemonClient: {
+      initialize: initializeMock,
+      getHealth: getHealthMock,
+      getReady: getReadyMock,
+      getSyncStatus: getSyncStatusMock,
+      getScannerStatus: getScannerStatusMock,
+      getVisionStatus: getVisionStatusMock,
+      getNaturalContext: getNaturalContextMock,
+      getRemoteOpsStatus: getRemoteOpsStatusMock,
+      getSaleView: getSaleViewMock,
+      recordStockMovement: recordStockMovementMock,
+      clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
+      runHardwareSelfCheck: runHardwareSelfCheckMock,
+      getConfig: getConfigMock,
+      saveConfig: saveConfigMock,
+      downloadLogExport: downloadLogExportMock,
+      beginMaintenanceSession: beginMaintenanceSessionMock,
+      clearMaintenanceSession: clearMaintenanceSessionMock,
+      handoffMaintenanceSessionToBringUp:
+        handoffMaintenanceSessionToBringUpMock,
+      getMaintenanceSessionForRoute: getMaintenanceSessionForRouteMock,
+      releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
+      onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
+    },
+  };
+});
 
 vi.mock("@/native/tauri", () => ({
   isTauriRuntime: () => true,
@@ -1663,7 +1670,7 @@ describe("MaintenanceView stock maintenance", () => {
     const host = await mountView();
     await unlockMaintenance(host);
     recordStockMovementMock
-      .mockRejectedValueOnce(new Error("response lost"))
+      .mockRejectedValueOnce(new DaemonUnavailableError("response lost"))
       .mockResolvedValueOnce(saleViewFixture());
 
     submitButton(host).click();
@@ -1682,6 +1689,89 @@ describe("MaintenanceView stock maintenance", () => {
       ([body]) => body as { movementId: string },
     );
     expect(first.movementId).toMatch(/^LOCAL-/);
+    expect(second.movementId).toBe(first.movementId);
+  });
+
+  it("clears a definitely rejected refill fingerprint so the operator can edit and resubmit", async () => {
+    const host = await mountView();
+    await unlockMaintenance(host);
+    recordStockMovementMock.mockRejectedValueOnce(
+      new DaemonUnavailableError("movement exceeds capacity", undefined, {
+        statusCode: 400,
+        responseCode: "stock_movement_record_failed",
+        responseMessage: "movement exceeds capacity",
+      }),
+    );
+
+    submitButton(host).click();
+    await vi.waitFor(() => {
+      expect(recordStockMovementMock).toHaveBeenCalledTimes(1);
+    });
+
+    const first = recordStockMovementMock.mock.calls[0]?.[0] as {
+      movementId: string;
+    };
+    const quantity = stockInputByLabel(host, "数量");
+    await vi.waitFor(() => {
+      expect(quantity.disabled).toBe(false);
+      expect(
+        globalThis.localStorage.getItem(
+          "vem.machine.pending-stock-movement.v1",
+        ),
+      ).toBeNull();
+    });
+    quantity.value = "2";
+    quantity.dispatchEvent(new Event("input"));
+    await nextTick();
+    recordStockMovementMock.mockResolvedValueOnce(saleViewFixture());
+    submitButton(host).click();
+
+    await vi.waitFor(() => {
+      expect(recordStockMovementMock).toHaveBeenCalledTimes(2);
+    });
+    const second = recordStockMovementMock.mock.calls[1]?.[0] as {
+      movementId: string;
+      quantity: number;
+    };
+    expect(second.movementId).not.toBe(first.movementId);
+    expect(second.quantity).toBe(2);
+  });
+
+  it("keeps the same locked refill fingerprint after a typed 5xx outcome", async () => {
+    const host = await mountView();
+    await unlockMaintenance(host);
+    recordStockMovementMock
+      .mockRejectedValueOnce(
+        new DaemonUnavailableError("daemon failed after request", undefined, {
+          statusCode: 503,
+          responseCode: "stock_movement_record_failed",
+        }),
+      )
+      .mockResolvedValueOnce(saleViewFixture());
+
+    submitButton(host).click();
+    await vi.waitFor(() => {
+      expect(recordStockMovementMock).toHaveBeenCalledTimes(1);
+    });
+    const first = recordStockMovementMock.mock.calls[0]?.[0] as {
+      movementId: string;
+    };
+    const quantity = stockInputByLabel(host, "数量");
+    expect(quantity.disabled).toBe(true);
+    expect(
+      globalThis.localStorage.getItem("vem.machine.pending-stock-movement.v1"),
+    ).toContain(first.movementId);
+
+    await vi.waitFor(() => {
+      expect(submitButton(host).disabled).toBe(false);
+    });
+    submitButton(host).click();
+    await vi.waitFor(() => {
+      expect(recordStockMovementMock).toHaveBeenCalledTimes(2);
+    });
+    const second = recordStockMovementMock.mock.calls[1]?.[0] as {
+      movementId: string;
+    };
     expect(second.movementId).toBe(first.movementId);
   });
 

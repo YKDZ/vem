@@ -355,6 +355,22 @@ struct PendingPhysicalStockAttestation {
     input: PhysicalStockAttestationInput,
     attested_at: String,
     movement_ids: Vec<String>,
+    #[serde(default)]
+    slot_generations: Vec<PendingPhysicalStockAttestationSlotGeneration>,
+}
+
+/// Binds one slot observation to the exact Platform idempotency generation
+/// and quantity transition that was submitted.  The corresponding durable
+/// receipt remains in `stock_movement_sync`, keyed by `movement_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingPhysicalStockAttestationSlotGeneration {
+    slot_id: String,
+    movement_id: String,
+    generation: String,
+    before_quantity: i64,
+    after_quantity: i64,
+    occurred_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2548,6 +2564,8 @@ impl LocalStateStore {
             ));
         }
 
+        let mut carried_slot_generations =
+            HashMap::<String, PendingPhysicalStockAttestationSlotGeneration>::new();
         if let Some(pending) = self
             .get_metadata::<PendingPhysicalStockAttestation>(PENDING_PHYSICAL_STOCK_ATTESTATION_KEY)
             .await?
@@ -2557,28 +2575,95 @@ impl LocalStateStore {
                 // second correction set; the durable outbox owns retransmit.
                 return self.sale_view(Some(machine_code.to_string())).await;
             }
-            let sync_rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT status FROM stock_movement_sync
-                 WHERE movement_id IN (SELECT value FROM json_each(?1))
-                   AND status IN ('rejected','reconciliation')",
+            let sync_rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+                "SELECT movement_id,status,platform_receipt_json
+                 FROM stock_movement_sync
+                 WHERE movement_id IN (SELECT value FROM json_each(?1))",
             )
             .bind(serde_json::to_string(&pending.movement_ids)?)
             .fetch_all(&self.pool)
             .await?;
-            if !sync_rows.is_empty() {
-                // Preserve a typed recovery record while allowing a corrected
-                // observation to receive a fresh idempotency generation.
-                self.put_metadata(FAILED_PHYSICAL_STOCK_ATTESTATION_KEY, &pending)
-                    .await?;
-                sqlx::query("DELETE FROM runtime_metadata WHERE key = ?1")
-                    .bind(PENDING_PHYSICAL_STOCK_ATTESTATION_KEY)
-                    .execute(&self.pool)
-                    .await?;
-            } else {
+            let statuses: HashMap<&str, (&str, Option<&str>)> = sync_rows
+                .iter()
+                .map(|(movement_id, status, receipt)| {
+                    (movement_id.as_str(), (status.as_str(), receipt.as_deref()))
+                })
+                .collect();
+            let has_terminal_rejection = statuses
+                .values()
+                .any(|(status, _)| matches!(*status, "rejected" | "reconciliation"));
+            if !has_terminal_rejection
+                || statuses
+                    .values()
+                    .any(|(status, _)| matches!(*status, "pending" | "failed"))
+            {
                 return Err(StoreError::InvalidStockInput(
                     "a physical stock attestation is awaiting platform acknowledgement; refresh its status before submitting another"
                         .to_string(),
                 ));
+            }
+
+            for previous_slot in &pending.input.slots {
+                let movement_id = pending
+                    .slot_generations
+                    .iter()
+                    .find(|generation| generation.slot_id == previous_slot.slot_id)
+                    .map(|generation| generation.movement_id.clone())
+                    .unwrap_or_else(|| {
+                        format!("{}:{}", pending.input.attestation_id, previous_slot.slot_id)
+                    });
+                let Some((status, receipt)) = statuses.get(movement_id.as_str()).copied() else {
+                    return Err(StoreError::IntegrityCheckFailed(format!(
+                        "physical stock attestation slot generation is missing sync state: {}",
+                        previous_slot.slot_code
+                    )));
+                };
+                if status != "accepted" {
+                    continue;
+                }
+                if receipt.is_none() {
+                    return Err(StoreError::IntegrityCheckFailed(format!(
+                        "accepted physical stock attestation slot is missing Platform receipt: {}",
+                        previous_slot.slot_code
+                    )));
+                }
+                if pending.input.planogram_version != input.planogram_version
+                    || input
+                        .slots
+                        .iter()
+                        .find(|slot| slot.slot_id == previous_slot.slot_id)
+                        != Some(previous_slot)
+                {
+                    return Err(StoreError::InvalidStockInput(format!(
+                        "Platform-accepted attested slot {} cannot be changed; retry only rejected slots",
+                        previous_slot.slot_code
+                    )));
+                }
+                let generation = if let Some(generation) = pending
+                    .slot_generations
+                    .iter()
+                    .find(|generation| generation.slot_id == previous_slot.slot_id)
+                {
+                    generation.clone()
+                } else {
+                    let before: Option<(i64,)> = sqlx::query_as(
+                        "SELECT physical_stock FROM current_stock_projection
+                         WHERE planogram_version = ?1 AND slot_id = ?2",
+                    )
+                    .bind(&pending.input.planogram_version)
+                    .bind(&previous_slot.slot_id)
+                    .fetch_optional(&self.pool)
+                    .await?;
+                    PendingPhysicalStockAttestationSlotGeneration {
+                        slot_id: previous_slot.slot_id.clone(),
+                        movement_id,
+                        generation: pending.input.attestation_id.clone(),
+                        before_quantity: before.map_or(0, |(quantity,)| quantity),
+                        after_quantity: previous_slot.quantity,
+                        occurred_at: pending.attested_at.clone(),
+                    }
+                };
+                carried_slot_generations.insert(previous_slot.slot_id.clone(), generation);
             }
         }
 
@@ -2631,6 +2716,7 @@ impl LocalStateStore {
             api_base_url.trim_end_matches('/')
         );
         let mut movement_ids = Vec::with_capacity(rows.len());
+        let mut slot_generations = Vec::with_capacity(rows.len());
         for row in rows {
             let slot_id: String = row.try_get("slot_id")?;
             let slot_code: String = row.try_get("slot_code")?;
@@ -2666,6 +2752,11 @@ impl LocalStateStore {
             .fetch_optional(tx.as_mut())
             .await?;
             let before_quantity = before_quantity.map_or(0, |(quantity,)| quantity);
+            if let Some(generation) = carried_slot_generations.remove(&slot_id) {
+                movement_ids.push(generation.movement_id.clone());
+                slot_generations.push(generation);
+                continue;
+            }
             let movement_id = format!("{}:{slot_id}", input.attestation_id);
             let slot_mapping_snapshot = serde_json::json!({
                 "slotCode": slot_code,
@@ -2703,13 +2794,22 @@ impl LocalStateStore {
             .execute(tx.as_mut())
             .await?;
             insert_outbox_in_tx(&mut tx, &event).await?;
-            movement_ids.push(movement_id);
+            movement_ids.push(movement_id.clone());
+            slot_generations.push(PendingPhysicalStockAttestationSlotGeneration {
+                slot_id,
+                movement_id,
+                generation: input.attestation_id.clone(),
+                before_quantity,
+                after_quantity: slot.quantity,
+                occurred_at: attested_at.clone(),
+            });
         }
 
         let pending = PendingPhysicalStockAttestation {
             input,
             attested_at,
             movement_ids,
+            slot_generations,
         };
         sqlx::query(
             "INSERT INTO runtime_metadata(key,value_json,updated_at)
@@ -2798,16 +2898,39 @@ impl LocalStateStore {
                 tx.rollback().await?;
                 return Ok(false);
             }
-            let before: Option<(i64,)> = sqlx::query_as(
-                "SELECT physical_stock FROM current_stock_projection
-                 WHERE planogram_version = ?1 AND slot_id = ?2",
-            )
-            .bind(&pending.input.planogram_version)
-            .bind(&slot.slot_id)
-            .fetch_optional(tx.as_mut())
-            .await?;
-            let before_quantity = before.map_or(0, |(quantity,)| quantity);
-            let movement_id = format!("{}:{}", pending.input.attestation_id, slot.slot_id);
+            let slot_generation = pending
+                .slot_generations
+                .iter()
+                .find(|generation| generation.slot_id == slot.slot_id);
+            let (movement_id, before_quantity, occurred_at) =
+                if let Some(generation) = slot_generation {
+                    if generation.after_quantity != slot.quantity
+                        || generation.movement_id
+                            != format!("{}:{}", generation.generation, slot.slot_id)
+                    {
+                        tx.rollback().await?;
+                        return Ok(false);
+                    }
+                    (
+                        generation.movement_id.clone(),
+                        generation.before_quantity,
+                        generation.occurred_at.as_str(),
+                    )
+                } else {
+                    let before: Option<(i64,)> = sqlx::query_as(
+                        "SELECT physical_stock FROM current_stock_projection
+                         WHERE planogram_version = ?1 AND slot_id = ?2",
+                    )
+                    .bind(&pending.input.planogram_version)
+                    .bind(&slot.slot_id)
+                    .fetch_optional(tx.as_mut())
+                    .await?;
+                    (
+                        format!("{}:{}", pending.input.attestation_id, slot.slot_id),
+                        before.map_or(0, |(quantity,)| quantity),
+                        pending.attested_at.as_str(),
+                    )
+                };
             let slot_mapping_snapshot = serde_json::json!({
                 "slotCode": slot_code,
                 "capacity": capacity,
@@ -2828,7 +2951,7 @@ impl LocalStateStore {
             .bind(before_quantity)
             .bind(slot_mapping_snapshot.to_string())
             .bind(&pending.input.operator_id)
-            .bind(&pending.attested_at)
+            .bind(occurred_at)
             .execute(tx.as_mut())
             .await?;
             clear_sale_safety_blocker_marker_in_tx(
@@ -3626,6 +3749,18 @@ impl LocalStateStore {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
         let mut tx = self.pool.begin().await?;
+        let pending_attestation: Option<(String,)> =
+            sqlx::query_as("SELECT value_json FROM runtime_metadata WHERE key = ?1")
+                .bind(PENDING_PHYSICAL_STOCK_ATTESTATION_KEY)
+                .fetch_optional(tx.as_mut())
+                .await?;
+        let protected_movement_ids: HashSet<String> = pending_attestation
+            .map(|(value_json,)| {
+                serde_json::from_str::<PendingPhysicalStockAttestation>(&value_json)
+                    .map(|pending| pending.movement_ids.into_iter().collect())
+            })
+            .transpose()?
+            .unwrap_or_default();
         let movement_ids: Vec<(String,)> = sqlx::query_as(
             "SELECT movement_id
              FROM stock_movement_sync
@@ -3637,6 +3772,9 @@ impl LocalStateStore {
 
         let mut pruned = 0_u64;
         for (movement_id,) in movement_ids {
+            if protected_movement_ids.contains(&movement_id) {
+                continue;
+            }
             sqlx::query("DELETE FROM stock_movement_sync WHERE movement_id = ?1")
                 .bind(&movement_id)
                 .execute(tx.as_mut())
@@ -5145,6 +5283,92 @@ mod tests {
             .expect("planogram");
     }
 
+    async fn seed_two_slot_planogram(store: &LocalStateStore) {
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-PARTIAL-ACK".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![
+                    MachinePlanogramSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                        slot_code: "A1".to_string(),
+                        layer_no: 1,
+                        cell_no: 1,
+                        capacity: 8,
+                        par_level: 6,
+                        inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                        variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                        product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                        product_name: "water".to_string(),
+                        product_description: None,
+                        cover_image_url: None,
+                        try_on_silhouette_url: None,
+                        category_id: None,
+                        category_name: None,
+                        sku: "WATER-001".to_string(),
+                        size: Some("550ml".to_string()),
+                        color: None,
+                        price_cents: 200,
+                        product_sort_order: 1,
+                        target_gender: None,
+                    },
+                    MachinePlanogramSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                        slot_code: "A2".to_string(),
+                        layer_no: 1,
+                        cell_no: 2,
+                        capacity: 8,
+                        par_level: 6,
+                        inventory_id: "550e8400-e29b-41d4-a716-446655440012".to_string(),
+                        variant_id: "550e8400-e29b-41d4-a716-446655440013".to_string(),
+                        product_id: "550e8400-e29b-41d4-a716-446655440014".to_string(),
+                        product_name: "tea".to_string(),
+                        product_description: None,
+                        cover_image_url: None,
+                        try_on_silhouette_url: None,
+                        category_id: None,
+                        category_name: None,
+                        sku: "TEA-001".to_string(),
+                        size: Some("500ml".to_string()),
+                        color: None,
+                        price_cents: 300,
+                        product_sort_order: 2,
+                        target_gender: None,
+                    },
+                ],
+            })
+            .await
+            .expect("two-slot planogram");
+    }
+
+    fn two_slot_attestation(
+        attestation_id: &str,
+        second_quantity: i64,
+    ) -> PhysicalStockAttestationInput {
+        PhysicalStockAttestationInput {
+            attestation_id: attestation_id.to_string(),
+            planogram_version: "PLAN-PARTIAL-ACK".to_string(),
+            operator_id: "operator-1".to_string(),
+            slots: vec![
+                PhysicalStockAttestationSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    sku: "WATER-001".to_string(),
+                    quantity: 3,
+                    enabled: true,
+                },
+                PhysicalStockAttestationSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                    slot_code: "A2".to_string(),
+                    sku: "TEA-001".to_string(),
+                    quantity: second_quantity,
+                    enabled: true,
+                },
+            ],
+        }
+    }
+
     #[tokio::test]
     async fn physical_stock_attestation_waits_for_conflicting_writer_before_reading_snapshot() {
         let temp = TempDir::new().expect("temp");
@@ -6139,6 +6363,299 @@ mod tests {
         let after_ack = store.sale_view(None).await.expect("sale view");
         assert_eq!(after_ack.items[0].physical_stock, 3);
         assert_eq!(after_ack.items[0].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn partial_attestation_receipts_survive_restart_and_retry_only_rejected_slots() {
+        let temp = TempDir::new().expect("temp");
+        let database = temp.path().join("state.db");
+        let store = LocalStateStore::open(&database).await.expect("open");
+        seed_two_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation_with_upload(
+                two_slot_attestation("ATT-PARTIAL-1", 4),
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("stage first generation");
+
+        let accepted_id = "ATT-PARTIAL-1:550e8400-e29b-41d4-a716-446655440001";
+        let rejected_id = "ATT-PARTIAL-1:550e8400-e29b-41d4-a716-446655440011";
+        let accepted_event = store
+            .outbox_record(&format!("stock-movement:{accepted_id}"))
+            .await
+            .expect("accepted outbox lookup")
+            .expect("accepted event");
+        store
+            .record_stock_movement_upload_response(
+                &accepted_event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: accepted_id.to_string(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:00:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-a1-generation-1"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            )
+            .await
+            .expect("accept A1");
+        let rejected_event = store
+            .outbox_record(&format!("stock-movement:{rejected_id}"))
+            .await
+            .expect("rejected outbox lookup")
+            .expect("rejected event");
+        store
+            .record_stock_movement_upload_response(
+                &rejected_event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: rejected_id.to_string(),
+                    status: "rejected".to_string(),
+                    accepted_at: None,
+                    receipt: None,
+                    rejection: Some(json!({"reason":"abnormal_variance"})),
+                    reconciliation: None,
+                },
+            )
+            .await
+            .expect("reject A2");
+        assert_eq!(
+            store
+                .physical_stock_attestation_status()
+                .await
+                .expect("partial status")
+                .status,
+            "failed"
+        );
+        assert!(store
+            .sale_view(None)
+            .await
+            .expect("uncommitted sale view")
+            .items
+            .iter()
+            .all(|item| item.physical_stock == 0));
+        sqlx::query(
+            "UPDATE stock_movement_sync
+             SET accepted_at = '2026-05-01T00:00:00.000Z', updated_at = '2026-05-01T00:00:00.000Z'
+             WHERE movement_id = ?1",
+        )
+        .bind(accepted_id)
+        .execute(store.pool())
+        .await
+        .expect("age carried receipt");
+        store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune unrelated accepted history");
+        assert!(store
+            .stock_movement_sync_record(accepted_id)
+            .await
+            .expect("pending receipt after pruning")
+            .is_some());
+        drop(store);
+
+        let restarted = LocalStateStore::open(&database).await.expect("restart");
+        let mut conflicting_retry = two_slot_attestation("ATT-PARTIAL-CONFLICT", 5);
+        conflicting_retry.slots[0].quantity = 2;
+        assert!(matches!(
+            restarted
+                .record_physical_stock_attestation_with_upload(
+                    conflicting_retry,
+                    Some("MACHINE-1"),
+                    Some("https://platform.example/api"),
+                )
+                .await,
+            Err(StoreError::InvalidStockInput(message))
+                if message.contains("Platform-accepted attested slot A1 cannot be changed")
+        ));
+        restarted
+            .record_physical_stock_attestation_with_upload(
+                two_slot_attestation("ATT-PARTIAL-2", 5),
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("retry rejected slot");
+
+        let duplicate_accepted_id = "ATT-PARTIAL-2:550e8400-e29b-41d4-a716-446655440001";
+        assert!(restarted
+            .stock_movement_sync_record(duplicate_accepted_id)
+            .await
+            .expect("duplicate accepted generation lookup")
+            .is_none());
+        assert!(restarted
+            .stock_movement_sync_record(accepted_id)
+            .await
+            .expect("carried receipt lookup")
+            .is_some_and(|sync| sync.status == "accepted"));
+        let retried_id = "ATT-PARTIAL-2:550e8400-e29b-41d4-a716-446655440011";
+        let retried_event = restarted
+            .outbox_record(&format!("stock-movement:{retried_id}"))
+            .await
+            .expect("retried outbox lookup")
+            .expect("retried event");
+        assert_eq!(retried_event.payload_json["beforeQuantity"], 0);
+        assert_eq!(retried_event.payload_json["afterQuantity"], 5);
+        restarted
+            .record_stock_movement_upload_response(
+                &retried_event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: retried_id.to_string(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:01:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-a2-generation-2"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            )
+            .await
+            .expect("accept retried A2");
+
+        let ready = restarted
+            .physical_stock_attestation_status()
+            .await
+            .expect("ready status");
+        assert_eq!(ready.status, "ready");
+        let sale_view = restarted.sale_view(None).await.expect("sale view");
+        assert_eq!(sale_view.items[0].physical_stock, 3);
+        assert_eq!(sale_view.items[1].physical_stock, 5);
+        let movement_ids: Vec<(String,)> = sqlx::query_as(
+            "SELECT movement_id FROM stock_movements WHERE source = 'physical_stock_attestation' ORDER BY movement_id",
+        )
+        .fetch_all(restarted.pool())
+        .await
+        .expect("committed movement ids");
+        assert_eq!(
+            movement_ids,
+            vec![(accepted_id.to_string(),), (retried_id.to_string(),)]
+        );
+        drop(restarted);
+        let finalized_restart = LocalStateStore::open(&database)
+            .await
+            .expect("restart finalized state");
+        assert_eq!(
+            finalized_restart
+                .physical_stock_attestation_status()
+                .await
+                .expect("idempotent finalized status")
+                .status,
+            "ready"
+        );
+        let movement_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM stock_movements WHERE source = 'physical_stock_attestation'",
+        )
+        .fetch_one(finalized_restart.pool())
+        .await
+        .expect("movement count after finalized restart");
+        assert_eq!(movement_count.0, 2);
+    }
+
+    #[tokio::test]
+    async fn partial_reconciliation_retries_only_the_unaccepted_slot_generation() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation_with_upload(
+                two_slot_attestation("ATT-RECONCILE-1", 4),
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("stage first generation");
+        let accepted_id = "ATT-RECONCILE-1:550e8400-e29b-41d4-a716-446655440001";
+        let reconciled_id = "ATT-RECONCILE-1:550e8400-e29b-41d4-a716-446655440011";
+        for (movement_id, response) in [
+            (
+                accepted_id,
+                crate::backend::StockMovementUploadResponse {
+                    movement_id: accepted_id.to_string(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:00:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-reconcile-a1"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            ),
+            (
+                reconciled_id,
+                crate::backend::StockMovementUploadResponse {
+                    movement_id: reconciled_id.to_string(),
+                    status: "reconciliation".to_string(),
+                    accepted_at: None,
+                    receipt: None,
+                    rejection: None,
+                    reconciliation: Some(crate::backend::StockMovementReconciliation {
+                        reason: "abnormal_variance".to_string(),
+                        platform_review: Some(json!({"required":true,"status":"open"})),
+                        sale_safety_blocker: None,
+                    }),
+                },
+            ),
+        ] {
+            let event = store
+                .outbox_record(&format!("stock-movement:{movement_id}"))
+                .await
+                .expect("outbox lookup")
+                .expect("event");
+            store
+                .record_stock_movement_upload_response(&event, &response)
+                .await
+                .expect("record Platform response");
+        }
+
+        store
+            .record_physical_stock_attestation_with_upload(
+                two_slot_attestation("ATT-RECONCILE-2", 6),
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("retry reconciled slot");
+        assert!(store
+            .stock_movement_sync_record("ATT-RECONCILE-2:550e8400-e29b-41d4-a716-446655440001",)
+            .await
+            .expect("duplicate accepted lookup")
+            .is_none());
+        assert!(store
+            .outbox_record("stock-movement:ATT-RECONCILE-2:550e8400-e29b-41d4-a716-446655440011",)
+            .await
+            .expect("retry outbox lookup")
+            .is_some());
+        let retried_id = "ATT-RECONCILE-2:550e8400-e29b-41d4-a716-446655440011";
+        let retried_event = store
+            .outbox_record(&format!("stock-movement:{retried_id}"))
+            .await
+            .expect("retried outbox lookup")
+            .expect("retried event");
+        store
+            .record_stock_movement_upload_response(
+                &retried_event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: retried_id.to_string(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:02:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-reconcile-a2-generation-2"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            )
+            .await
+            .expect("accept reconciled retry");
+        assert_eq!(
+            store
+                .physical_stock_attestation_status()
+                .await
+                .expect("ready status")
+                .status,
+            "ready"
+        );
+        let sale_view = store.sale_view(None).await.expect("sale view");
+        assert_eq!(sale_view.items[0].physical_stock, 3);
+        assert_eq!(sale_view.items[1].physical_stock, 6);
     }
 
     #[tokio::test]

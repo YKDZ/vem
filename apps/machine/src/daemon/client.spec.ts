@@ -556,6 +556,31 @@ describe("DaemonApiClient", () => {
     );
   });
 
+  it("types a rejected maintenance stock movement as a definite 4xx daemon response", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: "stock_movement_record_failed",
+          message: "movement exceeds capacity",
+        }),
+        { status: 400 },
+      ),
+    );
+
+    await expect(daemonClient.recordStockMovement({})).rejects.toMatchObject({
+      name: "DaemonUnavailableError",
+      statusCode: 400,
+      responseCode: "stock_movement_record_failed",
+      responseMessage: "movement exceeds capacity",
+    });
+  });
+
   it("does not expose legacy direct claim, network, or mutable config clients", async () => {
     expect(daemonClient).not.toHaveProperty("claimMachine");
     expect(daemonClient).not.toHaveProperty("applyNetworkSettings");
