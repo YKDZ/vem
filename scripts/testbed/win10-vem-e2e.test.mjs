@@ -3808,6 +3808,71 @@ try {
         /pass@127\.0\.0\.1/,
       );
       assert.match(result.stdout, /\[REDACTED\]/);
+
+      const wireGuardOutputPath = join(
+        temp,
+        "vm-runtime-acceptance-wireguard-plan.json",
+      );
+      const wireGuardResult = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/win10-vem-e2e.mjs",
+          "--mode",
+          "vm-runtime-acceptance",
+          "--run-id",
+          "RUN-181",
+          "--platform-target",
+          "ephemeral-run-181",
+          "--ephemeral-database-url",
+          "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+          "--ephemeral-api-base-url",
+          "http://127.0.0.1:26849/api",
+          "--ephemeral-mqtt-url",
+          "mqtt://127.0.0.1:1883",
+          "--factory-guest-endpoint-json",
+          JSON.stringify({
+            transport: "wireguard",
+            protocol: "ssh",
+            host: "10.91.16.10",
+            port: 22,
+            reachability: "authenticated",
+          }),
+          "--maintenance-relay-session-json",
+          JSON.stringify(maintenanceRelaySession),
+          "--expected-testbed-user",
+          "YKDZ",
+          "--ssh-known-hosts-path",
+          "/tmp/vem-runtime-known-hosts",
+          "--ssh-host-key-alias",
+          "vem-runtime-run-181",
+          "--identity",
+          "/tmp/vem-runtime-id",
+          "--certificate",
+          "/tmp/vem-runtime-id-cert.pub",
+          "--out",
+          wireGuardOutputPath,
+          "--dry-run",
+        ],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+      assert.equal(wireGuardResult.status, 0, wireGuardResult.stderr);
+      const wireGuardPlan = JSON.parse(wireGuardResult.stdout);
+      assert.deepEqual(
+        JSON.parse(
+          commandArg(
+            wireGuardPlan.steps[3].command,
+            "--maintenance-relay-session-json",
+          ),
+        ),
+        maintenanceRelaySession,
+      );
+      assert.equal(
+        commandArg(
+          wireGuardPlan.steps[3].command,
+          "--maintenance-endpoint-policy-json",
+        ),
+        undefined,
+      );
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }

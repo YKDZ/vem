@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
@@ -49,6 +49,25 @@ const SERIAL_CONFORMANCE = new URL(
 ).pathname;
 
 process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
+
+function testbedRunnerDirectContext(lifecycleReference) {
+  return {
+    maintenanceRelaySession: {
+      sessionId: "550e8400-e29b-41d4-a716-446655440000",
+      relayPeer: {
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
+      sourceTunnelAddress: "10.91.2.10",
+      endpointTunnelAddress: "10.91.16.10",
+    },
+    maintenanceEndpointPolicy: {
+      transport: "testbed-runner-direct",
+      runnerSourceAllowlist: ["192.0.2.10/32"],
+      lifecycleReference,
+    },
+  };
+}
 
 function blockedSaleOutput(overrides = {}) {
   const flow = {
@@ -2659,6 +2678,13 @@ describe("VM Host Adapter contract", () => {
   it("binds the CLI display capture to the supplied CDP target and generated visual challenge", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-display-cli-"));
     const out = join(root, "display.json");
+    const lifecycleReference = `vm-lifecycle://run-12-contract.${createHash(
+      "sha256",
+    )
+      .update("RUN-12-CONTRACT\nvm-target://runtime-testbed")
+      .digest("hex")
+      .slice(0, 32)}`;
+    const maintenanceContext = testbedRunnerDirectContext(lifecycleReference);
     execFileSync(
       process.execPath,
       [
@@ -2679,6 +2705,10 @@ describe("VM Host Adapter contract", () => {
         "http://tauri.localhost/#/",
         "--cdp-target-id",
         "cdp-target-runtime-001",
+        "--maintenance-relay-session-json",
+        JSON.stringify(maintenanceContext.maintenanceRelaySession),
+        "--maintenance-endpoint-policy-json",
+        JSON.stringify(maintenanceContext.maintenanceEndpointPolicy),
         "--out",
         out,
       ],
@@ -2692,6 +2722,18 @@ describe("VM Host Adapter contract", () => {
       },
     );
     const report = JSON.parse(readFileSync(out, "utf8"));
+    assert.deepEqual(
+      report.request.maintenanceRelaySession,
+      maintenanceContext.maintenanceRelaySession,
+    );
+    assert.deepEqual(
+      report.request.maintenanceEndpointPolicy,
+      maintenanceContext.maintenanceEndpointPolicy,
+    );
+    assert.equal(
+      report.guest.maintenanceEndpoint.transport,
+      "testbed-runner-direct",
+    );
     assert.equal(report.displayCapture.tauriRoute, "http://tauri.localhost/#/");
     assert.equal(report.displayCapture.cdpTargetId, "cdp-target-runtime-001");
     assert.match(report.displayCapture.visualChallenge.token, /^[a-f0-9]{64}$/);
@@ -2699,6 +2741,70 @@ describe("VM Host Adapter contract", () => {
       report.displayCapture.visualChallenge.matchingPixelCount,
       report.displayCapture.visualChallenge.region.width *
         report.displayCapture.visualChallenge.region.height,
+    );
+    const wireGuardOnlyContext = spawnSync(
+      process.execPath,
+      [
+        CLIENT,
+        "--operation",
+        "restore-approved-base",
+        "--run-id",
+        "RUN-12-CONTRACT",
+        "--target-identity",
+        "vm-target://runtime-testbed",
+        "--approved-runtime-base",
+        `factory-cas://sha256/${HASH}`,
+        "--maintenance-relay-session-json",
+        JSON.stringify(maintenanceContext.maintenanceRelaySession),
+        "--out",
+        join(root, "wireguard-context.json"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RUNNER_TEMP: root,
+          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+          VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence"),
+        },
+      },
+    );
+    assert.equal(wireGuardOnlyContext.status, 0, wireGuardOnlyContext.stderr);
+    const wireGuardReport = JSON.parse(
+      readFileSync(join(root, "wireguard-context.json"), "utf8"),
+    );
+    assert.deepEqual(
+      wireGuardReport.request.maintenanceRelaySession,
+      maintenanceContext.maintenanceRelaySession,
+    );
+    assert.equal(wireGuardReport.request.maintenanceEndpointPolicy, null);
+    assert.equal(
+      wireGuardReport.guest.maintenanceEndpoint.transport,
+      "wireguard",
+    );
+    const policyWithoutSession = spawnSync(
+      process.execPath,
+      [
+        CLIENT,
+        "--operation",
+        "restore-approved-base",
+        "--run-id",
+        "RUN-12-CONTRACT",
+        "--target-identity",
+        "vm-target://runtime-testbed",
+        "--approved-runtime-base",
+        `factory-cas://sha256/${HASH}`,
+        "--maintenance-endpoint-policy-json",
+        JSON.stringify(maintenanceContext.maintenanceEndpointPolicy),
+        "--out",
+        join(root, "policy-without-session.json"),
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(policyWithoutSession.status, 1);
+    assert.match(
+      policyWithoutSession.stderr,
+      /maintenance-endpoint-policy-json requires --maintenance-relay-session-json/,
     );
   });
 
@@ -2797,6 +2903,31 @@ describe("VM Host Adapter contract", () => {
     assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
   });
 
+  it("clears direct maintenance context before recovering a failed Factory request", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-direct-failure-"));
+    const request = createVmHostAdapterRequest(
+      cleanInstallRequest(
+        testbedRunnerDirectContext(
+          "vm-lifecycle://run-12-contract.runtime-testbed",
+        ),
+      ),
+    );
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request,
+          workDirectory: root,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
+          },
+        }),
+      (error) =>
+        error instanceof VmHostAdapterExecutionError &&
+        error.diagnostic.cleanup.status === "completed",
+    );
+  });
+
   it("cancels and cleans up a timed-out clean-install adapter", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-timeout-"));
     const signalFile = join(root, "adapter.signal");
@@ -2837,6 +2968,33 @@ describe("VM Host Adapter contract", () => {
       "cancel",
       "cleanup",
     ]);
+  });
+
+  it("clears direct maintenance context before cancelling and recovering a timed-out Factory request", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-direct-timeout-"));
+    const request = createVmHostAdapterRequest(
+      cleanInstallRequest(
+        testbedRunnerDirectContext(
+          "vm-lifecycle://run-12-contract.runtime-testbed",
+        ),
+      ),
+    );
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request,
+          workDirectory: root,
+          timeoutMs: 80,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
+          },
+        }),
+      (error) =>
+        error instanceof VmHostAdapterExecutionError &&
+        error.diagnostic.result === "timed_out" &&
+        error.diagnostic.cleanup.status === "completed",
+    );
   });
 
   it("builds a logical clean-install request from Factory ISO and personalization asset identities", () => {

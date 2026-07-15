@@ -2670,26 +2670,26 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     "--out",
     serialConformanceReport,
   ];
-  if (
-    options.maintenanceRelaySession !== undefined ||
-    options.maintenanceEndpointPolicy !== undefined
-  ) {
-    if (
-      !options.maintenanceRelaySession ||
-      !options.maintenanceEndpointPolicy
-    ) {
+  if (options.maintenanceEndpointPolicy !== undefined) {
+    if (options.maintenanceRelaySession === undefined)
       throw new Error(
-        "VM runtime serial conformance requires paired maintenance relay session and endpoint policy",
+        "VM runtime serial conformance endpoint policy requires a maintenance relay session",
       );
-    }
+  }
+  if (options.maintenanceRelaySession !== undefined) {
     saleFlowCommand.splice(
       saleFlowCommand.indexOf("--out"),
       0,
       "--maintenance-relay-session-json",
       JSON.stringify(options.maintenanceRelaySession),
-      "--maintenance-endpoint-policy-json",
-      JSON.stringify(options.maintenanceEndpointPolicy),
     );
+    if (options.maintenanceEndpointPolicy !== undefined)
+      saleFlowCommand.splice(
+        saleFlowCommand.indexOf("--out"),
+        0,
+        "--maintenance-endpoint-policy-json",
+        JSON.stringify(options.maintenanceEndpointPolicy),
+      );
   }
 
   const cleanBaseStep = cleanBaseFactoryAcceptance
@@ -8846,11 +8846,11 @@ function parseJsonObjectArgument(option, value) {
 
 function applyFactoryGuestEndpoint(options) {
   if (
-    (options.maintenanceRelaySession === undefined) !==
-    (options.maintenanceEndpointPolicy === undefined)
+    options.maintenanceEndpointPolicy !== undefined &&
+    options.maintenanceRelaySession === undefined
   ) {
     throw new Error(
-      "--maintenance-relay-session-json and --maintenance-endpoint-policy-json must be supplied together",
+      "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
     );
   }
   if (!options.factoryGuestEndpointJson) return options;

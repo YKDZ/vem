@@ -4080,6 +4080,8 @@ function cleanupRequestFor(request) {
     factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
+    maintenanceRelaySession: null,
+    maintenanceEndpointPolicy: null,
     requestedCapabilities: ["cleanup", "cancellation"],
     ...(isV2Request(request)
       ? {
@@ -4100,6 +4102,8 @@ function cancelRequestFor(request) {
     factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
+    maintenanceRelaySession: null,
+    maintenanceEndpointPolicy: null,
     requestedCapabilities: ["cancellation", "cleanup"],
     ...(isV2Request(request)
       ? {

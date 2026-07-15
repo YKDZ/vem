@@ -732,12 +732,9 @@ function readMaintenanceEndpointContext() {
   const maintenanceEndpointPolicy = readStrictJsonObjectOption(
     "--maintenance-endpoint-policy-json",
   );
-  if (
-    (maintenanceRelaySession === null) !==
-    (maintenanceEndpointPolicy === null)
-  ) {
+  if (maintenanceEndpointPolicy !== null && maintenanceRelaySession === null) {
     throw new Error(
-      "--maintenance-relay-session-json and --maintenance-endpoint-policy-json must be supplied together",
+      "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
     );
   }
   return { maintenanceRelaySession, maintenanceEndpointPolicy };
