@@ -2,7 +2,8 @@ import { reactive } from "vue";
 
 export type ProtectedTouchKeyboardAccess = {
   routeName: string;
-  maintenanceAuthorized: boolean;
+  maintenanceSessionIdentity: string | null;
+  maintenanceSessionGeneration: number;
 };
 
 type EligibleInput = HTMLInputElement | HTMLTextAreaElement;
@@ -14,11 +15,15 @@ export type ProtectedTouchKeyboardState = {
   target: EligibleInput | null;
 };
 
-function routeAllowsInput(access: ProtectedTouchKeyboardAccess): boolean {
-  return (
-    access.routeName === "bring-up" ||
-    (access.routeName === "maintenance" && access.maintenanceAuthorized)
-  );
+function accessKey(access: ProtectedTouchKeyboardAccess): string | null {
+  if (access.routeName === "bring-up") return "bring-up";
+  if (
+    access.routeName === "maintenance" &&
+    access.maintenanceSessionIdentity !== null
+  ) {
+    return `maintenance:${access.maintenanceSessionGeneration}:${access.maintenanceSessionIdentity}`;
+  }
+  return null;
 }
 
 function isEligibleInput(target: EventTarget | null): target is EligibleInput {
@@ -58,6 +63,10 @@ function initialLayout(
 
 function updateTargetValue(
   target: EligibleInput,
+  event: {
+    inputType: "insertText" | "deleteContentBackward";
+    data: string | null;
+  },
   transform: (
     value: string,
     start: number,
@@ -76,7 +85,11 @@ function updateTargetValue(
     target.setSelectionRange(next.cursor, next.cursor);
   }
   target.dispatchEvent(
-    new InputEvent("input", { bubbles: true, inputType: "insertText" }),
+    new InputEvent("input", {
+      bubbles: true,
+      inputType: event.inputType,
+      data: event.data,
+    }),
   );
 }
 
@@ -89,19 +102,49 @@ export function createProtectedTouchKeyboardController(
     uppercase: false,
     target: null,
   });
+  let openedAccessKey: string | null = null;
 
   function close(): void {
     state.open = false;
     state.uppercase = false;
     state.target = null;
+    openedAccessKey = null;
+  }
+
+  function clearMaintenanceInputBuffer(): void {
+    const target = state.target;
+    if (
+      !target ||
+      !openedAccessKey?.startsWith("maintenance:") ||
+      target.value.length === 0
+    ) {
+      return;
+    }
+    target.value = "";
+    if (target.type !== "number") target.setSelectionRange(0, 0);
+    target.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+        data: null,
+      }),
+    );
   }
 
   function reconcileAccess(): void {
-    if (!routeAllowsInput(getAccess())) close();
+    const currentAccessKey = accessKey(getAccess());
+    if (
+      currentAccessKey === null ||
+      (state.open && currentAccessKey !== openedAccessKey)
+    ) {
+      clearMaintenanceInputBuffer();
+      close();
+    }
   }
 
   function onFocusIn(event: FocusEvent): void {
-    if (!routeAllowsInput(getAccess()) || !isEligibleInput(event.target)) {
+    const currentAccessKey = accessKey(getAccess());
+    if (currentAccessKey === null || !isEligibleInput(event.target)) {
       close();
       return;
     }
@@ -109,6 +152,7 @@ export function createProtectedTouchKeyboardController(
     state.layout = initialLayout(event.target);
     state.uppercase = false;
     state.open = true;
+    openedAccessKey = currentAccessKey;
   }
 
   function install(ownerDocument: Document): () => void {
@@ -123,22 +167,30 @@ export function createProtectedTouchKeyboardController(
     const target = state.target;
     if (!state.open || !target || character.length === 0) return;
     const inserted = state.uppercase ? character.toUpperCase() : character;
-    updateTargetValue(target, (value, start, end) => ({
-      value: `${value.slice(0, start)}${inserted}${value.slice(end)}`,
-      cursor: start + inserted.length,
-    }));
+    updateTargetValue(
+      target,
+      { inputType: "insertText", data: inserted },
+      (value, start, end) => ({
+        value: `${value.slice(0, start)}${inserted}${value.slice(end)}`,
+        cursor: start + inserted.length,
+      }),
+    );
   }
 
   function backspace(): void {
     const target = state.target;
     if (!state.open || !target) return;
-    updateTargetValue(target, (value, start, end) => {
-      const deleteFrom = start === end ? Math.max(0, start - 1) : start;
-      return {
-        value: `${value.slice(0, deleteFrom)}${value.slice(end)}`,
-        cursor: deleteFrom,
-      };
-    });
+    updateTargetValue(
+      target,
+      { inputType: "deleteContentBackward", data: null },
+      (value, start, end) => {
+        const deleteFrom = start === end ? Math.max(0, start - 1) : start;
+        return {
+          value: `${value.slice(0, deleteFrom)}${value.slice(end)}`,
+          cursor: deleteFrom,
+        };
+      },
+    );
   }
 
   function submit(): void {

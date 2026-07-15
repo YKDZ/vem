@@ -1,9 +1,11 @@
 param(
   [switch]$PrintPlan,
+  [string]$ValidateFixturePath,
   [string]$EvidencePath,
   [string]$MachineUiPath = "C:\VEM\bringup\machine.exe",
-  [string]$ExpectedMachineUiSha256,
-  [string]$SourceCommit,
+  [string]$RuntimeAcceptanceReportPath = "C:\ProgramData\VEM\vending-daemon\runtime-acceptance-report.json",
+  [string]$ManagedUpdateManifestPath,
+  [string]$ManagedUpdateEvidencePath,
   [string]$ExpectedTestbedHost = "DESKTOP-2STVS5B",
   [string]$CdpEndpoint = "http://127.0.0.1:9222"
 )
@@ -44,19 +46,168 @@ $plan = [ordered]@{
   )
 }
 
+function Read-JsonFile([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "required evidence file is missing: $Path"
+  }
+  return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+}
+
+function Normalize-Sha256([object]$Value, [string]$Label) {
+  $normalized = ([string]$Value).Trim().ToLowerInvariant()
+  if ($normalized -notmatch "^[0-9a-f]{64}$") {
+    throw "$Label must be a SHA-256 digest"
+  }
+  return $normalized
+}
+
+function Normalize-WindowsPath([object]$Value) {
+  return ([string]$Value).Trim().Replace("/", "\").TrimEnd("\").ToLowerInvariant()
+}
+
+function Test-TauriHashRouteUrl([object]$Value) {
+  try {
+    $uri = [System.Uri]::new([string]$Value)
+    return (
+      $uri.Scheme -eq "http" -and
+      $uri.Host -eq "tauri.localhost" -and
+      $uri.AbsolutePath -eq "/" -and
+      $uri.Fragment.StartsWith("#/")
+    )
+  } catch {
+    return $false
+  }
+}
+
+function Get-SingleComponent([object]$Components, [string]$Label) {
+  $matches = @($Components | Where-Object { [string]$_.component -eq "ui" })
+  if ($matches.Count -ne 1) {
+    throw "$Label must contain exactly one ui component"
+  }
+  return $matches[0]
+}
+
+function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost) {
+  if ([string]$Fixture.host.computerName -cne $ExpectedHost) {
+    throw "acceptance fixture host does not match the dedicated testbed"
+  }
+
+  $artifactSha256 = Normalize-Sha256 $Fixture.artifact.sha256 "deployed machine UI"
+  if ([long]$Fixture.artifact.sizeBytes -le 0) {
+    throw "deployed machine UI size must be positive"
+  }
+
+  $runtime = $Fixture.runtimeAcceptance
+  if (-not ([string]$runtime.target.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
+    throw "runtime acceptance must use a VEM-TESTBED-* machine identity"
+  }
+  if (
+    [string]$runtime.result.runtimeReady.status -ne "passed" -or
+    -not [bool]$runtime.result.runtimeReady.asserted
+  ) {
+    throw "authoritative runtime acceptance must have passed"
+  }
+  if ((Normalize-Sha256 $runtime.artifacts.machineUiSha256 "runtime acceptance machine UI") -cne $artifactSha256) {
+    throw "runtime acceptance machine UI hash does not match the deployed artifact"
+  }
+
+  $machine = $Fixture.liveRuntime.machineProcess
+  $listener = $Fixture.liveRuntime.cdpListener
+  $target = $Fixture.liveRuntime.cdpTarget
+  $kiosk = $runtime.kioskRuntime
+  if (
+    [string]$machine.sessionUser -cne "VEMKiosk" -or
+    [int]$machine.processId -le 0 -or
+    [int]$machine.sessionId -le 0
+  ) {
+    throw "live machine.exe must belong to the VEMKiosk interactive session"
+  }
+  if (
+    -not [bool]$listener.bound -or
+    [int]$listener.processId -le 0 -or
+    [int]$listener.sessionId -ne [int]$machine.sessionId -or
+    [int]$listener.machineAncestorProcessId -ne [int]$machine.processId
+  ) {
+    throw "live CDP listener must be in the kiosk session and descend from machine.exe"
+  }
+  if (-not (Test-TauriHashRouteUrl $target.url) -or [string]::IsNullOrWhiteSpace([string]$target.id)) {
+    throw "live CDP target must be a bound tauri.localhost hash route"
+  }
+  if (
+    -not [bool]$kiosk.webviewRunning -or
+    -not [bool]$kiosk.cdpAvailable -or
+    [string]$kiosk.sessionUser -cne "VEMKiosk" -or
+    [int]$kiosk.processId -ne [int]$machine.processId -or
+    [int]$kiosk.sessionId -ne [int]$machine.sessionId -or
+    [int]$kiosk.cdpListenerProcessId -ne [int]$listener.processId -or
+    [int]$kiosk.cdpListenerSessionId -ne [int]$listener.sessionId -or
+    [int]$kiosk.cdpMachineAncestorProcessId -ne [int]$machine.processId -or
+    [string]$kiosk.cdpTargetId -cne [string]$target.id -or
+    [string]$kiosk.url -cne [string]$target.url
+  ) {
+    throw "live CDP/process/session facts do not match authoritative runtime acceptance"
+  }
+
+  $delivery = $Fixture.delivery
+  $manifest = $delivery.manifest
+  $managedUpdate = $delivery.evidence
+  $sourceCommit = ([string]$manifest.sourceCommit).Trim().ToLowerInvariant()
+  if ($sourceCommit -notmatch "^[0-9a-f]{40}$") {
+    throw "managed-update manifest must bind a full Git sourceCommit"
+  }
+  if (
+    [string]::IsNullOrWhiteSpace([string]$manifest.updateId) -or
+    [string]$managedUpdate.updateId -cne [string]$manifest.updateId -or
+    -not [bool]$managedUpdate.ok -or
+    [string]$managedUpdate.host -cne $ExpectedHost -or
+    (Normalize-WindowsPath $managedUpdate.manifestPath) -cne (Normalize-WindowsPath $delivery.manifestPath)
+  ) {
+    throw "managed-update evidence does not bind the supplied delivery manifest"
+  }
+  $manifestUi = Get-SingleComponent $manifest.components "managed-update manifest"
+  $evidenceUi = Get-SingleComponent $managedUpdate.components "managed-update evidence"
+  $artifactPath = Normalize-WindowsPath $Fixture.artifact.path
+  if (
+    (Normalize-WindowsPath $manifestUi.targetPath) -cne $artifactPath -or
+    (Normalize-WindowsPath $evidenceUi.targetPath) -cne $artifactPath -or
+    (Normalize-Sha256 $manifestUi.sha256 "manifest ui") -cne $artifactSha256 -or
+    (Normalize-Sha256 $evidenceUi.expectedSha256 "managed-update expected ui") -cne $artifactSha256 -or
+    (Normalize-Sha256 $evidenceUi.installedSha256 "managed-update installed ui") -cne $artifactSha256 -or
+    -not [bool]$evidenceUi.ok
+  ) {
+    throw "managed-update manifest/evidence does not bind the deployed machine UI bytes"
+  }
+
+  return [ordered]@{
+    status = "passed"
+    sourceCommit = $sourceCommit
+    machineUiSha256 = $artifactSha256
+    machineProcessId = [int]$machine.processId
+    cdpListenerProcessId = [int]$listener.processId
+    sessionId = [int]$machine.sessionId
+  }
+}
+
 if ($PrintPlan) {
   $plan | ConvertTo-Json -Depth 8 -Compress
+  exit 0
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ValidateFixturePath)) {
+  $fixture = Read-JsonFile $ValidateFixturePath
+  $validation = Assert-AcceptanceFixture $fixture $ExpectedTestbedHost
+  $validation | ConvertTo-Json -Depth 8 -Compress
   exit 0
 }
 
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
   throw "-EvidencePath is required"
 }
-if ($ExpectedMachineUiSha256 -notmatch "^[A-Fa-f0-9]{64}$") {
-  throw "-ExpectedMachineUiSha256 must be a SHA-256 digest"
+if ([string]::IsNullOrWhiteSpace($ManagedUpdateManifestPath)) {
+  throw "-ManagedUpdateManifestPath is required"
 }
-if ([string]::IsNullOrWhiteSpace($SourceCommit)) {
-  throw "-SourceCommit is required"
+if ([string]::IsNullOrWhiteSpace($ManagedUpdateEvidencePath)) {
+  throw "-ManagedUpdateEvidencePath is required"
 }
 if ($env:OS -ne "Windows_NT") {
   throw "interactive touch-keyboard acceptance must run on Windows"
@@ -70,10 +221,6 @@ if (-not (Test-Path -LiteralPath $MachineUiPath -PathType Leaf)) {
 
 $artifact = Get-Item -LiteralPath $MachineUiPath
 $artifactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $MachineUiPath).Hash.ToLowerInvariant()
-if ($artifactHash -cne $ExpectedMachineUiSha256.ToLowerInvariant()) {
-  throw "machine UI artifact hash does not match the accepted delivery unit"
-}
-
 $machineCim = @(
   Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" |
     Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq [System.IO.Path]::GetFullPath($MachineUiPath)) }
@@ -83,21 +230,73 @@ if ($machineCim.Count -ne 1) {
 }
 $machineProcess = Get-Process -Id $machineCim[0].ProcessId
 $ownerResult = Invoke-CimMethod -InputObject $machineCim[0] -MethodName GetOwner
-$sessionUser = [string]$ownerResult.User
-if ($sessionUser -cne $plan.requiredSessionUser) {
-  throw "machine UI must run in the VEMKiosk interactive session, found $sessionUser"
+
+$runtimeAcceptance = Read-JsonFile $RuntimeAcceptanceReportPath
+$manifest = Read-JsonFile $ManagedUpdateManifestPath
+$managedUpdateEvidence = Read-JsonFile $ManagedUpdateEvidencePath
+$authoritativeKiosk = $runtimeAcceptance.kioskRuntime
+$listenerCim = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$authoritativeKiosk.cdpListenerProcessId)"
+$bound = $false
+$cursor = $listenerCim
+for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth += 1) {
+  if ([int]$cursor.ProcessId -eq [int]$machineProcess.Id) {
+    $bound = $true
+    break
+  }
+  $parentId = [int]$cursor.ParentProcessId
+  if ($parentId -le 0 -or $parentId -eq [int]$cursor.ProcessId) { break }
+  $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+}
+$listenerSocket = @(
+  Get-NetTCPConnection -LocalPort ([System.Uri]$CdpEndpoint).Port -State Listen |
+    Where-Object { [int]$_.OwningProcess -eq [int]$listenerCim.ProcessId }
+)
+if ($listenerSocket.Count -eq 0) {
+  throw "authoritative CDP listener PID is not listening on the configured endpoint"
+}
+$targets = @(Invoke-RestMethod -Uri "$($CdpEndpoint.TrimEnd('/'))/json" -TimeoutSec 5)
+$target = @($targets | Where-Object { [string]$_.id -ceq [string]$authoritativeKiosk.cdpTargetId })
+if ($target.Count -ne 1) {
+  throw "authoritative CDP target is not present on the live listener"
 }
 
-$targets = @(Invoke-RestMethod -Uri "$($CdpEndpoint.TrimEnd('/'))/json" -TimeoutSec 5)
-$tauriTargets = @($targets | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
-if ($tauriTargets.Count -ne 1) {
-  throw "expected one tauri.localhost CDP target, found $($tauriTargets.Count)"
+$fixture = [ordered]@{
+  host = [ordered]@{ computerName = $env:COMPUTERNAME }
+  artifact = [ordered]@{
+    path = $MachineUiPath
+    sizeBytes = [long]$artifact.Length
+    sha256 = $artifactHash
+  }
+  liveRuntime = [ordered]@{
+    machineProcess = [ordered]@{
+      processId = [int]$machineProcess.Id
+      sessionId = [int]$machineProcess.SessionId
+      sessionUser = [string]$ownerResult.User
+    }
+    cdpListener = [ordered]@{
+      processId = [int]$listenerCim.ProcessId
+      sessionId = [int]$listenerCim.SessionId
+      machineAncestorProcessId = if ($bound) { [int]$machineProcess.Id } else { $null }
+      bound = $bound
+    }
+    cdpTarget = [ordered]@{
+      id = [string]$target[0].id
+      url = [string]$target[0].url
+    }
+  }
+  runtimeAcceptance = $runtimeAcceptance
+  delivery = [ordered]@{
+    manifestPath = $ManagedUpdateManifestPath
+    evidencePath = $ManagedUpdateEvidencePath
+    manifest = $manifest
+    evidence = $managedUpdateEvidence
+  }
 }
-$target = $tauriTargets[0]
+$validation = Assert-AcceptanceFixture $fixture $ExpectedTestbedHost
 
 Write-Host "受保护触摸键盘 Windows 交互验收"
 Write-Host "仅在专用 testbed 的临时身份/数据上执行；敏感值只可输入 kiosk 表单，禁止在本脚本终端输入或回显。"
-Write-Host "构件: $artifactHash；会话: $sessionUser/$($machineProcess.SessionId)；页面: $($target.url)"
+Write-Host "构件: $($validation.machineUiSha256)；源: $($validation.sourceCommit)；会话: VEMKiosk/$($validation.sessionId)"
 
 $results = @()
 foreach ($observation in $plan.observations) {
@@ -119,23 +318,22 @@ $evidence = [ordered]@{
   schemaVersion = "protected-touch-keyboard-acceptance-evidence/v1"
   stage = $plan.stage
   status = "passed"
-  sourceCommit = $SourceCommit
+  sourceCommit = $validation.sourceCommit
   recordedAt = (Get-Date).ToUniversalTime().ToString("o")
-  host = [ordered]@{
-    computerName = $env:COMPUTERNAME
-    expectedTestbedHost = $ExpectedTestbedHost
+  authority = [ordered]@{
+    runtimeAcceptanceReportPath = $RuntimeAcceptanceReportPath
+    managedUpdateManifestPath = $ManagedUpdateManifestPath
+    managedUpdateEvidencePath = $ManagedUpdateEvidencePath
   }
-  artifact = [ordered]@{
-    path = $MachineUiPath
-    sizeBytes = [long]$artifact.Length
-    sha256 = $artifactHash
-  }
+  host = $fixture.host
+  artifact = $fixture.artifact
   interactiveRuntime = [ordered]@{
-    processId = [int]$machineProcess.Id
-    sessionId = [int]$machineProcess.SessionId
-    sessionUser = $sessionUser
-    cdpTargetId = [string]$target.id
-    pageUrl = [string]$target.url
+    processId = $validation.machineProcessId
+    sessionId = $validation.sessionId
+    sessionUser = "VEMKiosk"
+    cdpListenerProcessId = $validation.cdpListenerProcessId
+    cdpTargetId = [string]$target[0].id
+    pageUrl = [string]$target[0].url
   }
   observations = $results
   secretValuesRecorded = $false

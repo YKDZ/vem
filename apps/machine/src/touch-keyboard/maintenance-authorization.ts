@@ -1,9 +1,18 @@
 import { readonly, ref } from "vue";
 
-const authorized = ref(false);
+export type MaintenanceTouchKeyboardSession = {
+  identity: string;
+  generation: number;
+};
 
-export const maintenanceTouchKeyboardAuthorized = readonly(authorized);
+const session = ref<MaintenanceTouchKeyboardSession | null>(null);
+let generation = 0;
 
-export function setMaintenanceTouchKeyboardAuthorized(value: boolean): void {
-  authorized.value = value;
+export const maintenanceTouchKeyboardSession = readonly(session);
+
+export function setMaintenanceTouchKeyboardSession(
+  identity: string | null,
+): void {
+  generation += 1;
+  session.value = identity === null ? null : { identity, generation };
 }

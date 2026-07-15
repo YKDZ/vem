@@ -41,7 +41,7 @@ import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
-import { setMaintenanceTouchKeyboardAuthorized } from "@/touch-keyboard/maintenance-authorization";
+import { setMaintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
 
 const router = useRouter();
 const route = useRoute();
@@ -220,7 +220,7 @@ async function beginProtectedMaintenance(): Promise<void> {
 function setMaintenanceSession(session: MaintenanceSession): void {
   clearRenderedMaintenanceSession();
   maintenanceSession.value = session;
-  setMaintenanceTouchKeyboardAuthorized(true);
+  setMaintenanceTouchKeyboardSession(session.sessionId);
   const delayMs = Date.parse(session.expiresAt) - Date.now();
   if (delayMs <= 0) {
     clearMaintenanceSession();
@@ -241,7 +241,7 @@ function clearRenderedMaintenanceSession(): void {
     maintenanceSessionExpiryTimer = null;
   }
   maintenanceSession.value = null;
-  setMaintenanceTouchKeyboardAuthorized(false);
+  setMaintenanceTouchKeyboardSession(null);
 }
 
 function clearMaintenanceSession(): void {

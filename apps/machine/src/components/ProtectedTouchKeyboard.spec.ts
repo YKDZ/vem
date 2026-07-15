@@ -18,7 +18,7 @@ describe("ProtectedTouchKeyboard", () => {
       render: () =>
         h(ProtectedTouchKeyboard, {
           routeName: routeName.value,
-          maintenanceAuthorized: false,
+          maintenanceSession: null,
         }),
     });
     app.mount(host);

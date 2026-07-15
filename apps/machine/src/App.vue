@@ -6,7 +6,7 @@ import ProtectedTouchKeyboard from "@/components/ProtectedTouchKeyboard.vue";
 import { installCustomerEventSources } from "@/composables/useCustomerEventSources";
 import { useReturnHomeOnCustomerDeparture } from "@/composables/usePresenceInteraction";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
-import { maintenanceTouchKeyboardAuthorized } from "@/touch-keyboard/maintenance-authorization";
+import { maintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
 
 const route = useRoute();
 const router = useRouter();
@@ -52,6 +52,6 @@ onMounted(async () => {
   <RouterView />
   <ProtectedTouchKeyboard
     :route-name="typeof route.name === 'string' ? route.name : ''"
-    :maintenance-authorized="maintenanceTouchKeyboardAuthorized"
+    :maintenance-session="maintenanceTouchKeyboardSession"
   />
 </template>

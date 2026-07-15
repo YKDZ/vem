@@ -1,27 +1,32 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 
+import type { MaintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
+
+import {
+  protectedTouchKeyboardLetterRows,
+  protectedTouchKeyboardNumberRows,
+  protectedTouchKeyboardSymbolRows,
+} from "@/touch-keyboard/layouts";
 import { createProtectedTouchKeyboardController } from "@/touch-keyboard/protected-touch-keyboard";
 
 const props = defineProps<{
   routeName: string;
-  maintenanceAuthorized: boolean;
+  maintenanceSession: MaintenanceTouchKeyboardSession | null;
 }>();
 
 const controller = createProtectedTouchKeyboardController(() => ({
   routeName: props.routeName,
-  maintenanceAuthorized: props.maintenanceAuthorized,
+  maintenanceSessionIdentity: props.maintenanceSession?.identity ?? null,
+  maintenanceSessionGeneration: props.maintenanceSession?.generation ?? 0,
 }));
 const { state } = controller;
 let removeFocusPolicy: (() => void) | null = null;
 
-const letterRows = [[..."qwertyuiop"], [..."asdfghjkl"], [..."zxcvbnm"]];
-const numberRows = [[..."1234567890"]];
-const symbolRows = [[..."!@#$%^&*()"], [..."-_+=[]{}"], [...".,:;/?\\|"]];
 const activeRows = computed(() => {
-  if (state.layout === "numbers") return numberRows;
-  if (state.layout === "symbols") return symbolRows;
-  return letterRows;
+  if (state.layout === "numbers") return protectedTouchKeyboardNumberRows;
+  if (state.layout === "symbols") return protectedTouchKeyboardSymbolRows;
+  return protectedTouchKeyboardLetterRows;
 });
 const numericOnly = computed(
   () =>
@@ -29,7 +34,7 @@ const numericOnly = computed(
 );
 
 watch(
-  () => [props.routeName, props.maintenanceAuthorized] as const,
+  () => [props.routeName, props.maintenanceSession?.generation] as const,
   () => controller.reconcileAccess(),
   { flush: "sync" },
 );

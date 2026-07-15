@@ -11,10 +11,12 @@ describe("protected touch keyboard authorization", () => {
 
   it("opens only for eligible Bring-Up and authenticated Maintenance inputs", () => {
     let routeName = "boot";
-    let maintenanceAuthorized = false;
+    let maintenanceSessionIdentity: string | null = null;
+    let maintenanceSessionGeneration = 0;
     const controller = createProtectedTouchKeyboardController(() => ({
       routeName,
-      maintenanceAuthorized,
+      maintenanceSessionIdentity,
+      maintenanceSessionGeneration,
     }));
     const remove = controller.install(document);
     const input = document.createElement("input");
@@ -32,16 +34,19 @@ describe("protected touch keyboard authorization", () => {
     controller.reconcileAccess();
     expect(controller.state.open).toBe(false);
 
-    maintenanceAuthorized = true;
+    maintenanceSessionIdentity = "session-a";
+    maintenanceSessionGeneration = 1;
     input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     expect(controller.state.open).toBe(true);
 
-    maintenanceAuthorized = false;
+    maintenanceSessionIdentity = null;
+    maintenanceSessionGeneration += 1;
     controller.reconcileAccess();
     expect(controller.state.open).toBe(false);
     expect(controller.state.target).toBeNull();
 
-    maintenanceAuthorized = true;
+    maintenanceSessionIdentity = "session-b";
+    maintenanceSessionGeneration += 1;
     input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     expect(controller.state.open).toBe(true);
 
@@ -52,10 +57,35 @@ describe("protected touch keyboard authorization", () => {
     remove();
   });
 
+  it("closes and clears its target when Maintenance rotates an authorized session", () => {
+    let maintenanceSessionIdentity: string | null = "session-a";
+    let maintenanceSessionGeneration = 7;
+    const controller = createProtectedTouchKeyboardController(() => ({
+      routeName: "maintenance",
+      maintenanceSessionIdentity,
+      maintenanceSessionGeneration,
+    }));
+    controller.install(document);
+    const input = document.createElement("input");
+    document.body.append(input);
+    input.focus();
+    controller.enter("sensitive-buffer");
+    expect(controller.state.open).toBe(true);
+
+    maintenanceSessionIdentity = "session-b";
+    maintenanceSessionGeneration += 1;
+    controller.reconcileAccess();
+
+    expect(controller.state.open).toBe(false);
+    expect(controller.state.target).toBeNull();
+    expect(input.value).toBe("");
+  });
+
   it("enters and deletes text through native input events", () => {
     const controller = createProtectedTouchKeyboardController(() => ({
       routeName: "bring-up",
-      maintenanceAuthorized: false,
+      maintenanceSessionIdentity: null,
+      maintenanceSessionGeneration: 0,
     }));
     controller.install(document);
     const input = document.createElement("input");
@@ -72,10 +102,57 @@ describe("protected touch keyboard authorization", () => {
     expect(inputEvents).toEqual(["a", "ab", "a"]);
   });
 
+  it("reports native input semantics for selection deletion and insertion", () => {
+    const controller = createProtectedTouchKeyboardController(() => ({
+      routeName: "bring-up",
+      maintenanceSessionIdentity: null,
+      maintenanceSessionGeneration: 0,
+    }));
+    controller.install(document);
+    const input = document.createElement("input");
+    input.value = "abcd";
+    document.body.append(input);
+    input.focus();
+    input.setSelectionRange(1, 3);
+    const events: Array<{
+      inputType: string;
+      data: string | null;
+      value: string;
+      selectionStart: number | null;
+    }> = [];
+    input.addEventListener("input", (event) => {
+      events.push({
+        inputType: event.inputType,
+        data: event.data,
+        value: input.value,
+        selectionStart: input.selectionStart,
+      });
+    });
+
+    controller.backspace();
+    controller.enter("X");
+
+    expect(events).toEqual([
+      {
+        inputType: "deleteContentBackward",
+        data: null,
+        value: "ad",
+        selectionStart: 1,
+      },
+      {
+        inputType: "insertText",
+        data: "X",
+        value: "aXd",
+        selectionStart: 2,
+      },
+    ]);
+  });
+
   it("submits through the owning form's native validation path", () => {
     const controller = createProtectedTouchKeyboardController(() => ({
       routeName: "bring-up",
-      maintenanceAuthorized: false,
+      maintenanceSessionIdentity: null,
+      maintenanceSessionGeneration: 0,
     }));
     controller.install(document);
     const form = document.createElement("form");
@@ -103,7 +180,8 @@ describe("protected touch keyboard authorization", () => {
   it("switches layouts, dismisses without changing form data, and leaves physical input intact", () => {
     const controller = createProtectedTouchKeyboardController(() => ({
       routeName: "bring-up",
-      maintenanceAuthorized: false,
+      maintenanceSessionIdentity: null,
+      maintenanceSessionGeneration: 0,
     }));
     controller.install(document);
     const input = document.createElement("input");
