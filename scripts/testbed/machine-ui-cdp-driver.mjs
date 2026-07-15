@@ -25,6 +25,14 @@ const FORBIDDEN_CUSTOMER_ROUTES = [
   "/offline",
   "/bring-up",
 ];
+const PRODUCTION_TUNNEL_OPTION_KEYS = new Set([
+  "remote",
+  "sshPort",
+  "identityFile",
+  "certificateFile",
+  "sshArgs",
+  "remoteCdpPort",
+]);
 
 export function isStrictTauriHashRouteUrl(value) {
   try {
@@ -1085,11 +1093,17 @@ export function startContinuousIdentityCapture(client, options = {}) {
 
 export async function runVisibleMachineSaleScenario(options = {}) {
   assertProductionScenarioOptions(options);
-  return runVisibleMachineSaleScenarioInternal(options, {
-    openSidecar: async (tunnelOptions) =>
-      openMachineUiCdpSidecar(tunnelOptions),
-    inspectRuntime: inspectWindowsMachineUiRuntime,
-  });
+  return runVisibleMachineSaleScenarioInternal(
+    {
+      ...options,
+      tunnelOptions: sanitizeProductionTunnelOptions(options.tunnelOptions),
+    },
+    {
+      openSidecar: async (tunnelOptions) =>
+        openMachineUiCdpSidecar(tunnelOptions),
+      inspectRuntime: inspectWindowsMachineUiRuntime,
+    },
+  );
 }
 
 // This harness is intentionally not reachable from CLI argument parsing.
@@ -1141,26 +1155,28 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   if (expectedInitialRoute == null) {
     throw new Error("expectedInitialRoute is required");
   }
+  const tunnelTransport = selectTunnelTransportFields(tunnelOptions);
+  const inspectionRemoteCdpPort =
+    tunnelTransport.remoteCdpPort ?? DEFAULT_REMOTE_CDP_PORT;
 
   const plannedExecution = countScenarioSteps(sequence);
   const executedExecution = { customerActivations: 0, observations: 0 };
   const observedRuntime = await dependencies.inspectRuntime({
-    remote: tunnelOptions.remote,
-    sshPort: tunnelOptions.sshPort,
-    identityFile: tunnelOptions.identityFile,
-    certificateFile: tunnelOptions.certificateFile,
-    sshArgs: tunnelOptions.sshArgs,
-    remoteCdpPort: tunnelOptions.remoteCdpPort ?? DEFAULT_REMOTE_CDP_PORT,
+    remote: tunnelTransport.remote,
+    sshPort: tunnelTransport.sshPort,
+    identityFile: tunnelTransport.identityFile,
+    certificateFile: tunnelTransport.certificateFile,
+    sshArgs: tunnelTransport.sshArgs,
+    remoteCdpPort: inspectionRemoteCdpPort,
     expectedMachinePath: expectedRuntime.machine.executablePath,
     timeoutMs,
   });
   const inspectedRuntime = normalizeWindowsRuntimeObservation(observedRuntime, {
-    remoteCdpPort: tunnelOptions.remoteCdpPort ?? DEFAULT_REMOTE_CDP_PORT,
+    remoteCdpPort: inspectionRemoteCdpPort,
   });
-  const sidecar = await dependencies.openSidecar({
-    ...tunnelOptions,
-    remoteCdpPort: inspectedRuntime.cdpListener.localPort,
-  });
+  const sidecar = await dependencies.openSidecar(
+    buildSidecarTunnelOptions(tunnelTransport, inspectedRuntime),
+  );
   let client;
   let capture;
   let unsubscribeCdpRoutes;
@@ -2252,6 +2268,57 @@ function assertProductionScenarioOptions(options) {
       );
     }
   }
+  sanitizeProductionTunnelOptions(options.tunnelOptions);
+}
+
+function sanitizeProductionTunnelOptions(tunnelOptions = {}) {
+  if (tunnelOptions == null) return {};
+  if (typeof tunnelOptions !== "object" || Array.isArray(tunnelOptions)) {
+    throw new Error("tunnelOptions must be an object");
+  }
+  const prototype = Object.getPrototypeOf(tunnelOptions);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("tunnelOptions must be a plain object");
+  }
+  for (const key of Reflect.ownKeys(tunnelOptions)) {
+    if (typeof key !== "string") {
+      throw new Error("tunnelOptions cannot use symbol keys");
+    }
+    if (!PRODUCTION_TUNNEL_OPTION_KEYS.has(key)) {
+      throw new Error(
+        `tunnelOptions.${key} is not allowed for production acceptance`,
+      );
+    }
+  }
+  return selectTunnelTransportFields(tunnelOptions);
+}
+
+function selectTunnelTransportFields(tunnelOptions = {}) {
+  const selected = {};
+  for (const key of PRODUCTION_TUNNEL_OPTION_KEYS) {
+    if (Object.hasOwn(tunnelOptions, key)) selected[key] = tunnelOptions[key];
+  }
+  return selected;
+}
+
+function buildSidecarTunnelOptions(tunnelTransport, inspectedRuntime) {
+  const sidecarOptions = {};
+  for (const key of [
+    "remote",
+    "sshPort",
+    "identityFile",
+    "certificateFile",
+    "sshArgs",
+  ]) {
+    if (Object.hasOwn(tunnelTransport, key)) {
+      sidecarOptions[key] = tunnelTransport[key];
+    }
+  }
+  return {
+    ...sidecarOptions,
+    remoteCdpHost: "127.0.0.1",
+    remoteCdpPort: inspectedRuntime.cdpListener.localPort,
+  };
 }
 
 function parseCliArgs(argv) {

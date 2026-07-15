@@ -309,6 +309,40 @@ describe("machine-ui-cdp-driver", () => {
     assert.match(cli.stderr, /unknown argument: --endpoint/);
   });
 
+  it("rejects nested production tunnel injection before it can run", async () => {
+    await assert.rejects(
+      runVisibleMachineSaleScenario({
+        tunnelOptions: {
+          remote: "test@win10.test",
+          endpoint: "http://127.0.0.1:9222",
+        },
+      }),
+      /tunnelOptions\.endpoint is not allowed/,
+    );
+    await assert.rejects(
+      runVisibleMachineSaleScenario({
+        tunnelOptions: {
+          remote: "test@win10.test",
+          processAdapter: {
+            spawn() {
+              throw new Error("injected adapter must not run");
+            },
+          },
+        },
+      }),
+      /tunnelOptions\.processAdapter is not allowed/,
+    );
+    await assert.rejects(
+      runVisibleMachineSaleScenario({
+        tunnelOptions: {
+          remote: "test@win10.test",
+          remoteCdpHost: "attacker.example",
+        },
+      }),
+      /tunnelOptions\.remoteCdpHost is not allowed/,
+    );
+  });
+
   it("opens an SSH tunnel only after readiness and drains stderr", async () => {
     const child = new FakeChildProcess();
     let ready = false;
@@ -904,8 +938,11 @@ describe("machine-ui-cdp-driver", () => {
           planned: { customerActivations: 1, observations: 1 },
           executed: { customerActivations: 1, observations: 1 },
         });
-        assert.equal(sidecarOptions.remoteCdpPort, 9222);
-        assert.equal("remoteCdpHost" in sidecarOptions, false);
+        assert.deepEqual(sidecarOptions, {
+          remote: "test@win10.test",
+          remoteCdpHost: "127.0.0.1",
+          remoteCdpPort: 9222,
+        });
       },
     );
   });
