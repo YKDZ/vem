@@ -266,9 +266,9 @@ describe("public near-field customer speaker acceptance runbook", () => {
       "directionally installed",
       "not Bluetooth",
       "not public-address style",
-      "OS default audio output",
-      "does not bind",
-      "speaker device ID",
+      "stable WASAPI output endpoint ID",
+      "must not rely on the OS default output",
+      "bound to the endpoint ID and form volume",
       "protected maintenance",
       "Machine Audio Test Playback",
       "Win10/Tauri production runtime",
@@ -287,5 +287,6 @@ describe("public near-field customer speaker acceptance runbook", () => {
     expect(content).toMatch(
       /Machine Audio playback success is customer-experience evidence only\.\s+It must not be treated as sale readiness evidence, payment evidence, dispensing evidence, refund evidence, or manual-handling evidence\./,
     );
+    expect(content).not.toContain("does not bind a specific speaker device ID");
   });
 });
