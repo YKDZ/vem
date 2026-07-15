@@ -279,10 +279,12 @@ export function validateFactoryMaintenanceRelayAttestation(value) {
   const handshake = runner.relayPeer.latestHandshakeEpochSeconds;
   if (
     !Number.isInteger(handshake) ||
-    handshake < Math.floor(startedAt / 1000) ||
+    handshake < Math.floor(issuedAt / 1000) ||
     handshake > Math.ceil(completedAt / 1000)
   ) {
-    throw new Error("runner relay peer handshake is not fresh for this proof");
+    throw new Error(
+      "runner relay peer handshake is not fresh for this session",
+    );
   }
   exactKeys(runner.route, ["destination", "device", "source"], "runner.route");
   if (

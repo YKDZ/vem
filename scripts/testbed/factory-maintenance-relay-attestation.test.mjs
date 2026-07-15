@@ -144,6 +144,13 @@ describe("Factory maintenance relay attestation", () => {
       },
     ],
     [
+      "a handshake from before the CI session",
+      (value) => {
+        value.runner.relayPeer.latestHandshakeEpochSeconds =
+          Math.floor(Date.parse(value.session.issuedAt) / 1000) - 1;
+      },
+    ],
+    [
       "adapter echoed proof",
       (value) => {
         value.source = "adapter";
