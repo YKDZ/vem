@@ -41,6 +41,9 @@ import {
   buildRuntimeAcceptanceReport,
   buildVmRuntimeAcceptanceReport,
   buildVmRuntimeAcceptancePlan,
+  buildInstalledKioskSaleLaunchScript,
+  buildInstalledKioskSaleCleanupScript,
+  runInstalledKioskSaleAcceptance,
   buildCleanBaseFactoryAcceptancePlan,
   buildFactoryImageDeliveryUnitReport,
   assertTrustedProtectedFactoryPersonalizationGate,
@@ -498,6 +501,37 @@ describe("transient SSH operation retry", () => {
 });
 
 describe("simulated hardware serial acceptance evidence", () => {
+  it("accepts one rendered customer binding and rejects business retry in the installed-kiosk profile", () => {
+    const input = completedSerialSaleEvidence();
+    const conformance = input.serialConformance;
+    conformance.profile = "installed-kiosk-sale";
+    conformance.customerUiSale = {
+      orderId: "ORDER-180",
+      paymentId: "PAYMENT-180",
+      transactionId: "ORDER-NO-180",
+      scenarioSha256: "a".repeat(64),
+      businessRetryCount: 0,
+    };
+    delete conformance.failureMatrix;
+    resignSerialConformance(conformance);
+    assert.doesNotThrow(() =>
+      validateSerialConformanceReport(conformance, {
+        expectedRunnerPublicKey: input.expectedRunnerPublicKey,
+        expectedAdapterIdentity: input.expectedAdapterIdentity,
+      }),
+    );
+    conformance.customerUiSale.businessRetryCount = 1;
+    resignSerialConformance(conformance);
+    assert.throws(
+      () =>
+        validateSerialConformanceReport(conformance, {
+          expectedRunnerPublicKey: input.expectedRunnerPublicKey,
+          expectedAdapterIdentity: input.expectedAdapterIdentity,
+        }),
+      /without business retry/,
+    );
+  });
+
   it("parses nested production failure commands and executes the command array", () => {
     const failedSaleOutput = JSON.stringify({
       ok: false,
@@ -3671,7 +3705,7 @@ try {
           "approved preclaim base verification",
           "ephemeral platform setup",
           "runtime acceptance",
-          "simulated hardware sale flow",
+          "installed kiosk sale",
         ],
       );
       assert.equal(plan.artifacts.source, "approved-preclaim-base");
@@ -3700,7 +3734,7 @@ try {
         plan.steps[1].command.includes("--allow-mock-payment"),
         "ephemeral setup must carry explicit mock-payment acknowledgement",
       );
-      assert.equal(plan.steps[3].mode, "simulated-hardware-sale-flow");
+      assert.equal(plan.steps[3].mode, "installed-kiosk-sale");
       assert.equal(
         plan.steps[3].ephemeralPlatformEvidence,
         plan.artifacts.ephemeralPlatformEvidence,
@@ -3727,6 +3761,82 @@ try {
       rmSync(temp, { recursive: true, force: true });
     }
   });
+
+  it("launches a single temporary CDP kiosk UI and always restores the normal owner without daemon mutation", () => {
+    const launch = buildInstalledKioskSaleLaunchScript();
+    const cleanup = buildInstalledKioskSaleCleanupScript();
+
+    assert.match(launch, /launch-machine-ui-debug\.vbs/);
+    assert.match(launch, /VEMInstalledKioskSaleDebug/);
+    assert.match(
+      launch,
+      /temporary CDP-enabled machine\.exe did not reach exactly-one process\/listener state/,
+    );
+    assert.match(launch, /targetId = \[string\]\$targets\[0\]\.id/);
+    assert.doesNotMatch(launch, /Stop-Service -Name 'VemVendingDaemon'/);
+    assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
+    assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
+    assert.match(cleanup, /CDP listener remained after debug UI cleanup/);
+    assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
+    assert.match(
+      cleanup,
+      /daemon stopped during installed kiosk sale acceptance/,
+    );
+  });
+
+  for (const [name, drive] of [
+    ["launch failure", null],
+    [
+      "driver failure",
+      async () => {
+        throw new Error("driver failed");
+      },
+    ],
+  ]) {
+    it(`runs installed kiosk cleanup after ${name}`, async () => {
+      const calls = [];
+      await assert.rejects(
+        () =>
+          runInstalledKioskSaleAcceptance(
+            {
+              options: {
+                remote: "YKDZ@win10.test",
+                identity: "/tmp/key",
+                certificate: "/tmp/cert",
+              },
+              plan: { artifacts: {} },
+              step: { command: [], report: "/tmp/unused.json" },
+              serialRunnerTrust: {
+                signingKeyFile: "/tmp/key",
+                publicKey: "key",
+              },
+            },
+            {
+              runRemote() {
+                calls.push("remote");
+                if (drive === null && calls.length === 1)
+                  throw new Error("launch failed");
+                return calls.length === 1
+                  ? {
+                      targetId: "target",
+                      machine: {
+                        processId: 1,
+                        sessionId: 1,
+                        executablePath: "C:\\VEM\\bringup\\machine.exe",
+                        principal: "VEM\\VEMKiosk",
+                      },
+                    }
+                  : { daemonRunning: true, cdpListenerCount: 0 };
+              },
+              catalog: async () => ({ evidence: [] }),
+              drive,
+            },
+          ),
+        /launch failed|driver failed/,
+      );
+      assert.deepEqual(calls, ["remote", "remote"]);
+    });
+  }
 
   it("plans clean-base factory acceptance with explicit clean-source evidence and destructive gates", () => {
     const plan = buildCleanBaseFactoryAcceptancePlan({
@@ -4826,7 +4936,7 @@ try {
       "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
     );
     const saleStep = plan.steps.find(
-      (step) => step.name === "simulated hardware sale flow",
+      (step) => step.name === "installed kiosk sale",
     );
     assert.equal(
       commandArg(saleStep.command, "--runner-signing-key-file"),
@@ -4836,66 +4946,21 @@ try {
       commandArg(saleStep.command, "--expected-runner-public-key"),
       "expected-serial-runner-public-key-required",
     );
-    const failureArtifacts = plan.artifacts.failureMatrix;
-    const failureCommands = readFailureMatrixCommands(
+    assert.equal(
+      commandArg(saleStep.command, "--customer-ui-sale-binding-file"),
+      plan.artifacts.customerUiSaleBinding,
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--sale-prepare-command-json"),
+      undefined,
+    );
+    assert.equal(
       commandArg(saleStep.command, "--failure-matrix-commands-json"),
+      undefined,
     );
-    assert.deepEqual(
-      JSON.parse(
-        commandArg(saleStep.command, "--failure-matrix-artifact-paths-json"),
-      ),
-      failureArtifacts,
-    );
-    const failureReports = Object.values(failureArtifacts).map(
-      (artifact) => artifact.report,
-    );
-    assert.equal(new Set(failureReports).size, 6);
-    assert.equal(
-      commandArg(
-        failureCommands["dispense-failed"].saleCompleteCommand,
-        "--out",
-      ),
-      failureArtifacts["dispense-failed"].saleComplete,
-    );
-    for (const failureMode of [
-      "swapped-roles",
-      "missing-device",
-      "scanner-timeout",
-    ])
-      assert.equal(
-        commandArg(failureCommands[failureMode].salePrepareCommand, "--out"),
-        failureArtifacts[failureMode].salePrepare,
-      );
-    for (const failureMode of ["swapped-roles", "missing-device"])
-      assert.equal(
-        commandArg(
-          failureCommands[failureMode].runtimeRecoveryCommand,
-          "--out",
-        ),
-        failureArtifacts[failureMode].runtimeRecovery,
-      );
-    assert.equal(
-      new Set([
-        ...failureReports,
-        ...Object.values(failureCommands).flatMap((commands) =>
-          Object.values(commands).map((command) =>
-            commandArg(command, "--out"),
-          ),
-        ),
-        commandArg(
-          JSON.parse(
-            commandArg(saleStep.command, "--sale-prepare-command-json"),
-          ),
-          "--out",
-        ),
-        commandArg(
-          JSON.parse(
-            commandArg(saleStep.command, "--sale-complete-command-json"),
-          ),
-          "--out",
-        ),
-      ]).size,
-      14,
+    assert.match(
+      commandArg(saleStep.command, "--sale-complete-command-json"),
+      /"--sale-phase","complete"/,
     );
 
     assert.throws(
@@ -4940,7 +5005,7 @@ try {
         "approved preclaim base verification",
         "ephemeral platform setup",
         "runtime acceptance",
-        "simulated hardware sale flow",
+        "installed kiosk sale",
       ],
     );
     assert.equal(plan.steps[0].mode, "clean-base-factory-acceptance");
@@ -5064,39 +5129,21 @@ try {
       );
     }
     const saleStep = plan.steps.find(
-      (step) => step.name === "simulated hardware sale flow",
+      (step) => step.name === "installed kiosk sale",
     );
     assert.ok(saleStep);
-    for (const option of [
-      "--sale-prepare-command-json",
-      "--sale-complete-command-json",
-    ]) {
-      const childCommand = JSON.parse(commandArg(saleStep.command, option));
-      assert.equal(commandArg(childCommand, "--ssh-port"), "22022");
-      assert.equal(
-        commandArg(childCommand, "--ssh-known-hosts-path"),
-        "/tmp/vem-runtime-known-hosts",
-      );
-      assert.equal(
-        commandArg(childCommand, "--ssh-host-key-alias"),
-        "vem-runtime-run-183",
-      );
-    }
-    for (const command of Object.values(
-      JSON.parse(
-        commandArg(saleStep.command, "--failure-matrix-commands-json"),
-      ),
-    ).flatMap((commands) => Object.values(commands))) {
-      assert.equal(commandArg(command, "--ssh-port"), "22022");
-      assert.equal(
-        commandArg(command, "--ssh-known-hosts-path"),
-        "/tmp/vem-runtime-known-hosts",
-      );
-      assert.equal(
-        commandArg(command, "--ssh-host-key-alias"),
-        "vem-runtime-run-183",
-      );
-    }
+    const childCommand = JSON.parse(
+      commandArg(saleStep.command, "--sale-complete-command-json"),
+    );
+    assert.equal(commandArg(childCommand, "--ssh-port"), "22022");
+    assert.equal(
+      commandArg(childCommand, "--ssh-known-hosts-path"),
+      "/tmp/vem-runtime-known-hosts",
+    );
+    assert.equal(
+      commandArg(childCommand, "--ssh-host-key-alias"),
+      "vem-runtime-run-183",
+    );
   });
 
   it("does not assert clean-base acceptance from invalid or dry-run evidence", () => {
