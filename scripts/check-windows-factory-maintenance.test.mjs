@@ -169,24 +169,22 @@ test("Factory OOBE cleanup keeps its task through reboot and completes only afte
 $script:TaskRegistered = $true
 $script:Winlogon = @{}
 $script:RestartRequests = 0
-$script:RestartSleeps = 0
 $env:COMPUTERNAME = 'VEM-TESTBED'
 function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
-function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Get-LocalUser { param($Name, $ErrorAction) if ($Name -ceq 'VEMOobeBootstrap') { [pscustomobject]@{ Name = $Name } } }
 function Get-CimInstance { param($ClassName, $ErrorAction) if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [DateTime]'2026-07-15T00:00:00Z' } }; throw "unexpected CIM class: $ClassName" }
 function Set-ItemProperty { param($Path, $Name, $Value, [switch]$Force) $script:Winlogon[$Name] = $Value }
 function Remove-ItemProperty { param($Path, $Name, $ErrorAction) }
 function Remove-LocalUser { param($Name, $ErrorAction) }
 function Get-Volume { param($ErrorAction) @() }
 function New-Object { param($ComObject) [pscustomobject]@{} }
-function Start-Sleep { param($Seconds) if ($Seconds -ne 5) { throw "unexpected sleep: $Seconds" }; $script:RestartSleeps += 1 }
+function Start-Sleep { param($Seconds) throw "initial cleanup must not busy-wait: $Seconds" }
 function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
 function Restart-Computer { param([switch]$Force, $ErrorAction) if (-not $Force) { throw 'cleanup restart must be forced' }; $script:RestartRequests += 1; throw 'restart service temporarily unavailable' }
-try { ${completion}; throw 'cleanup reboot failure fixture unexpectedly succeeded' } catch { if ([string]$_ -notmatch 'could not request the handoff reboot after bounded retries') { throw } }
+try { ${completion}; throw 'cleanup reboot failure fixture unexpectedly succeeded' } catch { if ([string]$_ -notmatch 'handoff reboot request 1 failed') { throw } }
 if (-not $script:TaskRegistered) { throw 'cleanup task was removed before the requested reboot' }
-if ($script:RestartRequests -cne 3) { throw "cleanup must bound restart attempts; got $script:RestartRequests" }
-if ($script:RestartSleeps -cne 2) { throw "cleanup restart retries must be bounded; got $script:RestartSleeps sleeps" }
+if ($script:RestartRequests -cne 1) { throw "cleanup must make one scheduler-managed restart request; got $script:RestartRequests" }
 if ($script:Winlogon.AutoAdminLogon -cne '1') { throw 'AutoAdminLogon was not restored' }
 if ($script:Winlogon.ForceAutoLogon -cne '1') { throw 'ForceAutoLogon was not restored' }
 if ($script:Winlogon.DefaultUserName -cne 'VEMKiosk') { throw 'DefaultUserName was not restored' }
@@ -196,6 +194,8 @@ if (Test-Path -LiteralPath '${kioskAutologonStatePath.replaceAll("'", "''")}') {
 $cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
 if ($cleanupStatus.phase -cne 'reboot-pending') { throw 'cleanup did not persist reboot-pending before restart' }
 if ($cleanupStatus.rebootOriginBootIdentity -cne '2026-07-15T00:00:00.0000000Z') { throw 'cleanup did not persist the pre-reboot boot identity' }
+if ($cleanupStatus.rebootAttemptCount -ne 1) { throw 'cleanup did not persist the first restart attempt' }
+if ([string]::IsNullOrWhiteSpace([string]$cleanupStatus.lastRebootFailure)) { throw 'cleanup did not persist the restart failure' }
 `,
     );
     const result = run("pwsh", [
@@ -206,6 +206,49 @@ if ($cleanupStatus.rebootOriginBootIdentity -cne '2026-07-15T00:00:00.0000000Z')
       fixturePath,
     ]);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+    const sameBootReentryFixturePath = join(root, "same-boot-reentry.ps1");
+    writeFileSync(
+      cleanupStatusPath,
+      JSON.stringify({
+        schemaVersion: "vem-factory-oobe-cleanup-status/v1",
+        phase: "reboot-pending",
+        rebootOriginBootIdentity: "2026-07-15T00:00:00.0000000Z",
+        rebootAttemptCount: 1,
+        lastRebootFailure: "restart service temporarily unavailable",
+      }),
+    );
+    writeFileSync(
+      sameBootReentryFixturePath,
+      `$ErrorActionPreference = 'Stop'
+$script:TaskRegistered = $true
+$script:RestartRequests = 0
+function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
+function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Get-CimInstance { param($ClassName, $ErrorAction) if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [DateTime]'2026-07-15T00:00:00Z' } }; throw "unexpected CIM class: $ClassName" }
+function Start-Sleep { param($Seconds) throw "same-boot reentry must not busy-wait: $Seconds" }
+function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
+function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
+function Restart-Computer { param([switch]$Force, $ErrorAction) $script:RestartRequests += 1; throw 'restart service temporarily unavailable' }
+try { ${completion}; throw 'same-boot retry fixture unexpectedly succeeded' } catch { if ([string]$_ -notmatch 'handoff reboot request 2 failed') { throw } }
+if ($script:RestartRequests -ne 1) { throw "same-boot reentry must make one retry request; got $script:RestartRequests" }
+$cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
+if ($cleanupStatus.rebootAttemptCount -ne 2) { throw 'same-boot reentry did not persist the bounded second attempt' }
+if ([string]::IsNullOrWhiteSpace([string]$cleanupStatus.lastRebootFailure)) { throw 'same-boot reentry did not persist the retry failure' }
+`,
+    );
+    const sameBootReentry = run("pwsh", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      sameBootReentryFixturePath,
+    ]);
+    assert.equal(
+      sameBootReentry.status,
+      0,
+      `${sameBootReentry.stdout}\n${sameBootReentry.stderr}`,
+    );
 
     writeFileSync(
       cleanupStatusPath,

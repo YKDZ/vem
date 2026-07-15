@@ -972,7 +972,7 @@ export function factoryAutounattendXml(
       <OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideLocalAccountScreen>true</HideLocalAccountScreen><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC><SkipMachineOOBE>true</SkipMachineOOBE><SkipUserOOBE>true</SkipUserOOBE></OOBE>
       <AutoLogon><Password><Value>${FACTORY_OOBE_BOOTSTRAP_PASSWORD}</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>${FACTORY_OOBE_BOOTSTRAP_USER}</Username></AutoLogon>
       <UserAccounts><LocalAccounts><LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Password><Value>${FACTORY_OOBE_BOOTSTRAP_PASSWORD}</Value><PlainText>true</PlainText></Password><Description>Temporary VEM Factory OOBE bootstrap</Description><DisplayName>VEM Factory OOBE Bootstrap</DisplayName><Group>Administrators</Group><Name>${FACTORY_OOBE_BOOTSTRAP_USER}</Name></LocalAccount></LocalAccounts></UserAccounts>
-      <FirstLogonCommands><SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command &quot;Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue&quot;</CommandLine><Description>Remove temporary OOBE AutoLogon counter</Description></SynchronousCommand></FirstLogonCommands>
+      <FirstLogonCommands><SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command &quot;Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -Type DWord -Value 0 -Force&quot;</CommandLine><Description>Set the temporary OOBE AutoLogon counter to the documented zero workaround</Description></SynchronousCommand></FirstLogonCommands>
       <RegisteredOwner>VEM Factory</RegisteredOwner><RegisteredOrganization>VEM</RegisteredOrganization><TimeZone>UTC</TimeZone>
     </component>
   </settings>
@@ -1033,7 +1033,10 @@ try {
   $stage = 'register-cleanup'
   $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\complete-oobe-bootstrap.ps1'
   $cleanupTrigger = New-ScheduledTaskTrigger -AtStartup
-  Register-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Action $cleanupAction -Trigger $cleanupTrigger -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+  # The cleanup records each reboot request; the scheduler may restart its failed
+  # invocation only twice, for three total requests on the originating boot.
+  $cleanupSettings = New-ScheduledTaskSettingsSet -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 1)
+  Register-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Action $cleanupAction -Trigger $cleanupTrigger -Settings $cleanupSettings -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
   Write-BootstrapStatus 'succeeded' 'complete'
   Start-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction Stop
 } catch {
@@ -1064,7 +1067,11 @@ $oobeComplete = $false
 function Get-BootIdentity {
   $boot = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
   if ($null -eq $boot.LastBootUpTime) { throw 'VEM Factory could not determine the current boot identity' }
-  return ([DateTime]$boot.LastBootUpTime).ToUniversalTime().ToString('o')
+  return ConvertTo-BootIdentity $boot.LastBootUpTime
+}
+function ConvertTo-BootIdentity($Value) {
+  if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return '' }
+  return ([DateTime]$Value).ToUniversalTime().ToString('o')
 }
 function Get-ActiveVemKioskConsoleSession {
   $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
@@ -1082,7 +1089,9 @@ function Write-CleanupStatus(
   [string]$Phase,
   [string]$RebootOriginBootIdentity = '',
   [string]$CompletedBootIdentity = '',
-  $KioskConsoleSession = $null
+  $KioskConsoleSession = $null,
+  [int]$RebootAttemptCount = 0,
+  [string]$LastRebootFailure = ''
 ) {
   $status = [ordered]@{
     schemaVersion = 'vem-factory-oobe-cleanup-status/v1'
@@ -1092,6 +1101,8 @@ function Write-CleanupStatus(
     $status.rebootOriginBootIdentity = $RebootOriginBootIdentity
     $status.completedBootIdentity = if ([string]::IsNullOrWhiteSpace($CompletedBootIdentity)) { $null } else { $CompletedBootIdentity }
     $status.kioskConsoleSession = $KioskConsoleSession
+    $status.rebootAttemptCount = $RebootAttemptCount
+    $status.lastRebootFailure = if ([string]::IsNullOrWhiteSpace($LastRebootFailure)) { $null } else { $LastRebootFailure }
   }
   $status = $status | ConvertTo-Json -Depth 10 -Compress
   $temporaryPath = "$cleanupStatusPath.tmp"
@@ -1106,6 +1117,22 @@ function Remove-CleanupTask {
     Start-Sleep -Seconds 1
   }
   throw 'VEM Factory OOBE cleanup task remains registered'
+}
+function Request-HandoffReboot([string]$RebootOriginBootIdentity, $PreviousStatus) {
+  $previousAttempts = if ($null -ne $PreviousStatus -and $null -ne $PreviousStatus.PSObject.Properties['rebootAttemptCount']) { [int]$PreviousStatus.rebootAttemptCount } else { 0 }
+  if ($previousAttempts -ge 3) {
+    throw 'VEM Factory OOBE cleanup exhausted its bounded handoff reboot requests'
+  }
+  $attempt = $previousAttempts + 1
+  Write-CleanupStatus 'reboot-pending' $RebootOriginBootIdentity '' $null $attempt
+  try {
+    Restart-Computer -Force -ErrorAction Stop
+    exit 0
+  } catch {
+    $failure = [string]$_.Exception.Message
+    Write-CleanupStatus 'reboot-pending' $RebootOriginBootIdentity '' $null $attempt $failure
+    throw "VEM Factory OOBE cleanup handoff reboot request $attempt failed: $failure"
+  }
 }
 do {
   $bootstrapStatus = if (Test-Path -LiteralPath $diagnosticPath -PathType Leaf) {
@@ -1141,11 +1168,12 @@ if ($cleanupPhase -eq 'complete') {
   exit 0
 }
 if ($cleanupPhase -eq 'reboot-pending') {
-  $rebootOriginBootIdentity = [string]$cleanupStatus.rebootOriginBootIdentity
+  $rebootOriginBootIdentity = ConvertTo-BootIdentity $cleanupStatus.rebootOriginBootIdentity
   if ([string]::IsNullOrWhiteSpace($rebootOriginBootIdentity)) { throw 'VEM Factory OOBE cleanup reboot origin is unavailable' }
   $currentBootIdentity = Get-BootIdentity
-  if ($currentBootIdentity -ceq $rebootOriginBootIdentity) {
-    throw 'VEM Factory OOBE cleanup is waiting for the requested reboot to change the boot identity'
+  if ([string]::Equals($currentBootIdentity, $rebootOriginBootIdentity, [StringComparison]::Ordinal)) {
+    Request-HandoffReboot $rebootOriginBootIdentity $cleanupStatus
+    exit 0
   }
   $kioskSessionDeadline = (Get-Date).AddMinutes(30)
   $kioskConsoleSession = $null
@@ -1155,7 +1183,7 @@ if ($cleanupPhase -eq 'reboot-pending') {
     Start-Sleep -Seconds 5
   } while ((Get-Date) -lt $kioskSessionDeadline)
   if ($null -eq $kioskConsoleSession) { throw 'VEM Factory OOBE cleanup did not observe an active VEMKiosk console session after reboot' }
-  Write-CleanupStatus 'complete' $rebootOriginBootIdentity $currentBootIdentity $kioskConsoleSession
+  Write-CleanupStatus 'complete' $rebootOriginBootIdentity $currentBootIdentity $kioskConsoleSession ([int]$cleanupStatus.rebootAttemptCount) ([string]$cleanupStatus.lastRebootFailure)
   Remove-CleanupTask
   exit 0
 }
@@ -1199,15 +1227,7 @@ if ($personalizationVolumes.Count -ne 0) { throw 'VEM personalization medium rem
 Write-CleanupStatus 'media-ejected'
 $rebootOriginBootIdentity = Get-BootIdentity
 Write-CleanupStatus 'reboot-pending' $rebootOriginBootIdentity
-for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
-  try {
-    Restart-Computer -Force -ErrorAction Stop
-    exit 0
-  } catch {
-    if ($attempt -eq 2) { throw 'VEM Factory OOBE cleanup could not request the handoff reboot after bounded retries' }
-    Start-Sleep -Seconds 5
-  }
-}
+Request-HandoffReboot $rebootOriginBootIdentity $cleanupStatus
 `;
 }
 

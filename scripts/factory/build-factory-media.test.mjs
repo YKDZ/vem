@@ -1157,7 +1157,7 @@ describe("real deterministic Factory ISO builder", () => {
         "temporary OOBE bootstrap account has one group",
       ),
       "Administrators",
-      "temporary OOBE bootstrap account is intentionally elevated so Win10 FirstLogonCommands can remove HKLM AutoLogonCount",
+      "temporary OOBE bootstrap account is intentionally elevated so Win10 FirstLogonCommands can set HKLM AutoLogonCount to the documented zero workaround",
     );
     assert.equal(
       singleXmlTextForTest(autoLogon, "Username", "AutoLogon has one username"),
@@ -1205,16 +1205,16 @@ describe("real deterministic Factory ISO builder", () => {
     const firstLogonCommands = singleXmlBlockForTest(
       bios,
       "FirstLogonCommands",
-      "Factory unattended removes the temporary OOBE AutoLogon counter on its first bootstrap login",
+      "Factory unattended sets the temporary OOBE AutoLogon counter to the documented zero workaround on its first bootstrap login",
     );
-    const removeAutoLogonCount = singleXmlBlockForTest(
+    const resetAutoLogonCount = singleXmlBlockForTest(
       firstLogonCommands,
       "SynchronousCommand",
       "Factory unattended has one synchronous first-logon cleanup command",
     );
     assert.equal(
       singleXmlTextForTest(
-        removeAutoLogonCount,
+        resetAutoLogonCount,
         "Order",
         "first-logon AutoLogonCount cleanup has one order",
       ),
@@ -1222,11 +1222,11 @@ describe("real deterministic Factory ISO builder", () => {
     );
     assert.equal(
       singleXmlTextForTest(
-        removeAutoLogonCount,
+        resetAutoLogonCount,
         "CommandLine",
-        "first-logon AutoLogonCount cleanup has one exact command",
+        "first-logon AutoLogonCount workaround has one exact command",
       ),
-      "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command &quot;Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue&quot;",
+      "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command &quot;Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -Type DWord -Value 0 -Force&quot;",
     );
     assert.doesNotMatch(bios, /YKDZ/);
 
@@ -1802,6 +1802,11 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(prepareOobe, /New-ScheduledTaskTrigger -AtStartup/);
       assert.match(
         prepareOobe,
+        /New-ScheduledTaskSettingsSet -RestartCount 2 -RestartInterval \(New-TimeSpan -Minutes 1\)[\s\S]+Register-ScheduledTask[\s\S]+-Settings \$cleanupSettings/,
+        "cleanup task must have bounded scheduler-managed restart retries",
+      );
+      assert.match(
+        prepareOobe,
         /Write-BootstrapStatus 'succeeded' 'complete'[\s\S]+Start-ScheduledTask -TaskName 'VEMFactoryOobeCleanup'/,
       );
       assert.match(
@@ -1867,13 +1872,13 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(completeOobe, /Write-CleanupStatus 'media-ejected'/);
       assert.match(
         completeOobe,
-        /Get-BootIdentity[\s\S]+Write-CleanupStatus 'reboot-pending' \$rebootOriginBootIdentity[\s\S]+Restart-Computer -Force -ErrorAction Stop/,
+        /Get-BootIdentity[\s\S]+Write-CleanupStatus 'reboot-pending' \$rebootOriginBootIdentity[\s\S]+Request-HandoffReboot \$rebootOriginBootIdentity \$cleanupStatus/,
         "cleanup persists its pre-reboot boot identity before requesting the kiosk handoff reboot",
       );
       assert.match(
         completeOobe,
-        /\$currentBootIdentity -ceq \$rebootOriginBootIdentity[\s\S]+waiting for the requested reboot to change the boot identity/,
-        "reboot-pending cleanup must not request another reboot from the same boot",
+        /\[string\]::Equals\(\$currentBootIdentity, \$rebootOriginBootIdentity, \[StringComparison\]::Ordinal\)[\s\S]+Request-HandoffReboot \$rebootOriginBootIdentity \$cleanupStatus/,
+        "same-boot reboot-pending cleanup must use the scheduler-bounded handoff retry",
       );
       assert.match(
         completeOobe,
@@ -1882,8 +1887,13 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.match(
         completeOobe,
-        /for \(\$attempt = 0; \$attempt -lt 3; \$attempt \+= 1\)[\s\S]+could not request the handoff reboot after bounded retries/,
-        "restart failures must retry only within a bounded handoff request",
+        /function Request-HandoffReboot[\s\S]+\$previousAttempts -ge 3[\s\S]+Restart-Computer -Force -ErrorAction Stop/,
+        "restart failures must persist bounded task-managed handoff state",
+      );
+      assert.match(
+        completeOobe,
+        /rebootAttemptCount[\s\S]+lastRebootFailure/,
+        "cleanup status must retain the bounded reboot attempt and failure evidence",
       );
       assert.match(
         completeOobe,

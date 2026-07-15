@@ -35,6 +35,7 @@ import {
   buildInteractiveDesktopDisplayBaseline,
   assertSimulatedSaleFlowPreMutationTarget,
   readEphemeralPlatformSetupEvidence,
+  parseStructuredSshVerifierEvidence,
   runTransientSshOperation,
   buildKioskRuntimeEvidence,
   buildPortraitKioskAcceptance,
@@ -494,6 +495,33 @@ describe("transient SSH operation retry", () => {
 
     assert.equal(result.status, 255);
     assert.equal(calls, 1);
+  });
+
+  it("retains verifier evidence when a reset follows structured stdout", async () => {
+    const evidence = {
+      schemaVersion: "factory-preclaim-verification/v1",
+      kind: "factory-preclaim-verification",
+      ok: true,
+    };
+    let calls = 0;
+    const result = await runTransientSshOperation("ssh", ["factory"], {
+      run: async () => {
+        calls += 1;
+        return {
+          status: 255,
+          stdout: JSON.stringify(evidence),
+          stderr: "Connection reset by peer",
+        };
+      },
+      sleep: async () => assert.fail("verifier evidence must suppress retry"),
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.status, 255);
+    assert.deepEqual(
+      parseStructuredSshVerifierEvidence(result.stdout),
+      evidence,
+    );
   });
 });
 
@@ -3087,6 +3115,18 @@ try {
     assert.match(script, /cleanupStatus\.phase -ceq 'complete'/);
     assert.match(script, /rebootOriginBootIdentity/);
     assert.match(script, /Win32_OperatingSystem/);
+    assert.match(
+      script,
+      /\$completedBootIdentity -cne \$rebootOriginBootIdentity/,
+    );
+    assert.match(
+      script,
+      /\$currentBootIdentity -cne \$rebootOriginBootIdentity/,
+    );
+    assert.doesNotMatch(
+      script,
+      /\[string\]\$cleanupStatus\.completedBootIdentity -ceq \[string\]\$currentBootIdentity/,
+    );
     assert.match(script, /postRebootBootIdentityChanged = \$cleanupComplete/);
     assert.match(script, /Win32_ComputerSystem/);
     assert.match(script, /activeVemKioskConsoleSession/);
