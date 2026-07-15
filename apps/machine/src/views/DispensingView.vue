@@ -145,6 +145,7 @@ onUnmounted(() => {
       :data-transaction-id="checkoutStore.transaction?.orderNo ?? ''"
       :data-payment-url="checkoutStore.transaction?.paymentUrl ?? ''"
       :data-command-id="checkoutStore.transaction?.vending?.commandId ?? ''"
+      data-test="dispensing-page"
     >
       <div class="dispensing-mist dispensing-mist-left"></div>
       <div class="dispensing-mist dispensing-mist-right"></div>
