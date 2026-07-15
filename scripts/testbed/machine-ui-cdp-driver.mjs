@@ -1345,6 +1345,20 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           label: `${step.name}:before`,
           identity: before,
         });
+        if (step.activatesRouteBarrier) {
+          activeAllowedRoutes = validateAllowedRoutes(
+            PAYMENT_BARRIER_ALLOWED_ROUTES,
+          );
+          record({
+            type: "route-barrier",
+            label: step.name,
+            forbiddenRoutes: activeForbiddenRoutes,
+            allowedRoutes: activeAllowedRoutes,
+            armedBeforeInput: true,
+            armBaseline: { identity: before, route: before.route },
+          });
+          assertHealthy();
+        }
         const activation = await activateVisibleSelector(
           client,
           step.selector,
@@ -1361,20 +1375,9 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           label: step.name,
           selector: step.selector,
           input: activation.input,
-          routeBefore: before.route,
+          ...(step.activatesRouteBarrier ? {} : { routeBefore: before.route }),
         });
         executedExecution.customerActivations += 1;
-        if (step.activatesRouteBarrier) {
-          activeAllowedRoutes = validateAllowedRoutes(
-            PAYMENT_BARRIER_ALLOWED_ROUTES,
-          );
-          record({
-            type: "route-barrier",
-            label: step.name,
-            forbiddenRoutes: activeForbiddenRoutes,
-            allowedRoutes: activeAllowedRoutes,
-          });
-        }
         assertHealthy();
         const after = await waitForRoute(client, step.routeAfter, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
@@ -1918,7 +1921,9 @@ function boundEvidenceEntry(entry) {
         MAX_SELECTOR_LENGTH,
       ),
       input: boundPhysicalInput(entry.input),
-      routeBefore: normalizeMachineRoute(entry.routeBefore),
+      ...(entry.routeBefore == null
+        ? {}
+        : { routeBefore: normalizeMachineRoute(entry.routeBefore) }),
     };
   }
   if (entry.type === "observation") {
@@ -1953,6 +1958,11 @@ function boundEvidenceEntry(entry) {
       ),
       forbiddenRoutes: validateForbiddenRoutes(entry.forbiddenRoutes),
       allowedRoutes: validateAllowedRoutes(entry.allowedRoutes),
+      armedBeforeInput: entry.armedBeforeInput === true,
+      armBaseline: {
+        identity: boundIdentity(entry.armBaseline?.identity),
+        route: normalizeMachineRoute(entry.armBaseline?.route),
+      },
     };
   }
   if (entry.type === "route-action") {

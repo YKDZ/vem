@@ -32,6 +32,7 @@ const DEFAULT_MACHINE_CLAIM_LOOKUP_HMAC_KEY =
 const MINIMUM_CLEAN_INSTALL_CLAIM_CODE_TTL_SECONDS = 7200;
 const DEFAULT_MACHINE_CLAIM_CODE_TTL_SECONDS =
   MINIMUM_CLEAN_INSTALL_CLAIM_CODE_TTL_SECONDS;
+const EPHEMERAL_DATABASE_URL_ENV = "VEM_EPHEMERAL_DATABASE_URL";
 const TESTBED_MACHINE_CODE_PATTERN = /^VEM-TESTBED-[A-Z0-9][A-Z0-9-]{0,47}$/;
 const TESTBED_MACHINE_CODE_PREFIX_PATTERN =
   /^VEM-TESTBED-[A-Z0-9][A-Z0-9-]{0,40}$/;
@@ -297,7 +298,7 @@ function assertAllowedEphemeralTarget(
     const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
     if (KNOWN_PRODUCTION_DATABASE_NAMES.has(databaseName)) {
       throw new Error(
-        `Refusing known production or VPS target for --database-url: ${databaseName}`,
+        `Refusing known production or VPS target for ${target.flag}: ${databaseName}`,
       );
     }
   }
@@ -308,8 +309,8 @@ export function parseCliOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): CliOptions {
   const databaseUrl = requireOption(
-    readFlag(args, "database-url"),
-    "--database-url is required",
+    env[EPHEMERAL_DATABASE_URL_ENV],
+    `${EPHEMERAL_DATABASE_URL_ENV} is required`,
   );
   const apiBaseUrl = requireOption(
     readFlag(args, "api-base-url"),
@@ -351,7 +352,7 @@ export function parseCliOptions(
     throw new Error("--allow-mock-payment is required");
   }
   assertAllowedEphemeralTarget(
-    { name: "database", flag: "--database-url" },
+    { name: "database", flag: EPHEMERAL_DATABASE_URL_ENV },
     databaseUrl,
   );
   assertAllowedEphemeralTarget(

@@ -193,7 +193,7 @@ function platformRawRecords({
 } = {}) {
   const machineId = "MACHINE-180";
   return {
-    schemaVersion: "installed-kiosk-sale-platform-raw-records/v1",
+    schemaVersion: "installed-kiosk-sale-platform-raw-records/v2",
     source: "authoritative_ephemeral_platform_database",
     scope: { runId, machineCode, machineId },
     raw: {
@@ -203,6 +203,15 @@ function platformRawRecords({
           orderNo: "ORDER-NO-180",
           machineId,
           status: "completed",
+        },
+      ],
+      orderItems: [
+        {
+          id: "ORDER-ITEM-180",
+          orderId: "ORDER-180",
+          inventoryId: "INVENTORY-180",
+          slotId: "SLOT-180",
+          quantity: 1,
         },
       ],
       payments: [
@@ -230,6 +239,7 @@ function platformRawRecords({
           orderId: "ORDER-180",
           machineId,
           orderItemId: "ORDER-ITEM-180",
+          slotId: "SLOT-180",
           status: "succeeded",
         },
       ],
@@ -241,7 +251,10 @@ function platformRawRecords({
           movementType: "dispense_succeeded",
           quantity: 1,
           status: "accepted",
+          slotId: "SLOT-180",
           orderNo: "ORDER-NO-180",
+          orderItemId: "ORDER-ITEM-180",
+          inventoryId: "INVENTORY-180",
           commandNo: "COMMAND-NO-180",
         },
       ],
@@ -665,6 +678,10 @@ describe("simulated hardware serial acceptance evidence", () => {
       "utf8",
     );
     const calls = [];
+    const previousDatabaseUrl =
+      process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+    process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL =
+      "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime";
     try {
       const report = await runInstalledKioskSaleAcceptanceCli(
         {
@@ -672,8 +689,6 @@ describe("simulated hardware serial acceptance evidence", () => {
           machine_code: "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
           platform_target: "ephemeral-run-180",
           ephemeral_platform_evidence: join(root, "ephemeral-platform.json"),
-          ephemeral_database_url:
-            "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime",
           runtime_acceptance_report: runtimeReport,
           remote: "YKDZ@vm.example.test",
           identity: join(root, "identity"),
@@ -688,7 +703,7 @@ describe("simulated hardware serial acceptance evidence", () => {
           out: output,
         },
         {
-          runCommand(command, label) {
+          runCommand(command, label, { env } = {}) {
             calls.push(label);
             const out = command[command.indexOf("--out") + 1];
             if (label === "simulated hardware fixture") {
@@ -705,13 +720,19 @@ describe("simulated hardware serial acceptance evidence", () => {
               );
               return { status: 0 };
             }
-            if (label === "authoritative platform raw query") {
+            if (label.startsWith("authoritative platform raw")) {
+              assert.equal(command.includes("--database-url"), false);
               assert.equal(
-                command[command.indexOf("--database-url") + 1],
+                env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL,
                 "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime",
               );
               assert.equal(command.includes("--remote"), false);
-              writeFileSync(out, JSON.stringify(platformRawRecords()), "utf8");
+              const report = platformRawRecords();
+              if (label.endsWith("baseline query")) {
+                for (const records of Object.values(report.raw))
+                  records.length = 0;
+              }
+              writeFileSync(out, JSON.stringify(report), "utf8");
               return { status: 0 };
             }
             const scannerCodePath =
@@ -877,11 +898,17 @@ describe("simulated hardware serial acceptance evidence", () => {
       assert.deepEqual(calls, [
         "simulated hardware fixture",
         "launch",
+        "authoritative platform raw baseline query",
         "serial conformance",
-        "authoritative platform raw query",
+        "authoritative platform raw post query",
         "cleanup",
       ]);
     } finally {
+      if (previousDatabaseUrl === undefined) {
+        delete process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+      } else {
+        process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL = previousDatabaseUrl;
+      }
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -910,13 +937,19 @@ describe("simulated hardware serial acceptance evidence", () => {
         },
       },
     };
-    const derive = (platformRaw) =>
+    const derive = (platformRawPost) =>
       deriveCorrelation({
         payment,
         fulfillment,
         serial,
         completion,
-        platformRaw,
+        platformRawBaseline: {
+          ...platformRawPost,
+          raw: Object.fromEntries(
+            Object.entries(platformRawPost.raw).map(([name]) => [name, []]),
+          ),
+        },
+        platformRawPost,
         runId: "RUN-180-EVIDENCE",
         machineCode: "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
         saleCorrelationId:
@@ -926,6 +959,7 @@ describe("simulated hardware serial acceptance evidence", () => {
     assert.equal(derive(platformRawRecords()).exactOnce.orderNoCount, 1);
     for (const [identity, recordName] of [
       ["order", "orders"],
+      ["order item", "orderItems"],
       ["payment", "payments"],
       ["reservation", "reservations"],
       ["command", "commands"],
@@ -4099,8 +4133,6 @@ if ($errors.Count -gt 0) {
           "RUN-181",
           "--platform-target",
           "ephemeral-run-181",
-          "--ephemeral-database-url",
-          "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
           "--ephemeral-api-base-url",
           "http://127.0.0.1:26849/api",
           "--ephemeral-mqtt-url",
@@ -4126,7 +4158,15 @@ if ($errors.Count -gt 0) {
           outputPath,
           "--dry-run",
         ],
-        { cwd: process.cwd(), encoding: "utf8" },
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            VEM_EPHEMERAL_DATABASE_URL:
+              "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+          },
+        },
       );
 
       assert.equal(result.status, 0, result.stderr);
@@ -4182,6 +4222,12 @@ if ($errors.Count -gt 0) {
         plan.steps[1].command.includes("--allow-ephemeral-target"),
         "ephemeral setup must carry explicit safety flags",
       );
+      assert.equal(
+        plan.steps.every(
+          (step) => !step.command.includes("--ephemeral-database-url"),
+        ),
+        true,
+      );
       assert.ok(
         plan.steps[1].command.includes("--allow-mock-payment"),
         "ephemeral setup must carry explicit mock-payment acknowledgement",
@@ -4213,7 +4259,7 @@ if ($errors.Count -gt 0) {
         readFileSync(outputPath, "utf8"),
         /pass@127\.0\.0\.1/,
       );
-      assert.match(result.stdout, /\[REDACTED\]/);
+      assert.doesNotMatch(result.stdout, /postgres(?:ql)?:\/\//i);
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }

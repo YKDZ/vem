@@ -75,6 +75,7 @@ function runScenarioForTest(options) {
 
 async function runInstalledRouteCompetitionScenario({
   competingRoute = null,
+  touchIntervalRoute = null,
 } = {}) {
   return withFakeHttpTargets(
     [target("machine-target", "#/catalog")],
@@ -130,6 +131,13 @@ async function runInstalledRouteCompetitionScenario({
             ][activations - 1];
             if (nextRoute !== route) {
               route = nextRoute;
+              socket.emitMessage({
+                method: "Page.navigatedWithinDocument",
+                params: { url: `http://tauri.localhost/${route}` },
+              });
+            }
+            if (activations === 5 && touchIntervalRoute) {
+              route = touchIntervalRoute;
               socket.emitMessage({
                 method: "Page.navigatedWithinDocument",
                 params: { url: `http://tauri.localhost/${route}` },
@@ -724,6 +732,17 @@ describe("machine-ui-cdp-driver", () => {
           entry.routeAfter === "#/payment",
       ),
     );
+    const barrier = result.evidence.find(
+      (entry) => entry.type === "route-barrier",
+    );
+    assert.equal(barrier.armedBeforeInput, true);
+    assert.equal(barrier.armBaseline.route, "#/checkout");
+    const paymentActivation = result.evidence.find(
+      (entry) =>
+        entry.type === "customer-activation" &&
+        entry.label === "payment submit",
+    );
+    assert.equal("routeBefore" in paymentActivation, false);
     assert.ok(
       sockets[0].sent.some(
         (message) =>
@@ -738,6 +757,17 @@ describe("machine-ui-cdp-driver", () => {
       await assert.rejects(
         runInstalledRouteCompetitionScenario({ competingRoute }),
         new RegExp(`payment barrier route observed: ${competingRoute}`),
+      );
+    });
+  }
+
+  for (const transientRoute of ["#/checkout", "#/products/test-item"]) {
+    it(`rejects ${transientRoute} injected between payment touch start and end`, async () => {
+      await assert.rejects(
+        runInstalledRouteCompetitionScenario({
+          touchIntervalRoute: transientRoute,
+        }),
+        new RegExp(`payment barrier route observed: ${transientRoute}`),
       );
     });
   }

@@ -654,11 +654,10 @@ jobs:
           test -n "${VEM_VM_HOST_SCANNER_CODE_FILE:-}"
           test -f "$VEM_VM_HOST_SCANNER_CODE_FILE"
           test "$(stat -c '%a' "$VEM_VM_HOST_SCANNER_CODE_FILE")" = "600"
-          node scripts/testbed/win10-vem-e2e.mjs \
+          VEM_EPHEMERAL_DATABASE_URL="$DATABASE_URL" node scripts/testbed/win10-vem-e2e.mjs \
             --mode vm-runtime-acceptance \
             --run-id "$RUN_ID" \
             --platform-target "self-hosted-${RUN_ID}" \
-            --ephemeral-database-url "$DATABASE_URL" \
             --ephemeral-api-base-url "$EPHEMERAL_API_BASE_URL" \
             --ephemeral-mqtt-url "$EPHEMERAL_MQTT_URL" \
             --factory-guest-endpoint-json "$VM_GUEST_MAINTENANCE_ENDPOINT_JSON" \

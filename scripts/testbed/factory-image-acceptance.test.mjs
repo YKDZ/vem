@@ -351,6 +351,14 @@ function saleScenario(input, _runtimeDigest) {
           label: "payment option",
           forbiddenRoutes: ["/catalog", "/home", "/maintenance"],
           allowedRoutes: ["/payment", "/dispensing", "/result"],
+          armedBeforeInput: true,
+          armBaseline: {
+            route: "#/checkout",
+            identity: {
+              url: "http://tauri.localhost/#/checkout",
+              route: "#/checkout",
+            },
+          },
         },
         {
           type: "route-action",
@@ -394,6 +402,13 @@ function saleScenario(input, _runtimeDigest) {
         stockMovementId: "movement-factory-1",
         stockDelta: -1,
         status: "accepted",
+        orderItem: {
+          id: "order-item-factory-1",
+          orderId: "order-factory-1",
+          inventoryId: "inventory-factory-1",
+          slotId: "slot-factory-1",
+          quantity: 1,
+        },
         reservation: {
           exposed: true,
           source: "authoritative_ephemeral_platform.inventory_reservations",
@@ -426,6 +441,11 @@ function saleScenario(input, _runtimeDigest) {
             unique: ["order-no-factory-1"],
             count: 1,
           },
+          orderItemIds: {
+            occurrences: ["order-item-factory-1"],
+            unique: ["order-item-factory-1"],
+            count: 1,
+          },
           commandIds: {
             occurrences: ["command-factory-1"],
             unique: ["command-factory-1"],
@@ -449,6 +469,7 @@ function saleScenario(input, _runtimeDigest) {
         orderCount: 1,
         paymentCount: 1,
         orderNoCount: 1,
+        orderItemCount: 1,
         reservationCount: 1,
         commandCount: 1,
         movementCount: 1,
@@ -606,7 +627,6 @@ describe("Factory Image Acceptance lifecycle", () => {
       endpoint,
       runtimeAcceptanceSummary(),
       sshKnownHostsPath,
-      "postgresql://vem:runner-only@127.0.0.1:55433/vem_factory_acceptance",
     );
 
     assert.deepEqual(invocation.slice(0, 2), [
@@ -634,10 +654,7 @@ describe("Factory Image Acceptance lifecycle", () => {
       "factory-route-competition",
     );
     assert.equal(invocation.includes("--already-claimed"), true);
-    assert.equal(
-      invocation[invocation.indexOf("--ephemeral-database-url") + 1],
-      "postgresql://vem:runner-only@127.0.0.1:55433/vem_factory_acceptance",
-    );
+    assert.equal(invocation.includes("--ephemeral-database-url"), false);
     assert.equal(
       invocation[invocation.indexOf("--ssh-known-hosts-path") + 1],
       sshKnownHostsPath,
@@ -693,6 +710,13 @@ describe("Factory Image Acceptance lifecycle", () => {
           orderId: "order-factory-1",
           paymentId: "payment-factory-1",
           orderNo: "order-no-factory-1",
+          orderItem: {
+            id: "order-item-factory-1",
+            orderId: "order-factory-1",
+            inventoryId: "inventory-factory-1",
+            slotId: "slot-factory-1",
+            quantity: 1,
+          },
           reservation: {
             exposed: true,
             source: "authoritative_ephemeral_platform.inventory_reservations",
@@ -827,6 +851,25 @@ describe("Factory Image Acceptance lifecycle", () => {
         `post-payment ${route} must fail Factory acceptance`,
       );
     }
+
+    const checkoutAfterArm = saleScenario(input, digest);
+    checkoutAfterArm.machineUiCdpScenario.evidence.push({
+      type: "customer-activation",
+      label: "payment submit",
+      routeBefore: "#/checkout",
+      input: { method: "Input.dispatchTouchEvent", released: true },
+    });
+    writeFileSync(output, `${JSON.stringify(checkoutAfterArm)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /route-barrier/,
+      "only the explicit pre-input arm baseline may retain checkout",
+    );
   });
 
   it("writes sanitized JSON copies into a dedicated upload boundary", () => {

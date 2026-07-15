@@ -610,13 +610,8 @@ export function buildFactoryInstalledKioskSaleInvocation(
   endpoint,
   runtimeAcceptance,
   sshKnownHostsPath = null,
-  runnerDatabaseUrl = process.env.VEM_FACTORY_EPHEMERAL_DATABASE_URL,
 ) {
   const accepted = validateFactoryImageAcceptanceInput(input);
-  const databaseUrl = nonEmpty(
-    runnerDatabaseUrl,
-    "VEM_FACTORY_EPHEMERAL_DATABASE_URL",
-  );
   const displayBinding = runtimeAcceptance?.displayBinding;
   if (
     displayBinding?.activeKioskSession?.sessionUser !== "VEMKiosk" ||
@@ -633,8 +628,6 @@ export function buildFactoryInstalledKioskSaleInvocation(
     "node",
     "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
     ...commonVerifierArgs(accepted, endpoint, { sshKnownHostsPath }),
-    "--ephemeral-database-url",
-    databaseUrl,
     "--runtime-acceptance-report",
     verifierOutput(accepted, "runtime-acceptance.json"),
     "--adapter",
@@ -651,10 +644,17 @@ export function buildFactoryInstalledKioskSaleInvocation(
   ];
 }
 
-function runExact(command, failureMessage) {
+function runExact(command, failureMessage, env) {
+  const childEnvironment = env ? { ...env } : { ...process.env };
+  delete childEnvironment.VEM_FACTORY_EPHEMERAL_DATABASE_URL;
+  delete childEnvironment.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+  if (env?.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL) {
+    childEnvironment.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL =
+      env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+  }
   const result = spawnSync(command[0], command.slice(1), {
     stdio: "inherit",
-    env: process.env,
+    env: childEnvironment,
   });
   if (result.status !== 0) throw new Error(failureMessage);
 }
@@ -798,6 +798,18 @@ function hasReservationExactOnce(reservation, observation, count, orderId) {
   );
 }
 
+function hasOrderItemExactOnce(orderItem, observation, count, orderId) {
+  return (
+    typeof orderItem?.id === "string" &&
+    typeof orderItem?.inventoryId === "string" &&
+    typeof orderItem?.slotId === "string" &&
+    orderItem.orderId === orderId &&
+    orderItem.quantity === 1 &&
+    count === 1 &&
+    hasOneObservedIdentity(observation, orderItem.id)
+  );
+}
+
 export function verifyInstalledKioskSaleScenarioResult(
   path,
   input,
@@ -811,6 +823,7 @@ export function verifyInstalledKioskSaleScenarioResult(
   const correlation = report?.correlation;
   const exactOnce = correlation?.exactOnce;
   const observations = correlation?.platform?.observations;
+  const orderItem = correlation?.platform?.orderItem;
   const reservation = correlation?.platform?.reservation;
   const continuousEvidence = scenario?.evidence?.filter(
     (entry) => entry?.type === "checkpoint" && entry?.label === "continuous",
@@ -822,6 +835,7 @@ export function verifyInstalledKioskSaleScenarioResult(
     barrierIndex != null && barrierIndex >= 0
       ? scenario?.evidence?.[barrierIndex]
       : null;
+  const barrierArmBaseline = barrier?.armBaseline;
   const routesAfterBarrier = scenario?.evidence
     ?.slice((barrierIndex ?? -1) + 1)
     .flatMap((entry) => [
@@ -857,6 +871,9 @@ export function verifyInstalledKioskSaleScenarioResult(
     continuousEvidence.length < 1 ||
     barrierIndex == null ||
     barrierIndex < 0 ||
+    barrier?.armedBeforeInput !== true ||
+    barrierArmBaseline?.route !== "#/checkout" ||
+    barrierArmBaseline?.identity?.route !== "#/checkout" ||
     !Array.isArray(barrier?.allowedRoutes) ||
     JSON.stringify([...barrier.allowedRoutes].sort()) !==
       JSON.stringify([...PAYMENT_BARRIER_ALLOWED_ROUTES].sort()) ||
@@ -872,6 +889,12 @@ export function verifyInstalledKioskSaleScenarioResult(
     exactOnce?.orderCount !== 1 ||
     exactOnce.paymentCount !== 1 ||
     exactOnce.orderNoCount !== 1 ||
+    !hasOrderItemExactOnce(
+      orderItem,
+      observations?.orderItemIds,
+      exactOnce?.orderItemCount,
+      correlation?.rendered?.orderId,
+    ) ||
     !hasReservationExactOnce(
       reservation,
       observations?.reservationIds,
@@ -939,6 +962,7 @@ export function verifyInstalledKioskSaleScenarioResult(
       orderId: correlation.rendered.orderId,
       paymentId: correlation.rendered.paymentId,
       orderNo: correlation.rendered.orderNo,
+      orderItem,
       reservation: correlation.platform.reservation,
       commandId: correlation.rendered.commandId,
       stockMovementId: correlation.platform.stockMovementId,
@@ -1253,9 +1277,17 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
       reports.runtimeAcceptance,
       sshKnownHostsPath,
     );
+    const databaseUrl = nonEmpty(
+      process.env.VEM_FACTORY_EPHEMERAL_DATABASE_URL,
+      "VEM_FACTORY_EPHEMERAL_DATABASE_URL",
+    );
     runExact(
       customerSale,
       "installed kiosk customer UI sale acceptance failed",
+      {
+        ...process.env,
+        VEM_INSTALLED_KIOSK_SALE_DATABASE_URL: databaseUrl,
+      },
     );
     reports.customerUiSale = verifyInstalledKioskSaleScenarioResult(
       verifierOutput(input, "customer-ui-sale-scenario.json"),

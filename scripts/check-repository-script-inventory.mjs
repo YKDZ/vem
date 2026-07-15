@@ -35,6 +35,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "factory preparation"],
   },
   {
+    path: "scripts/testbed/installed-kiosk-sale-acceptance.test.mjs",
+    owner: "machine-runtime-console",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "factory preparation"],
+  },
+  {
     path: "scripts/check-machine-customer-payment-copy.mjs",
     owner: "machine-runtime-console",
     category: "verifier-test guard",

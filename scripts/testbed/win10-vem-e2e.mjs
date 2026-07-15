@@ -274,6 +274,9 @@ const DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST =
 const DEFAULT_CONTROLLED_MAINTENANCE_REMOTE = `${DEFAULT_CONTROLLED_MAINTENANCE_USER}@${DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST}`;
 const DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX = "VEM-TESTBED-WINVM";
 const DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT = "artifacts/vm-runtime-acceptance";
+const EPHEMERAL_DATABASE_URL_ENV = "VEM_EPHEMERAL_DATABASE_URL";
+const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
+  "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
   "artifacts/clean-base-factory-acceptance";
 
@@ -433,7 +436,7 @@ function assertNotSharedOrKnownProductionTarget(label, value) {
       `VM runtime acceptance refuses known VPS or production endpoint for ${label}: ${text}`,
     );
   }
-  if (label === "--ephemeral-database-url") {
+  if (label === EPHEMERAL_DATABASE_URL_ENV) {
     const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
     if (KNOWN_PRODUCTION_DATABASE_NAMES.has(databaseName)) {
       throw new Error(
@@ -2774,9 +2777,9 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       `VM runtime acceptance refuses shared platform target: ${platformTarget}`,
     );
   }
-  const databaseUrl = assertNotSharedOrKnownProductionTarget(
-    "--ephemeral-database-url",
-    options.ephemeralDatabaseUrl,
+  assertNotSharedOrKnownProductionTarget(
+    EPHEMERAL_DATABASE_URL_ENV,
+    process.env[EPHEMERAL_DATABASE_URL_ENV] ?? options.ephemeralDatabaseUrl,
   );
   const apiBaseUrl = assertNotSharedOrKnownProductionTarget(
     "--ephemeral-api-base-url",
@@ -2833,8 +2836,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       platformTarget,
       "--ephemeral-platform-evidence",
       ephemeralPlatformEvidence,
-      "--ephemeral-database-url",
-      databaseUrl,
       "--runtime-acceptance-report",
       runtimeAcceptanceReport,
       "--identity",
@@ -2980,8 +2981,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
           "--",
           "--run-id",
           runId,
-          "--database-url",
-          databaseUrl,
           "--api-base-url",
           apiBaseUrl,
           "--mqtt-url",
@@ -2997,6 +2996,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         env: {
           PAYMENT_MOCK_ENABLED: "true",
         },
+        requiresEphemeralDatabase: true,
         report: ephemeralPlatformEvidence,
         blocksOnFailure: true,
       },
@@ -3016,6 +3016,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         ephemeralPlatformEvidence,
         report: customerUiSaleNormalReport,
         blocksOnFailure: true,
+        requiresEphemeralDatabase: true,
       },
       {
         name: "installed kiosk sale route competition",
@@ -3025,6 +3026,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         ephemeralPlatformEvidence,
         report: customerUiSaleCompetitionReport,
         blocksOnFailure: true,
+        requiresEphemeralDatabase: true,
       },
     ],
   };
@@ -4199,6 +4201,10 @@ async function runVmRuntimeAcceptance(options) {
       "VM runtime acceptance requires --scanner-code-file and --approved-runtime-base",
     );
   const plan = buildVmRuntimeAcceptancePlan(options);
+  const databaseUrl = process.env[EPHEMERAL_DATABASE_URL_ENV];
+  const childEnvironment = { ...process.env };
+  delete childEnvironment[EPHEMERAL_DATABASE_URL_ENV];
+  delete childEnvironment[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
   mkdirSync(plan.evidenceRoot, { recursive: true });
   mkdirSync(plan.artifacts.logsRoot, { recursive: true });
   mkdirSync(plan.artifacts.screenshotsRoot, { recursive: true });
@@ -4232,7 +4238,17 @@ async function runVmRuntimeAcceptance(options) {
       const result = spawnSync(step.command[0], step.command.slice(1), {
         cwd: step.cwd ?? process.cwd(),
         encoding: "utf8",
-        env: { ...process.env, ...(step.env ?? {}) },
+        env: {
+          ...childEnvironment,
+          ...(step.env ?? {}),
+          ...(step.requiresEphemeralDatabase
+            ? step.mode === "installed-kiosk-sale"
+              ? {
+                  [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: databaseUrl,
+                }
+              : { [EPHEMERAL_DATABASE_URL_ENV]: databaseUrl }
+            : {}),
+        },
       });
       writeFileSync(stdoutPath, result.stdout ?? "", "utf8");
       writeFileSync(stderrPath, result.stderr ?? "", "utf8");
@@ -8920,7 +8936,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-media-root PATH] [--vision-configuration-source-path PATH] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--expected-testbed-user USER] --identity KEY --certificate CERT [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-media-root PATH] [--vision-configuration-source-path PATH] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--expected-testbed-user USER] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -8943,7 +8959,7 @@ Factory-image-delivery-unit mode reads a completed clean-base factory acceptance
 
 Factory-preclaim-verify mode connects only through an adapter-discovered certificate SSH endpoint, invokes the Factory ISO-installed verifier without preparation, and emits structured baseline and unclaimed-identity evidence before approved-base capture.
 
-VM runtime acceptance mode is the CI/manual gate entrypoint. It verifies the restored approved preclaim base through certificate-only SSH, then runs ephemeral platform setup, runtime acceptance, and simulated hardware sale-flow in one non-interactive sequence. It requires --run-id, a non-shared --platform-target, explicit --ephemeral-database-url/--ephemeral-api-base-url/--ephemeral-mqtt-url, and certificate SSH inputs. Reports and logs are written under artifacts/vm-runtime-acceptance/<run-id>/.
+VM runtime acceptance mode is the CI/manual gate entrypoint. It verifies the restored approved preclaim base through certificate-only SSH, then runs ephemeral platform setup, runtime acceptance, and simulated hardware sale-flow in one non-interactive sequence. It requires --run-id, a non-shared --platform-target, VEM_EPHEMERAL_DATABASE_URL, explicit --ephemeral-api-base-url/--ephemeral-mqtt-url, and certificate SSH inputs. Reports and logs are written under artifacts/vm-runtime-acceptance/<run-id>/.
 `);
 }
 
@@ -9016,9 +9032,6 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--already-claimed") {
       options.alreadyClaimed = true;
-    } else if (arg === "--ephemeral-database-url") {
-      options.ephemeralDatabaseUrl = next;
-      index += 1;
     } else if (arg === "--ephemeral-api-base-url") {
       options.ephemeralApiBaseUrl = next;
       index += 1;

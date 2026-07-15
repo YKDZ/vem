@@ -1,50 +1,47 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import {
   buildInstalledKioskSalePlatformRawReport,
+  INSTALLED_KIOSK_SALE_DATABASE_URL_ENV,
+  installedKioskSalePlatformQueryScope,
   parseInstalledKioskSalePlatformQueryArgs,
 } from "./query-installed-kiosk-sale-platform.cli";
 
 const args = [
-  "--database-url",
-  "postgresql://vem:runner-only@127.0.0.1:55433/vem_factory_acceptance",
   "--run-id",
   "RUN-204",
   "--machine-code",
   "VEM-TESTBED-FACTORY-RUN-204",
-  "--order-id",
-  "order-204",
-  "--payment-id",
-  "payment-204",
-  "--order-no",
-  "order-no-204",
-  "--command-id",
-  "command-204",
-  "--movement-id",
-  "movement-204",
 ];
+const databaseUrl =
+  "postgresql://vem:runner-only@127.0.0.1:55433/vem_factory_acceptance";
 
 describe("installed kiosk sale platform raw query", () => {
-  it("requires a PostgreSQL runner-local connection URL", () => {
+  it("requires a PostgreSQL runner-local connection URL from its private environment", () => {
     expect(() =>
-      parseInstalledKioskSalePlatformQueryArgs(
-        args.map((value) =>
-          value ===
-          "postgresql://vem:runner-only@127.0.0.1:55433/vem_factory_acceptance"
-            ? "https://platform.example.test"
-            : value,
-        ),
-      ),
-    ).toThrow("--database-url must be a PostgreSQL URL");
+      parseInstalledKioskSalePlatformQueryArgs(args, {
+        [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]:
+          "https://platform.example.test",
+      }),
+    ).toThrow(
+      `${INSTALLED_KIOSK_SALE_DATABASE_URL_ENV} must be a PostgreSQL URL`,
+    );
+    expect(() => parseInstalledKioskSalePlatformQueryArgs(args, {})).toThrow(
+      `${INSTALLED_KIOSK_SALE_DATABASE_URL_ENV} is required`,
+    );
   });
 
   it("emits raw records and scopes without persisting the database URL", () => {
-    const options = parseInstalledKioskSalePlatformQueryArgs(args);
+    const options = parseInstalledKioskSalePlatformQueryArgs(args, {
+      [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: databaseUrl,
+    });
     const report = buildInstalledKioskSalePlatformRawReport({
       options,
       machineId: "machine-204",
       raw: {
         orders: [],
+        orderItems: [],
         payments: [],
         reservations: [],
         commands: [],
@@ -53,7 +50,7 @@ describe("installed kiosk sale platform raw query", () => {
     });
 
     expect(report).toEqual({
-      schemaVersion: "installed-kiosk-sale-platform-raw-records/v1",
+      schemaVersion: "installed-kiosk-sale-platform-raw-records/v2",
       source: "authoritative_ephemeral_platform_database",
       scope: {
         runId: "RUN-204",
@@ -62,6 +59,7 @@ describe("installed kiosk sale platform raw query", () => {
       },
       raw: {
         orders: [],
+        orderItems: [],
         payments: [],
         reservations: [],
         commands: [],
@@ -69,5 +67,32 @@ describe("installed kiosk sale platform raw query", () => {
       },
     });
     expect(JSON.stringify(report)).not.toContain("runner-only@127.0.0.1");
+  });
+
+  it("declares a machine-scoped query contract rather than expected-primary-key filters", async () => {
+    expect(installedKioskSalePlatformQueryScope).toEqual({
+      orders: "machine_id",
+      orderItems: "enumerated_order_ids",
+      payments: "enumerated_order_ids",
+      reservations: "enumerated_order_ids",
+      commands: "enumerated_order_ids",
+      movements: "machine_id + dispense_succeeded",
+    });
+    const source = await readFile(
+      new URL("./query-installed-kiosk-sale-platform.cli.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain(".where(eq(orders.machineId, machine.id))");
+    expect(source).toContain("inArray(payments.orderId, orderIds)");
+    expect(source).toContain(
+      "inArray(inventoryReservations.orderId, orderIds)",
+    );
+    expect(source).toContain("inArray(vendingCommands.orderId, orderIds)");
+    expect(source).toContain(
+      'eq(machineRawStockMovements.movementType, "dispense_succeeded")',
+    );
+    expect(source).not.toMatch(
+      /options\.(?:orderId|paymentId|orderNo|commandId|movementId)/,
+    );
   });
 });

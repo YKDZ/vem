@@ -198,6 +198,12 @@ describe("Factory Image Acceptance workflow", () => {
       workflow,
       /--mqtt-url\s+"mqtt:\/\/\$\{VEM_FACTORY_PLATFORM_INGRESS_HOST\}:18884"/,
     );
+    const preparePlatform = stepBlock("Prepare Same-Run Ephemeral Platform");
+    assert.match(
+      preparePlatform,
+      /VEM_EPHEMERAL_DATABASE_URL="\$DATABASE_URL"\s+pnpm --filter service-api testbed:prepare-ephemeral-platform/,
+    );
+    assert.doesNotMatch(preparePlatform, /--database-url/);
     assert.match(workflow, /curl -fsS "\$EPHEMERAL_API_READY_URL\/health"/);
     const lifecycle = stepBlock("Run Typed Factory Lifecycle");
     assert.match(

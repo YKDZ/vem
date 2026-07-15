@@ -27,6 +27,8 @@ import {
 } from "./win10-vem-e2e.mjs";
 
 const SCHEMA_VERSION = "installed-kiosk-sale-acceptance/v2";
+const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
+  "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 const PROFILE_NAMES = new Set([
   "vm-normal",
   "vm-route-competition",
@@ -49,7 +51,6 @@ function parseArgs(argv) {
     "machine-code",
     "platform-target",
     "ephemeral-platform-evidence",
-    "ephemeral-database-url",
     "runtime-acceptance-report",
     "remote",
     "ssh-port",
@@ -91,7 +92,6 @@ function parseArgs(argv) {
     "machine_code",
     "platform_target",
     "ephemeral_platform_evidence",
-    "ephemeral_database_url",
     "runtime_acceptance_report",
     "identity",
     "certificate",
@@ -279,11 +279,11 @@ function prepareScannerCode(options, root) {
   return { path, owned: true };
 }
 
-function runCommand(command, label) {
+function runCommand(command, label, { env = process.env } = {}) {
   const result = spawnSync(command[0], command.slice(1), {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: process.env,
+    env,
   });
   if (result.status !== 0) {
     throw new Error(`${label} failed: ${result.stderr || result.stdout}`);
@@ -313,7 +313,7 @@ function observedIdentity(values, name) {
 function requiredRawRecords(platformRaw) {
   if (
     platformRaw?.schemaVersion !==
-      "installed-kiosk-sale-platform-raw-records/v1" ||
+      "installed-kiosk-sale-platform-raw-records/v2" ||
     platformRaw?.source !== "authoritative_ephemeral_platform_database" ||
     !platformRaw.raw ||
     typeof platformRaw.raw !== "object"
@@ -322,13 +322,59 @@ function requiredRawRecords(platformRaw) {
       "authoritative platform raw query did not return the installed kiosk sale record contract",
     );
   }
-  const names = ["orders", "payments", "reservations", "commands", "movements"];
+  const names = [
+    "orders",
+    "orderItems",
+    "payments",
+    "reservations",
+    "commands",
+    "movements",
+  ];
   for (const name of names) {
     if (!Array.isArray(platformRaw.raw[name])) {
       throw new Error(`authoritative platform raw query omitted ${name}`);
     }
   }
   return platformRaw.raw;
+}
+
+function rawRecordId(name, record) {
+  const id = record?.id;
+  if (typeof id !== "string" || id.length === 0) {
+    throw new Error(
+      `authoritative platform ${name} record omitted its stable id`,
+    );
+  }
+  return id;
+}
+
+export function postMinusBaselinePlatformRaw({ baseline, post }) {
+  const baselineRaw = requiredRawRecords(baseline);
+  const postRaw = requiredRawRecords(post);
+  if (
+    baseline?.scope?.runId !== post?.scope?.runId ||
+    baseline?.scope?.machineCode !== post?.scope?.machineCode ||
+    baseline?.scope?.machineId !== post?.scope?.machineId
+  ) {
+    throw new Error("authoritative platform baseline and post scopes differ");
+  }
+  const raw = {};
+  for (const name of [
+    "orders",
+    "orderItems",
+    "payments",
+    "reservations",
+    "commands",
+    "movements",
+  ]) {
+    const baselineIds = new Set(
+      baselineRaw[name].map((record) => rawRecordId(name, record)),
+    );
+    raw[name] = postRaw[name].filter(
+      (record) => !baselineIds.has(rawRecordId(name, record)),
+    );
+  }
+  return { scope: post.scope, raw };
 }
 
 function serialSaleBinding(conformance) {
@@ -358,7 +404,8 @@ export function deriveCorrelation({
   fulfillment,
   serial,
   completion,
-  platformRaw,
+  platformRawBaseline,
+  platformRawPost,
   runId,
   machineCode,
   saleCorrelationId,
@@ -367,8 +414,12 @@ export function deriveCorrelation({
   const sale = platform?.sale;
   const projectedMovementId =
     platform?.platformState?.postSaleDispenseMovement?.movementId;
-  const raw = requiredRawRecords(platformRaw);
+  const { scope: platformRawScope, raw } = postMinusBaselinePlatformRaw({
+    baseline: platformRawBaseline,
+    post: platformRawPost,
+  });
   const rawOrder = raw.orders[0] ?? null;
+  const rawOrderItem = raw.orderItems[0] ?? null;
   const rawPayment = raw.payments[0] ?? null;
   const rawReservation = raw.reservations[0] ?? null;
   const rawCommand = raw.commands[0] ?? null;
@@ -401,6 +452,9 @@ export function deriveCorrelation({
     rawCommand?.orderId === rendered.orderId &&
     rawMovement?.movementId === projectedMovementId &&
     rawMovement?.orderNo === rendered.orderNo &&
+    rawMovement?.orderItemId === rawOrderItem?.id &&
+    rawMovement?.inventoryId === rawOrderItem?.inventoryId &&
+    rawMovement?.slotId === rawOrderItem?.slotId &&
     rawMovement?.commandNo === rawCommand?.commandNo;
   const observations = {
     orderIds: observedIdentity(
@@ -414,6 +468,10 @@ export function deriveCorrelation({
     orderNos: observedIdentity(
       raw.orders.map((record) => record?.orderNo),
       "platform order-number evidence",
+    ),
+    orderItemIds: observedIdentity(
+      raw.orderItems.map((record) => record?.id),
+      "platform order-item evidence",
     ),
     commandIds: observedIdentity(
       raw.commands.map((record) => record?.id),
@@ -429,6 +487,10 @@ export function deriveCorrelation({
     ),
   };
   const reservationEvidenceMatches =
+    raw.orderItems.length === 1 &&
+    rawOrderItem?.id === observations.orderItemIds.unique[0] &&
+    rawOrderItem?.orderId === rendered.orderId &&
+    rawOrderItem?.quantity === 1 &&
     raw.reservations.length === 1 &&
     rawReservation?.id === observations.reservationIds.unique[0] &&
     rawReservation?.orderId === rendered.orderId &&
@@ -437,15 +499,17 @@ export function deriveCorrelation({
     typeof rawReservation?.orderItemId === "string" &&
     rawReservation.orderItemId.length > 0 &&
     typeof rawReservation?.inventoryId === "string" &&
-    rawReservation.inventoryId.length > 0 &&
-    rawCommand?.orderItemId === rawReservation.orderItemId;
+    rawReservation.inventoryId === rawOrderItem.inventoryId &&
+    rawCommand?.orderItemId === rawReservation.orderItemId &&
+    rawCommand?.orderItemId === rawOrderItem.id &&
+    rawCommand?.slotId === rawOrderItem.slotId;
   const rawScopeMatches =
-    platformRaw.scope?.runId === runId &&
-    platformRaw.scope?.machineCode === machineCode &&
-    typeof platformRaw.scope?.machineId === "string" &&
-    rawOrder?.machineId === platformRaw.scope.machineId &&
-    rawCommand?.machineId === platformRaw.scope.machineId &&
-    rawMovement?.machineId === platformRaw.scope.machineId;
+    platformRawScope?.runId === runId &&
+    platformRawScope?.machineCode === machineCode &&
+    typeof platformRawScope?.machineId === "string" &&
+    rawOrder?.machineId === platformRawScope.machineId &&
+    rawCommand?.machineId === platformRawScope.machineId &&
+    rawMovement?.machineId === platformRawScope.machineId;
   const rawMovementMatches =
     rawMovement?.movementType === "dispense_succeeded" &&
     rawMovement?.quantity === 1 &&
@@ -454,6 +518,7 @@ export function deriveCorrelation({
     orderCount: observations.orderIds.count,
     paymentCount: observations.paymentIds.count,
     orderNoCount: observations.orderNos.count,
+    orderItemCount: observations.orderItemIds.count,
     reservationCount: observations.reservationIds.count,
     commandCount: observations.commandIds.count,
     movementCount: observations.movementIds.count,
@@ -467,6 +532,7 @@ export function deriveCorrelation({
     observations.orderIds.count !== 1 ||
     observations.paymentIds.count !== 1 ||
     observations.orderNos.count !== 1 ||
+    observations.orderItemIds.count !== 1 ||
     observations.reservationIds.count !== 1 ||
     observations.commandIds.count !== 1 ||
     observations.movementIds.count !== 1 ||
@@ -490,6 +556,13 @@ export function deriveCorrelation({
       stockDelta: -rawMovement.quantity,
       status: rawMovement.status,
       observations,
+      orderItem: {
+        id: rawOrderItem.id,
+        orderId: rawOrderItem.orderId,
+        inventoryId: rawOrderItem.inventoryId,
+        slotId: rawOrderItem.slotId,
+        quantity: rawOrderItem.quantity,
+      },
       reservation: {
         exposed: true,
         source: "authoritative_ephemeral_platform.inventory_reservations",
@@ -529,6 +602,10 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
     outputRoot,
     "platform-raw-records.json",
   );
+  const platformRawBaselineReport = join(
+    outputRoot,
+    "platform-raw-records-baseline.json",
+  );
   const fixtureCommand = buildAcceptanceScriptCommand(
     "simulated-hardware-sale-flow",
     remote,
@@ -557,6 +634,7 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
       bindingReport,
       serialReport,
       platformRawRecordsReport,
+      platformRawBaselineReport,
     },
   };
 }
@@ -579,11 +657,23 @@ export async function runInstalledKioskSaleAcceptanceCli(
   const runRemote = dependencies.runRemote ?? runInstalledKioskSaleRemoteScript;
   const drive = dependencies.drive ?? runVisibleMachineSaleScenario;
   const capture = dependencies.capture ?? captureInstalledKioskSaleHook;
+  const queryDatabaseUrl = process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+  if (typeof queryDatabaseUrl !== "string" || queryDatabaseUrl.trim() === "") {
+    throw new Error(`${INSTALLED_KIOSK_SALE_DATABASE_URL_ENV} is required`);
+  }
+  const nonQueryEnvironment = { ...process.env };
+  delete nonQueryEnvironment[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+  const queryEnvironment = {
+    ...nonQueryEnvironment,
+    [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: queryDatabaseUrl,
+  };
   let launch;
   let cleanup;
   let primaryError;
   try {
-    run(plan.fixtureCommand, "simulated hardware fixture");
+    run(plan.fixtureCommand, "simulated hardware fixture", {
+      env: nonQueryEnvironment,
+    });
     launch = runRemote(remote, buildInstalledKioskSaleLaunchScript());
     if (
       launch?.prelaunch?.principal == null ||
@@ -600,6 +690,25 @@ export async function runInstalledKioskSaleAcceptanceCli(
       targetId: launch.debugTarget.id,
       machine: launch.machine,
     };
+    const platformRawQuery = (out) => [
+      process.execPath,
+      "--conditions=vem-source",
+      "--import",
+      "tsx",
+      "apps/service-api/src/testbed/query-installed-kiosk-sale-platform.cli.ts",
+      "--run-id",
+      options.run_id,
+      "--machine-code",
+      options.machine_code,
+      "--out",
+      out,
+    ];
+    // This must precede the first customer activation, including checkout submit.
+    run(
+      platformRawQuery(plan.artifacts.platformRawBaselineReport),
+      "authoritative platform raw baseline query",
+      { env: queryEnvironment },
+    );
     const scenario = await drive({
       tunnelOptions: {
         remote: remote.remote,
@@ -681,7 +790,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
       "--out",
       plan.artifacts.serialReport,
     ];
-    run(serialCommand, "serial conformance");
+    run(serialCommand, "serial conformance", { env: nonQueryEnvironment });
     const serial = JSON.parse(
       readFileSync(plan.artifacts.serialReport, "utf8"),
     );
@@ -706,33 +815,15 @@ export async function runInstalledKioskSaleAcceptanceCli(
         "[data-installed-kiosk-sale-fulfillment-surface], [data-installed-kiosk-sale-result-surface]",
       route: /^#\/(dispensing|result)/,
     });
-    const platformRawQuery = [
-      process.execPath,
-      "--conditions=vem-source",
-      "--import",
-      "tsx",
-      "apps/service-api/src/testbed/query-installed-kiosk-sale-platform.cli.ts",
-      "--database-url",
-      options.ephemeral_database_url,
-      "--run-id",
-      options.run_id,
-      "--machine-code",
-      options.machine_code,
-      "--order-id",
-      payment.orderId,
-      "--payment-id",
-      payment.paymentId,
-      "--order-no",
-      payment.orderNo,
-      "--command-id",
-      fulfillment.commandId,
-      "--movement-id",
-      projectedMovementId,
-      "--out",
-      plan.artifacts.platformRawRecordsReport,
-    ];
-    run(platformRawQuery, "authoritative platform raw query");
-    const platformRaw = JSON.parse(
+    run(
+      platformRawQuery(plan.artifacts.platformRawRecordsReport),
+      "authoritative platform raw post query",
+      { env: queryEnvironment },
+    );
+    const platformRawBaseline = JSON.parse(
+      readFileSync(plan.artifacts.platformRawBaselineReport, "utf8"),
+    );
+    const platformRawPost = JSON.parse(
       readFileSync(plan.artifacts.platformRawRecordsReport, "utf8"),
     );
     const correlation = deriveCorrelation({
@@ -740,7 +831,8 @@ export async function runInstalledKioskSaleAcceptanceCli(
       fulfillment,
       serial,
       completion,
-      platformRaw,
+      platformRawBaseline,
+      platformRawPost,
       runId: options.run_id,
       machineCode: options.machine_code,
       saleCorrelationId,
@@ -769,6 +861,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
         serialConformancePath: plan.artifacts.serialReport,
         completionPath: plan.artifacts.completionReport,
         platformRawRecordsPath: plan.artifacts.platformRawRecordsReport,
+        platformRawBaselinePath: plan.artifacts.platformRawBaselineReport,
       },
     };
     writeJson(options.out, report);
@@ -819,7 +912,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
 
 function usage() {
   console.error(
-    `Usage: installed-kiosk-sale-acceptance.mjs --run-id ID --machine-code CODE --platform-target TARGET --ephemeral-platform-evidence PATH --ephemeral-database-url URL --runtime-acceptance-report PATH (--remote USER@HOST | --factory-guest-endpoint-json JSON --expected-testbed-user USER) --identity KEY --certificate CERT --adapter PATH --target-identity ID --approved-runtime-base factory-cas://sha256/HASH [--scanner-code-file PATH] [--profile vm-normal|vm-route-competition|factory-route-competition] --out PATH [--dry-run]`,
+    `Usage: VEM_INSTALLED_KIOSK_SALE_DATABASE_URL=... installed-kiosk-sale-acceptance.mjs --run-id ID --machine-code CODE --platform-target TARGET --ephemeral-platform-evidence PATH --runtime-acceptance-report PATH (--remote USER@HOST | --factory-guest-endpoint-json JSON --expected-testbed-user USER) --identity KEY --certificate CERT --adapter PATH --target-identity ID --approved-runtime-base factory-cas://sha256/HASH [--scanner-code-file PATH] [--profile vm-normal|vm-route-competition|factory-route-competition] --out PATH [--dry-run]`,
   );
 }
 

@@ -317,10 +317,9 @@ jobs:
           evidence_root="$GITHUB_WORKSPACE/artifacts/factory-image-acceptance/lifecycle/$RUN_ID"
           mkdir -p "$evidence_root"
           machine_prefix="VEM-TESTBED-FACTORY"
-          pnpm --filter service-api testbed:prepare-ephemeral-platform -- \
+          VEM_EPHEMERAL_DATABASE_URL="$DATABASE_URL" pnpm --filter service-api testbed:prepare-ephemeral-platform -- \
             --run-id "$RUN_ID" \
             --machine-code-prefix "$machine_prefix" \
-            --database-url "$DATABASE_URL" \
             --api-base-url "http://${VEM_FACTORY_PLATFORM_INGRESS_HOST}:26850/api" \
             --mqtt-url "mqtt://${VEM_FACTORY_PLATFORM_INGRESS_HOST}:18884" \
             --maintenance-relay-peer-id "$MAINTENANCE_RELAY_PEER_ID" \
