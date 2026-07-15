@@ -26,6 +26,9 @@ function storedZip(
   declaredSize = content.length,
   flags = 0,
   method = 0,
+  localExtra = Buffer.alloc(0),
+  centralExtra = localExtra,
+  archiveComment = Buffer.alloc(0),
 ) {
   const fileName = Buffer.from(name);
   const local = Buffer.alloc(30);
@@ -36,6 +39,7 @@ function storedZip(
   local.writeUInt32LE(content.length, 18);
   local.writeUInt32LE(declaredSize, 22);
   local.writeUInt16LE(fileName.length, 26);
+  local.writeUInt16LE(localExtra.length, 28);
   const central = Buffer.alloc(46);
   central.writeUInt32LE(0x02014b50, 0);
   central.writeUInt16LE(20, 4);
@@ -45,14 +49,38 @@ function storedZip(
   central.writeUInt32LE(content.length, 20);
   central.writeUInt32LE(declaredSize, 24);
   central.writeUInt16LE(fileName.length, 28);
-  const centralOffset = local.length + fileName.length + content.length;
+  central.writeUInt16LE(centralExtra.length, 30);
+  const centralOffset =
+    local.length + fileName.length + localExtra.length + content.length;
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
   end.writeUInt16LE(1, 8);
   end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(central.length + fileName.length, 12);
+  end.writeUInt32LE(central.length + fileName.length + centralExtra.length, 12);
   end.writeUInt32LE(centralOffset, 16);
-  return Buffer.concat([local, fileName, content, central, fileName, end]);
+  end.writeUInt16LE(archiveComment.length, 20);
+  return Buffer.concat([
+    local,
+    fileName,
+    localExtra,
+    content,
+    central,
+    fileName,
+    centralExtra,
+    end,
+    archiveComment,
+  ]);
+}
+
+function crc32(content) {
+  let crc = 0xffffffff;
+  for (const byte of content) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 function encryptedLocalHiddenByEmptyDirectory() {
@@ -104,6 +132,26 @@ function zip64Sentinel() {
   const centralStart = declared.readUInt32LE(endOffset + 16);
   declared.writeUInt32LE(0xffffffff, centralStart + 24);
   return declared;
+}
+
+function prefixedReadableZip(content) {
+  const compressed = deflateRawSync(content);
+  const declared = storedZip(
+    "nested/private.pem",
+    compressed,
+    content.length,
+    0,
+    8,
+  );
+  const endOffset = declared.length - 22;
+  const centralStart = declared.readUInt32LE(endOffset + 16);
+  const checksum = crc32(content);
+  declared.writeUInt32LE(checksum, 14);
+  declared.writeUInt32LE(checksum, centralStart + 16);
+  const prefixed = Buffer.concat([Buffer.from([0x4d]), declared]);
+  prefixed.writeUInt32LE(1, centralStart + 1 + 42);
+  prefixed.writeUInt32LE(centralStart + 1, endOffset + 1 + 16);
+  return prefixed;
 }
 
 async function runGuards(value, artifactBytes = "machine-runtime") {
@@ -274,5 +322,52 @@ describe("managed-update payment secret guard", () => {
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /invalid archive|unsupported archive/i);
     }
+  });
+
+  it("rejects a readable deflate ZIP container with a nonzero local-header offset", async () => {
+    const privateKey = Buffer.from(
+      "-----BEGIN PRIVATE KEY-----\nprefixed-secret\n-----END PRIVATE KEY-----",
+    );
+    const result = await runGuards(
+      { updateId: "field-prefixed-zip", components: [] },
+      prefixedReadableZip(privateKey),
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid archive|private-key material/i);
+  });
+
+  it("rejects recognizable ZIP trailing structures without flagging incidental PK bytes", async () => {
+    const trailing = await runGuards(
+      { updateId: "field-trailing-zip", components: [] },
+      Buffer.concat([
+        storedZip("runtime.txt", Buffer.from("safe")),
+        Buffer.from("trailing-polyglot"),
+      ]),
+    );
+    assert.notEqual(trailing.status, 0);
+    assert.match(trailing.stderr, /invalid archive/i);
+
+    const incidental = await runGuards(
+      { updateId: "field-incidental-pk", components: [] },
+      Buffer.from("ordinary PK\u0003\u0004 noise PK\u0005\u0006 bytes"),
+    );
+    assert.equal(incidental.status, 0, incidental.stderr);
+
+    const allowedExtra = Buffer.from([0xfe, 0xca, 0x02, 0x00, 0x12, 0x34]);
+    const commented = await runGuards(
+      { updateId: "field-commented-zip", components: [] },
+      storedZip(
+        "metadata.txt",
+        Buffer.from("safe"),
+        4,
+        0,
+        0,
+        allowedExtra,
+        allowedExtra,
+        Buffer.from("factory-comment"),
+      ),
+    );
+    assert.equal(commented.status, 0, commented.stderr);
   });
 });

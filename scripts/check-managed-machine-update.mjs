@@ -66,6 +66,8 @@ addCheck(
     paymentSecretBytesGuardBlock.includes("06092A864886F70D01050D") &&
     paymentSecretBytesGuardBlock.includes("encrypted archive entry") &&
     paymentSecretBytesGuardBlock.includes("invalid archive structure") &&
+    paymentSecretBytesGuardBlock.includes("findRecognizableZipContainer") &&
+    paymentSecretBytesGuardBlock.includes("LastIndexOf") &&
     paymentSecretBytesGuardBlock.includes("centralEntries") &&
     paymentSecretBytesGuardBlock.includes("localEntryCount") &&
     paymentSecretBytesGuardBlock.includes("ZipArchive") &&
