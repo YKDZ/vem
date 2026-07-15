@@ -482,9 +482,38 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
             .await
             .expect("profile cache exists check")
     );
-    assert!(!tokio::fs::try_exists(root.join("secrets"))
+    assert!(
+        !tokio::fs::try_exists(daemon.data_dir.join("secrets"))
+            .await
+            .expect("legacy plaintext secrets exists check"),
+        "network bootstrap must not recreate the legacy plaintext secret store"
+    );
+    let protected_secret_dir = root.join("secrets");
+    let mut protected_secret_entries = std::fs::read_dir(&protected_secret_dir)
+        .expect("read protected secret store")
+        .map(|entry| {
+            entry
+                .expect("protected secret entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    protected_secret_entries.sort();
+    assert_eq!(
+        protected_secret_entries,
+        ["machine_maintenance_pin.dpapi"],
+        "network bootstrap must not persist submitted credentials as machine secrets"
+    );
+    let protected_pin = tokio::fs::read(protected_secret_dir.join("machine_maintenance_pin.dpapi"))
         .await
-        .expect("secrets exists check"));
+        .expect("read protected maintenance verifier");
+    assert!(
+        !protected_pin
+            .windows(wifi_password.len())
+            .any(|window| window == wifi_password.as_bytes()),
+        "protected secret store leaked submitted Wi-Fi password"
+    );
 
     let pool = sqlite::open_readonly(&daemon.state_db_path()).await;
     assert_eq!(
