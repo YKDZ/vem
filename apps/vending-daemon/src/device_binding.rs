@@ -26,7 +26,7 @@ pub struct StableSerialDeviceIdentity {
     pub serial_number: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalDeviceRole {
     LowerController,
@@ -72,6 +72,23 @@ pub struct DeviceBindingCandidate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceDiscoveryDiagnostic {
+    pub current_port: String,
+    pub friendly_name: Option<String>,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRoleRuntimeReadiness {
+    pub online: bool,
+    pub current_port: Option<String>,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceRoleBindingSnapshot {
     pub role: LocalDeviceRole,
     pub binding: Option<LocalSerialRoleBinding>,
@@ -83,6 +100,7 @@ pub struct DeviceRoleBindingSnapshot {
     pub ambiguity_ports: Vec<String>,
     pub legacy_port_hint: Option<String>,
     pub candidates: Vec<DeviceBindingCandidate>,
+    pub discovery_diagnostics: Vec<DeviceDiscoveryDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -224,7 +242,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $devices
 pub fn parse_windows_serial_discovery(payload: &[u8]) -> Result<Vec<ObservedSerialDevice>, String> {
     let value: serde_json::Value = serde_json::from_slice(payload)
         .map_err(|error| format!("parse Windows serial discovery failed: {error}"))?;
-    let devices = if value.is_array() {
+    let mut devices: Vec<ObservedSerialDevice> = if value.is_array() {
         serde_json::from_value(value)
     } else if value.is_object() {
         serde_json::from_value(serde_json::Value::Array(vec![value]))
@@ -232,7 +250,26 @@ pub fn parse_windows_serial_discovery(payload: &[u8]) -> Result<Vec<ObservedSeri
         return Err("Windows serial discovery returned an invalid payload".to_string());
     }
     .map_err(|error| format!("parse Windows serial discovery devices failed: {error}"))?;
+    for device in &mut devices {
+        let Some(current_port) = normalize_windows_com_port(&device.current_port) else {
+            return Err(format!(
+                "Windows serial discovery currentPort must be a canonical COMn value, got {:?}",
+                device.current_port
+            ));
+        };
+        device.current_port = current_port;
+    }
     Ok(devices)
+}
+
+fn normalize_windows_com_port(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_uppercase();
+    let number = value.strip_prefix("COM")?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = number.parse::<u16>().ok()?;
+    (number > 0).then(|| format!("COM{number}"))
 }
 
 impl StableSerialDeviceIdentity {
@@ -242,32 +279,32 @@ impl StableSerialDeviceIdentity {
             .as_deref()
             .and_then(normalize_container_id);
         let instance_id = normalize_optional_identity(observed.instance_id.as_deref());
-        let serial_number = normalize_optional_identity(observed.serial_number.as_deref());
+        let serial_number = observed
+            .serial_number
+            .as_deref()
+            .and_then(normalize_stable_usb_serial);
+        let hardware_ids = canonical_usb_hardware_ids(&observed.hardware_ids);
         let identity_key = if let Some(container_id) = container_id.as_deref() {
             format!("container:{container_id}")
         } else if let (Some(serial), Some(hardware_id)) =
-            (serial_number.as_deref(), observed.hardware_ids.first())
+            (serial_number.as_deref(), hardware_ids.first())
         {
             format!(
                 "usb:{}:{}",
-                hardware_id.trim().to_ascii_lowercase(),
+                hardware_id.to_ascii_lowercase(),
                 serial.to_ascii_lowercase()
             )
-        } else if let Some(instance_id) = instance_id.as_deref() {
-            format!("instance:{}", instance_id.to_ascii_lowercase())
         } else {
-            return Err("serial device has no stable Windows identity".to_string());
+            return Err(
+                "serial device has no stable USB identity; use a valid ContainerId or USB VID/PID with a manufacturer serial number"
+                    .to_string(),
+            );
         };
         Ok(Self {
             identity_key,
             instance_id,
             container_id,
-            hardware_ids: observed
-                .hardware_ids
-                .iter()
-                .map(|value| value.trim().to_ascii_uppercase())
-                .filter(|value| !value.is_empty())
-                .collect(),
+            hardware_ids,
             serial_number,
         })
     }
@@ -286,12 +323,53 @@ fn normalize_optional_identity(value: Option<&str>) -> Option<String> {
 }
 
 fn normalize_container_id(value: &str) -> Option<String> {
-    let normalized = value
-        .trim()
-        .trim_start_matches('{')
-        .trim_end_matches('}')
-        .to_ascii_lowercase();
-    (!normalized.is_empty()).then_some(normalized)
+    let normalized = value.trim().trim_start_matches('{').trim_end_matches('}');
+    uuid::Uuid::parse_str(normalized)
+        .ok()
+        .map(|value| value.hyphenated().to_string())
+}
+
+fn normalize_stable_usb_serial(value: &str) -> Option<String> {
+    let value = value.trim();
+    let upper = value.to_ascii_uppercase();
+    if value.is_empty()
+        || value.len() > 128
+        || value.contains('&')
+        || upper.starts_with("LOCATION")
+        || upper.starts_with("PORT_")
+        || upper.starts_with("MI_")
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn canonical_usb_hardware_ids(values: &[String]) -> Vec<String> {
+    let mut canonical = values
+        .iter()
+        .filter_map(|value| {
+            let upper = value.trim().to_ascii_uppercase();
+            if !upper.starts_with("USB\\") {
+                return None;
+            }
+            let vid_start = upper.find("VID_")? + 4;
+            let pid_start = upper.find("PID_")? + 4;
+            let vid = upper.get(vid_start..vid_start + 4)?;
+            let pid = upper.get(pid_start..pid_start + 4)?;
+            if !vid.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !pid.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return None;
+            }
+            Some(format!("USB\\VID_{vid}&PID_{pid}"))
+        })
+        .collect::<Vec<_>>();
+    canonical.sort();
+    canonical.dedup();
+    canonical
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,7 +389,6 @@ pub fn resolve_bound_port(
         .map(|candidate| candidate.current_port.clone())
         .collect::<Vec<_>>();
     ports.sort();
-    ports.dedup();
     match ports.as_slice() {
         [] => BindingResolution::Missing,
         [port] => BindingResolution::Resolved(port.clone()),
@@ -324,35 +401,68 @@ pub fn project_role_binding(
     binding: Option<LocalSerialRoleBinding>,
     legacy_port_hint: Option<String>,
     observed: &[ObservedSerialDevice],
+    runtime_readiness: Option<DeviceRoleRuntimeReadiness>,
 ) -> DeviceRoleBindingSnapshot {
-    let candidates = observed
-        .iter()
-        .filter_map(|candidate| {
-            StableSerialDeviceIdentity::try_from_observation(candidate)
-                .ok()
-                .map(|identity| DeviceBindingCandidate {
-                    identity,
-                    current_port: candidate.current_port.clone(),
-                    friendly_name: candidate.friendly_name.clone(),
-                    readiness: DeviceCandidateReadiness::Candidate,
-                    readiness_code: "ROLE_TEST_REQUIRED".to_string(),
-                    readiness_message: "candidate requires role-specific protected test"
-                        .to_string(),
-                })
-        })
-        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    let mut discovery_diagnostics = Vec::new();
+    for candidate in observed {
+        match StableSerialDeviceIdentity::try_from_observation(candidate) {
+            Ok(identity) => candidates.push(DeviceBindingCandidate {
+                identity,
+                current_port: candidate.current_port.clone(),
+                friendly_name: candidate.friendly_name.clone(),
+                readiness: DeviceCandidateReadiness::Candidate,
+                readiness_code: "ROLE_TEST_REQUIRED".to_string(),
+                readiness_message: "candidate requires role-specific protected test".to_string(),
+            }),
+            Err(message) => discovery_diagnostics.push(DeviceDiscoveryDiagnostic {
+                current_port: candidate.current_port.clone(),
+                friendly_name: candidate.friendly_name.clone(),
+                code: "DEVICE_IDENTITY_NOT_BINDABLE".to_string(),
+                message,
+            }),
+        }
+    }
 
     let (current_port, ready, code, message, ambiguous, ambiguity_ports) =
         match binding.as_ref() {
             Some(binding) => match resolve_bound_port(&binding.identity, observed) {
-                BindingResolution::Resolved(port) => (
-                    Some(port),
-                    true,
-                    "DEVICE_BINDING_RESOLVED".to_string(),
-                    "bound device resolved to its current Windows port".to_string(),
-                    false,
-                    vec![],
-                ),
+                BindingResolution::Resolved(port) => match runtime_readiness.as_ref() {
+                    Some(runtime)
+                        if runtime.online
+                            && runtime.current_port.as_deref() == Some(port.as_str()) =>
+                    {
+                        (
+                            Some(port),
+                            true,
+                            "DEVICE_BINDING_RESOLVED".to_string(),
+                            "bound device resolved and its role runtime self-check is ready"
+                                .to_string(),
+                            false,
+                            vec![],
+                        )
+                    }
+                    Some(runtime) => (
+                        Some(port),
+                        false,
+                        "DEVICE_BINDING_RUNTIME_NOT_READY".to_string(),
+                        format!(
+                            "bound device is attached but its role runtime is not ready ({}): {}",
+                            runtime.code, runtime.message
+                        ),
+                        false,
+                        vec![],
+                    ),
+                    None => (
+                        Some(port),
+                        false,
+                        "DEVICE_BINDING_RUNTIME_STATUS_UNKNOWN".to_string(),
+                        "bound device is attached but no role runtime self-check evidence is available"
+                            .to_string(),
+                        false,
+                        vec![],
+                    ),
+                },
                 BindingResolution::Missing => (
                     None,
                     false,
@@ -411,6 +521,7 @@ pub fn project_role_binding(
         ambiguity_ports,
         legacy_port_hint,
         candidates,
+        discovery_diagnostics,
     }
 }
 
@@ -484,9 +595,9 @@ mod tests {
     #[test]
     fn bound_role_reports_ambiguity_instead_of_selecting_the_first_com_port() {
         let identity = StableSerialDeviceIdentity {
-            identity_key: "container:shared".to_string(),
+            identity_key: "container:11111111-2222-3333-4444-555555555555".to_string(),
             instance_id: None,
-            container_id: Some("shared".to_string()),
+            container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
             hardware_ids: vec![],
             serial_number: None,
         };
@@ -499,7 +610,7 @@ mod tests {
         let observed = ["COM4", "COM9"].map(|port| ObservedSerialDevice {
             current_port: port.to_string(),
             instance_id: None,
-            container_id: Some("{SHARED}".to_string()),
+            container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
             hardware_ids: vec![],
             serial_number: None,
             friendly_name: None,
@@ -510,6 +621,7 @@ mod tests {
             Some(binding),
             Some("COM5".to_string()),
             &observed,
+            None,
         );
 
         assert!(!snapshot.ready);
@@ -517,6 +629,25 @@ mod tests {
         assert_eq!(snapshot.code, "DEVICE_BINDING_AMBIGUOUS");
         assert_eq!(snapshot.ambiguity_ports, vec!["COM4", "COM9"]);
         assert_eq!(snapshot.legacy_port_hint.as_deref(), Some("COM5"));
+    }
+
+    #[test]
+    fn duplicate_observations_are_ambiguous_even_when_they_report_the_same_com_port() {
+        let observed = ObservedSerialDevice {
+            current_port: "COM4".to_string(),
+            instance_id: Some("USB\\VID_1234&PID_5678\\SERIAL-1".to_string()),
+            container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SERIAL-1".to_string()),
+            friendly_name: None,
+        };
+        let binding =
+            StableSerialDeviceIdentity::try_from_observation(&observed).expect("stable fixture");
+
+        assert_eq!(
+            resolve_bound_port(&binding, &[observed.clone(), observed]),
+            BindingResolution::Ambiguous(vec!["COM4".to_string(), "COM4".to_string()])
+        );
     }
 
     #[test]
@@ -534,5 +665,122 @@ mod tests {
                 .identity_key,
             "container:11111111-2222-3333-4444-555555555555"
         );
+    }
+
+    #[test]
+    fn arbitrary_or_location_dependent_instance_id_is_not_a_stable_binding_identity() {
+        let observed = ObservedSerialDevice {
+            current_port: "COM8".to_string(),
+            instance_id: Some("ACPI\\PNP0501\\1".to_string()),
+            container_id: Some("{not-a-guid}".to_string()),
+            hardware_ids: vec!["ROOT\\PORTS\\0000".to_string()],
+            serial_number: Some("LOCATION-1".to_string()),
+            friendly_name: Some("Communications Port".to_string()),
+        };
+
+        let error = StableSerialDeviceIdentity::try_from_observation(&observed)
+            .expect_err("location-dependent identity must not be bindable");
+
+        assert!(error.contains("stable USB identity"));
+    }
+
+    #[test]
+    fn usb_serial_fallback_canonicalizes_only_stable_vid_pid_hardware_tuple() {
+        let observed = ObservedSerialDevice {
+            current_port: "COM14".to_string(),
+            instance_id: Some("USB\\VID_1a86&PID_55d3\\CTRL-01".to_string()),
+            container_id: None,
+            hardware_ids: vec![
+                " USB\\VID_1a86&PID_55d3&REV_0444 ".to_string(),
+                "ROOT\\PORTS\\0000".to_string(),
+                "USB\\VID_1A86&PID_55D3".to_string(),
+            ],
+            serial_number: Some("CTRL-01".to_string()),
+            friendly_name: None,
+        };
+
+        let identity = StableSerialDeviceIdentity::try_from_observation(&observed)
+            .expect("manufacturer USB serial fallback");
+
+        assert_eq!(identity.identity_key, "usb:usb\\vid_1a86&pid_55d3:ctrl-01");
+        assert_eq!(identity.hardware_ids, vec!["USB\\VID_1A86&PID_55D3"]);
+    }
+
+    #[test]
+    fn windows_discovery_rejects_non_com_port_observations() {
+        let payload = br#"[{"currentPort":"LPT1","instanceId":"USB\\VID_1A86&PID_55D3\\CTRL-01","containerId":"{11111111-2222-3333-4444-555555555555}","hardwareIds":["USB\\VID_1A86&PID_55D3"],"serialNumber":"CTRL-01","friendlyName":"forged serial"}]"#;
+
+        let error = parse_windows_serial_discovery(payload)
+            .expect_err("Windows serial discovery must accept only COMn observations");
+
+        assert!(error.contains("currentPort"));
+        assert!(error.contains("COMn"));
+    }
+
+    #[test]
+    fn unbindable_observation_is_exposed_as_actionable_discovery_evidence() {
+        let observed = ObservedSerialDevice {
+            current_port: "COM8".to_string(),
+            instance_id: Some("ACPI\\PNP0501\\1".to_string()),
+            container_id: None,
+            hardware_ids: vec!["ROOT\\PORTS\\0000".to_string()],
+            serial_number: None,
+            friendly_name: Some("Communications Port".to_string()),
+        };
+
+        let snapshot = project_role_binding(
+            LocalDeviceRole::Scanner,
+            None,
+            Some("COM3".to_string()),
+            &[observed],
+            None,
+        );
+
+        assert_eq!(snapshot.candidates.len(), 0);
+        assert_eq!(snapshot.discovery_diagnostics.len(), 1);
+        assert_eq!(
+            snapshot.discovery_diagnostics[0].code,
+            "DEVICE_IDENTITY_NOT_BINDABLE"
+        );
+        assert_eq!(snapshot.discovery_diagnostics[0].current_port, "COM8");
+        assert!(snapshot.discovery_diagnostics[0]
+            .message
+            .contains("ContainerId"));
+    }
+
+    #[test]
+    fn resolved_port_is_not_ready_when_the_role_runtime_self_check_is_offline() {
+        let observed = ObservedSerialDevice {
+            current_port: "COM5".to_string(),
+            instance_id: None,
+            container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
+            hardware_ids: vec![],
+            serial_number: None,
+            friendly_name: None,
+        };
+        let binding = LocalSerialRoleBinding {
+            identity: StableSerialDeviceIdentity::try_from_observation(&observed)
+                .expect("stable fixture"),
+            confirmed_at: "2026-07-15T00:00:00Z".to_string(),
+            confirmed_by: "operator-1".to_string(),
+            test_evidence_code: "LOWER_CONTROLLER_HANDSHAKE_READY".to_string(),
+        };
+
+        let snapshot = project_role_binding(
+            LocalDeviceRole::LowerController,
+            Some(binding),
+            Some("COM5".to_string()),
+            &[observed],
+            Some(DeviceRoleRuntimeReadiness {
+                online: false,
+                current_port: Some("COM5".to_string()),
+                code: "LOWER_CONTROLLER_HANDSHAKE_FAILED".to_string(),
+                message: "controller handshake failed".to_string(),
+            }),
+        );
+
+        assert!(!snapshot.ready);
+        assert_eq!(snapshot.code, "DEVICE_BINDING_RUNTIME_NOT_READY");
+        assert!(snapshot.message.contains("controller handshake failed"));
     }
 }

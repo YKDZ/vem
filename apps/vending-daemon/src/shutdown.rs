@@ -245,6 +245,7 @@ async fn run_console_cycle(
         runtime_tx: tx_raw.clone(),
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
+        device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,
@@ -415,17 +416,70 @@ async fn run_device_binding_watch(
             _ = shutdown.cancelled() => return Ok(()),
             _ = interval.tick() => {}
         }
-        let Some(settings) = config_store.load_local_bring_up_settings().await? else {
-            continue;
+        let settings = match config_store.load_local_bring_up_settings().await {
+            Ok(Some(settings)) => settings,
+            Ok(None) => continue,
+            Err(error) => {
+                record_binding_watch_retry(
+                    &status_cache,
+                    "DEVICE_BINDING_CONFIG_RETRY",
+                    format!("read local device bindings failed; retrying: {error}"),
+                    true,
+                    true,
+                )
+                .await;
+                continue;
+            }
         };
         if settings.lower_controller_binding.is_none() && settings.scanner_binding.is_none() {
             continue;
         }
         let observed = match platform.discover().await {
             Ok(observed) => observed,
-            Err(_) => continue,
+            Err(error) => {
+                record_binding_watch_retry(
+                    &status_cache,
+                    "SCANNER_DISCOVERY_RETRY",
+                    format!(
+                        "serial device discovery failed; retrying on bounded interval: {error}"
+                    ),
+                    settings.lower_controller_binding.is_some(),
+                    settings.scanner_binding.is_some(),
+                )
+                .await;
+                continue;
+            }
         };
-        let public = config_store.load_effective_public_config().await?;
+        let public = match config_store.load_effective_public_config().await {
+            Ok(public) => public,
+            Err(error) => {
+                record_binding_watch_retry(
+                    &status_cache,
+                    "DEVICE_BINDING_CONFIG_RETRY",
+                    format!("load effective hardware config failed; retrying: {error}"),
+                    settings.lower_controller_binding.is_some(),
+                    settings.scanner_binding.is_some(),
+                )
+                .await;
+                continue;
+            }
+        };
+        let active_sale = match state.current_transaction_snapshot().await {
+            Ok(snapshot) => snapshot.as_ref().is_some_and(is_active_transaction),
+            Err(error) => {
+                record_binding_watch_retry(
+                    &status_cache,
+                    "DEVICE_BINDING_SALE_STATE_RETRY",
+                    format!(
+                        "cannot prove sale state; binding reconfiguration deferred and will retry: {error}"
+                    ),
+                    settings.lower_controller_binding.is_some(),
+                    settings.scanner_binding.is_some(),
+                )
+                .await;
+                continue;
+            }
+        };
 
         if let Some(binding) = settings.lower_controller_binding.as_ref() {
             let current_port = status_cache.hardware.read().await.port_path.clone();
@@ -437,21 +491,24 @@ async fn run_device_binding_watch(
                 &observed,
             ) {
                 Ok(port) => {
-                    let active_sale = state
-                        .current_transaction_snapshot()
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .as_ref()
-                        .is_some_and(is_active_transaction);
                     if current_port.as_deref() != Some(port.as_str()) && !active_sale {
-                        if let Ok(status) = hardware
+                        match hardware
                             .reconfigure_from_config(
                                 &resolved,
                                 Some(data_dir.join("logs").join("serial-protocol.jsonl")),
                             )
                             .await
                         {
-                            *status_cache.hardware.write().await = status;
+                            Ok(status) => *status_cache.hardware.write().await = status,
+                            Err(error) => {
+                                let mut status = status_cache.hardware.read().await.clone();
+                                status.online = false;
+                                status.port_path = None;
+                                status.message = format!(
+                                    "lower controller reconfiguration failed; retrying on bounded interval: {error}"
+                                );
+                                *status_cache.hardware.write().await = status;
+                            }
                         }
                     }
                 }
@@ -474,12 +531,28 @@ async fn run_device_binding_watch(
                 &observed,
             ) {
                 Ok(port) => {
-                    if current_port.as_deref() != Some(port.as_str()) {
-                        scanner_runtime.reconfigure_from_config(&resolved).await?;
+                    if current_port.as_deref() != Some(port.as_str()) && !active_sale {
+                        if let Err(error) = scanner_runtime.reconfigure_from_config(&resolved).await
+                        {
+                            *status_cache.scanner.write().await =
+                                vending_core::scanner::ScannerHealthSnapshot {
+                                    online: false,
+                                    adapter:
+                                        vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
+                                            .to_string(),
+                                    port: None,
+                                    level: vending_core::health::HealthLevel::Degraded,
+                                    code: "SCANNER_RECONFIGURE_RETRY".to_string(),
+                                    message: format!(
+                                        "scanner reconfiguration failed; previous runtime restored; retrying on bounded interval: {error}"
+                                    ),
+                                    updated_at: crate::state::store::now_iso(),
+                                };
+                        }
                     }
                 }
                 Err(code) => {
-                    scanner_runtime.stop().await?;
+                    let stop_error = scanner_runtime.stop().await.err();
                     *status_cache.scanner.write().await =
                         vending_core::scanner::ScannerHealthSnapshot {
                             online: false,
@@ -488,12 +561,45 @@ async fn run_device_binding_watch(
                             port: None,
                             level: vending_core::health::HealthLevel::Offline,
                             code: "SCANNER_BINDING_UNAVAILABLE".to_string(),
-                            message: format!("scanner stable binding requires maintenance: {code}"),
+                            message: format!(
+                                "scanner stable binding requires maintenance: {code}{}",
+                                stop_error
+                                    .map(|error| format!("; stop failed and will retry: {error}"))
+                                    .unwrap_or_default()
+                            ),
                             updated_at: crate::state::store::now_iso(),
                         };
                 }
             }
         }
+    }
+}
+
+async fn record_binding_watch_retry(
+    status_cache: &ipc::RuntimeStatusCache,
+    scanner_code: &str,
+    message: String,
+    lower_controller_affected: bool,
+    scanner_affected: bool,
+) {
+    if lower_controller_affected {
+        let mut status = status_cache.hardware.read().await.clone();
+        status.online = false;
+        status.port_path = None;
+        status.message = message.clone();
+        *status_cache.hardware.write().await = status;
+    }
+    if scanner_affected {
+        let adapter = status_cache.scanner.read().await.adapter.clone();
+        *status_cache.scanner.write().await = vending_core::scanner::ScannerHealthSnapshot {
+            online: false,
+            adapter,
+            port: None,
+            level: vending_core::health::HealthLevel::Degraded,
+            code: scanner_code.to_string(),
+            message,
+            updated_at: crate::state::store::now_iso(),
+        };
     }
 }
 
@@ -898,6 +1004,47 @@ mod tests {
     #[derive(Debug)]
     struct FaultySelfCheckAdapter;
 
+    #[cfg(unix)]
+    struct TransientThenDevicePlatform {
+        calls: AtomicUsize,
+        device: crate::device_binding::ObservedSerialDevice,
+    }
+
+    #[async_trait]
+    #[cfg(unix)]
+    impl crate::device_binding::SerialDevicePlatform for TransientThenDevicePlatform {
+        async fn discover(
+            &self,
+        ) -> Result<Vec<crate::device_binding::ObservedSerialDevice>, String> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err("transient Windows device discovery failure".to_string())
+            } else {
+                Ok(vec![self.device.clone()])
+            }
+        }
+
+        async fn test_candidate(
+            &self,
+            role: crate::device_binding::LocalDeviceRole,
+            candidate: &crate::device_binding::ObservedSerialDevice,
+        ) -> crate::device_binding::DeviceBindingTestResult {
+            crate::device_binding::DeviceBindingTestResult {
+                role,
+                identity_key:
+                    crate::device_binding::StableSerialDeviceIdentity::try_from_observation(
+                        candidate,
+                    )
+                    .expect("fixture identity")
+                    .identity_key,
+                current_port: candidate.current_port.clone(),
+                success: true,
+                code: "SCANNER_PORT_OPEN_READY".to_string(),
+                message: "fixture ready".to_string(),
+                tested_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
     #[async_trait]
     impl vending_core::hardware::HardwareAdapter for FaultySelfCheckAdapter {
         fn adapter_name(&self) -> &str {
@@ -1074,6 +1221,107 @@ mod tests {
 
         task.abort();
         let _ = task.await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn device_binding_watch_reports_transient_failure_then_converges_after_retry() {
+        use crate::secret::InMemorySecretStore;
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let config_store = Arc::new(ConfigStore::new(
+            data_dir.clone(),
+            state.clone(),
+            Arc::new(InMemorySecretStore::default()),
+        ));
+        let public = default_public_config();
+        config_store
+            .save_public_config(public.clone())
+            .await
+            .expect("save config");
+        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+        grantpt(&master).expect("grant pty");
+        unlockpt(&master).expect("unlock pty");
+        let scanner_port = ptsname_r(&master).expect("slave path");
+        let device = crate::device_binding::ObservedSerialDevice {
+            current_port: scanner_port,
+            instance_id: Some("USB\\VID_1234&PID_5678\\SCAN-RETRY".to_string()),
+            container_id: Some("{77777777-8888-9999-aaaa-bbbbbbbbbbbb}".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SCAN-RETRY".to_string()),
+            friendly_name: Some("scanner".to_string()),
+        };
+        let identity =
+            crate::device_binding::StableSerialDeviceIdentity::try_from_observation(&device)
+                .expect("stable identity");
+        config_store
+            .save_local_device_binding(
+                crate::device_binding::LocalDeviceRole::Scanner,
+                crate::device_binding::LocalSerialRoleBinding {
+                    identity,
+                    confirmed_at: crate::state::store::now_iso(),
+                    confirmed_by: "operator-1".to_string(),
+                    test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
+                },
+            )
+            .await
+            .expect("save binding");
+        let status_cache = ipc::RuntimeStatusCache::new(&public, state.clone()).await;
+        let (events_tx, _) = broadcast::channel(16);
+        let (raw_tx, _raw_rx) = mpsc::channel(4);
+        let scanner_runtime = ScannerRuntimeController::new(raw_tx, events_tx.clone());
+        let cache_task = tokio::spawn(cache_daemon_events(
+            events_tx.subscribe(),
+            status_cache.clone(),
+            None,
+        ));
+        let shutdown = CancellationToken::new();
+        let watch_task = tokio::spawn(run_device_binding_watch(
+            Arc::new(TransientThenDevicePlatform {
+                calls: AtomicUsize::new(0),
+                device,
+            }),
+            config_store,
+            state,
+            HardwareSupervisor::from_config(&public).expect("hardware"),
+            scanner_runtime.clone(),
+            status_cache.clone(),
+            data_dir,
+            shutdown.clone(),
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if status_cache.scanner.read().await.code == "SCANNER_DISCOVERY_RETRY" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("transient discovery evidence");
+        tokio::time::timeout(std::time::Duration::from_secs(4), async {
+            loop {
+                if status_cache.scanner.read().await.code == "SCANNER_READY" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("watcher converges after bounded retry");
+
+        shutdown.cancel();
+        watch_task.await.expect("watch join").expect("watch result");
+        scanner_runtime.stop().await.expect("stop scanner");
+        cache_task.abort();
+        let _ = cache_task.await;
     }
 
     #[tokio::test]

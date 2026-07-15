@@ -61,6 +61,129 @@ struct ClearWholeMachineMaintenanceLockRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DeviceBindingCandidateRequest {
     identity_key: String,
+    #[serde(default)]
+    test_evidence_token: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceBindingTestResponse {
+    #[serde(flatten)]
+    result: crate::device_binding::DeviceBindingTestResult,
+    test_evidence_token: String,
+    test_evidence_expires_at: String,
+    observation_revision: String,
+    config_revision: String,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceBindingTestEvidence {
+    session_generation: String,
+    role: crate::device_binding::LocalDeviceRole,
+    identity_key: String,
+    observation_revision: String,
+    config_revision: String,
+    expires_at: Instant,
+}
+
+#[derive(Debug)]
+pub(crate) struct DeviceBindingTestEvidenceStore {
+    entries: Mutex<HashMap<String, DeviceBindingTestEvidence>>,
+    ttl: Duration,
+}
+
+impl Default for DeviceBindingTestEvidenceStore {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            ttl: Duration::from_secs(60),
+        }
+    }
+}
+
+impl DeviceBindingTestEvidenceStore {
+    #[cfg(test)]
+    fn with_ttl(ttl: Duration) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            ttl,
+        }
+    }
+
+    async fn issue(
+        &self,
+        session_generation: String,
+        role: crate::device_binding::LocalDeviceRole,
+        identity_key: String,
+        observation_revision: String,
+        config_revision: String,
+    ) -> (String, String) {
+        let token = uuid::Uuid::new_v4().to_string();
+        let expires_at = Instant::now() + self.ttl;
+        self.entries.lock().await.insert(
+            token.clone(),
+            DeviceBindingTestEvidence {
+                session_generation,
+                role,
+                identity_key,
+                observation_revision,
+                config_revision,
+                expires_at,
+            },
+        );
+        let expires_at_wall = chrono::Utc::now()
+            + chrono::Duration::from_std(self.ttl)
+                .unwrap_or_else(|_| chrono::Duration::seconds(60));
+        (token, expires_at_wall.to_rfc3339())
+    }
+
+    async fn consume(
+        &self,
+        token: &str,
+        session_generation: &str,
+        role: crate::device_binding::LocalDeviceRole,
+        identity_key: &str,
+        observation_revision: &str,
+        config_revision: &str,
+    ) -> Result<(), (&'static str, String)> {
+        let mut entries = self.entries.lock().await;
+        entries.retain(|_, evidence| evidence.expires_at > Instant::now());
+        let Some(evidence) = entries.remove(token) else {
+            return Err((
+                "device_binding_test_evidence_invalid",
+                "device binding test evidence is missing, expired, or already consumed".to_string(),
+            ));
+        };
+        if evidence.session_generation != session_generation {
+            return Err((
+                "device_binding_test_evidence_session_changed",
+                "device binding test evidence belongs to a different maintenance session generation"
+                    .to_string(),
+            ));
+        }
+        if evidence.role != role || evidence.identity_key != identity_key {
+            return Err((
+                "device_binding_test_evidence_target_changed",
+                "device binding role or stable identity changed after the protected test"
+                    .to_string(),
+            ));
+        }
+        if evidence.observation_revision != observation_revision {
+            return Err((
+                "device_binding_test_evidence_observation_changed",
+                "device port observation changed after the protected test; test the device again"
+                    .to_string(),
+            ));
+        }
+        if evidence.config_revision != config_revision {
+            return Err((
+                "device_binding_test_evidence_config_changed",
+                "local hardware configuration changed after the protected test; test the device again"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn parse_local_device_role(value: &str) -> Option<crate::device_binding::LocalDeviceRole> {
@@ -653,6 +776,7 @@ pub struct IpcContext {
     pub runtime_tx: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
     pub scanner_runtime: crate::scanner::ScannerRuntimeController,
     pub serial_device_platform: crate::device_binding::SharedSerialDevicePlatform,
+    pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
@@ -4759,6 +4883,8 @@ async fn device_binding_snapshot(
                 .into_response()
         }
     };
+    let hardware_runtime = ctx.ui.status_cache.hardware.read().await.clone();
+    let scanner_runtime = ctx.ui.status_cache.scanner.read().await.clone();
     Json(serde_json::json!({
         "roles": [
             crate::device_binding::project_role_binding(
@@ -4766,12 +4892,24 @@ async fn device_binding_snapshot(
                 settings.lower_controller_binding,
                 public.serial_port_path,
                 &observed,
+                Some(crate::device_binding::DeviceRoleRuntimeReadiness {
+                    online: hardware_runtime.online,
+                    current_port: hardware_runtime.port_path,
+                    code: "LOWER_CONTROLLER_RUNTIME_STATUS".to_string(),
+                    message: hardware_runtime.message,
+                }),
             ),
             crate::device_binding::project_role_binding(
                 crate::device_binding::LocalDeviceRole::Scanner,
                 settings.scanner_binding,
                 public.scanner_serial_port_path,
                 &observed,
+                Some(crate::device_binding::DeviceRoleRuntimeReadiness {
+                    online: scanner_runtime.online,
+                    current_port: scanner_runtime.port,
+                    code: scanner_runtime.code,
+                    message: scanner_runtime.message,
+                }),
             ),
         ]
     }))
@@ -4824,6 +4962,42 @@ async fn find_requested_device_candidate(
     Ok(candidate)
 }
 
+fn device_binding_observation_revision(
+    candidate: &crate::device_binding::ObservedSerialDevice,
+) -> Result<String, String> {
+    let identity =
+        crate::device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)?;
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "identity": identity,
+        "currentPort": candidate.current_port,
+    }))
+    .map_err(|error| format!("serialize device observation revision failed: {error}"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
+}
+
+async fn device_binding_config_revision(ctx: &IpcContext) -> Result<String, String> {
+    let public = ctx.config_store.load_effective_public_config().await?;
+    let local = ctx
+        .config_store
+        .load_local_bring_up_settings()
+        .await?
+        .unwrap_or_default();
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "public": public,
+        "local": local,
+    }))
+    .map_err(|error| format!("serialize device binding config revision failed: {error}"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
+}
+
+fn maintenance_session_generation(headers: &HeaderMap) -> &str {
+    headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default()
+}
+
 async fn test_device_binding_candidate(
     State(ctx): State<IpcContext>,
     AxumPath(role): AxumPath<String>,
@@ -4862,12 +5036,53 @@ async fn test_device_binding_candidate(
         .serial_device_platform
         .test_candidate(role, &candidate)
         .await;
-    let status = if result.success {
-        StatusCode::OK
-    } else {
-        StatusCode::UNPROCESSABLE_ENTITY
+    if !result.success {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(result)).into_response();
+    }
+    let observation_revision = match device_binding_observation_revision(&candidate) {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorMessage {
+                    code: "device_identity_unstable",
+                    message,
+                }),
+            )
+                .into_response();
+        }
     };
-    (status, Json(result)).into_response()
+    let config_revision = match device_binding_config_revision(&ctx).await {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "device_binding_config_revision_failed",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let (test_evidence_token, test_evidence_expires_at) = ctx
+        .device_binding_test_evidence
+        .issue(
+            maintenance_session_generation(&headers).to_string(),
+            role,
+            result.identity_key.clone(),
+            observation_revision.clone(),
+            config_revision.clone(),
+        )
+        .await;
+    Json(DeviceBindingTestResponse {
+        result,
+        test_evidence_token,
+        test_evidence_expires_at,
+        observation_revision,
+        config_revision,
+    })
+    .into_response()
 }
 
 async fn confirm_device_binding_candidate(
@@ -4901,28 +5116,91 @@ async fn confirm_device_binding_candidate(
         return response;
     }
     let _guard = ctx.bring_up_execution_lock.lock().await;
-    if ctx
-        .state
-        .current_transaction_snapshot()
-        .await
-        .ok()
-        .flatten()
-        .as_ref()
-        .is_some_and(crate::transaction::is_active_transaction)
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorMessage {
-                code: "device_binding_active_sale",
-                message: "hardware binding cannot change during an active sale".to_string(),
-            }),
-        )
-            .into_response();
+    match ctx.state.current_transaction_snapshot().await {
+        Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "device_binding_active_sale",
+                    message: "hardware binding cannot change during an active sale".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "device_binding_sale_state_unavailable",
+                    message: format!(
+                        "cannot prove that no sale is active; hardware binding remains unchanged: {error}"
+                    ),
+                }),
+            )
+                .into_response();
+        }
     }
     let candidate = match find_requested_device_candidate(&ctx, request.identity_key.trim()).await {
         Ok(candidate) => candidate,
         Err(response) => return response,
     };
+    let Some(test_evidence_token) = request
+        .test_evidence_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "device_binding_test_evidence_required",
+                message: "run the protected role test immediately before confirming this binding"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let observation_revision = match device_binding_observation_revision(&candidate) {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorMessage {
+                    code: "device_identity_unstable",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let config_revision = match device_binding_config_revision(&ctx).await {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "device_binding_config_revision_failed",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err((code, message)) = ctx
+        .device_binding_test_evidence
+        .consume(
+            test_evidence_token,
+            maintenance_session_generation(&headers),
+            role,
+            request.identity_key.trim(),
+            &observation_revision,
+            &config_revision,
+        )
+        .await
+    {
+        return (StatusCode::CONFLICT, Json(ErrorMessage { code, message })).into_response();
+    }
     let tested = ctx
         .serial_device_platform
         .test_candidate(role, &candidate)
@@ -6127,6 +6405,7 @@ mod tests {
             runtime_tx: runtime_tx.clone(),
             scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
             serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
+            device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
             disk_pressure_probe: Arc::new(FixedDiskPressureProbe {
                 available_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES + 1,
                 threshold_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES,
@@ -6884,6 +7163,35 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    async fn test_binding_candidate(
+        app: &Router,
+        role: &str,
+        identity_key: &str,
+    ) -> serde_json::Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/v1/hardware-bindings/{role}/test"))
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({ "identityKey": identity_key }).to_string(),
+                    ))
+                    .expect("test binding request"),
+            )
+            .await
+            .expect("test binding response");
+        let status = response.status();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("test binding body");
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        serde_json::from_slice(&body).expect("test binding json")
+    }
+
     #[tokio::test]
     async fn device_binding_snapshot_exposes_stable_identity_current_com_and_role_ambiguity() {
         let temp = tempdir().expect("temp");
@@ -6893,7 +7201,7 @@ mod tests {
                 crate::device_binding::ObservedSerialDevice {
                     current_port: "COM5".to_string(),
                     instance_id: Some("USB\\CTRL-1".to_string()),
-                    container_id: Some("{controller-1}".to_string()),
+                    container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
                     hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
                     serial_number: None,
                     friendly_name: Some("lower controller candidate".to_string()),
@@ -6901,7 +7209,7 @@ mod tests {
                 crate::device_binding::ObservedSerialDevice {
                     current_port: "COM3".to_string(),
                     instance_id: Some("USB\\SCAN-1".to_string()),
-                    container_id: Some("{scanner-1}".to_string()),
+                    container_id: Some("{22222222-3333-4444-5555-666666666666}".to_string()),
                     hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
                     serial_number: Some("SCAN-1".to_string()),
                     friendly_name: Some("scanner candidate".to_string()),
@@ -6917,7 +7225,7 @@ mod tests {
         assert_eq!(payload["roles"][0]["candidates"][0]["currentPort"], "COM5");
         assert_eq!(
             payload["roles"][0]["candidates"][0]["identity"]["identityKey"],
-            "container:controller-1"
+            "container:11111111-2222-3333-4444-555555555555"
         );
         assert_eq!(payload["roles"][1]["role"], "scanner");
         assert_eq!(payload["roles"][1]["candidates"][1]["currentPort"], "COM3");
@@ -6942,7 +7250,7 @@ mod tests {
         let device = crate::device_binding::ObservedSerialDevice {
             current_port: scanner_port,
             instance_id: Some("USB\\SCAN-1".to_string()),
-            container_id: Some("{scanner-1}".to_string()),
+            container_id: Some("{22222222-3333-4444-5555-666666666666}".to_string()),
             hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
             serial_number: Some("SCAN-1".to_string()),
             friendly_name: Some("scanner candidate".to_string()),
@@ -6955,6 +7263,12 @@ mod tests {
         let hardware_name_before = hardware.adapter_name();
         let scanner_runtime = ctx.scanner_runtime.clone();
         let app = build_router(ctx);
+        let tested = test_binding_candidate(
+            &app,
+            "scanner",
+            "container:22222222-3333-4444-5555-666666666666",
+        )
+        .await;
         let request = Request::builder()
             .method(Method::POST)
             .uri("/v1/hardware-bindings/scanner/confirm")
@@ -6962,7 +7276,11 @@ mod tests {
             .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
-                r#"{"identityKey":"container:scanner-1"}"#,
+                json!({
+                    "identityKey": "container:22222222-3333-4444-5555-666666666666",
+                    "testEvidenceToken": tested["testEvidenceToken"],
+                })
+                .to_string(),
             ))
             .expect("request");
 
@@ -6989,7 +7307,7 @@ mod tests {
                 .expect("scanner binding")
                 .identity
                 .identity_key,
-            "container:scanner-1"
+            "container:22222222-3333-4444-5555-666666666666"
         );
         assert_eq!(
             settings.scanner_adapter,
@@ -7008,7 +7326,7 @@ mod tests {
             devices: vec![crate::device_binding::ObservedSerialDevice {
                 current_port: "/dev/vem-missing-controller".to_string(),
                 instance_id: Some("USB\\CTRL-FAIL".to_string()),
-                container_id: Some("{controller-fail}".to_string()),
+                container_id: Some("{33333333-4444-5555-6666-777777777777}".to_string()),
                 hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
                 serial_number: None,
                 friendly_name: Some("controller candidate".to_string()),
@@ -7017,6 +7335,12 @@ mod tests {
         let config_store = ctx.config_store.clone();
         let hardware = ctx.hardware.clone();
         let app = build_router(ctx);
+        let tested = test_binding_candidate(
+            &app,
+            "lower_controller",
+            "container:33333333-4444-5555-6666-777777777777",
+        )
+        .await;
         let request = Request::builder()
             .method(Method::POST)
             .uri("/v1/hardware-bindings/lower_controller/confirm")
@@ -7024,7 +7348,11 @@ mod tests {
             .header("x-vem-maintenance-session", "protected-session-1")
             .header(CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(
-                r#"{"identityKey":"container:controller-fail"}"#,
+                json!({
+                    "identityKey": "container:33333333-4444-5555-6666-777777777777",
+                    "testEvidenceToken": tested["testEvidenceToken"],
+                })
+                .to_string(),
             ))
             .expect("request");
 
@@ -7042,6 +7370,276 @@ mod tests {
             Some(crate::config::HardwareAdapterKind::Mock)
         );
         assert_eq!(hardware.adapter_name(), "mock");
+    }
+
+    #[tokio::test]
+    async fn device_binding_confirm_fails_closed_when_sale_state_cannot_be_read() {
+        let temp = tempdir().expect("temp");
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
+            devices: vec![crate::device_binding::ObservedSerialDevice {
+                current_port: "COM5".to_string(),
+                instance_id: Some("USB\\CTRL-STATE".to_string()),
+                container_id: Some("{44444444-5555-6666-7777-888888888888}".to_string()),
+                hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+                serial_number: None,
+                friendly_name: Some("controller candidate".to_string()),
+            }],
+        });
+        let hardware = ctx.hardware.clone();
+        ctx.state.close_for_tests().await;
+        let app = build_router(ctx);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/hardware-bindings/lower_controller/confirm")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"identityKey":"container:44444444-5555-6666-7777-888888888888"}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value = serde_json::from_slice(
+            &body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("json");
+        assert_eq!(payload["code"], "device_binding_sale_state_unavailable");
+        assert_eq!(hardware.adapter_name(), "mock");
+    }
+
+    #[tokio::test]
+    async fn device_binding_confirm_never_reconfigures_during_an_active_sale() {
+        let temp = tempdir().expect("temp");
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
+            devices: vec![crate::device_binding::ObservedSerialDevice {
+                current_port: "COM5".to_string(),
+                instance_id: Some("USB\\CTRL-ACTIVE".to_string()),
+                container_id: Some("{45454545-5656-6767-7878-898989898989}".to_string()),
+                hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+                serial_number: None,
+                friendly_name: Some("controller candidate".to_string()),
+            }],
+        });
+        ctx.state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: "ORDER-ACTIVE-BINDING",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "paid",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed active sale");
+        let hardware = ctx.hardware.clone();
+        let app = build_router(ctx);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/hardware-bindings/lower_controller/confirm")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"identityKey":"container:45454545-5656-6767-7878-898989898989"}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let payload: serde_json::Value = serde_json::from_slice(
+            &body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("json");
+        assert_eq!(payload["code"], "device_binding_active_sale");
+        assert_eq!(hardware.adapter_name(), "mock");
+    }
+
+    #[tokio::test]
+    async fn device_binding_confirm_rejects_direct_confirmation_without_test_evidence() {
+        let temp = tempdir().expect("temp");
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
+            devices: vec![crate::device_binding::ObservedSerialDevice {
+                current_port: "COM5".to_string(),
+                instance_id: Some("USB\\CTRL-EVIDENCE".to_string()),
+                container_id: Some("{55555555-6666-7777-8888-999999999999}".to_string()),
+                hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+                serial_number: None,
+                friendly_name: Some("controller candidate".to_string()),
+            }],
+        });
+        let app = build_router(ctx);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/hardware-bindings/lower_controller/confirm")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"identityKey":"container:55555555-6666-7777-8888-999999999999"}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let payload: serde_json::Value = serde_json::from_slice(
+            &body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("json");
+        assert_eq!(payload["code"], "device_binding_test_evidence_required");
+    }
+
+    #[tokio::test]
+    async fn device_binding_test_evidence_is_consumed_once_under_concurrent_confirm() {
+        let temp = tempdir().expect("temp");
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        let identity_key = "container:66666666-7777-8888-9999-aaaaaaaaaaaa";
+        ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
+            devices: vec![crate::device_binding::ObservedSerialDevice {
+                current_port: "/dev/vem-missing-controller".to_string(),
+                instance_id: Some("USB\\CTRL-CONCURRENT".to_string()),
+                container_id: Some("{66666666-7777-8888-9999-aaaaaaaaaaaa}".to_string()),
+                hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+                serial_number: None,
+                friendly_name: Some("controller candidate".to_string()),
+            }],
+        });
+        let app = build_router(ctx);
+        let tested = test_binding_candidate(&app, "lower_controller", identity_key).await;
+        let body = json!({
+            "identityKey": identity_key,
+            "testEvidenceToken": tested["testEvidenceToken"],
+        })
+        .to_string();
+        let request = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/hardware-bindings/lower_controller/confirm")
+                .header(AUTHORIZATION, "Bearer token-1")
+                .header("x-vem-maintenance-session", "protected-session-1")
+                .header(CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(body.clone()))
+                .expect("request")
+        };
+
+        let (first, second) = tokio::join!(
+            app.clone().oneshot(request()),
+            app.clone().oneshot(request())
+        );
+        let mut statuses = vec![
+            first.expect("first response").status(),
+            second.expect("second response").status(),
+        ];
+        statuses.sort();
+
+        assert_eq!(
+            statuses,
+            vec![StatusCode::CONFLICT, StatusCode::UNPROCESSABLE_ENTITY]
+        );
+    }
+
+    #[tokio::test]
+    async fn device_binding_test_evidence_rejects_session_target_observation_config_and_expiry_changes(
+    ) {
+        let store = DeviceBindingTestEvidenceStore::with_ttl(Duration::from_secs(60));
+        let role = crate::device_binding::LocalDeviceRole::Scanner;
+        let identity = "container:77777777-8888-9999-aaaa-bbbbbbbbbbbb";
+        for (changed, expected_code) in [
+            ("session", "device_binding_test_evidence_session_changed"),
+            ("identity", "device_binding_test_evidence_target_changed"),
+            (
+                "observation",
+                "device_binding_test_evidence_observation_changed",
+            ),
+            ("config", "device_binding_test_evidence_config_changed"),
+        ] {
+            let (token, _) = store
+                .issue(
+                    "session-1".to_string(),
+                    role,
+                    identity.to_string(),
+                    "observation-1".to_string(),
+                    "config-1".to_string(),
+                )
+                .await;
+            let error = store
+                .consume(
+                    &token,
+                    if changed == "session" {
+                        "session-2"
+                    } else {
+                        "session-1"
+                    },
+                    role,
+                    if changed == "identity" {
+                        "container:88888888-9999-aaaa-bbbb-cccccccccccc"
+                    } else {
+                        identity
+                    },
+                    if changed == "observation" {
+                        "observation-2"
+                    } else {
+                        "observation-1"
+                    },
+                    if changed == "config" {
+                        "config-2"
+                    } else {
+                        "config-1"
+                    },
+                )
+                .await
+                .expect_err("changed evidence dimension must fail closed");
+            assert_eq!(error.0, expected_code);
+        }
+
+        let expired = DeviceBindingTestEvidenceStore::with_ttl(Duration::ZERO);
+        let (token, _) = expired
+            .issue(
+                "session-1".to_string(),
+                role,
+                identity.to_string(),
+                "observation-1".to_string(),
+                "config-1".to_string(),
+            )
+            .await;
+        let error = expired
+            .consume(
+                &token,
+                "session-1",
+                role,
+                identity,
+                "observation-1",
+                "config-1",
+            )
+            .await
+            .expect_err("expired evidence");
+        assert_eq!(error.0, "device_binding_test_evidence_invalid");
     }
 
     fn valid_provisioning_profile() -> serde_json::Value {

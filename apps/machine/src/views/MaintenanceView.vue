@@ -556,7 +556,12 @@ const deviceBindingMaintenance = reactive({
   loading: false,
   message: null as string | null,
   snapshot: null as DeviceBindingSnapshot | null,
-  tested: {} as Partial<Record<"lower_controller" | "scanner", string>>,
+  tested: {} as Partial<
+    Record<
+      "lower_controller" | "scanner",
+      { identityKey: string; testEvidenceToken: string }
+    >
+  >,
 });
 
 async function refreshDeviceBindings(): Promise<void> {
@@ -577,7 +582,10 @@ async function testDeviceBinding(
   deviceBindingMaintenance.message = null;
   try {
     const result = await daemonClient.testDeviceBinding(role, identityKey);
-    deviceBindingMaintenance.tested[role] = identityKey;
+    deviceBindingMaintenance.tested[role] = {
+      identityKey,
+      testEvidenceToken: result.testEvidenceToken,
+    };
     deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}测试通过：${result.currentPort}`;
   } catch (error) {
     clearMaintenanceSessionAfterAuthorizationFailure(error);
@@ -594,14 +602,20 @@ async function confirmDeviceBinding(
 ): Promise<void> {
   if (
     !maintenanceSessionAuthorized.value ||
-    deviceBindingMaintenance.tested[role] !== identityKey
+    deviceBindingMaintenance.tested[role]?.identityKey !== identityKey
   )
     return;
   deviceBindingMaintenance.loading = true;
   deviceBindingMaintenance.message = null;
   try {
-    const result = await daemonClient.confirmDeviceBinding(role, identityKey);
+    const tested = deviceBindingMaintenance.tested[role];
+    if (!tested) return;
     delete deviceBindingMaintenance.tested[role];
+    const result = await daemonClient.confirmDeviceBinding(
+      role,
+      identityKey,
+      tested.testEvidenceToken,
+    );
     deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}已绑定到 ${result.currentPort}`;
     await Promise.all([refreshDeviceBindings(), refreshDiagnostics()]);
   } catch (error) {
@@ -1615,7 +1629,7 @@ async function submitStockMovement(): Promise<void> {
                   :disabled="
                     !maintenanceSessionAuthorized ||
                     deviceBindingMaintenance.loading ||
-                    deviceBindingMaintenance.tested[role.role] !==
+                    deviceBindingMaintenance.tested[role.role]?.identityKey !==
                       candidate.identity.identityKey
                   "
                   @click="
@@ -1629,6 +1643,15 @@ async function submitStockMovement(): Promise<void> {
                 </button>
               </div>
             </div>
+            <p
+              v-for="diagnostic in role.discoveryDiagnostics"
+              :key="`${diagnostic.currentPort}:${diagnostic.code}`"
+              class="rounded-2xl border border-amber-200/20 p-3 text-sm text-amber-100"
+            >
+              {{ diagnostic.friendlyName ?? "串口设备" }} ·
+              {{ diagnostic.currentPort }}：
+              {{ operatorMessageLabel(diagnostic.message) }}
+            </p>
           </div>
           <details
             v-if="role.binding || role.legacyPortHint"

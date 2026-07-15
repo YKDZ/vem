@@ -7,6 +7,7 @@ import {
   daemonIpcCheckoutFlowActionSchema,
   daemonIpcEventNotificationSchema,
   daemonIpcDeviceBindingSnapshotSchema,
+  daemonIpcDeviceBindingTestResultSchema,
   daemonIpcDispenseProgressObservationStageSchema,
   daemonIpcScannerStatusSchema,
   daemonIpcPickupReminderSchema,
@@ -49,9 +50,9 @@ describe("Daemon IPC Contract Area", () => {
           candidates: [
             {
               identity: {
-                identityKey: "container:controller-1",
+                identityKey: "container:11111111-2222-3333-4444-555555555555",
                 instanceId: "USB\\CONTROLLER-1",
-                containerId: "controller-1",
+                containerId: "11111111-2222-3333-4444-555555555555",
                 hardwareIds: ["USB\\VID_1A86&PID_55D3"],
                 serialNumber: null,
               },
@@ -62,6 +63,7 @@ describe("Daemon IPC Contract Area", () => {
               readinessMessage: "test required",
             },
           ],
+          discoveryDiagnostics: [],
         },
         {
           role: "scanner",
@@ -74,13 +76,16 @@ describe("Daemon IPC Contract Area", () => {
           ambiguityPorts: [],
           legacyPortHint: "COM3",
           candidates: [],
+          discoveryDiagnostics: [],
         },
       ],
     });
 
     expect(snapshot.roles[0]?.candidates[0]).toMatchObject({
       currentPort: "COM9",
-      identity: { identityKey: "container:controller-1" },
+      identity: {
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
+      },
     });
     expect(() =>
       daemonIpcDeviceBindingSnapshotSchema.parse({
@@ -97,6 +102,30 @@ describe("Daemon IPC Contract Area", () => {
           },
           snapshot.roles[1],
         ],
+      }),
+    ).toThrow();
+  });
+
+  it("requires one-time protected test evidence before a binding confirmation", () => {
+    const tested = daemonIpcDeviceBindingTestResultSchema.parse({
+      role: "scanner",
+      identityKey: "container:22222222-3333-4444-5555-666666666666",
+      currentPort: "COM3",
+      success: true,
+      code: "SCANNER_PORT_OPEN_READY",
+      message: "ready",
+      testedAt: "2026-07-15T00:00:00Z",
+      testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+      testEvidenceExpiresAt: "2026-07-15T00:01:00Z",
+      observationRevision: `sha256:${"a".repeat(64)}`,
+      configRevision: `sha256:${"b".repeat(64)}`,
+    });
+
+    expect(tested.testEvidenceToken).not.toBe(tested.identityKey);
+    expect(() =>
+      daemonIpcDeviceBindingTestResultSchema.parse({
+        ...tested,
+        testEvidenceToken: undefined,
       }),
     ).toThrow();
   });

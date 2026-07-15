@@ -104,10 +104,19 @@ export type DaemonIpcScannerStatus = z.infer<
 
 export const daemonIpcStableSerialDeviceIdentitySchema = z
   .object({
-    identityKey: z.string().min(1),
+    identityKey: z
+      .string()
+      .regex(
+        /^(?:container:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|usb:usb\\vid_[0-9a-f]{4}&pid_[0-9a-f]{4}:[a-z0-9._-]+)$/,
+      ),
     instanceId: z.string().nullable(),
-    containerId: z.string().nullable(),
-    hardwareIds: z.array(z.string()),
+    containerId: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+      .nullable(),
+    hardwareIds: z.array(
+      z.string().regex(/^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}$/),
+    ),
     serialNumber: z.string().nullable(),
   })
   .strict();
@@ -126,11 +135,20 @@ const daemonIpcLocalSerialRoleBindingSchema = z
 export const daemonIpcDeviceBindingCandidateSchema = z
   .object({
     identity: daemonIpcStableSerialDeviceIdentitySchema,
-    currentPort: z.string(),
+    currentPort: z.string().regex(/^COM[1-9]\d*$/),
     friendlyName: z.string().nullable(),
     readiness: z.enum(["candidate", "ready", "blocked"]),
     readinessCode: z.string(),
     readinessMessage: z.string(),
+  })
+  .strict();
+
+const daemonIpcDeviceDiscoveryDiagnosticSchema = z
+  .object({
+    currentPort: z.string(),
+    friendlyName: z.string().nullable(),
+    code: z.literal("DEVICE_IDENTITY_NOT_BINDABLE"),
+    message: z.string(),
   })
   .strict();
 
@@ -146,6 +164,7 @@ export const daemonIpcDeviceRoleBindingSnapshotSchema = z
     ambiguityPorts: z.array(z.string()),
     legacyPortHint: z.string().nullable(),
     candidates: z.array(daemonIpcDeviceBindingCandidateSchema),
+    discoveryDiagnostics: z.array(daemonIpcDeviceDiscoveryDiagnosticSchema),
   })
   .strict();
 
@@ -164,6 +183,10 @@ export const daemonIpcDeviceBindingTestResultSchema = z
     code: z.string(),
     message: z.string(),
     testedAt: z.string(),
+    testEvidenceToken: z.uuid(),
+    testEvidenceExpiresAt: z.iso.datetime({ offset: true }),
+    observationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    configRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
   .strict();
 

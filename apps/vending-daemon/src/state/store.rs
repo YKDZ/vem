@@ -568,6 +568,11 @@ pub struct LocalStateStore {
 }
 
 impl LocalStateStore {
+    #[cfg(test)]
+    pub async fn close_for_tests(&self) {
+        self.pool.close().await;
+    }
+
     async fn begin_immediate_write_transaction(
         &self,
     ) -> Result<Transaction<'static, Sqlite>, StoreError> {

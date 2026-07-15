@@ -189,6 +189,7 @@ function saleViewFixture() {
         targetGender: null,
       },
     ],
+    discoveryDiagnostics: [],
     source: "local_stock",
     planogramVersion: "PLAN-1",
     lastUpdatedAt: "2026-06-05T00:00:00.000Z",
@@ -358,9 +359,9 @@ beforeEach(() => {
         candidates: [
           {
             identity: {
-              identityKey: "container:controller-1",
+              identityKey: "container:11111111-2222-3333-4444-555555555555",
               instanceId: "USB\\CONTROLLER-1",
-              containerId: "controller-1",
+              containerId: "11111111-2222-3333-4444-555555555555",
               hardwareIds: ["USB\\VID_1A86&PID_55D3"],
               serialNumber: null,
             },
@@ -383,24 +384,29 @@ beforeEach(() => {
         ambiguityPorts: [],
         legacyPortHint: "COM3",
         candidates: [],
+        discoveryDiagnostics: [],
       },
     ],
   });
   testDeviceBindingMock.mockResolvedValue({
     role: "lower_controller",
-    identityKey: "container:controller-1",
+    identityKey: "container:11111111-2222-3333-4444-555555555555",
     currentPort: "COM5",
     success: true,
     code: "LOWER_CONTROLLER_HANDSHAKE_READY",
     message: "ready",
     testedAt: "2026-07-15T00:00:00Z",
+    testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+    testEvidenceExpiresAt: "2026-07-15T00:01:00Z",
+    observationRevision: `sha256:${"a".repeat(64)}`,
+    configRevision: `sha256:${"b".repeat(64)}`,
   });
   confirmDeviceBindingMock.mockResolvedValue({
     binding: {
       identity: {
-        identityKey: "container:controller-1",
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
         instanceId: "USB\\CONTROLLER-1",
-        containerId: "controller-1",
+        containerId: "11111111-2222-3333-4444-555555555555",
         hardwareIds: ["USB\\VID_1A86&PID_55D3"],
         serialNumber: null,
       },
@@ -708,7 +714,7 @@ describe("MaintenanceView hardware config", () => {
     await vi.waitFor(() => {
       expect(testDeviceBindingMock).toHaveBeenCalledWith(
         "lower_controller",
-        "container:controller-1",
+        "container:11111111-2222-3333-4444-555555555555",
       );
     });
 
@@ -720,7 +726,8 @@ describe("MaintenanceView hardware config", () => {
     await vi.waitFor(() => {
       expect(confirmDeviceBindingMock).toHaveBeenCalledWith(
         "lower_controller",
-        "container:controller-1",
+        "container:11111111-2222-3333-4444-555555555555",
+        "11111111-2222-4333-8444-555555555555",
       );
     });
   });

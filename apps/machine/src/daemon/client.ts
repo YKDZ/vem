@@ -654,11 +654,12 @@ export class DaemonApiClient {
   async confirmDeviceBinding(
     role: "lower_controller" | "scanner",
     identityKey: string,
+    testEvidenceToken: string,
   ): Promise<DeviceBindingActivation> {
     return deviceBindingActivationSchema.parse(
       await this.request(`/v1/hardware-bindings/${role}/confirm`, {
         method: "POST",
-        body: { identityKey },
+        body: { identityKey, testEvidenceToken },
       }),
     );
   }
