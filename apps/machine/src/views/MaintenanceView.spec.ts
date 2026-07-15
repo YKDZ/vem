@@ -24,6 +24,9 @@ const {
   getRemoteOpsStatusMock,
   getStockMaintenanceTaskMock,
   submitStockMaintenanceBatchMock,
+  getSaleViewMock,
+  getPaymentOptionsMock,
+  recordStockMovementMock,
   clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
   getConfigMock,
@@ -56,6 +59,9 @@ const {
   getRemoteOpsStatusMock: vi.fn(),
   getStockMaintenanceTaskMock: vi.fn(),
   submitStockMaintenanceBatchMock: vi.fn(),
+  getSaleViewMock: vi.fn(),
+  getPaymentOptionsMock: vi.fn(),
+  recordStockMovementMock: vi.fn(),
   clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
   getConfigMock: vi.fn(),
@@ -105,6 +111,9 @@ vi.mock("@/daemon/client", async (importOriginal) => {
       getRemoteOpsStatus: getRemoteOpsStatusMock,
       getStockMaintenanceTask: getStockMaintenanceTaskMock,
       submitStockMaintenanceBatch: submitStockMaintenanceBatchMock,
+      getSaleView: getSaleViewMock,
+      getPaymentOptions: getPaymentOptionsMock,
+      recordStockMovement: recordStockMovementMock,
       clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
       runHardwareSelfCheck: runHardwareSelfCheckMock,
       getConfig: getConfigMock,
@@ -484,6 +493,19 @@ beforeEach(() => {
     task: { ...stockMaintenanceTaskFixture(), status: "pending" },
     duplicate: false,
   });
+  getSaleViewMock.mockResolvedValue(saleViewFixture());
+  getPaymentOptionsMock.mockResolvedValue({
+    options: [],
+    defaultOptionKey: null,
+    defaultProviderCode: null,
+    providerEnvironment: {
+      environment: "sandbox",
+      readiness: "ready",
+      errorCategory: "none",
+    },
+    serverTime: "2026-06-05T00:00:00.000Z",
+  });
+  recordStockMovementMock.mockResolvedValue(saleViewFixture());
   clearWholeMachineMaintenanceLockMock.mockResolvedValue({ cleared: true });
   runHardwareSelfCheckMock.mockResolvedValue({
     online: true,
@@ -616,6 +638,20 @@ it("verifies the PIN through daemon IPC before enabling protected maintenance ac
     );
   });
   expect(clearMaintenanceSessionMock).not.toHaveBeenCalled();
+});
+
+it("shows only the secret-free payment environment diagnostic after maintenance authorization", async () => {
+  const host = await mountView();
+
+  expect(host.textContent).not.toContain("支付环境");
+  await unlockMaintenance(host);
+  await vi.waitFor(() => {
+    expect(getPaymentOptionsMock).toHaveBeenCalled();
+    expect(host.textContent).toContain("支付环境");
+    expect(host.textContent).toContain("沙箱");
+    expect(host.textContent).toContain("已就绪");
+  });
+  expect(host.textContent).not.toMatch(/privateKeyPem|certificate|密钥|证书/);
 });
 
 it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {

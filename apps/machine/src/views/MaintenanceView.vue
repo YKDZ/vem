@@ -4,6 +4,7 @@ import {
   type DaemonIpcAudioOutputTestResponse,
   formatMachineSlotCoordinate,
   type StockMaintenanceTask,
+  type PaymentProviderEnvironmentDiagnostic,
 } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -68,6 +69,42 @@ const maintenanceSessionAuthorized = computed(
     maintenanceSession.value !== null &&
     Date.parse(maintenanceSession.value.expiresAt) > Date.now(),
 );
+const paymentEnvironmentDiagnostic =
+  ref<PaymentProviderEnvironmentDiagnostic | null>(null);
+const paymentEnvironmentMessage = ref<string | null>(null);
+const paymentEnvironmentLabel = computed(() => {
+  switch (paymentEnvironmentDiagnostic.value?.environment) {
+    case "sandbox":
+      return "沙箱";
+    case "production":
+      return "正式";
+    case "mixed":
+      return "混合配置";
+    default:
+      return "未配置";
+  }
+});
+const paymentEnvironmentReadinessLabel = computed(() =>
+  paymentEnvironmentDiagnostic.value?.readiness === "ready"
+    ? "已就绪"
+    : "未就绪",
+);
+const paymentEnvironmentErrorLabel = computed(() => {
+  switch (paymentEnvironmentDiagnostic.value?.errorCategory) {
+    case "none":
+      return "无";
+    case "no_enabled_channel":
+      return "未启用支付渠道";
+    case "provider_unconfigured":
+      return "支付提供方未配置";
+    case "credentials_incomplete":
+      return "平台凭据不完整";
+    case "mixed_environment":
+      return "支付环境混合";
+    default:
+      return "尚未读取";
+  }
+});
 let maintenanceSessionExpiryTimer: number | null = null;
 let removeMaintenanceSessionInvalidationListener: (() => void) | null = null;
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
@@ -275,6 +312,7 @@ async function beginProtectedMaintenance(): Promise<void> {
       operatorEnteredMaintenance.value ? "operator-console" : "front-panel",
     );
     setMaintenanceSession(session);
+    await refreshPaymentEnvironmentDiagnostic();
     maintenanceAuthentication.pin = "";
     maintenanceAuthentication.message = `已验证维护会话，${new Date(session.expiresAt).toLocaleTimeString("zh-CN")} 前有效。`;
   } catch (error) {
@@ -310,6 +348,8 @@ function clearRenderedMaintenanceSession(): void {
     maintenanceSessionExpiryTimer = null;
   }
   maintenanceSession.value = null;
+  paymentEnvironmentDiagnostic.value = null;
+  paymentEnvironmentMessage.value = null;
   setMaintenanceTouchKeyboardSession(null);
 }
 
@@ -1111,6 +1151,9 @@ async function runDiagnosticsRefresh(): Promise<void> {
       naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
       refreshDeviceBindings(),
+      ...(maintenanceSessionAuthorized.value
+        ? [refreshPaymentEnvironmentDiagnostic()]
+        : []),
     ]);
     await returnToCatalogAfterSystemRecovery();
   } catch (error) {
@@ -1118,6 +1161,18 @@ async function runDiagnosticsRefresh(): Promise<void> {
       error instanceof Error ? error.message : String(error);
   } finally {
     diagnostics.loading = false;
+  }
+}
+
+async function refreshPaymentEnvironmentDiagnostic(): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) return;
+  paymentEnvironmentMessage.value = null;
+  try {
+    const response = await daemonClient.getPaymentOptions();
+    paymentEnvironmentDiagnostic.value = response.providerEnvironment;
+  } catch {
+    paymentEnvironmentDiagnostic.value = null;
+    paymentEnvironmentMessage.value = "支付环境诊断暂不可用";
   }
 }
 
@@ -1586,6 +1641,26 @@ async function submitStockMaintenanceTask(): Promise<void> {
           aria-live="polite"
         >
           {{ maintenanceAuthentication.message }}
+        </p>
+      </section>
+
+      <section
+        v-if="maintenanceSessionAuthorized"
+        class="mt-4 rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
+        aria-label="支付环境诊断"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="font-semibold text-white">支付环境</p>
+          <span class="text-sm font-semibold text-sky-100">
+            {{ paymentEnvironmentLabel }} ·
+            {{ paymentEnvironmentReadinessLabel }}
+          </span>
+        </div>
+        <p class="mt-1 text-sm text-slate-300">
+          错误分类：{{ paymentEnvironmentErrorLabel }}
+        </p>
+        <p v-if="paymentEnvironmentMessage" class="mt-1 text-sm text-amber-100">
+          {{ paymentEnvironmentMessage }}
         </p>
       </section>
 

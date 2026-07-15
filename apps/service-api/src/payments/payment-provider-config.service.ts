@@ -71,6 +71,7 @@ export type PaymentChannelProviderReadiness = {
   method: "qr_code" | "payment_code";
   ready: boolean;
   missingCredentialKeys: string[];
+  environment: "sandbox" | "production" | null;
 };
 
 type PaymentChannelPolicyRow = {
@@ -421,6 +422,12 @@ export class PaymentProviderConfigService {
     const readinessByChannel = new Map(
       providerReadiness.map((readiness) => [readiness.channelKey, readiness]),
     );
+    const enabledReadiness = policy.channels
+      .filter((channel) => channel.enabled)
+      .flatMap((channel) => {
+        const readiness = readinessByChannel.get(channel.channelKey);
+        return readiness ? [readiness] : [];
+      });
     const options: Omit<MachinePaymentOption, "recommended">[] = [];
 
     for (const channel of policy.channels) {
@@ -474,6 +481,33 @@ export class PaymentProviderConfigService {
     const defaultProviderCode =
       options.find((option) => option.optionKey === defaultOptionKey)
         ?.providerCode ?? null;
+    const configuredEnvironments = [
+      ...new Set(
+        enabledReadiness.flatMap((item) =>
+          item.environment === null ? [] : [item.environment],
+        ),
+      ),
+    ];
+    const providerEnvironment =
+      configuredEnvironments.length === 0
+        ? "unavailable"
+        : configuredEnvironments.length === 1
+          ? (configuredEnvironments[0] ?? "unavailable")
+          : "mixed";
+    const blockedReadiness = enabledReadiness.filter((item) => !item.ready);
+    const providerEnvironmentError = policy.channels.every(
+      (channel) => !channel.enabled,
+    )
+      ? "no_enabled_channel"
+      : providerEnvironment === "mixed"
+        ? "mixed_environment"
+        : blockedReadiness.length === 0 && options.length > 0
+          ? "none"
+          : blockedReadiness.every(
+                (item) => item.missingCredentialKeys[0] === "providerConfig",
+              )
+            ? "provider_unconfigured"
+            : "credentials_incomplete";
 
     return {
       options: options.map((option) => ({
@@ -482,6 +516,11 @@ export class PaymentProviderConfigService {
       })),
       defaultOptionKey,
       defaultProviderCode,
+      providerEnvironment: {
+        environment: providerEnvironment,
+        readiness: providerEnvironmentError === "none" ? "ready" : "blocked",
+        errorCategory: providerEnvironmentError,
+      },
       serverTime: new Date().toISOString(),
     };
   }
@@ -616,6 +655,12 @@ export class PaymentProviderConfigService {
         method: "qr_code",
         ready: config !== null && missingQrCredentialKeys.length === 0,
         missingCredentialKeys: missingQrCredentialKeys,
+        environment: config
+          ? this.paymentProviderEnvironment(
+              providerCode,
+              config.publicConfigJson,
+            )
+          : null,
       });
 
       const missingPaymentCodeCredentialKeys = config
@@ -627,6 +672,12 @@ export class PaymentProviderConfigService {
         method: "payment_code",
         ready: config !== null && missingPaymentCodeCredentialKeys.length === 0,
         missingCredentialKeys: missingPaymentCodeCredentialKeys,
+        environment: config
+          ? this.paymentProviderEnvironment(
+              providerCode,
+              config.publicConfigJson,
+            )
+          : null,
       });
     }
     return readiness;
@@ -711,6 +762,15 @@ export class PaymentProviderConfigService {
 
   private hasNonBlankString(value: unknown): value is string {
     return typeof value === "string" && value.trim().length > 0;
+  }
+
+  private paymentProviderEnvironment(
+    providerCode: "alipay" | "wechat_pay",
+    publicConfigJson: Record<string, unknown>,
+  ): "sandbox" | "production" | null {
+    if (providerCode === "wechat_pay") return "production";
+    const mode = publicConfigJson["mode"];
+    return mode === "sandbox" || mode === "production" ? mode : null;
   }
 
   async listProductionPilotPaymentEvidenceForMachine(

@@ -638,6 +638,11 @@ async fn mock_payment_code_options(server: &MockServer) {
             }],
             "defaultOptionKey": "payment_code:alipay",
             "defaultProviderCode": "alipay",
+            "providerEnvironment": {
+                "environment": "production",
+                "readiness": "ready",
+                "errorCategory": "none"
+            },
             "serverTime": "2026-05-30T00:00:00.000Z"
         })))
         .mount(server)

@@ -85,6 +85,11 @@ function makeProviderConfigs(): PaymentProviderConfigService {
         },
       ],
       defaultProviderCode: "alipay",
+      providerEnvironment: {
+        environment: "production",
+        readiness: "ready",
+        errorCategory: "none",
+      },
       serverTime: new Date().toISOString(),
     }),
     listPaymentChannelProviderReadinessForMachine: vi.fn().mockResolvedValue(
@@ -96,6 +101,7 @@ function makeProviderConfigs(): PaymentProviderConfigService {
           method,
           ready: true,
           missingCredentialKeys: [],
+          environment: "production",
         };
       }),
     ),
@@ -637,6 +643,11 @@ describe("PaymentOpsService.getReadiness", () => {
         productionProviders: [],
       },
     });
+    expect(result.providerEnvironment).toEqual({
+      environment: "sandbox",
+      readiness: "ready",
+      errorCategory: "none",
+    });
   });
 
   it("allows sandbox provider setup in test readiness while marking it as test-only", async () => {
@@ -708,6 +719,11 @@ describe("PaymentOpsService.getReadiness", () => {
     const result = await service.getReadiness();
 
     expect(result.status).toBe("ready");
+    expect(result.providerEnvironment).toEqual({
+      environment: "sandbox",
+      readiness: "ready",
+      errorCategory: "none",
+    });
     expect(
       result.checks.find(
         (check) => check.code === "provider_environment.production_ready",
@@ -1006,6 +1022,11 @@ describe("PaymentOpsService.getMachinePreflight", () => {
       options: [],
       defaultOptionKey: null,
       defaultProviderCode: null,
+      providerEnvironment: {
+        environment: "unavailable",
+        readiness: "blocked",
+        errorCategory: "provider_unconfigured",
+      },
       serverTime: new Date().toISOString(),
     });
 
@@ -1064,6 +1085,11 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "payment_code:alipay",
         defaultProviderCode: "alipay",
+        providerEnvironment: {
+          environment: "production",
+          readiness: "ready",
+          errorCategory: "none",
+        },
         serverTime: new Date().toISOString(),
       });
 
@@ -1146,6 +1172,11 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "payment_code:alipay",
         defaultProviderCode: "alipay",
+        providerEnvironment: {
+          environment: "production",
+          readiness: "ready",
+          errorCategory: "none",
+        },
         serverTime: new Date().toISOString(),
       });
 
@@ -1234,6 +1265,11 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "payment_code:alipay",
         defaultProviderCode: "alipay",
+        providerEnvironment: {
+          environment: "production",
+          readiness: "ready",
+          errorCategory: "none",
+        },
         serverTime: new Date().toISOString(),
       });
 
@@ -1353,6 +1389,11 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "payment_code:alipay",
         defaultProviderCode: "alipay",
+        providerEnvironment: {
+          environment: "production",
+          readiness: "ready",
+          errorCategory: "none",
+        },
         serverTime: new Date().toISOString(),
       });
 
@@ -1433,6 +1474,11 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "qr_code:alipay",
         defaultProviderCode: "alipay",
+        providerEnvironment: {
+          environment: "production",
+          readiness: "ready",
+          errorCategory: "none",
+        },
         serverTime: new Date().toISOString(),
       });
       vi.mocked(
@@ -1444,6 +1490,7 @@ describe("PaymentOpsService.getMachinePreflight", () => {
           method: "qr_code",
           ready: true,
           missingCredentialKeys: [],
+          environment: "production",
         },
         {
           channelKey: "qr_code:wechat_pay",
@@ -1451,6 +1498,7 @@ describe("PaymentOpsService.getMachinePreflight", () => {
           method: "qr_code",
           ready: false,
           missingCredentialKeys: ["providerConfig"],
+          environment: null,
         },
       ]);
 

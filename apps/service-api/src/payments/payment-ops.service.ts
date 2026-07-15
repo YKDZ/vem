@@ -260,10 +260,47 @@ export class PaymentOpsService {
     const criticalFailed = checks.some(
       (check) => check.severity === "critical" && !check.passed,
     );
+    const environmentCheck = checks.find(
+      (check) => check.code === "provider_environment.production_ready",
+    );
+    const sandboxProviders = Array.isArray(
+      environmentCheck?.evidence["sandboxProviders"],
+    )
+      ? environmentCheck.evidence["sandboxProviders"]
+      : [];
+    const productionProviders = Array.isArray(
+      environmentCheck?.evidence["productionProviders"],
+    )
+      ? environmentCheck.evidence["productionProviders"]
+      : [];
+    const hasSandboxProvider = sandboxProviders.length > 0;
+    const hasProductionProvider = productionProviders.length > 0;
+    const providerEnvironment =
+      hasSandboxProvider && hasProductionProvider
+        ? "mixed"
+        : hasSandboxProvider
+          ? "sandbox"
+          : hasProductionProvider
+            ? "production"
+            : "unavailable";
     return {
       status: criticalFailed ? "blocked" : "ready",
       checkedAt: new Date().toISOString(),
       environment: this.config.nodeEnv,
+      providerEnvironment: {
+        environment: providerEnvironment,
+        readiness:
+          providerEnvironment === "sandbox" ||
+          providerEnvironment === "production"
+            ? "ready"
+            : "blocked",
+        errorCategory:
+          providerEnvironment === "mixed"
+            ? "mixed_environment"
+            : providerEnvironment === "unavailable"
+              ? "provider_unconfigured"
+              : "none",
+      },
       checks,
     };
   }

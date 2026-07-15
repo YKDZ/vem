@@ -556,6 +556,74 @@ describe("PaymentProviderConfigService", () => {
   });
 
   describe("listMachinePaymentOptionsForMachine", () => {
+    it("reports sandbox to protected diagnostics without changing customer copy or using mock", async () => {
+      const sandbox = makeListOptionsService(
+        [
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                mode: "sandbox",
+                gatewayUrl:
+                  "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+                keyType: "PKCS8",
+                notifyUrl:
+                  "https://platform.example/api/payments/webhooks/alipay",
+              },
+            }),
+          ],
+          [],
+        ],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+      const production = makeListOptionsService(
+        [
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                mode: "production",
+                gatewayUrl: "https://openapi.alipay.com/gateway.do",
+                keyType: "PKCS8",
+                notifyUrl:
+                  "https://platform.example/api/payments/webhooks/alipay",
+              },
+            }),
+          ],
+          [],
+        ],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+
+      const sandboxResult =
+        await sandbox.listMachinePaymentOptionsForMachine("machine-1");
+      const productionResult =
+        await production.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(sandboxResult.providerEnvironment).toEqual({
+        environment: "sandbox",
+        readiness: "ready",
+        errorCategory: "none",
+      });
+      expect(sandboxResult.options).toEqual(productionResult.options);
+      expect(JSON.stringify(sandboxResult.options)).not.toMatch(
+        /sandbox|沙箱/i,
+      );
+      expect(sandboxResult.options[0]?.providerCode).toBe("alipay");
+    });
+
     it("projects ready machine options from global channel policy order and default", async () => {
       const service = makeListOptionsService(
         [[makeCompleteAlipayRow()], [makeCompleteWechatRow()]],
@@ -859,6 +927,7 @@ describe("PaymentProviderConfigService", () => {
         providerCode: "wechat_pay",
         method: "payment_code",
         ready: false,
+        environment: "production",
         missingCredentialKeys: [
           "apiV2Key",
           "merchantApiCertPem",
@@ -870,6 +939,7 @@ describe("PaymentProviderConfigService", () => {
         providerCode: "wechat_pay",
         method: "qr_code",
         ready: true,
+        environment: "production",
         missingCredentialKeys: [],
       });
     });

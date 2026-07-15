@@ -34,11 +34,47 @@ const daemonHealthBlock = functionBlock(script, "Test-DaemonHealth");
 const uiHealthBlock = functionBlock(script, "Test-UiHealth");
 const stopBlock = functionBlock(script, "Stop-ComponentForReplace");
 const sourceBindingBlock = functionBlock(script, "New-ManifestSourceBinding");
+const paymentSecretGuardBlock = functionBlock(
+  script,
+  "Assert-NoPlatformPaymentSecrets",
+);
+const paymentSecretFileGuardBlock = functionBlock(
+  script,
+  "Assert-NoPlatformPaymentSecretFile",
+);
 
 addCheck(
   "script-exists",
   script.length > 0,
   `${scriptPath} should provide the Windows managed update entrypoint`,
+);
+
+addCheck(
+  "rejects-platform-payment-secret-bytes-from-artifacts",
+  paymentSecretFileGuardBlock.includes("ReadAllBytes") &&
+    paymentSecretFileGuardBlock.includes(
+      "BEGIN\\s+(?:RSA\\s+)?PRIVATE\\s+KEY",
+    ) &&
+    paymentSecretFileGuardBlock.includes("BEGIN\\s+CERTIFICATE") &&
+    installBlock.includes(
+      "Assert-NoPlatformPaymentSecretFile -Path $Spec.artifactPath",
+    ) &&
+    installBlock.includes(
+      "Assert-NoPlatformPaymentSecretFile -Path $sidecar.artifactPath",
+    ),
+  `${scriptPath} must scan every staged delivery artifact for platform payment key/certificate bytes before stopping a component`,
+);
+
+addCheck(
+  "rejects-platform-payment-secrets-from-delivery-manifest",
+  paymentSecretGuardBlock.includes("privateKeyPem") &&
+    paymentSecretGuardBlock.includes("appCertPem") &&
+    paymentSecretGuardBlock.includes("BEGIN\\s+(?:RSA\\s+)?PRIVATE\\s+KEY") &&
+    paymentSecretGuardBlock.includes("BEGIN\\s+CERTIFICATE") &&
+    script.includes(
+      "Assert-NoPlatformPaymentSecrets -Value $manifestForEvidence -Path manifest",
+    ),
+  `${scriptPath} must reject platform payment private keys and certificates before materializing a managed update`,
 );
 
 addCheck(

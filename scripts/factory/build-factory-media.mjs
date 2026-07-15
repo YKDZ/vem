@@ -158,6 +158,39 @@ function hashBytes(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+export function assertNoPlatformPaymentSecretBytes(bytes, label) {
+  const text = Buffer.from(bytes).toString("latin1");
+  if (
+    /BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY/i.test(text) ||
+    /BEGIN\s+CERTIFICATE/i.test(text)
+  ) {
+    throw new Error(
+      `${label} contains platform payment private-key or certificate material`,
+    );
+  }
+}
+
+async function assertRuntimeAssetsContainNoPlatformPaymentSecrets(
+  resolvedAssets,
+  store,
+) {
+  const root = await mkdtemp(join(tmpdir(), "vem-factory-payment-boundary-"));
+  try {
+    for (const asset of resolvedAssets.filter(({ reference }) =>
+      ["vem-daemon", "vem-machine-ui"].includes(reference.role),
+    )) {
+      const path = join(root, `${asset.reference.role}.bin`);
+      await store.stageVerified(asset.reference, path);
+      assertNoPlatformPaymentSecretBytes(
+        await readFile(path),
+        asset.reference.role,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function collectImportedModuleInputs(entry) {
   const inputs = new Map();
   async function visit(url) {
@@ -4493,6 +4526,10 @@ export async function buildFactoryMedia({
     authenticodeVerifierPath,
     authenticodeCaBundlePath,
   });
+  await assertRuntimeAssetsContainNoPlatformPaymentSecrets(
+    resolvedAssets,
+    store,
+  );
   const selectedVisionAsset = resolvedAssets.find(
     ({ reference }) => reference.role === "vision-release",
   );
