@@ -21,6 +21,7 @@ pub mod state;
 pub mod stock_upload;
 pub mod transaction;
 pub mod vision;
+pub mod vision_camera_maintenance;
 
 #[cfg(windows)]
 pub mod service_windows;

@@ -12,6 +12,7 @@ async-trait.workspace = true
 axum = { version = "0.7", features = ["ws"] }
 base64.workspace = true
 chrono.workspace = true
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 getrandom.workspace = true
 hmac.workspace = true
 keyring.workspace = true

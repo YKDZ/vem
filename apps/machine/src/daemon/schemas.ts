@@ -13,6 +13,9 @@ import {
   paymentProviderEnvironmentDiagnosticSchema,
   machineSaleViewSnapshotSchema,
   parseDaemonIpcTransactionSnapshotBoundary,
+  visionCameraMaintenanceConfirmResponseSchema,
+  visionCameraMaintenanceContractSchema,
+  visionCameraMaintenanceTestResponseSchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -496,6 +499,13 @@ export const visionStatusSchema = z.object({
   latestDiagnosticPayload: z.unknown().nullable().optional(),
 });
 
+export const visionCameraMaintenanceContractResponseSchema =
+  visionCameraMaintenanceContractSchema;
+export const visionCameraMaintenanceTestResponseProxySchema =
+  visionCameraMaintenanceTestResponseSchema;
+export const visionCameraMaintenanceConfirmResponseProxySchema =
+  visionCameraMaintenanceConfirmResponseSchema;
+
 export const remoteOpsStatusSchema = z.object({
   lastPolledAt: z.string().nullable(),
   pending: z.number().int().nonnegative(),
@@ -765,6 +775,15 @@ export type DeviceBindingActivation = z.infer<
   typeof deviceBindingActivationSchema
 >;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;
+export type VisionCameraMaintenanceContract = z.infer<
+  typeof visionCameraMaintenanceContractResponseSchema
+>;
+export type VisionCameraMaintenanceTestResponse = z.infer<
+  typeof visionCameraMaintenanceTestResponseProxySchema
+>;
+export type VisionCameraMaintenanceConfirmResponse = z.infer<
+  typeof visionCameraMaintenanceConfirmResponseProxySchema
+>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
 export type NaturalContextSnapshot = z.infer<
   typeof naturalContextSnapshotSchema

@@ -91,6 +91,12 @@ struct AudioOutputBindingSnapshot {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisionCameraMaintenanceCandidateRequest {
+    candidate_id: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TestAudioOutputRequest {
     endpoint_id: String,
     audio_cue_settings: crate::config::AudioCueSettings,
@@ -288,6 +294,15 @@ impl AudioOutputObservationGenerationTracker {
         }
         Ok(state.generation)
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisionCameraMaintenanceConfirmRequestBody {
+    candidate_id: String,
+    test_evidence_id: String,
+    operator_visual_confirmation: bool,
+    expected_generation: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1287,6 +1302,26 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/sync/status", get(sync_status))
         .route("/v1/scanner/status", get(scanner_status))
         .route("/v1/vision/status", get(vision_status))
+        .route(
+            "/v1/vision/camera-maintenance",
+            get(vision_camera_maintenance_contract),
+        )
+        .route(
+            "/v1/vision/camera-maintenance/refresh",
+            post(vision_camera_maintenance_refresh),
+        )
+        .route(
+            "/v1/vision/camera-maintenance/candidates/:candidate_id/preview.jpg",
+            get(vision_camera_maintenance_preview),
+        )
+        .route(
+            "/v1/vision/camera-maintenance/roles/:role/test",
+            post(vision_camera_maintenance_test),
+        )
+        .route(
+            "/v1/vision/camera-maintenance/roles/:role/confirm",
+            post(vision_camera_maintenance_confirm),
+        )
         .route("/v1/natural-context", get(natural_context))
         .route("/v1/remote-ops/status", get(remote_ops_status))
         .route("/v1/logs/export", get(export_logs))
@@ -7544,6 +7579,238 @@ async fn vision_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> imp
     .into_response()
 }
 
+fn parse_vision_camera_role(
+    value: &str,
+) -> Option<crate::vision_camera_maintenance::VisionCameraRole> {
+    match value {
+        "top" => Some(crate::vision_camera_maintenance::VisionCameraRole::Top),
+        "front" => Some(crate::vision_camera_maintenance::VisionCameraRole::Front),
+        _ => None,
+    }
+}
+
+async fn load_vision_camera_maintenance_config(
+    ctx: &IpcContext,
+) -> Result<MachinePublicConfig, axum::response::Response> {
+    ctx.config_store
+        .load_effective_public_config()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response()
+        })
+}
+
+fn vision_camera_maintenance_gateway_error(
+    error: crate::vision_camera_maintenance::VisionCameraMaintenanceError,
+) -> axum::response::Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(ErrorMessage {
+            code: "vision_camera_maintenance_failed",
+            message: error.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+async fn vision_camera_maintenance_contract(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.read").await
+    {
+        return response;
+    }
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::get_contract(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+    )
+    .await
+    {
+        Ok(contract) => Json(contract).into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
+async fn vision_camera_maintenance_refresh(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.refresh")
+            .await
+    {
+        return response;
+    }
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::refresh_contract(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+    )
+    .await
+    {
+        Ok(contract) => Json(contract).into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
+async fn vision_camera_maintenance_preview(
+    State(ctx): State<IpcContext>,
+    AxumPath(candidate_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.preview")
+            .await
+    {
+        return response;
+    }
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::preview_candidate(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+        &candidate_id,
+    )
+    .await
+    {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (CONTENT_TYPE, "image/jpeg"),
+                (HeaderName::from_static("cache-control"), "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
+async fn vision_camera_maintenance_test(
+    State(ctx): State<IpcContext>,
+    AxumPath(role): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<VisionCameraMaintenanceCandidateRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.test").await
+    {
+        return response;
+    }
+    let Some(role) = parse_vision_camera_role(&role) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage {
+                code: "vision_camera_role_unknown",
+                message: "unknown vision camera role".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::test_role(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+        role,
+        request.candidate_id.trim(),
+    )
+    .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
+async fn vision_camera_maintenance_confirm(
+    State(ctx): State<IpcContext>,
+    AxumPath(role): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<VisionCameraMaintenanceConfirmRequestBody>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.confirm")
+            .await
+    {
+        return response;
+    }
+    let Some(role) = parse_vision_camera_role(&role) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage {
+                code: "vision_camera_role_unknown",
+                message: "unknown vision camera role".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::confirm_role(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+        role,
+        &crate::vision_camera_maintenance::VisionCameraMaintenanceConfirmRequest {
+            candidate_id: request.candidate_id,
+            test_evidence_id: request.test_evidence_id,
+            operator_visual_confirmation: request.operator_visual_confirmation,
+            expected_generation: request.expected_generation,
+        },
+    )
+    .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
 async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
@@ -8269,7 +8536,7 @@ mod tests {
             .await;
     }
     use wiremock::{
-        matchers::{body_partial_json, method, path},
+        matchers::{body_partial_json, header_exists, method, path},
         Mock, MockServer, ResponseTemplate,
     };
 
@@ -9418,6 +9685,288 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn vision_camera_maintenance_proxy_negotiates_v2_and_proxies_preview_test_confirm() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let server = MockServer::start().await;
+        let vision_ws_url = format!("{}/ws", server.uri().replacen("http://", "ws://", 1));
+        let ctx = test_ipc_context(
+            temp.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://api",
+        )
+        .await;
+        let mut public = ctx
+            .config_store
+            .load_public_config()
+            .await
+            .expect("load public config");
+        public.vision_ws_url = vision_ws_url;
+        ctx.config_store
+            .save_public_config(public)
+            .await
+            .expect("save vision ws url");
+        let app = build_router(ctx.clone());
+
+        Mock::given(method("GET"))
+            .and(path("/maintenance/cameras"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contractVersion": "vem.vision.camera-maintenance/v2",
+                "generation": "generation-42",
+                "candidates": [{
+                    "id": "usb#top-001",
+                    "label": "Top Camera",
+                    "backendObservation": {
+                        "backend": "directshow",
+                        "index": 3,
+                        "available": true,
+                        "mappingState": "proven"
+                    }
+                }],
+                "roles": {
+                    "top": {
+                        "role": "top",
+                        "state": "missing",
+                        "ready": false,
+                        "candidateId": "usb#top-001",
+                        "reason": "bound_camera_missing",
+                        "backendObservation": {
+                            "backend": "directshow",
+                            "index": 3,
+                            "available": false,
+                            "mappingState": "proven"
+                        }
+                    },
+                    "front": {
+                        "role": "front",
+                        "state": "unbound",
+                        "ready": false,
+                        "reason": "camera_not_confirmed"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/refresh"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contractVersion": "vem.vision.camera-maintenance/v2",
+                "generation": "generation-43",
+                "candidates": [],
+                "roles": {
+                    "top": {
+                        "role": "top",
+                        "state": "unbound",
+                        "ready": false,
+                        "reason": "camera_not_confirmed"
+                    },
+                    "front": {
+                        "role": "front",
+                        "state": "unbound",
+                        "ready": false,
+                        "reason": "camera_not_confirmed"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/maintenance/cameras/usb%23top-001/preview.jpg"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/jpeg")
+                    .set_body_bytes(vec![0xFF, 0xD8, 0xFF, 0xD9]),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/top/test"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .and(body_partial_json(json!({ "candidateId": "usb#top-001" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "role": "top",
+                "candidateId": "usb#top-001",
+                "generation": "generation-42",
+                "ok": true,
+                "frame": { "width": 1280, "height": 720 },
+                "backendObservation": {
+                    "backend": "directshow",
+                    "index": 3,
+                    "available": true,
+                    "mappingState": "proven"
+                },
+                "evidence": {
+                    "id": "evidence-1",
+                    "role": "top",
+                    "candidateId": "usb#top-001",
+                    "generation": "generation-42",
+                    "expiresAt": 1752570000
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/top/confirm"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .and(body_partial_json(json!({
+                "candidateId": "usb#top-001",
+                "testEvidenceId": "evidence-1",
+                "operatorVisualConfirmation": true,
+                "expectedGeneration": "generation-42"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "role": "top",
+                "state": "ready",
+                "ready": true,
+                "candidateId": "usb#top-001",
+                "backendObservation": {
+                    "backend": "directshow",
+                    "index": 4,
+                    "available": true,
+                    "mappingState": "proven"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/vision/camera-maintenance")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("vision list request"),
+            )
+            .await
+            .expect("vision list response");
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed_body = body::to_bytes(listed.into_body(), usize::MAX)
+            .await
+            .expect("vision list body");
+        let listed: serde_json::Value =
+            serde_json::from_slice(&listed_body).expect("vision list json");
+        assert_eq!(
+            listed["contractVersion"],
+            "vem.vision.camera-maintenance/v2"
+        );
+        assert_eq!(listed["generation"], "generation-42");
+
+        let refreshed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/vision/camera-maintenance/refresh")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("refresh request"),
+            )
+            .await
+            .expect("refresh response");
+        assert_eq!(refreshed.status(), StatusCode::OK);
+
+        let preview = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/vision/camera-maintenance/candidates/usb%23top-001/preview.jpg")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("preview request"),
+            )
+            .await
+            .expect("preview response");
+        assert_eq!(preview.status(), StatusCode::OK);
+        assert_eq!(
+            preview
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            preview
+                .headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+
+        let tested = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/vision/camera-maintenance/roles/top/test")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({ "candidateId": "usb#top-001" }).to_string(),
+                    ))
+                    .expect("vision test request"),
+            )
+            .await
+            .expect("vision test response");
+        let tested_body = body::to_bytes(tested.into_body(), usize::MAX)
+            .await
+            .expect("tested body");
+        let tested_json: serde_json::Value =
+            serde_json::from_slice(&tested_body).expect("tested json");
+        assert_eq!(tested_json["evidence"]["id"], "evidence-1");
+
+        let confirmed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/vision/camera-maintenance/roles/top/confirm")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({
+                            "candidateId": "usb#top-001",
+                            "testEvidenceId": "evidence-1",
+                            "operatorVisualConfirmation": true,
+                            "expectedGeneration": "generation-42"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("vision confirm request"),
+            )
+            .await
+            .expect("vision confirm response");
+        assert_eq!(confirmed.status(), StatusCode::OK);
+        let confirmed_body = body::to_bytes(confirmed.into_body(), usize::MAX)
+            .await
+            .expect("confirmed body");
+        let confirmed_json: serde_json::Value =
+            serde_json::from_slice(&confirmed_body).expect("confirmed json");
+        assert_eq!(confirmed_json["state"], "ready");
+
+        assert!(
+            tokio::fs::try_exists(ctx.data_dir.join("vision/daemon-maintenance-keys.json"))
+                .await
+                .expect("vision keyring exists")
+        );
+        assert!(
+            tokio::fs::try_exists(ctx.data_dir.join("vision/daemon-maintenance-session.json"))
+                .await
+                .expect("vision session exists")
+        );
     }
 
     async fn test_binding_candidate(

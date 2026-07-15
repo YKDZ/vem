@@ -13,6 +13,9 @@ import {
   type StockMaintenanceBatchRequest,
   type StockMaintenanceBatchResponse,
   type StockMaintenanceTask,
+  type VisionCameraMaintenanceConfirmRequest,
+  type VisionCameraMaintenanceRole,
+  type VisionCameraMaintenanceTestRequest,
 } from "@vem/shared";
 
 import { managedMediaDiagnosticKey } from "@/catalog/managed-media";
@@ -72,7 +75,13 @@ import {
   type TransactionSnapshot,
   type UnknownDaemonEvent,
   type VisionStatus,
+  type VisionCameraMaintenanceConfirmResponse,
+  type VisionCameraMaintenanceContract,
+  type VisionCameraMaintenanceTestResponse,
   type WifiScanResponse,
+  visionCameraMaintenanceConfirmResponseProxySchema,
+  visionCameraMaintenanceContractResponseSchema,
+  visionCameraMaintenanceTestResponseProxySchema,
 } from "./schemas";
 
 function normalizeSaleViewManagedMedia(payload: unknown): {
@@ -350,6 +359,48 @@ export class DaemonApiClient {
     const { text } = body;
     const parsed: unknown = text ? JSON.parse(text) : null;
     return parsed;
+  }
+
+  private async requestBlob(
+    path: string,
+    options: Omit<RequestOptions, "body"> = {},
+  ): Promise<Blob> {
+    const connection = await this.initialize();
+    const maintenanceSession = this.currentMaintenanceSession;
+    const response = await fetch(`${connection.baseUrl}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        Authorization: `Bearer ${connection.token}`,
+        ...(maintenanceSession
+          ? { "x-vem-maintenance-session": maintenanceSession.sessionId }
+          : {}),
+      },
+    }).catch((error: unknown) => {
+      throw new DaemonUnavailableError("daemon request failed", error);
+    });
+
+    if (response.status === 401 && options.retry401 !== false) {
+      this.clearMaintenanceSession();
+      await this.initialize(true);
+      return this.requestBlob(path, { ...options, retry401: false });
+    }
+
+    if (!response.ok) {
+      const body = await readDaemonResponseText(response).catch(() => ({
+        exceeded: false as const,
+        text: "",
+      }));
+      throw new DaemonUnavailableError(
+        `${path} returned HTTP ${response.status}`,
+        undefined,
+        {
+          statusCode: response.status,
+          responseBody: body.exceeded ? undefined : body.text,
+        },
+      );
+    }
+
+    return response.blob();
   }
 
   async initialize(force = false): Promise<DaemonConnectionInfo> {
@@ -735,6 +786,55 @@ export class DaemonApiClient {
 
   async getVisionStatus(): Promise<VisionStatus> {
     return visionStatusSchema.parse(await this.request("/v1/vision/status"));
+  }
+
+  async getVisionCameraMaintenanceContract(): Promise<VisionCameraMaintenanceContract> {
+    return visionCameraMaintenanceContractResponseSchema.parse(
+      await this.request("/v1/vision/camera-maintenance"),
+    );
+  }
+
+  async refreshVisionCameraMaintenanceContract(): Promise<VisionCameraMaintenanceContract> {
+    return visionCameraMaintenanceContractResponseSchema.parse(
+      await this.request("/v1/vision/camera-maintenance/refresh", {
+        method: "POST",
+      }),
+    );
+  }
+
+  async getVisionCameraMaintenancePreviewBlob(
+    candidateId: string,
+  ): Promise<Blob> {
+    return this.requestBlob(
+      `/v1/vision/camera-maintenance/candidates/${encodeURIComponent(candidateId)}/preview.jpg`,
+    );
+  }
+
+  async testVisionCameraRole(
+    role: VisionCameraMaintenanceRole,
+    request: VisionCameraMaintenanceTestRequest,
+  ): Promise<VisionCameraMaintenanceTestResponse> {
+    return visionCameraMaintenanceTestResponseProxySchema.parse(
+      await this.request(`/v1/vision/camera-maintenance/roles/${role}/test`, {
+        method: "POST",
+        body: request,
+      }),
+    );
+  }
+
+  async confirmVisionCameraRole(
+    role: VisionCameraMaintenanceRole,
+    request: VisionCameraMaintenanceConfirmRequest,
+  ): Promise<VisionCameraMaintenanceConfirmResponse> {
+    return visionCameraMaintenanceConfirmResponseProxySchema.parse(
+      await this.request(
+        `/v1/vision/camera-maintenance/roles/${role}/confirm`,
+        {
+          method: "POST",
+          body: request,
+        },
+      ),
+    );
   }
 
   async getNaturalContext(): Promise<NaturalContextSnapshot> {
