@@ -101,6 +101,28 @@ function base64Url(value: unknown) {
 }
 
 describe("GitHub Actions OIDC validation", () => {
+  it("accepts GitHub certificate thumbprints in the signed JWT header", async () => {
+    const encodedHeader = base64Url({
+      alg: "RS256",
+      kid: jwks.keys[0].kid,
+      typ: "JWT",
+      x5t: "live-shaped-test-thumbprint",
+      "x5t#S256": "live-shaped-test-sha256-thumbprint",
+    });
+
+    await expect(
+      validateGithubActionsOidcToken(signedFixture({}, encodedHeader), {
+        jwks,
+        now,
+        policy,
+      }),
+    ).resolves.toMatchObject({
+      repositoryId: "123456789",
+      workflowRef:
+        "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+    });
+  });
+
   it("rejects a correctly signed JWT whose base64url segments are not canonical", async () => {
     const canonicalHeader = base64Url({
       alg: "RS256",

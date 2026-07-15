@@ -10,7 +10,7 @@ const refProtectedSchema = z
   .union([z.boolean(), z.enum(["true", "false"])])
   .transform((value) => value === true || value === "true");
 
-const githubActionsOidcHeaderSchema = z.strictObject({
+const githubActionsOidcHeaderSchema = z.object({
   alg: z.literal("RS256"),
   kid: z.string().min(1).max(256),
   typ: z.literal("JWT").optional(),
