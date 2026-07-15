@@ -155,7 +155,7 @@ jobs:
             mode: 0o600,
           });
           NODE
-          IFS= read -r id_token < "$oidc_token_path"
+          id_token="$(<"$oidc_token_path")"
           printf '::add-mask::%s\n' "$id_token"
           unset id_token
 
@@ -207,7 +207,7 @@ jobs:
             mode: 0o600,
           });
           NODE
-          IFS= read -r automation_token < "$automation_token_path"
+          automation_token="$(<"$automation_token_path")"
           printf '::add-mask::%s\n' "$automation_token"
           unset automation_token
           rm -f \
@@ -216,7 +216,7 @@ jobs:
             "$exchange_request_path" \
             "$exchange_response_path"
 
-          IFS= read -r automation_token < "$automation_token_path"
+          automation_token="$(<"$automation_token_path")"
           {
             printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
             printf 'request = "POST"\n'
@@ -229,7 +229,7 @@ jobs:
           unset automation_token
           chmod 600 "$session_create_path"
 
-          IFS= read -r automation_token < "$automation_token_path"
+          automation_token="$(<"$automation_token_path")"
           {
             printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
             printf 'request = "GET"\n'
@@ -287,7 +287,7 @@ jobs:
           const publicKey = fs.readFileSync(process.argv[2], "utf8").trim().split(/\s+/).slice(0, 2).join(" ");
           fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID() }), { mode: 0o600 });
           NODE
-          IFS= read -r automation_token < "$automation_token_path"
+          automation_token="$(<"$automation_token_path")"
           { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --globoff --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session/ssh-certificate"
           unset automation_token
           node - "$ssh_response_path" "$ssh_certificate_path" <<'NODE'
@@ -836,7 +836,7 @@ jobs:
           automation_token_path="$RUNNER_TEMP/automation-token.jwt"
           revoke_response_path="$RUNNER_TEMP/maintenance-session-revoke.json"
           if [ -s "$automation_token_path" ]; then
-            IFS= read -r automation_token < "$automation_token_path"
+            automation_token="$(<"$automation_token_path")"
             {
               printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
               printf 'request = "POST"\n'

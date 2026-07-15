@@ -21,6 +21,10 @@ function stepBlock(stepName) {
 }
 
 describe("Factory Image Acceptance workflow", () => {
+  it("reads token files without requiring a trailing newline", () => {
+    assert.doesNotMatch(workflow, /IFS= read -r \w+ < "\$[^\"]*token[^\"]*"/);
+  });
+
   it("requires the real platform-neutral Factory lifecycle orchestrator", () => {
     assert.match(
       workflow,
