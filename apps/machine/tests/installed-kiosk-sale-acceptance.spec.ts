@@ -73,6 +73,76 @@ test.describe("Installed Kiosk Sale browser UI contract", () => {
     });
   }
 
+  test("captures a route flashed between Result observation and observation close", async ({
+    page,
+  }) => {
+    const adapter = new PlaywrightInstalledKioskSaleAdapter(page);
+    await adapter.startFromSaleableHome();
+    await adapter.selectProductAndQrPayment();
+    await adapter.assertPaymentQrPresented();
+    await adapter.injectDisturbance("catalog_refresh");
+    await adapter.assertPaymentQrPresented();
+    await adapter.completePayment();
+    await adapter.assertFulfillmentStarted();
+    await adapter.completeFulfillment();
+
+    await page.evaluate(() => {
+      const control: unknown = Reflect.get(
+        window,
+        "__VEM_INSTALLED_KIOSK_SALE_DEBUG__",
+      );
+      if (typeof control !== "object" || control === null) {
+        throw new Error("Installed Kiosk Sale debug control is unavailable");
+      }
+      const observeTransactionSurface: unknown = Reflect.get(
+        control,
+        "observeTransactionSurface",
+      );
+      const recordRouteObservation: unknown = Reflect.get(
+        control,
+        "recordRouteObservation",
+      );
+      if (
+        typeof observeTransactionSurface !== "function" ||
+        typeof recordRouteObservation !== "function"
+      ) {
+        throw new Error("Installed Kiosk Sale route flash hook is unavailable");
+      }
+
+      let resultObservationCount = 0;
+      Reflect.set(control, "observeTransactionSurface", (surface: unknown) => {
+        const result: unknown = Reflect.apply(
+          observeTransactionSurface,
+          control,
+          [surface],
+        );
+        const route =
+          typeof surface === "object" && surface !== null
+            ? Reflect.get(surface, "route")
+            : null;
+        if (route === "result") {
+          resultObservationCount += 1;
+          if (resultObservationCount === 2) {
+            Reflect.apply(recordRouteObservation, control, ["/catalog"]);
+          }
+        }
+        return result;
+      });
+    });
+
+    await adapter.assertSuccessfulResult();
+
+    const evidence = browserInstalledKioskSaleContractFactsSchema.parse(
+      await adapter.readEvidence(),
+    );
+    expect(evidence.timeline.map((entry) => entry.route)).toContain("home");
+    expect(
+      classifyBrowserInstalledKioskSaleContract(evidence).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("active_transaction_route_replaced");
+  });
+
   test("rejects an img src replaced on the rendered customer surface", async ({
     page,
   }) => {

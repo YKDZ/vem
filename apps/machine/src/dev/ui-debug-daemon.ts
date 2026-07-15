@@ -738,6 +738,7 @@ function installInstalledKioskSaleDebugControl(): void {
     observePaymentSurface: recordCustomerPaymentSurface,
     observeTransactionSurface: recordCustomerTransactionSurface,
     readEvidence: (): UiDebugSaleEvidence => structuredClone(saleEvidence),
+    recordRouteObservation: recordInstalledKioskSaleRoute,
     completePayment: async (): Promise<void> => {
       useCheckoutStore().applyTransaction(handleUiDebugPaymentStatus(true));
       await routeToTransactionProjection();
@@ -746,8 +747,10 @@ function installInstalledKioskSaleDebugControl(): void {
       useCheckoutStore().applyTransaction(completeSimulatedDispense());
       await routeToTransactionProjection();
     },
-    closeObservationWindow: (closedAt: string): void => {
-      saleEvidence.observationWindow.closedAt = closedAt;
+    closeObservationWindow: (): UiDebugSaleEvidence => {
+      captureCurrentRoute?.();
+      saleEvidence.observationWindow.closedAt = nowIso();
+      return structuredClone(saleEvidence);
     },
   });
 }

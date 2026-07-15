@@ -19,6 +19,7 @@ const readyCatalogScenario = getMachineRuntimeScenario("ready-catalog");
 export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleScenarioAdapter {
   private paymentSurface: InstalledKioskSaleCustomerPaymentSurface | null =
     null;
+  private closedEvidence: unknown = null;
 
   constructor(private readonly page: Page) {}
 
@@ -141,14 +142,17 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
       "result",
     );
     await this.page.waitForTimeout(125);
-    const postResultSurface = await this.observeTransactionSurface(
+    await this.observeTransactionSurface(
       "[data-installed-kiosk-sale-result-surface]",
       "result",
     );
-    await this.control("closeObservationWindow", postResultSurface.observedAt);
+    this.closedEvidence = await this.closeObservationWindowAndReadEvidence();
   }
 
   async readEvidence(): Promise<unknown> {
+    if (this.closedEvidence !== null) {
+      return this.closedEvidence;
+    }
     return this.page.evaluate((): unknown => {
       const control: unknown = Reflect.get(
         window,
@@ -182,17 +186,12 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     surface: InstalledKioskSaleCustomerTransactionSurface,
   ): Promise<void>;
   private async control(
-    action: "closeObservationWindow",
-    closedAt: string,
-  ): Promise<void>;
-  private async control(
     action:
       | "completePayment"
       | "completeDispense"
       | "inject"
       | "observePaymentSurface"
-      | "observeTransactionSurface"
-      | "closeObservationWindow",
+      | "observeTransactionSurface",
     argument?: unknown,
   ): Promise<void> {
     await this.page.evaluate(
@@ -216,6 +215,33 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
       },
       { action, argument },
     );
+  }
+
+  private async closeObservationWindowAndReadEvidence(): Promise<unknown> {
+    return this.page.evaluate((): unknown => {
+      const control: unknown = Reflect.get(
+        window,
+        "__VEM_INSTALLED_KIOSK_SALE_DEBUG__",
+      );
+      if (typeof control !== "object" || control === null) {
+        throw new Error("Installed Kiosk Sale debug control is unavailable");
+      }
+      const closeObservationWindow: unknown = Reflect.get(
+        control,
+        "closeObservationWindow",
+      );
+      if (typeof closeObservationWindow !== "function") {
+        throw new Error(
+          "Installed Kiosk Sale closeObservationWindow is unavailable",
+        );
+      }
+      const result: unknown = Reflect.apply(
+        closeObservationWindow,
+        control,
+        [],
+      );
+      return result;
+    });
   }
 
   private async observeTransactionSurface(
