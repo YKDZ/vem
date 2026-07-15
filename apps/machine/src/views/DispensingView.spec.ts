@@ -120,6 +120,37 @@ afterEach(() => {
 });
 
 describe("DispensingView", () => {
+  it("describes pickup closure as reset in progress until terminal F2", async () => {
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.refreshCurrentTransaction = vi
+      .fn()
+      .mockResolvedValue(undefined) as never;
+    checkoutStore.applyTransaction(
+      dispensingTransaction({
+        vending: {
+          commandId: null,
+          commandNo: "CMD-DISPENSING-CUE-001",
+          status: "acknowledged",
+          lastError: null,
+          pickupReminder: {
+            stage: "pickup_completed",
+            level: "info",
+            message: "raw F1",
+            warningNo: null,
+            reportedAt: "2026-06-29T09:00:03.000Z",
+          },
+        },
+      }),
+    );
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("已完成取货");
+    expect(host.textContent).toContain("正在复位");
+    expect(host.textContent).not.toContain("出货成功");
+    expect(host.textContent).not.toContain("出货完成");
+  });
+
   it("routes manual handling transaction status to ResultView", async () => {
     const checkoutStore = useCheckoutStore();
     checkoutStore.refreshCurrentTransaction = vi

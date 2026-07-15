@@ -14,14 +14,15 @@ function sessionClient(
           handoffActive && requestedRoute === route,
       ),
     clearMaintenanceSession: vi.fn(),
+    revokeMaintenanceSessionRoute: vi.fn().mockResolvedValue(undefined),
   };
 }
 
 describe("maintenance session route scope", () => {
-  it("preserves only an explicit Maintenance-to-Bring-Up handoff", () => {
+  it("preserves only an explicit Maintenance-to-Bring-Up handoff", async () => {
     const client = sessionClient(true);
 
-    reconcileMaintenanceSessionRoute(
+    await reconcileMaintenanceSessionRoute(
       { name: "bring-up" },
       { name: "maintenance" },
       client,
@@ -33,10 +34,10 @@ describe("maintenance session route scope", () => {
     expect(client.clearMaintenanceSession).not.toHaveBeenCalled();
   });
 
-  it("clears a session when Bring-Up is opened without a handoff", () => {
+  it("clears a session when Bring-Up is opened without a handoff", async () => {
     const client = sessionClient(false);
 
-    reconcileMaintenanceSessionRoute(
+    await reconcileMaintenanceSessionRoute(
       { name: "bring-up" },
       { name: "boot" },
       client,
@@ -45,22 +46,25 @@ describe("maintenance session route scope", () => {
     expect(client.clearMaintenanceSession).toHaveBeenCalledOnce();
   });
 
-  it("clears a handed-off session when the protected flow is left", () => {
+  it("revokes a handed-off session before the protected flow is left", async () => {
     const client = sessionClient(true);
 
-    reconcileMaintenanceSessionRoute(
+    await reconcileMaintenanceSessionRoute(
       { name: "catalog" },
       { name: "bring-up" },
       client,
     );
 
-    expect(client.clearMaintenanceSession).toHaveBeenCalledOnce();
+    expect(client.revokeMaintenanceSessionRoute).toHaveBeenCalledWith(
+      "bring-up",
+    );
+    expect(client.clearMaintenanceSession).not.toHaveBeenCalled();
   });
 
-  it("preserves an explicit Bring-Up-to-Maintenance continuation", () => {
+  it("preserves an explicit Bring-Up-to-Maintenance continuation", async () => {
     const client = sessionClient(true, "maintenance");
 
-    reconcileMaintenanceSessionRoute(
+    await reconcileMaintenanceSessionRoute(
       { name: "maintenance" },
       { name: "bring-up" },
       client,
@@ -70,5 +74,23 @@ describe("maintenance session route scope", () => {
       "maintenance",
     );
     expect(client.clearMaintenanceSession).not.toHaveBeenCalled();
+  });
+
+  it("still clears the local bearer when daemon revocation fails", async () => {
+    const client = sessionClient(true);
+    client.revokeMaintenanceSessionRoute.mockRejectedValueOnce(
+      new Error("daemon unavailable"),
+    );
+
+    await reconcileMaintenanceSessionRoute(
+      { name: "catalog" },
+      { name: "bring-up" },
+      client,
+    );
+
+    expect(client.revokeMaintenanceSessionRoute).toHaveBeenCalledWith(
+      "bring-up",
+    );
+    expect(client.clearMaintenanceSession).toHaveBeenCalledOnce();
   });
 });

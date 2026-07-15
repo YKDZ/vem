@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
+use uuid::Uuid;
 
 use crate::{
     backend::BackendClient,
@@ -492,6 +493,14 @@ struct MaintenanceSessionResponse {
 const MAINTENANCE_SCOPE_MUTATE: &str = "maintenance.mutate";
 const MAINTENANCE_SCOPE_RECLAIM: &str = "maintenance.reclaim";
 const MAINTENANCE_SCOPE_DESKTOP_EXIT: &str = "maintenance.desktop_exit";
+const MAINTENANCE_SCOPE_MANUAL_DISPENSE: &str = "maintenance.manual_dispense";
+
+#[derive(Debug, Clone)]
+pub struct AuthorizedMaintenancePrincipal {
+    pub operator_id: String,
+    pub session_correlation_id: String,
+    pub scope: &'static str,
+}
 
 /// Logs need to tie issuance and mutations together without turning the log
 /// export into a bearer-token recovery channel.  A short SHA-256 prefix is
@@ -605,7 +614,9 @@ impl DaemonMaintenanceAuthorization {
         for scope in requested_scopes {
             if matches!(
                 scope.as_str(),
-                MAINTENANCE_SCOPE_RECLAIM | MAINTENANCE_SCOPE_DESKTOP_EXIT
+                MAINTENANCE_SCOPE_RECLAIM
+                    | MAINTENANCE_SCOPE_DESKTOP_EXIT
+                    | MAINTENANCE_SCOPE_MANUAL_DISPENSE
             ) {
                 scopes.insert(scope);
             }
@@ -655,6 +666,32 @@ impl DaemonMaintenanceAuthorization {
             (session.expires_at > chrono::Utc::now()).then(|| session.operator_id.clone())
         })
     }
+
+    async fn authorize_principal(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+        scope: &'static str,
+    ) -> Result<AuthorizedMaintenancePrincipal, String> {
+        let mut sessions = self.sessions.lock().await;
+        sessions.retain(|_, session| session.expires_at > chrono::Utc::now());
+        let Some(session) = sessions.get(&context.session_id) else {
+            return Err("protected maintenance session is missing, expired, revoked, or replayed after daemon restart".to_string());
+        };
+        if !session.scopes.contains(scope) {
+            return Err(format!(
+                "protected maintenance session is not authorized for {scope}"
+            ));
+        }
+        Ok(AuthorizedMaintenancePrincipal {
+            operator_id: session.operator_id.clone(),
+            session_correlation_id: maintenance_session_correlation_id(&context.session_id),
+            scope,
+        })
+    }
+
+    async fn revoke(&self, session_id: &str) -> bool {
+        self.sessions.lock().await.remove(session_id).is_some()
+    }
 }
 
 fn normalize_maintenance_operator_id(operator_id: Option<String>) -> Result<String, String> {
@@ -698,6 +735,13 @@ pub trait MaintenanceAuthorization: Send + Sync {
 
     async fn operator_id(&self, _context: &MaintenanceAuthorizationContext) -> Option<String> {
         None
+    }
+
+    async fn authorize_manual_dispense(
+        &self,
+        _context: &MaintenanceAuthorizationContext,
+    ) -> Result<AuthorizedMaintenancePrincipal, String> {
+        Err("protected manual dispense authorization is unavailable".to_string())
     }
 }
 
@@ -747,6 +791,14 @@ impl MaintenanceAuthorization for DaemonMaintenanceAuthorization {
 
     async fn operator_id(&self, context: &MaintenanceAuthorizationContext) -> Option<String> {
         DaemonMaintenanceAuthorization::operator_id(self, context).await
+    }
+
+    async fn authorize_manual_dispense(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+    ) -> Result<AuthorizedMaintenancePrincipal, String> {
+        self.authorize_principal(context, MAINTENANCE_SCOPE_MANUAL_DISPENSE)
+            .await
     }
 }
 
@@ -890,6 +942,33 @@ struct LocalEnvironmentControlRequest {
     target_temperature_celsius: Option<i8>,
     vent_speed: Option<u8>,
     timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManualDispenseDiagnosticRequest {
+    idempotency_key: String,
+    slot_code: String,
+    layer_no: u32,
+    cell_no: u32,
+    #[serde(default = "default_manual_dispense_quantity")]
+    quantity: u32,
+    #[serde(default = "default_manual_dispense_timeout_seconds")]
+    timeout_seconds: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReconcileManualDispenseDiagnosticRequest {
+    diagnostic_id: String,
+    stock_count_movement_id: String,
+}
+
+fn default_manual_dispense_quantity() -> u32 {
+    1
+}
+fn default_manual_dispense_timeout_seconds() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1039,6 +1118,7 @@ pub struct IpcContext {
 const SALE_BINDING_GATE_IDLE: u8 = 0;
 const SALE_BINDING_GATE_SALE_START: u8 = 1;
 const SALE_BINDING_GATE_RECONFIGURE: u8 = 2;
+const SALE_BINDING_GATE_MANUAL_DISPENSE: u8 = 3;
 
 #[derive(Debug, Default)]
 pub(crate) struct SaleBindingOperationGate {
@@ -1056,6 +1136,12 @@ impl SaleBindingOperationGate {
         self: &Arc<Self>,
     ) -> Result<SaleBindingOperationLease, u8> {
         self.try_acquire(SALE_BINDING_GATE_RECONFIGURE)
+    }
+
+    pub(crate) fn try_acquire_manual_dispense(
+        self: &Arc<Self>,
+    ) -> Result<SaleBindingOperationLease, u8> {
+        self.try_acquire(SALE_BINDING_GATE_MANUAL_DISPENSE)
     }
 
     fn try_acquire(self: &Arc<Self>, operation: u8) -> Result<SaleBindingOperationLease, u8> {
@@ -1130,6 +1216,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/maintenance/status", get(maintenance_status))
         .route("/v1/maintenance/sessions", post(create_maintenance_session))
         .route(
+            "/v1/maintenance/sessions/revoke",
+            post(revoke_maintenance_session),
+        )
+        .route(
             "/v1/factory/bootstrap/maintenance-session",
             post(create_factory_bootstrap_maintenance_session),
         )
@@ -1172,6 +1262,14 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(transaction_by_order_no))
         .route("/v1/hardware/self-check", post(hardware_self_check))
+        .route(
+            "/v1/maintenance/manual-dispense-diagnostic",
+            post(manual_dispense_diagnostic),
+        )
+        .route(
+            "/v1/maintenance/manual-dispense-diagnostic/reconcile",
+            post(reconcile_manual_dispense_diagnostic),
+        )
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
         .route(
             "/v1/hardware-bindings/:role/test",
@@ -1246,6 +1344,36 @@ async fn create_maintenance_session(
         )
             .into_response(),
     }
+}
+
+async fn revoke_maintenance_session(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    let Some(authority) = ctx
+        .maintenance_authorization
+        .as_any()
+        .downcast_ref::<DaemonMaintenanceAuthorization>()
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorMessage {
+                code: "protected_maintenance_unavailable",
+                message: "protected maintenance session issuer is unavailable".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let revoked = authority.revoke(session_id).await;
+    Json(serde_json::json!({"revoked": revoked})).into_response()
 }
 
 /// Exchange the Factory's one-shot local-account capability for the same
@@ -5725,10 +5853,10 @@ async fn clear_whole_machine_maintenance_lock(
 }
 
 fn store_error_response(code: &'static str, error: StoreError) -> axum::response::Response {
-    let status = if matches!(error, StoreError::InvalidStockInput(_)) {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
+    let status = match error {
+        StoreError::InvalidStockInput(_) => StatusCode::BAD_REQUEST,
+        StoreError::ManualDispenseIdempotencyConflict => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
         status,
@@ -6946,6 +7074,405 @@ async fn control_environment(
     Json(result).into_response()
 }
 
+async fn manual_dispense_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<ManualDispenseDiagnosticRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    let principal = match ctx
+        .maintenance_authorization
+        .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+    {
+        Ok(principal) => principal,
+        Err(message) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorMessage {
+                    code: "protected_manual_dispense_authorization_denied",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let key = request.idempotency_key.trim();
+    if key.is_empty()
+        || key.len() > 96
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        || request.slot_code.trim().is_empty()
+        || request.slot_code.len() > 32
+        || request.quantity != 1
+        || !(1..=120).contains(&request.timeout_seconds)
+        || request.layer_no == 0
+        || request.layer_no > 255
+        || request.cell_no == 0
+        || request.cell_no > 255
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "invalid_manual_dispense_diagnostic_request",
+                message: "bounded idempotencyKey, slot, quantity=1 and timeoutSeconds 1..120 are required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let _lease = match ctx.sale_binding_gate.try_acquire_manual_dispense() {
+        Ok(lease) => lease,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "manual_dispense_controller_busy",
+                    message: "sale or hardware reconfiguration is active".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    match ctx.state.current_transaction_snapshot().await {
+        Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "manual_dispense_active_sale",
+                    message: "manual dispense is unavailable during an active sale".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => return store_error_response("manual_dispense_sale_state_unavailable", error),
+        _ => {}
+    }
+    let binding_snapshot = match ctx
+        .config_store
+        .local_device_binding_snapshot(crate::device_binding::LocalDeviceRole::LowerController)
+        .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_binding_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let Some(binding) = binding_snapshot.binding.clone() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "manual_dispense_controller_unbound",
+                message: "stable lower-controller binding is required".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let observed = match ctx.serial_device_platform.discover().await {
+        Ok(observed) => observed,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_controller_discovery_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let resolved_port =
+        match crate::device_binding::resolve_bound_port(&binding.identity, &observed) {
+            crate::device_binding::BindingResolution::Resolved(port) => port,
+            crate::device_binding::BindingResolution::Missing => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "manual_dispense_controller_binding_missing",
+                        message: "the bound lower controller is not currently attached".to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+            crate::device_binding::BindingResolution::Ambiguous(_) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "manual_dispense_controller_binding_ambiguous",
+                        message: "the bound lower controller does not resolve to one current port"
+                            .to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+    let config = match ctx.config_store.load_effective_public_config().await {
+        Ok(config) => config,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_config_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let config_revision = match device_binding_config_revision(&config) {
+        Ok(value) => value,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_config_revision_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let controller = ctx.hardware.self_check().await;
+    // A mock or an unresolved serial binding must never turn this diagnostic
+    // into a hidden alternative sale path.
+    if !controller.online || controller.port_path.as_deref() != Some(resolved_port.as_str()) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "manual_dispense_controller_unresolved",
+                message: "manual dispense requires the online runtime to match the bound controller's current port".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let diagnostic_id = format!("manual-dispense-{}", Uuid::new_v4().simple());
+    let command = vending_core::hardware::DispenseCommandPayload {
+        command_no: diagnostic_id.clone(),
+        // This sentinel is intentionally not an order number. It keeps the
+        // controller protocol observable without creating sale evidence.
+        order_no: "MANUAL-DIAGNOSTIC".to_string(),
+        slot: vending_core::hardware::SlotPayload {
+            layer_no: request.layer_no,
+            cell_no: request.cell_no,
+            slot_code: request.slot_code.trim().to_string(),
+        },
+        quantity: request.quantity,
+        timeout_seconds: request.timeout_seconds,
+    };
+    let started_at = crate::state::store::now_iso();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::days(90)).to_rfc3339();
+    let pending = crate::state::store::ManualDispenseDiagnostic {
+        diagnostic_id: diagnostic_id.clone(),
+        idempotency_key: key.to_string(),
+        request_fingerprint: crate::state::store::manual_dispense_request_fingerprint(
+            request.slot_code.trim(),
+            u64::from(request.layer_no),
+            u64::from(request.cell_no),
+            u64::from(request.quantity),
+            request.timeout_seconds,
+        ),
+        status: "pending".to_string(),
+        operator_id: principal.operator_id.clone(),
+        session_correlation_id: principal.session_correlation_id.clone(),
+        controller: serde_json::json!({
+            "stableIdentity": binding.identity, "adapter": controller.adapter,
+            "portPath": controller.port_path, "resolutionSource": controller.resolution_source,
+            "configRevision": config_revision, "bindingRevision": binding_snapshot.revision,
+        }),
+        command: serde_json::json!({
+            "commandNo": command.command_no, "slotCode": command.slot.slot_code,
+            "layerNo": command.slot.layer_no, "cellNo": command.slot.cell_no,
+            "quantity": command.quantity, "timeoutSeconds": command.timeout_seconds,
+            "namespace": "manual_diagnostic",
+        }),
+        started_at: started_at.clone(),
+        completed_at: None,
+        raw_result: None,
+        normalized_result: None,
+        reconciliation_status: "open".to_string(),
+        expires_at,
+    };
+    match ctx.state.reserve_manual_dispense_diagnostic(&pending).await {
+        Ok(crate::state::store::ManualDispenseReservation::Existing(existing)) => {
+            let existing = if existing.status == "pending" {
+                match ctx
+                    .state
+                    .mark_pending_manual_dispense_result_unknown(&existing.diagnostic_id)
+                    .await
+                {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return store_error_response(
+                            "manual_dispense_unknown_evidence_write_failed",
+                            error,
+                        )
+                    }
+                }
+            } else {
+                existing
+            };
+            return (StatusCode::OK, Json(serde_json::json!({
+                "diagnosticId": existing.diagnostic_id, "outcome": existing.status,
+                "stockReconciliationRequired": true, "reconciliationStatus": existing.reconciliation_status,
+                "replayed": true,
+            }))).into_response();
+        }
+        Err(error) => {
+            return store_error_response("manual_dispense_pending_evidence_write_failed", error)
+        }
+        Ok(crate::state::store::ManualDispenseReservation::Reserved(_)) => {}
+    }
+    let result = match tokio::time::timeout(
+        Duration::from_secs(request.timeout_seconds.saturating_add(10)),
+        ctx.hardware.dispense(command.clone()),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => vending_core::hardware::DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: false,
+            error_code: Some("RESULT_UNKNOWN".to_string()),
+            message: "manual dispense result unknown after local timeout".to_string(),
+            reported_at: crate::state::store::now_iso(),
+        },
+    };
+    let normalized = serde_json::json!({
+        "outcome": if result.success { "completed" } else if result.error_code.as_deref() == Some("RESULT_UNKNOWN") { "result_unknown" } else { "failed" },
+        "errorCode": result.error_code,
+        "reportedAt": result.reported_at,
+    });
+    let terminal_status = normalized["outcome"].as_str().unwrap_or("result_unknown");
+    let raw_result = bounded_manual_dispense_raw_result(&result);
+    let record = match ctx
+        .state
+        .finish_manual_dispense_diagnostic(
+            &diagnostic_id,
+            terminal_status,
+            raw_result,
+            normalized.clone(),
+        )
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => {
+            // Pending evidence remains durable. A retry with the same key
+            // reports unknown and must never issue the physical command again.
+            return store_error_response("manual_dispense_terminal_evidence_write_failed", error);
+        }
+    };
+    append_local_diagnostic_log(
+        &ctx,
+        "info",
+        "maintenance_audit",
+        "manual dispense diagnostic completed",
+        Some(serde_json::json!({
+            "diagnosticId": diagnostic_id, "operatorId": principal.operator_id,
+            "sessionCorrelationId": record.session_correlation_id, "scope": principal.scope,
+            "outcome": normalized["outcome"],
+        })),
+    )
+    .await;
+    Json(serde_json::json!({
+        "diagnosticId": record.diagnostic_id, "outcome": normalized["outcome"],
+        "errorCode": normalized["errorCode"], "reportedAt": normalized["reportedAt"],
+        "stockReconciliationRequired": true,
+        "reconciliationStatus": "open",
+        "replayed": false,
+    }))
+    .into_response()
+}
+
+async fn reconcile_manual_dispense_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<ReconcileManualDispenseDiagnosticRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    if let Err(message) = ctx
+        .maintenance_authorization
+        .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage {
+                code: "protected_manual_dispense_authorization_denied",
+                message,
+            }),
+        )
+            .into_response();
+    }
+    if request.diagnostic_id.trim().is_empty() || request.stock_count_movement_id.trim().is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "invalid_manual_dispense_reconciliation",
+                message: "diagnosticId and stockCountMovementId are required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    match ctx
+        .state
+        .reconcile_manual_dispense_diagnostic(
+            request.diagnostic_id.trim(),
+            request.stock_count_movement_id.trim(),
+        )
+        .await
+    {
+        Ok(record) => Json(serde_json::json!({
+            "diagnosticId": record.diagnostic_id,
+            "reconciliationStatus": record.reconciliation_status,
+            "stockCountMovementId": request.stock_count_movement_id,
+        }))
+        .into_response(),
+        Err(error) => store_error_response("manual_dispense_reconciliation_failed", error),
+    }
+}
+
+fn bounded_manual_dispense_raw_result(
+    result: &vending_core::hardware::DispenseResultPayload,
+) -> serde_json::Value {
+    fn bounded(value: &str, max_chars: usize) -> String {
+        value.chars().take(max_chars).collect()
+    }
+    serde_json::json!({
+        "commandNo": bounded(&result.command_no, 128),
+        "success": result.success,
+        "errorCode": result.error_code.as_deref().map(|value| bounded(value, 128)),
+        "message": bounded(&result.message, 1024),
+        "reportedAt": bounded(&result.reported_at, 64),
+    })
+}
+
 fn hardware_fault_injection_enabled() -> bool {
     std::env::var("VEM_ENABLE_HARDWARE_FAULT_INJECTION")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -7508,6 +8035,10 @@ mod tests {
         devices: Vec<crate::device_binding::ObservedSerialDevice>,
     }
 
+    struct SwitchableFixtureSerialDevicePlatform {
+        devices: Arc<tokio::sync::RwLock<Vec<crate::device_binding::ObservedSerialDevice>>>,
+    }
+
     #[cfg(unix)]
     struct RecordingProbeSerialDevicePlatform {
         device: crate::device_binding::ObservedSerialDevice,
@@ -7557,6 +8088,24 @@ mod tests {
                 message: "fixture role probe ready".to_string(),
                 tested_at: crate::state::store::now_iso(),
             }
+        }
+    }
+
+    #[async_trait]
+    impl crate::device_binding::SerialDevicePlatform for SwitchableFixtureSerialDevicePlatform {
+        async fn discover(
+            &self,
+        ) -> Result<Vec<crate::device_binding::ObservedSerialDevice>, String> {
+            Ok(self.devices.read().await.clone())
+        }
+
+        async fn test_candidate(
+            &self,
+            _role: crate::device_binding::LocalDeviceRole,
+            _candidate: &crate::device_binding::ObservedSerialDevice,
+            _probe_config: &crate::device_binding::SerialDeviceRoleProbeConfig,
+        ) -> crate::device_binding::DeviceBindingTestResult {
+            unreachable!("manual dispense only needs discovery")
         }
     }
 
@@ -15396,6 +15945,43 @@ mod tests {
         allow: bool,
     }
 
+    #[derive(Default)]
+    struct CountingManualDispenseAdapter {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl vending_core::hardware::HardwareAdapter for CountingManualDispenseAdapter {
+        fn adapter_name(&self) -> &str {
+            "serial"
+        }
+        async fn self_check(&self) -> vending_core::hardware::HardwareStatus {
+            vending_core::hardware::HardwareStatus {
+                adapter: "serial".to_string(),
+                online: true,
+                message: "resolved controller ready".to_string(),
+                port_path: Some("COM5".to_string()),
+                resolution_source: Some("stable_device_binding".to_string()),
+                bound_usb_identity: None,
+                candidates: vec![],
+            }
+        }
+        async fn dispense(
+            &self,
+            command: vending_core::hardware::DispenseCommandPayload,
+        ) -> vending_core::hardware::DispenseResultPayload {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            vending_core::hardware::DispenseResultPayload {
+                command_no: command.command_no,
+                success: true,
+                error_code: None,
+                message: "controller completed".to_string(),
+                reported_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
     #[async_trait]
     impl MaintenanceAuthorization for TestMaintenanceAuthorization {
         fn as_any(&self) -> &dyn StdAny {
@@ -15557,6 +16143,286 @@ mod tests {
             json!(["maintenance.mutate", "maintenance.reclaim"])
         );
         assert!(issued["expiresAt"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_scope_is_dedicated_immutable_expiring_and_revocable() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let authority = Arc::new(DaemonMaintenanceAuthorization::with_ttl(
+            ctx.config_store.clone(),
+            Duration::from_millis(40),
+        ));
+        let ordinary = authority
+            .issue_verified("ordinary".to_string(), vec![])
+            .await
+            .unwrap();
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: ordinary.session_id
+            })
+            .await
+            .is_err());
+        let session = authority
+            .issue_verified(
+                "operator-7".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        let principal = authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: session.session_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(principal.operator_id, "operator-7");
+        assert_eq!(principal.scope, MAINTENANCE_SCOPE_MANUAL_DISPENSE);
+        assert!(!principal
+            .session_correlation_id
+            .contains(&session.session_id));
+        assert!(authority.revoke(&session.session_id).await);
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: session.session_id
+            })
+            .await
+            .is_err());
+
+        let expiring = authority
+            .issue_verified(
+                "operator-8".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: expiring.session_id
+            })
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn maintenance_logout_endpoint_revokes_the_presented_session_only() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx =
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let authority = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let first = authority
+            .issue_verified(
+                "first".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        let second = authority
+            .issue_verified(
+                "second".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        ctx.maintenance_authorization = authority.clone();
+        let response = build_router(ctx)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/maintenance/sessions/revoke")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", &first.session_id)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: first.session_id
+            })
+            .await
+            .is_err());
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: second.session_id
+            })
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_endpoint_uses_two_tokens_and_executes_one_isolated_command() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx =
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let authority = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let session = authority
+            .issue_verified(
+                "operator-9".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        ctx.maintenance_authorization = authority;
+        ctx.config_store
+            .save_local_device_binding(
+                crate::device_binding::LocalDeviceRole::LowerController,
+                crate::device_binding::LocalSerialRoleBinding {
+                    identity: crate::device_binding::StableSerialDeviceIdentity {
+                        identity_key: "container:11111111-2222-3333-4444-555555555555".to_string(),
+                        instance_id: Some("USB\\VID_1234&PID_5678\\SERIAL-1".to_string()),
+                        container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                        hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                        serial_number: Some("SERIAL-1".to_string()),
+                    },
+                    confirmed_at: crate::state::store::now_iso(),
+                    confirmed_by: "operator-9".to_string(),
+                    test_evidence_code: "passed".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let matching_controller = crate::device_binding::ObservedSerialDevice {
+            current_port: "COM5".to_string(),
+            instance_id: Some("USB\\VID_1234&PID_5678\\SERIAL-1".to_string()),
+            container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SERIAL-1".to_string()),
+            friendly_name: Some("lower controller".to_string()),
+        };
+        let observed_devices = Arc::new(tokio::sync::RwLock::new(vec![
+            crate::device_binding::ObservedSerialDevice {
+                current_port: "COM5".to_string(),
+                instance_id: Some("USB\\VID_9999&PID_0001\\OTHER".to_string()),
+                container_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
+                hardware_ids: vec!["USB\\VID_9999&PID_0001".to_string()],
+                serial_number: Some("OTHER".to_string()),
+                friendly_name: Some("unrelated device on the same COM port".to_string()),
+            },
+        ]));
+        ctx.serial_device_platform = Arc::new(SwitchableFixtureSerialDevicePlatform {
+            devices: observed_devices.clone(),
+        });
+        let adapter = Arc::new(CountingManualDispenseAdapter::default());
+        ctx.hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let state = ctx.state.clone();
+        let app = build_router(ctx);
+        let request = |idempotency_key: &str| {
+            Request::builder().method(Method::POST)
+            .uri("/v1/maintenance/manual-dispense-diagnostic")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", &session.session_id)
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(json!({
+                "idempotencyKey":idempotency_key,"slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5
+            }).to_string())).unwrap()
+        };
+        let wrong_identity = app
+            .clone()
+            .oneshot(request("field-click-wrong-identity"))
+            .await
+            .unwrap();
+        assert_eq!(wrong_identity.status(), StatusCode::CONFLICT);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        *observed_devices.write().await = vec![matching_controller];
+        let (first, concurrent) = tokio::join!(
+            app.clone().oneshot(request("field-click-1")),
+            app.clone().oneshot(request("field-click-1")),
+        );
+        let first = first.unwrap();
+        let concurrent = concurrent.unwrap();
+        assert!([first.status(), concurrent.status()].contains(&StatusCode::OK));
+        assert!([first.status(), concurrent.status()].contains(&StatusCode::CONFLICT));
+        let replay = app.clone().oneshot(request("field-click-1")).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        for table in [
+            "order_sessions",
+            "command_log",
+            "stock_movements",
+            "outbox_events",
+        ] {
+            let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(state.pool())
+                .await
+                .unwrap();
+            assert_eq!(count.0, 0, "business table {table} must remain untouched");
+        }
+        let evidence = state
+            .manual_dispense_diagnostic(first_manual_dispense_id(state.pool()).await.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.reconciliation_status, "open");
+        assert!(evidence.controller.get("stableIdentity").is_some());
+
+        let interrupted = crate::state::store::ManualDispenseDiagnostic {
+            diagnostic_id: "manual-dispense-interrupted".to_string(),
+            idempotency_key: "field-click-after-restart".to_string(),
+            status: "pending".to_string(),
+            completed_at: None,
+            raw_result: None,
+            normalized_result: None,
+            ..evidence
+        };
+        assert!(matches!(
+            state
+                .reserve_manual_dispense_diagnostic(&interrupted)
+                .await
+                .unwrap(),
+            crate::state::store::ManualDispenseReservation::Reserved(_)
+        ));
+        let recovered = app
+            .clone()
+            .oneshot(request("field-click-after-restart"))
+            .await
+            .unwrap();
+        assert_eq!(recovered.status(), StatusCode::OK);
+        let recovered_body = body::to_bytes(recovered.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let recovered_body: serde_json::Value = serde_json::from_slice(&recovered_body).unwrap();
+        assert_eq!(recovered_body["outcome"], "result_unknown");
+        assert_eq!(recovered_body["replayed"], true);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            state
+                .manual_dispense_diagnostic("manual-dispense-interrupted")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "result_unknown"
+        );
+
+        sqlx::query("DROP TABLE manual_dispense_diagnostics")
+            .execute(state.pool())
+            .await
+            .unwrap();
+        let failed_reservation = app
+            .clone()
+            .oneshot(request("field-click-db-failure"))
+            .await
+            .unwrap();
+        assert_eq!(
+            failed_reservation.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    async fn first_manual_dispense_id(pool: &sqlx::SqlitePool) -> String {
+        sqlx::query_scalar("SELECT diagnostic_id FROM manual_dispense_diagnostics LIMIT 1")
+            .fetch_one(pool)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
