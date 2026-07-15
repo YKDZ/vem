@@ -1146,7 +1146,9 @@ test("touch keyboard stays closed before Maintenance authorization and clears on
   await expect(keyboard).toBeHidden();
   await pin.fill("2468");
   await page.getByRole("button", { name: "验证并解锁" }).click();
-  const quantity = page.getByLabel("数量", { exact: true });
+  const quantity = page
+    .getByRole("spinbutton", { name: /^补货数量/ })
+    .first();
   await expect(quantity).toBeEnabled();
   await quantity.tap();
   await expect(keyboard).toBeVisible();
