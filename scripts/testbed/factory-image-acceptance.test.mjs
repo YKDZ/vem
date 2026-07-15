@@ -22,6 +22,7 @@ import {
   buildFactoryMachineClaimInvocation,
   buildFactoryRuntimeAcceptanceInvocation,
   materializeFactoryDisplayEvidence,
+  nonQueryChildEnvironment,
   prepareSanitizedFactoryAcceptanceUpload,
   runAdmittedFactoryImageAcceptanceLifecycle,
   sanitizeFactoryAcceptanceEvidence,
@@ -483,6 +484,7 @@ function saleScenario(input, _runtimeDigest) {
 describe("Factory Image Acceptance lifecycle", () => {
   it("extends only clean-install adapter execution", () => {
     const environment = {
+      DATABASE_URL: "postgresql://shared:secret@db.test/vem",
       VEM_VM_HOST_ADAPTER_TIMEOUT_MS: "600000",
       VEM_FACTORY_CLEAN_INSTALL_ADAPTER_TIMEOUT_MS: "2700000",
     };
@@ -491,7 +493,11 @@ describe("Factory Image Acceptance lifecycle", () => {
         .VEM_VM_HOST_ADAPTER_TIMEOUT_MS,
       "2700000",
     );
-    assert.strictEqual(adapterEnvironment("cleanup", environment), environment);
+    assert.equal(nonQueryChildEnvironment(environment).DATABASE_URL, undefined);
+    assert.equal(
+      adapterEnvironment("cleanup", environment).DATABASE_URL,
+      undefined,
+    );
     assert.equal(
       adapterEnvironment("cleanup", environment).VEM_VM_HOST_ADAPTER_TIMEOUT_MS,
       "600000",

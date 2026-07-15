@@ -1051,6 +1051,73 @@ describe("machine-ui-cdp-driver", () => {
     );
   });
 
+  it("evaluates continuous checkpoints against the policy captured when they start", async () => {
+    let captureRequestId;
+    let captureStarted;
+    const started = new Promise((resolve) => {
+      captureStarted = resolve;
+    });
+    const { factory, sockets } = createFakeWebSocketFactory((message) => {
+      if (message.method === "Runtime.evaluate") {
+        captureRequestId = message.id;
+        captureStarted();
+        return null;
+      }
+      return { id: message.id, result: {} };
+    });
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/policy", {
+      webSocketFactory: factory,
+    });
+    await client.connect();
+
+    let policy = {
+      epoch: 0,
+      forbiddenRoutes: ["/maintenance"],
+      allowedRoutes: null,
+    };
+    const capture = startContinuousIdentityCapture(client, {
+      intervalMs: 1,
+      routePolicy: () => policy,
+    });
+    await started;
+
+    policy = {
+      epoch: 1,
+      forbiddenRoutes: ["/maintenance"],
+      allowedRoutes: ["/payment", "/dispensing", "/result"],
+    };
+    sockets[0].emitMessage(cdpValue(identity("#/checkout"), captureRequestId));
+
+    const checkpoints = await capture.stop();
+    assert.equal(checkpoints.length, 1);
+    assert.equal(checkpoints[0].identity.route, "#/checkout");
+    await client.close();
+  });
+
+  it("rejects continuous checkpoints begun after the payment barrier", async () => {
+    const { factory } = createFakeWebSocketFactory((message) =>
+      cdpValue(identity("#/products/test-item"), message.id),
+    );
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/policy", {
+      webSocketFactory: factory,
+    });
+    await client.connect();
+    const capture = startContinuousIdentityCapture(client, {
+      intervalMs: 1,
+      routePolicy: () => ({
+        epoch: 1,
+        forbiddenRoutes: ["/maintenance"],
+        allowedRoutes: ["/payment", "/dispensing", "/result"],
+      }),
+    });
+    await sleep(10);
+    await assert.rejects(
+      capture.stop(),
+      /payment barrier route observed: #\/products\/test-item/,
+    );
+    await client.close();
+  });
+
   it("runs an immutable copy of closed scenario steps and reports execution counts", async () => {
     await withFakeHttpTargets(
       [target("machine-target", "#/sale")],

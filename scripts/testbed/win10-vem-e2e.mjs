@@ -280,6 +280,12 @@ const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
 const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
   "artifacts/clean-base-factory-acceptance";
 
+export function nonQueryChildEnvironment(environment = process.env) {
+  const childEnvironment = { ...environment };
+  delete childEnvironment.DATABASE_URL;
+  return childEnvironment;
+}
+
 export function buildBringUpPlan(options = {}) {
   const maintenanceIngressSourceAllowlist = String(
     options.maintenanceIngressSourceAllowlist ?? "",
@@ -2620,6 +2626,7 @@ export function runInstalledKioskSaleRemoteScript(options, script) {
       input: `${script}\n`,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
+      env: nonQueryChildEnvironment(),
     },
   );
   let output = null;
@@ -4202,7 +4209,7 @@ async function runVmRuntimeAcceptance(options) {
     );
   const plan = buildVmRuntimeAcceptancePlan(options);
   const databaseUrl = process.env[EPHEMERAL_DATABASE_URL_ENV];
-  const childEnvironment = { ...process.env };
+  const childEnvironment = nonQueryChildEnvironment();
   delete childEnvironment[EPHEMERAL_DATABASE_URL_ENV];
   delete childEnvironment[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
   mkdirSync(plan.evidenceRoot, { recursive: true });
@@ -8533,7 +8540,11 @@ export function cleanupFactoryAcceptanceStaging(
         ...sshCommand.slice(1),
         `powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)}) { throw 'factory staging cleanup retained protected media' }"`,
       ],
-      { encoding: "utf8", stdio: "ignore" },
+      {
+        encoding: "utf8",
+        stdio: "ignore",
+        env: nonQueryChildEnvironment(),
+      },
     );
     remoteCleaned = cleanup.status === 0;
   } finally {
@@ -8648,6 +8659,7 @@ function spawnSshOperation(command, args, { input, signal } = {}) {
     const child = spawn(command, args, {
       stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       signal,
+      env: nonQueryChildEnvironment(),
     });
     if (input !== undefined) {
       child.stdin.on("error", () => {});
@@ -8814,6 +8826,7 @@ function assertCleanBaseRemoteIdentityProbe(options, sshCommand) {
     {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      env: nonQueryChildEnvironment(),
     },
   );
   if (result.status !== 0) {
@@ -8850,6 +8863,7 @@ function assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand) {
     {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      env: nonQueryChildEnvironment(),
     },
   );
   if (result.status !== 0) {
@@ -9659,6 +9673,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           {
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"],
+            env: nonQueryChildEnvironment(),
           },
         );
         cancellation.throwIfCancellationRequested();

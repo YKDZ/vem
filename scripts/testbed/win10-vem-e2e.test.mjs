@@ -65,6 +65,7 @@ import {
   findActiveKioskSession,
   getRuntimeAcceptanceExitStatus,
   isStrictTauriHashRouteUrl,
+  nonQueryChildEnvironment,
   sanitizeFactoryPreclaimReport,
 } from "./win10-vem-e2e.mjs";
 
@@ -680,8 +681,10 @@ describe("simulated hardware serial acceptance evidence", () => {
     const calls = [];
     const previousDatabaseUrl =
       process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+    const previousGenericDatabaseUrl = process.env.DATABASE_URL;
     process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL =
       "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime";
+    process.env.DATABASE_URL = "postgresql://shared:secret@db.test/vem";
     try {
       const report = await runInstalledKioskSaleAcceptanceCli(
         {
@@ -705,6 +708,7 @@ describe("simulated hardware serial acceptance evidence", () => {
         {
           runCommand(command, label, { env } = {}) {
             calls.push(label);
+            assert.equal(env.DATABASE_URL, undefined);
             const out = command[command.indexOf("--out") + 1];
             if (label === "simulated hardware fixture") {
               writeFileSync(
@@ -909,8 +913,21 @@ describe("simulated hardware serial acceptance evidence", () => {
       } else {
         process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL = previousDatabaseUrl;
       }
+      if (previousGenericDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = previousGenericDatabaseUrl;
+      }
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("removes DATABASE_URL from non-query child environments", () => {
+    const environment = {
+      DATABASE_URL: "postgresql://shared:secret@db.test/vem",
+      KEEP: "value",
+    };
+    assert.deepEqual(nonQueryChildEnvironment(environment), { KEEP: "value" });
   });
 
   it("derives every exact-once identity from raw platform records and rejects same-ID duplicates", () => {

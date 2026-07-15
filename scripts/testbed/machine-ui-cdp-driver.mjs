@@ -1068,6 +1068,9 @@ export function startContinuousIdentityCapture(client, options = {}) {
 
   const capture = () => {
     if (stopped || inFlight || failure) return;
+    // A capture can complete after a payment barrier is armed. Its route must be
+    // judged by the policy that existed when the capture began, not afterward.
+    const policy = snapshotRoutePolicy(options);
     inFlight = captureCheckpoint(client, options.label ?? "continuous", options)
       .then((checkpoint) => {
         if (checkpoints.length >= maxCheckpoints) {
@@ -1078,8 +1081,8 @@ export function startContinuousIdentityCapture(client, options = {}) {
         checkpoint.ordinal = ordinal++;
         assertAllowedRoute(
           checkpoint.identity.route,
-          resolveForbiddenRoutes(options.forbiddenRoutes),
-          resolveAllowedRoutes(options.allowedRoutes),
+          policy.forbiddenRoutes,
+          policy.allowedRoutes,
         );
         checkpoints.push(checkpoint);
       })
@@ -1186,6 +1189,13 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   };
   let activeForbiddenRoutes = validateForbiddenRoutes(initialForbiddenRoutes);
   let activeAllowedRoutes = null;
+  let routePolicyEpoch = 0;
+  const currentRoutePolicy = () =>
+    Object.freeze({
+      epoch: routePolicyEpoch,
+      forbiddenRoutes: activeForbiddenRoutes,
+      allowedRoutes: activeAllowedRoutes,
+    });
   const observedRuntime = await dependencies.inspectRuntime({
     remote: tunnelTransport.remote,
     sshPort: tunnelTransport.sshPort,
@@ -1232,11 +1242,12 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   const classifyRouteEvent = (event, source = "adapter") => {
     if (fatalError) return;
     try {
+      const policy = currentRoutePolicy();
       const identity = boundIdentity(event?.identity ?? event);
       assertAllowedRoute(
         identity.route,
-        activeForbiddenRoutes,
-        activeAllowedRoutes,
+        policy.forbiddenRoutes,
+        policy.allowedRoutes,
       );
       record({ type: "route-changed", source, identity });
     } catch (error) {
@@ -1306,8 +1317,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           intervalMs: continuousCaptureIntervalMs,
           screenshot: screenshotCheckpoints,
           screenshotSink: adapter.screenshotSink,
-          forbiddenRoutes: () => activeForbiddenRoutes,
-          allowedRoutes: () => activeAllowedRoutes,
+          routePolicy: currentRoutePolicy,
           timeoutMs,
           clock,
           startOrdinal: 1_000_000,
@@ -1349,6 +1359,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           activeAllowedRoutes = validateAllowedRoutes(
             PAYMENT_BARRIER_ALLOWED_ROUTES,
           );
+          routePolicyEpoch += 1;
           record({
             type: "route-barrier",
             label: step.name,
@@ -1828,6 +1839,29 @@ function resolveAllowedRoutes(routes) {
   if (routes == null) return null;
   const resolved = typeof routes === "function" ? routes() : routes;
   return resolved == null ? null : validateAllowedRoutes(resolved);
+}
+
+function snapshotRoutePolicy(options) {
+  const policy =
+    typeof options.routePolicy === "function" ? options.routePolicy() : null;
+  if (policy != null) {
+    if (typeof policy !== "object") {
+      throw new Error("routePolicy must return an object");
+    }
+    return Object.freeze({
+      epoch: policy.epoch ?? null,
+      forbiddenRoutes: validateForbiddenRoutes(policy.forbiddenRoutes),
+      allowedRoutes:
+        policy.allowedRoutes == null
+          ? null
+          : validateAllowedRoutes(policy.allowedRoutes),
+    });
+  }
+  return Object.freeze({
+    epoch: null,
+    forbiddenRoutes: resolveForbiddenRoutes(options.forbiddenRoutes),
+    allowedRoutes: resolveAllowedRoutes(options.allowedRoutes),
+  });
 }
 
 function boundIdentity(identity) {

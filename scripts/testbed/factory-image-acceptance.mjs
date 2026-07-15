@@ -645,9 +645,7 @@ export function buildFactoryInstalledKioskSaleInvocation(
 }
 
 function runExact(command, failureMessage, env) {
-  const childEnvironment = env ? { ...env } : { ...process.env };
-  delete childEnvironment.VEM_FACTORY_EPHEMERAL_DATABASE_URL;
-  delete childEnvironment.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+  const childEnvironment = nonQueryChildEnvironment(env);
   if (env?.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL) {
     childEnvironment.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL =
       env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
@@ -657,6 +655,14 @@ function runExact(command, failureMessage, env) {
     env: childEnvironment,
   });
   if (result.status !== 0) throw new Error(failureMessage);
+}
+
+export function nonQueryChildEnvironment(environment = process.env) {
+  const childEnvironment = { ...environment };
+  delete childEnvironment.DATABASE_URL;
+  delete childEnvironment.VEM_FACTORY_EPHEMERAL_DATABASE_URL;
+  delete childEnvironment.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+  return childEnvironment;
 }
 
 function verifyClaimResult(path, input) {
@@ -1145,10 +1151,11 @@ function assertSameBase(expected, report) {
 }
 
 export function adapterEnvironment(operation, environment = process.env) {
-  const timeout = environment.VEM_FACTORY_CLEAN_INSTALL_ADAPTER_TIMEOUT_MS;
+  const childEnvironment = nonQueryChildEnvironment(environment);
+  const timeout = childEnvironment.VEM_FACTORY_CLEAN_INSTALL_ADAPTER_TIMEOUT_MS;
   if (operation !== "clean-install" || timeout === undefined)
-    return environment;
-  return { ...environment, VEM_VM_HOST_ADAPTER_TIMEOUT_MS: timeout };
+    return childEnvironment;
+  return { ...childEnvironment, VEM_VM_HOST_ADAPTER_TIMEOUT_MS: timeout };
 }
 
 async function runAdapter(

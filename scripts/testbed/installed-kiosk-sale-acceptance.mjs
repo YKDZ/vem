@@ -291,6 +291,13 @@ function runCommand(command, label, { env = process.env } = {}) {
   return result;
 }
 
+export function nonQueryChildEnvironment(environment = process.env) {
+  const childEnvironment = { ...environment };
+  delete childEnvironment.DATABASE_URL;
+  delete childEnvironment[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+  return childEnvironment;
+}
+
 function writeJson(path, value, mode) {
   writeFileSync(
     path,
@@ -661,8 +668,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
   if (typeof queryDatabaseUrl !== "string" || queryDatabaseUrl.trim() === "") {
     throw new Error(`${INSTALLED_KIOSK_SALE_DATABASE_URL_ENV} is required`);
   }
-  const nonQueryEnvironment = { ...process.env };
-  delete nonQueryEnvironment[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+  const nonQueryEnvironment = nonQueryChildEnvironment();
   const queryEnvironment = {
     ...nonQueryEnvironment,
     [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: queryDatabaseUrl,
