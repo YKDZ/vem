@@ -948,10 +948,6 @@ async function refreshMachineAudioOutputs(): Promise<void> {
 }
 
 async function saveMachineAudioSettings(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) {
-    machineAudioOutputMaintenance.message = "请先验证维护 PIN。";
-    return;
-  }
   const selected = selectedMachineAudioOutputCandidate.value;
   if (!selected) {
     machineAudioOutputMaintenance.message = "请先选择顾客扬声器端点。";
@@ -1032,10 +1028,6 @@ const latestMachineAudioTestPlaybackRows = computed(() => {
 });
 
 async function playMachineAudioTestPlayback(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) {
-    machineAudioTestPlayback.message = "请先验证维护 PIN。";
-    return;
-  }
   const selected = selectedMachineAudioOutputCandidate.value;
   if (!selected) {
     machineAudioTestPlayback.message = "请先选择顾客扬声器端点。";
@@ -3073,7 +3065,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
                   type="button"
                   :disabled="
                     machineAudioTestPlayback.loading ||
-                    !maintenanceSessionAuthorized ||
                     !machineAudioOutputMaintenance.selectedEndpointId
                   "
                   @click="playMachineAudioTestPlayback"

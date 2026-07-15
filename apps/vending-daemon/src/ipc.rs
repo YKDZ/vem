@@ -2486,12 +2486,12 @@ async fn test_audio_output(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) =
-        require_non_bring_up_maintenance_authorization(&ctx, &headers, "test_audio_output_binding")
-            .await
-    {
-        return response;
-    }
+    // Field-test exception: audio output binding must be recoverable from the
+    // kiosk maintenance page even when the protected-maintenance PIN path is
+    // unavailable or still being brought up. The daemon ready-token gate still
+    // applies, and this exception is intentionally scoped to audible endpoint
+    // calibration so the next real-machine pass can proceed without shell-only
+    // configuration.
     let _calibration = match ctx.audio_output_calibration_lock.try_lock() {
         Ok(lease) => lease,
         Err(_) => {
@@ -2719,15 +2719,9 @@ async fn confirm_audio_output(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(
-        &ctx,
-        &headers,
-        "confirm_audio_output_binding",
-    )
-    .await
-    {
-        return response;
-    }
+    // Field-test exception: see test_audio_output. Confirmation writes only the
+    // machine audio output binding, cue toggles, and volume, after an audible
+    // test-evidence token has been issued for the current observed endpoint.
     if !request.heard {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -11235,7 +11229,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audio_output_test_and_confirmation_require_protected_maintenance_session() {
+    async fn audio_output_test_and_confirmation_accept_ready_token_for_field_recovery() {
         let temp_dir = tempdir().expect("tmp");
         let mut ctx = test_ipc_context(
             temp_dir.path(),
@@ -11245,43 +11239,60 @@ mod tests {
         )
         .await;
         ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: false });
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        ctx.audio_output_playback =
+            Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
         let app = build_router(ctx);
-        let requests = [
-            (
-                "/v1/audio-output-binding/test",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "audioCueSettings": {
-                        "enabled": true,
-                        "categories": { "presence": true, "transaction": true }
-                    },
-                    "machineAudioVolume": 0.42
-                }),
-            ),
-            (
-                "/v1/audio-output-binding/confirm",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "testEvidenceToken": "11111111-2222-4333-8444-555555555555",
-                    "heard": true,
-                    "audioCueSettings": {
-                        "enabled": true,
-                        "categories": { "presence": true, "transaction": true }
-                    },
-                    "machineAudioVolume": 0.42
-                }),
-            ),
-        ];
 
-        for (uri, payload) in requests {
-            let response = post_json_with_maintenance(&app, uri, "token-1", payload).await;
-            assert_eq!(response.status(), StatusCode::FORBIDDEN);
-            let body = body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .expect("response body");
-            let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-            assert_eq!(body["code"], "protected_maintenance_authorization_denied");
-        }
+        let response = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": true }
+                },
+                "machineAudioVolume": 0.42
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["endpointId"], "endpoint-speaker");
+
+        let response = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "testEvidenceToken": "11111111-2222-4333-8444-555555555555",
+                "heard": true,
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": true }
+                },
+                "machineAudioVolume": 0.42
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_test_evidence_missing");
     }
 
     #[tokio::test]
