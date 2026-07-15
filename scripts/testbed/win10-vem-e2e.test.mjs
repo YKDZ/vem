@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
@@ -54,26 +54,73 @@ import {
   sanitizeFactoryPreclaimReport,
 } from "./win10-vem-e2e.mjs";
 
+const FAKE_VM_HOST_ADAPTER = new URL(
+  "./fake-vm-host-adapter.mjs",
+  import.meta.url,
+).pathname;
+const SERIAL_CONFORMANCE = new URL(
+  "./vm-host-adapter-serial-conformance.mjs",
+  import.meta.url,
+).pathname;
+
+let capturedSerialConformance;
+
 function completedSerialSaleEvidence(overrides = {}) {
+  if (!capturedSerialConformance) {
+    const root = mkdtempSync(join(tmpdir(), "vem-serial-evidence-consumer-"));
+    const scannerCodePath = join(root, "protected-scanner-code.txt");
+    const outputPath = join(root, "conformance.json");
+    try {
+      writeFileSync(scannerCodePath, "test-scanner-secret", { mode: 0o600 });
+      execFileSync(
+        process.execPath,
+        [
+          SERIAL_CONFORMANCE,
+          "--adapter",
+          FAKE_VM_HOST_ADAPTER,
+          "--out",
+          outputPath,
+          "--scanner-code-file",
+          scannerCodePath,
+          "--run-id",
+          "RUN-180-EVIDENCE",
+          "--target-identity",
+          "vm-target://runtime-testbed",
+          "--approved-runtime-base",
+          `factory-cas://sha256/${"a".repeat(64)}`,
+          "--lifecycle-reference",
+          "vm-lifecycle://run-180-evidence.runtime-testbed",
+          "--sale-correlation-id",
+          "sale-correlation://sale-180",
+          "--order-id",
+          "ORDER-180",
+          "--payment-id",
+          "PAYMENT-180",
+          "--vending-command-id",
+          "VEND-180",
+        ],
+        {
+          env: {
+            ...process.env,
+            RUNNER_TEMP: root,
+            VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY: "1",
+            VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
+            VEM_VM_HOST_FAKE_LOWER_CONTROLLER_GUEST_IDENTITY:
+              "windows-com://com31",
+            VEM_VM_HOST_FAKE_SCANNER_GUEST_IDENTITY: "windows-com://com32",
+          },
+        },
+      );
+      capturedSerialConformance = JSON.parse(readFileSync(outputPath, "utf8"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
   const sale = {
     orderId: "ORDER-180",
     paymentId: "PAYMENT-180",
     vendingCommandId: "VEND-180",
   };
-  const serialSessionId = "serial-session-180";
-  const deviceMappingDigest = "sha256:serial-mapping-180";
-  const frame = (role, event, sequence) => ({
-    role,
-    event,
-    deviceMappingDigest,
-    saleBinding: sale,
-    capturedFrame: {
-      source: "guest-serial-session",
-      sequence,
-      digest: `sha256:frame-${sequence}`,
-      byteLength: 12,
-    },
-  });
   return {
     saleFlow: {
       simulatedHardwareSaleFlow: {
@@ -90,41 +137,7 @@ function completedSerialSaleEvidence(overrides = {}) {
         },
       },
     },
-    serialConformance: {
-      reports: {
-        start: {
-          result: "succeeded",
-          serialSession: {
-            serialSessionId,
-            deviceMappingDigest,
-            deviceMappings: [
-              {
-                role: "lower-controller",
-                guestDeviceIdentity: "windows-com://COM31",
-                connectionState: "connected",
-              },
-              {
-                role: "scanner",
-                guestDeviceIdentity: "windows-com://COM32",
-                connectionState: "connected",
-              },
-            ],
-          },
-        },
-        collect: {
-          result: "succeeded",
-          serialEvidence: {
-            serialSessionId,
-            deviceMappingDigest,
-            records: [
-              frame("scanner", "scanner-injection", 1),
-              frame("lower-controller", "dispense-request", 2),
-              frame("lower-controller", "dispense-result", 3),
-            ],
-          },
-        },
-      },
-    },
+    serialConformance: structuredClone(capturedSerialConformance),
     ...overrides,
   };
 }
@@ -459,6 +472,51 @@ describe("simulated hardware serial acceptance evidence", () => {
     assert.deepEqual(evidence.diagnostics, []);
   });
 
+  it("rejects serial frames relabeled after sale completion", () => {
+    const input = completedSerialSaleEvidence();
+    const relabeledSale = {
+      orderId: "ORDER-ATTACKER",
+      paymentId: "PAYMENT-ATTACKER",
+      vendingCommandId: "VEND-ATTACKER",
+    };
+    input.saleFlow.simulatedHardwareSaleFlow.sale = relabeledSale;
+    input.serialConformance.reports.collect.serialEvidence.records =
+      input.serialConformance.reports.collect.serialEvidence.records.map(
+        (record) => ({
+          ...record,
+          saleBinding: record.saleBinding === null ? null : relabeledSale,
+        }),
+      );
+
+    const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+    assert.equal(evidence.status, "failed");
+    assert.ok(
+      evidence.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_conformance_report_invalid",
+      ),
+    );
+  });
+
+  it("rejects a serial report relabeled into another run", () => {
+    const input = completedSerialSaleEvidence();
+    const conformance = input.serialConformance;
+    conformance.runId = "RUN-ATTACKER";
+    for (const name of ["start", "inject", "collect"]) {
+      conformance.requests[name].runId = "RUN-ATTACKER";
+      conformance.reports[name].request.runId = "RUN-ATTACKER";
+    }
+
+    const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+    assert.equal(evidence.status, "failed");
+    assert.ok(
+      evidence.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_conformance_report_invalid",
+      ),
+    );
+  });
+
   for (const [name, mutate, code] of [
     [
       "mock hardware adapter",
@@ -487,8 +545,9 @@ describe("simulated hardware serial acceptance evidence", () => {
     [
       "software scanner injection",
       (input) => {
-        input.serialConformance.reports.collect.serialEvidence.records[0].capturedFrame.source =
-          "software-injection";
+        input.serialConformance.reports.collect.serialEvidence.records.find(
+          (record) => record.role === "scanner",
+        ).capturedFrame.source = "software-injection";
       },
       "guest_serial_frame_evidence_required",
     ],

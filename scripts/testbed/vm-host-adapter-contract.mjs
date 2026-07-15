@@ -324,6 +324,57 @@ export function createScannerCodeDescriptor(scannerCode) {
   };
 }
 
+export function deriveSerialFrameCaptureBindingDigest({
+  request,
+  record,
+  previousCaptureBindingDigest = null,
+}) {
+  const frame = record?.capturedFrame ?? {};
+  const sale = record?.saleBinding;
+  const material = {
+    schemaVersion: "vem-serial-frame-capture-binding/v1",
+    runId: request?.runId ?? null,
+    lifecycleReference: request?.lifecycleReference ?? null,
+    targetIdentity: request?.target?.identity ?? null,
+    operationReference: request?.operationReference ?? null,
+    serialSessionId: request?.serialSession?.serialSessionId ?? null,
+    sessionBindingToken: request?.serialSession?.sessionBindingToken ?? null,
+    deviceMappingDigest: request?.serialSession?.deviceMappingDigest ?? null,
+    saleCorrelationId: record?.saleCorrelationId ?? null,
+    orderId: sale?.orderId ?? null,
+    paymentId: sale?.paymentId ?? null,
+    vendingCommandId: sale?.vendingCommandId ?? null,
+    role: record?.role ?? null,
+    event: record?.event ?? null,
+    operationNonce: record?.operationNonce ?? null,
+    rawSerialFrame: {
+      source: frame.source ?? null,
+      sequence: frame.sequence ?? null,
+      digest: frame.digest ?? null,
+      byteLength: frame.byteLength ?? null,
+    },
+    previousCaptureBindingDigest,
+  };
+  return `sha256:${sha256(JSON.stringify(material))}`;
+}
+
+export function deriveSerialEvidenceCaptureChainDigest({ request, records }) {
+  const material = {
+    schemaVersion: "vem-serial-evidence-capture-chain/v1",
+    runId: request?.runId ?? null,
+    lifecycleReference: request?.lifecycleReference ?? null,
+    targetIdentity: request?.target?.identity ?? null,
+    operationReference: request?.operationReference ?? null,
+    serialSessionId: request?.serialSession?.serialSessionId ?? null,
+    sessionBindingToken: request?.serialSession?.sessionBindingToken ?? null,
+    deviceMappingDigest: request?.serialSession?.deviceMappingDigest ?? null,
+    captureBindingDigests: Array.isArray(records)
+      ? records.map((record) => record?.captureBindingDigest ?? null)
+      : null,
+  };
+  return `sha256:${sha256(JSON.stringify(material))}`;
+}
+
 export function deriveSerialSessionBinding({
   runId,
   lifecycleReference,
@@ -708,6 +759,7 @@ function assertSemanticRecord(record, index, request, issues) {
         "saleCorrelationId",
         "saleBinding",
         "capturedFrame",
+        "captureBindingDigest",
       ],
       path,
       issues,
@@ -716,6 +768,12 @@ function assertSemanticRecord(record, index, request, issues) {
     return;
   if (!SALE_EVIDENCE_ROLES.has(record.role))
     issue(issues, `${path}.role`, "must be a supported serial evidence role");
+  if (!SHA256_DIGEST.test(record.captureBindingDigest ?? ""))
+    issue(
+      issues,
+      `${path}.captureBindingDigest`,
+      "must bind the frame capture to its sale and serial context",
+    );
   if (
     assertExactKeys(
       record.capturedFrame,
@@ -927,6 +985,7 @@ function assertSerialEvidence(report, request, issues) {
         "sessionBindingToken",
         "deviceMappingDigest",
         "records",
+        "captureChainDigest",
       ],
       "report.serialEvidence",
       issues,
@@ -951,6 +1010,33 @@ function assertSerialEvidence(report, request, issues) {
   evidence.records.forEach((record, index) =>
     assertSemanticRecord(record, index, request, issues),
   );
+  let previousCaptureBindingDigest = null;
+  evidence.records.forEach((record, index) => {
+    const expectedCaptureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+      request,
+      record,
+      previousCaptureBindingDigest,
+    });
+    if (record?.captureBindingDigest !== expectedCaptureBindingDigest)
+      issue(
+        issues,
+        `report.serialEvidence.records[${index}].captureBindingDigest`,
+        "must immutably bind the run, sale, and raw serial frame at capture",
+      );
+    previousCaptureBindingDigest = record?.captureBindingDigest ?? null;
+  });
+  if (
+    evidence.captureChainDigest !==
+    deriveSerialEvidenceCaptureChainDigest({
+      request,
+      records: evidence.records,
+    })
+  )
+    issue(
+      issues,
+      "report.serialEvidence.captureChainDigest",
+      "must commit the complete immutable serial capture chain",
+    );
   const capturedFrameSequences = new Set();
   let previousFrameSequence = 0;
   evidence.records.forEach((record, index) => {
@@ -3093,6 +3179,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
                     report.serialEvidence.sessionBindingToken,
                   deviceMappingDigest:
                     report.serialEvidence.deviceMappingDigest,
+                  captureChainDigest: report.serialEvidence.captureChainDigest,
                   records: report.serialEvidence.records.map((record) => ({
                     role: record.role,
                     event: record.event,
@@ -3105,6 +3192,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
                     saleCorrelationId: record.saleCorrelationId,
                     saleBinding: record.saleBinding,
                     capturedFrame: record.capturedFrame,
+                    captureBindingDigest: record.captureBindingDigest,
                   })),
                 },
         }

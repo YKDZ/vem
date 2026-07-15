@@ -16,8 +16,138 @@ import {
   createScannerCodeDescriptor,
   createVmHostAdapterRequest,
   runVmHostAdapter,
+  validateVmHostAdapterReport,
   VM_HOST_ADAPTER_CONTRACT_VERSION,
 } from "./vm-host-adapter-contract.mjs";
+
+function assertConformance(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function validateSerialConformanceReport(input) {
+  const conformance = structuredClone(input);
+  assertConformance(
+    conformance?.schemaVersion === "vem-vm-host-adapter-serial-conformance/v1",
+    "serial conformance schemaVersion is invalid",
+  );
+  assertConformance(
+    typeof conformance.runId === "string" && conformance.runId.length > 0,
+    "serial conformance runId is required",
+  );
+  const reports = conformance.reports;
+  const requests = conformance.requests;
+  assertConformance(
+    reports && typeof reports === "object" && !Array.isArray(reports),
+    "serial conformance reports are required",
+  );
+  for (const name of ["start", "inject", "collect"])
+    assertConformance(
+      reports[name],
+      `serial conformance ${name} report is required`,
+    );
+  assertConformance(
+    requests && typeof requests === "object" && !Array.isArray(requests),
+    "serial conformance requests are required",
+  );
+  for (const name of ["start", "inject", "collect"])
+    assertConformance(
+      requests[name],
+      `serial conformance ${name} request is required`,
+    );
+
+  const validatedReports = {};
+  for (const name of ["start", "inject", "collect"]) {
+    const report = reports[name];
+    assertConformance(
+      report && typeof report === "object" && !Array.isArray(report),
+      `serial conformance ${name} report is invalid`,
+    );
+    assertConformance(
+      requests[name],
+      `serial conformance ${name} request is required for report validation`,
+    );
+    validatedReports[name] = validateVmHostAdapterReport(
+      report,
+      requests[name],
+    );
+  }
+
+  const start = validatedReports.start;
+  const inject = validatedReports.inject;
+  const collect = validatedReports.collect;
+  assertConformance(
+    start.result === "succeeded" &&
+      inject.result === "succeeded" &&
+      collect.result === "succeeded",
+    "serial conformance lifecycle reports must succeed",
+  );
+  assertConformance(
+    start.request.operation === "start-serial-session" &&
+      inject.request.operation === "inject-scanner-code" &&
+      collect.request.operation === "collect-serial-evidence",
+    "serial conformance lifecycle report operations are invalid",
+  );
+  assertConformance(
+    [start, inject, collect].every(
+      (report) => report.request.runId === conformance.runId,
+    ),
+    "serial conformance reports must bind the declared run",
+  );
+  assertConformance(
+    start.request.lifecycleReference === inject.request.lifecycleReference &&
+      start.request.lifecycleReference === collect.request.lifecycleReference &&
+      start.request.targetIdentity === inject.request.targetIdentity &&
+      start.request.targetIdentity === collect.request.targetIdentity,
+    "serial conformance reports must bind one lifecycle target",
+  );
+  const startSession = start.serialSession;
+  assertConformance(
+    startSession,
+    "serial conformance start session is required",
+  );
+  assertConformance(
+    sameJson(conformance.session, {
+      serialSessionId: startSession.serialSessionId,
+      sessionBindingToken: startSession.sessionBindingToken,
+      deviceMappingDigest: startSession.deviceMappingDigest,
+    }),
+    "serial conformance session must match the validated start report",
+  );
+  for (const report of [inject, collect])
+    assertConformance(
+      [
+        "serialSessionId",
+        "sessionBindingToken",
+        "startOperationReference",
+        "deviceMappingDigest",
+      ].every(
+        (key) => report.request.serialSession?.[key] === startSession[key],
+      ),
+      "serial conformance reports must retain the validated start session",
+    );
+  assertConformance(
+    collect.request.serialSession.scannerInjection?.operationNonce ===
+      inject.request.operationNonce,
+    "serial evidence collection must bind the validated scanner injection",
+  );
+  const injectedSale = inject.request.serialSession.saleBindings?.[0];
+  const collectedSale = collect.request.serialSession.saleBindings?.[0];
+  assertConformance(
+    injectedSale &&
+      collectedSale &&
+      injectedSale.saleCorrelationId === collectedSale.saleCorrelationId &&
+      injectedSale.orderId === collectedSale.orderId &&
+      injectedSale.paymentId === collectedSale.paymentId &&
+      injectedSale.vendingCommandId === null &&
+      typeof collectedSale.vendingCommandId === "string",
+    "serial collection must complete the injected sale without relabeling it",
+  );
+  return { conformance, reports: validatedReports };
+}
 
 function readOption(name) {
   const index = process.argv.indexOf(name);
@@ -200,20 +330,24 @@ async function main() {
   let recoveryStop;
   let failureMatrix;
   let session;
+  let startRequest;
+  let injectRequest;
+  let collectRequest;
   let preparedSale;
   let completedSale;
   let primaryError;
   try {
+    startRequest = requestFor({
+      operation: "start-serial-session",
+      runId,
+      targetIdentity,
+      lifecycleReference,
+      approvedRuntimeBase,
+      saleCorrelationId,
+      saleBinding: null,
+    });
     start = await runVmHostAdapter({
-      request: requestFor({
-        operation: "start-serial-session",
-        runId,
-        targetIdentity,
-        lifecycleReference,
-        approvedRuntimeBase,
-        saleCorrelationId,
-        saleBinding: null,
-      }),
+      request: startRequest,
       workDirectory,
       environment,
     });
@@ -227,18 +361,19 @@ async function main() {
         }
       : runSaleCommand(readOption("--sale-prepare-command-json"), "prepare");
     const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
+    injectRequest = requestFor({
+      operation: "inject-scanner-code",
+      runId,
+      targetIdentity,
+      lifecycleReference,
+      approvedRuntimeBase,
+      session,
+      scannerDescriptor,
+      saleCorrelationId,
+      saleBinding: preparedSale,
+    });
     inject = await runVmHostAdapter({
-      request: requestFor({
-        operation: "inject-scanner-code",
-        runId,
-        targetIdentity,
-        lifecycleReference,
-        approvedRuntimeBase,
-        session,
-        scannerDescriptor,
-        saleCorrelationId,
-        saleBinding: preparedSale,
-      }),
+      request: injectRequest,
       workDirectory,
       environment,
       scannerCode,
@@ -256,21 +391,22 @@ async function main() {
       throw new Error(
         "completed scanner sale does not bind the prepared order and payment IDs",
       );
+    collectRequest = requestFor({
+      operation: "collect-serial-evidence",
+      runId,
+      targetIdentity,
+      lifecycleReference,
+      approvedRuntimeBase,
+      session,
+      scannerDescriptor: {
+        operationNonce: inject.request.operationNonce,
+        ...scannerDescriptor,
+      },
+      saleCorrelationId,
+      saleBinding: completedSale,
+    });
     collect = await runVmHostAdapter({
-      request: requestFor({
-        operation: "collect-serial-evidence",
-        runId,
-        targetIdentity,
-        lifecycleReference,
-        approvedRuntimeBase,
-        session,
-        scannerDescriptor: {
-          operationNonce: inject.request.operationNonce,
-          ...scannerDescriptor,
-        },
-        saleCorrelationId,
-        saleBinding: completedSale,
-      }),
+      request: collectRequest,
       workDirectory,
       environment,
     });
@@ -363,6 +499,11 @@ async function main() {
         {
           schemaVersion: "vem-vm-host-adapter-serial-conformance/v1",
           runId,
+          requests: {
+            start: startRequest,
+            inject: injectRequest,
+            collect: collectRequest,
+          },
           session:
             session === undefined
               ? null

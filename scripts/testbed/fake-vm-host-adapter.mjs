@@ -8,6 +8,8 @@ import { deflateSync } from "node:zlib";
 import {
   createScannerCodeDescriptor,
   deriveSerialDeviceMappingDigest,
+  deriveSerialEvidenceCaptureChainDigest,
+  deriveSerialFrameCaptureBindingDigest,
   deriveSerialSessionBinding,
   validateVmHostAdapterRequest,
   VM_HOST_ADAPTER_CONTRACT_VERSION,
@@ -232,14 +234,18 @@ function serialMappings(state) {
   return [
     {
       role: "lower-controller",
-      guestDeviceIdentity: "guest-device://fake-lower-controller-001",
+      guestDeviceIdentity:
+        process.env.VEM_VM_HOST_FAKE_LOWER_CONTROLLER_GUEST_IDENTITY ??
+        "guest-device://fake-lower-controller-001",
       simulatorProcessIdentity: "simulator-process://fake-lower-controller-001",
       simulatorSocketIdentity: "simulator-socket://fake-lower-controller-001",
       connectionState: state,
     },
     {
       role: "scanner",
-      guestDeviceIdentity: "guest-device://fake-scanner-001",
+      guestDeviceIdentity:
+        process.env.VEM_VM_HOST_FAKE_SCANNER_GUEST_IDENTITY ??
+        "guest-device://fake-scanner-001",
       simulatorProcessIdentity: "simulator-process://fake-scanner-001",
       simulatorSocketIdentity: "simulator-socket://fake-scanner-001",
       connectionState: state,
@@ -345,10 +351,20 @@ function semanticRecords(request) {
     })),
     ...lower.slice(2),
   ];
-  return records.map((record, index) => ({
-    ...record,
-    capturedFrame: capturedFrame(index + 1),
-  }));
+  let previousCaptureBindingDigest = null;
+  return records.map((record, index) => {
+    const captured = {
+      ...record,
+      capturedFrame: capturedFrame(index + 1),
+    };
+    captured.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+      request,
+      record: captured,
+      previousCaptureBindingDigest,
+    });
+    previousCaptureBindingDigest = captured.captureBindingDigest;
+    return captured;
+  });
 }
 
 function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
@@ -555,12 +571,19 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
           serialEvidence:
             request.operation === "collect-serial-evidence" &&
             result === "succeeded"
-              ? {
-                  serialSessionId: serialRequest.serialSessionId,
-                  sessionBindingToken: serialRequest.sessionBindingToken,
-                  deviceMappingDigest: serialRequest.deviceMappingDigest,
-                  records: semanticRecords(request),
-                }
+              ? (() => {
+                  const records = semanticRecords(request);
+                  return {
+                    serialSessionId: serialRequest.serialSessionId,
+                    sessionBindingToken: serialRequest.sessionBindingToken,
+                    deviceMappingDigest: serialRequest.deviceMappingDigest,
+                    records,
+                    captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
+                      request,
+                      records,
+                    }),
+                  };
+                })()
               : null,
         }
       : {}),

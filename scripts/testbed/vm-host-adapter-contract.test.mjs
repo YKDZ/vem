@@ -16,6 +16,8 @@ import {
   createScannerCodeDescriptor,
   createVmHostAdapterRequest,
   deriveSerialDeviceMappingDigest,
+  deriveSerialEvidenceCaptureChainDigest,
+  deriveSerialFrameCaptureBindingDigest,
   deriveSerialSessionBinding,
   redactScannerCode,
   runVmHostAdapter,
@@ -397,10 +399,20 @@ function serialEvidenceRecords(request) {
     })),
     ...lower.slice(2),
   ];
-  return records.map((record, index) => ({
-    ...record,
-    capturedFrame: capturedFrame(index + 1),
-  }));
+  let previousCaptureBindingDigest = null;
+  return records.map((record, index) => {
+    const captured = {
+      ...record,
+      capturedFrame: capturedFrame(index + 1),
+    };
+    captured.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+      request,
+      record: captured,
+      previousCaptureBindingDigest,
+    });
+    previousCaptureBindingDigest = captured.captureBindingDigest;
+    return captured;
+  });
 }
 
 function cleanInstallRequest() {
@@ -701,14 +713,21 @@ function reportFor(request, overrides = {}) {
                 },
           serialEvidence:
             request.operation === "collect-serial-evidence"
-              ? {
-                  serialSessionId: request.serialSession.serialSessionId,
-                  sessionBindingToken:
-                    request.serialSession.sessionBindingToken,
-                  deviceMappingDigest:
-                    request.serialSession.deviceMappingDigest,
-                  records: serialEvidenceRecords(request),
-                }
+              ? (() => {
+                  const records = serialEvidenceRecords(request);
+                  return {
+                    serialSessionId: request.serialSession.serialSessionId,
+                    sessionBindingToken:
+                      request.serialSession.sessionBindingToken,
+                    deviceMappingDigest:
+                      request.serialSession.deviceMappingDigest,
+                    records,
+                    captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
+                      request,
+                      records,
+                    }),
+                  };
+                })()
               : null,
         }
       : {}),
@@ -1002,6 +1021,40 @@ describe("VM Host Adapter contract", () => {
           collect,
         ),
       );
+  });
+
+  it("rejects a completed sale relabeled without recapturing its serial frames", () => {
+    const collect = createVmHostAdapterRequest(
+      serialSessionRequest("collect-serial-evidence"),
+    );
+    const original = reportFor(collect);
+    const retaggedRequest = createVmHostAdapterRequest({
+      ...collect,
+      serialSession: {
+        ...collect.serialSession,
+        saleBindings: [
+          {
+            ...collect.serialSession.saleBindings[0],
+            orderId: "order-attacker",
+            paymentId: "payment-attacker",
+            vendingCommandId: "vending-command-attacker",
+          },
+        ],
+      },
+    });
+    const retagged = reportFor(retaggedRequest);
+    retagged.serialEvidence.records = retagged.serialEvidence.records.map(
+      (record, index) => ({
+        ...record,
+        captureBindingDigest:
+          original.serialEvidence.records[index].captureBindingDigest,
+      }),
+    );
+
+    assert.throws(
+      () => validateVmHostAdapterReport(retagged, retaggedRequest),
+      /immutably bind the run, sale, and raw serial frame at capture/,
+    );
   });
 
   it("rejects duplicate, non-monotonic, and causally inverted sale frames", () => {

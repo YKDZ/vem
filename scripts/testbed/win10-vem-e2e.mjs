@@ -19,6 +19,7 @@ import {
   readFactoryPersonalizationMediaSnapshot,
   redactFactoryPersonalizationMedia,
 } from "../factory/factory-personalization-media.mjs";
+import { validateSerialConformanceReport } from "./vm-host-adapter-serial-conformance.mjs";
 
 const VEM_RESET_ROOTS = [
   "C:\\VEM\\bringup",
@@ -3426,8 +3427,19 @@ export function evaluateSimulatedHardwareSerialEvidence({
   const facts = saleFlow?.simulatedHardwareSaleFlow ?? saleFlow;
   const serialConfiguration = facts?.daemonSerialConfiguration;
   const sale = facts?.sale;
-  const session = serialConformance?.reports?.start?.serialSession;
-  const collect = serialConformance?.reports?.collect;
+  let validatedConformance = null;
+  try {
+    validatedConformance = validateSerialConformanceReport(serialConformance);
+  } catch {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "serial_conformance_report_invalid",
+        "Acceptance requires the complete serial conformance report to be revalidated before evidence labels are consumed.",
+      ),
+    );
+  }
+  const session = validatedConformance?.reports.start.serialSession;
+  const collect = validatedConformance?.reports.collect;
   const records = collect?.serialEvidence?.records;
 
   if (
