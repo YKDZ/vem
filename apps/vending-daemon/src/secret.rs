@@ -440,9 +440,7 @@ pub(crate) async fn harden_machine_protected_file_permissions(
         // Do not use account names here: localized Windows images can resolve
         // them differently.  Rebuild the explicit DACL so a pre-existing temp
         // file cannot retain an unrelated allow or deny ACE after replacement.
-        let status = tokio::process::Command::new("powershell.exe")
-            .args(windows_secret_acl_command())
-            .env("VEM_DAEMON_SECRET_ACL_PATH", path)
+        let status = windows_secret_acl_process(path)
             .status()
             .await
             .map_err(|error| format!("set file secret ACL failed: {error}"))?;
@@ -489,6 +487,19 @@ fn windows_secret_acl_command() -> Vec<String> {
         "-EncodedCommand".to_string(),
         STANDARD.encode(utf16le),
     ]
+}
+
+#[cfg(any(windows, test))]
+fn windows_secret_acl_process(path: &std::path::Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("powershell.exe");
+    command
+        .args(windows_secret_acl_command())
+        .env("VEM_DAEMON_SECRET_ACL_PATH", path)
+        // A daemon started by pwsh can inherit PowerShell 7's module search
+        // path. Windows PowerShell then finds but cannot load its own Security
+        // module. Let powershell.exe reconstruct its native module boundary.
+        .env_remove("PSModulePath");
+    command
 }
 
 fn protected_secret_protection_name() -> &'static str {
@@ -937,6 +948,22 @@ mod tests {
         assert!(script.contains("VEM_DAEMON_SECRET_ACL_PATH"));
         assert!(script.contains("$args.Count -ne 0"));
         assert!(!script.contains("$args[0]"));
+    }
+
+    #[test]
+    fn windows_secret_acl_process_does_not_inherit_powershell_module_path() {
+        let command = windows_secret_acl_process(Path::new("secret with spaces.bin"));
+        let (name, value) = command
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| name.eq_ignore_ascii_case("PSModulePath"))
+            .expect("PowerShell module path must have an explicit child-process policy");
+
+        assert_eq!(name, std::ffi::OsStr::new("PSModulePath"));
+        assert!(value.is_none(), "the child must not inherit pwsh modules");
+        assert!(command.as_std().get_envs().any(|(name, value)| {
+            name == std::ffi::OsStr::new("VEM_DAEMON_SECRET_ACL_PATH") && value.is_some()
+        }));
     }
 
     #[cfg(windows)]

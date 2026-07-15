@@ -1,10 +1,13 @@
 [CmdletBinding()]
 param(
-  [string]$CandidatePath = (Join-Path $PSScriptRoot "test-vision-candidate.ps1")
+  [string]$CandidatePath
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+if ([string]::IsNullOrWhiteSpace($CandidatePath)) {
+  $CandidatePath = Join-Path $PSScriptRoot "test-vision-candidate.ps1"
+}
 
 function Get-HarnessSha256([string]$Path) {
   return "sha256:" + (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()

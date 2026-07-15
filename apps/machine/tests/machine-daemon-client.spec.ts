@@ -340,7 +340,7 @@ function currentFixtures(): Record<string, unknown> {
           },
         ],
       }),
-      bringUp: bringUpSnapshot("sell_ready"),
+      bringUp: bringUpSnapshot("runtime_ready"),
       transaction: emptyTransaction,
     };
   }
@@ -584,7 +584,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   if (url.pathname === "/v1/config/summary") {
-    const provisioned = scenario !== "provisioning";
+    const provisioned =
+      scenario !== "provisioning" && scenario !== "maintenance";
     const payload = {
       configuredState: {
         factoryManifest: true,

@@ -446,6 +446,7 @@ async function runStaticJob() {
   await run("pnpm", ["check:vm-host-adapter"]);
   await run("pnpm", ["check:factory-image-acceptance"]);
   await run("pnpm", ["check:admin-api-contracts"]);
+  await run("pnpm", ["check:machine-e2e-ci"]);
   await ensureCargoTypify();
   await run("pnpm", ["check:daemon-ipc-contracts"]);
   await run("pnpm", ["fmt:check"]);
@@ -470,6 +471,7 @@ async function runMachineE2eJob() {
   await assertChromePrerequisite();
   printStep("Machine UI daemon E2E");
   await run("google-chrome", ["--version"]);
+  await run("pnpm", ["turbo", "build", "--filter", "machine^..."]);
   await run("pnpm", [
     "-F",
     "machine",

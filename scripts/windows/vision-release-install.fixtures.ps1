@@ -62,7 +62,7 @@ function Assert-ExactSystemInstallerAcl([string]$Path, [bool]$KioskReadable) {
   if (-not $acl.AreAccessRulesProtected) {
     throw "installer ACL must be protected"
   }
-  $owner = $acl.Owner.Translate([Security.Principal.SecurityIdentifier]).Value
+  $owner = ([Security.Principal.NTAccount]::new([string]$acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value
   if ($owner -cne "S-1-5-18") { throw "installer ACL owner must be LocalSystem" }
   $expected = @{
     "S-1-5-18" = [int][Security.AccessControl.FileSystemRights]::FullControl

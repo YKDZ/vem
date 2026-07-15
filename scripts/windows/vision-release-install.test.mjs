@@ -132,6 +132,22 @@ describe("Vision release installer fixtures", () => {
     },
   );
 
+  boundedIt(
+    "resolves the Candidate harness default path after Windows PowerShell parameter binding",
+    () => {
+      const source = readFileSync(candidateWindowsHarness, "utf8");
+      assert.match(source, /param\(\s*\[string\]\$CandidatePath\s*\)/);
+      assert.match(
+        source,
+        /if \(\[string\]::IsNullOrWhiteSpace\(\$CandidatePath\)\) \{\s*\$CandidatePath = Join-Path \$PSScriptRoot "test-vision-candidate\.ps1"\s*\}/,
+      );
+      assert.doesNotMatch(
+        source,
+        /\$CandidatePath\s*=\s*\(Join-Path \$PSScriptRoot/,
+      );
+    },
+  );
+
   for (const [name, path] of [
     ["production installer", "scripts/windows/install-vision-release.ps1"],
     [
@@ -730,6 +746,32 @@ describe("Vision release installer fixtures", () => {
       2,
     );
   });
+
+  boundedIt(
+    "creates every protected Factory Vision root before ACL inspection",
+    () => {
+      const source = readFileSync(
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "utf8",
+      );
+      assert.match(
+        source,
+        /\$protectedRoots = @\(\$factoryRoot, \$trustRoot, \$bringupRoot, \(Join-Path \$factoryRoot "vision-release"\)\)[\s\S]*?foreach \(\$path in \$protectedRoots\) \{[\s\S]*?if \(-not \(Test-Path -LiteralPath \$path -PathType Container\)\) \{\s*New-Item -ItemType Directory -Path \$path -Force \| Out-Null\s*\}[\s\S]*?foreach \(\$path in \$protectedRoots \+ @\(\$installedFiles[\s\S]*?Set-SystemOnlyAcl \$path/,
+      );
+    },
+  );
+
+  boundedIt(
+    "resolves Windows ACL owners through a strongly typed account",
+    () => {
+      const source = readFileSync(fixture, "utf8");
+      assert.match(
+        source,
+        /\[Security\.Principal\.NTAccount\]::new\(\[string\]\$acl\.Owner\)\)\.Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/,
+      );
+      assert.doesNotMatch(source, /\$acl\.Owner\.Translate\(/);
+    },
+  );
 
   boundedIt("uses object fields for strict install evidence", () => {
     const source = readFileSync(

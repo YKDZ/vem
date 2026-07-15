@@ -143,7 +143,14 @@ foreach ($property in @($manifest.files.PSObject.Properties)) {
   if ((Get-Sha256Digest $destination) -cne $expected) { throw "Factory Vision destination hash mismatch" }
   $installedFiles += [ordered]@{ relative=$relative; path=$destination; digest=$expected }
 }
-foreach ($path in @($factoryRoot, $trustRoot, $bringupRoot, (Join-Path $factoryRoot "vision-release")) + @($installedFiles | ForEach-Object { [string]$_.path }) | Select-Object -Unique) {
+$protectedRoots = @($factoryRoot, $trustRoot, $bringupRoot, (Join-Path $factoryRoot "vision-release"))
+foreach ($path in $protectedRoots) {
+  Assert-NonReparsePath $path "Factory Vision installed root"
+  if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+    New-Item -ItemType Directory -Path $path -Force | Out-Null
+  }
+}
+foreach ($path in $protectedRoots + @($installedFiles | ForEach-Object { [string]$_.path }) | Select-Object -Unique) {
   Assert-NonReparsePath $path "Factory Vision installed path"
   Set-SystemOnlyAcl $path
 }
