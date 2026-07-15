@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createRuntimeArtifactDescriptor, writeRuntimeArtifactDescriptor } from "../factory/runtime-artifact-descriptor.mjs";
+import {
+  createRuntimeArtifactDescriptor,
+  writeRuntimeArtifactDescriptor,
+} from "../factory/runtime-artifact-descriptor.mjs";
 
 function canonicalJson(value) {
   if (Array.isArray(value)) {
@@ -54,11 +63,17 @@ async function createRuntimeInput(root) {
 }
 
 function createVisionPreapproval(root, expectedDigest) {
-  const preapproval = join(root, "vision-preapproval-input", "VEM-VISION-PREAPPROVAL");
+  const preapproval = join(
+    root,
+    "vision-preapproval-input",
+    "VEM-VISION-PREAPPROVAL",
+  );
   mkdirSync(preapproval, { recursive: true });
   const files = {
     "bundle.bin": Buffer.from("bundle\n"),
-    "vision-release-descriptor.json": Buffer.from('{"schemaVersion":"fixture"}\n'),
+    "vision-release-descriptor.json": Buffer.from(
+      '{"schemaVersion":"fixture"}\n',
+    ),
     "test-vision-candidate.ps1": Buffer.from("Write-Host test\n"),
     "vision-release-materialization.psm1": Buffer.from("Export-ModuleMember\n"),
     "vision-diagnostic-redaction.psm1": Buffer.from("Export-ModuleMember\n"),
@@ -75,12 +90,17 @@ function createVisionPreapproval(root, expectedDigest) {
       Object.entries(files).map(([name, bytes]) => [name, sha(bytes)]),
     ),
   };
-  writeFileSync(join(preapproval, "preapproval-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(
+    join(preapproval, "preapproval-manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
   writeFileSync(
     join(preapproval, "SHA256SUMS"),
     Object.entries({
       ...files,
-      "preapproval-manifest.json": Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`),
+      "preapproval-manifest.json": Buffer.from(
+        `${JSON.stringify(manifest, null, 2)}\n`,
+      ),
     })
       .map(([name, bytes]) => `${sha(bytes).slice(7)}  ${name}`)
       .sort()
@@ -95,10 +115,27 @@ function createVisionFactory(root, bundleDigest) {
   mkdirSync(join(out, "VEM", "VISION-TRUST"), { recursive: true });
   mkdirSync(join(out, "VEM", "VISION-INSTALLER"), { recursive: true });
   writeFileSync(join(out, "VEM", "VISION-RELEASE", "bundle.bin"), "bundle\n");
-  writeFileSync(join(out, "VEM", "VISION-INSTALLER", "install-vision-release.ps1"), "Write-Host install\n");
-  writeFileSync(join(out, "VEM", "VISION-INSTALLER", "provision-vision-factory-release.ps1"), "Write-Host provision\n");
-  writeFileSync(join(out, "VEM", "VISION-INSTALLER", "vision-release-materialization.psm1"), "Export-ModuleMember\n");
-  writeFileSync(join(out, "VEM", "VISION-INSTALLER", "vision-diagnostic-redaction.psm1"), "Export-ModuleMember\n");
+  writeFileSync(
+    join(out, "VEM", "VISION-INSTALLER", "install-vision-release.ps1"),
+    "Write-Host install\n",
+  );
+  writeFileSync(
+    join(
+      out,
+      "VEM",
+      "VISION-INSTALLER",
+      "provision-vision-factory-release.ps1",
+    ),
+    "Write-Host provision\n",
+  );
+  writeFileSync(
+    join(out, "VEM", "VISION-INSTALLER", "vision-release-materialization.psm1"),
+    "Export-ModuleMember\n",
+  );
+  writeFileSync(
+    join(out, "VEM", "VISION-INSTALLER", "vision-diagnostic-redaction.psm1"),
+    "Export-ModuleMember\n",
+  );
   const files = {};
   for (const relative of [
     "VISION-RELEASE/bundle.bin",
@@ -107,7 +144,9 @@ function createVisionFactory(root, bundleDigest) {
     "VISION-INSTALLER/vision-release-materialization.psm1",
     "VISION-INSTALLER/vision-diagnostic-redaction.psm1",
   ]) {
-    files[relative] = sha(readFileSync(join(out, "VEM", ...relative.split("/"))));
+    files[relative] = sha(
+      readFileSync(join(out, "VEM", ...relative.split("/"))),
+    );
   }
   writeFileSync(
     join(out, "VEM", "VISION-FACTORY-PROVISIONING.JSON"),
@@ -119,12 +158,16 @@ function createVisionFactory(root, bundleDigest) {
   );
   writeFileSync(
     join(out, "experimental-acceptance.json"),
-    `${JSON.stringify({
-      schemaVersion: "vem-vision-experimental-acceptance/v1",
-      kind: "vision-experimental-acceptance",
-      classification: "Experimental Candidate / Testbed Accepted",
-      bundleDigest,
-    }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        schemaVersion: "vem-vision-experimental-acceptance/v1",
+        kind: "vision-experimental-acceptance",
+        classification: "Experimental Candidate / Testbed Accepted",
+        bundleDigest,
+      },
+      null,
+      2,
+    )}\n`,
   );
   return out;
 }
@@ -137,7 +180,10 @@ test("prepare stages one exact delivery unit for managed update and progressive 
     const preapproval = createVisionPreapproval(root, expectedVisionDigest);
     const visionFactory = createVisionFactory(root, expectedVisionDigest);
     const output = join(root, "out");
-    const script = join(process.cwd(), "scripts/windows/prepare-unified-field-delivery.mjs");
+    const script = join(
+      process.cwd(),
+      "scripts/windows/prepare-unified-field-delivery.mjs",
+    );
     const { execFileSync } = await import("node:child_process");
     execFileSync(process.execPath, [
       script,
@@ -155,12 +201,22 @@ test("prepare stages one exact delivery unit for managed update and progressive 
       "--expected-vision-bundle-digest",
       expectedVisionDigest,
     ]);
-    const candidate = JSON.parse(readFileSync(join(output, "candidate.json"), "utf8"));
+    const candidate = JSON.parse(
+      readFileSync(join(output, "candidate.json"), "utf8"),
+    );
     assert.equal(candidate.updateId, "field-20260715T120000Z");
     assert.equal(candidate.vision.bundleDigest, expectedVisionDigest);
-    const manifest = JSON.parse(readFileSync(join(output, "managed-update.json"), "utf8"));
-    assert.equal(manifest.components[0].artifactPath, "C:\\VEM\\updates\\field-20260715T120000Z\\runtime\\vending-daemon.exe");
-    assert.equal(manifest.components[1].sidecars[0].targetPath, "C:\\VEM\\bringup\\WebView2Loader.dll");
+    const manifest = JSON.parse(
+      readFileSync(join(output, "managed-update.json"), "utf8"),
+    );
+    assert.equal(
+      manifest.components[0].artifactPath,
+      "C:\\VEM\\updates\\field-20260715T120000Z\\runtime\\vending-daemon.exe",
+    );
+    assert.equal(
+      manifest.components[1].sidecars[0].targetPath,
+      "C:\\VEM\\bringup\\WebView2Loader.dll",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -170,7 +226,10 @@ test("skeleton records missing exact inputs without building source artifacts", 
   const root = fixtureRoot();
   try {
     const output = join(root, "skeleton");
-    const script = join(process.cwd(), "scripts/windows/prepare-unified-field-delivery.mjs");
+    const script = join(
+      process.cwd(),
+      "scripts/windows/prepare-unified-field-delivery.mjs",
+    );
     const { execFileSync } = await import("node:child_process");
     execFileSync(process.execPath, [
       script,
@@ -182,9 +241,17 @@ test("skeleton records missing exact inputs without building source artifacts", 
       "--source-commit",
       "2".repeat(40),
     ]);
-    const required = JSON.parse(readFileSync(join(output, "required-inputs.json"), "utf8"));
-    assert.match(required.missingExactInputs[0], /WINDOWS-RUNTIME-ARTIFACTS\.json/);
-    assert.match(readFileSync(join(output, "NEXT-STEPS.md"), "utf8"), /prepare-preapproval/);
+    const required = JSON.parse(
+      readFileSync(join(output, "required-inputs.json"), "utf8"),
+    );
+    assert.match(
+      required.missingExactInputs[0],
+      /WINDOWS-RUNTIME-ARTIFACTS\.json/,
+    );
+    assert.match(
+      readFileSync(join(output, "NEXT-STEPS.md"), "utf8"),
+      /prepare-preapproval/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

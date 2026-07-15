@@ -22,7 +22,9 @@ function readJson(path) {
 }
 
 function normalizeSha(value, label) {
-  const digest = String(value ?? "").trim().toLowerCase();
+  const digest = String(value ?? "")
+    .trim()
+    .toLowerCase();
   if (!SHA256.test(digest)) {
     throw new Error(`${label} must be a 64-hex SHA-256`);
   }
@@ -30,7 +32,9 @@ function normalizeSha(value, label) {
 }
 
 function normalizePrefixed(value, label) {
-  const digest = String(value ?? "").trim().toLowerCase();
+  const digest = String(value ?? "")
+    .trim()
+    .toLowerCase();
   if (!/^sha256:[a-f0-9]{64}$/.test(digest)) {
     throw new Error(`${label} must be sha256:<64 lowercase hex>`);
   }
@@ -80,7 +84,10 @@ function main() {
     "candidate WebView2 digest",
   );
   const visionSha = candidate.vision?.bundleDigest
-    ? normalizePrefixed(candidate.vision.bundleDigest, "candidate Vision digest")
+    ? normalizePrefixed(
+        candidate.vision.bundleDigest,
+        "candidate Vision digest",
+      )
     : null;
 
   if (options["vm-runtime-acceptance"]) {
@@ -97,17 +104,24 @@ function main() {
       checks,
       "L2_windows_vm",
       "machine-ui-sha256",
-      normalizeSha(vm.artifacts?.machineUiSha256, "VM acceptance machine UI") ===
-        machineSha.slice(7),
+      normalizeSha(
+        vm.artifacts?.machineUiSha256,
+        "VM acceptance machine UI",
+      ) === machineSha.slice(7),
       "VM acceptance machineUiSha256 must equal unified delivery runtime artifact",
     );
   }
 
-  if (options["managed-update-manifest"] && options["managed-update-evidence"]) {
+  if (
+    options["managed-update-manifest"] &&
+    options["managed-update-evidence"]
+  ) {
     const manifest = readJson(options["managed-update-manifest"]);
     const evidence = readJson(options["managed-update-evidence"]);
     const sourceBinding = evidence.sourceBinding ?? {};
-    const daemon = manifest.components.find((entry) => entry.component === "daemon");
+    const daemon = manifest.components.find(
+      (entry) => entry.component === "daemon",
+    );
     const ui = manifest.components.find((entry) => entry.component === "ui");
     addCheck(
       checks,
@@ -129,7 +143,8 @@ function main() {
       checks,
       "L3_non_iso_field",
       "ui-component-hash",
-      normalizeSha(ui?.sha256, "managed-update ui sha256") === machineSha.slice(7),
+      normalizeSha(ui?.sha256, "managed-update ui sha256") ===
+        machineSha.slice(7),
       "managed-update UI component must bind the unified delivery machine UI bytes",
     );
     addCheck(

@@ -148,7 +148,12 @@ function readJson(path, label) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function buildManagedUpdateManifest({ updateId, sourceCommit, windowsStageRoot, runtimeDescriptor }) {
+function buildManagedUpdateManifest({
+  updateId,
+  sourceCommit,
+  windowsStageRoot,
+  runtimeDescriptor,
+}) {
   const artifact = (role) =>
     runtimeDescriptor.artifacts.find((entry) => entry.role === role);
   const daemon = artifact("vem-daemon");
@@ -215,7 +220,9 @@ function verifyPreapprovalDirectory(directory, expectedBundleDigest) {
   }
   for (const [name, digest] of Object.entries(manifest.files ?? {})) {
     if (!existsSync(join(root, name))) {
-      throw new Error(`vision preapproval manifest references missing file: ${name}`);
+      throw new Error(
+        `vision preapproval manifest references missing file: ${name}`,
+      );
     }
     if (digestFile(join(root, name)) !== digest) {
       throw new Error(`vision preapproval file digest mismatch: ${name}`);
@@ -234,7 +241,11 @@ function verifyPreapprovalDirectory(directory, expectedBundleDigest) {
 
 function verifyVisionFactoryDirectory(directory, expectedBundleDigest) {
   const root = resolve(directory);
-  const provisioningPath = join(root, "VEM", "VISION-FACTORY-PROVISIONING.JSON");
+  const provisioningPath = join(
+    root,
+    "VEM",
+    "VISION-FACTORY-PROVISIONING.JSON",
+  );
   const provisioning = readJson(
     provisioningPath,
     "vision factory provisioning manifest",
@@ -245,13 +256,17 @@ function verifyVisionFactoryDirectory(directory, expectedBundleDigest) {
   ) {
     throw new Error("vision factory provisioning manifest contract is invalid");
   }
-  for (const [relativePath, digest] of Object.entries(provisioning.files ?? {})) {
+  for (const [relativePath, digest] of Object.entries(
+    provisioning.files ?? {},
+  )) {
     const path = join(root, "VEM", ...relativePath.split("/"));
     if (!existsSync(path)) {
       throw new Error(`vision factory delivery file missing: ${relativePath}`);
     }
     if (digestFile(path) !== digest) {
-      throw new Error(`vision factory delivery digest mismatch: ${relativePath}`);
+      throw new Error(
+        `vision factory delivery digest mismatch: ${relativePath}`,
+      );
     }
   }
   const classificationPath = join(root, "experimental-acceptance.json");
@@ -370,7 +385,10 @@ async function prepare(options) {
   const updateId = assertUpdateId(options["update-id"]);
   const runtimeDirectory = resolve(String(options["runtime-directory"] ?? ""));
   const runtimeDescriptor = await loadRuntimeDescriptor(runtimeDirectory);
-  const sourceCommit = assertCommit(runtimeDescriptor.commit, "runtime descriptor commit");
+  const sourceCommit = assertCommit(
+    runtimeDescriptor.commit,
+    "runtime descriptor commit",
+  );
   const expectedVisionBundleDigest = options["expected-vision-bundle-digest"]
     ? assertSha256(
         options["expected-vision-bundle-digest"],
@@ -385,18 +403,26 @@ async function prepare(options) {
     options["vision-factory-directory"],
     expectedVisionBundleDigest ?? preapproval.expectedDigest,
   );
-  const visionBundleDigest = expectedVisionBundleDigest ?? preapproval.expectedDigest;
+  const visionBundleDigest =
+    expectedVisionBundleDigest ?? preapproval.expectedDigest;
   const visionPythonVersion = String(
     options["vision-python-version"] ?? DEFAULT_VISION_PYTHON,
   );
 
   const runtimeOut = join(outputRoot, "runtime");
   mkdirSync(runtimeOut, { recursive: true });
-  for (const file of [RUNTIME_DESCRIPTOR_FILE, ...RUNTIME_ARTIFACT_FILES.map((entry) => entry.name)]) {
+  for (const file of [
+    RUNTIME_DESCRIPTOR_FILE,
+    ...RUNTIME_ARTIFACT_FILES.map((entry) => entry.name),
+  ]) {
     copyFileSync(join(runtimeDirectory, file), join(runtimeOut, file));
   }
 
-  const preapprovalOut = join(outputRoot, "vision-preapproval", "VEM-VISION-PREAPPROVAL");
+  const preapprovalOut = join(
+    outputRoot,
+    "vision-preapproval",
+    "VEM-VISION-PREAPPROVAL",
+  );
   copyTreeStrict(preapproval.root, preapprovalOut);
   const visionFactoryOut = join(outputRoot, "vision-factory");
   copyTreeStrict(visionFactory.root, visionFactoryOut);
