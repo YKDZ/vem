@@ -775,10 +775,16 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
     scripts: [],
     requiredText: [
       "Controlled Maintenance Ingress",
-      "Maintenance Relay",
-      "SSH, WireGuard, and relay",
+      "唯一合法的远程维护路径",
+      "session-scoped WireGuard pull relay",
+      "OIDC-authenticated maintenance session",
+      "SSH certificate-only",
     ],
-    forbiddenText: ["Tailscale SSH", "受控 Tailscale"],
+    forbiddenText: [
+      "Tailscale SSH",
+      "受控 Tailscale",
+      "SSH, WireGuard, and relay are implementation mechanisms",
+    ],
   },
   {
     path: "public/managed-machine-update.md",

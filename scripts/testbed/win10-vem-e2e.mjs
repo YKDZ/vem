@@ -59,8 +59,6 @@ const SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json";
 const SIMULATED_HARDWARE_SALE_CONTEXT_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-context.json";
-const DIRTY_HOST_FACTORY_ACCEPTANCE_FILE_NAME =
-  "dirty-host-factory-acceptance.json";
 const CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME =
   "clean-base-factory-acceptance.json";
 const FACTORY_IMAGE_DELIVERY_UNIT_FILE_NAME =
@@ -251,13 +249,10 @@ const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
 const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
 const EXPECTED_PORTRAIT_WIDTH_PX = 1080;
 const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
-const DEFAULT_DIRTY_HOST_TESTBED = {
-  hostName: "DESKTOP-2STVS5B",
-  user: "YKDZ",
-};
+const DEFAULT_CONTROLLED_MAINTENANCE_USER = "YKDZ";
 const DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST =
   "controlled-maintenance-ingress.local";
-const DEFAULT_CONTROLLED_MAINTENANCE_REMOTE = `${DEFAULT_DIRTY_HOST_TESTBED.user}@${DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST}`;
+const DEFAULT_CONTROLLED_MAINTENANCE_REMOTE = `${DEFAULT_CONTROLLED_MAINTENANCE_USER}@${DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST}`;
 const DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX = "VEM-TESTBED-WINVM";
 const DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT = "artifacts/vm-runtime-acceptance";
 const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
@@ -1527,63 +1522,6 @@ function normalizeRemoteForSafety(remote) {
   };
 }
 
-function expectedDirtyHostTestbed(options = {}) {
-  const remote = normalizeRemoteForSafety(options.remote);
-  return {
-    hostName:
-      options.expectedTestbedHostName ?? DEFAULT_DIRTY_HOST_TESTBED.hostName,
-    user: options.expectedTestbedUser ?? DEFAULT_DIRTY_HOST_TESTBED.user,
-    maintenanceIngressHost:
-      options.expectedMaintenanceIngressHost ?? remote.host ?? null,
-  };
-}
-
-function assertDirtyHostFactoryRemoteSafety(options = {}) {
-  if (options.mode !== "dirty-host-factory-acceptance") {
-    return;
-  }
-
-  const expected = expectedDirtyHostTestbed(options);
-  for (const [name, value] of Object.entries({
-    hostName: expected.hostName,
-    user: expected.user,
-  })) {
-    if (!String(value ?? "").trim()) {
-      throw new Error(
-        `dirty-host factory acceptance requires expected ${name} for remote identity guard`,
-      );
-    }
-  }
-
-  const remote = normalizeRemoteForSafety(options.remote);
-  const refusal = classifyUnsafeCleanBaseSource([remote.user, remote.host]);
-  if (refusal === "production machine") {
-    throw new Error(
-      `dirty-host factory acceptance refuses production remote before reset: ${options.remote}`,
-    );
-  }
-  if (
-    String(options.expectedMaintenanceIngressHost ?? "").trim() &&
-    remote.host !== expected.maintenanceIngressHost &&
-    options.allowTestbedRemoteAlias !== true
-  ) {
-    throw new Error(
-      "dirty-host factory acceptance refuses unexpected maintenance ingress host by default; use --allow-testbed-remote-alias with expected testbed identity values",
-    );
-  }
-
-  if (
-    remote.user === expected.user ||
-    options.allowTestbedRemoteAlias === true
-  ) {
-    return;
-  }
-
-  throw new Error(
-    "dirty-host factory acceptance refuses SSH config alias remotes by default; use --allow-testbed-remote-alias with expected testbed identity values",
-  );
-}
-
 function assertCleanBaseRemoteSafety(options = {}) {
   if (options.mode !== "clean-base-factory-acceptance") {
     return;
@@ -1683,10 +1621,7 @@ export function assertTrustedProtectedFactoryPersonalizationGate(
 }
 
 async function resolveHostOwnedFactoryPersonalizationMedia(options = {}) {
-  if (
-    options.mode !== "clean-base-factory-acceptance" &&
-    options.mode !== "dirty-host-factory-acceptance"
-  ) {
+  if (options.mode !== "clean-base-factory-acceptance") {
     return null;
   }
   assertTrustedProtectedFactoryPersonalizationGate();
@@ -1853,38 +1788,9 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
   };
 }
 
-function resolveDirtyHostArtifactInputs(options = {}) {
-  if (options.mode !== "dirty-host-factory-acceptance") {
-    return null;
-  }
-  if (options.useExistingRemoteArtifacts === true) {
-    return {
-      useExistingRemoteArtifacts: true,
-      daemonSha256: null,
-      machineUiSha256: null,
-    };
-  }
-  if (!options.daemonArtifact || !options.machineUiArtifact) {
-    throw new Error(
-      "dirty-host factory acceptance requires --daemon-artifact and --machine-ui-artifact unless --use-existing-remote-artifacts is supplied",
-    );
-  }
-  resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
-  return {
-    useExistingRemoteArtifacts: false,
-    daemonSha256: sha256File(options.daemonArtifact),
-    machineUiSha256: sha256File(options.machineUiArtifact),
-  };
-}
-
 function resolveCleanBaseArtifactInputs(options = {}) {
   if (options.mode !== "clean-base-factory-acceptance") {
     return null;
-  }
-  if (options.useExistingRemoteArtifacts === true) {
-    throw new Error(
-      "clean-base factory acceptance live mode rejects --use-existing-remote-artifacts; provide local daemon and machine UI artifacts",
-    );
   }
   if (!options.daemonArtifact || !options.machineUiArtifact) {
     throw new Error(
@@ -1926,13 +1832,6 @@ function resolveCleanBaseArtifactInputs(options = {}) {
 }
 
 function resolveVmRuntimeAcceptanceArtifacts(options = {}) {
-  if (options.useExistingRemoteArtifacts === true) {
-    return {
-      source: "existing_remote_bringup",
-      daemonSha256: null,
-      machineUiSha256: null,
-    };
-  }
   if (options.daemonArtifactSha256 && options.machineUiArtifactSha256) {
     return {
       source: "uploaded_local_artifacts",
@@ -1948,7 +1847,7 @@ function resolveVmRuntimeAcceptanceArtifacts(options = {}) {
   }
   if (!options.daemonArtifact || !options.machineUiArtifact) {
     throw new Error(
-      "VM runtime acceptance requires --daemon-artifact and --machine-ui-artifact unless --use-existing-remote-artifacts is supplied",
+      "VM runtime acceptance requires --daemon-artifact and --machine-ui-artifact",
     );
   }
   resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
@@ -2220,11 +2119,6 @@ export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
       "clean-base readiness must pass cleanBasePreparationAcceptance",
     );
   }
-  if (readiness.dirtyHostResetAcceptance !== "not_asserted") {
-    return cleanBaseValidationFailure(
-      "clean-base evidence must not assert dirtyHostResetAcceptance",
-    );
-  }
   if (readiness.runtimeReady !== "not_asserted") {
     return cleanBaseValidationFailure(
       "clean-base evidence must not assert runtimeReady",
@@ -2405,7 +2299,7 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
     cleanBase: {
       source: cleanBaseSource,
       snapshot: cleanBaseSnapshot || null,
-      mustNotReuseDirtyHost: true,
+      requiresCleanWindowsBase: true,
       ...(visionInputs ? { visionInputs } : {}),
       factoryWindowsBaselinePolicy: structuredClone(
         FACTORY_WINDOWS_BASELINE_POLICY,
@@ -2481,7 +2375,6 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
       },
     ],
     readinessLevels: {
-      dirtyHostResetAcceptance: "not_asserted",
       cleanBasePreparationAcceptance: "asserted_by_clean_base_step",
       runtimeReady: "not_asserted",
       simulatedHardwareReady: "not_asserted",
@@ -2516,35 +2409,14 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   if (options.sshHostKeyAlias) {
     command.push("--ssh-host-key-alias", options.sshHostKeyAlias);
   }
-  if (options.sshConfig === true) {
-    command.push("--ssh-config");
-  }
   if (options.maintenanceIngressSourceAllowlist) {
     command.push(
       "--maintenance-ingress-source-allowlist",
       options.maintenanceIngressSourceAllowlist,
     );
   }
-  if (options.allowTestbedRemoteAlias === true) {
-    command.push("--allow-testbed-remote-alias");
-  }
-  if (options.expectedTestbedHostName) {
-    command.push(
-      "--expected-testbed-hostname",
-      options.expectedTestbedHostName,
-    );
-  }
   if (options.expectedTestbedUser) {
     command.push("--expected-testbed-user", options.expectedTestbedUser);
-  }
-  if (options.expectedMaintenanceIngressHost) {
-    command.push(
-      "--expected-maintenance-ingress-host",
-      options.expectedMaintenanceIngressHost,
-    );
-  }
-  if (options.proxyCommand) {
-    command.push("--proxy-command", options.proxyCommand);
   }
   if (options.identity) {
     command.push("--identity", options.identity);
@@ -3305,9 +3177,6 @@ export function buildFactoryImageDeliveryUnitReport({
       cleanBasePreparationAcceptance: deliveryReadinessAssertion(
         readiness.cleanBasePreparationAcceptance,
       ),
-      dirtyHostResetAcceptance: deliveryReadinessAssertion(
-        readiness.dirtyHostResetAcceptance,
-      ),
       runtimeReady: deliveryReadinessAssertion(readiness.runtimeReady),
       simulatedHardwareReady: deliveryReadinessAssertion(
         readiness.simulatedHardwareReady,
@@ -4006,7 +3875,6 @@ export function buildRemotePowerShellScript(options = {}) {
     "provision",
     "runtime-acceptance",
     "simulated-hardware-sale-flow",
-    "dirty-host-factory-acceptance",
     "clean-base-factory-acceptance",
     "factory-preclaim-verify",
   ];
@@ -4023,7 +3891,6 @@ export function buildRemotePowerShellScript(options = {}) {
     return buildFactoryPreclaimVerificationScript(options);
   }
   const runId =
-    mode === "dirty-host-factory-acceptance" ||
     mode === "clean-base-factory-acceptance" ||
     mode === "simulated-hardware-sale-flow" ||
     ((mode === "provision" || mode === "runtime-acceptance") &&
@@ -4069,19 +3936,12 @@ export function buildRemotePowerShellScript(options = {}) {
   if (mode === "provision" && String(claimCode).trim().length === 0) {
     throw new Error("provision mode requires --claim-code");
   }
-  const dirtyHostEvidenceRoot =
-    mode === "dirty-host-factory-acceptance"
-      ? `C:\\ProgramData\\VEM\\evidence\\${runId}`
-      : "C:\\ProgramData\\VEM\\evidence\\not-applicable";
   const cleanBaseEvidenceRoot =
     mode === "clean-base-factory-acceptance"
       ? `C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\${runId}`
       : "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\not-applicable";
   const remoteSupportScriptRoot = options.remoteSupportScriptRoot ?? "";
   const remoteUploadedArtifactRoot = options.remoteUploadedArtifactRoot ?? "";
-  const expectedTestbed = expectedDirtyHostTestbed(options);
-  const useExistingRemoteArtifacts =
-    options.useExistingRemoteArtifacts === true;
   const expectedDaemonArtifactSha256 = options.daemonArtifactSha256 ?? "";
   const expectedMachineUiArtifactSha256 = options.machineUiArtifactSha256 ?? "";
   const cleanBaseSource = cleanBasePlan?.cleanBase.source ?? "";
@@ -4214,32 +4074,6 @@ function Test-LocalAdmin {
 function Assert-RequiredSecretEnvironment([string]$Name) {
   if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($Name, "Process"))) {
     throw "required secret environment variable is missing: $Name"
-  }
-}
-
-function Get-DirtyHostFactoryTestbedIdentity {
-  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $computer = Get-CimInstance Win32_ComputerSystem
-  return [ordered]@{
-    expected = [ordered]@{
-      hostName = ${psString(expectedTestbed.hostName)}
-      user = ${psString(expectedTestbed.user)}
-      maintenanceIngressHost = ${psString(expectedTestbed.maintenanceIngressHost ?? "")}
-    }
-    observed = [ordered]@{
-      hostName = [string]$computer.Name
-      user = ([string]$identity.Name).Split("\\")[-1]
-      windowsIdentity = [string]$identity.Name
-    }
-  }
-}
-
-function Assert-DirtyHostFactoryTestbedIdentity($IdentityGuard) {
-  if ([string]$IdentityGuard.observed.hostName -ne [string]$IdentityGuard.expected.hostName) {
-    throw "dirty-host factory acceptance refused remote host: expected $($IdentityGuard.expected.hostName), got $($IdentityGuard.observed.hostName)"
-  }
-  if ([string]$IdentityGuard.observed.user -ne [string]$IdentityGuard.expected.user) {
-    throw "dirty-host factory acceptance refused remote user: expected $($IdentityGuard.expected.user), got $($IdentityGuard.observed.user)"
   }
 }
 
@@ -5675,21 +5509,13 @@ function Copy-FactoryAcceptanceInputs([string]$StageRoot) {
   New-Item -ItemType Directory -Path $scriptRoot -Force | Out-Null
 
   $uploadedArtifactRoot = ${psString(remoteUploadedArtifactRoot)}
-  $useExistingRemoteArtifacts = $${useExistingRemoteArtifacts ? "true" : "false"}
-  if ($useExistingRemoteArtifacts) {
-    $daemonSource = "C:\\VEM\\bringup\\vending-daemon.exe"
-    $machineUiSource = "C:\\VEM\\bringup\\machine.exe"
-    $machineUiSidecarSource = "C:\\VEM\\bringup\\WebView2Loader.dll"
-    $artifactSource = "existing_remote_bringup"
-  } else {
-    if ([string]::IsNullOrWhiteSpace($uploadedArtifactRoot)) {
-      throw "factory acceptance requires uploaded artifact root"
-    }
-    $daemonSource = Join-Path $uploadedArtifactRoot "vending-daemon.exe"
-    $machineUiSource = Join-Path $uploadedArtifactRoot "machine.exe"
-    $machineUiSidecarSource = Join-Path $uploadedArtifactRoot "WebView2Loader.dll"
-    $artifactSource = "uploaded_local_artifacts"
+  if ([string]::IsNullOrWhiteSpace($uploadedArtifactRoot)) {
+    throw "factory acceptance requires uploaded artifact root"
   }
+  $daemonSource = Join-Path $uploadedArtifactRoot "vending-daemon.exe"
+  $machineUiSource = Join-Path $uploadedArtifactRoot "machine.exe"
+  $machineUiSidecarSource = Join-Path $uploadedArtifactRoot "WebView2Loader.dll"
+  $artifactSource = "uploaded_local_artifacts"
   $daemonBackup = Join-Path $artifactRoot "vending-daemon.exe"
   $machineUiBackup = Join-Path $artifactRoot "machine.exe"
   $machineUiSidecarBackup = Join-Path $artifactRoot "WebView2Loader.dll"
@@ -5836,167 +5662,6 @@ function Invoke-FactoryChildPowerShell($Actions, [string]$Name, [string]$ScriptP
     }
   }
   $Actions.Add([pscustomobject]$action) | Out-Null
-}
-
-function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
-  $runId = ${psString(runId)}
-  $runRoot = ${psString(dirtyHostEvidenceRoot)}
-  $stageRoot = if ([string]::IsNullOrWhiteSpace(${psString(remoteSupportScriptRoot)})) {
-    Join-Path $env:TEMP ("vem-dirty-host-factory-" + $runId)
-  } else {
-    Join-Path ${psString(remoteSupportScriptRoot)} "staging"
-  }
-  $acceptancePath = Join-Path $runRoot ${psString(DIRTY_HOST_FACTORY_ACCEPTANCE_FILE_NAME)}
-  $preparationOutputPath = Join-Path $runRoot "factory-runtime-preparation.json"
-  $verificationOutputPath = Join-Path $runRoot "factory-runtime-verification-action.json"
-  $verifierEvidencePath = Join-Path $runRoot "factory-runtime-verification.json"
-  $staged = $null
-  $identityGuard = $null
-  $personalizationEvidence = $null
-
-  try {
-    $identityGuard = Get-DirtyHostFactoryTestbedIdentity
-    Assert-DirtyHostFactoryTestbedIdentity $identityGuard
-    $FactoryActions.Add([pscustomobject]@{
-      name = "guard dirty-host factory testbed identity"
-      status = "succeeded"
-      message = $null
-      identityGuard = $identityGuard
-    }) | Out-Null
-  } catch {
-    $FactoryActions.Add([pscustomobject]@{
-      name = "guard dirty-host factory testbed identity"
-      status = "failed"
-      message = [string]$_
-      identityGuard = $identityGuard
-    }) | Out-Null
-    return [ordered]@{
-      runId = $runId
-      evidenceRoot = $runRoot
-      acceptancePath = $acceptancePath
-      preparationOutputPath = $preparationOutputPath
-      verificationOutputPath = $verificationOutputPath
-      verifierEvidencePath = $verifierEvidencePath
-      staged = $null
-      identityGuard = $identityGuard
-    }
-  }
-
-  try {
-    if ([string]::IsNullOrWhiteSpace(${psString(options.remotePersonalizationMediaPath ?? "")})) { throw "Factory Personalization Media staging path is missing" }
-    $personalizationEvidence = [ordered]@{
-      profile = ${psString(options.factoryProfile ?? "testbed")}
-      source = "trusted_protected_gate"
-      credentials = "not_logged"
-      wireGuardPrivateKey = "not-supplied; generated-locally"
-    }
-    $FactoryActions.Add([pscustomobject]@{
-      name = "mount dirty-host Factory Personalization Media"
-      status = "succeeded"
-      message = $null
-      personalizationEvidence = $personalizationEvidence
-    }) | Out-Null
-  } catch {
-    $FactoryActions.Add([pscustomobject]@{
-      name = "mount dirty-host Factory Personalization Media"
-      status = "failed"
-      message = [string]$_
-      personalizationEvidence = $personalizationEvidence
-    }) | Out-Null
-    return [ordered]@{
-      runId = $runId
-      evidenceRoot = $runRoot
-      acceptancePath = $acceptancePath
-      preparationOutputPath = $preparationOutputPath
-      verificationOutputPath = $verificationOutputPath
-      verifierEvidencePath = $verifierEvidencePath
-      staged = $null
-      identityGuard = $identityGuard
-      personalizationEvidence = $personalizationEvidence
-    }
-  }
-
-  try {
-    $staged = Copy-FactoryAcceptanceInputs $stageRoot
-    $FactoryActions.Add([pscustomobject]@{
-      name = "stage dirty-host factory inputs"
-      status = "succeeded"
-      message = $null
-      evidenceRoot = $runRoot
-      stageRoot = $stageRoot
-      staged = $staged
-    }) | Out-Null
-  } catch {
-    $FactoryActions.Add([pscustomobject]@{
-      name = "stage dirty-host factory inputs"
-      status = "failed"
-      message = [string]$_
-      evidenceRoot = $runRoot
-      staged = $null
-    }) | Out-Null
-  }
-
-  if ($null -ne $staged) {
-    Invoke-FactoryChildPowerShell -Actions $FactoryActions -Name "run scripted factory runtime preparation" -ScriptPath ([string]$staged.prepareScript) -Arguments @{
-      DaemonArtifactPath = [string]$staged.daemonArtifactPath
-      DaemonSha256 = [string]$staged.daemonSha256
-      MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
-      MachineUiSha256 = [string]$staged.machineUiSha256
-      EnvironmentName = "machine-runtime-testbed"
-      DeploymentBatch = "dirty-host-reset-v1"
-      ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
-      MqttUrl = ${psString(platform.mqttUrl)}
-      HardwareMode = "simulated"
-      HardwareModel = "win10-runtime-testbed"
-      TopologyIdentity = "vm-runtime-testbed"
-      TopologyVersion = "dirty-host-reset-v1"
-      ExpectedDisplayWidth = "1080"
-      ExpectedDisplayHeight = "1920"
-      ExpectedDisplayOrientation = "portrait"
-      ExpectedKioskUser = "VEMKiosk"
-      ExpectedMaintenanceUser = "YKDZ"
-      ExpectedAutoLogonUser = "VEMKiosk"
-      ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
-      TargetLayoutVersion = "win10-runtime-layout/v1"
-      FactoryProfile = ${psString(options.factoryProfile ?? "testbed")}
-      PersonalizationMediaPath = ${psString(options.remotePersonalizationMediaPath ?? "")}
-      ResetExistingVemState = $true
-      OpenSshPackagePath = ${psString(options.remoteOpenSshPackagePath ?? "")}
-      OpenSshPackageSource = "local-pinned"
-      OpenSshPackageVersion = ${psString(options.openSshPackageVersion ?? "")}
-      OpenSshPackageSha256 = ${psString(options.openSshPackageSha256 ?? "")}
-      OpenSshApprovedSignerThumbprint = ${psString(options.openSshApprovedSignerThumbprint ?? "")}
-      OpenSshApprovedRootThumbprint = ${psString(options.openSshApprovedRootThumbprint ?? "")}
-      WireGuardPackagePath = ${psString(options.remoteWireGuardPackagePath ?? "")}
-      WireGuardPackageSource = "local-pinned"
-      WireGuardPackageVersion = ${psString(options.wireGuardPackageVersion ?? "")}
-      WireGuardPackageSha256 = ${psString(options.wireGuardPackageSha256 ?? "")}
-      WireGuardApprovedSignerThumbprint = ${psString(options.wireGuardApprovedSignerThumbprint ?? "")}
-      WireGuardApprovedRootThumbprint = ${psString(options.wireGuardApprovedRootThumbprint ?? "")}
-      MaintenanceSshCaPublicKeyPath = ${psString(options.remoteMaintenanceCaPublicKeyPath ?? "")}
-      MaintenanceSshCaPublicKeySha256 = ${psString(options.maintenanceCaPublicKeySha256 ?? "")}
-      MaintenanceRunnerSourceAllowlist = ${psArray(splitCsvOption(options.maintenanceRunnerSourceAllowlist))}
-      MaintenanceMaintainerSourceAllowlist = ${psArray(splitCsvOption(options.maintenanceMaintainerSourceAllowlist))}
-      MaintenanceWireGuardListenAddress = ${psString(options.maintenanceWireGuardListenAddress ?? "")}
-    } -OutputPath $preparationOutputPath -WriteStructuredJsonOutput $true
-
-    Invoke-FactoryChildPowerShell -Actions $FactoryActions -Name "run scripted factory runtime verifier" -ScriptPath ([string]$staged.verifierScript) -Arguments @{
-      ManifestPath = "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json"
-      EvidencePath = $verifierEvidencePath
-    } -OutputPath $verificationOutputPath
-  }
-
-  return [ordered]@{
-    runId = $runId
-    evidenceRoot = $runRoot
-    acceptancePath = $acceptancePath
-    preparationOutputPath = $preparationOutputPath
-    verificationOutputPath = $verificationOutputPath
-    verifierEvidencePath = $verifierEvidencePath
-    staged = $staged
-    identityGuard = $identityGuard
-    personalizationEvidence = $personalizationEvidence
-  }
 }
 
 function Add-FactoryAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$Message, $Detail = $null) {
@@ -6402,7 +6067,6 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
     }
     readiness = [ordered]@{
       cleanBasePreparationAcceptance = if ($passed) { "passed" } else { "failed" }
-      dirtyHostResetAcceptance = "not_asserted"
       runtimeReady = "not_asserted"
       simulatedHardwareReady = "not_asserted"
       sellReady = "not_asserted"
@@ -7717,50 +7381,6 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   }
 }
 
-function Get-DirtyHostFactoryDisplayProof($Inventory) {
-  $diagnostics = [System.Collections.Generic.List[object]]::new()
-  if ($null -eq $Inventory) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "display_proof_missing" "Dirty-host factory acceptance requires post-preparation display evidence."
-    return [ordered]@{
-      status = "missing"
-      required = $true
-      interactiveDesktopDisplayBaseline = $null
-      portraitKioskAcceptance = $null
-      diagnostics = @($diagnostics)
-    }
-  }
-
-  $interactive = $Inventory.runtimeAcceptanceFactsSubset.displayEvidence.interactiveDesktopDisplayBaseline
-  $portrait = $Inventory.runtimeAcceptanceFactsSubset.displayEvidence.portraitKioskAcceptance
-  if (
-    [string]$interactive.status -ne "passed" -or
-    [int]$interactive.widthPx -ne 1080 -or
-    [int]$interactive.heightPx -ne 1920 -or
-    [string]$interactive.sessionUser -ne "VEMKiosk" -or
-    $null -eq $interactive.sessionId
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "display_proof_missing" "Dirty-host factory acceptance requires Interactive Desktop Display Baseline at 1080x1920 from the VEMKiosk session."
-  }
-  if (
-    [string]$portrait.status -ne "passed" -or
-    [string]$portrait.source -ne "interactive_kiosk_session" -or
-    [int]$portrait.widthPx -ne 1080 -or
-    [int]$portrait.heightPx -ne 1920 -or
-    [string]$portrait.sessionUser -ne "VEMKiosk" -or
-    $null -eq $portrait.sessionId
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_display_proof_missing" "Dirty-host factory acceptance requires Portrait Kiosk Acceptance at 1080x1920 from the VEMKiosk session."
-  }
-
-  return [ordered]@{
-    status = if ($diagnostics.Count -eq 0) { "passed" } else { "failed" }
-    required = $true
-    interactiveDesktopDisplayBaseline = $interactive
-    portraitKioskAcceptance = $portrait
-    diagnostics = @($diagnostics)
-  }
-}
-
 function Invoke-ResetStep($Actions, [string]$Name, [scriptblock]$Script) {
   $status = "succeeded"
   $message = $null
@@ -7958,10 +7578,6 @@ if ($mode -eq "provision") {
   Invoke-TestbedProvisioningClaim $provisioningActions
 }
 
-if ($mode -eq "dirty-host-factory-acceptance") {
-  $factoryAcceptancePaths = Invoke-DirtyHostFactoryAcceptance $factoryActions
-}
-
 if ($mode -eq "clean-base-factory-acceptance") {
   $factoryAcceptancePaths = Invoke-CleanBaseFactoryAcceptance $factoryActions
 }
@@ -7976,19 +7592,12 @@ if ($mode -eq "simulated-hardware-sale-flow") {
 $inventoryAfter = if ($mode -eq "inventory-reset") { Get-InventoryFacts } else { $null }
 $inventoryAfterBringUp = if ($mode -eq "bring-up") { Get-InventoryFacts } else { $null }
 $inventoryAfterProvision = if ($mode -eq "provision") { Get-InventoryFacts $provisioningActions } else { $null }
-$inventoryAfterFactoryAcceptance = if ($mode -eq "dirty-host-factory-acceptance") { Get-InventoryFacts } else { $null }
-$dirtyHostFactoryDisplayProof = if ($mode -eq "dirty-host-factory-acceptance") { Get-DirtyHostFactoryDisplayProof $inventoryAfterFactoryAcceptance } else { $null }
 $runtimeAcceptanceReportResult = if ($mode -eq "runtime-acceptance") { Get-RuntimeAcceptanceReport $provisioningActions } else { $null }
 $runtimeAcceptanceReport = if ($null -ne $runtimeAcceptanceReportResult) { $runtimeAcceptanceReportResult.report } else { $null }
 $simulatedHardwareSaleFlowReport = if ($null -ne $simulatedHardwareSaleFlowResult) { $simulatedHardwareSaleFlowResult.report } else { $null }
 $actionsOk = (((@($resetActions) + @($bringUpActions) + @($provisioningActions) + @($factoryActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
 $runtimeAcceptanceOk = if ($mode -eq "runtime-acceptance") {
   $null -ne $runtimeAcceptanceReport -and [string]$runtimeAcceptanceReport.result.runtimeReady.status -eq "passed"
-} else {
-  $true
-}
-$dirtyHostFactoryAcceptanceOk = if ($mode -eq "dirty-host-factory-acceptance") {
-  $null -ne $dirtyHostFactoryDisplayProof -and [string]$dirtyHostFactoryDisplayProof.status -eq "passed"
 } else {
   $true
 }
@@ -8007,49 +7616,9 @@ $simulatedHardwareSaleFlowOk = if ($mode -eq "simulated-hardware-sale-flow") {
 }
 
 $result = [ordered]@{
-  ok = $actionsOk -and $runtimeAcceptanceOk -and $dirtyHostFactoryAcceptanceOk -and $cleanBaseFactoryAcceptanceOk -and $simulatedHardwareSaleFlowOk
+  ok = $actionsOk -and $runtimeAcceptanceOk -and $cleanBaseFactoryAcceptanceOk -and $simulatedHardwareSaleFlowOk
   mode = $mode
   inventory = $inventoryBefore
-  dirtyHostFactoryAcceptance = if ($mode -eq "dirty-host-factory-acceptance") {
-    [ordered]@{
-      schemaVersion = "vem-dirty-host-factory-acceptance/v1"
-      runId = ${psString(runId)}
-      acceptanceMode = "dirty_host_reset_acceptance"
-      cleanBasePreparationAcceptance = "not_asserted"
-      platformBusinessDataTouched = $false
-      distinction = [ordered]@{
-        accepted = "dirty_host_reset_acceptance"
-        notAccepted = "clean_base_preparation_acceptance"
-        reason = "Existing testbed VM was inventoried, locally reset, prepared, and verified; this does not prove a clean Windows base image."
-      }
-      evidenceRoot = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.evidenceRoot } else { $null }
-      acceptancePath = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.acceptancePath } else { $null }
-      inventoryBeforeReset = $inventoryBefore
-      actions = @($factoryActions)
-      inventoryAfterPreparation = $inventoryAfterFactoryAcceptance
-      displayProof = $dirtyHostFactoryDisplayProof
-      result = [ordered]@{
-        dirtyHostResetAcceptance = [ordered]@{
-          status = if ($actionsOk -and $dirtyHostFactoryAcceptanceOk) { "passed" } else { "failed" }
-          asserted = $actionsOk -and $dirtyHostFactoryAcceptanceOk
-        }
-        diagnostics = if ($null -ne $dirtyHostFactoryDisplayProof) { @($dirtyHostFactoryDisplayProof.diagnostics) } else { @() }
-      }
-      controlledState = [ordered]@{
-        daemonService = if ($null -ne $inventoryAfterFactoryAcceptance) { $inventoryAfterFactoryAcceptance.vem.daemonService } else { $null }
-        machineUiTask = if ($null -ne $inventoryAfterFactoryAcceptance) { $inventoryAfterFactoryAcceptance.vem.machineUiTask } else { $null }
-        readyFile = if ($null -ne $inventoryAfterFactoryAcceptance) { $inventoryAfterFactoryAcceptance.vem.readyFile } else { $null }
-        autoLogon = if ($null -ne $inventoryAfterFactoryAcceptance) { $inventoryAfterFactoryAcceptance.runtimeAcceptanceFactsSubset.startupBringup.autoLogon } else { $null }
-      }
-      evidencePaths = [ordered]@{
-        preparationOutput = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.preparationOutputPath } else { $null }
-        verificationAction = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.verificationOutputPath } else { $null }
-        verifierEvidence = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.verifierEvidencePath } else { $null }
-      }
-    }
-  } else {
-    $null
-  }
   cleanBaseFactoryAcceptance = if ($mode -eq "clean-base-factory-acceptance") {
     if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.report } else { $null }
   } else {
@@ -8077,15 +7646,10 @@ ${bringUpReportArgumentLines}
   inventoryAfterReset = $inventoryAfter
   inventoryAfterBringUp = $inventoryAfterBringUp
   inventoryAfterProvision = $inventoryAfterProvision
-  inventoryAfterFactoryAcceptance = $inventoryAfterFactoryAcceptance
   runtimeAcceptanceReportPath = if ($null -ne $runtimeAcceptanceReportResult) { $runtimeAcceptanceReportResult.path } else { $null }
   runtimeAcceptanceReport = $runtimeAcceptanceReport
   simulatedHardwareSaleFlowPath = if ($null -ne $simulatedHardwareSaleFlowResult) { $simulatedHardwareSaleFlowResult.path } else { $null }
   simulatedHardwareSaleFlow = if ($null -ne $simulatedHardwareSaleFlowResult) { $simulatedHardwareSaleFlowResult.report } else { $null }
-}
-
-if ($mode -eq "dirty-host-factory-acceptance" -and $null -ne $factoryAcceptancePaths) {
-  Write-JsonFile ([string]$factoryAcceptancePaths.acceptancePath) ([pscustomobject]$result.dirtyHostFactoryAcceptance)
 }
 
 [pscustomobject]$result | ConvertTo-Json -Depth 60
@@ -8205,10 +7769,7 @@ export function cleanupFactoryAcceptanceStaging(
     cleanupLocal = true,
   } = {},
 ) {
-  if (
-    options.mode !== "dirty-host-factory-acceptance" &&
-    options.mode !== "clean-base-factory-acceptance"
-  ) {
+  if (options.mode !== "clean-base-factory-acceptance") {
     throw new Error(
       "factory staging cleanup requires a factory acceptance mode",
     );
@@ -8285,11 +7846,7 @@ function buildSshOptionArgs(options = {}, { portFlag = "-p" } = {}) {
   if (options.sshHostKeyAlias) {
     sshArgs.push("-o", `HostKeyAlias=${options.sshHostKeyAlias}`);
   }
-  if (options.proxyCommand) {
-    sshArgs.push("-o", `ProxyCommand=${options.proxyCommand}`);
-  } else if (options.sshConfig !== true) {
-    sshArgs.push("-o", "ProxyCommand=none");
-  }
+  sshArgs.push("-o", "ProxyCommand=none");
   return sshArgs;
 }
 
@@ -8567,14 +8124,6 @@ export function getRuntimeAcceptanceExitStatus({
   if (status !== 0) {
     return status;
   }
-  if (mode === "dirty-host-factory-acceptance") {
-    try {
-      const output = JSON.parse(String(stdout ?? ""));
-      return output?.ok === true ? 0 : 1;
-    } catch {
-      return 1;
-    }
-  }
   if (mode === "clean-base-factory-acceptance") {
     try {
       const output = JSON.parse(String(stdout ?? ""));
@@ -8622,7 +8171,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-media-root PATH] [--vision-configuration-source-path PATH] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-media-root PATH] [--vision-configuration-source-path PATH] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--expected-testbed-user USER] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -8635,10 +8184,6 @@ Provision mode starts and reads the daemon IPC, applies only pre-claim platform 
 Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
 
 Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json on the remote host and includes the same report in stdout. It requires --ephemeral-platform-evidence from service-api testbed:prepare-ephemeral-platform, an explicit non-shared --platform-target, a same-run daemon IPC claim, simulated hardware mode, platform planogram sync, stock attestation upload acceptance, mock payment readiness, and simulated dispense success.
-
-Dirty-host factory acceptance mode stages specified local artifacts and factory scripts under C:\\ProgramData\\VEM\\evidence\\<run-id>, runs scripted factory preparation with explicit local reset, runs the verifier, and writes dirty-host-factory-acceptance.json. It requires --run-id, --daemon-artifact, --machine-ui-artifact, and remote VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD.
---use-existing-remote-artifacts is a test-only escape hatch for intentionally accepting C:\\VEM\\bringup\\*.exe instead of uploaded artifacts.
-SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
 Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. A production run also requires --factory-media-root and --vision-configuration-source-path, which must already be accessible on the clean Windows base for the child Factory preparation entrypoint. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
@@ -8687,9 +8232,6 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--certificate") {
       options.certificate = next;
-      index += 1;
-    } else if (arg === "--proxy-command") {
-      options.proxyCommand = next;
       index += 1;
     } else if (arg === "--machine-code") {
       options.machineCode = next;
@@ -8762,8 +8304,6 @@ function parseArgs(argv) {
     } else if (arg === "--out") {
       options.out = next;
       index += 1;
-    } else if (arg === "--ssh-config") {
-      options.sshConfig = true;
     } else if (arg === "--maintenance-ingress-source-allowlist") {
       options.maintenanceIngressSourceAllowlist = next;
       index += 1;
@@ -8866,20 +8406,10 @@ function parseArgs(argv) {
     } else if (arg === "--maintenance-maintainer-source-allowlist") {
       options.maintenanceMaintainerSourceAllowlist = next;
       index += 1;
-    } else if (arg === "--use-existing-remote-artifacts") {
-      options.useExistingRemoteArtifacts = true;
     } else if (arg === "--allow-clean-base-prepare") {
       options.allowCleanBasePrepare = true;
-    } else if (arg === "--allow-testbed-remote-alias") {
-      options.allowTestbedRemoteAlias = true;
-    } else if (arg === "--expected-testbed-hostname") {
-      options.expectedTestbedHostName = next;
-      index += 1;
     } else if (arg === "--expected-testbed-user") {
       options.expectedTestbedUser = next;
-      index += 1;
-    } else if (arg === "--expected-maintenance-ingress-host") {
-      options.expectedMaintenanceIngressHost = next;
       index += 1;
     } else if (arg === "--dry-run") {
       options.dryRun = true;
@@ -8927,8 +8457,6 @@ function applyFactoryGuestEndpoint(options) {
     sshHostKeyAlias:
       options.sshHostKeyAlias ??
       `vem-factory-${normalizeEphemeralRunId(options.runId).toLowerCase()}`,
-    expectedMaintenanceIngressHost:
-      options.expectedMaintenanceIngressHost ?? endpoint.host,
   };
 }
 
@@ -9015,14 +8543,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         process.exit(report.ok ? 0 : 1);
       }
       if (options.mode === "clean-base-factory-acceptance") {
-        if (
-          options.dryRun !== true &&
-          options.useExistingRemoteArtifacts === true
-        ) {
-          throw new Error(
-            "clean-base factory acceptance live mode rejects --use-existing-remote-artifacts; provide local daemon and machine UI artifacts",
-          );
-        }
         const plan = buildCleanBaseFactoryAcceptancePlan(options);
         if (options.dryRun) {
           if (options.out) {
@@ -9057,18 +8577,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         }
         process.exit(report.ok ? 0 : 1);
       }
-      assertDirtyHostFactoryRemoteSafety(options);
       assertCleanBaseRemoteSafety(options);
-      const dirtyHostArtifacts = resolveDirtyHostArtifactInputs(options);
       const cleanBaseArtifacts = resolveCleanBaseArtifactInputs(options);
       const cleanBaseFactoryCapability =
         resolveCleanBaseFactoryCapabilityInputs(options);
-      if (dirtyHostArtifacts) {
-        options.useExistingRemoteArtifacts =
-          dirtyHostArtifacts.useExistingRemoteArtifacts;
-        options.daemonArtifactSha256 = dirtyHostArtifacts.daemonSha256;
-        options.machineUiArtifactSha256 = dirtyHostArtifacts.machineUiSha256;
-      }
       if (cleanBaseArtifacts) {
         options.daemonArtifactSha256 = cleanBaseArtifacts.daemonSha256;
         options.machineUiArtifactSha256 = cleanBaseArtifacts.machineUiSha256;
@@ -9088,10 +8600,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const { remoteTempRoot, remoteSupportScriptRoot, remoteScriptPath } =
         factoryAcceptanceRemoteStagingPaths(options);
       const remoteUploadedArtifactRoot = `${remoteSupportScriptRoot}\\input-artifacts`;
-      if (
-        options.mode === "dirty-host-factory-acceptance" ||
-        options.mode === "clean-base-factory-acceptance"
-      ) {
+      if (options.mode === "clean-base-factory-acceptance") {
         options.remoteSupportScriptRoot = remoteSupportScriptRoot;
         options.remoteUploadedArtifactRoot = remoteUploadedArtifactRoot;
         options.remotePersonalizationMediaPath = `${remoteSupportScriptRoot}\\personalization\\factory-personalization-media.json`;
@@ -9102,7 +8611,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         }
       }
       const factoryAcceptanceMode =
-        options.mode === "dirty-host-factory-acceptance" ||
         options.mode === "clean-base-factory-acceptance";
       const localTempDirectory = factoryAcceptanceMode
         ? join(tmpdir(), "vem-factory-acceptance-staging")
@@ -9158,20 +8666,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               resetPlan: assertResetPlanPreservesTestbed(buildResetPlan()),
               bringUpPlan: buildBringUpPlan(options),
               runId:
-                options.mode === "dirty-host-factory-acceptance" ||
                 options.mode === "simulated-hardware-sale-flow"
                   ? sanitizeRunId(options.runId)
                   : null,
-              artifacts: dirtyHostArtifacts
-                ? {
-                    source:
-                      dirtyHostArtifacts.useExistingRemoteArtifacts === true
-                        ? "existing_remote_bringup"
-                        : "uploaded_local_artifacts",
-                    daemonSha256: dirtyHostArtifacts.daemonSha256,
-                    machineUiSha256: dirtyHostArtifacts.machineUiSha256,
-                  }
-                : null,
               cleanBaseFactoryCapability: cleanBaseFactoryCapability
                 ? {
                     openSshPackageSha256:
@@ -9252,10 +8749,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           );
         }
 
-        if (
-          options.mode === "dirty-host-factory-acceptance" ||
-          options.mode === "clean-base-factory-acceptance"
-        ) {
+        if (options.mode === "clean-base-factory-acceptance") {
           const personalizationDirectory = `${remoteSupportScriptRoot}\\personalization`;
           const createSupportRootCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; function Assert-VemFactoryPersonalizationAcl([string]\$Path, [bool]\$Directory) { \$acl = Get-Acl -LiteralPath \$Path -ErrorAction Stop; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$owner = (New-Object System.Security.Principal.NTAccount(\$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$owner -ne \$admin.Value -or -not \$acl.AreAccessRulesProtected) { throw 'factory personalization ACL owner or inheritance is unsafe' }; \$rules = @(@(\$acl.Access) | Where-Object { -not \$_.IsInherited }); if (\$rules.Count -ne 2 -or @('\$system', '\$admin').Count -ne 2) { throw 'factory personalization ACL rule count is unsafe' }; foreach (\$rule in \$rules) { \$sid = \$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$sid -notin @('S-1-5-18', 'S-1-5-32-544') -or \$rule.AccessControlType -ne 'Allow' -or (\$rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'factory personalization ACL grants an unsafe principal or right' } } }; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteUploadedArtifactRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(personalizationDirectory)} -Force | Out-Null; \$acl = Get-Acl -LiteralPath ${quotePowerShellSingleQuoted(personalizationDirectory)}; \$acl.SetAccessRuleProtection(\$true, \$false); foreach (\$rule in @(\$acl.Access)) { [void]\$acl.RemoveAccessRuleAll(\$rule) }; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$acl.SetOwner(\$admin); foreach (\$sid in @(\$system, \$admin)) { \$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(\$sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }; Set-Acl -LiteralPath ${quotePowerShellSingleQuoted(personalizationDirectory)} -AclObject \$acl; & icacls.exe ${quotePowerShellSingleQuoted(personalizationDirectory)} /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null; if (\$LASTEXITCODE -ne 0) { throw 'icacls failed to protect factory personalization staging' }; Assert-VemFactoryPersonalizationAcl -Path ${quotePowerShellSingleQuoted(personalizationDirectory)} -Directory \$true"`;
           const createSupportRoot = await runTransientSshOperation(

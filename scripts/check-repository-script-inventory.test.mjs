@@ -829,7 +829,9 @@ describe("repository script inventory guard", () => {
               scripts: [],
               requiredText: [
                 "Controlled Maintenance Ingress",
-                "Maintenance Relay",
+                "session-scoped WireGuard pull relay",
+                "OIDC-authenticated maintenance session",
+                "SSH certificate-only",
               ],
               forbiddenText: ["Tailscale SSH"],
             },
@@ -843,7 +845,15 @@ describe("repository script inventory guard", () => {
         );
         assert.match(
           result.failures.join("\n"),
-          /public\/production\.md missing required runbook text: Maintenance Relay/,
+          /public\/production\.md missing required runbook text: session-scoped WireGuard pull relay/,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /public\/production\.md missing required runbook text: OIDC-authenticated maintenance session/,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /public\/production\.md missing required runbook text: SSH certificate-only/,
         );
         assert.match(
           result.failures.join("\n"),
