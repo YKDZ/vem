@@ -7255,13 +7255,25 @@ async fn manual_dispense_diagnostic(
     };
     match ctx.state.reserve_manual_dispense_diagnostic(&pending).await {
         Ok(crate::state::store::ManualDispenseReservation::Existing(existing)) => {
-            let status = if existing.status == "pending" {
-                StatusCode::CONFLICT
+            let existing = if existing.status == "pending" {
+                match ctx
+                    .state
+                    .mark_pending_manual_dispense_result_unknown(&existing.diagnostic_id)
+                    .await
+                {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return store_error_response(
+                            "manual_dispense_unknown_evidence_write_failed",
+                            error,
+                        )
+                    }
+                }
             } else {
-                StatusCode::OK
+                existing
             };
-            return (status, Json(serde_json::json!({
-                "diagnosticId": existing.diagnostic_id, "outcome": if existing.status == "pending" { "result_unknown" } else { existing.status.as_str() },
+            return (StatusCode::OK, Json(serde_json::json!({
+                "diagnosticId": existing.diagnostic_id, "outcome": existing.status,
                 "stockReconciliationRequired": true, "reconciliationStatus": existing.reconciliation_status,
                 "replayed": true,
             }))).into_response();
@@ -16185,6 +16197,45 @@ mod tests {
             .unwrap();
         assert_eq!(evidence.reconciliation_status, "open");
         assert!(evidence.controller.get("stableIdentity").is_some());
+
+        let interrupted = crate::state::store::ManualDispenseDiagnostic {
+            diagnostic_id: "manual-dispense-interrupted".to_string(),
+            idempotency_key: "field-click-after-restart".to_string(),
+            status: "pending".to_string(),
+            completed_at: None,
+            raw_result: None,
+            normalized_result: None,
+            ..evidence
+        };
+        assert!(matches!(
+            state
+                .reserve_manual_dispense_diagnostic(&interrupted)
+                .await
+                .unwrap(),
+            crate::state::store::ManualDispenseReservation::Reserved(_)
+        ));
+        let recovered = app
+            .clone()
+            .oneshot(request("field-click-after-restart"))
+            .await
+            .unwrap();
+        assert_eq!(recovered.status(), StatusCode::OK);
+        let recovered_body = body::to_bytes(recovered.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let recovered_body: serde_json::Value = serde_json::from_slice(&recovered_body).unwrap();
+        assert_eq!(recovered_body["outcome"], "result_unknown");
+        assert_eq!(recovered_body["replayed"], true);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            state
+                .manual_dispense_diagnostic("manual-dispense-interrupted")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "result_unknown"
+        );
 
         sqlx::query("DROP TABLE manual_dispense_diagnostics")
             .execute(state.pool())
