@@ -1486,6 +1486,17 @@ mod tests {
             runtime_tx: runtime_tx.clone(),
             scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
             serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
+            audio_output_platform: Arc::new(crate::audio_output::WindowsAudioOutputPlatform),
+            audio_output_playback: Arc::new(
+                crate::audio_output::WindowsAudioOutputPlayback::default(),
+            ),
+            audio_output_calibration_lock: Arc::new(tokio::sync::Mutex::new(())),
+            audio_output_observation_generation: Arc::new(
+                crate::ipc::AudioOutputObservationGenerationTracker::default(),
+            ),
+            audio_output_test_evidence: Arc::new(
+                crate::ipc::AudioOutputTestEvidenceStore::default(),
+            ),
             device_binding_test_evidence: Arc::new(
                 crate::ipc::DeviceBindingTestEvidenceStore::default(),
             ),

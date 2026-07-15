@@ -245,6 +245,104 @@ export const daemonIpcDeviceBindingActivationSchema = z
   })
   .strict();
 
+export const daemonIpcAudioOutputObservationSchema = z
+  .object({
+    endpointId: z.string().trim().min(1).max(512),
+    friendlyName: z.string().trim().min(1).max(512),
+    isDefault: z.boolean(),
+  })
+  .strict();
+
+export const daemonIpcAudioOutputBindingSchema = z
+  .object({
+    endpointId: z.string().trim().min(1).max(512),
+    friendlyName: z.string().trim().min(1).max(512).nullable(),
+    confirmedHeardAt: z.iso.datetime({ offset: true }),
+    confirmedObservationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  })
+  .strict();
+
+export const daemonIpcAudioOutputBindingSnapshotSchema = z
+  .object({
+    binding: daemonIpcAudioOutputBindingSchema.nullable(),
+    currentObservation: daemonIpcAudioOutputObservationSchema.nullable(),
+    observationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    candidates: z.array(daemonIpcAudioOutputObservationSchema),
+    ready: z.boolean(),
+    code: z.enum([
+      "AUDIO_OUTPUT_BINDING_READY",
+      "AUDIO_OUTPUT_BINDING_REMOVED",
+      "AUDIO_OUTPUT_BINDING_REQUIRED",
+      "AUDIO_OUTPUT_ENUMERATION_UNAVAILABLE",
+    ]),
+    message: z.string(),
+  })
+  .strict();
+
+const daemonIpcAudioCueSettingsSchema = z
+  .object({
+    enabled: z.boolean(),
+    categories: z
+      .object({
+        presence: z.boolean(),
+        transaction: z.boolean(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const daemonIpcAudioOutputTestRequestSchema = z
+  .object({
+    endpointId: z.string().trim().min(1).max(512),
+    audioCueSettings: daemonIpcAudioCueSettingsSchema,
+    machineAudioVolume: z.number().positive().max(1),
+    challenge: z
+      .string()
+      .regex(/^[a-f0-9]{32,128}$/)
+      .optional(),
+  })
+  .strict();
+
+export const daemonIpcAudioOutputTestResponseSchema = z
+  .object({
+    endpointId: z.string().trim().min(1).max(512),
+    testEvidenceToken: z.uuid(),
+    testEvidenceExpiresAt: z.iso.datetime({ offset: true }),
+    observationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    observationGeneration: z.number().int().nonnegative(),
+    configRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    configGeneration: z.number().int().nonnegative(),
+    proposedSettingsDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    challenge: z
+      .string()
+      .regex(/^[a-f0-9]{32,128}$/)
+      .optional(),
+  })
+  .strict();
+
+export const daemonIpcAudioOutputConfirmRequestSchema = z
+  .object({
+    endpointId: z.string().trim().min(1).max(512),
+    testEvidenceToken: z.uuid(),
+    heard: z.literal(true),
+    audioCueSettings: daemonIpcAudioCueSettingsSchema,
+    machineAudioVolume: z.number().positive().max(1),
+  })
+  .strict();
+
+export type DaemonIpcAudioOutputBindingSnapshot = z.infer<
+  typeof daemonIpcAudioOutputBindingSnapshotSchema
+>;
+export type DaemonIpcAudioOutputTestRequest = z.infer<
+  typeof daemonIpcAudioOutputTestRequestSchema
+>;
+export type DaemonIpcAudioOutputTestResponse = z.infer<
+  typeof daemonIpcAudioOutputTestResponseSchema
+>;
+export type DaemonIpcAudioOutputConfirmRequest = z.infer<
+  typeof daemonIpcAudioOutputConfirmRequestSchema
+>;
+
 const daemonIpcEventEnvelopeMetadataSchema = z
   .object({
     schemaVersion: z.number().int().positive().optional(),

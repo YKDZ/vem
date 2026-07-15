@@ -23,6 +23,7 @@ export const machineAudioOutputBindingSchema = z
     endpointId: z.string().trim().min(1).max(512),
     friendlyName: z.string().trim().min(1).max(512).nullable().default(null),
     confirmedHeardAt: z.iso.datetime(),
+    confirmedObservationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
   .nullable()
   .default(null);
@@ -276,6 +277,8 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
           friendlyName:
             parsed.machineAudioOutputBinding.friendlyName?.trim() || null,
           confirmedHeardAt: parsed.machineAudioOutputBinding.confirmedHeardAt,
+          confirmedObservationRevision:
+            parsed.machineAudioOutputBinding.confirmedObservationRevision,
         }
       : null,
   };

@@ -406,6 +406,34 @@ describe("createMachineAudioPlayback", () => {
     });
   });
 
+  it("fails closed when native playback is unavailable for a confirmed output binding", async () => {
+    const created: MockBrowserAudio[] = [];
+    const browserDriver = createBrowserMachineAudioPlaybackDriver({
+      audioFactory: (sourceUrl) => {
+        const audio = new MockBrowserAudio(sourceUrl);
+        created.push(audio);
+        return audio;
+      },
+    });
+    const playback = createMachineAudioPlayback({
+      nativeDriver: null,
+      browserDriver,
+      outputDeviceId: "{0.0.0.00000000}.speaker-1",
+      requireNativeOutputBinding: true,
+    });
+
+    const played = await playback.playLocal("/assets/payment-succeeded.wav");
+
+    expect(played).toBe(false);
+    expect(created).toHaveLength(0);
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "failed",
+      driver: "native",
+      sourceUrl: "/assets/payment-succeeded.wav",
+      message: "native playback unavailable for confirmed audio output binding",
+    });
+  });
+
   it("falls back to browser playback when native playback is unavailable", async () => {
     const created: MockBrowserAudio[] = [];
     const browserDriver = createBrowserMachineAudioPlaybackDriver({

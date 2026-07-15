@@ -1,26 +1,22 @@
 <script setup lang="ts">
 import {
+  type DaemonIpcAudioOutputBindingSnapshot,
+  type DaemonIpcAudioOutputTestResponse,
   formatMachineSlotCoordinate,
   type StockMaintenanceTask,
 } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import type { MachineAudioPlaybackDiagnostic } from "@/audio-playback/machine-audio-playback";
 import type {
   DeviceBindingSnapshot,
   MaintenanceSession,
 } from "@/daemon/schemas";
 
-import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
-import {
-  createMachineAudioPlayback,
-  createMockMachineAudioPlaybackDriver,
-  type MachineAudioPlayback,
-  type MachineAudioPlaybackDiagnostic,
-} from "@/audio-playback/machine-audio-playback";
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import {
@@ -136,41 +132,30 @@ const audioCueSettingsRows = computed(() => [
   },
 ]);
 
-type MachineAudioOutputCandidate = {
-  endpointId: string;
-  friendlyName: string;
-  isDefault: boolean;
-};
-
 const machineAudioOutputMaintenance = reactive({
   loading: false,
   saving: false,
   message: null as string | null,
-  candidates: [] as MachineAudioOutputCandidate[],
+  snapshot: null as DaemonIpcAudioOutputBindingSnapshot | null,
   selectedEndpointId: null as string | null,
   heardConfirmation: false,
+  testEvidence: null as DaemonIpcAudioOutputTestResponse | null,
 });
-const machineAudioTestEvidence = ref<{
-  requestId: string;
-  endpointId: string;
-  volume: number;
-} | null>(null);
+
+const machineAudioOutputCandidates = computed(
+  () => machineAudioOutputMaintenance.snapshot?.candidates ?? [],
+);
 
 const confirmedMachineAudioOutputBinding =
   computed<MachineAudioOutputBinding | null>(
     () => machineStore.config.machineAudioOutputBinding,
   );
 const observedMachineAudioOutputBinding = computed(
-  () =>
-    machineAudioOutputMaintenance.candidates.find(
-      (candidate) =>
-        candidate.endpointId ===
-        confirmedMachineAudioOutputBinding.value?.endpointId,
-    ) ?? null,
+  () => machineAudioOutputMaintenance.snapshot?.currentObservation ?? null,
 );
 const selectedMachineAudioOutputCandidate = computed(
   () =>
-    machineAudioOutputMaintenance.candidates.find(
+    machineAudioOutputCandidates.value.find(
       (candidate) =>
         candidate.endpointId ===
         machineAudioOutputMaintenance.selectedEndpointId,
@@ -392,32 +377,6 @@ const form = reactive({
   mqttPasswordInput: "",
 });
 
-watch(
-  [
-    () => machineAudioOutputMaintenance.selectedEndpointId,
-    () => form.machineAudioVolumePercent,
-  ],
-  () => {
-    machineAudioOutputMaintenance.heardConfirmation = false;
-    machineAudioTestEvidence.value = null;
-  },
-);
-
-const machineAudioTestVolume = computed(
-  () => form.machineAudioVolumePercent / 100,
-);
-const hasCurrentMachineAudioTestEvidence = computed(() => {
-  const selectedEndpointId = machineAudioOutputMaintenance.selectedEndpointId;
-  const evidence = machineAudioTestEvidence.value;
-  return (
-    selectedEndpointId !== null &&
-    machineAudioTestVolume.value > 0 &&
-    evidence !== null &&
-    evidence.endpointId === selectedEndpointId &&
-    evidence.volume === machineAudioTestVolume.value
-  );
-});
-
 const tryOnPreviewDiagnostic = reactive({
   loading: false,
   message: null as string | null,
@@ -629,7 +588,6 @@ onMounted(async () => {
       }
       syncFormFromStore();
       await refreshMachineAudioOutputs();
-      ensureMachineAudioTestPlayback();
     } catch {
       // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
     }
@@ -646,7 +604,7 @@ onUnmounted(() => {
   removeMaintenanceSessionInvalidationListener?.();
   removeMaintenanceSessionInvalidationListener = null;
   stopDiagnosticsAutoRefresh();
-  activeMachineAudioPlayback?.stop();
+  void callTauriCommand<void>("stop_machine_audio").catch(() => undefined);
   clearRenderedMaintenanceSession();
   daemonClient.releaseMaintenanceSessionRoute("maintenance");
   void stopTryOnPreviewDiagnostic();
@@ -830,24 +788,37 @@ const machineAudioTestPlayback = reactive({
   diagnostic: null as MachineAudioPlaybackDiagnostic | null,
   volume: machineStore.config.machineAudioVolume,
 });
-let activeMachineAudioPlayback: MachineAudioPlayback | null = null;
-let activeMachineAudioPlaybackVolume: number | null = null;
-let activeMachineAudioPlaybackOutputDeviceId: string | null = null;
+const daemonAudioCalibrationSource = "daemon://audio-output-calibration";
+
+function clearMachineAudioTestEvidence(): void {
+  machineAudioOutputMaintenance.testEvidence = null;
+  machineAudioOutputMaintenance.heardConfirmation = false;
+}
+
+watch(
+  () => [
+    machineAudioOutputMaintenance.selectedEndpointId,
+    machineAudioOutputMaintenance.snapshot?.observationRevision ?? null,
+    form.machineAudioVolumePercent,
+    form.audioCueSettings.enabled,
+    form.audioCueSettings.categories.presence,
+    form.audioCueSettings.categories.transaction,
+  ],
+  () => clearMachineAudioTestEvidence(),
+);
 
 async function refreshMachineAudioOutputs(): Promise<void> {
   machineAudioOutputMaintenance.loading = true;
   machineAudioOutputMaintenance.message = null;
   try {
-    const outputs = await callTauriCommand<MachineAudioOutputCandidate[]>(
-      "list_machine_audio_outputs",
-    );
-    machineAudioOutputMaintenance.candidates = outputs;
+    const snapshot = await daemonClient.getAudioOutputBinding();
+    machineAudioOutputMaintenance.snapshot = snapshot;
     if (
       !machineAudioOutputMaintenance.selectedEndpointId &&
-      machineStore.config.machineAudioOutputBinding?.endpointId
+      snapshot.binding?.endpointId
     ) {
       machineAudioOutputMaintenance.selectedEndpointId =
-        machineStore.config.machineAudioOutputBinding.endpointId;
+        snapshot.binding.endpointId;
     }
   } catch (error) {
     machineAudioOutputMaintenance.message =
@@ -867,24 +838,23 @@ async function saveMachineAudioSettings(): Promise<void> {
     machineAudioOutputMaintenance.message = "请先选择顾客扬声器端点。";
     return;
   }
-  if (!hasCurrentMachineAudioTestEvidence.value) {
-    machineAudioOutputMaintenance.message =
-      "请先以当前端点和当前音量完成测试播放。";
-    return;
-  }
   if (!machineAudioOutputMaintenance.heardConfirmation) {
     machineAudioOutputMaintenance.message = "请确认“我听到了”后再保存绑定。";
+    return;
+  }
+  const testEvidence = machineAudioOutputMaintenance.testEvidence;
+  if (!testEvidence) {
+    machineAudioOutputMaintenance.message =
+      "请先对当前端点和设置完成测试播放。";
     return;
   }
   machineAudioOutputMaintenance.saving = true;
   machineAudioOutputMaintenance.message = null;
   try {
-    const summary = await daemonClient.saveMachineAudioSettings({
-      machineAudioOutputBinding: {
-        endpointId: selected.endpointId,
-        friendlyName: selected.friendlyName,
-        confirmedHeardAt: new Date().toISOString(),
-      },
+    const summary = await daemonClient.confirmAudioOutput({
+      endpointId: selected.endpointId,
+      testEvidenceToken: testEvidence.testEvidenceToken,
+      heard: true,
       audioCueSettings: {
         enabled: form.audioCueSettings.enabled,
         categories: {
@@ -892,7 +862,7 @@ async function saveMachineAudioSettings(): Promise<void> {
           transaction: form.audioCueSettings.categories.transaction,
         },
       },
-      machineAudioVolume: machineAudioTestVolume.value,
+      machineAudioVolume: form.machineAudioVolumePercent / 100,
     });
     machineStore.applyConfigSummary(summary);
     syncFormFromStore();
@@ -943,83 +913,51 @@ const latestMachineAudioTestPlaybackRows = computed(() => {
 });
 
 async function playMachineAudioTestPlayback(): Promise<void> {
-  machineAudioTestEvidence.value = null;
-  machineAudioOutputMaintenance.heardConfirmation = false;
+  if (!maintenanceSessionAuthorized.value) {
+    machineAudioTestPlayback.message = "请先验证维护 PIN。";
+    return;
+  }
+  const selected = selectedMachineAudioOutputCandidate.value;
+  if (!selected) {
+    machineAudioTestPlayback.message = "请先选择顾客扬声器端点。";
+    return;
+  }
   machineAudioTestPlayback.loading = true;
   machineAudioTestPlayback.message = null;
+  clearMachineAudioTestEvidence();
   try {
-    const playback = ensureMachineAudioTestPlayback();
-    const playbackRequest = playback.playLocal(maintenanceTestToneUrl);
-    refreshMachineAudioTestPlaybackDiagnostic();
-    const started = await playbackRequest;
-    refreshMachineAudioTestPlaybackDiagnostic();
-    machineAudioTestPlayback.message = started
-      ? "机器音频测试播放已启动。"
-      : "机器音频测试播放未启动。";
+    const volume = form.machineAudioVolumePercent / 100;
+    const testEvidence = await daemonClient.testAudioOutput({
+      endpointId: selected.endpointId,
+      audioCueSettings: {
+        enabled: form.audioCueSettings.enabled,
+        categories: {
+          presence: form.audioCueSettings.categories.presence,
+          transaction: form.audioCueSettings.categories.transaction,
+        },
+      },
+      machineAudioVolume: volume,
+    });
+    machineAudioOutputMaintenance.testEvidence = testEvidence;
+    machineAudioTestPlayback.volume = volume;
+    machineAudioTestPlayback.driver = "native";
+    machineAudioTestPlayback.diagnostic = {
+      requestId: testEvidence.testEvidenceToken,
+      status: "started",
+      driver: "native",
+      sourceUrl: daemonAudioCalibrationSource,
+      message: null,
+      recordedAt: new Date().toISOString(),
+    };
+    machineAudioTestPlayback.message =
+      "机器音频测试播放已启动，请确认实际听感。";
   } catch (error) {
+    clearMachineAudioTestEvidence();
     machineAudioTestPlayback.message =
       error instanceof Error ? error.message : String(error);
   } finally {
     machineAudioTestPlayback.loading = false;
   }
-}
-
-function stopMachineAudioTestPlayback(): void {
-  activeMachineAudioPlayback?.stop();
-  refreshMachineAudioTestPlaybackDiagnostic();
-}
-
-function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
-  const volume = machineAudioTestVolume.value;
-  const outputDeviceId =
-    machineAudioOutputMaintenance.selectedEndpointId ??
-    machineStore.config.machineAudioOutputBinding?.endpointId ??
-    null;
-  if (
-    activeMachineAudioPlayback &&
-    activeMachineAudioPlaybackVolume === volume &&
-    activeMachineAudioPlaybackOutputDeviceId === outputDeviceId
-  ) {
-    return activeMachineAudioPlayback;
-  }
-  activeMachineAudioPlayback?.stop();
-  activeMachineAudioPlaybackVolume = volume;
-  activeMachineAudioPlaybackOutputDeviceId = outputDeviceId;
-  machineAudioTestPlayback.volume = volume;
-  activeMachineAudioPlayback = createMachineAudioPlayback({
-    driver:
-      import.meta.env.MODE === "test"
-        ? createMockMachineAudioPlaybackDriver({
-            startDelayMs: 10,
-            completeAfterMs: 10,
-          })
-        : undefined,
-    onDiagnostic: (diagnostic) => {
-      machineAudioTestPlayback.driver = diagnostic.driver;
-      machineAudioTestPlayback.diagnostic = diagnostic;
-      if (diagnostic.status === "completed" && outputDeviceId) {
-        machineAudioTestEvidence.value = {
-          requestId: diagnostic.requestId,
-          endpointId: outputDeviceId,
-          volume,
-        };
-      }
-    },
-    outputDeviceId,
-    requireNativeOutputBinding: isTauriRuntime(),
-    volume,
-  });
-  machineAudioTestPlayback.driver = activeMachineAudioPlayback.currentDriver();
-  machineAudioTestPlayback.diagnostic =
-    activeMachineAudioPlayback.latestDiagnostic();
-  return activeMachineAudioPlayback;
-}
-
-function refreshMachineAudioTestPlaybackDiagnostic(): void {
-  if (!activeMachineAudioPlayback) return;
-  machineAudioTestPlayback.driver = activeMachineAudioPlayback.currentDriver();
-  machineAudioTestPlayback.diagnostic =
-    activeMachineAudioPlayback.latestDiagnostic();
 }
 
 async function startTryOnPreviewDiagnostic(): Promise<void> {
@@ -2763,7 +2701,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
               </div>
 
               <div
-                v-if="machineAudioOutputMaintenance.candidates.length === 0"
+                v-if="machineAudioOutputCandidates.length === 0"
                 class="rounded-2xl bg-slate-950/35 p-4 text-sm text-cyan-50"
               >
                 {{
@@ -2775,7 +2713,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
 
               <div v-else class="grid gap-3">
                 <label
-                  v-for="candidate in machineAudioOutputMaintenance.candidates"
+                  v-for="candidate in machineAudioOutputCandidates"
                   :key="candidate.endpointId"
                   class="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/35 p-4"
                 >
@@ -2802,8 +2740,8 @@ async function submitStockMaintenanceTask(): Promise<void> {
               <label class="flex items-center gap-3 text-left">
                 <input
                   v-model="machineAudioOutputMaintenance.heardConfirmation"
+                  :disabled="!machineAudioOutputMaintenance.testEvidence"
                   class="size-5 accent-cyan-300"
-                  :disabled="!hasCurrentMachineAudioTestEvidence"
                   type="checkbox"
                 />
                 <span class="text-sm font-semibold text-cyan-50">
@@ -2816,7 +2754,8 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 type="button"
                 :disabled="
                   machineAudioOutputMaintenance.saving ||
-                  !hasCurrentMachineAudioTestEvidence ||
+                  !machineAudioOutputMaintenance.selectedEndpointId ||
+                  !machineAudioOutputMaintenance.testEvidence ||
                   !machineAudioOutputMaintenance.heardConfirmation
                 "
                 @click="saveMachineAudioSettings"
@@ -2900,17 +2839,14 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 <button
                   class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
                   type="button"
-                  :disabled="machineAudioTestPlayback.loading"
+                  :disabled="
+                    machineAudioTestPlayback.loading ||
+                    !maintenanceSessionAuthorized ||
+                    !machineAudioOutputMaintenance.selectedEndpointId
+                  "
                   @click="playMachineAudioTestPlayback"
                 >
                   播放测试音频
-                </button>
-                <button
-                  class="kiosk-touch-target rounded-2xl border border-cyan-100/40 px-4 py-3 font-bold text-cyan-50 disabled:opacity-50"
-                  type="button"
-                  @click="stopMachineAudioTestPlayback"
-                >
-                  停止当前播放
                 </button>
               </div>
 
