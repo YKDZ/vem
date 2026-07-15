@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { deflateRawSync } from "node:zlib";
 
 import { assertNoPlatformPrivateKeyMaterial } from "../security/platform-private-key-scanner.mjs";
 
@@ -13,13 +14,14 @@ function storedZip(
   content,
   declaredUncompressedSize = content.length,
   flags = 0,
+  method = 0,
 ) {
   const fileName = Buffer.from(name);
   const header = Buffer.alloc(30);
   header.writeUInt32LE(0x04034b50, 0);
   header.writeUInt16LE(20, 4);
   header.writeUInt16LE(flags, 6);
-  header.writeUInt16LE(0, 8);
+  header.writeUInt16LE(method, 8);
   header.writeUInt32LE(content.length, 18);
   header.writeUInt32LE(declaredUncompressedSize, 22);
   header.writeUInt16LE(fileName.length, 26);
@@ -28,6 +30,7 @@ function storedZip(
   central.writeUInt16LE(20, 4);
   central.writeUInt16LE(20, 6);
   central.writeUInt16LE(flags, 8);
+  central.writeUInt16LE(method, 10);
   central.writeUInt32LE(content.length, 20);
   central.writeUInt32LE(declaredUncompressedSize, 24);
   central.writeUInt16LE(fileName.length, 28);
@@ -39,6 +42,57 @@ function storedZip(
   end.writeUInt32LE(central.length + fileName.length, 12);
   end.writeUInt32LE(centralOffset, 16);
   return Buffer.concat([header, fileName, content, central, fileName, end]);
+}
+
+function encryptedLocalHiddenByEmptyDirectory() {
+  const name = Buffer.from("orphan-encrypted.bin");
+  const content = Buffer.from("ciphertext");
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0x01, 6);
+  local.writeUInt32LE(content.length, 18);
+  local.writeUInt32LE(content.length, 22);
+  local.writeUInt16LE(name.length, 26);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt32LE(local.length + name.length + content.length, 16);
+  return Buffer.concat([local, name, content, end]);
+}
+
+function orphanEncryptedLocalAfterCentralDirectory() {
+  const declared = storedZip("declared.txt", Buffer.from("safe"));
+  const orphan = encryptedLocalHiddenByEmptyDirectory();
+  return Buffer.concat([
+    declared.subarray(0, -22),
+    orphan.subarray(0, -22),
+    declared.subarray(-22),
+  ]);
+}
+
+function duplicateCentralEntry() {
+  const declared = storedZip("duplicate.txt", Buffer.from("safe"));
+  const endOffset = declared.length - 22;
+  const centralStart = declared.readUInt32LE(endOffset + 16);
+  const central = declared.subarray(centralStart, endOffset);
+  const end = Buffer.from(declared.subarray(endOffset));
+  end.writeUInt16LE(2, 8);
+  end.writeUInt16LE(2, 10);
+  end.writeUInt32LE(central.length * 2, 12);
+  return Buffer.concat([
+    declared.subarray(0, centralStart),
+    central,
+    central,
+    end,
+  ]);
+}
+
+function zip64Sentinel() {
+  const declared = Buffer.from(storedZip("zip64.txt", Buffer.from("safe")));
+  const endOffset = declared.length - 22;
+  const centralStart = declared.readUInt32LE(endOffset + 16);
+  declared.writeUInt32LE(0xffffffff, centralStart + 24);
+  return declared;
 }
 
 describe("Factory runtime payment secret boundary", () => {
@@ -209,6 +263,45 @@ describe("Factory runtime payment secret boundary", () => {
         ),
       /encrypted archive/i,
     );
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          encryptedLocalHiddenByEmptyDirectory(),
+          "empty-directory-bypass.zip",
+        ),
+      /invalid archive|encrypted archive/i,
+    );
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          orphanEncryptedLocalAfterCentralDirectory(),
+          "orphan-after-central.zip",
+        ),
+      /invalid archive|encrypted archive/i,
+    );
+    const deflated = Buffer.from("valid deflate runtime payload");
+    assert.doesNotThrow(() =>
+      assertNoPlatformPrivateKeyMaterial(
+        storedZip(
+          "runtime.txt",
+          deflateRawSync(deflated),
+          deflated.length,
+          0,
+          8,
+        ),
+        "valid-deflate.zip",
+      ),
+    );
+    for (const malformed of [
+      storedZip("descriptor.txt", Buffer.from("safe"), 4, 0x08),
+      duplicateCentralEntry(),
+      zip64Sentinel(),
+    ]) {
+      assert.throws(
+        () => assertNoPlatformPrivateKeyMaterial(malformed, "malformed.zip"),
+        /invalid archive|unsupported archive/i,
+      );
+    }
   });
 
   it("applies the scanner to every resolved Factory payload including Vision", async () => {
