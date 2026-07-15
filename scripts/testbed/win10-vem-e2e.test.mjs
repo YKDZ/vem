@@ -123,7 +123,59 @@ function completedSerialSaleEvidence(overrides = {}) {
             ],
           },
         },
+        firstStop: {
+          result: "succeeded",
+          serialSession: {
+            serialSessionId,
+            deviceMappingDigest,
+            simulatorCleanup: {
+              idempotencyVerified: false,
+              survivingProcessCount: 0,
+            },
+          },
+        },
+        repeatedStop: {
+          result: "succeeded",
+          serialSession: {
+            serialSessionId,
+            deviceMappingDigest,
+            simulatorCleanup: {
+              idempotencyVerified: true,
+              survivingProcessCount: 0,
+            },
+          },
+        },
       },
+      failureMatrix: [
+        "malformed-frame",
+        "device-disconnected",
+        "scanner-timeout",
+        "dispense-failed",
+        "swapped-roles",
+        "missing-device",
+      ].map((failureMode) => ({
+        failureMode,
+        result: "observed_failure",
+        adapterResult: "succeeded",
+        diagnosticCode: {
+          "malformed-frame": "serial_malformed_frame",
+          "device-disconnected": "serial_device_disconnected",
+          "scanner-timeout": "serial_scanner_timeout",
+          "dispense-failed": "serial_dispense_failed",
+          "swapped-roles": "serial_swapped_roles",
+          "missing-device": "serial_missing_device",
+        }[failureMode],
+        ...(["swapped-roles", "missing-device"].includes(failureMode)
+          ? {
+              recovery: {
+                runtimeReady: "passed",
+                hardwareOnline: true,
+                scannerOnline: true,
+                ready: true,
+              },
+            }
+          : {}),
+      })),
     },
     ...overrides,
   };
@@ -509,6 +561,64 @@ describe("simulated hardware serial acceptance evidence", () => {
       assert.equal(evidence.asserted, false);
       assert.ok(
         evidence.diagnostics.some((diagnostic) => diagnostic.code === code),
+      );
+    });
+  }
+
+  for (const [name, mutate] of [
+    [
+      "missing repeated stop evidence",
+      (input) => {
+        delete input.serialConformance.reports.repeatedStop;
+      },
+    ],
+    [
+      "non-idempotent repeated stop",
+      (input) => {
+        input.serialConformance.reports.repeatedStop.serialSession.simulatorCleanup.idempotencyVerified = false;
+      },
+    ],
+    [
+      "surviving simulator process",
+      (input) => {
+        input.serialConformance.reports.repeatedStop.serialSession.simulatorCleanup.survivingProcessCount = 1;
+      },
+    ],
+    [
+      "incomplete failure matrix",
+      (input) => {
+        input.serialConformance.failureMatrix.pop();
+      },
+    ],
+    [
+      "mismatched failure diagnostic",
+      (input) => {
+        input.serialConformance.failureMatrix[0].diagnosticCode =
+          "serial_device_disconnected";
+      },
+    ],
+    [
+      "missing mapping recovery",
+      (input) => {
+        const mappingFailure = input.serialConformance.failureMatrix.find(
+          (entry) => entry.failureMode === "swapped-roles",
+        );
+        delete mappingFailure.recovery;
+      },
+    ],
+  ]) {
+    it(`does not assert readiness for ${name}`, () => {
+      const input = completedSerialSaleEvidence();
+      mutate(input);
+      const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+      assert.equal(evidence.status, "failed");
+      assert.equal(evidence.asserted, false);
+      assert.ok(
+        evidence.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === "guest_serial_lifecycle_evidence_required",
+        ),
       );
     });
   }
