@@ -253,6 +253,49 @@ function nestedBase64Payload(layers) {
   return payload;
 }
 
+async function generatePbes1EncryptedPkcs8(root) {
+  const keyPath = join(root, "fixture-key.pem");
+  const encryptedPath = join(root, "fixture-encrypted.der");
+  const generated = spawnSync(
+    "openssl",
+    [
+      "genpkey",
+      "-algorithm",
+      "RSA",
+      "-pkeyopt",
+      "rsa_keygen_bits:1024",
+      "-out",
+      keyPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr);
+  const encrypted = spawnSync(
+    "openssl",
+    [
+      "pkcs8",
+      "-topk8",
+      "-in",
+      keyPath,
+      "-outform",
+      "DER",
+      "-v1",
+      "PBE-MD5-DES",
+      "-passout",
+      "pass:fixture-passphrase",
+      "-provider",
+      "default",
+      "-provider",
+      "legacy",
+      "-out",
+      encryptedPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(encrypted.status, 0, encrypted.stderr);
+  return readFile(encryptedPath);
+}
+
 describe("Factory runtime payment secret boundary", () => {
   it("allows ordinary public certificates but rejects private-key PEM encodings", () => {
     assert.doesNotThrow(() =>
@@ -322,6 +365,68 @@ describe("Factory runtime payment secret boundary", () => {
     assert.doesNotThrow(() =>
       assertNoPlatformPrivateKeyMaterial(publicDer, "public.der"),
     );
+  });
+
+  it("rejects algorithm-independent PBES1 EncryptedPrivateKeyInfo", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-pbes1-private-key-"));
+    try {
+      const encryptedPrivateKey = await generatePbes1EncryptedPkcs8(root);
+      assert.throws(
+        () =>
+          assertNoPlatformPrivateKeyMaterial(
+            encryptedPrivateKey,
+            "encrypted-provider-key.der",
+          ),
+        /private-key material/i,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects provider credential fields in runtime content but allows public certificate contracts", () => {
+    for (const field of [
+      "appCertPem",
+      "alipayPublicCertPem",
+      "alipayRootCertPem",
+      "merchantApiCertPem",
+      "platformCertificatePem",
+    ]) {
+      assert.throws(
+        () =>
+          assertNoPlatformPrivateKeyMaterial(
+            Buffer.from(JSON.stringify({ [field]: "configured" })),
+            "runtime-config.json",
+          ),
+        /provider credential field/i,
+      );
+    }
+    assert.doesNotThrow(() =>
+      assertNoPlatformPrivateKeyMaterial(
+        Buffer.from(
+          JSON.stringify({
+            publicCertificatePem:
+              "-----BEGIN CERTIFICATE----- public-ca -----END CERTIFICATE-----",
+          }),
+        ),
+        "public-runtime-config.json",
+      ),
+    );
+    for (const oid of [
+      "06092a864886f70d01050d",
+      "060b2a864886f70d010c0a0101",
+    ]) {
+      assert.doesNotThrow(() =>
+        assertNoPlatformPrivateKeyMaterial(
+          Buffer.concat([
+            Buffer.from("incidental-prefix"),
+            Buffer.from(oid, "hex"),
+            Buffer.from("incidental-suffix"),
+          ]),
+          "incidental-runtime.bin",
+        ),
+      );
+    }
   });
 
   it("rejects a real PKCS#12 container carrying a private key", async () => {
