@@ -155,12 +155,14 @@ function Invoke-VisionReleaseMaterialization {
   Assert-VisionMaterializationPath $Destination "destination"
   [void](Assert-VisionNoReparseTraversal $Destination "destination")
   if (Test-Path -LiteralPath $Destination) { throw "Vision materialization failed: destination already exists" }
-  [void](New-VisionSafeDirectoryTree $Destination "destination" $null)
-  [void](Assert-VisionNoReparseTraversal $Destination "destination")
-  $stream = Get-VisionVerifiedCandidateStream $CandidatePath $ExpectedDigest $Descriptor
   Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $true)
+  $stream = $null
+  $archive = $null
   try {
+    $stream = Get-VisionVerifiedCandidateStream $CandidatePath $ExpectedDigest $Descriptor
+    [void](New-VisionSafeDirectoryTree $Destination "destination" $null)
+    [void](Assert-VisionNoReparseTraversal $Destination "destination")
+    $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $true)
     if ($archive.Entries.Count -lt 1 -or $archive.Entries.Count -gt [Int64]$ExtractionPolicy.MaxArchiveEntries) {
       throw "Vision materialization failed: archive entry count is unsafe"
     }
@@ -195,7 +197,10 @@ function Invoke-VisionReleaseMaterialization {
   } catch {
     Remove-VisionMaterializationDestination $Destination
     throw
-  } finally { $archive.Dispose(); $stream.Dispose() }
+  } finally {
+    if ($null -ne $archive) { $archive.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
+  }
 }
 
 Export-ModuleMember -Function Invoke-VisionReleaseMaterialization

@@ -94,6 +94,12 @@ describe("Vision release installer fixtures", () => {
       ]);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
       assert.match(result.stdout, new RegExp(`${testCase} fixtures passed`));
+      if (testCase === "archive") {
+        assert.match(result.stdout, /candidate digest mismatch rejected/);
+        assert.match(result.stdout, /archive entry-count limit rejected/);
+        assert.match(result.stdout, /archive expanded-size limit rejected/);
+        assert.match(result.stdout, /archive expansion-ratio limit rejected/);
+      }
     });
   }
 
@@ -227,6 +233,14 @@ describe("Vision release installer fixtures", () => {
           assert.equal(
             provisionEvidence.files[relative].digest,
             files[relative],
+          );
+          assert.equal(
+            provisionEvidence.files[relative].destination,
+            destination,
+          );
+          assert.equal(
+            sha256(readFileSync(provisionEvidence.files[relative].destination)),
+            provisionEvidence.files[relative].digest,
           );
         }
       } finally {
@@ -699,8 +713,14 @@ describe("Vision release installer fixtures", () => {
       "scripts/windows/provision-vision-factory-release.ps1",
       "utf8",
     );
-    assert.match(provisioner, /\$installedFiles \+= \$destination/);
-    assert.match(provisioner, /\+ \$installedFiles \| Select-Object -Unique/);
+    assert.match(
+      provisioner,
+      /\$installedFiles \+= \[ordered\]@\{\s*relative=\$relative;\s*path=\$destination;\s*digest=\$expected\s*\}/,
+    );
+    assert.match(
+      provisioner,
+      /\+ @\(\$installedFiles \| ForEach-Object \{ \[string\]\$_\.path \}\) \| Select-Object -Unique/,
+    );
     const installer = readFileSync(
       "scripts/windows/install-vision-release.ps1",
       "utf8",

@@ -100,6 +100,42 @@ try {
     $bytes = [IO.File]::ReadAllBytes($bundle)
     $digest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
     $descriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$digest; bytes=[Int64]$bytes.Length } }
+    $wrongDigest = "sha256:" + ("0" * 64)
+    $wrongDescriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$wrongDigest; bytes=[Int64]$bytes.Length } }
+    $digestMismatchTarget = Join-Path $root "digest-mismatch-materialization"
+    Assert-ThrowsMessage {
+      Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $wrongDigest -Descriptor $wrongDescriptor -Destination $digestMismatchTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 }
+    } "candidate exact bytes do not match expected digest" "candidate digest mismatch"
+    if (Test-Path -LiteralPath $digestMismatchTarget) { throw "digest mismatch left a partial materialization" }
+    Write-Output "candidate digest mismatch rejected"
+    $entryCountBundle = Join-Path $root "entry-count.zip"
+    New-Zip $entryCountBundle @(@("bin/runtime.exe", "runtime"), @("models/model.bin", "model"))
+    $entryCountBytes = [IO.File]::ReadAllBytes($entryCountBundle)
+    $entryCountDigest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($entryCountBytes))).ToLowerInvariant()
+    $entryCountDescriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$entryCountDigest; bytes=[Int64]$entryCountBytes.Length } }
+    $entryCountTarget = Join-Path $root "entry-count-materialization"
+    Assert-ThrowsMessage {
+      Invoke-VisionReleaseMaterialization -CandidatePath $entryCountBundle -ExpectedDigest $entryCountDigest -Descriptor $entryCountDescriptor -Destination $entryCountTarget -ExtractionPolicy @{ MaxArchiveEntries=1; MaxExpandedBytes=4096; MaxExpansionRatio=20 }
+    } "archive entry count is unsafe" "archive entry-count limit"
+    if (Test-Path -LiteralPath $entryCountTarget) { throw "entry-count rejection left a partial materialization" }
+    Write-Output "archive entry-count limit rejected"
+    $expandedSizeTarget = Join-Path $root "expanded-size-materialization"
+    Assert-ThrowsMessage {
+      Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination $expandedSizeTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=1; MaxExpansionRatio=100000 }
+    } "archive expansion budget is unsafe" "archive expanded-size limit"
+    if (Test-Path -LiteralPath $expandedSizeTarget) { throw "expanded-size rejection left a partial materialization" }
+    Write-Output "archive expanded-size limit rejected"
+    $expansionRatioBundle = Join-Path $root "expansion-ratio.zip"
+    New-Zip $expansionRatioBundle @(,@("models/compressible.bin", ("A" * 8192)))
+    $expansionRatioBytes = [IO.File]::ReadAllBytes($expansionRatioBundle)
+    $expansionRatioDigest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($expansionRatioBytes))).ToLowerInvariant()
+    $expansionRatioDescriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$expansionRatioDigest; bytes=[Int64]$expansionRatioBytes.Length } }
+    $expansionRatioTarget = Join-Path $root "expansion-ratio-materialization"
+    Assert-ThrowsMessage {
+      Invoke-VisionReleaseMaterialization -CandidatePath $expansionRatioBundle -ExpectedDigest $expansionRatioDigest -Descriptor $expansionRatioDescriptor -Destination $expansionRatioTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=1048576; MaxExpansionRatio=1 }
+    } "archive expansion budget is unsafe" "archive expansion-ratio limit"
+    if (Test-Path -LiteralPath $expansionRatioTarget) { throw "expansion-ratio rejection left a partial materialization" }
+    Write-Output "archive expansion-ratio limit rejected"
     $safeTarget = Join-Path $root "safe-materialization"
     Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination $safeTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 } | Out-Null
     if (-not (Test-Path -LiteralPath (Join-Path $safeTarget "bin/runtime.exe") -PathType Leaf)) { throw "safe archive was not materialized" }
