@@ -615,10 +615,15 @@ function verifyPreclaimResult(path, input) {
     report?.readOnly !== true ||
     report?.ok !== true ||
     report?.checks?.factoryRuntime?.ok !== true ||
-    report?.checks?.absentMachineIdentity?.asserted !== true
+    report?.checks?.absentMachineIdentity?.asserted !== true ||
+    report?.checks?.oobeComplete?.asserted !== true ||
+    report?.checks?.oobeComplete?.cleanupPhase !== "complete" ||
+    report?.checks?.oobeComplete?.cleanupTaskPresent !== false ||
+    report?.checks?.oobeComplete?.postRebootBootIdentityChanged !== true ||
+    report?.checks?.oobeComplete?.activeVemKioskConsoleSession !== true
   ) {
     throw new Error(
-      "Factory preclaim verification did not prove installed runtime and absent machine identity",
+      "Factory preclaim verification did not prove post-reboot OOBE cleanup, installed runtime, and absent machine identity",
     );
   }
   return { status: "passed", readOnly: true, verifier: "factory-runtime" };

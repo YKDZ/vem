@@ -453,7 +453,7 @@ describe("Factory Image Acceptance lifecycle", () => {
     writeFileSync(
       ssh,
       `#!/bin/sh
-printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"factory-preclaim-verification","runId":"RUN-15-LIFECYCLE","expectedUnclaimedMachineCode":"VEM-TESTBED-WINVM-01","readOnly":true,"ok":true,"checks":{"factoryRuntime":{"ok":true},"absentMachineIdentity":{"asserted":true}}}'
+printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"factory-preclaim-verification","runId":"RUN-15-LIFECYCLE","expectedUnclaimedMachineCode":"VEM-TESTBED-WINVM-01","readOnly":true,"ok":true,"checks":{"factoryRuntime":{"ok":true},"absentMachineIdentity":{"asserted":true},"oobeComplete":{"asserted":true,"cleanupPhase":"complete","cleanupTaskPresent":false,"postRebootBootIdentityChanged":true,"activeVemKioskConsoleSession":true}}}'
 `,
       { mode: 0o700 },
     );
@@ -547,7 +547,7 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
     writeFileSync(
       ssh,
       `#!/bin/sh
-printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"factory-preclaim-verification","runId":"RUN-15-LIFECYCLE","expectedUnclaimedMachineCode":"VEM-TESTBED-WINVM-01","readOnly":true,"ok":true,"checks":{"factoryRuntime":{"ok":true},"absentMachineIdentity":{"asserted":true}}}'
+printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"factory-preclaim-verification","runId":"RUN-15-LIFECYCLE","expectedUnclaimedMachineCode":"VEM-TESTBED-WINVM-01","readOnly":true,"ok":true,"checks":{"factoryRuntime":{"ok":true},"absentMachineIdentity":{"asserted":true},"oobeComplete":{"asserted":true,"cleanupPhase":"complete","cleanupTaskPresent":false,"postRebootBootIdentityChanged":true,"activeVemKioskConsoleSession":true}}}'
 `,
       { mode: 0o700 },
     );
@@ -732,9 +732,18 @@ if (request.operation === "capture-approved-base") {
       writeFileSync(
         ssh,
         `#!/bin/sh
+attempt_file=${join(root, "ssh-attempts")}
+attempt=0
+if [ -f "$attempt_file" ]; then attempt=$(cat "$attempt_file"); fi
+attempt=$((attempt + 1))
+printf '%s' "$attempt" > "$attempt_file"
+if [ "$attempt" -eq 1 ]; then
+  printf '%s\\n' 'Connection reset by peer during Factory reboot' >&2
+  exit 255
+fi
 printf '%s\\n' "$@" > ${join(root, "ssh-args.txt")}
 cat > ${join(root, "ssh-stdin.ps1")}
-printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"factory-preclaim-verification","runId":"RUN-15-LIFECYCLE","expectedUnclaimedMachineCode":"VEM-TESTBED-WINVM-01","readOnly":true,"ok":true,"checks":{"factoryRuntime":{"ok":true},"absentMachineIdentity":{"asserted":true}}}'
+printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"factory-preclaim-verification","runId":"RUN-15-LIFECYCLE","expectedUnclaimedMachineCode":"VEM-TESTBED-WINVM-01","readOnly":true,"ok":true,"checks":{"factoryRuntime":{"ok":true},"absentMachineIdentity":{"asserted":true},"oobeComplete":{"asserted":true,"cleanupPhase":"complete","cleanupTaskPresent":false,"postRebootBootIdentityChanged":true,"activeVemKioskConsoleSession":true}}}'
 `,
         { mode: 0o700 },
       );
@@ -780,6 +789,11 @@ printf '%s\\n' '{"schemaVersion":"factory-preclaim-verification/v1","kind":"fact
       );
       assert.equal(result.status, 0, result.stderr);
       assert.equal(JSON.parse(readFileSync(output, "utf8")).readOnly, true);
+      assert.equal(
+        readFileSync(join(root, "ssh-attempts"), "utf8"),
+        "2",
+        "factory preclaim must retry a transient reboot transport disconnect",
+      );
       const sshArgs = readFileSync(join(root, "ssh-args.txt"), "utf8");
       const sshStdin = readFileSync(join(root, "ssh-stdin.ps1"), "utf8");
       assert.match(sshArgs, /-p\n2222\n/);
