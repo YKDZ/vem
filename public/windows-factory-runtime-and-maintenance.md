@@ -619,10 +619,17 @@ Ed25519 key whose `vem-maintenance-ca:<profile>` comment matches the selected
 profile; preparation derives its SHA-256 fingerprint with `ssh-keygen`.
 Windows preparation accepts only declared fixed local OpenSSH and WireGuard
 packages with version, SHA-256, approved signer/root thumbprints, and a valid
-Authenticode chain. `sshd` listens only on the declared WireGuard tunnel
-address. The firewall source set is exactly the configured runner and
-maintainer role pools, and every other enabled inbound TCP/22 rule is removed.
-No profile authorizes a `SYSTEM` principal or creates a default SYSTEM SSH
+Authenticode chain. Production `sshd` listens only on the declared WireGuard
+tunnel address, and its firewall source set is exactly the configured runner
+and maintainer role pools. The testbed additionally uses the explicit
+`testbed-runner-direct-plus-wireguard` bootstrap/recovery mode: `sshd` listens
+on non-WireGuard guest interfaces so a platform-neutral VM adapter can reach
+its discovered DHCP endpoint, but the direct TCP/22 firewall rule permits only
+the existing exact `MaintenanceRunnerSourceAllowlist`. A separate WireGuard
+rule retains the combined runner and maintainer role pools. Testbed direct mode
+fails without a non-empty runner allowlist; it does not encode a host bridge,
+platform, or address assumption. Every other enabled inbound TCP/22 rule is
+removed. No profile authorizes a `SYSTEM` principal or creates a default SYSTEM SSH
 entrypoint. SYSTEM-only work requires explicit elevation from the authenticated
 administrator session, which acceptance measures with an ephemeral SYSTEM task.
 

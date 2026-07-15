@@ -234,10 +234,17 @@ function Get-FactoryMaintenanceIngressPolicy {
     }
   }
   if ($Profile -eq "testbed") {
+    if ([string]::IsNullOrWhiteSpace($WireGuardInterfaceAlias)) {
+      throw "testbed FactoryProfile requires a WireGuard maintenance interface alias"
+    }
+    if ([string]::IsNullOrWhiteSpace($WireGuardListenAddress) -or $WireGuardListenAddress -eq "0.0.0.0") {
+      throw "testbed FactoryProfile requires a concrete WireGuard maintenance ListenAddress"
+    }
     return [ordered]@{
-      mode = "testbed-bootstrap-certificate"
+      mode = "testbed-runner-direct-plus-wireguard"
       effectiveListenAddress = "0.0.0.0"
       effectiveFirewallInterfaceScope = "Any"
+      runnerDirectEnabled = $true
     }
   }
   throw "FactoryProfile must be production or testbed"
@@ -1300,7 +1307,7 @@ function Get-FactoryMaintenanceResetTargets {
       "C:\ProgramData\VEM\factory\factory-runtime-manifest.json",
       "C:\ProgramData\ssh\sshd_config"
     )
-    firewallDisplayNames = @("VEM Controlled Maintenance SSH")
+    firewallDisplayNames = @("VEM Controlled Maintenance SSH", "VEM Testbed Runner Direct SSH")
   }
 }
 
@@ -1621,6 +1628,7 @@ function Write-FactoryRuntimeFiles {
       ingressMode = [string]$Preflight.MaintenanceIngress.mode
       effectiveListenAddress = [string]$Preflight.MaintenanceIngress.effectiveListenAddress
       effectiveFirewallInterfaceScope = [string]$Preflight.MaintenanceIngress.effectiveFirewallInterfaceScope
+      runnerDirectEnabled = [bool]$Preflight.MaintenanceIngress.runnerDirectEnabled
     }
     wireGuard = [ordered]@{
       serviceName = Get-WireGuardTunnelServiceName

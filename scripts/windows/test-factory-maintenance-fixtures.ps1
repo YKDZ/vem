@@ -178,7 +178,7 @@ try {
       -KioskUser "VEMKiosk" `
       -MaintenanceUser "Admin" `
       -CaPath "C:\ProgramData\VEM\factory\maintenance-ca.pub" `
-      -ListenAddress "10.77.0.10"
+      -ListenAddresses @("10.77.0.10")
   } -Pattern "conflicting earlier sshd directive" -Message "conflicting earlier sshd policy must be rejected"
 
   @(
@@ -191,7 +191,7 @@ try {
       -KioskUser "VEMKiosk" `
       -MaintenanceUser "Admin" `
       -CaPath "C:\\ProgramData\\VEM\\factory\\maintenance-ca.pub" `
-      -ListenAddress "10.77.0.10"
+      -ListenAddresses @("10.77.0.10")
   } -Pattern "conflicting earlier sshd directive" -Message "preconfigured authorized-key command must not bypass certificate-only SSH"
 
   @(
@@ -206,7 +206,7 @@ try {
     -KioskUser "VEMKiosk" `
     -MaintenanceUser "Admin" `
     -CaPath "C:\ProgramData\VEM\factory\maintenance-ca.pub" `
-    -ListenAddress "10.77.0.10"
+    -ListenAddresses @("10.77.0.10")
   $managedSshd = Get-Content -LiteralPath $sshdConfig
   $enabledSshd = @($managedSshd | Where-Object { $_ -match "^\s*[^#\s]" })
   Assert-Fixture ($enabledSshd[0] -ceq "ListenAddress 10.77.0.10") "ListenAddress must be the first effective managed directive"
@@ -251,7 +251,7 @@ try {
       -KioskUser "VEMKiosk" `
       -MaintenanceUser "YKDZ" `
       -CaPath "C:\ProgramData\VEM\factory\maintenance-ca.pub" `
-      -ListenAddress "0.0.0.0"
+      -ListenAddresses @("0.0.0.0")
   } -Pattern "must not be wildcard or loopback" -Message "testbed SSH configuration must reject a wildcard listener"
 
   $script:FactoryProfile = "testbed"
@@ -260,12 +260,12 @@ try {
     -KioskUser "VEMKiosk" `
     -MaintenanceUser "YKDZ" `
     -CaPath "C:\ProgramData\VEM\factory\maintenance-ca.pub" `
-    -ListenAddress "10.77.0.10"
+    -ListenAddresses @("0.0.0.0")
   $testbedSshd = Get-Content -LiteralPath $sshdConfig
   $testbedEnabledSshd = @($testbedSshd | Where-Object { $_ -match "^\s*[^#\s]" })
-  Assert-Fixture ($testbedEnabledSshd[0] -ceq "ListenAddress 10.77.0.10") "testbed ingress must generate the declared WireGuard SSH listener"
-  Assert-Fixture (@($testbedEnabledSshd | Where-Object { $_ -ceq "PasswordAuthentication no" }).Count -eq 1) "testbed WireGuard ingress must keep password SSH disabled"
-  Assert-Fixture (@($testbedEnabledSshd | Where-Object { $_ -ceq "AuthorizedKeysFile none" }).Count -eq 1) "testbed WireGuard ingress must keep raw authorized keys disabled"
+  Assert-Fixture ($testbedEnabledSshd[0] -ceq "ListenAddress 0.0.0.0") "testbed runner-direct ingress must listen on non-WireGuard guest interfaces"
+  Assert-Fixture (@($testbedEnabledSshd | Where-Object { $_ -ceq "PasswordAuthentication no" }).Count -eq 1) "testbed runner-direct ingress must keep password SSH disabled"
+  Assert-Fixture (@($testbedEnabledSshd | Where-Object { $_ -ceq "AuthorizedKeysFile none" }).Count -eq 1) "testbed runner-direct ingress must keep raw authorized keys disabled"
   $script:FactoryProfile = "production"
 } finally {
   Remove-Item -LiteralPath $sshdConfig -Force -ErrorAction SilentlyContinue
@@ -431,13 +431,13 @@ function Get-NetIPAddress {
 $script:FactoryProfile = "production"
 $productionIngress = Get-ControlledMaintenanceIngressPolicy -Profile "production" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "10.77.0.10"
 Assert-Fixture ($productionIngress.mode -ceq "wireguard-only") "production must use WireGuard-only maintenance ingress"
-Assert-Fixture ($productionIngress.sshListenAddress -ceq "10.77.0.10" -and $productionIngress.firewallInterfaceScope -ceq "VEM-Maintenance") "production ingress must retain the WireGuard listener and interface scope"
+Assert-Fixture ($productionIngress.sshListenAddresses[0] -ceq "10.77.0.10" -and $productionIngress.firewallInterfaceScope -ceq "VEM-Maintenance") "production ingress must retain the WireGuard listener and interface scope"
 Assert-ThrowsLike -Action {
   Get-ControlledMaintenanceIngressPolicy -Profile "production" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "0.0.0.0"
 } -Pattern "must not be wildcard or loopback" -Message "production must reject a wildcard SSH listener"
 $testbedIngress = Get-ControlledMaintenanceIngressPolicy -Profile "testbed" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "10.77.0.10"
-Assert-Fixture ($testbedIngress.mode -ceq "wireguard-only") "testbed must use WireGuard-only maintenance ingress"
-Assert-Fixture ($testbedIngress.sshListenAddress -ceq "10.77.0.10" -and $testbedIngress.firewallInterfaceScope -ceq "VEM-Maintenance") "testbed ingress must retain the declared WireGuard listener and interface scope"
+Assert-Fixture ($testbedIngress.mode -ceq "testbed-runner-direct-plus-wireguard") "testbed must enable runner-direct SSH bootstrap alongside WireGuard"
+Assert-Fixture ($testbedIngress.sshListenAddresses[0] -ceq "0.0.0.0" -and $testbedIngress.firewallInterfaceScope -ceq "Any" -and [bool]$testbedIngress.runnerDirectEnabled) "testbed ingress must listen on non-WireGuard guest interfaces while preserving the declared WireGuard path"
 Assert-ThrowsLike -Action {
   Get-ControlledMaintenanceIngressPolicy -Profile "testbed" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "0.0.0.0"
 } -Pattern "must not be wildcard or loopback" -Message "testbed must reject a wildcard SSH listener"
@@ -452,7 +452,7 @@ Assert-ThrowsLike -Action { Assert-RolePools } -Pattern "exact host addresses" -
 $script:MaintenanceRunnerSourceAllowlist = @("10.77.0.2")
 
 $script:removedFirewallRules = [System.Collections.Generic.List[string]]::new()
-$script:createdFirewallRule = $null
+$script:createdFirewallRules = [System.Collections.Generic.List[object]]::new()
 $existingFirewallRules = @(
   [pscustomobject]@{ Name = "stock-ssh"; DisplayName = "OpenSSH SSH Server"; Direction = "Inbound"; Enabled = "True"; Action = "Allow" },
   [pscustomobject]@{ Name = "unrelated-name"; DisplayName = "Corporate Support"; Direction = "Inbound"; Enabled = "True"; Action = "Allow" },
@@ -490,17 +490,26 @@ function New-NetFirewallRule {
     [string]$Profile,
     [string]$Description
   )
-  $script:createdFirewallRule = [pscustomobject]$PSBoundParameters
+  $script:createdFirewallRules.Add([pscustomobject]$PSBoundParameters) | Out-Null
 }
-Ensure-ControlledMaintenanceIngressFirewall -SourceAllowlist @("10.77.0.2", "10.77.0.3") -InterfaceAlias "VEM-Maintenance" -IngressMode "wireguard-only"
+Ensure-ControlledMaintenanceIngressFirewall -RunnerSourceAllowlist @("10.77.0.2") -MaintainerSourceAllowlist @("10.77.0.3") -InterfaceAlias "VEM-Maintenance" -IngressMode "wireguard-only"
 Assert-Fixture ($script:removedFirewallRules.Contains("stock-ssh")) "stock OpenSSH TCP/22 rule must be removed"
 Assert-Fixture ($script:removedFirewallRules.Contains("unrelated-name")) "every enabled inbound TCP/22 rule must be removed regardless of name"
 Assert-Fixture (-not $script:removedFirewallRules.Contains("web")) "non-SSH inbound rules must remain"
-Assert-Fixture ($script:createdFirewallRule.InterfaceAlias -ceq "VEM-Maintenance") "replacement firewall rule must bind the WireGuard interface"
-Assert-Fixture ($script:createdFirewallRule.LocalPort -ceq "22") "replacement firewall rule must allow only TCP/22"
-$script:createdFirewallRule = $null
+Assert-Fixture ($script:createdFirewallRules.Count -eq 1 -and $script:createdFirewallRules[0].InterfaceAlias -ceq "VEM-Maintenance") "production replacement firewall rule must bind the WireGuard interface"
+Assert-Fixture ($script:createdFirewallRules[0].LocalPort -ceq "22") "replacement firewall rule must allow only TCP/22"
+$script:createdFirewallRules.Clear()
+Ensure-ControlledMaintenanceIngressFirewall -RunnerSourceAllowlist @("10.77.0.2") -MaintainerSourceAllowlist @("10.77.0.3") -InterfaceAlias "VEM-Maintenance" -IngressMode "testbed-runner-direct-plus-wireguard"
+Assert-Fixture ($script:createdFirewallRules.Count -eq 2) "testbed runner-direct ingress must create WireGuard and direct SSH firewall rules"
+$testbedWireGuardRule = @($script:createdFirewallRules | Where-Object { $_.DisplayName -ceq "VEM Controlled Maintenance SSH" })[0]
+$testbedDirectRule = @($script:createdFirewallRules | Where-Object { $_.DisplayName -ceq "VEM Testbed Runner Direct SSH" })[0]
+Assert-Fixture ($testbedWireGuardRule.InterfaceAlias -ceq "VEM-Maintenance" -and @($testbedWireGuardRule.RemoteAddress).Count -eq 2) "testbed WireGuard firewall rule must retain both role pools"
+Assert-Fixture (-not $testbedDirectRule.PSObject.Properties.Name.Contains("InterfaceAlias") -and @($testbedDirectRule.RemoteAddress).Count -eq 1 -and $testbedDirectRule.RemoteAddress[0] -ceq "10.77.0.2") "testbed direct firewall rule must expose only the runner allowlist on non-WireGuard interfaces"
 Assert-ThrowsLike -Action {
-  Ensure-ControlledMaintenanceIngressFirewall -SourceAllowlist @("10.77.0.2", "10.77.0.3") -IngressMode "wireguard-only"
+  Ensure-ControlledMaintenanceIngressFirewall -RunnerSourceAllowlist @() -MaintainerSourceAllowlist @("10.77.0.3") -InterfaceAlias "VEM-Maintenance" -IngressMode "testbed-runner-direct-plus-wireguard"
+} -Pattern "non-empty MaintenanceRunnerSourceAllowlist" -Message "testbed runner-direct ingress must reject an empty runner allowlist"
+Assert-ThrowsLike -Action {
+  Ensure-ControlledMaintenanceIngressFirewall -RunnerSourceAllowlist @("10.77.0.2") -MaintainerSourceAllowlist @("10.77.0.3") -IngressMode "wireguard-only"
 } -Pattern "requires the declared WireGuard interface alias" -Message "testbed firewall must reject an unscoped interface"
 foreach ($shim in @("Get-NetIPAddress", "Get-NetFirewallRule", "Get-NetFirewallPortFilter", "Remove-NetFirewallRule", "Disable-NetFirewallRule", "New-NetFirewallRule")) {
   Remove-Item -LiteralPath "Function:global:$shim" -Force -ErrorAction SilentlyContinue
@@ -525,10 +534,16 @@ function Get-NetFirewallPortFilter {
 }
 function Get-NetFirewallAddressFilter {
   param($AssociatedNetFirewallRule, $ErrorAction)
+  if ($AssociatedNetFirewallRule.DisplayName -ceq "VEM Testbed Runner Direct SSH") {
+    return [pscustomobject]@{ RemoteAddress = @("10.77.0.2") }
+  }
   return [pscustomobject]@{ RemoteAddress = @("10.77.0.2", "10.77.0.3") }
 }
 function Get-NetFirewallInterfaceFilter {
   param($AssociatedNetFirewallRule, $ErrorAction)
+  if ($AssociatedNetFirewallRule.DisplayName -ceq "VEM Testbed Runner Direct SSH") {
+    return [pscustomobject]@{ InterfaceAlias = "Any" }
+  }
   return [pscustomobject]@{ InterfaceAlias = $script:fixtureFirewallInterfaceAlias }
 }
 function Get-NetTCPConnection {
@@ -544,6 +559,7 @@ $firewallEvidence = Get-MaintenanceFirewallEvidence -Manifest ([pscustomobject]@
       ingressMode = "wireguard-only"
       effectiveListenAddress = "10.77.0.10"
       effectiveFirewallInterfaceScope = "VEM-Maintenance"
+      runnerDirectEnabled = $false
     }
   })
 Assert-Fixture (@($firewallEvidence.enabledInboundTcp22Rules).Count -eq 2) "verifier must enumerate every enabled inbound TCP/22 rule"
@@ -557,22 +573,25 @@ $testbedManifest = [pscustomobject]@{
     maintainerSourceAllowlist = @("10.77.0.3")
     wireGuardInterfaceAlias = "VEM-Maintenance"
     wireGuardListenAddress = "10.77.0.10"
-    ingressMode = "wireguard-only"
-    effectiveListenAddress = "10.77.0.10"
-    effectiveFirewallInterfaceScope = "VEM-Maintenance"
+    ingressMode = "testbed-runner-direct-plus-wireguard"
+    effectiveListenAddress = "0.0.0.0"
+    effectiveFirewallInterfaceScope = "Any"
+    runnerDirectEnabled = $true
   }
 }
-$script:fixtureFirewallRules = @($managedRule)
+$directRule = [pscustomobject]@{ Name = "direct"; DisplayName = "VEM Testbed Runner Direct SSH"; Direction = "Inbound"; Enabled = "True"; Action = "Allow" }
+$script:fixtureFirewallRules = @($managedRule, $directRule)
 $script:fixtureFirewallInterfaceAlias = "VEM-Maintenance"
-$script:fixtureListeners = @([pscustomobject]@{ LocalAddress = "10.77.0.10"; LocalPort = 22; OwningProcess = 100 })
+$script:fixtureListeners = @([pscustomobject]@{ LocalAddress = "0.0.0.0"; LocalPort = 22; OwningProcess = 100 })
 $testbedFirewallEvidence = Get-MaintenanceFirewallEvidence -Manifest $testbedManifest
 $testbedIngressEvidence = Get-MaintenanceIngressEvidence -Manifest $testbedManifest
-Assert-Fixture ($testbedFirewallEvidence.interfaceAlias -ceq "VEM-Maintenance" -and @($testbedFirewallEvidence.unexpectedListeners).Count -eq 0) "testbed verifier must require the declared WireGuard listener and interface scope"
-Assert-Fixture ([bool]$testbedIngressEvidence.profileBound -and [bool]$testbedIngressEvidence.wireGuardOnly) "testbed verifier must require WireGuard-only ingress"
-$testbedManifest.maintenanceSsh.ingressMode = "testbed-bootstrap-certificate"
-$testbedManifest.maintenanceSsh.effectiveListenAddress = "0.0.0.0"
-$testbedManifest.maintenanceSsh.effectiveFirewallInterfaceScope = "Any"
-Assert-Fixture (-not [bool](Get-MaintenanceIngressEvidence -Manifest $testbedManifest).profileBound) "verifier must reject legacy testbed wildcard ingress"
+Assert-Fixture ([bool]$testbedFirewallEvidence.roleScopedRulesMatch -and @($testbedFirewallEvidence.unexpectedListeners).Count -eq 0) "testbed verifier must require a runner-only direct rule and the WireGuard role-pool rule"
+Assert-Fixture ([bool]$testbedIngressEvidence.profileBound -and [bool]$testbedIngressEvidence.runnerDirectPlusWireGuard) "testbed verifier must require runner-direct plus WireGuard ingress"
+$adapterDiscoveredDhcpGuestAddress = "192.0.2.42"
+$adapterGuestAddress = [System.Net.IPAddress]::None
+Assert-Fixture ([System.Net.IPAddress]::TryParse($adapterDiscoveredDhcpGuestAddress, [ref]$adapterGuestAddress) -and $adapterGuestAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $testbedFirewallEvidence.listeners[0].localAddress -ceq "0.0.0.0" -and $testbedFirewallEvidence.listeners[0].localPort -eq 22) "testbed runner-direct listener must accept an adapter-discovered DHCP guest address on TCP/22"
+$testbedManifest.maintenanceSsh.runnerSourceAllowlist = @()
+Assert-Fixture (-not [bool](Get-MaintenanceIngressEvidence -Manifest $testbedManifest).runnerDirectPlusWireGuard) "verifier must reject testbed direct mode with an empty runner allowlist"
 foreach ($shim in @("Get-NetFirewallRule", "Get-NetFirewallPortFilter", "Get-NetFirewallAddressFilter", "Get-NetFirewallInterfaceFilter", "Get-NetTCPConnection")) {
   Remove-Item -LiteralPath "Function:global:$shim" -Force -ErrorAction SilentlyContinue
 }
@@ -619,6 +638,7 @@ Assert-Fixture (@($resetTargets.serviceNames | Where-Object { $_ -ceq "WireGuard
 Assert-Fixture (@($resetTargets.paths | Where-Object { $_ -match "maintenance.+VEM-Maintenance\.conf$" }).Count -eq 1) "reset must remove stale maintenance tunnel config"
 Assert-Fixture (@($resetTargets.paths | Where-Object { $_ -match "ssh.+sshd_config$" }).Count -eq 1) "reset must remove stale managed sshd config"
 Assert-Fixture (@($resetTargets.firewallDisplayNames | Where-Object { $_ -ceq "VEM Controlled Maintenance SSH" }).Count -eq 1) "reset must remove stale maintenance firewall state"
+Assert-Fixture (@($resetTargets.firewallDisplayNames | Where-Object { $_ -ceq "VEM Testbed Runner Direct SSH" }).Count -eq 1) "reset must remove stale testbed runner-direct firewall state"
 
 Import-ScriptFunctions -Path $PreparePath
 function Get-LocalUser {

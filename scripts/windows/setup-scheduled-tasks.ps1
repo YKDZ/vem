@@ -394,11 +394,19 @@ function Get-ControlledMaintenanceIngressPolicy {
     throw "FactoryProfile must be production or testbed"
   }
   Assert-WireGuardListenAddress -InterfaceAlias $WireGuardInterfaceAlias -ListenAddress $WireGuardListenAddress
+  if ($Profile -eq "testbed") {
+    return [ordered]@{
+      mode = "testbed-runner-direct-plus-wireguard"
+      sshListenAddresses = @("0.0.0.0")
+      firewallInterfaceScope = "Any"
+      runnerDirectEnabled = $true
+    }
+  }
   return [ordered]@{
     mode = "wireguard-only"
-    sshListenAddress = $WireGuardListenAddress
+    sshListenAddresses = @($WireGuardListenAddress)
     firewallInterfaceScope = $WireGuardInterfaceAlias
-    requiresWireGuardAddress = $true
+    runnerDirectEnabled = $false
   }
 }
 
@@ -426,7 +434,7 @@ function Ensure-SshdConfigDenyKioskUser {
     [string]$KioskUser,
     [string]$MaintenanceUser,
     [string]$CaPath,
-    [string]$ListenAddress
+    [string[]]$ListenAddresses
   )
 
   Ensure-Directory -Path (Split-Path -Parent $ConfigPath)
@@ -438,21 +446,31 @@ function Ensure-SshdConfigDenyKioskUser {
 
   $startMarker = "# BEGIN VEM controlled remote maintenance access"
   $endMarker = "# END VEM controlled remote maintenance access"
-  if ([string]::IsNullOrWhiteSpace($ListenAddress)) {
-    throw "WireGuard tunnel ListenAddress is required"
+  if (@($ListenAddresses).Count -eq 0) {
+    throw "Controlled Maintenance Ingress requires at least one SSH ListenAddress"
   }
-  $parsedAddress = [System.Net.IPAddress]::None
-  if (-not [System.Net.IPAddress]::TryParse($ListenAddress, [ref]$parsedAddress)) {
-    throw "WireGuard tunnel ListenAddress must be an IP address: $ListenAddress"
-  }
-  if ($parsedAddress.Equals([System.Net.IPAddress]::Any) -or $parsedAddress.Equals([System.Net.IPAddress]::IPv6Any) -or
-      $parsedAddress.Equals([System.Net.IPAddress]::Loopback) -or $parsedAddress.Equals([System.Net.IPAddress]::IPv6Loopback)) {
-    throw "WireGuard tunnel ListenAddress must not be wildcard or loopback"
+  $canonicalListenAddresses = [System.Collections.Generic.List[string]]::new()
+  foreach ($ListenAddress in @($ListenAddresses)) {
+    $parsedAddress = [System.Net.IPAddress]::None
+    if ([string]::IsNullOrWhiteSpace($ListenAddress) -or -not [System.Net.IPAddress]::TryParse($ListenAddress, [ref]$parsedAddress)) {
+      throw "Controlled Maintenance Ingress ListenAddress must be an IP address: $ListenAddress"
+    }
+    $isWildcard = $parsedAddress.Equals([System.Net.IPAddress]::Any) -or $parsedAddress.Equals([System.Net.IPAddress]::IPv6Any)
+    if ($isWildcard -and $FactoryProfile -ne "testbed") {
+      throw "WireGuard tunnel ListenAddress must not be wildcard or loopback"
+    }
+    if ($parsedAddress.Equals([System.Net.IPAddress]::Loopback) -or $parsedAddress.Equals([System.Net.IPAddress]::IPv6Loopback)) {
+      throw "WireGuard tunnel ListenAddress must not be wildcard or loopback"
+    }
+    $normalizedAddress = [string]$parsedAddress.IPAddressToString
+    if (-not $canonicalListenAddresses.Contains($normalizedAddress)) {
+      $canonicalListenAddresses.Add($normalizedAddress) | Out-Null
+    }
   }
 
   $managedBlock = @(
     $startMarker,
-    "ListenAddress $($parsedAddress.IPAddressToString)",
+    @($canonicalListenAddresses | ForEach-Object { "ListenAddress $_" }),
     "TrustedUserCAKeys $CaPath",
     "PubkeyAuthentication yes",
     "PasswordAuthentication no",
@@ -640,21 +658,28 @@ function Assert-ControlledMaintenanceIngressSourceAllowlist {
 
 function Ensure-ControlledMaintenanceIngressFirewall {
   param(
-    [string[]]$SourceAllowlist,
+    [string[]]$RunnerSourceAllowlist,
+    [string[]]$MaintainerSourceAllowlist,
     [string]$InterfaceAlias,
     [string]$IngressMode
   )
 
-  $ruleName = "VEM Controlled Maintenance SSH"
-  $validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $SourceAllowlist
+  $wireGuardRuleName = "VEM Controlled Maintenance SSH"
+  $runnerDirectRuleName = "VEM Testbed Runner Direct SSH"
+  if ($IngressMode -eq "testbed-runner-direct-plus-wireguard" -and @($RunnerSourceAllowlist).Count -eq 0) {
+    throw "testbed runner-direct SSH ingress requires a non-empty MaintenanceRunnerSourceAllowlist"
+  }
+  $validatedRunnerSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $RunnerSourceAllowlist
+  $validatedMaintainerSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $MaintainerSourceAllowlist
+  $validatedSources = @(@($validatedRunnerSources) + @($validatedMaintainerSources) | Sort-Object -Unique)
   if ([string]::IsNullOrWhiteSpace($InterfaceAlias) -or $InterfaceAlias -ceq "Any") {
     throw "Controlled Maintenance Ingress firewall requires the declared WireGuard interface alias"
   }
 
   Get-EnabledInboundSshFirewallRules | Remove-NetFirewallRule
 
-  $ruleArguments = @{
-    DisplayName = $ruleName
+  $wireGuardRuleArguments = @{
+    DisplayName = $wireGuardRuleName
     Direction = "Inbound"
     Action = "Allow"
     Protocol = "TCP"
@@ -663,8 +688,22 @@ function Ensure-ControlledMaintenanceIngressFirewall {
     Profile = "Any"
     Description = "VEM-managed $IngressMode SSH ingress scoped to explicit runner and maintainer role pools."
   }
-  $ruleArguments.InterfaceAlias = $InterfaceAlias
-  New-NetFirewallRule @ruleArguments | Out-Null
+  $wireGuardRuleArguments.InterfaceAlias = $InterfaceAlias
+  New-NetFirewallRule @wireGuardRuleArguments | Out-Null
+
+  if ($IngressMode -eq "testbed-runner-direct-plus-wireguard") {
+    $runnerDirectRuleArguments = @{
+      DisplayName = $runnerDirectRuleName
+      Direction = "Inbound"
+      Action = "Allow"
+      Protocol = "TCP"
+      LocalPort = 22
+      RemoteAddress = $validatedRunnerSources
+      Profile = "Any"
+      Description = "VEM-managed testbed runner-direct SSH bootstrap/recovery ingress scoped to explicit runner sources."
+    }
+    New-NetFirewallRule @runnerDirectRuleArguments | Out-Null
+  }
 }
 
 function Reject-ControlledMaintenanceIngressMigration {
@@ -717,14 +756,17 @@ function Ensure-ControlledMaintenanceIngress {
 
   Assert-ProfileMaintenanceCa -Path $CaPath -Profile $FactoryProfile
   Ensure-OpenSshServer
-  Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser -MaintenanceUser $MaintenanceUser -CaPath $CaPath -ListenAddress ([string]$ingressPolicy.sshListenAddress)
+  if ([bool]$ingressPolicy.runnerDirectEnabled -and @($RunnerSourceAllowlist).Count -eq 0) {
+    throw "testbed runner-direct SSH ingress requires a non-empty MaintenanceRunnerSourceAllowlist"
+  }
+  Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser -MaintenanceUser $MaintenanceUser -CaPath $CaPath -ListenAddresses @($ingressPolicy.sshListenAddresses)
   $sshdExePath = Get-OpenSshServerExePath
   if ([string]::IsNullOrWhiteSpace($sshdExePath)) {
     throw "OpenSSH sshd executable is unavailable after pinned local installation"
   }
   $sshdProbeSource = ([string]$validatedSources[0] -split "/", 2)[0]
   Test-SshdConfiguration -SshdExePath $sshdExePath -ConfigPath $SshdConfigPath -MaintenanceUser $MaintenanceUser -SourceAddress $sshdProbeSource | Out-Null
-  Ensure-ControlledMaintenanceIngressFirewall -SourceAllowlist $validatedSources -InterfaceAlias ([string]$ingressPolicy.firewallInterfaceScope) -IngressMode ([string]$ingressPolicy.mode)
+  Ensure-ControlledMaintenanceIngressFirewall -RunnerSourceAllowlist $RunnerSourceAllowlist -MaintainerSourceAllowlist $MaintainerSourceAllowlist -InterfaceAlias $InterfaceAlias -IngressMode ([string]$ingressPolicy.mode)
   Ensure-LocalGroupExists -Group "OpenSSH Users"
   Add-LocalGroupMember -Group "OpenSSH Users" -Member $MaintenanceUser -ErrorAction SilentlyContinue
   Remove-LocalGroupMember -Group "OpenSSH Users" -Member $KioskUser -ErrorAction SilentlyContinue
