@@ -40,6 +40,7 @@ import {
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { admitFactoryAcceptance } from "./factory-acceptance-admission.mjs";
 import { canonicalJson, createFactoryManifest } from "./factory-manifest.mjs";
+import { factoryOobePrivacySuppressionScript } from "./oobe-registry.mjs";
 import { createSignedAssetEvidence } from "./verify-asset-evidence.mjs";
 import { verifyFactoryVisionDelivery } from "./verify-vision-delivery-assembly.mjs";
 import {
@@ -106,6 +107,24 @@ function decodeWimXmlForTest(value) {
     return swapped.toString("utf16le");
   }
   return bytes.toString("utf8");
+}
+
+function singleXmlBlockForTest(xml, tag, message) {
+  const blocks = [
+    ...xml.matchAll(
+      new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "g"),
+    ),
+  ];
+  assert.equal(blocks.length, 1, message);
+  return blocks[0][1];
+}
+
+function singleXmlTextForTest(xml, tag, message) {
+  const values = [
+    ...xml.matchAll(new RegExp(`<${tag}>([^<]+)</${tag}>`, "g")),
+  ].map((match) => match[1]);
+  assert.equal(values.length, 1, message);
+  return values[0];
 }
 
 function expectedFirstWimImage(path) {
@@ -185,6 +204,60 @@ describe("7-Zip banner version parsing", () => {
       ),
       false,
     );
+  });
+});
+
+describe("Factory OOBE registry suppression", () => {
+  it("marks the Default User profile as having seen the China local-account data-transfer notice", () => {
+    const script = factoryOobePrivacySuppressionScript();
+    assert.match(
+      script,
+      /\$defaultUserHivePath = 'C:\\Users\\Default\\NTUSER\.DAT'/,
+    );
+    assert.match(
+      script,
+      /\$defaultUserHiveRegPath = 'HKU\\VEM_FACTORY_DEFAULT_USER'/,
+    );
+    assert.match(
+      script,
+      /\$defaultUserPdePath = 'Registry::HKEY_USERS\\VEM_FACTORY_DEFAULT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CloudExperienceHost\\Intent\\PersonalDataExport'/,
+    );
+    assert.match(
+      script,
+      /reg\.exe load \$defaultUserHiveRegPath \$defaultUserHivePath/,
+    );
+    assert.match(
+      script,
+      /New-ItemProperty -Path \$defaultUserPdePath -Name PDEShown -Value 1 -PropertyType DWord -Force/,
+    );
+    assert.match(
+      script,
+      /finally \{[\s\S]+if \(\$defaultUserHiveLoaded\)[\s\S]+reg\.exe unload \$defaultUserHiveRegPath/,
+    );
+    assert.doesNotMatch(script, /\$env:|COMPUTERNAME|USERNAME|HKCU:/);
+  });
+
+  it("escapes caller-provided registry literals without deriving host-specific paths", () => {
+    const script = factoryOobePrivacySuppressionScript({
+      policyPath: "HKLM:\\SOFTWARE\\VEM\\O'BEE",
+      statePath: "HKLM:\\SOFTWARE\\VEM\\OOBEState",
+      defaultUserHivePath: "D:\\Factory\\Default's\\NTUSER.DAT",
+      defaultUserHiveName: "VEM_FACTORY_TEST_HIVE",
+    });
+    assert.match(script, /\$oobePolicyPath = 'HKLM:\\SOFTWARE\\VEM\\O''BEE'/);
+    assert.match(
+      script,
+      /\$defaultUserHivePath = 'D:\\Factory\\Default''s\\NTUSER\.DAT'/,
+    );
+    assert.match(
+      script,
+      /\$defaultUserHiveRegPath = 'HKU\\VEM_FACTORY_TEST_HIVE'/,
+    );
+    assert.match(
+      script,
+      /Registry::HKEY_USERS\\VEM_FACTORY_TEST_HIVE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CloudExperienceHost\\Intent\\PersonalDataExport/,
+    );
+    assert.doesNotMatch(script, /\$env:|COMPUTERNAME|USERNAME|HKCU:/);
   });
 });
 
@@ -1068,7 +1141,60 @@ describe("real deterministic Factory ISO builder", () => {
     }
     assert.match(bios, /<UserAccounts>[\s\S]*?<Name>VEMOobeBootstrap<\/Name>/);
     assert.match(bios, /<Group>Users<\/Group>/);
-    assert.doesNotMatch(bios, /<AutoLogon>|<FirstLogonCommands>/);
+    const autoLogon = singleXmlBlockForTest(
+      bios,
+      "AutoLogon",
+      "Factory unattended has exactly one temporary OOBE AutoLogon",
+    );
+    const localAccount = singleXmlBlockForTest(
+      bios,
+      "LocalAccount",
+      "Factory unattended has exactly one temporary OOBE local account",
+    );
+    assert.equal(
+      singleXmlTextForTest(autoLogon, "Username", "AutoLogon has one username"),
+      singleXmlTextForTest(
+        localAccount,
+        "Name",
+        "temporary local account has one name",
+      ),
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        autoLogon,
+        "Value",
+        "AutoLogon has one password value",
+      ),
+      singleXmlTextForTest(
+        localAccount,
+        "Value",
+        "temporary local account has one password value",
+      ),
+    );
+    assert.equal(
+      singleXmlTextForTest(autoLogon, "Username", "AutoLogon has one username"),
+      "VEMOobeBootstrap",
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        autoLogon,
+        "Value",
+        "AutoLogon has one password value",
+      ),
+      "VEM-Factory-OOBE-v1!",
+    );
+    assert.equal(
+      singleXmlTextForTest(autoLogon, "Enabled", "AutoLogon has one Enabled"),
+      "true",
+    );
+    assert.deepEqual(
+      [...bios.matchAll(/<LogonCount>([^<]+)<\/LogonCount>/g)].map(
+        (match) => match[1],
+      ),
+      ["1"],
+      "Factory unattended AutoLogon is one logon only",
+    );
+    assert.doesNotMatch(bios, /<FirstLogonCommands>/);
     assert.doesNotMatch(bios, /YKDZ/);
 
     const production = factoryAutounattendXml(
@@ -1399,8 +1525,8 @@ describe("real deterministic Factory ISO builder", () => {
         [...unattended.matchAll(/<Password><Value>([^<]+)<\/Value>/g)].map(
           (match) => match[1],
         ),
-        ["VEM-Factory-OOBE-v1!"],
-        "Factory unattended media may embed only the disposable OOBE bootstrap password",
+        ["VEM-Factory-OOBE-v1!", "VEM-Factory-OOBE-v1!"],
+        "Factory unattended media may embed only the disposable OOBE bootstrap password for account creation and one-time AutoLogon",
       );
       const baseline = JSON.parse(
         await readFile(
@@ -1588,6 +1714,24 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(prepareOobe, /'suppress-oobe-privacy'/);
       assert.match(prepareOobe, /DisablePrivacyExperience/);
       assert.match(prepareOobe, /PrivacyConsentStatus/);
+      assert.match(prepareOobe, /C:\\Users\\Default\\NTUSER\.DAT/);
+      assert.match(prepareOobe, /HKU\\VEM_FACTORY_DEFAULT_USER/);
+      assert.match(
+        prepareOobe,
+        /CloudExperienceHost\\Intent\\PersonalDataExport/,
+      );
+      assert.match(
+        prepareOobe,
+        /New-ItemProperty -Path \$defaultUserPdePath -Name PDEShown -Value 1 -PropertyType DWord -Force/,
+      );
+      assert.match(
+        prepareOobe,
+        /reg\.exe load \$defaultUserHiveRegPath \$defaultUserHivePath[\s\S]+finally \{[\s\S]+reg\.exe unload \$defaultUserHiveRegPath/,
+      );
+      assert.doesNotMatch(
+        prepareOobe,
+        /CloudExperienceHost[\s\S]{0,240}\$env:|HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CloudExperienceHost/,
+      );
       assert.match(
         prepareOobe,
         /Test-Path -LiteralPath \$oobeStatePath -PathType Container/,
@@ -1632,6 +1776,10 @@ describe("real deterministic Factory ISO builder", () => {
         "utf8",
       );
       assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
+      assert.match(
+        completeOobe,
+        /Remove-ItemProperty[^\n]+AutoLogonCount[\s\S]+Remove-LocalUser[^\n]+VEMOobeBootstrap/,
+      );
       assert.match(
         completeOobe,
         /DefaultUserName -Value 'VEMKiosk'[\s\S]+DefaultDomainName -Value \$env:COMPUTERNAME/,

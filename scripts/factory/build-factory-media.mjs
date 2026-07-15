@@ -907,6 +907,9 @@ function factoryAccountForProfile(profile) {
   return profile === "production" ? "Admin" : "YKDZ";
 }
 
+const FACTORY_OOBE_BOOTSTRAP_USER = "VEMOobeBootstrap";
+const FACTORY_OOBE_BOOTSTRAP_PASSWORD = "VEM-Factory-OOBE-v1!";
+
 const WINDOWS_SETUP_KEY_BY_EDITION = new Map([
   ["Professional", "W269N-WFGWX-YVC9B-4J6C9-T83GX"],
 ]);
@@ -967,7 +970,8 @@ export function factoryAutounattendXml(
     </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideLocalAccountScreen>true</HideLocalAccountScreen><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC><SkipMachineOOBE>true</SkipMachineOOBE><SkipUserOOBE>true</SkipUserOOBE></OOBE>
-      <UserAccounts><LocalAccounts><LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Password><Value>VEM-Factory-OOBE-v1!</Value><PlainText>true</PlainText></Password><Description>Temporary VEM Factory OOBE bootstrap</Description><DisplayName>VEM Factory OOBE Bootstrap</DisplayName><Group>Users</Group><Name>VEMOobeBootstrap</Name></LocalAccount></LocalAccounts></UserAccounts>
+      <AutoLogon><Password><Value>${FACTORY_OOBE_BOOTSTRAP_PASSWORD}</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>${FACTORY_OOBE_BOOTSTRAP_USER}</Username></AutoLogon>
+      <UserAccounts><LocalAccounts><LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Password><Value>${FACTORY_OOBE_BOOTSTRAP_PASSWORD}</Value><PlainText>true</PlainText></Password><Description>Temporary VEM Factory OOBE bootstrap</Description><DisplayName>VEM Factory OOBE Bootstrap</DisplayName><Group>Users</Group><Name>${FACTORY_OOBE_BOOTSTRAP_USER}</Name></LocalAccount></LocalAccounts></UserAccounts>
       <RegisteredOwner>VEM Factory</RegisteredOwner><RegisteredOrganization>VEM</RegisteredOrganization><TimeZone>UTC</TimeZone>
     </component>
   </settings>
