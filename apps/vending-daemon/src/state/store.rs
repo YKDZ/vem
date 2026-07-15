@@ -26,6 +26,7 @@ use vending_core::hardware::{
 
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
 const COMMAND_LOG_MAX_ENTRIES: i64 = 2000;
+const MANUAL_DISPENSE_DIAGNOSTIC_MAX_ENTRIES: i64 = 2000;
 const OUTBOX_TTL_DAYS: i64 = 7;
 pub const OUTBOX_MAX_EVENTS: i64 = 500;
 const STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY: &str = "stock_ledger_rebuilt_after_quarantine";
@@ -154,6 +155,8 @@ pub enum StoreError {
     InvalidStockInput(String),
     #[error("invalid checkout flow action for new write: {0}")]
     InvalidCheckoutFlowAction(String),
+    #[error("manual dispense diagnostic capacity limit reached")]
+    ManualDispenseDiagnosticCapacity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -923,6 +926,13 @@ impl LocalStateStore {
             tx.commit().await?;
             return Ok(ManualDispenseReservation::Existing(existing));
         }
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM manual_dispense_diagnostics")
+            .fetch_one(tx.as_mut())
+            .await?;
+        if count.0 >= MANUAL_DISPENSE_DIAGNOSTIC_MAX_ENTRIES {
+            tx.rollback().await?;
+            return Err(StoreError::ManualDispenseDiagnosticCapacity);
+        }
         sqlx::query(
             "INSERT INTO manual_dispense_diagnostics(
               diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
@@ -1375,14 +1385,18 @@ impl LocalStateStore {
         &self,
         event: &DispenseProgressEvent,
     ) -> Result<(), StoreError> {
-        let row: Option<(Option<String>,)> =
-            sqlx::query_as("SELECT last_backend_status_json FROM order_sessions WHERE order_no=?1")
-                .bind(&event.order_no)
-                .fetch_optional(&self.pool)
-                .await?;
-        let Some((last_backend_status_json,)) = row else {
+        let row: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT last_backend_status_json,next_action FROM order_sessions WHERE order_no=?1",
+        )
+        .bind(&event.order_no)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((last_backend_status_json, next_action)) = row else {
             return Ok(());
         };
+        if next_action != "dispensing" {
+            return Ok(());
+        }
 
         let mut backend_status = last_backend_status_json
             .as_deref()
@@ -6467,6 +6481,19 @@ fn patch_backend_status_for_dispense_progress(
         *vending = serde_json::json!({});
     }
     if let Some(vending) = vending.as_object_mut() {
+        let incoming_rank = dispense_progress_rank(&event.stage);
+        let current_rank = vending
+            .get("fulfillmentProgressStage")
+            .and_then(|value| value.as_str())
+            .map(dispense_progress_name_rank)
+            .unwrap_or(0);
+        if incoming_rank < current_rank {
+            return;
+        }
+        vending.insert(
+            "fulfillmentProgressStage".to_string(),
+            serde_json::Value::String(dispense_progress_stage_name(&event.stage).to_string()),
+        );
         vending.insert(
             "commandNo".to_string(),
             serde_json::Value::String(event.command_no.clone()),
@@ -6495,6 +6522,37 @@ fn patch_backend_status_for_dispense_progress(
                 "reportedAt": event.reported_at,
             }),
         );
+    }
+}
+
+fn dispense_progress_rank(stage: &DispenseProgressStage) -> u8 {
+    match stage {
+        DispenseProgressStage::OutletOpened => 1,
+        DispenseProgressStage::PickupWaiting => 2,
+        DispenseProgressStage::PickupTimeoutWarning => 3,
+        DispenseProgressStage::PickupCompleted => 4,
+        DispenseProgressStage::ResetCompleted => 5,
+    }
+}
+
+fn dispense_progress_stage_name(stage: &DispenseProgressStage) -> &'static str {
+    match stage {
+        DispenseProgressStage::OutletOpened => "outlet_opened",
+        DispenseProgressStage::PickupWaiting => "pickup_waiting",
+        DispenseProgressStage::PickupTimeoutWarning => "pickup_timeout_warning",
+        DispenseProgressStage::PickupCompleted => "pickup_completed",
+        DispenseProgressStage::ResetCompleted => "reset_completed",
+    }
+}
+
+fn dispense_progress_name_rank(stage: &str) -> u8 {
+    match stage {
+        "outlet_opened" => 1,
+        "pickup_waiting" => 2,
+        "pickup_timeout_warning" => 3,
+        "pickup_completed" => 4,
+        "reset_completed" => 5,
+        _ => 0,
     }
 }
 
@@ -12004,6 +12062,18 @@ mod tests {
             .await
             .expect("record late reset completed");
 
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-LATE-RESET".to_string(),
+                order_no: "ORDER-LATE-RESET".to_string(),
+                stage: DispenseProgressStage::PickupTimeoutWarning,
+                warning_no: Some(2),
+                message: "delayed E5".to_string(),
+                reported_at: "2026-06-13T09:00:03.000Z".to_string(),
+            })
+            .await
+            .expect("ignore delayed nonterminal progress");
+
         let snapshot = store
             .current_transaction_snapshot()
             .await
@@ -12018,6 +12088,58 @@ mod tests {
         assert_eq!(vending.command_no.as_deref(), Some("CMD-LATE-RESET"));
         assert_eq!(vending.status.as_deref(), Some("succeeded"));
         assert!(vending.pickup_reminder.is_none());
+    }
+
+    #[tokio::test]
+    async fn f1_is_nonterminal_and_delayed_e5_cannot_regress_closure_progress() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store.upsert_order_session(OrderSessionUpsert {
+            order_no: "ORDER-F1", payment_method: "payment_code", payment_provider: Some("alipay"),
+            items_json: json!([]), status: "dispensing", next_action: "dispensing",
+            payment_attempt_json: None, recovery_strategy: "local",
+            last_backend_status_json: Some(json!({"orderNo":"ORDER-F1","orderStatus":"dispensing","nextAction":"dispensing","vending":{"commandNo":"CMD-F1","status":"dispensing"}})),
+            last_error: None,
+        }).await.unwrap();
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-F1".to_string(),
+                order_no: "ORDER-F1".to_string(),
+                stage: DispenseProgressStage::PickupCompleted,
+                warning_no: None,
+                message: "pickup closed, resetting".to_string(),
+                reported_at: now_iso(),
+            })
+            .await
+            .unwrap();
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-F1".to_string(),
+                order_no: "ORDER-F1".to_string(),
+                stage: DispenseProgressStage::PickupTimeoutWarning,
+                warning_no: Some(2),
+                message: "delayed timeout".to_string(),
+                reported_at: now_iso(),
+            })
+            .await
+            .unwrap();
+        let snapshot = store.current_transaction_snapshot().await.unwrap().unwrap();
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
+        assert_eq!(
+            snapshot
+                .vending
+                .unwrap()
+                .pickup_reminder
+                .unwrap()
+                .stage
+                .as_deref(),
+            Some("pickup_completed")
+        );
     }
 
     #[tokio::test]

@@ -304,6 +304,9 @@ async function beginProtectedMaintenance(): Promise<void> {
   try {
     const scopes = [
       ...(operatorEnteredMaintenance.value ? ["maintenance.reclaim"] : []),
+      ...(operatorEnteredMaintenance.value
+        ? ["maintenance.manual_dispense"]
+        : []),
       ...(showProtectedDesktopExit.value ? ["maintenance.desktop_exit"] : []),
     ];
     const session = await daemonClient.beginMaintenanceSession(
@@ -646,7 +649,7 @@ onUnmounted(() => {
   stopDiagnosticsAutoRefresh();
   void callTauriCommand<void>("stop_machine_audio").catch(() => undefined);
   clearRenderedMaintenanceSession();
-  daemonClient.releaseMaintenanceSessionRoute("maintenance");
+  void daemonClient.revokeMaintenanceSessionRoute("maintenance");
   void stopTryOnPreviewDiagnostic();
 });
 
@@ -660,6 +663,41 @@ const hardwareMaintenance = reactive({
   loading: false,
   message: null as string | null,
 });
+
+const manualDispenseDiagnostic = reactive({
+  slotCode: "A1",
+  layerNo: 1,
+  cellNo: 1,
+  loading: false,
+  message: null as string | null,
+});
+
+async function runManualDispenseDiagnostic(): Promise<void> {
+  if (!maintenanceSessionAuthorized.value || !operatorEnteredMaintenance.value)
+    return;
+  manualDispenseDiagnostic.loading = true;
+  manualDispenseDiagnostic.message = null;
+  try {
+    const result = await daemonClient.runManualDispenseDiagnostic({
+      idempotencyKey: crypto.randomUUID(),
+      slotCode: manualDispenseDiagnostic.slotCode.trim(),
+      layerNo: manualDispenseDiagnostic.layerNo,
+      cellNo: manualDispenseDiagnostic.cellNo,
+      quantity: 1,
+      timeoutSeconds: 30,
+    });
+    manualDispenseDiagnostic.message =
+      result.outcome === "completed"
+        ? `诊断出货完成（${result.diagnosticId}）。请立即执行库存核对。`
+        : `诊断结果 ${result.outcome}（${result.diagnosticId}）。请核实实物并执行库存核对。`;
+  } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
+    manualDispenseDiagnostic.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    manualDispenseDiagnostic.loading = false;
+  }
+}
 
 const deviceBindingMaintenance = reactive({
   loading: false,
@@ -1875,6 +1913,68 @@ async function submitStockMaintenanceTask(): Promise<void> {
           class="rounded-2xl bg-sky-500/15 p-3 text-sky-100"
         >
           {{ deviceBindingMaintenance.message }}
+        </p>
+      </section>
+
+      <section
+        v-if="operatorEnteredMaintenance"
+        class="mt-6 rounded-3xl border border-amber-200/20 bg-amber-500/10 p-5"
+        data-test="manual-dispense-diagnostic"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="font-semibold text-amber-100">手动出货诊断</p>
+          <span class="text-sm text-amber-100">执行后必须核对库存</span>
+        </div>
+        <form
+          class="mt-4 grid gap-3 md:grid-cols-4"
+          @submit.prevent="runManualDispenseDiagnostic"
+        >
+          <label class="grid gap-1 text-left text-sm text-slate-200">
+            货道
+            <input
+              v-model.trim="manualDispenseDiagnostic.slotCode"
+              class="rounded-xl bg-slate-950/60 p-3"
+              maxlength="32"
+              required
+            />
+          </label>
+          <label class="grid gap-1 text-left text-sm text-slate-200">
+            层
+            <input
+              v-model.number="manualDispenseDiagnostic.layerNo"
+              class="rounded-xl bg-slate-950/60 p-3"
+              type="number"
+              min="1"
+              max="255"
+              required
+            />
+          </label>
+          <label class="grid gap-1 text-left text-sm text-slate-200">
+            格
+            <input
+              v-model.number="manualDispenseDiagnostic.cellNo"
+              class="rounded-xl bg-slate-950/60 p-3"
+              type="number"
+              min="1"
+              max="255"
+              required
+            />
+          </label>
+          <button
+            class="kiosk-touch-target self-end rounded-xl bg-amber-200 px-4 py-3 font-bold text-slate-950 disabled:opacity-40"
+            type="submit"
+            :disabled="
+              !maintenanceSessionAuthorized || manualDispenseDiagnostic.loading
+            "
+          >
+            {{ manualDispenseDiagnostic.loading ? "执行中" : "出货一件" }}
+          </button>
+        </form>
+        <p
+          v-if="manualDispenseDiagnostic.message"
+          class="mt-3 text-sm text-amber-100"
+        >
+          {{ manualDispenseDiagnostic.message }}
         </p>
       </section>
 

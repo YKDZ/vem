@@ -27,6 +27,7 @@ import {
   configSummaryFromRuntimeConfigurationSummary,
   daemonEventSchema,
   hardwareSelfCheckSchema,
+  manualDispenseDiagnosticResultSchema,
   deviceBindingActivationSchema,
   deviceBindingSnapshotSchema,
   deviceBindingTestResultSchema,
@@ -524,6 +525,22 @@ export class DaemonApiClient {
     }
   }
 
+  async revokeMaintenanceSessionRoute(
+    route: MaintenanceSessionRouteScope,
+  ): Promise<void> {
+    if (
+      this.maintenanceSessionRouteScope !== route ||
+      !this.maintenanceSession
+    ) {
+      return;
+    }
+    try {
+      await this.request("/v1/maintenance/sessions/revoke", { method: "POST" });
+    } finally {
+      this.clearMaintenanceSession();
+    }
+  }
+
   onMaintenanceSessionInvalidated(listener: () => void): () => void {
     this.maintenanceSessionInvalidationListeners.add(listener);
     return () => {
@@ -700,6 +717,15 @@ export class DaemonApiClient {
   async runHardwareSelfCheck(): Promise<HardwareSelfCheck> {
     return hardwareSelfCheckSchema.parse(
       await this.request("/v1/hardware/self-check", { method: "POST" }),
+    );
+  }
+
+  async runManualDispenseDiagnostic(body: unknown) {
+    return manualDispenseDiagnosticResultSchema.parse(
+      await this.request("/v1/maintenance/manual-dispense-diagnostic", {
+        method: "POST",
+        body,
+      }),
     );
   }
 

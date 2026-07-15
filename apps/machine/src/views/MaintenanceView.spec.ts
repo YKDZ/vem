@@ -38,6 +38,8 @@ const {
   handoffMaintenanceSessionToBringUpMock,
   getMaintenanceSessionForRouteMock,
   releaseMaintenanceSessionRouteMock,
+  revokeMaintenanceSessionRouteMock,
+  runManualDispenseDiagnosticMock,
   onMaintenanceSessionInvalidatedMock,
   callTauriCommandMock,
   openVisionTryOnSessionMock,
@@ -71,6 +73,8 @@ const {
   handoffMaintenanceSessionToBringUpMock: vi.fn(),
   getMaintenanceSessionForRouteMock: vi.fn(),
   releaseMaintenanceSessionRouteMock: vi.fn(),
+  revokeMaintenanceSessionRouteMock: vi.fn().mockResolvedValue(undefined),
+  runManualDispenseDiagnosticMock: vi.fn(),
   onMaintenanceSessionInvalidatedMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
@@ -122,6 +126,8 @@ vi.mock("@/daemon/client", async (importOriginal) => {
         handoffMaintenanceSessionToBringUpMock,
       getMaintenanceSessionForRoute: getMaintenanceSessionForRouteMock,
       releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
+      revokeMaintenanceSessionRoute: revokeMaintenanceSessionRouteMock,
+      runManualDispenseDiagnostic: runManualDispenseDiagnosticMock,
       onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
     },
   };
@@ -619,7 +625,7 @@ it("verifies the PIN through daemon IPC before enabling protected maintenance ac
   await vi.waitFor(() => {
     expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
       "2468",
-      ["maintenance.reclaim"],
+      ["maintenance.reclaim", "maintenance.manual_dispense"],
       "operator-console",
     );
   });
@@ -638,6 +644,33 @@ it("shows only the secret-free payment environment diagnostic after maintenance 
     expect(host.textContent).toContain("已就绪");
   });
   expect(host.textContent).not.toMatch(/privateKeyPem|certificate|密钥|证书/);
+});
+
+it("runs one protected manual dispense diagnostic and requires explicit stock reconciliation", async () => {
+  runManualDispenseDiagnosticMock.mockResolvedValue({
+    diagnosticId: "manual-dispense-1",
+    outcome: "completed",
+    errorCode: null,
+    reportedAt: "2026-07-15T00:00:00.000Z",
+    stockReconciliationRequired: true,
+    reconciliationStatus: "open",
+    replayed: false,
+  });
+  const host = await mountView();
+  await unlockMaintenance(host);
+  buttonByText(host, "出货一件").click();
+  await vi.waitFor(() => {
+    expect(runManualDispenseDiagnosticMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slotCode: "A1",
+        layerNo: 1,
+        cellNo: 1,
+        quantity: 1,
+      }),
+    );
+    expect(host.textContent).toContain("请立即执行库存核对");
+  });
+  expect(recordStockMovementMock).not.toHaveBeenCalled();
 });
 
 it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {
@@ -1801,7 +1834,11 @@ describe("MaintenanceView hardware config", () => {
     await vi.waitFor(() => {
       expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
         "2468",
-        ["maintenance.reclaim", "maintenance.desktop_exit"],
+        [
+          "maintenance.reclaim",
+          "maintenance.manual_dispense",
+          "maintenance.desktop_exit",
+        ],
         "operator-console",
       );
       expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop", {
