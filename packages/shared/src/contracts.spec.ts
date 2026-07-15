@@ -1014,6 +1014,27 @@ describe("shared API contract", () => {
         }),
       ).toThrow();
 
+      for (const publicConfigJson of [
+        {
+          mode: "production",
+          gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+        },
+        {
+          mode: "sandbox",
+          gatewayUrl: "https://openapi.alipay.com/gateway.do",
+        },
+      ]) {
+        expect(() =>
+          upsertPaymentProviderConfigSchema.parse({
+            providerCode: "alipay",
+            publicConfigJson,
+            sensitiveConfigJson: {
+              privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+            },
+          }),
+        ).toThrow(/gateway/i);
+      }
+
       expect(() =>
         upsertPaymentProviderConfigSchema.parse({
           providerCode: "wechat_pay",
@@ -3164,7 +3185,7 @@ describe("shared API contract", () => {
   });
 
   describe("payment ops schemas", () => {
-    it("carries a secret-free provider environment diagnostic to machine operators", () => {
+    it("keeps the customer payment-options contract environment-neutral", () => {
       const result = machinePaymentOptionsResponseSchema.parse({
         options: [],
         defaultOptionKey: null,
@@ -3177,14 +3198,8 @@ describe("shared API contract", () => {
         serverTime: "2026-05-06T10:00:00.000Z",
       });
 
-      expect(result.providerEnvironment).toEqual({
-        environment: "sandbox",
-        readiness: "ready",
-        errorCategory: "none",
-      });
-      expect(JSON.stringify(result.providerEnvironment)).not.toMatch(
-        /private|secret|certificate|keyPem/i,
-      );
+      expect(result).not.toHaveProperty("providerEnvironment");
+      expect(JSON.stringify(result)).not.toMatch(/sandbox|production/i);
     });
 
     it("paymentOpsReadinessSchema parses ready status with all checks", () => {

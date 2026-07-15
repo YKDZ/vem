@@ -638,12 +638,17 @@ async fn mock_payment_code_options(server: &MockServer) {
             }],
             "defaultOptionKey": "payment_code:alipay",
             "defaultProviderCode": "alipay",
-            "providerEnvironment": {
-                "environment": "production",
-                "readiness": "ready",
-                "errorCategory": "none"
-            },
             "serverTime": "2026-05-30T00:00:00.000Z"
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/machine-orders/payment-environment-diagnostic"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "environment": "production",
+            "readiness": "ready",
+            "errorCategory": "none"
         })))
         .mount(server)
         .await;

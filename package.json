@@ -10,6 +10,7 @@
     "check:factory-manifest": "node --test scripts/check-factory-manifest.test.mjs scripts/factory/*.test.mjs",
     "check:factory-runtime-prep": "node scripts/check-factory-runtime-prep.mjs",
     "check:fix": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all && turbo lint -- --fix && turbo typecheck test",
+    "check:machine-customer-copy": "node --test scripts/check-machine-customer-payment-copy.test.mjs && pnpm --filter machine build && node scripts/check-machine-customer-payment-copy.mjs",
     "check:machine-e2e-ci": "node --test scripts/check-machine-e2e-ci.test.mjs",
     "check:machine-vision-deployment": "node scripts/check-machine-vision-deployment.mjs",
     "check:maintenance-relay-runbook": "node --test scripts/check-maintenance-relay-runbook.test.mjs",

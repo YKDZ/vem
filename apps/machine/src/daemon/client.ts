@@ -33,6 +33,7 @@ import {
   environmentControlResultSchema,
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
+  paymentProviderEnvironmentDiagnosticSchema,
   machineSaleReadinessSchema,
   naturalContextSnapshotSchema,
   networkSettingsResponseSchema,
@@ -57,6 +58,7 @@ import {
   type DeviceBindingTestResult,
   type EnvironmentControlResult,
   type MachineSaleReadiness,
+  type PaymentProviderEnvironmentDiagnostic,
   type NaturalContextSnapshot,
   type MaintenanceEnrollmentStatus,
   type MaintenanceSession,
@@ -629,6 +631,12 @@ export class DaemonApiClient {
   async getPaymentOptions() {
     return machinePaymentOptionsResponseSchema.parse(
       await this.request("/v1/payment-options"),
+    );
+  }
+
+  async getPaymentEnvironmentDiagnostic(): Promise<PaymentProviderEnvironmentDiagnostic> {
+    return paymentProviderEnvironmentDiagnosticSchema.parse(
+      await this.request("/v1/maintenance/payment-environment"),
     );
   }
 

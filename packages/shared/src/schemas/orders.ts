@@ -599,11 +599,6 @@ export const machinePaymentOptionsResponseSchema = z.object({
   options: z.array(machinePaymentOptionSchema),
   defaultOptionKey: machinePaymentOptionKeySchema.nullable(),
   defaultProviderCode: machinePaymentProviderCodeSchema.nullable(),
-  providerEnvironment: paymentProviderEnvironmentDiagnosticSchema.default({
-    environment: "unavailable",
-    readiness: "blocked",
-    errorCategory: "provider_unconfigured",
-  }),
   serverTime: z.iso.datetime(),
 });
 

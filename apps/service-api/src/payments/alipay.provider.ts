@@ -6,6 +6,7 @@ import {
   Logger,
   UnauthorizedException,
 } from "@nestjs/common";
+import { alipayEffectiveEnvironmentSchema } from "@vem/shared";
 
 import type {
   PaymentCodeCapableProvider,
@@ -95,6 +96,9 @@ function normalizeEndpoint(gatewayUrl: string): string {
 }
 
 function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
+  const publicConfig = alipayEffectiveEnvironmentSchema.parse(
+    input.publicConfigJson,
+  );
   const source: Record<string, unknown> = {
     ...input.publicConfigJson,
     ...input.sensitiveConfigJson,
@@ -102,10 +106,7 @@ function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
   if (input.appId) source["appId"] ??= input.appId;
   if (input.merchantNo) source["sellerId"] ??= input.merchantNo;
 
-  const gatewayUrl =
-    typeof source["gatewayUrl"] === "string" && source["gatewayUrl"].length > 0
-      ? source["gatewayUrl"]
-      : "https://openapi.alipay.com/gateway.do";
+  const gatewayUrl = publicConfig.gatewayUrl;
   const keyType = source["keyType"] === "PKCS1" ? "PKCS1" : "PKCS8";
   return {
     appId: readRequiredString(source, "appId", "Alipay"),

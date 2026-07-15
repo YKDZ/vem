@@ -12,7 +12,7 @@ export function getPaymentProviderCopy(
   if (providerCode === "alipay") {
     return {
       title: "支付宝扫码支付",
-      subtitle: "请使用支付宝或沙箱钱包扫码完成支付。",
+      subtitle: "请使用支付宝扫码完成支付。",
       qrAlt: "支付宝支付二维码",
     };
   }

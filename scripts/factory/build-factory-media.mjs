@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 
+import { assertNoPlatformPrivateKeyMaterialFile } from "../security/platform-private-key-scanner.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { canonicalJson, validateFactoryManifest } from "./factory-manifest.mjs";
 import { factoryOobePrivacySuppressionScript } from "./oobe-registry.mjs";
@@ -118,6 +119,7 @@ const EFFECTIVE_REPOSITORY_INPUT_ROLES = [
   "repo-module:factory/oobe-registry.mjs",
   "repo-module:factory/verify-asset-evidence.mjs",
   "repo-module:factory/vision-release.mjs",
+  "repo-module:security/platform-private-key-scanner.mjs",
   "repo-schema:public/factory-manifest-v1.schema.json",
   "repo-schema:public/vision-artifact-attestation-v1.schema.json",
   "repo-schema:public/vision-conformance-v1.schema.json",
@@ -158,33 +160,24 @@ function hashBytes(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-export function assertNoPlatformPaymentSecretBytes(bytes, label) {
-  const text = Buffer.from(bytes).toString("latin1");
-  if (
-    /BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY/i.test(text) ||
-    /BEGIN\s+CERTIFICATE/i.test(text)
-  ) {
-    throw new Error(
-      `${label} contains platform payment private-key or certificate material`,
-    );
-  }
-}
-
 async function assertRuntimeAssetsContainNoPlatformPaymentSecrets(
   resolvedAssets,
   store,
 ) {
   const root = await mkdtemp(join(tmpdir(), "vem-factory-payment-boundary-"));
   try {
-    for (const asset of resolvedAssets.filter(({ reference }) =>
-      ["vem-daemon", "vem-machine-ui"].includes(reference.role),
-    )) {
+    for (const asset of resolvedAssets) {
       const path = join(root, `${asset.reference.role}.bin`);
-      await store.stageVerified(asset.reference, path);
-      assertNoPlatformPaymentSecretBytes(
-        await readFile(path),
-        asset.reference.role,
-      );
+      if (asset.reference.role === "windows-source-iso") {
+        await store.stageUncachedVerified(
+          asset.reference,
+          asset.sourcePath,
+          path,
+        );
+      } else {
+        await store.stageVerified(asset.reference, path);
+      }
+      await assertNoPlatformPrivateKeyMaterialFile(path, asset.reference.role);
     }
   } finally {
     await rm(root, { recursive: true, force: true });

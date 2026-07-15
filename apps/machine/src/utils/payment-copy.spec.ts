@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 import { getPaymentProviderCopy } from "./payment-copy";
 
 describe("getPaymentProviderCopy", () => {
+  it("never exposes provider environment vocabulary in real-provider customer copy", () => {
+    const copy = JSON.stringify([
+      getPaymentProviderCopy("alipay"),
+      getPaymentProviderCopy("wechat_pay"),
+    ]);
+    expect(copy).not.toMatch(/sandbox|沙箱|testbed|测试环境/i);
+  });
+
   it("returns alipay copy for alipay providerCode", () => {
     const copy = getPaymentProviderCopy("alipay");
     expect(copy.title).toBe("支付宝扫码支付");

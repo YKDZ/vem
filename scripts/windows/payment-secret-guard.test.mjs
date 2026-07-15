@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +19,32 @@ function powershellFunction(source, name) {
   return output.join("\n");
 }
 
-async function runGuards(value, artifactText = "machine-runtime") {
+function storedZip(name, content, declaredSize = content.length) {
+  const fileName = Buffer.from(name);
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt32LE(content.length, 18);
+  local.writeUInt32LE(declaredSize, 22);
+  local.writeUInt16LE(fileName.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt32LE(content.length, 20);
+  central.writeUInt32LE(declaredSize, 24);
+  central.writeUInt16LE(fileName.length, 28);
+  const centralOffset = local.length + fileName.length + content.length;
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + fileName.length, 12);
+  end.writeUInt32LE(centralOffset, 16);
+  return Buffer.concat([local, fileName, content, central, fileName, end]);
+}
+
+async function runGuards(value, artifactBytes = "machine-runtime") {
   const root = await mkdtemp(join(tmpdir(), "vem-payment-secret-guard-"));
   try {
     const source = await readFile(
@@ -29,7 +55,7 @@ async function runGuards(value, artifactText = "machine-runtime") {
     const artifactPath = join(root, "machine.exe");
     const harnessPath = join(root, "guard.ps1");
     await writeFile(manifestPath, JSON.stringify(value), "utf8");
-    await writeFile(artifactPath, artifactText, "utf8");
+    await writeFile(artifactPath, artifactBytes);
     await writeFile(
       harnessPath,
       `${powershellFunction(source, "Assert-NoPlatformPaymentSecrets")}\n${powershellFunction(source, "Assert-NoPlatformPaymentSecretFile")}\n$manifest = Get-Content -LiteralPath '${manifestPath}' -Raw | ConvertFrom-Json\nAssert-NoPlatformPaymentSecrets -Value $manifest -Path manifest\nAssert-NoPlatformPaymentSecretFile -Path '${artifactPath}'\n`,
@@ -50,21 +76,54 @@ describe("managed-update payment secret guard", () => {
       components: [{ component: "ui", artifactPath: "machine.exe" }],
     });
     assert.equal(result.status, 0, result.stderr);
+
+    const publicCertificate = await runGuards(
+      { updateId: "field-ca", components: [] },
+      "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----",
+    );
+    assert.equal(publicCertificate.status, 0, publicCertificate.stderr);
   });
 
-  it("rejects provider secret fields and PEM bytes", async () => {
+  it("rejects provider secret fields and encoded private-key bytes", async () => {
     const secretField = await runGuards({ privateKeyPem: "secret" });
     assert.notEqual(secretField.status, 0);
     assert.match(secretField.stderr, /platform-only payment secret/i);
 
-    const pemArtifact = await runGuards(
-      { updateId: "field-2", components: [] },
-      "-----BEGIN CERTIFICATE-----\nnot-deliverable\n",
+    const privatePem =
+      "-----BEGIN ENCRYPTED PRIVATE KEY-----\nnot-deliverable\n-----END ENCRYPTED PRIVATE KEY-----";
+    for (const artifact of [
+      privatePem,
+      Buffer.from(privatePem, "utf16le"),
+      Buffer.from(Buffer.from(privatePem).toString("base64")),
+    ]) {
+      const result = await runGuards(
+        { updateId: "field-2", components: [] },
+        artifact,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /platform private-key material/i);
+    }
+
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const derArtifact = await runGuards(
+      { updateId: "field-der", components: [] },
+      privateKey.export({ format: "der", type: "pkcs8" }),
     );
-    assert.notEqual(pemArtifact.status, 0);
-    assert.match(
-      pemArtifact.stderr,
-      /platform payment private-key or certificate/i,
+    assert.notEqual(derArtifact.status, 0);
+    assert.match(derArtifact.stderr, /platform private-key material/i);
+
+    const zipArtifact = await runGuards(
+      { updateId: "field-zip", components: [] },
+      storedZip("nested/private.pem", Buffer.from(privatePem)),
     );
+    assert.notEqual(zipArtifact.status, 0);
+    assert.match(zipArtifact.stderr, /platform private-key material/i);
+
+    const zipBomb = await runGuards(
+      { updateId: "field-zip-bomb", components: [] },
+      storedZip("bomb.bin", Buffer.alloc(1), 64 * 1024 * 1024),
+    );
+    assert.notEqual(zipBomb.status, 0);
+    assert.match(zipBomb.stderr, /scan budget/i);
   });
 });

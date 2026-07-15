@@ -2511,6 +2511,12 @@ export class OrdersService {
     );
   }
 
+  async getMachinePaymentEnvironmentDiagnostic(machineId: string) {
+    return await this.paymentProviderConfigService.getPaymentProviderEnvironmentDiagnosticForMachine(
+      machineId,
+    );
+  }
+
   private async createPaymentIntent(
     method: string,
     input: {

@@ -90,10 +90,9 @@ function Assert-NoPlatformPaymentSecrets {
   if ($null -eq $Value) { return }
   if ($Value -is [string]) {
     if (
-      $Value -match 'BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY' -or
-      $Value -match 'BEGIN\s+CERTIFICATE'
+      $Value -match 'BEGIN\s+(?:(?:RSA|EC)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY'
     ) {
-      throw "$Path contains platform payment private-key or certificate material"
+      throw "$Path contains platform private-key material"
     }
     return
   }
@@ -119,13 +118,131 @@ function Assert-NoPlatformPaymentSecretFile {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     throw "artifact not found: $Path"
   }
-  $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($Path))
-  if (
-    $text -match 'BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY' -or
-    $text -match 'BEGIN\s+CERTIFICATE'
-  ) {
-    throw "artifact contains platform payment private-key or certificate material: $Path"
+  $file = Get-Item -LiteralPath $Path
+  $maxInputBytes = 256MB
+  $maxExpandedBytes = 16MB
+  if ($file.Length -gt $maxInputBytes) {
+    throw "artifact exceeds bounded platform private-key scan budget: $Path"
   }
+  $scan = {
+    param([byte[]]$Bytes, [string]$Label, [int]$Depth)
+
+    if ($Depth -gt 3 -or $Bytes.Length -gt $maxInputBytes) {
+      throw "artifact exceeds bounded platform private-key scan budget: $Label"
+    }
+    $texts = @(
+      [Text.Encoding]::UTF8.GetString($Bytes),
+      [Text.Encoding]::Unicode.GetString($Bytes)
+    )
+    foreach ($text in $texts) {
+      if ($text -match 'BEGIN\s+(?:(?:RSA|EC)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY') {
+        throw "artifact contains platform private-key material: $Label"
+      }
+    }
+
+    $hex = [Convert]::ToHexString($Bytes)
+    foreach ($privateContainerOid in @(
+      '060B2A864886F70D010C0A0101',
+      '060B2A864886F70D010C0A0102',
+      '06092A864886F70D01050D'
+    )) {
+      if ($hex.Contains($privateContainerOid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "artifact contains platform private-key material: $Label"
+      }
+    }
+
+    $privateKeyDetected = $false
+    foreach ($kind in @('pkcs8', 'pkcs1')) {
+      $rsa = [Security.Cryptography.RSA]::Create()
+      try {
+        $read = 0
+        if ($kind -eq 'pkcs8') {
+          $rsa.ImportPkcs8PrivateKey($Bytes, [ref]$read)
+        } else {
+          $rsa.ImportRSAPrivateKey($Bytes, [ref]$read)
+        }
+        if ($read -eq $Bytes.Length) { $privateKeyDetected = $true }
+      } catch {
+        # Not this DER private-key encoding.
+      } finally {
+        $rsa.Dispose()
+      }
+    }
+    $ec = [Security.Cryptography.ECDsa]::Create()
+    try {
+      $read = 0
+      $ec.ImportECPrivateKey($Bytes, [ref]$read)
+      if ($read -eq $Bytes.Length) { $privateKeyDetected = $true }
+    } catch {
+      # Not an EC private-key encoding.
+    } finally {
+      $ec.Dispose()
+    }
+    if ($privateKeyDetected) {
+      throw "artifact contains platform private-key material: $Label"
+    }
+
+    if ($Bytes.Length -ge 4 -and [BitConverter]::ToUInt32($Bytes, 0) -eq 0x04034b50) {
+      Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+      $archiveStream = [IO.MemoryStream]::new($Bytes, $false)
+      try {
+        $archive = [IO.Compression.ZipArchive]::new(
+          $archiveStream,
+          [IO.Compression.ZipArchiveMode]::Read,
+          $false
+        )
+        try {
+          if ($archive.Entries.Count -gt 256) {
+            throw "artifact exceeds bounded platform private-key scan budget: $Label"
+          }
+          $expanded = 0L
+          foreach ($entry in $archive.Entries) {
+            $expanded += $entry.Length
+            if (
+              $entry.Length -gt $maxExpandedBytes -or
+              $expanded -gt $maxExpandedBytes -or
+              ($entry.CompressedLength -gt 0 -and ($entry.Length / $entry.CompressedLength) -gt 200)
+            ) {
+              throw "artifact exceeds bounded platform private-key scan budget: $Label"
+            }
+            $entryStream = $entry.Open()
+            $entryBytes = [IO.MemoryStream]::new()
+            try {
+              $entryStream.CopyTo($entryBytes)
+              & $scan $entryBytes.ToArray() "$Label/$($entry.FullName)" ($Depth + 1)
+            } finally {
+              $entryBytes.Dispose()
+              $entryStream.Dispose()
+            }
+          }
+        } finally {
+          $archive.Dispose()
+        }
+      } catch {
+        if ($_.Exception.Message -match 'platform private-key|bounded platform private-key') { throw }
+        throw "artifact archive cannot be scanned safely: $Label"
+      } finally {
+        $archiveStream.Dispose()
+      }
+    }
+
+    if ($Depth -lt 3) {
+      foreach ($text in $texts) {
+        foreach ($match in [regex]::Matches($text, '(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')) {
+          if ($match.Value.Length -gt 2MB) { continue }
+          try {
+            $decoded = [Convert]::FromBase64String($match.Value)
+          } catch {
+            continue
+          }
+          if ($decoded.Length -ge 24 -and $decoded.Length -le 1MB) {
+            & $scan $decoded "$Label (base64)" ($Depth + 1)
+          }
+        }
+      }
+    }
+  }
+  & $scan ([IO.File]::ReadAllBytes($Path)) $Path 0
 }
 
 function Get-DefaultTargetPath {

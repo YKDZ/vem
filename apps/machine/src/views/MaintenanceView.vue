@@ -1168,8 +1168,8 @@ async function refreshPaymentEnvironmentDiagnostic(): Promise<void> {
   if (!maintenanceSessionAuthorized.value) return;
   paymentEnvironmentMessage.value = null;
   try {
-    const response = await daemonClient.getPaymentOptions();
-    paymentEnvironmentDiagnostic.value = response.providerEnvironment;
+    paymentEnvironmentDiagnostic.value =
+      await daemonClient.getPaymentEnvironmentDiagnostic();
   } catch {
     paymentEnvironmentDiagnostic.value = null;
     paymentEnvironmentMessage.value = "支付环境诊断暂不可用";

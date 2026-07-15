@@ -25,7 +25,7 @@ const {
   getStockMaintenanceTaskMock,
   submitStockMaintenanceBatchMock,
   getSaleViewMock,
-  getPaymentOptionsMock,
+  getPaymentEnvironmentDiagnosticMock,
   recordStockMovementMock,
   clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
@@ -60,7 +60,7 @@ const {
   getStockMaintenanceTaskMock: vi.fn(),
   submitStockMaintenanceBatchMock: vi.fn(),
   getSaleViewMock: vi.fn(),
-  getPaymentOptionsMock: vi.fn(),
+  getPaymentEnvironmentDiagnosticMock: vi.fn(),
   recordStockMovementMock: vi.fn(),
   clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
@@ -112,7 +112,7 @@ vi.mock("@/daemon/client", async (importOriginal) => {
       getStockMaintenanceTask: getStockMaintenanceTaskMock,
       submitStockMaintenanceBatch: submitStockMaintenanceBatchMock,
       getSaleView: getSaleViewMock,
-      getPaymentOptions: getPaymentOptionsMock,
+      getPaymentEnvironmentDiagnostic: getPaymentEnvironmentDiagnosticMock,
       recordStockMovement: recordStockMovementMock,
       clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
       runHardwareSelfCheck: runHardwareSelfCheckMock,
@@ -494,16 +494,10 @@ beforeEach(() => {
     duplicate: false,
   });
   getSaleViewMock.mockResolvedValue(saleViewFixture());
-  getPaymentOptionsMock.mockResolvedValue({
-    options: [],
-    defaultOptionKey: null,
-    defaultProviderCode: null,
-    providerEnvironment: {
-      environment: "sandbox",
-      readiness: "ready",
-      errorCategory: "none",
-    },
-    serverTime: "2026-06-05T00:00:00.000Z",
+  getPaymentEnvironmentDiagnosticMock.mockResolvedValue({
+    environment: "sandbox",
+    readiness: "ready",
+    errorCategory: "none",
   });
   recordStockMovementMock.mockResolvedValue(saleViewFixture());
   clearWholeMachineMaintenanceLockMock.mockResolvedValue({ cleared: true });
@@ -646,7 +640,7 @@ it("shows only the secret-free payment environment diagnostic after maintenance 
   expect(host.textContent).not.toContain("支付环境");
   await unlockMaintenance(host);
   await vi.waitFor(() => {
-    expect(getPaymentOptionsMock).toHaveBeenCalled();
+    expect(getPaymentEnvironmentDiagnosticMock).toHaveBeenCalled();
     expect(host.textContent).toContain("支付环境");
     expect(host.textContent).toContain("沙箱");
     expect(host.textContent).toContain("已就绪");
@@ -662,6 +656,7 @@ it("returns the rendered maintenance session to read-only when the daemon invali
   await nextTick();
 
   expect(host.textContent).toContain("只读");
+  expect(host.textContent).not.toContain("支付环境");
   expect(host.textContent).toContain("守护进程连接已更新");
   expect(clearMaintenanceSessionMock).toHaveBeenCalled();
 });
