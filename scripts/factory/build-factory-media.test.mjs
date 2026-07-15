@@ -1929,6 +1929,42 @@ describe("real deterministic Factory ISO builder", () => {
     }
   });
 
+  it("passes the combined validated maintenance role pools to controlled ingress setup", async () => {
+    const prepareFactoryRuntime = await readFile(
+      new URL("../windows/prepare-factory-runtime.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      prepareFactoryRuntime,
+      /RolePools = @\(\$rolePools\.All\)[\s\S]+RunnerSourceAllowlist = @\(\$rolePools\.Runner\)[\s\S]+MaintainerSourceAllowlist = @\(\$rolePools\.Maintainer\)/,
+    );
+    const setupArguments =
+      /\$setupArguments = @\{([\s\S]*?)\n  \}/.exec(
+        prepareFactoryRuntime,
+      )?.[1] ?? "";
+    assert.ok(setupArguments, "prepare-factory-runtime has setup arguments");
+    assert.match(
+      setupArguments,
+      /MaintenanceIngressSourceAllowlist = @\(\$Preflight\.RolePools\)/,
+    );
+    assert.match(
+      setupArguments,
+      /MaintenanceRunnerSourceAllowlist = @\(\$Preflight\.RunnerSourceAllowlist\)/,
+    );
+    assert.match(
+      setupArguments,
+      /MaintenanceMaintainerSourceAllowlist = @\(\$Preflight\.MaintainerSourceAllowlist\)/,
+    );
+    assert.match(
+      setupArguments,
+      /MaintenanceIngressSourceAllowlist = @\(\$Preflight\.RolePools\)[\s\S]+MaintenanceRunnerSourceAllowlist = @\(\$Preflight\.RunnerSourceAllowlist\)[\s\S]+MaintenanceMaintainerSourceAllowlist = @\(\$Preflight\.MaintainerSourceAllowlist\)/,
+    );
+    assert.match(
+      prepareFactoryRuntime,
+      /Invoke-NamedPowerShellScript -ScriptPath \(Join-Path \$scriptsRoot "setup-scheduled-tasks\.ps1"\) -Arguments \$setupArguments/,
+    );
+  });
+
   it("replays the source boot configuration and injects OEM media into a deterministic Windows ISO", async () => {
     const data = await fixture();
     try {

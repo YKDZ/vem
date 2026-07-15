@@ -1737,6 +1737,7 @@ function Write-FactoryRuntimeFiles {
     ConfigureControlledMaintenanceIngress = $true
     MaintenanceSshCaPublicKeyPath = [string]$Plan.layout.maintenanceCaPath
     FactoryProfile = [string]$Preflight.FactoryProfile
+    MaintenanceIngressSourceAllowlist = @($Preflight.RolePools)
     MaintenanceRunnerSourceAllowlist = @($Preflight.RunnerSourceAllowlist)
     MaintenanceMaintainerSourceAllowlist = @($Preflight.MaintainerSourceAllowlist)
     MaintenanceWireGuardInterfaceAlias = [string]$Preflight.WireGuardInterfaceAlias
