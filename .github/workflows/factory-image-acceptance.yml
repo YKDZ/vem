@@ -177,7 +177,7 @@ jobs:
           if (typeof value?.accessToken !== "string" || value.actor?.runId !== process.env.GITHUB_RUN_ID || value.actor?.runAttempt !== process.env.GITHUB_RUN_ATTEMPT) throw new Error("maintenance automation exchange invalid");
           fs.writeFileSync(process.argv[3], value.accessToken, { mode: 0o600 });
           NODE
-          IFS= read -r token < "$automation_token"
+          token="$(<"$automation_token")"
           printf '::add-mask::%s\n' "$token"
           { printf 'header = "Authorization: Bearer %s"\n' "$token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --output "$created" "$control_plane/maintenance-automation/session"
           for attempt in $(seq 1 60); do
@@ -462,7 +462,7 @@ jobs:
           ssh_directory="${VEM_FACTORY_MAINTENANCE_SSH_DIR:-$RUNNER_TEMP/vem-factory-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
           if [ -s "$automation_token_path" ]; then
             control_plane="${MAINTENANCE_CONTROL_PLANE_URL%/}"
-            IFS= read -r automation_token < "$automation_token_path"
+            automation_token="$(<"$automation_token_path")"
             if ! { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --output "$revoke_response_path" "$control_plane/maintenance-automation/session/revoke"; then
               echo "Maintenance Session explicit revoke request failed" >&2
               failed=1

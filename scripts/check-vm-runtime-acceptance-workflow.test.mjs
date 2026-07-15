@@ -26,6 +26,20 @@ function stepBlock(workflow, stepName) {
 }
 
 describe("VM runtime acceptance workflow maintenance relay path", () => {
+  it("reads token files without requiring a trailing newline", () => {
+    const workflow = readWorkflow();
+    assert.doesNotMatch(workflow, /\bread\b[^\n]*token/);
+    assert.equal(
+      workflow.match(/id_token="\$\(<"\$oidc_token_path"\)"/g)?.length,
+      1,
+    );
+    assert.equal(
+      workflow.match(/automation_token="\$\(<"\$automation_token_path"\)"/g)
+        ?.length,
+      5,
+    );
+  });
+
   it("delegates serial trust-anchor creation to the E2E runner before serial adapter invocation", () => {
     const workflow = readWorkflow();
     const runtimeAcceptance = stepBlock(workflow, "Run VM Runtime Acceptance");
