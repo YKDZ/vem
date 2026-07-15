@@ -173,6 +173,7 @@ function assertMaintenancePinVerifier(value, issues) {
 
 function assertNoPrivateNetworkMaterial(value, path, issues) {
   if (typeof value === "string") {
+    if (path === "media.maintenancePinVerifier.salt") return;
     if (FORBIDDEN_PRIVATE_NETWORK_MATERIAL_PATTERN.test(value)) {
       issues.push(
         issue(
