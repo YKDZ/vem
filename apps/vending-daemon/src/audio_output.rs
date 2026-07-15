@@ -1,10 +1,18 @@
 use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::Mutex;
+#[cfg(windows)]
+use std::{num::NonZeroU16, num::NonZeroU32};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[cfg(windows)]
-use rodio::cpal::traits::{DeviceTrait, HostTrait};
+use rodio::{
+    buffer::SamplesBuffer,
+    cpal::traits::{DeviceTrait, HostTrait},
+    DeviceSinkBuilder, MixerDeviceSink, Player,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -19,6 +27,155 @@ pub trait AudioOutputPlatform: Send + Sync {
 }
 
 pub type SharedAudioOutputPlatform = Arc<dyn AudioOutputPlatform>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeAudioPlaybackEvidence {
+    pub endpoint_id: String,
+    pub source_non_silent: bool,
+}
+
+pub trait AudioOutputPlayback: Send + Sync {
+    fn play_calibration(
+        &self,
+        endpoint_id: &str,
+        volume: f32,
+    ) -> Result<NativeAudioPlaybackEvidence, String>;
+}
+
+pub type SharedAudioOutputPlayback = Arc<dyn AudioOutputPlayback>;
+
+#[cfg(any(windows, test))]
+const CALIBRATION_SAMPLE_RATE: u32 = 48_000;
+#[cfg(any(windows, test))]
+const CALIBRATION_DURATION_SAMPLES: usize = 48_000;
+#[cfg(any(windows, test))]
+const CALIBRATION_FREQUENCY_HZ: f32 = 880.0;
+#[cfg(any(windows, test))]
+const CALIBRATION_AMPLITUDE: f32 = 0.25;
+
+#[cfg(any(windows, test))]
+fn fixed_audio_calibration_samples() -> Vec<f32> {
+    (0..CALIBRATION_DURATION_SAMPLES)
+        .map(|index| {
+            let phase = 2.0 * std::f32::consts::PI * CALIBRATION_FREQUENCY_HZ * index as f32
+                / CALIBRATION_SAMPLE_RATE as f32;
+            CALIBRATION_AMPLITUDE * phase.sin()
+        })
+        .collect()
+}
+
+#[derive(Default)]
+pub struct WindowsAudioOutputPlayback {
+    #[cfg(windows)]
+    active: Mutex<Option<ActiveAudioOutputPlayback>>,
+}
+
+#[cfg(windows)]
+struct ActiveAudioOutputPlayback {
+    _sink: MixerDeviceSink,
+    player: Player,
+}
+
+impl std::fmt::Debug for WindowsAudioOutputPlayback {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WindowsAudioOutputPlayback")
+            .finish_non_exhaustive()
+    }
+}
+
+impl AudioOutputPlayback for WindowsAudioOutputPlayback {
+    fn play_calibration(
+        &self,
+        endpoint_id: &str,
+        volume: f32,
+    ) -> Result<NativeAudioPlaybackEvidence, String> {
+        #[cfg(not(windows))]
+        {
+            let _ = (endpoint_id, volume);
+            Err("native audio output playback is only supported on Windows".to_string())
+        }
+
+        #[cfg(windows)]
+        {
+            self.play_windows_calibration(endpoint_id, volume)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl WindowsAudioOutputPlayback {
+    fn play_windows_calibration(
+        &self,
+        endpoint_id: &str,
+        volume: f32,
+    ) -> Result<NativeAudioPlaybackEvidence, String> {
+        let endpoint_id = endpoint_id.trim();
+        if endpoint_id.is_empty() {
+            return Err("audio output calibration requires a stable endpoint id".to_string());
+        }
+        let host = rodio::cpal::default_host();
+        let device = host
+            .output_devices()
+            .map_err(|error| format!("enumerate audio outputs failed: {error}"))?
+            .find_map(|device| {
+                device
+                    .id()
+                    .ok()
+                    .filter(|id| id.1 == endpoint_id)
+                    .map(|_| device)
+            })
+            .ok_or_else(|| "selected native audio output is not currently observed".to_string())?;
+        let samples = fixed_audio_calibration_samples();
+        let source_non_silent = samples.iter().any(|sample| sample.abs() > 0.000_1);
+        if !source_non_silent {
+            return Err("audio output calibration source is silent".to_string());
+        }
+        let sink = DeviceSinkBuilder::from_device(device)
+            .and_then(|builder| builder.open_stream())
+            .map_err(|error| format!("open selected audio output failed: {error}"))?;
+        let player = Player::connect_new(&sink.mixer());
+        player.set_volume(volume.clamp(0.0, 1.0));
+        player.append(SamplesBuffer::new(
+            NonZeroU16::new(1).expect("one calibration channel"),
+            NonZeroU32::new(CALIBRATION_SAMPLE_RATE).expect("calibration sample rate"),
+            samples,
+        ));
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "audio output playback state is unavailable".to_string())?;
+        if let Some(previous) = active.take() {
+            previous.player.stop();
+        }
+        *active = Some(ActiveAudioOutputPlayback {
+            _sink: sink,
+            player,
+        });
+        Ok(NativeAudioPlaybackEvidence {
+            endpoint_id: endpoint_id.to_string(),
+            source_non_silent,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calibration_pcm_is_fixed_and_non_silent() {
+        let first = fixed_audio_calibration_samples();
+        let second = fixed_audio_calibration_samples();
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), CALIBRATION_DURATION_SAMPLES);
+        assert!(first.iter().any(|sample| sample.abs() > 0.000_1));
+        assert!(first
+            .iter()
+            .all(|sample| sample.abs() <= CALIBRATION_AMPLITUDE));
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct WindowsAudioOutputPlatform;

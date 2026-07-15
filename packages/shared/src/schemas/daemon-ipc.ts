@@ -279,14 +279,6 @@ export const daemonIpcAudioOutputBindingSnapshotSchema = z
   })
   .strict();
 
-export const daemonIpcNativeAudioPlaybackEvidenceSchema = z
-  .object({
-    driver: z.literal("native"),
-    endpointId: z.string().trim().min(1).max(512),
-    sourceNonSilent: z.literal(true),
-  })
-  .strict();
-
 const daemonIpcAudioCueSettingsSchema = z
   .object({
     enabled: z.boolean(),
@@ -304,7 +296,6 @@ export const daemonIpcAudioOutputTestRequestSchema = z
     endpointId: z.string().trim().min(1).max(512),
     audioCueSettings: daemonIpcAudioCueSettingsSchema,
     machineAudioVolume: z.number().positive().max(1),
-    nativePlaybackEvidence: daemonIpcNativeAudioPlaybackEvidenceSchema,
   })
   .strict();
 
@@ -335,9 +326,6 @@ export type DaemonIpcAudioOutputTestRequest = z.infer<
 >;
 export type DaemonIpcAudioOutputTestResponse = z.infer<
   typeof daemonIpcAudioOutputTestResponseSchema
->;
-export type DaemonIpcNativeAudioPlaybackEvidence = z.infer<
-  typeof daemonIpcNativeAudioPlaybackEvidenceSchema
 >;
 export type DaemonIpcAudioOutputConfirmRequest = z.infer<
   typeof daemonIpcAudioOutputConfirmRequestSchema

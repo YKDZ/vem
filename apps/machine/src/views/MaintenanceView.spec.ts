@@ -539,18 +539,7 @@ beforeEach(() => {
       };
     },
   );
-  callTauriCommandMock.mockImplementation(
-    (command: string, input?: { outputDeviceId?: string }) => {
-      if (command === "test_machine_audio_output") {
-        return Promise.resolve({
-          driver: "native",
-          endpointId: input?.outputDeviceId,
-          sourceNonSilent: true,
-        });
-      }
-      return Promise.resolve(undefined);
-    },
-  );
+  callTauriCommandMock.mockResolvedValue(undefined);
   openVisionTryOnSessionMock.mockResolvedValue({
     sessionId: "maintenance-session-1",
     previewUrl: "http://127.0.0.1:7892/try-on/maintenance.mjpeg",
@@ -1233,7 +1222,7 @@ describe("MaintenanceView hardware config", () => {
     expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
-  it("tests the selected stable endpoint through native playback before enabling heard confirmation", async () => {
+  it("asks daemon to test the selected stable endpoint before enabling heard confirmation", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -1265,23 +1254,21 @@ describe("MaintenanceView hardware config", () => {
       expect(testAudioOutputMock).toHaveBeenCalledOnce();
     });
 
-    expect(callTauriCommandMock).toHaveBeenCalledWith(
+    expect(callTauriCommandMock).not.toHaveBeenCalledWith(
       "test_machine_audio_output",
-      expect.objectContaining({
-        outputDeviceId: "{0.0.0.00000000}.hdmi-1",
-      }),
+      expect.anything(),
     );
-    expect(testAudioOutputMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        endpointId: "{0.0.0.00000000}.hdmi-1",
-        nativePlaybackEvidence: {
-          driver: "native",
-          endpointId: "{0.0.0.00000000}.hdmi-1",
-          sourceNonSilent: true,
-        },
-      }),
-    );
-    expect((heard as HTMLInputElement).disabled).toBe(false);
+    expect(testAudioOutputMock).toHaveBeenCalledWith({
+      endpointId: "{0.0.0.00000000}.hdmi-1",
+      audioCueSettings: {
+        enabled: false,
+        categories: { presence: false, transaction: false },
+      },
+      machineAudioVolume: 0.7,
+    });
+    await vi.waitFor(() => {
+      expect((heard as HTMLInputElement).disabled).toBe(false);
+    });
   });
 
   it("persists the heard output binding together with audio cue settings through protected maintenance", async () => {
@@ -1344,7 +1331,9 @@ describe("MaintenanceView hardware config", () => {
     if (!(heardCheckbox instanceof HTMLInputElement)) {
       throw new Error("heard confirmation checkbox not found");
     }
-    expect(heardCheckbox.disabled).toBe(false);
+    await vi.waitFor(() => {
+      expect(heardCheckbox.disabled).toBe(false);
+    });
     heardCheckbox.click();
     await nextTick();
 
@@ -1408,6 +1397,9 @@ describe("MaintenanceView hardware config", () => {
     if (!(heard instanceof HTMLInputElement)) {
       throw new Error("heard confirmation checkbox not found");
     }
+    await vi.waitFor(() => {
+      expect(heard.disabled).toBe(false);
+    });
     heard.click();
     await nextTick();
     expect(heard.checked).toBe(true);
@@ -1494,7 +1486,7 @@ describe("MaintenanceView hardware config", () => {
         advancedMaintenanceConfig: true,
       },
     });
-    callTauriCommandMock.mockRejectedValueOnce(
+    testAudioOutputMock.mockRejectedValueOnce(
       new Error("native output unavailable"),
     );
     const host = await mountView();
@@ -1513,7 +1505,7 @@ describe("MaintenanceView hardware config", () => {
     await vi.waitFor(() => {
       expect(host.textContent).toContain("native output unavailable");
     });
-    expect(testAudioOutputMock).not.toHaveBeenCalled();
+    expect(testAudioOutputMock).toHaveBeenCalledOnce();
     expect(host.textContent).not.toContain("当前播放驱动 · browser");
     const heard = Array.from(host.querySelectorAll("label"))
       .find((label) => label.textContent?.includes("我已经"))

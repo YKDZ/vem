@@ -237,7 +237,7 @@ describe("Daemon IPC Contract Area", () => {
     ]);
   });
 
-  it("accepts only native non-silent test evidence and daemon-confirmable hearing", () => {
+  it("does not accept client-authored native playback evidence for audio tests", () => {
     const proposedSettings = {
       endpointId: "wasapi:endpoint-1",
       audioCueSettings: {
@@ -247,20 +247,13 @@ describe("Daemon IPC Contract Area", () => {
       machineAudioVolume: 0.7,
     };
     expect(
-      daemonIpcAudioOutputTestRequestSchema.parse({
-        ...proposedSettings,
-        nativePlaybackEvidence: {
-          driver: "native",
-          endpointId: "wasapi:endpoint-1",
-          sourceNonSilent: true,
-        },
-      }).nativePlaybackEvidence,
-    ).toMatchObject({ driver: "native", sourceNonSilent: true });
+      daemonIpcAudioOutputTestRequestSchema.parse(proposedSettings),
+    ).toEqual(proposedSettings);
     expect(() =>
       daemonIpcAudioOutputTestRequestSchema.parse({
         ...proposedSettings,
         nativePlaybackEvidence: {
-          driver: "browser",
+          driver: "native",
           endpointId: "wasapi:endpoint-1",
           sourceNonSilent: true,
         },
