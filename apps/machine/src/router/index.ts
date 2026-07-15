@@ -10,6 +10,6 @@ export const router = createRouter({
   routes: machineRoutes,
 });
 
-router.beforeEach((to, from) => {
-  reconcileMaintenanceSessionRoute(to, from, daemonClient);
+router.beforeEach(async (to, from) => {
+  return reconcileMaintenanceSessionRoute(to, from, daemonClient);
 });
