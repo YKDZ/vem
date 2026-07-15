@@ -94,6 +94,20 @@ function textRepresentations(bytes) {
 
 function scanZipEntries(bytes, label, state, depth) {
   if (bytes.length < 30 || bytes.readUInt32LE(0) !== 0x04034b50) return;
+  const invalidArchive = () => {
+    throw new Error(`${label} contains an invalid archive structure`);
+  };
+  const parseExtraFields = (extra) => {
+    let offset = 0;
+    while (offset < extra.length) {
+      if (offset + 4 > extra.length) invalidArchive();
+      const id = extra.readUInt16LE(offset);
+      const size = extra.readUInt16LE(offset + 2);
+      offset += 4;
+      if (offset + size > extra.length || id === 0x0001) invalidArchive();
+      offset += size;
+    }
+  };
   const scanEntry = ({
     compressedSize,
     uncompressedSize,
@@ -128,86 +142,80 @@ function scanZipEntries(bytes, label, state, depth) {
     if (content.length > MAX_ARCHIVE_ENTRY_BYTES) {
       throw new Error(`${label} exceeds the bounded archive scan budget`);
     }
+    if (content.length !== uncompressedSize) invalidArchive();
     scanBytes(content, `${label}:${name}`, state, depth + 1);
   };
 
-  const endSignature = Buffer.from("504b0506", "hex");
-  const endOffset = bytes.lastIndexOf(endSignature);
-  if (endOffset >= 0 && endOffset + 22 <= bytes.length) {
-    const entryCount = bytes.readUInt16LE(endOffset + 10);
-    if (entryCount > MAX_ARCHIVE_ENTRIES) {
-      throw new Error(`${label} exceeds the bounded archive scan budget`);
-    }
-    let centralOffset = bytes.readUInt32LE(endOffset + 16);
-    let expandedBytes = 0;
-    for (let index = 0; index < entryCount; index += 1) {
-      if (
-        centralOffset + 46 > bytes.length ||
-        bytes.readUInt32LE(centralOffset) !== 0x02014b50
-      ) {
-        throw new Error(`${label} contains an invalid archive directory`);
-      }
-      const flags = bytes.readUInt16LE(centralOffset + 8);
-      const method = bytes.readUInt16LE(centralOffset + 10);
-      const compressedSize = bytes.readUInt32LE(centralOffset + 20);
-      const uncompressedSize = bytes.readUInt32LE(centralOffset + 24);
-      const nameLength = bytes.readUInt16LE(centralOffset + 28);
-      const extraLength = bytes.readUInt16LE(centralOffset + 30);
-      const commentLength = bytes.readUInt16LE(centralOffset + 32);
-      const localOffset = bytes.readUInt32LE(centralOffset + 42);
-      if (
-        compressedSize === 0xffffffff ||
-        uncompressedSize === 0xffffffff ||
-        localOffset === 0xffffffff
-      ) {
-        throw new Error(`${label} exceeds the bounded archive scan budget`);
-      }
-      if (
-        localOffset + 30 > bytes.length ||
-        bytes.readUInt32LE(localOffset) !== 0x04034b50
-      ) {
-        throw new Error(`${label} contains an invalid archive entry`);
-      }
-      const localFlags = bytes.readUInt16LE(localOffset + 6);
-      if (((flags | localFlags) & 0x41) !== 0) {
-        throw new Error(`${label} contains an encrypted archive entry`);
-      }
-      const localNameLength = bytes.readUInt16LE(localOffset + 26);
-      const localExtraLength = bytes.readUInt16LE(localOffset + 28);
-      const name = bytes
-        .subarray(centralOffset + 46, centralOffset + 46 + nameLength)
-        .toString("utf8");
-      expandedBytes += uncompressedSize;
-      scanEntry({
-        compressedSize,
-        uncompressedSize,
-        method,
-        name,
-        dataStart: localOffset + 30 + localNameLength + localExtraLength,
-        expandedBytes,
-      });
-      centralOffset += 46 + nameLength + extraLength + commentLength;
-    }
-    return;
-  }
-
-  let offset = 0;
-  let entries = 0;
-  let expandedBytes = 0;
-  while (
-    offset + 30 <= bytes.length &&
-    bytes.readUInt32LE(offset) === 0x04034b50
+  let endOffset = -1;
+  const minimumEndOffset = Math.max(0, bytes.length - 65_557);
+  for (
+    let offset = bytes.length - 22;
+    offset >= minimumEndOffset;
+    offset -= 1
   ) {
-    entries += 1;
-    if (entries > MAX_ARCHIVE_ENTRIES) {
-      throw new Error(`${label} exceeds the bounded archive scan budget`);
+    if (
+      bytes.readUInt32LE(offset) === 0x06054b50 &&
+      offset + 22 + bytes.readUInt16LE(offset + 20) === bytes.length
+    ) {
+      endOffset = offset;
+      break;
     }
-    const flags = bytes.readUInt16LE(offset + 6);
-    const method = bytes.readUInt16LE(offset + 8);
-    const compressedSize = bytes.readUInt32LE(offset + 18);
-    const uncompressedSize = bytes.readUInt32LE(offset + 22);
-    const nameLength = bytes.readUInt16LE(offset + 26);
-    const extraLength = bytes.readUInt16LE(offset + 28);
+  }
+  if (endOffset < 0) invalidArchive();
+
+  const diskNumber = bytes.readUInt16LE(endOffset + 4);
+  const centralDisk = bytes.readUInt16LE(endOffset + 6);
+  const diskEntryCount = bytes.readUInt16LE(endOffset + 8);
+  const entryCount = bytes.readUInt16LE(endOffset + 10);
+  const centralSize = bytes.readUInt32LE(endOffset + 12);
+  const centralStart = bytes.readUInt32LE(endOffset + 16);
+  if (
+    diskNumber !== 0 ||
+    centralDisk !== 0 ||
+    diskEntryCount !== entryCount ||
+    entryCount === 0xffff ||
+    centralSize === 0xffffffff ||
+    centralStart === 0xffffffff ||
+    centralStart + centralSize !== endOffset
+  ) {
+    invalidArchive();
+  }
+  if (entryCount > MAX_ARCHIVE_ENTRIES) {
+    throw new Error(`${label} exceeds the bounded archive scan budget`);
+  }
+  const endComment = bytes.subarray(endOffset + 22);
+  if (endComment.indexOf(Buffer.from("504b0304", "hex")) >= 0) invalidArchive();
+
+  const centralEntries = new Map();
+  let centralOffset = centralStart;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (
+      centralOffset + 46 > endOffset ||
+      bytes.readUInt32LE(centralOffset) !== 0x02014b50
+    ) {
+      invalidArchive();
+    }
+    const flags = bytes.readUInt16LE(centralOffset + 8);
+    const method = bytes.readUInt16LE(centralOffset + 10);
+    const crc = bytes.readUInt32LE(centralOffset + 16);
+    const compressedSize = bytes.readUInt32LE(centralOffset + 20);
+    const uncompressedSize = bytes.readUInt32LE(centralOffset + 24);
+    const nameLength = bytes.readUInt16LE(centralOffset + 28);
+    const extraLength = bytes.readUInt16LE(centralOffset + 30);
+    const commentLength = bytes.readUInt16LE(centralOffset + 32);
+    const localOffset = bytes.readUInt32LE(centralOffset + 42);
+    const centralEnd =
+      centralOffset + 46 + nameLength + extraLength + commentLength;
+    if (
+      centralEnd > endOffset ||
+      compressedSize === 0xffffffff ||
+      uncompressedSize === 0xffffffff ||
+      localOffset === 0xffffffff ||
+      localOffset >= centralStart ||
+      centralEntries.has(localOffset)
+    ) {
+      invalidArchive();
+    }
     if ((flags & 0x41) !== 0) {
       throw new Error(`${label} contains an encrypted archive entry`);
     }
@@ -216,20 +224,93 @@ function scanZipEntries(bytes, label, state, depth) {
         `${label} uses an unsupported archive form for bounded scanning`,
       );
     }
+    const nameBytes = bytes.subarray(
+      centralOffset + 46,
+      centralOffset + 46 + nameLength,
+    );
+    parseExtraFields(
+      bytes.subarray(
+        centralOffset + 46 + nameLength,
+        centralOffset + 46 + nameLength + extraLength,
+      ),
+    );
+    centralEntries.set(localOffset, {
+      flags,
+      method,
+      crc,
+      compressedSize,
+      uncompressedSize,
+      nameBytes,
+    });
+    centralOffset = centralEnd;
+  }
+  if (centralOffset !== endOffset) invalidArchive();
+
+  let localOffset = 0;
+  let expandedBytes = 0;
+  let localEntryCount = 0;
+  while (localOffset < centralStart) {
+    if (
+      localOffset + 30 > centralStart ||
+      bytes.readUInt32LE(localOffset) !== 0x04034b50
+    ) {
+      invalidArchive();
+    }
+    const central = centralEntries.get(localOffset);
+    if (!central) invalidArchive();
+    const flags = bytes.readUInt16LE(localOffset + 6);
+    const method = bytes.readUInt16LE(localOffset + 8);
+    const crc = bytes.readUInt32LE(localOffset + 14);
+    const compressedSize = bytes.readUInt32LE(localOffset + 18);
+    const uncompressedSize = bytes.readUInt32LE(localOffset + 22);
+    const nameLength = bytes.readUInt16LE(localOffset + 26);
+    const extraLength = bytes.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + nameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    if (
+      dataStart > centralStart ||
+      dataEnd > centralStart ||
+      compressedSize === 0xffffffff ||
+      uncompressedSize === 0xffffffff ||
+      flags !== central.flags ||
+      method !== central.method ||
+      crc !== central.crc ||
+      compressedSize !== central.compressedSize ||
+      uncompressedSize !== central.uncompressedSize ||
+      !bytes
+        .subarray(localOffset + 30, localOffset + 30 + nameLength)
+        .equals(central.nameBytes)
+    ) {
+      invalidArchive();
+    }
+    if ((flags & 0x41) !== 0) {
+      throw new Error(`${label} contains an encrypted archive entry`);
+    }
+    if ((flags & 0x08) !== 0) {
+      throw new Error(
+        `${label} uses an unsupported archive form for bounded scanning`,
+      );
+    }
+    parseExtraFields(bytes.subarray(localOffset + 30 + nameLength, dataStart));
     expandedBytes += uncompressedSize;
-    const dataStart = offset + 30 + nameLength + extraLength;
-    const name = bytes
-      .subarray(offset + 30, offset + 30 + nameLength)
-      .toString("utf8");
     scanEntry({
       compressedSize,
       uncompressedSize,
       method,
-      name,
+      name: central.nameBytes.toString("utf8"),
       dataStart,
       expandedBytes,
     });
-    offset = dataStart + compressedSize;
+    centralEntries.delete(localOffset);
+    localEntryCount += 1;
+    localOffset = dataEnd;
+  }
+  if (
+    localOffset !== centralStart ||
+    localEntryCount !== entryCount ||
+    centralEntries.size !== 0
+  ) {
+    invalidArchive();
   }
 }
 

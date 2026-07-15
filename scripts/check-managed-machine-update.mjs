@@ -65,6 +65,9 @@ addCheck(
     paymentSecretBytesGuardBlock.includes("ImportPkcs8PrivateKey") &&
     paymentSecretBytesGuardBlock.includes("06092A864886F70D01050D") &&
     paymentSecretBytesGuardBlock.includes("encrypted archive entry") &&
+    paymentSecretBytesGuardBlock.includes("invalid archive structure") &&
+    paymentSecretBytesGuardBlock.includes("centralEntries") &&
+    paymentSecretBytesGuardBlock.includes("localEntryCount") &&
     paymentSecretBytesGuardBlock.includes("ZipArchive") &&
     paymentSecretBytesGuardBlock.includes("FromBase64String") &&
     paymentSecretBytesGuardBlock.includes("DecodedBytes") &&

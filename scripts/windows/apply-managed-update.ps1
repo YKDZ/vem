@@ -157,41 +157,174 @@ function Assert-NoPlatformPaymentSecretBytes {
     }
 
     if ($Bytes.Length -ge 4 -and [BitConverter]::ToUInt32($Bytes, 0) -eq 0x04034b50) {
+      $invalidArchive = { throw "artifact contains an invalid archive structure: $Label" }
+      $assertExtraFields = {
+        param([long]$Start, [long]$Length)
+        $extraOffset = $Start
+        $extraEnd = $Start + $Length
+        while ($extraOffset -lt $extraEnd) {
+          if ($extraOffset + 4 -gt $extraEnd) { & $invalidArchive }
+          $extraId = [BitConverter]::ToUInt16($Bytes, [int]$extraOffset)
+          $extraSize = [BitConverter]::ToUInt16($Bytes, [int]$extraOffset + 2)
+          $extraOffset += 4
+          if ($extraId -eq 0x0001 -or $extraOffset + $extraSize -gt $extraEnd) {
+            & $invalidArchive
+          }
+          $extraOffset += $extraSize
+        }
+      }
+      $bytesEqual = {
+        param([long]$Left, [long]$Right, [long]$Length)
+        for ($byteIndex = 0; $byteIndex -lt $Length; $byteIndex += 1) {
+          if ($Bytes[$Left + $byteIndex] -ne $Bytes[$Right + $byteIndex]) { return $false }
+        }
+        return $true
+      }
       $endOffset = -1
       $minimumEndOffset = [Math]::Max(0, $Bytes.Length - 65557)
       for ($offset = $Bytes.Length - 22; $offset -ge $minimumEndOffset; $offset -= 1) {
-        if ([BitConverter]::ToUInt32($Bytes, $offset) -eq 0x06054b50) {
+        if (
+          [BitConverter]::ToUInt32($Bytes, $offset) -eq 0x06054b50 -and
+          $offset + 22 + [BitConverter]::ToUInt16($Bytes, $offset + 20) -eq $Bytes.Length
+        ) {
           $endOffset = $offset
           break
         }
       }
-      if ($endOffset -ge 0) {
-        $entryCount = [BitConverter]::ToUInt16($Bytes, $endOffset + 10)
-        $centralOffset = [BitConverter]::ToUInt32($Bytes, $endOffset + 16)
-        for ($index = 0; $index -lt $entryCount; $index += 1) {
-          if (
-            $centralOffset + 46 -gt $Bytes.Length -or
-            [BitConverter]::ToUInt32($Bytes, $centralOffset) -ne 0x02014b50
-          ) {
-            throw "artifact archive cannot be scanned safely: $Label"
-          }
-          $flags = [BitConverter]::ToUInt16($Bytes, $centralOffset + 8)
-          $localOffset = [BitConverter]::ToUInt32($Bytes, $centralOffset + 42)
-          if (
-            $localOffset + 30 -gt $Bytes.Length -or
-            [BitConverter]::ToUInt32($Bytes, $localOffset) -ne 0x04034b50
-          ) {
-            throw "artifact archive cannot be scanned safely: $Label"
-          }
-          $localFlags = [BitConverter]::ToUInt16($Bytes, $localOffset + 6)
-          if ((($flags -bor $localFlags) -band 0x41) -ne 0) {
-            throw "artifact contains an encrypted archive entry: $Label"
-          }
-          $nameLength = [BitConverter]::ToUInt16($Bytes, $centralOffset + 28)
-          $extraLength = [BitConverter]::ToUInt16($Bytes, $centralOffset + 30)
-          $commentLength = [BitConverter]::ToUInt16($Bytes, $centralOffset + 32)
-          $centralOffset += 46 + $nameLength + $extraLength + $commentLength
+      if ($endOffset -lt 0) { & $invalidArchive }
+
+      $diskNumber = [BitConverter]::ToUInt16($Bytes, $endOffset + 4)
+      $centralDisk = [BitConverter]::ToUInt16($Bytes, $endOffset + 6)
+      $diskEntryCount = [BitConverter]::ToUInt16($Bytes, $endOffset + 8)
+      $entryCount = [BitConverter]::ToUInt16($Bytes, $endOffset + 10)
+      $centralSize = [BitConverter]::ToUInt32($Bytes, $endOffset + 12)
+      $centralStart = [BitConverter]::ToUInt32($Bytes, $endOffset + 16)
+      if (
+        $diskNumber -ne 0 -or
+        $centralDisk -ne 0 -or
+        $diskEntryCount -ne $entryCount -or
+        $entryCount -eq 0xffff -or
+        $centralSize -eq 0xffffffff -or
+        $centralStart -eq 0xffffffff -or
+        [long]$centralStart + $centralSize -ne $endOffset
+      ) {
+        & $invalidArchive
+      }
+      if ($entryCount -gt 256) {
+        throw "artifact exceeds bounded platform private-key scan budget: $Label"
+      }
+      for ($commentOffset = $endOffset + 22; $commentOffset + 4 -le $Bytes.Length; $commentOffset += 1) {
+        if ([BitConverter]::ToUInt32($Bytes, $commentOffset) -eq 0x04034b50) {
+          & $invalidArchive
         }
+      }
+
+      $centralEntries = @{}
+      $centralOffset = [long]$centralStart
+      for ($index = 0; $index -lt $entryCount; $index += 1) {
+        if (
+          $centralOffset + 46 -gt $endOffset -or
+          [BitConverter]::ToUInt32($Bytes, [int]$centralOffset) -ne 0x02014b50
+        ) {
+          & $invalidArchive
+        }
+        $flags = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 8)
+        $method = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 10)
+        $crc = [BitConverter]::ToUInt32($Bytes, [int]$centralOffset + 16)
+        $compressedSize = [BitConverter]::ToUInt32($Bytes, [int]$centralOffset + 20)
+        $uncompressedSize = [BitConverter]::ToUInt32($Bytes, [int]$centralOffset + 24)
+        $nameLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 28)
+        $extraLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 30)
+        $commentLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 32)
+        $entryDisk = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 34)
+        $localOffset = [BitConverter]::ToUInt32($Bytes, [int]$centralOffset + 42)
+        $centralEnd = $centralOffset + 46 + $nameLength + $extraLength + $commentLength
+        $localKey = $localOffset.ToString([Globalization.CultureInfo]::InvariantCulture)
+        if (
+          $centralEnd -gt $endOffset -or
+          $entryDisk -ne 0 -or
+          $compressedSize -eq 0xffffffff -or
+          $uncompressedSize -eq 0xffffffff -or
+          $localOffset -eq 0xffffffff -or
+          $localOffset -ge $centralStart -or
+          $centralEntries.ContainsKey($localKey) -or
+          $method -notin @(0, 8)
+        ) {
+          & $invalidArchive
+        }
+        if (($flags -band 0x41) -ne 0) {
+          throw "artifact contains an encrypted archive entry: $Label"
+        }
+        if (($flags -band 0x08) -ne 0) {
+          throw "artifact uses an unsupported archive form for bounded scanning: $Label"
+        }
+        & $assertExtraFields ($centralOffset + 46 + $nameLength) $extraLength
+        $centralEntries[$localKey] = [pscustomobject]@{
+          flags = $flags
+          method = $method
+          crc = $crc
+          compressedSize = $compressedSize
+          uncompressedSize = $uncompressedSize
+          nameOffset = $centralOffset + 46
+          nameLength = $nameLength
+        }
+        $centralOffset = $centralEnd
+      }
+      if ($centralOffset -ne $endOffset) { & $invalidArchive }
+
+      $localOffset = 0L
+      $localEntryCount = 0
+      while ($localOffset -lt $centralStart) {
+        if (
+          $localOffset + 30 -gt $centralStart -or
+          [BitConverter]::ToUInt32($Bytes, [int]$localOffset) -ne 0x04034b50
+        ) {
+          & $invalidArchive
+        }
+        $localKey = $localOffset.ToString([Globalization.CultureInfo]::InvariantCulture)
+        if (-not $centralEntries.ContainsKey($localKey)) { & $invalidArchive }
+        $central = $centralEntries[$localKey]
+        $localFlags = [BitConverter]::ToUInt16($Bytes, [int]$localOffset + 6)
+        $localMethod = [BitConverter]::ToUInt16($Bytes, [int]$localOffset + 8)
+        $localCrc = [BitConverter]::ToUInt32($Bytes, [int]$localOffset + 14)
+        $localCompressedSize = [BitConverter]::ToUInt32($Bytes, [int]$localOffset + 18)
+        $localUncompressedSize = [BitConverter]::ToUInt32($Bytes, [int]$localOffset + 22)
+        $localNameLength = [BitConverter]::ToUInt16($Bytes, [int]$localOffset + 26)
+        $localExtraLength = [BitConverter]::ToUInt16($Bytes, [int]$localOffset + 28)
+        $dataStart = $localOffset + 30 + $localNameLength + $localExtraLength
+        $dataEnd = $dataStart + $localCompressedSize
+        if (
+          $dataStart -gt $centralStart -or
+          $dataEnd -gt $centralStart -or
+          $localCompressedSize -eq 0xffffffff -or
+          $localUncompressedSize -eq 0xffffffff -or
+          $localFlags -ne $central.flags -or
+          $localMethod -ne $central.method -or
+          $localCrc -ne $central.crc -or
+          $localCompressedSize -ne $central.compressedSize -or
+          $localUncompressedSize -ne $central.uncompressedSize -or
+          $localNameLength -ne $central.nameLength -or
+          -not (& $bytesEqual ($localOffset + 30) $central.nameOffset $localNameLength)
+        ) {
+          & $invalidArchive
+        }
+        if (($localFlags -band 0x41) -ne 0) {
+          throw "artifact contains an encrypted archive entry: $Label"
+        }
+        if (($localFlags -band 0x08) -ne 0) {
+          throw "artifact uses an unsupported archive form for bounded scanning: $Label"
+        }
+        & $assertExtraFields ($localOffset + 30 + $localNameLength) $localExtraLength
+        $centralEntries.Remove($localKey)
+        $localEntryCount += 1
+        $localOffset = $dataEnd
+      }
+      if (
+        $localOffset -ne $centralStart -or
+        $localEntryCount -ne $entryCount -or
+        $centralEntries.Count -ne 0
+      ) {
+        & $invalidArchive
       }
       Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
       $archiveStream = [IO.MemoryStream]::new($Bytes, $false)
