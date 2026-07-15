@@ -162,11 +162,13 @@ async function readDaemonResponseText(
   let total = 0;
   try {
     while (true) {
+      // oxlint-disable-next-line no-await-in-loop -- a response stream must be read sequentially and remains size-bounded.
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
       if (total > MAX_DAEMON_RESPONSE_BYTES) {
+        // oxlint-disable-next-line no-await-in-loop -- cancel the same sequential reader before returning the bounded failure.
         await reader.cancel().catch(() => undefined);
         return { exceeded: true };
       }
@@ -185,10 +187,6 @@ async function readDaemonResponseText(
   return { exceeded: false, text: new TextDecoder().decode(body) };
 }
 const MAX_TIMEOUT_MS = 2_147_483_647;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

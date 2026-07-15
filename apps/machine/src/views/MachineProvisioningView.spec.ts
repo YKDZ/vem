@@ -348,31 +348,31 @@ describe("Bring-Up Console", () => {
       Object.assign(new DaemonUnavailableErrorMock("network rejected"), {
         statusCode: 422,
         responseBody: JSON.stringify({
-      status: "failed",
-      ssid: "Store-WiFi",
-      hidden: false,
-      diagnostics: [
-        {
-          component: "local_network",
-          level: "ok",
-          code: "WIFI_ASSOCIATED",
-          message: "association observed",
-        },
-        {
-          component: "provisioning_endpoint",
-          level: "error",
-          code: "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
-          message: "Platform API unavailable",
-        },
-        {
-          component: "mqtt",
-          level: "unknown",
-          code: "MQTT_NOT_CHECKED",
-          message: "MQTT was not checked after Platform API failure",
-        },
-      ],
-      operatorGuidance: "平台不可达，请检查平台服务。",
-      updatedAt: "2026-07-04T00:01:00Z",
+          status: "failed",
+          ssid: "Store-WiFi",
+          hidden: false,
+          diagnostics: [
+            {
+              component: "local_network",
+              level: "ok",
+              code: "WIFI_ASSOCIATED",
+              message: "association observed",
+            },
+            {
+              component: "provisioning_endpoint",
+              level: "error",
+              code: "PRECLAIM_PLATFORM_ENDPOINT_UNREACHABLE",
+              message: "Platform API unavailable",
+            },
+            {
+              component: "mqtt",
+              level: "unknown",
+              code: "MQTT_NOT_CHECKED",
+              message: "MQTT was not checked after Platform API failure",
+            },
+          ],
+          operatorGuidance: "平台不可达，请检查平台服务。",
+          updatedAt: "2026-07-04T00:01:00Z",
         }),
       }),
     );
