@@ -17,7 +17,7 @@ use axum::{
         HeaderMap, Method, StatusCode,
     },
     response::{IntoResponse, Json},
-    routing::{get, post, put},
+    routing::{get, post},
     Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
+use uuid::Uuid;
 
 use crate::{
     backend::BackendClient,
@@ -74,6 +75,234 @@ struct DeviceBindingTestResponse {
     test_evidence_expires_at: String,
     observation_revision: String,
     config_revision: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AudioOutputBindingSnapshot {
+    binding: Option<crate::config::MachineAudioOutputBinding>,
+    current_observation: Option<crate::audio_output::AudioOutputObservation>,
+    observation_revision: String,
+    candidates: Vec<crate::audio_output::AudioOutputObservation>,
+    ready: bool,
+    code: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisionCameraMaintenanceCandidateRequest {
+    candidate_id: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TestAudioOutputRequest {
+    endpoint_id: String,
+    audio_cue_settings: crate::config::AudioCueSettings,
+    machine_audio_volume: f64,
+    challenge: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConfirmAudioOutputRequest {
+    endpoint_id: String,
+    test_evidence_token: String,
+    heard: bool,
+    audio_cue_settings: crate::config::AudioCueSettings,
+    machine_audio_volume: f64,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AudioOutputTestResponse {
+    endpoint_id: String,
+    test_evidence_token: String,
+    test_evidence_expires_at: String,
+    observation_revision: String,
+    observation_generation: u64,
+    config_revision: String,
+    config_generation: u64,
+    proposed_settings_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    challenge: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AudioOutputTestEvidence {
+    session_generation: String,
+    endpoint_id: String,
+    observation_revision: String,
+    observation_generation: u64,
+    effective_config_revision: String,
+    effective_config_generation: u64,
+    proposed_settings_digest: String,
+    expires_at: Instant,
+}
+
+#[derive(Debug)]
+pub(crate) struct AudioOutputTestEvidenceStore {
+    entries: Mutex<HashMap<String, AudioOutputTestEvidence>>,
+    ttl: Duration,
+}
+
+impl Default for AudioOutputTestEvidenceStore {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            ttl: Duration::from_secs(60),
+        }
+    }
+}
+
+impl AudioOutputTestEvidenceStore {
+    #[cfg(test)]
+    fn with_ttl(ttl: Duration) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            ttl,
+        }
+    }
+
+    async fn issue(
+        &self,
+        session_generation: String,
+        endpoint_id: String,
+        observation_revision: String,
+        observation_generation: u64,
+        effective_config_revision: String,
+        effective_config_generation: u64,
+        proposed_settings_digest: String,
+    ) -> (String, String) {
+        let token = uuid::Uuid::new_v4().to_string();
+        let expires_at = Instant::now() + self.ttl;
+        self.entries.lock().await.insert(
+            token.clone(),
+            AudioOutputTestEvidence {
+                session_generation,
+                endpoint_id,
+                observation_revision,
+                observation_generation,
+                effective_config_revision,
+                effective_config_generation,
+                proposed_settings_digest,
+                expires_at,
+            },
+        );
+        let expires_at_wall = chrono::Utc::now()
+            + chrono::Duration::from_std(self.ttl)
+                .unwrap_or_else(|_| chrono::Duration::seconds(60));
+        (token, expires_at_wall.to_rfc3339())
+    }
+
+    async fn consume(
+        &self,
+        token: &str,
+        session_generation: &str,
+        endpoint_id: &str,
+        observation_revision: &str,
+        observation_generation: u64,
+        effective_config_revision: &str,
+        effective_config_generation: u64,
+        proposed_settings_digest: &str,
+    ) -> Result<AudioOutputTestEvidence, (&'static str, String)> {
+        let mut entries = self.entries.lock().await;
+        entries.retain(|_, evidence| evidence.expires_at > Instant::now());
+        let Some(evidence) = entries.remove(token) else {
+            return Err((
+                "audio_output_test_evidence_invalid",
+                "audio output test evidence is missing, expired, or already consumed".to_string(),
+            ));
+        };
+        if evidence.session_generation != session_generation {
+            return Err((
+                "audio_output_test_evidence_session_changed",
+                "audio output test evidence belongs to a different maintenance session".to_string(),
+            ));
+        }
+        if evidence.endpoint_id != endpoint_id {
+            return Err((
+                "audio_output_test_evidence_target_changed",
+                "selected audio output changed after test playback".to_string(),
+            ));
+        }
+        if evidence.observation_revision != observation_revision {
+            return Err((
+                "audio_output_test_evidence_observation_changed",
+                "audio output observation changed after test playback; test again".to_string(),
+            ));
+        }
+        if evidence.observation_generation != observation_generation {
+            return Err((
+                "audio_output_test_evidence_observation_changed",
+                "audio output observation generation changed after test playback; test again"
+                    .to_string(),
+            ));
+        }
+        if evidence.effective_config_revision != effective_config_revision {
+            return Err((
+                "audio_output_test_evidence_effective_config_changed",
+                "effective daemon configuration changed after test playback; test again"
+                    .to_string(),
+            ));
+        }
+        if evidence.effective_config_generation != effective_config_generation {
+            return Err((
+                "audio_output_test_evidence_effective_config_changed",
+                "effective daemon configuration generation changed after test playback; test again"
+                    .to_string(),
+            ));
+        }
+        if evidence.proposed_settings_digest != proposed_settings_digest {
+            return Err((
+                "audio_output_test_evidence_config_changed",
+                "audio settings changed after test playback; test again".to_string(),
+            ));
+        }
+        Ok(evidence)
+    }
+
+    async fn restore(&self, token: String, evidence: AudioOutputTestEvidence) {
+        if evidence.expires_at <= Instant::now() {
+            return;
+        }
+        self.entries.lock().await.entry(token).or_insert(evidence);
+    }
+}
+
+#[derive(Debug, Default)]
+struct AudioOutputObservationGenerationState {
+    revision: Option<String>,
+    generation: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AudioOutputObservationGenerationTracker {
+    state: std::sync::Mutex<AudioOutputObservationGenerationState>,
+}
+
+impl AudioOutputObservationGenerationTracker {
+    fn observe(&self, revision: &str) -> Result<u64, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "audio output observation generation is unavailable".to_string())?;
+        if state.revision.as_deref() != Some(revision) {
+            state.generation = state.generation.saturating_add(1);
+            state.revision = Some(revision.to_string());
+        }
+        Ok(state.generation)
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisionCameraMaintenanceConfirmRequestBody {
+    candidate_id: String,
+    test_evidence_id: String,
+    operator_visual_confirmation: bool,
+    expected_generation: String,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +508,14 @@ struct MaintenanceSessionResponse {
 const MAINTENANCE_SCOPE_MUTATE: &str = "maintenance.mutate";
 const MAINTENANCE_SCOPE_RECLAIM: &str = "maintenance.reclaim";
 const MAINTENANCE_SCOPE_DESKTOP_EXIT: &str = "maintenance.desktop_exit";
+const MAINTENANCE_SCOPE_MANUAL_DISPENSE: &str = "maintenance.manual_dispense";
+
+#[derive(Debug, Clone)]
+pub struct AuthorizedMaintenancePrincipal {
+    pub operator_id: String,
+    pub session_correlation_id: String,
+    pub scope: &'static str,
+}
 
 /// Logs need to tie issuance and mutations together without turning the log
 /// export into a bearer-token recovery channel.  A short SHA-256 prefix is
@@ -392,7 +629,9 @@ impl DaemonMaintenanceAuthorization {
         for scope in requested_scopes {
             if matches!(
                 scope.as_str(),
-                MAINTENANCE_SCOPE_RECLAIM | MAINTENANCE_SCOPE_DESKTOP_EXIT
+                MAINTENANCE_SCOPE_RECLAIM
+                    | MAINTENANCE_SCOPE_DESKTOP_EXIT
+                    | MAINTENANCE_SCOPE_MANUAL_DISPENSE
             ) {
                 scopes.insert(scope);
             }
@@ -442,6 +681,32 @@ impl DaemonMaintenanceAuthorization {
             (session.expires_at > chrono::Utc::now()).then(|| session.operator_id.clone())
         })
     }
+
+    async fn authorize_principal(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+        scope: &'static str,
+    ) -> Result<AuthorizedMaintenancePrincipal, String> {
+        let mut sessions = self.sessions.lock().await;
+        sessions.retain(|_, session| session.expires_at > chrono::Utc::now());
+        let Some(session) = sessions.get(&context.session_id) else {
+            return Err("protected maintenance session is missing, expired, revoked, or replayed after daemon restart".to_string());
+        };
+        if !session.scopes.contains(scope) {
+            return Err(format!(
+                "protected maintenance session is not authorized for {scope}"
+            ));
+        }
+        Ok(AuthorizedMaintenancePrincipal {
+            operator_id: session.operator_id.clone(),
+            session_correlation_id: maintenance_session_correlation_id(&context.session_id),
+            scope,
+        })
+    }
+
+    async fn revoke(&self, session_id: &str) -> bool {
+        self.sessions.lock().await.remove(session_id).is_some()
+    }
 }
 
 fn normalize_maintenance_operator_id(operator_id: Option<String>) -> Result<String, String> {
@@ -485,6 +750,13 @@ pub trait MaintenanceAuthorization: Send + Sync {
 
     async fn operator_id(&self, _context: &MaintenanceAuthorizationContext) -> Option<String> {
         None
+    }
+
+    async fn authorize_manual_dispense(
+        &self,
+        _context: &MaintenanceAuthorizationContext,
+    ) -> Result<AuthorizedMaintenancePrincipal, String> {
+        Err("protected manual dispense authorization is unavailable".to_string())
     }
 }
 
@@ -535,6 +807,14 @@ impl MaintenanceAuthorization for DaemonMaintenanceAuthorization {
     async fn operator_id(&self, context: &MaintenanceAuthorizationContext) -> Option<String> {
         DaemonMaintenanceAuthorization::operator_id(self, context).await
     }
+
+    async fn authorize_manual_dispense(
+        &self,
+        context: &MaintenanceAuthorizationContext,
+    ) -> Result<AuthorizedMaintenancePrincipal, String> {
+        self.authorize_principal(context, MAINTENANCE_SCOPE_MANUAL_DISPENSE)
+            .await
+    }
 }
 
 async fn require_non_bring_up_maintenance_authorization(
@@ -577,6 +857,33 @@ async fn require_non_bring_up_maintenance_authorization(
     )
     .await;
     Ok(())
+}
+
+async fn require_maintenance_diagnostic_authorization(
+    ctx: &IpcContext,
+    headers: &HeaderMap,
+) -> Result<(), axum::response::Response> {
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    ctx.maintenance_authorization
+        .authorize_non_bring_up_mutation(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|message| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(ErrorMessage {
+                    code: "protected_maintenance_authorization_denied",
+                    message,
+                }),
+            )
+                .into_response()
+        })
 }
 
 async fn require_reclaim_maintenance_authorization(
@@ -650,6 +957,33 @@ struct LocalEnvironmentControlRequest {
     target_temperature_celsius: Option<i8>,
     vent_speed: Option<u8>,
     timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManualDispenseDiagnosticRequest {
+    idempotency_key: String,
+    slot_code: String,
+    layer_no: u32,
+    cell_no: u32,
+    #[serde(default = "default_manual_dispense_quantity")]
+    quantity: u32,
+    #[serde(default = "default_manual_dispense_timeout_seconds")]
+    timeout_seconds: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReconcileManualDispenseDiagnosticRequest {
+    diagnostic_id: String,
+    stock_count_movement_id: String,
+}
+
+fn default_manual_dispense_quantity() -> u32 {
+    1
+}
+fn default_manual_dispense_timeout_seconds() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -778,6 +1112,11 @@ pub struct IpcContext {
     pub runtime_tx: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
     pub scanner_runtime: crate::scanner::ScannerRuntimeController,
     pub serial_device_platform: crate::device_binding::SharedSerialDevicePlatform,
+    pub audio_output_platform: crate::audio_output::SharedAudioOutputPlatform,
+    pub audio_output_playback: crate::audio_output::SharedAudioOutputPlayback,
+    pub(crate) audio_output_calibration_lock: Arc<Mutex<()>>,
+    pub(crate) audio_output_observation_generation: Arc<AudioOutputObservationGenerationTracker>,
+    pub(crate) audio_output_test_evidence: Arc<AudioOutputTestEvidenceStore>,
     pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
     pub(crate) sale_binding_gate: Arc<SaleBindingOperationGate>,
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
@@ -794,6 +1133,7 @@ pub struct IpcContext {
 const SALE_BINDING_GATE_IDLE: u8 = 0;
 const SALE_BINDING_GATE_SALE_START: u8 = 1;
 const SALE_BINDING_GATE_RECONFIGURE: u8 = 2;
+const SALE_BINDING_GATE_MANUAL_DISPENSE: u8 = 3;
 
 #[derive(Debug, Default)]
 pub(crate) struct SaleBindingOperationGate {
@@ -811,6 +1151,12 @@ impl SaleBindingOperationGate {
         self: &Arc<Self>,
     ) -> Result<SaleBindingOperationLease, u8> {
         self.try_acquire(SALE_BINDING_GATE_RECONFIGURE)
+    }
+
+    pub(crate) fn try_acquire_manual_dispense(
+        self: &Arc<Self>,
+    ) -> Result<SaleBindingOperationLease, u8> {
+        self.try_acquire(SALE_BINDING_GATE_MANUAL_DISPENSE)
     }
 
     fn try_acquire(self: &Arc<Self>, operation: u8) -> Result<SaleBindingOperationLease, u8> {
@@ -873,17 +1219,30 @@ pub fn build_router(ctx: IpcContext) -> Router {
         )
         .route("/v1/config/summary", get(get_config_summary))
         .route(
-            "/v1/config/audio-settings",
-            put(update_machine_audio_settings),
+            "/v1/audio-output-binding",
+            get(audio_output_binding_snapshot),
+        )
+        .route("/v1/audio-output-binding/test", post(test_audio_output))
+        .route(
+            "/v1/audio-output-binding/confirm",
+            post(confirm_audio_output),
         )
         .route("/v1/provisioning/claim", post(claim_machine))
         .route("/v1/maintenance/status", get(maintenance_status))
         .route("/v1/maintenance/sessions", post(create_maintenance_session))
         .route(
+            "/v1/maintenance/sessions/revoke",
+            post(revoke_maintenance_session),
+        )
+        .route(
             "/v1/factory/bootstrap/maintenance-session",
             post(create_factory_bootstrap_maintenance_session),
         )
         .route("/v1/maintenance/desktop-exit", post(authorize_desktop_exit))
+        .route(
+            "/v1/maintenance/payment-environment",
+            get(payment_environment_diagnostic),
+        )
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
         .route("/v1/sale-readiness", get(sale_readiness))
@@ -918,6 +1277,14 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(transaction_by_order_no))
         .route("/v1/hardware/self-check", post(hardware_self_check))
+        .route(
+            "/v1/maintenance/manual-dispense-diagnostic",
+            post(manual_dispense_diagnostic),
+        )
+        .route(
+            "/v1/maintenance/manual-dispense-diagnostic/reconcile",
+            post(reconcile_manual_dispense_diagnostic),
+        )
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
         .route(
             "/v1/hardware-bindings/:role/test",
@@ -935,6 +1302,26 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/sync/status", get(sync_status))
         .route("/v1/scanner/status", get(scanner_status))
         .route("/v1/vision/status", get(vision_status))
+        .route(
+            "/v1/vision/camera-maintenance",
+            get(vision_camera_maintenance_contract),
+        )
+        .route(
+            "/v1/vision/camera-maintenance/refresh",
+            post(vision_camera_maintenance_refresh),
+        )
+        .route(
+            "/v1/vision/camera-maintenance/candidates/:candidate_id/preview.jpg",
+            get(vision_camera_maintenance_preview),
+        )
+        .route(
+            "/v1/vision/camera-maintenance/roles/:role/test",
+            post(vision_camera_maintenance_test),
+        )
+        .route(
+            "/v1/vision/camera-maintenance/roles/:role/confirm",
+            post(vision_camera_maintenance_confirm),
+        )
         .route("/v1/natural-context", get(natural_context))
         .route("/v1/remote-ops/status", get(remote_ops_status))
         .route("/v1/logs/export", get(export_logs))
@@ -992,6 +1379,36 @@ async fn create_maintenance_session(
         )
             .into_response(),
     }
+}
+
+async fn revoke_maintenance_session(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    let Some(authority) = ctx
+        .maintenance_authorization
+        .as_any()
+        .downcast_ref::<DaemonMaintenanceAuthorization>()
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorMessage {
+                code: "protected_maintenance_unavailable",
+                message: "protected maintenance session issuer is unavailable".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let revoked = authority.revoke(session_id).await;
+    Json(serde_json::json!({"revoked": revoked})).into_response()
 }
 
 /// Exchange the Factory's one-shot local-account capability for the same
@@ -1482,6 +1899,100 @@ struct BackendPaymentOptionsResponse {
     server_time: String,
 }
 
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendPaymentProviderEnvironment {
+    environment: String,
+    readiness: String,
+    error_category: String,
+}
+
+impl Default for BackendPaymentProviderEnvironment {
+    fn default() -> Self {
+        Self {
+            environment: "unavailable".to_string(),
+            readiness: "blocked".to_string(),
+            error_category: "provider_unconfigured".to_string(),
+        }
+    }
+}
+
+impl BackendPaymentProviderEnvironment {
+    fn is_valid(&self) -> bool {
+        matches!(
+            self.environment.as_str(),
+            "sandbox" | "production" | "mixed" | "unavailable"
+        ) && matches!(self.readiness.as_str(), "ready" | "blocked")
+            && matches!(
+                self.error_category.as_str(),
+                "none"
+                    | "no_enabled_channel"
+                    | "provider_unconfigured"
+                    | "credentials_incomplete"
+                    | "mixed_environment"
+            )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FactoryPaymentEnvironmentPolicy {
+    Production,
+    Testbed,
+    Unavailable,
+}
+
+struct PaymentEnvironmentGate {
+    policy: FactoryPaymentEnvironmentPolicy,
+    diagnostic: BackendPaymentProviderEnvironment,
+}
+
+impl PaymentEnvironmentGate {
+    fn allows(&self, option: &BackendPaymentOption) -> bool {
+        let explicit_mock = option.provider_code == "mock"
+            && matches!(option.method.as_str(), "mock" | "payment_code");
+        let real_provider = option.provider_code != "mock" && option.method != "mock";
+        let real_provider_ready = real_provider
+            && self.diagnostic.readiness == "ready"
+            && self.diagnostic.error_category == "none"
+            && matches!(
+                self.diagnostic.environment.as_str(),
+                "sandbox" | "production"
+            );
+
+        match self.policy {
+            FactoryPaymentEnvironmentPolicy::Production => {
+                real_provider_ready && self.diagnostic.environment == "production"
+            }
+            FactoryPaymentEnvironmentPolicy::Testbed => explicit_mock || real_provider_ready,
+            FactoryPaymentEnvironmentPolicy::Unavailable => false,
+        }
+    }
+}
+
+async fn payment_environment_gate(ctx: &IpcContext) -> PaymentEnvironmentGate {
+    let policy = match ctx.config_store.load_factory_manifest().await {
+        Ok(Some(manifest)) => match manifest.environment {
+            crate::config::FactoryProfile::Production => {
+                FactoryPaymentEnvironmentPolicy::Production
+            }
+            crate::config::FactoryProfile::Testbed => FactoryPaymentEnvironmentPolicy::Testbed,
+        },
+        Ok(None) | Err(_) => FactoryPaymentEnvironmentPolicy::Unavailable,
+    };
+    let diagnostic = ctx
+        .ui
+        .backend
+        .get_payment_environment_diagnostic()
+        .await
+        .ok()
+        .and_then(|payload| {
+            serde_json::from_value::<BackendPaymentProviderEnvironment>(payload).ok()
+        })
+        .filter(BackendPaymentProviderEnvironment::is_valid)
+        .unwrap_or_default();
+    PaymentEnvironmentGate { policy, diagnostic }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BackendPaymentOption {
@@ -1811,10 +2322,399 @@ async fn get_config_summary(
     }
 }
 
-async fn update_machine_audio_settings(
+async fn audio_output_binding_snapshot(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
-    Json(payload): Json<crate::config::MachineAudioSettingsUpdateRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let binding = match ctx.config_store.load_effective_public_config().await {
+        Ok(config) => config.machine_audio_output_binding,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "audio_output_config_unavailable",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let candidates = match ctx.audio_output_platform.enumerate() {
+        Ok(candidates) => crate::audio_output::normalized_audio_output_observations(candidates),
+        Err(message) => {
+            let unavailable_revision = crate::audio_output::audio_output_observation_revision(&[])
+                .unwrap_or_else(|_| "sha256:unavailable".to_string());
+            let _ = ctx
+                .audio_output_observation_generation
+                .observe(&unavailable_revision);
+            return Json(AudioOutputBindingSnapshot {
+                binding,
+                current_observation: None,
+                observation_revision: unavailable_revision,
+                candidates: Vec::new(),
+                ready: false,
+                code: "AUDIO_OUTPUT_ENUMERATION_UNAVAILABLE",
+                message,
+            })
+            .into_response();
+        }
+    };
+    let observation_revision =
+        match crate::audio_output::audio_output_observation_revision(&candidates) {
+            Ok(revision) => revision,
+            Err(message) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage {
+                        code: "audio_output_observation_invalid",
+                        message,
+                    }),
+                )
+                    .into_response();
+            }
+        };
+    if let Err(message) = ctx
+        .audio_output_observation_generation
+        .observe(&observation_revision)
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorMessage {
+                code: "audio_output_observation_invalid",
+                message,
+            }),
+        )
+            .into_response();
+    }
+    let current_observation = binding.as_ref().and_then(|binding| {
+        candidates
+            .iter()
+            .find(|candidate| candidate.endpoint_id == binding.endpoint_id)
+            .cloned()
+    });
+    let (ready, code, message) = match (&binding, &current_observation) {
+        (Some(_), Some(_)) => (
+            true,
+            "AUDIO_OUTPUT_BINDING_READY",
+            "confirmed customer audio output is currently observed".to_string(),
+        ),
+        (Some(_), None) => (
+            false,
+            "AUDIO_OUTPUT_BINDING_REMOVED",
+            "confirmed customer audio output is not currently observed".to_string(),
+        ),
+        (None, _) => (
+            false,
+            "AUDIO_OUTPUT_BINDING_REQUIRED",
+            "customer audio output has not been audibly confirmed".to_string(),
+        ),
+    };
+    Json(AudioOutputBindingSnapshot {
+        binding,
+        current_observation,
+        observation_revision,
+        candidates,
+        ready,
+        code,
+        message,
+    })
+    .into_response()
+}
+
+fn audio_output_proposed_settings_digest(
+    endpoint_id: &str,
+    audio_cue_settings: &crate::config::AudioCueSettings,
+    machine_audio_volume: f64,
+) -> Result<String, String> {
+    if !machine_audio_volume.is_finite() || !(0.0..=1.0).contains(&machine_audio_volume) {
+        return Err("machineAudioVolume must be between 0 and 1".to_string());
+    }
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "endpointId": endpoint_id,
+        "audioCueSettings": audio_cue_settings,
+        "machineAudioVolume": machine_audio_volume,
+    }))
+    .map_err(|error| format!("serialize audio output config revision failed: {error}"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
+}
+
+fn audio_output_effective_config_revision(
+    config: &crate::config::MachinePublicConfig,
+) -> Result<String, String> {
+    let payload = serde_json::to_vec(config)
+        .map_err(|error| format!("serialize effective audio config revision failed: {error}"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
+}
+
+fn current_audio_output_candidate(
+    ctx: &IpcContext,
+    endpoint_id: &str,
+) -> Result<(crate::audio_output::AudioOutputObservation, String, u64), (&'static str, String)> {
+    let candidates = ctx.audio_output_platform.enumerate().map_err(|message| {
+        (
+            "audio_output_enumeration_unavailable",
+            format!("cannot observe native audio outputs: {message}"),
+        )
+    })?;
+    let candidates = crate::audio_output::normalized_audio_output_observations(candidates);
+    let revision = crate::audio_output::audio_output_observation_revision(&candidates)
+        .map_err(|message| ("audio_output_observation_invalid", message))?;
+    let generation = ctx
+        .audio_output_observation_generation
+        .observe(&revision)
+        .map_err(|message| ("audio_output_observation_invalid", message))?;
+    let candidate = candidates
+        .into_iter()
+        .find(|candidate| candidate.endpoint_id == endpoint_id)
+        .ok_or_else(|| {
+            (
+                "audio_output_candidate_unavailable",
+                "selected native audio output is not currently observed".to_string(),
+            )
+        })?;
+    Ok((candidate, revision, generation))
+}
+
+async fn test_audio_output(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<TestAudioOutputRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "test_audio_output_binding")
+            .await
+    {
+        return response;
+    }
+    let _calibration = match ctx.audio_output_calibration_lock.try_lock() {
+        Ok(lease) => lease,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "audio_output_calibration_in_progress",
+                    message: "another audio output calibration is already in progress".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let endpoint_id = request.endpoint_id.trim();
+    let challenge_valid = request.challenge.as_deref().is_none_or(|challenge| {
+        (32..=128).contains(&challenge.len())
+            && challenge
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if endpoint_id.is_empty() || request.machine_audio_volume <= 0.0 || !challenge_valid {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorMessage {
+                code: "audio_output_native_test_invalid",
+                message: "a selected endpoint, audible calibration volume, and optional lowercase hexadecimal challenge are required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let (effective_config_revision, effective_config_generation) = match ctx
+        .config_store
+        .load_effective_public_config_snapshot()
+        .await
+    {
+        Ok((config, generation)) => match audio_output_effective_config_revision(&config) {
+            Ok(revision) => (revision, generation),
+            Err(message) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage {
+                        code: "audio_output_effective_config_revision_failed",
+                        message,
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "audio_output_config_unavailable",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let (_, observation_revision, observation_generation) =
+        match current_audio_output_candidate(&ctx, endpoint_id) {
+            Ok(value) => value,
+            Err((code, message)) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ErrorMessage { code, message }),
+                )
+                    .into_response();
+            }
+        };
+    let proposed_settings_digest = match audio_output_proposed_settings_digest(
+        endpoint_id,
+        &request.audio_cue_settings,
+        request.machine_audio_volume,
+    ) {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorMessage {
+                    code: "audio_output_config_invalid",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let playback = ctx.audio_output_playback.play_calibration(
+        endpoint_id,
+        request.machine_audio_volume as f32,
+        ctx.background_shutdown.clone(),
+    );
+    tokio::pin!(playback);
+    let mut observation_poll = tokio::time::interval(Duration::from_millis(25));
+    observation_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut observation_changed_during_playback = false;
+    let playback_result = loop {
+        tokio::select! {
+            result = &mut playback => break result,
+            _ = observation_poll.tick() => {
+                match current_audio_output_candidate(&ctx, endpoint_id) {
+                    Ok((_, _, generation)) if generation != observation_generation => {
+                        observation_changed_during_playback = true;
+                    }
+                    Err(_) => observation_changed_during_playback = true,
+                    _ => {}
+                }
+            }
+        }
+    };
+    let playback_evidence = match playback_result {
+        Ok(evidence) if evidence.endpoint_id == endpoint_id && evidence.source_non_silent => {
+            evidence
+        }
+        Ok(_) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorMessage {
+                    code: "audio_output_native_test_invalid",
+                    message: "daemon native calibration playback returned invalid evidence"
+                        .to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(message) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorMessage {
+                    code: "audio_output_native_playback_failed",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let (current_effective_config_revision, current_effective_config_generation) = match ctx
+        .config_store
+        .load_effective_public_config_snapshot()
+        .await
+        .and_then(|(config, generation)| {
+            audio_output_effective_config_revision(&config).map(|revision| (revision, generation))
+        }) {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "audio_output_effective_config_revision_failed",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    if current_effective_config_revision != effective_config_revision
+        || current_effective_config_generation != effective_config_generation
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "audio_output_effective_config_changed",
+                message: "effective daemon configuration changed during calibration playback"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let (_, current_observation_revision, current_observation_generation) =
+        match current_audio_output_candidate(&ctx, &playback_evidence.endpoint_id) {
+            Ok(value) => value,
+            Err((code, message)) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ErrorMessage { code, message }),
+                )
+                    .into_response();
+            }
+        };
+    if observation_changed_during_playback
+        || current_observation_revision != observation_revision
+        || current_observation_generation != observation_generation
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "audio_output_observation_changed",
+                message: "audio output observations changed during calibration playback"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let (test_evidence_token, test_evidence_expires_at) = ctx
+        .audio_output_test_evidence
+        .issue(
+            maintenance_session_generation(&headers).to_string(),
+            endpoint_id.to_string(),
+            observation_revision.clone(),
+            observation_generation,
+            effective_config_revision.clone(),
+            effective_config_generation,
+            proposed_settings_digest.clone(),
+        )
+        .await;
+    Json(AudioOutputTestResponse {
+        endpoint_id: endpoint_id.to_string(),
+        test_evidence_token,
+        test_evidence_expires_at,
+        observation_revision,
+        observation_generation,
+        config_revision: effective_config_revision,
+        config_generation: effective_config_generation,
+        proposed_settings_digest,
+        challenge: request.challenge,
+    })
+    .into_response()
+}
+
+async fn confirm_audio_output(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<ConfirmAudioOutputRequest>,
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
@@ -1822,27 +2722,170 @@ async fn update_machine_audio_settings(
     if let Err(response) = require_non_bring_up_maintenance_authorization(
         &ctx,
         &headers,
-        "update_machine_audio_settings",
+        "confirm_audio_output_binding",
     )
     .await
     {
         return response;
     }
-
+    if !request.heard {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorMessage {
+                code: "audio_output_human_confirmation_required",
+                message: "the operator must explicitly confirm hearing the intended speaker"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let _binding_lease = match ctx.sale_binding_gate.try_acquire_reconfigure() {
+        Ok(lease) => lease,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "audio_output_sale_start_in_progress",
+                    message: "a sale is starting; audio output binding remains unchanged"
+                        .to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match ctx.state.current_transaction_snapshot().await {
+        Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "audio_output_active_sale",
+                    message: "audio output binding cannot change during an active sale".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "audio_output_sale_state_unavailable",
+                    message: format!(
+                        "cannot prove that no sale is active; audio output binding remains unchanged: {error}"
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    }
+    let endpoint_id = request.endpoint_id.trim();
+    let (candidate, observation_revision, observation_generation) =
+        match current_audio_output_candidate(&ctx, endpoint_id) {
+            Ok(value) => value,
+            Err((code, message)) => {
+                return (StatusCode::CONFLICT, Json(ErrorMessage { code, message }))
+                    .into_response();
+            }
+        };
+    let proposed_settings_digest = match audio_output_proposed_settings_digest(
+        endpoint_id,
+        &request.audio_cue_settings,
+        request.machine_audio_volume,
+    ) {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorMessage {
+                    code: "audio_output_config_invalid",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let (effective_config_revision, effective_config_generation) = match ctx
+        .config_store
+        .load_effective_public_config_snapshot()
+        .await
+        .and_then(|(config, generation)| {
+            audio_output_effective_config_revision(&config).map(|revision| (revision, generation))
+        }) {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "audio_output_effective_config_revision_failed",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let consumed_evidence = match ctx
+        .audio_output_test_evidence
+        .consume(
+            request.test_evidence_token.trim(),
+            maintenance_session_generation(&headers),
+            endpoint_id,
+            &observation_revision,
+            observation_generation,
+            &effective_config_revision,
+            effective_config_generation,
+            &proposed_settings_digest,
+        )
+        .await
+    {
+        Ok(evidence) => evidence,
+        Err((code, message)) => {
+            return (StatusCode::CONFLICT, Json(ErrorMessage { code, message })).into_response();
+        }
+    };
+    let payload = crate::config::MachineAudioSettingsUpdateRequest {
+        machine_audio_output_binding: crate::config::MachineAudioOutputBinding {
+            endpoint_id: endpoint_id.to_string(),
+            friendly_name: Some(candidate.friendly_name),
+            confirmed_heard_at: crate::state::store::now_iso(),
+            confirmed_observation_revision: observation_revision,
+        },
+        audio_cue_settings: request.audio_cue_settings,
+        machine_audio_volume: request.machine_audio_volume,
+    };
     match ctx
         .config_store
-        .save_machine_audio_settings_update(payload)
+        .save_machine_audio_settings_update_if_generation(payload, effective_config_generation)
         .await
     {
         Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorMessage {
-                code: "machine_audio_settings_invalid",
-                message: error,
-            }),
-        )
-            .into_response(),
+        Err(message) => {
+            let generation_changed =
+                message.starts_with("effective configuration generation changed:");
+            if !generation_changed {
+                ctx.audio_output_test_evidence
+                    .restore(
+                        request.test_evidence_token.trim().to_string(),
+                        consumed_evidence,
+                    )
+                    .await;
+            }
+            (
+                if generation_changed {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                },
+                Json(ErrorMessage {
+                    code: if generation_changed {
+                        "audio_output_effective_config_changed"
+                    } else {
+                        "audio_output_binding_persist_failed"
+                    },
+                    message,
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -3636,14 +4679,20 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     let scanner_ready = scanner_readiness.ready;
 
     let payment_capability = load_machine_payment_capability(ctx).await;
+    let payment_environment_gate = payment_environment_gate(ctx).await;
     let payment_probe = ctx.ui.backend.get_payment_options().await;
     let platform_ready = payment_probe.is_ok();
     let mut payment_methods = Vec::new();
+    let mut payment_environment_allowed = false;
     let mut payment_options_error = None;
     if let Ok(payload) = payment_probe.as_ref() {
         match strict_payment_options(payload) {
-            Ok(options) => {
-                for option in options {
+            Ok(response) => {
+                for option in response.options {
+                    if !payment_environment_gate.allows(&option) {
+                        continue;
+                    }
+                    payment_environment_allowed = true;
                     if !payment_method_allowed_by_capability(&option.method, &payment_capability) {
                         continue;
                     }
@@ -3689,6 +4738,9 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     }
     if !payment_options_ready {
         blocking_codes.push("NO_PAYMENT_OPTIONS");
+    }
+    if !payment_environment_allowed {
+        blocking_codes.push("PAYMENT_ENVIRONMENT_NOT_READY");
     }
     if !sync_ready {
         blocking_codes.push("SYNC_UNHEALTHY");
@@ -4048,7 +5100,7 @@ fn payment_method_allowed_by_capability(
 
 fn strict_payment_options(
     payload: &serde_json::Value,
-) -> Result<Vec<BackendPaymentOption>, String> {
+) -> Result<BackendPaymentOptionsResponse, String> {
     let response: BackendPaymentOptionsResponse = serde_json::from_value(payload.clone())
         .map_err(|error| format!("payment options schema invalid: {error}"))?;
     if response.server_time.trim().is_empty() {
@@ -4090,7 +5142,7 @@ fn strict_payment_options(
             // part of strict parsing without changing readiness semantics.
         }
     }
-    Ok(response.options)
+    Ok(response)
 }
 
 fn validate_selected_payment_option(
@@ -4836,10 +5888,10 @@ async fn clear_whole_machine_maintenance_lock(
 }
 
 fn store_error_response(code: &'static str, error: StoreError) -> axum::response::Response {
-    let status = if matches!(error, StoreError::InvalidStockInput(_)) {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
+    let status = match error {
+        StoreError::InvalidStockInput(_) => StatusCode::BAD_REQUEST,
+        StoreError::ManualDispenseIdempotencyConflict => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
         status,
@@ -4858,6 +5910,20 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
 
     match ctx.ui.backend.get_payment_options().await {
         Ok(mut payload) => {
+            if let Err(error) = strict_payment_options(&payload) {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorMessage {
+                        code: "payment_options_invalid",
+                        message: error,
+                    }),
+                )
+                    .into_response();
+            }
+            if let Some(object) = payload.as_object_mut() {
+                object.remove("providerEnvironment");
+            }
+            let payment_environment_gate = payment_environment_gate(&ctx).await;
             let platform_default_option_key = payload
                 .get("defaultOptionKey")
                 .and_then(|value| value.as_str())
@@ -4872,11 +5938,14 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 .and_then(|value| value.as_array_mut())
             {
                 options.retain(|option| {
-                    option
-                        .get("method")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|method| {
-                            payment_method_allowed_by_capability(method, &payment_capability)
+                    serde_json::from_value::<BackendPaymentOption>(option.clone())
+                        .ok()
+                        .is_some_and(|parsed| {
+                            payment_environment_gate.allows(&parsed)
+                                && payment_method_allowed_by_capability(
+                                    &parsed.method,
+                                    &payment_capability,
+                                )
                         })
                 });
                 for option in options.iter_mut() {
@@ -4929,6 +5998,47 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             StatusCode::BAD_REQUEST,
             Json(ErrorMessage {
                 code: "payment_options_failed",
+                message: error,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn payment_environment_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_maintenance_diagnostic_authorization(&ctx, &headers).await {
+        return response;
+    }
+    match ctx.ui.backend.get_payment_environment_diagnostic().await {
+        Ok(payload) => match serde_json::from_value::<BackendPaymentProviderEnvironment>(payload) {
+            Ok(diagnostic) if diagnostic.is_valid() => Json(diagnostic).into_response(),
+            Ok(_) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorMessage {
+                    code: "payment_environment_diagnostic_invalid",
+                    message: "payment provider environment diagnostic is invalid".to_string(),
+                }),
+            )
+                .into_response(),
+            Err(error) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorMessage {
+                    code: "payment_environment_diagnostic_invalid",
+                    message: format!("payment provider environment diagnostic is invalid: {error}"),
+                }),
+            )
+                .into_response(),
+        },
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage {
+                code: "payment_environment_diagnostic_unavailable",
                 message: error,
             }),
         )
@@ -5999,6 +7109,405 @@ async fn control_environment(
     Json(result).into_response()
 }
 
+async fn manual_dispense_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<ManualDispenseDiagnosticRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    let principal = match ctx
+        .maintenance_authorization
+        .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+    {
+        Ok(principal) => principal,
+        Err(message) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorMessage {
+                    code: "protected_manual_dispense_authorization_denied",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let key = request.idempotency_key.trim();
+    if key.is_empty()
+        || key.len() > 96
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        || request.slot_code.trim().is_empty()
+        || request.slot_code.len() > 32
+        || request.quantity != 1
+        || !(1..=120).contains(&request.timeout_seconds)
+        || request.layer_no == 0
+        || request.layer_no > 255
+        || request.cell_no == 0
+        || request.cell_no > 255
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "invalid_manual_dispense_diagnostic_request",
+                message: "bounded idempotencyKey, slot, quantity=1 and timeoutSeconds 1..120 are required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let _lease = match ctx.sale_binding_gate.try_acquire_manual_dispense() {
+        Ok(lease) => lease,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "manual_dispense_controller_busy",
+                    message: "sale or hardware reconfiguration is active".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    match ctx.state.current_transaction_snapshot().await {
+        Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "manual_dispense_active_sale",
+                    message: "manual dispense is unavailable during an active sale".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => return store_error_response("manual_dispense_sale_state_unavailable", error),
+        _ => {}
+    }
+    let binding_snapshot = match ctx
+        .config_store
+        .local_device_binding_snapshot(crate::device_binding::LocalDeviceRole::LowerController)
+        .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_binding_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let Some(binding) = binding_snapshot.binding.clone() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "manual_dispense_controller_unbound",
+                message: "stable lower-controller binding is required".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let observed = match ctx.serial_device_platform.discover().await {
+        Ok(observed) => observed,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_controller_discovery_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let resolved_port =
+        match crate::device_binding::resolve_bound_port(&binding.identity, &observed) {
+            crate::device_binding::BindingResolution::Resolved(port) => port,
+            crate::device_binding::BindingResolution::Missing => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "manual_dispense_controller_binding_missing",
+                        message: "the bound lower controller is not currently attached".to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+            crate::device_binding::BindingResolution::Ambiguous(_) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "manual_dispense_controller_binding_ambiguous",
+                        message: "the bound lower controller does not resolve to one current port"
+                            .to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+    let config = match ctx.config_store.load_effective_public_config().await {
+        Ok(config) => config,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_config_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let config_revision = match device_binding_config_revision(&config) {
+        Ok(value) => value,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_config_revision_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let controller = ctx.hardware.self_check().await;
+    // A mock or an unresolved serial binding must never turn this diagnostic
+    // into a hidden alternative sale path.
+    if !controller.online || controller.port_path.as_deref() != Some(resolved_port.as_str()) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "manual_dispense_controller_unresolved",
+                message: "manual dispense requires the online runtime to match the bound controller's current port".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let diagnostic_id = format!("manual-dispense-{}", Uuid::new_v4().simple());
+    let command = vending_core::hardware::DispenseCommandPayload {
+        command_no: diagnostic_id.clone(),
+        // This sentinel is intentionally not an order number. It keeps the
+        // controller protocol observable without creating sale evidence.
+        order_no: "MANUAL-DIAGNOSTIC".to_string(),
+        slot: vending_core::hardware::SlotPayload {
+            layer_no: request.layer_no,
+            cell_no: request.cell_no,
+            slot_code: request.slot_code.trim().to_string(),
+        },
+        quantity: request.quantity,
+        timeout_seconds: request.timeout_seconds,
+    };
+    let started_at = crate::state::store::now_iso();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::days(90)).to_rfc3339();
+    let pending = crate::state::store::ManualDispenseDiagnostic {
+        diagnostic_id: diagnostic_id.clone(),
+        idempotency_key: key.to_string(),
+        request_fingerprint: crate::state::store::manual_dispense_request_fingerprint(
+            request.slot_code.trim(),
+            u64::from(request.layer_no),
+            u64::from(request.cell_no),
+            u64::from(request.quantity),
+            request.timeout_seconds,
+        ),
+        status: "pending".to_string(),
+        operator_id: principal.operator_id.clone(),
+        session_correlation_id: principal.session_correlation_id.clone(),
+        controller: serde_json::json!({
+            "stableIdentity": binding.identity, "adapter": controller.adapter,
+            "portPath": controller.port_path, "resolutionSource": controller.resolution_source,
+            "configRevision": config_revision, "bindingRevision": binding_snapshot.revision,
+        }),
+        command: serde_json::json!({
+            "commandNo": command.command_no, "slotCode": command.slot.slot_code,
+            "layerNo": command.slot.layer_no, "cellNo": command.slot.cell_no,
+            "quantity": command.quantity, "timeoutSeconds": command.timeout_seconds,
+            "namespace": "manual_diagnostic",
+        }),
+        started_at: started_at.clone(),
+        completed_at: None,
+        raw_result: None,
+        normalized_result: None,
+        reconciliation_status: "open".to_string(),
+        expires_at,
+    };
+    match ctx.state.reserve_manual_dispense_diagnostic(&pending).await {
+        Ok(crate::state::store::ManualDispenseReservation::Existing(existing)) => {
+            let existing = if existing.status == "pending" {
+                match ctx
+                    .state
+                    .mark_pending_manual_dispense_result_unknown(&existing.diagnostic_id)
+                    .await
+                {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return store_error_response(
+                            "manual_dispense_unknown_evidence_write_failed",
+                            error,
+                        )
+                    }
+                }
+            } else {
+                existing
+            };
+            return (StatusCode::OK, Json(serde_json::json!({
+                "diagnosticId": existing.diagnostic_id, "outcome": existing.status,
+                "stockReconciliationRequired": true, "reconciliationStatus": existing.reconciliation_status,
+                "replayed": true,
+            }))).into_response();
+        }
+        Err(error) => {
+            return store_error_response("manual_dispense_pending_evidence_write_failed", error)
+        }
+        Ok(crate::state::store::ManualDispenseReservation::Reserved(_)) => {}
+    }
+    let result = match tokio::time::timeout(
+        Duration::from_secs(request.timeout_seconds.saturating_add(10)),
+        ctx.hardware.dispense(command.clone()),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => vending_core::hardware::DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: false,
+            error_code: Some("RESULT_UNKNOWN".to_string()),
+            message: "manual dispense result unknown after local timeout".to_string(),
+            reported_at: crate::state::store::now_iso(),
+        },
+    };
+    let normalized = serde_json::json!({
+        "outcome": if result.success { "completed" } else if result.error_code.as_deref() == Some("RESULT_UNKNOWN") { "result_unknown" } else { "failed" },
+        "errorCode": result.error_code,
+        "reportedAt": result.reported_at,
+    });
+    let terminal_status = normalized["outcome"].as_str().unwrap_or("result_unknown");
+    let raw_result = bounded_manual_dispense_raw_result(&result);
+    let record = match ctx
+        .state
+        .finish_manual_dispense_diagnostic(
+            &diagnostic_id,
+            terminal_status,
+            raw_result,
+            normalized.clone(),
+        )
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => {
+            // Pending evidence remains durable. A retry with the same key
+            // reports unknown and must never issue the physical command again.
+            return store_error_response("manual_dispense_terminal_evidence_write_failed", error);
+        }
+    };
+    append_local_diagnostic_log(
+        &ctx,
+        "info",
+        "maintenance_audit",
+        "manual dispense diagnostic completed",
+        Some(serde_json::json!({
+            "diagnosticId": diagnostic_id, "operatorId": principal.operator_id,
+            "sessionCorrelationId": record.session_correlation_id, "scope": principal.scope,
+            "outcome": normalized["outcome"],
+        })),
+    )
+    .await;
+    Json(serde_json::json!({
+        "diagnosticId": record.diagnostic_id, "outcome": normalized["outcome"],
+        "errorCode": normalized["errorCode"], "reportedAt": normalized["reportedAt"],
+        "stockReconciliationRequired": true,
+        "reconciliationStatus": "open",
+        "replayed": false,
+    }))
+    .into_response()
+}
+
+async fn reconcile_manual_dispense_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<ReconcileManualDispenseDiagnosticRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    if let Err(message) = ctx
+        .maintenance_authorization
+        .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage {
+                code: "protected_manual_dispense_authorization_denied",
+                message,
+            }),
+        )
+            .into_response();
+    }
+    if request.diagnostic_id.trim().is_empty() || request.stock_count_movement_id.trim().is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "invalid_manual_dispense_reconciliation",
+                message: "diagnosticId and stockCountMovementId are required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    match ctx
+        .state
+        .reconcile_manual_dispense_diagnostic(
+            request.diagnostic_id.trim(),
+            request.stock_count_movement_id.trim(),
+        )
+        .await
+    {
+        Ok(record) => Json(serde_json::json!({
+            "diagnosticId": record.diagnostic_id,
+            "reconciliationStatus": record.reconciliation_status,
+            "stockCountMovementId": request.stock_count_movement_id,
+        }))
+        .into_response(),
+        Err(error) => store_error_response("manual_dispense_reconciliation_failed", error),
+    }
+}
+
+fn bounded_manual_dispense_raw_result(
+    result: &vending_core::hardware::DispenseResultPayload,
+) -> serde_json::Value {
+    fn bounded(value: &str, max_chars: usize) -> String {
+        value.chars().take(max_chars).collect()
+    }
+    serde_json::json!({
+        "commandNo": bounded(&result.command_no, 128),
+        "success": result.success,
+        "errorCode": result.error_code.as_deref().map(|value| bounded(value, 128)),
+        "message": bounded(&result.message, 1024),
+        "reportedAt": bounded(&result.reported_at, 64),
+    })
+}
+
 fn hardware_fault_injection_enabled() -> bool {
     std::env::var("VEM_ENABLE_HARDWARE_FAULT_INJECTION")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -6068,6 +7577,238 @@ async fn vision_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> imp
         "latestDiagnosticPayload": snapshot.latest_diagnostic_payload,
     }))
     .into_response()
+}
+
+fn parse_vision_camera_role(
+    value: &str,
+) -> Option<crate::vision_camera_maintenance::VisionCameraRole> {
+    match value {
+        "top" => Some(crate::vision_camera_maintenance::VisionCameraRole::Top),
+        "front" => Some(crate::vision_camera_maintenance::VisionCameraRole::Front),
+        _ => None,
+    }
+}
+
+async fn load_vision_camera_maintenance_config(
+    ctx: &IpcContext,
+) -> Result<MachinePublicConfig, axum::response::Response> {
+    ctx.config_store
+        .load_effective_public_config()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response()
+        })
+}
+
+fn vision_camera_maintenance_gateway_error(
+    error: crate::vision_camera_maintenance::VisionCameraMaintenanceError,
+) -> axum::response::Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(ErrorMessage {
+            code: "vision_camera_maintenance_failed",
+            message: error.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+async fn vision_camera_maintenance_contract(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.read").await
+    {
+        return response;
+    }
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::get_contract(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+    )
+    .await
+    {
+        Ok(contract) => Json(contract).into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
+async fn vision_camera_maintenance_refresh(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.refresh")
+            .await
+    {
+        return response;
+    }
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::refresh_contract(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+    )
+    .await
+    {
+        Ok(contract) => Json(contract).into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
+async fn vision_camera_maintenance_preview(
+    State(ctx): State<IpcContext>,
+    AxumPath(candidate_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.preview")
+            .await
+    {
+        return response;
+    }
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::preview_candidate(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+        &candidate_id,
+    )
+    .await
+    {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (CONTENT_TYPE, "image/jpeg"),
+                (HeaderName::from_static("cache-control"), "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
+async fn vision_camera_maintenance_test(
+    State(ctx): State<IpcContext>,
+    AxumPath(role): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<VisionCameraMaintenanceCandidateRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.test").await
+    {
+        return response;
+    }
+    let Some(role) = parse_vision_camera_role(&role) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage {
+                code: "vision_camera_role_unknown",
+                message: "unknown vision camera role".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::test_role(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+        role,
+        request.candidate_id.trim(),
+    )
+    .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
+}
+
+async fn vision_camera_maintenance_confirm(
+    State(ctx): State<IpcContext>,
+    AxumPath(role): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<VisionCameraMaintenanceConfirmRequestBody>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "vision.camera.confirm")
+            .await
+    {
+        return response;
+    }
+    let Some(role) = parse_vision_camera_role(&role) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage {
+                code: "vision_camera_role_unknown",
+                message: "unknown vision camera role".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let public = match load_vision_camera_maintenance_config(&ctx).await {
+        Ok(public) => public,
+        Err(response) => return response,
+    };
+    match crate::vision_camera_maintenance::confirm_role(
+        &reqwest::Client::new(),
+        &ctx.data_dir,
+        &public,
+        maintenance_session_generation(&headers),
+        role,
+        &crate::vision_camera_maintenance::VisionCameraMaintenanceConfirmRequest {
+            candidate_id: request.candidate_id,
+            test_evidence_id: request.test_evidence_id,
+            operator_visual_confirmation: request.operator_visual_confirmation,
+            expected_generation: request.expected_generation,
+        },
+    )
+    .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => vision_camera_maintenance_gateway_error(error),
+    }
 }
 
 async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
@@ -6278,6 +8019,147 @@ async fn events_ws_inner(mut socket: WebSocket, events: broadcast::Sender<Daemon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct FixedAudioOutputPlatform {
+        observations: std::sync::RwLock<Vec<crate::audio_output::AudioOutputObservation>>,
+    }
+
+    impl FixedAudioOutputPlatform {
+        fn new(observations: Vec<crate::audio_output::AudioOutputObservation>) -> Self {
+            Self {
+                observations: std::sync::RwLock::new(observations),
+            }
+        }
+
+        fn replace(&self, observations: Vec<crate::audio_output::AudioOutputObservation>) {
+            *self.observations.write().expect("audio observations") = observations;
+        }
+    }
+
+    impl crate::audio_output::AudioOutputPlatform for FixedAudioOutputPlatform {
+        fn enumerate(&self) -> Result<Vec<crate::audio_output::AudioOutputObservation>, String> {
+            Ok(self
+                .observations
+                .read()
+                .expect("audio observations")
+                .clone())
+        }
+    }
+
+    #[derive(Debug)]
+    struct FixedAudioOutputPlayback {
+        result: std::sync::RwLock<Result<crate::audio_output::NativeAudioPlaybackEvidence, String>>,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl FixedAudioOutputPlayback {
+        fn successful(endpoint_id: &str) -> Self {
+            Self {
+                result: std::sync::RwLock::new(Ok(
+                    crate::audio_output::NativeAudioPlaybackEvidence {
+                        endpoint_id: endpoint_id.to_string(),
+                        source_non_silent: true,
+                    },
+                )),
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn with_result(
+            result: Result<crate::audio_output::NativeAudioPlaybackEvidence, String>,
+        ) -> Self {
+            Self {
+                result: std::sync::RwLock::new(result),
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().expect("audio playback calls").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::audio_output::AudioOutputPlayback for FixedAudioOutputPlayback {
+        async fn play_calibration(
+            &self,
+            endpoint_id: &str,
+            _volume: f32,
+            _cancellation: CancellationToken,
+        ) -> Result<crate::audio_output::NativeAudioPlaybackEvidence, String> {
+            self.calls
+                .lock()
+                .expect("audio playback calls")
+                .push(endpoint_id.to_string());
+            self.result.read().expect("audio playback result").clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct MutatingAudioOutputPlayback {
+        platform: Arc<FixedAudioOutputPlatform>,
+        replacement: Vec<crate::audio_output::AudioOutputObservation>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::audio_output::AudioOutputPlayback for MutatingAudioOutputPlayback {
+        async fn play_calibration(
+            &self,
+            endpoint_id: &str,
+            _volume: f32,
+            _cancellation: CancellationToken,
+        ) -> Result<crate::audio_output::NativeAudioPlaybackEvidence, String> {
+            self.platform.replace(self.replacement.clone());
+            Ok(crate::audio_output::NativeAudioPlaybackEvidence {
+                endpoint_id: endpoint_id.to_string(),
+                source_non_silent: true,
+            })
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct BlockingFirstAudioOutputPlayback {
+        calls: AtomicUsize,
+        released: AtomicBool,
+        completion: tokio::sync::Notify,
+    }
+
+    impl BlockingFirstAudioOutputPlayback {
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::Acquire)
+        }
+
+        fn release(&self) {
+            self.released.store(true, Ordering::Release);
+            self.completion.notify_waiters();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::audio_output::AudioOutputPlayback for BlockingFirstAudioOutputPlayback {
+        async fn play_calibration(
+            &self,
+            endpoint_id: &str,
+            _volume: f32,
+            cancellation: CancellationToken,
+        ) -> Result<crate::audio_output::NativeAudioPlaybackEvidence, String> {
+            if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                while !self.released.load(Ordering::Acquire) {
+                    tokio::select! {
+                        _ = self.completion.notified() => {}
+                        _ = cancellation.cancelled() => {
+                            return Err("audio output calibration was cancelled before playback completed".to_string());
+                        }
+                    }
+                }
+            }
+            Ok(crate::audio_output::NativeAudioPlaybackEvidence {
+                endpoint_id: endpoint_id.to_string(),
+                source_non_silent: true,
+            })
+        }
+    }
     use crate::{
         config::{
             default_public_config, FactoryProfile, FactoryRuntimeManifest,
@@ -6420,6 +8302,10 @@ mod tests {
         devices: Vec<crate::device_binding::ObservedSerialDevice>,
     }
 
+    struct SwitchableFixtureSerialDevicePlatform {
+        devices: Arc<tokio::sync::RwLock<Vec<crate::device_binding::ObservedSerialDevice>>>,
+    }
+
     #[cfg(unix)]
     struct RecordingProbeSerialDevicePlatform {
         device: crate::device_binding::ObservedSerialDevice,
@@ -6469,6 +8355,24 @@ mod tests {
                 message: "fixture role probe ready".to_string(),
                 tested_at: crate::state::store::now_iso(),
             }
+        }
+    }
+
+    #[async_trait]
+    impl crate::device_binding::SerialDevicePlatform for SwitchableFixtureSerialDevicePlatform {
+        async fn discover(
+            &self,
+        ) -> Result<Vec<crate::device_binding::ObservedSerialDevice>, String> {
+            Ok(self.devices.read().await.clone())
+        }
+
+        async fn test_candidate(
+            &self,
+            _role: crate::device_binding::LocalDeviceRole,
+            _candidate: &crate::device_binding::ObservedSerialDevice,
+            _probe_config: &crate::device_binding::SerialDeviceRoleProbeConfig,
+        ) -> crate::device_binding::DeviceBindingTestResult {
+            unreachable!("manual dispense only needs discovery")
         }
     }
 
@@ -6618,8 +8522,21 @@ mod tests {
             updated_at: crate::state::store::now_iso(),
         }
     }
+
+    async fn mount_default_payment_environment(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "production",
+                "readiness": "ready",
+                "errorCategory": "none"
+            })))
+            .with_priority(100)
+            .mount(server)
+            .await;
+    }
     use wiremock::{
-        matchers::{body_partial_json, method, path},
+        matchers::{body_partial_json, header_exists, method, path},
         Mock, MockServer, ResponseTemplate,
     };
 
@@ -6903,6 +8820,15 @@ mod tests {
             runtime_tx: runtime_tx.clone(),
             scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
             serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
+            audio_output_platform: Arc::new(crate::audio_output::WindowsAudioOutputPlatform),
+            audio_output_playback: Arc::new(
+                crate::audio_output::WindowsAudioOutputPlayback::default(),
+            ),
+            audio_output_calibration_lock: Arc::new(Mutex::new(())),
+            audio_output_observation_generation: Arc::new(
+                AudioOutputObservationGenerationTracker::default(),
+            ),
+            audio_output_test_evidence: Arc::new(AudioOutputTestEvidenceStore::default()),
             device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
             sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
             disk_pressure_probe: Arc::new(FixedDiskPressureProbe {
@@ -7082,6 +9008,7 @@ mod tests {
     #[tokio::test]
     async fn dispense_confirmation_proxies_authenticated_backend_response() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path(
                 "/machine-stock-movements/dispense-confirmation",
@@ -7164,6 +9091,7 @@ mod tests {
     #[tokio::test]
     async fn dispense_confirmation_failure_does_not_expose_backend_credential() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path(
                 "/machine-stock-movements/dispense-confirmation",
@@ -7459,8 +9387,26 @@ mod tests {
         ensure_platform_profile(ctx).await;
     }
 
+    async fn mark_factory_testbed(ctx: &IpcContext) {
+        let mut manifest = ctx
+            .config_store
+            .load_factory_manifest()
+            .await
+            .expect("load factory manifest")
+            .expect("factory manifest");
+        manifest.environment = FactoryProfile::Testbed;
+        manifest.hardware_mode = RuntimeHardwareMode::Simulated;
+        tokio::fs::write(
+            ctx.config_store.factory_manifest_path(),
+            serde_json::to_vec_pretty(&manifest).expect("serialize testbed manifest"),
+        )
+        .await
+        .expect("write testbed manifest");
+    }
+
     async fn ready_payment_options_server() -> MockServer {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -7739,6 +9685,288 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn vision_camera_maintenance_proxy_negotiates_v2_and_proxies_preview_test_confirm() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let server = MockServer::start().await;
+        let vision_ws_url = format!("{}/ws", server.uri().replacen("http://", "ws://", 1));
+        let ctx = test_ipc_context(
+            temp.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://api",
+        )
+        .await;
+        let mut public = ctx
+            .config_store
+            .load_public_config()
+            .await
+            .expect("load public config");
+        public.vision_ws_url = vision_ws_url;
+        ctx.config_store
+            .save_public_config(public)
+            .await
+            .expect("save vision ws url");
+        let app = build_router(ctx.clone());
+
+        Mock::given(method("GET"))
+            .and(path("/maintenance/cameras"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contractVersion": "vem.vision.camera-maintenance/v2",
+                "generation": "generation-42",
+                "candidates": [{
+                    "id": "usb#top-001",
+                    "label": "Top Camera",
+                    "backendObservation": {
+                        "backend": "directshow",
+                        "index": 3,
+                        "available": true,
+                        "mappingState": "proven"
+                    }
+                }],
+                "roles": {
+                    "top": {
+                        "role": "top",
+                        "state": "missing",
+                        "ready": false,
+                        "candidateId": "usb#top-001",
+                        "reason": "bound_camera_missing",
+                        "backendObservation": {
+                            "backend": "directshow",
+                            "index": 3,
+                            "available": false,
+                            "mappingState": "proven"
+                        }
+                    },
+                    "front": {
+                        "role": "front",
+                        "state": "unbound",
+                        "ready": false,
+                        "reason": "camera_not_confirmed"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/refresh"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contractVersion": "vem.vision.camera-maintenance/v2",
+                "generation": "generation-43",
+                "candidates": [],
+                "roles": {
+                    "top": {
+                        "role": "top",
+                        "state": "unbound",
+                        "ready": false,
+                        "reason": "camera_not_confirmed"
+                    },
+                    "front": {
+                        "role": "front",
+                        "state": "unbound",
+                        "ready": false,
+                        "reason": "camera_not_confirmed"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/maintenance/cameras/usb%23top-001/preview.jpg"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/jpeg")
+                    .set_body_bytes(vec![0xFF, 0xD8, 0xFF, 0xD9]),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/top/test"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .and(body_partial_json(json!({ "candidateId": "usb#top-001" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "role": "top",
+                "candidateId": "usb#top-001",
+                "generation": "generation-42",
+                "ok": true,
+                "frame": { "width": 1280, "height": 720 },
+                "backendObservation": {
+                    "backend": "directshow",
+                    "index": 3,
+                    "available": true,
+                    "mappingState": "proven"
+                },
+                "evidence": {
+                    "id": "evidence-1",
+                    "role": "top",
+                    "candidateId": "usb#top-001",
+                    "generation": "generation-42",
+                    "expiresAt": 1752570000
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/top/confirm"))
+            .and(header_exists("x-vision-maintenance-capability"))
+            .and(body_partial_json(json!({
+                "candidateId": "usb#top-001",
+                "testEvidenceId": "evidence-1",
+                "operatorVisualConfirmation": true,
+                "expectedGeneration": "generation-42"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "role": "top",
+                "state": "ready",
+                "ready": true,
+                "candidateId": "usb#top-001",
+                "backendObservation": {
+                    "backend": "directshow",
+                    "index": 4,
+                    "available": true,
+                    "mappingState": "proven"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/vision/camera-maintenance")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("vision list request"),
+            )
+            .await
+            .expect("vision list response");
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed_body = body::to_bytes(listed.into_body(), usize::MAX)
+            .await
+            .expect("vision list body");
+        let listed: serde_json::Value =
+            serde_json::from_slice(&listed_body).expect("vision list json");
+        assert_eq!(
+            listed["contractVersion"],
+            "vem.vision.camera-maintenance/v2"
+        );
+        assert_eq!(listed["generation"], "generation-42");
+
+        let refreshed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/vision/camera-maintenance/refresh")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("refresh request"),
+            )
+            .await
+            .expect("refresh response");
+        assert_eq!(refreshed.status(), StatusCode::OK);
+
+        let preview = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/vision/camera-maintenance/candidates/usb%23top-001/preview.jpg")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("preview request"),
+            )
+            .await
+            .expect("preview response");
+        assert_eq!(preview.status(), StatusCode::OK);
+        assert_eq!(
+            preview
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            preview
+                .headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+
+        let tested = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/vision/camera-maintenance/roles/top/test")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({ "candidateId": "usb#top-001" }).to_string(),
+                    ))
+                    .expect("vision test request"),
+            )
+            .await
+            .expect("vision test response");
+        let tested_body = body::to_bytes(tested.into_body(), usize::MAX)
+            .await
+            .expect("tested body");
+        let tested_json: serde_json::Value =
+            serde_json::from_slice(&tested_body).expect("tested json");
+        assert_eq!(tested_json["evidence"]["id"], "evidence-1");
+
+        let confirmed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/vision/camera-maintenance/roles/top/confirm")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({
+                            "candidateId": "usb#top-001",
+                            "testEvidenceId": "evidence-1",
+                            "operatorVisualConfirmation": true,
+                            "expectedGeneration": "generation-42"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("vision confirm request"),
+            )
+            .await
+            .expect("vision confirm response");
+        assert_eq!(confirmed.status(), StatusCode::OK);
+        let confirmed_body = body::to_bytes(confirmed.into_body(), usize::MAX)
+            .await
+            .expect("confirmed body");
+        let confirmed_json: serde_json::Value =
+            serde_json::from_slice(&confirmed_body).expect("confirmed json");
+        assert_eq!(confirmed_json["state"], "ready");
+
+        assert!(
+            tokio::fs::try_exists(ctx.data_dir.join("vision/daemon-maintenance-keys.json"))
+                .await
+                .expect("vision keyring exists")
+        );
+        assert!(
+            tokio::fs::try_exists(ctx.data_dir.join("vision/daemon-maintenance-session.json"))
+                .await
+                .expect("vision session exists")
+        );
     }
 
     async fn test_binding_candidate(
@@ -8631,6 +10859,7 @@ mod tests {
 
     async fn claim_with_profile(profile: serde_json::Value) -> (StatusCode, serde_json::Value) {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(profile))
@@ -8694,6 +10923,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_claim_applies_profile_to_public_config_without_returning_secrets() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .and(body_partial_json(json!({
@@ -8838,6 +11068,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_claim_writes_profile_cache_layer_for_effective_runtime_config() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -8908,7 +11139,103 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn machine_audio_settings_endpoint_rejects_unauthorized_maintenance_mutation() {
+    async fn audio_output_snapshot_keeps_identical_names_distinct_and_revisions_observations() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-b".to_string(),
+                friendly_name: "Speakers".to_string(),
+                is_default: false,
+            },
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-a".to_string(),
+                friendly_name: "Speakers".to_string(),
+                is_default: true,
+            },
+        ]));
+        ctx.audio_output_platform = platform.clone();
+        let app = build_router(ctx);
+
+        let get_snapshot = || async {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/audio-output-binding")
+                        .header(AUTHORIZATION, "Bearer token-1")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body");
+            serde_json::from_slice::<serde_json::Value>(&body).expect("response json")
+        };
+
+        let first = get_snapshot().await;
+        assert_eq!(first["candidates"][0]["endpointId"], "endpoint-a");
+        assert_eq!(first["candidates"][1]["endpointId"], "endpoint-b");
+        assert_eq!(first["candidates"][0]["friendlyName"], "Speakers");
+        assert_eq!(first["candidates"][1]["friendlyName"], "Speakers");
+        assert_eq!(first["currentObservation"], serde_json::Value::Null);
+        let first_revision = first["observationRevision"]
+            .as_str()
+            .expect("first revision")
+            .to_string();
+
+        platform.replace(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-a".to_string(),
+                friendly_name: "Speakers".to_string(),
+                is_default: false,
+            },
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-b".to_string(),
+                friendly_name: "Speakers".to_string(),
+                is_default: true,
+            },
+        ]);
+        let default_changed = get_snapshot().await;
+        assert_ne!(
+            default_changed["observationRevision"].as_str(),
+            Some(first_revision.as_str())
+        );
+        let changed_revision = default_changed["observationRevision"]
+            .as_str()
+            .expect("changed revision")
+            .to_string();
+
+        platform.replace(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-b".to_string(),
+                friendly_name: "Speakers".to_string(),
+                is_default: true,
+            },
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-a".to_string(),
+                friendly_name: "Speakers".to_string(),
+                is_default: false,
+            },
+        ]);
+        let reordered = get_snapshot().await;
+        assert_eq!(
+            reordered["observationRevision"].as_str(),
+            Some(changed_revision.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_output_test_and_confirmation_require_protected_maintenance_session() {
         let temp_dir = tempdir().expect("tmp");
         let mut ctx = test_ipc_context(
             temp_dir.path(),
@@ -8919,52 +11246,46 @@ mod tests {
         .await;
         ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: false });
         let app = build_router(ctx);
+        let requests = [
+            (
+                "/v1/audio-output-binding/test",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            ),
+            (
+                "/v1/audio-output-binding/confirm",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "testEvidenceToken": "11111111-2222-4333-8444-555555555555",
+                    "heard": true,
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            ),
+        ];
 
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::PUT)
-                    .uri("/v1/config/audio-settings")
-                    .header(AUTHORIZATION, "Bearer token-1")
-                    .header("x-vem-maintenance-session", "protected-session-1")
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(axum::body::Body::from(
-                        json!({
-                            "machineAudioOutputBinding": {
-                                "endpointId": "{0.0.0.00000000}.{field-speaker-1}",
-                                "friendlyName": "现场喇叭",
-                                "confirmedHeardAt": "2026-07-15T10:00:00.000Z"
-                            },
-                            "audioCueSettings": {
-                                "enabled": true,
-                                "categories": {
-                                    "presence": false,
-                                    "transaction": true
-                                }
-                            },
-                            "machineAudioVolume": 0.42
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let payload: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(
-            payload["code"],
-            "protected_maintenance_authorization_denied"
-        );
+        for (uri, payload) in requests {
+            let response = post_json_with_maintenance(&app, uri, "token-1", payload).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let body = body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+            assert_eq!(body["code"], "protected_maintenance_authorization_denied");
+        }
     }
 
     #[tokio::test]
-    async fn machine_audio_settings_endpoint_persists_binding_cues_and_volume() {
+    async fn audio_output_test_does_not_play_or_sign_when_endpoint_is_missing() {
         let temp_dir = tempdir().expect("tmp");
         let mut ctx = test_ipc_context(
             temp_dir.path(),
@@ -8973,18 +11294,1141 @@ mod tests {
             "http://127.0.0.1:0",
         )
         .await;
-        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: true });
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(Vec::new()));
+        let playback = Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+        ctx.audio_output_playback = playback.clone();
         let app = build_router(ctx);
 
+        let response = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": true }
+                },
+                "machineAudioVolume": 0.42
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_candidate_unavailable");
+        assert!(body.get("testEvidenceToken").is_none());
+        assert!(playback.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn audio_output_test_rejects_an_invalid_evidence_challenge_before_playback() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        let playback = Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+        ctx.audio_output_playback = playback.clone();
+        let app = build_router(ctx);
+
+        let response = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": true }
+                },
+                "machineAudioVolume": 0.42,
+                "challenge": "not-a-trusted-runner-challenge"
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_native_test_invalid");
+        assert!(body.get("testEvidenceToken").is_none());
+        assert!(playback.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn audio_output_test_does_not_sign_playback_errors_or_silent_results() {
+        for (result, expected_code) in [
+            (
+                Err("native endpoint open failed".to_string()),
+                "audio_output_native_playback_failed",
+            ),
+            (
+                Ok(crate::audio_output::NativeAudioPlaybackEvidence {
+                    endpoint_id: "endpoint-speaker".to_string(),
+                    source_non_silent: false,
+                }),
+                "audio_output_native_test_invalid",
+            ),
+        ] {
+            let temp_dir = tempdir().expect("tmp");
+            let mut ctx = test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await;
+            ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+                crate::audio_output::AudioOutputObservation {
+                    endpoint_id: "endpoint-speaker".to_string(),
+                    friendly_name: "Near-field speaker".to_string(),
+                    is_default: true,
+                },
+            ]));
+            let playback = Arc::new(FixedAudioOutputPlayback::with_result(result));
+            ctx.audio_output_playback = playback.clone();
+            let app = build_router(ctx);
+
+            let response = post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            )
+            .await;
+
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let body = body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+            assert_eq!(body["code"], expected_code);
+            assert!(body.get("testEvidenceToken").is_none());
+            assert_eq!(playback.calls(), vec!["endpoint-speaker"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn audio_output_test_does_not_sign_when_observations_change_during_playback() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let initial = crate::audio_output::AudioOutputObservation {
+            endpoint_id: "endpoint-speaker".to_string(),
+            friendly_name: "Near-field speaker".to_string(),
+            is_default: true,
+        };
+        let platform = Arc::new(FixedAudioOutputPlatform::new(vec![initial.clone()]));
+        ctx.audio_output_platform = platform.clone();
+        ctx.audio_output_playback = Arc::new(MutatingAudioOutputPlayback {
+            platform,
+            replacement: vec![crate::audio_output::AudioOutputObservation {
+                is_default: false,
+                ..initial
+            }],
+        });
+        let app = build_router(ctx);
+
+        let response = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": true }
+                },
+                "machineAudioVolume": 0.42
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_observation_changed");
+        assert!(body.get("testEvidenceToken").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_output_calibration_is_single_flight_across_different_endpoints() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-a".to_string(),
+                friendly_name: "Speaker A".to_string(),
+                is_default: true,
+            },
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-b".to_string(),
+                friendly_name: "Speaker B".to_string(),
+                is_default: false,
+            },
+        ]));
+        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
+        ctx.audio_output_playback = playback.clone();
+        let app = build_router(ctx);
+        let request = |endpoint_id: &str| {
+            json!({
+                "endpointId": endpoint_id,
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": true }
+                },
+                "machineAudioVolume": 0.42
+            })
+        };
+        let first_app = app.clone();
+        let first = tokio::spawn(async move {
+            post_json_with_maintenance(
+                &first_app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                request("endpoint-a"),
+            )
+            .await
+        });
+        while playback.call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let competing = tokio::time::timeout(
+            Duration::from_secs(1),
+            post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                request("endpoint-b"),
+            ),
+        )
+        .await
+        .expect("competing calibration response");
+        playback.release();
+        let first = first.await.expect("first calibration task");
+
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(competing.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(competing.into_body(), usize::MAX)
+            .await
+            .expect("competing response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_calibration_in_progress");
+        assert!(body.get("testEvidenceToken").is_none());
+        assert_eq!(playback.call_count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_output_test_does_not_sign_when_effective_config_changes_during_playback() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
+        ctx.audio_output_playback = playback.clone();
+        let config_store = ctx.config_store.clone();
+        let app = build_router(ctx);
+        let request_app = app.clone();
+        let request = tokio::spawn(async move {
+            post_json_with_maintenance(
+                &request_app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            )
+            .await
+        });
+        while playback.call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let mut config = config_store
+            .load_effective_public_config()
+            .await
+            .expect("load effective config");
+        config.machine_audio_volume = 0.55;
+        config_store
+            .save_public_config(config)
+            .await
+            .expect("change effective config during playback");
+        playback.release();
+        let response = request.await.expect("calibration request");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_effective_config_changed");
+        assert!(body.get("testEvidenceToken").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_output_test_does_not_sign_when_endpoint_observation_changes_before_completion() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let initial_observation = crate::audio_output::AudioOutputObservation {
+            endpoint_id: "endpoint-speaker".to_string(),
+            friendly_name: "Near-field speaker".to_string(),
+            is_default: true,
+        };
+        let platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            initial_observation.clone()
+        ]));
+        ctx.audio_output_platform = platform.clone();
+        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
+        ctx.audio_output_playback = playback.clone();
+        let app = build_router(ctx);
+        let request_app = app.clone();
+        let request = tokio::spawn(async move {
+            post_json_with_maintenance(
+                &request_app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            )
+            .await
+        });
+        while playback.call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        platform.replace(vec![crate::audio_output::AudioOutputObservation {
+            endpoint_id: "endpoint-speaker".to_string(),
+            friendly_name: "Near-field speaker re-enumerated".to_string(),
+            is_default: false,
+        }]);
+        let observed_intermediate = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/audio-output-binding")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("observation request"),
+            )
+            .await
+            .expect("observe intermediate endpoint generation");
+        assert_eq!(observed_intermediate.status(), StatusCode::OK);
+        platform.replace(vec![initial_observation]);
+        playback.release();
+
+        let response = request.await.expect("calibration request");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_observation_changed");
+        assert!(body.get("testEvidenceToken").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_output_test_cancels_inflight_playback_on_daemon_shutdown_without_signing() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
+        ctx.audio_output_playback = playback.clone();
+        let shutdown = ctx.background_shutdown.clone();
+        let app = build_router(ctx);
+        let request = tokio::spawn(async move {
+            post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            )
+            .await
+        });
+        while playback.call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        shutdown.cancel();
+
+        let response = request.await.expect("calibration request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_native_playback_failed");
+        assert!(body.get("testEvidenceToken").is_none());
+    }
+
+    #[tokio::test]
+    async fn audio_output_confirmation_requires_one_native_test_and_explicit_human_hearing() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: false,
+            },
+        ]));
+        let playback = Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+        ctx.audio_output_playback = playback.clone();
+        let mut restarted = ctx.clone();
+        let app = build_router(ctx);
+        let settings = json!({
+            "audioCueSettings": {
+                "enabled": true,
+                "categories": { "presence": false, "transaction": true }
+            },
+            "machineAudioVolume": 0.42
+        });
+        for (driver, source_non_silent) in [("browser", true), ("native", false)] {
+            let invalid = post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": settings["audioCueSettings"].clone(),
+                    "machineAudioVolume": settings["machineAudioVolume"].clone(),
+                    "nativePlaybackEvidence": {
+                        "driver": driver,
+                        "endpointId": "endpoint-speaker",
+                        "sourceNonSilent": source_non_silent
+                    }
+                }),
+            )
+            .await;
+            assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        assert!(playback.calls().is_empty());
+        let test_response = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "audioCueSettings": settings["audioCueSettings"].clone(),
+                "machineAudioVolume": settings["machineAudioVolume"].clone()
+            }),
+        )
+        .await;
+        assert_eq!(test_response.status(), StatusCode::OK);
+        assert_eq!(playback.calls(), vec!["endpoint-speaker"]);
+        let body = body::to_bytes(test_response.into_body(), usize::MAX)
+            .await
+            .expect("test response body");
+        let tested: serde_json::Value = serde_json::from_slice(&body).expect("test response json");
+        let evidence_token = tested["testEvidenceToken"]
+            .as_str()
+            .expect("evidence token");
+        assert!(tested["observationRevision"]
+            .as_str()
+            .is_some_and(|revision| revision.starts_with("sha256:")));
+
+        let confirmation = |heard: bool| {
+            json!({
+                "endpointId": "endpoint-speaker",
+                "testEvidenceToken": evidence_token,
+                "heard": heard,
+                "audioCueSettings": settings["audioCueSettings"].clone(),
+                "machineAudioVolume": settings["machineAudioVolume"].clone()
+            })
+        };
+        let not_heard = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            confirmation(false),
+        )
+        .await;
+        assert_eq!(not_heard.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let (first_confirmation, second_confirmation) = tokio::join!(
+            post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/confirm",
+                "token-1",
+                confirmation(true),
+            ),
+            post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/confirm",
+                "token-1",
+                confirmation(true),
+            ),
+        );
+        let statuses = [first_confirmation.status(), second_confirmation.status()];
+        assert!(statuses.contains(&StatusCode::OK));
+        assert!(statuses.contains(&StatusCode::CONFLICT));
+        let confirmed = [first_confirmation, second_confirmation]
+            .into_iter()
+            .find(|response| response.status() == StatusCode::OK)
+            .expect("exactly one concurrent confirmation succeeds");
+        let body = body::to_bytes(confirmed.into_body(), usize::MAX)
+            .await
+            .expect("confirm response body");
+        let confirmed: serde_json::Value =
+            serde_json::from_slice(&body).expect("confirm response json");
+        let binding = &confirmed["effectivePublic"]["machineAudioOutputBinding"];
+        assert_eq!(binding["endpointId"], "endpoint-speaker");
+        assert_eq!(binding["friendlyName"], "Near-field speaker");
+        assert!(binding["confirmedHeardAt"].as_str().is_some());
+        assert_eq!(
+            binding["confirmedObservationRevision"],
+            tested["observationRevision"]
+        );
+
+        let replay = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            confirmation(true),
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(replay.into_body(), usize::MAX)
+            .await
+            .expect("replay response body");
+        let replay: serde_json::Value = serde_json::from_slice(&body).expect("replay json");
+        assert_eq!(replay["code"], "audio_output_test_evidence_invalid");
+
+        drop(app);
+        let restarted_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker after reboot".to_string(),
+                is_default: true,
+            },
+        ]));
+        restarted.audio_output_platform = restarted_platform.clone();
+        restarted.audio_output_test_evidence = Arc::new(AudioOutputTestEvidenceStore::default());
+        let restarted_app = build_router(restarted);
+        let response = restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/audio-output-binding")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("restarted snapshot body");
+        let restarted_snapshot: serde_json::Value =
+            serde_json::from_slice(&body).expect("restarted snapshot json");
+        assert_eq!(restarted_snapshot["ready"], true);
+        assert_eq!(
+            restarted_snapshot["currentObservation"]["endpointId"],
+            "endpoint-speaker"
+        );
+
+        restarted_platform.replace(Vec::new());
+        let removed = restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/audio-output-binding")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(removed.into_body(), usize::MAX)
+            .await
+            .expect("removed snapshot body");
+        let removed: serde_json::Value =
+            serde_json::from_slice(&body).expect("removed snapshot json");
+        assert_eq!(removed["ready"], false);
+        assert_eq!(removed["code"], "AUDIO_OUTPUT_BINDING_REMOVED");
+
+        let readiness = restarted_app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .expect("readiness body");
+        let readiness: serde_json::Value = serde_json::from_slice(&body).expect("readiness json");
+        assert!(!readiness["blockingCodes"]
+            .as_array()
+            .expect("blocking codes")
+            .iter()
+            .any(|code| code.as_str().is_some_and(|code| code.contains("AUDIO"))));
+    }
+
+    #[tokio::test]
+    async fn audio_output_confirmation_rejects_observation_and_config_changes_after_test() {
+        for changed in [
+            "observation",
+            "observation_aba",
+            "proposed_config",
+            "effective_config",
+            "effective_config_aba",
+            "device_writer",
+        ] {
+            let temp_dir = tempdir().expect("tmp");
+            let mut ctx = test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await;
+            let platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+                crate::audio_output::AudioOutputObservation {
+                    endpoint_id: "endpoint-speaker".to_string(),
+                    friendly_name: "Near-field speaker".to_string(),
+                    is_default: true,
+                },
+            ]));
+            ctx.audio_output_platform = platform.clone();
+            ctx.audio_output_playback =
+                Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+            let config_store = ctx.config_store.clone();
+            if changed == "effective_config_aba" {
+                config_store
+                    .save_local_bring_up_network_profile("network-r1")
+                    .await
+                    .expect("seed network profile");
+            }
+            let app = build_router(ctx);
+            let settings = json!({
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": false }
+                },
+                "machineAudioVolume": 0.42
+            });
+            let tested = post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": settings["audioCueSettings"].clone(),
+                    "machineAudioVolume": settings["machineAudioVolume"].clone()
+                }),
+            )
+            .await;
+            assert_eq!(tested.status(), StatusCode::OK);
+            let body = body::to_bytes(tested.into_body(), usize::MAX)
+                .await
+                .expect("test response body");
+            let tested: serde_json::Value =
+                serde_json::from_slice(&body).expect("test response json");
+            if changed == "observation" {
+                platform.replace(vec![crate::audio_output::AudioOutputObservation {
+                    endpoint_id: "endpoint-speaker".to_string(),
+                    friendly_name: "Near-field speaker".to_string(),
+                    is_default: false,
+                }]);
+            }
+            if changed == "observation_aba" {
+                platform.replace(vec![crate::audio_output::AudioOutputObservation {
+                    endpoint_id: "endpoint-speaker".to_string(),
+                    friendly_name: "Intermediate speaker observation".to_string(),
+                    is_default: false,
+                }]);
+                let observed = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri("/v1/audio-output-binding")
+                            .header(AUTHORIZATION, "Bearer token-1")
+                            .body(axum::body::Body::empty())
+                            .expect("observation request"),
+                    )
+                    .await
+                    .expect("observe intermediate generation");
+                assert_eq!(observed.status(), StatusCode::OK);
+                platform.replace(vec![crate::audio_output::AudioOutputObservation {
+                    endpoint_id: "endpoint-speaker".to_string(),
+                    friendly_name: "Near-field speaker".to_string(),
+                    is_default: true,
+                }]);
+            }
+            if changed == "effective_config" {
+                let mut current = config_store
+                    .load_effective_public_config()
+                    .await
+                    .expect("load effective config");
+                current.machine_audio_volume = 0.55;
+                config_store
+                    .save_public_config(current)
+                    .await
+                    .expect("change effective config");
+            }
+            if changed == "effective_config_aba" {
+                config_store
+                    .save_local_bring_up_network_profile("network-r2")
+                    .await
+                    .expect("write network r2");
+                config_store
+                    .save_local_bring_up_network_profile("network-r1")
+                    .await
+                    .expect("restore network r1");
+            }
+            if changed == "device_writer" {
+                config_store
+                    .save_local_device_binding(
+                        crate::device_binding::LocalDeviceRole::Scanner,
+                        crate::device_binding::LocalSerialRoleBinding {
+                            identity: crate::device_binding::StableSerialDeviceIdentity {
+                                identity_key: "container:11111111-2222-3333-4444-555555555555"
+                                    .to_string(),
+                                instance_id: Some("USB\\SCANNER-1".to_string()),
+                                container_id: Some(
+                                    "11111111-2222-3333-4444-555555555555".to_string(),
+                                ),
+                                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                                serial_number: Some("SCANNER-1".to_string()),
+                            },
+                            confirmed_at: "2026-07-15T10:00:00.000Z".to_string(),
+                            confirmed_by: "operator-console".to_string(),
+                            test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
+                        },
+                    )
+                    .await
+                    .expect("save scanner binding");
+            }
+            let confirmed = post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/confirm",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "testEvidenceToken": tested["testEvidenceToken"].clone(),
+                    "heard": true,
+                    "audioCueSettings": settings["audioCueSettings"].clone(),
+                    "machineAudioVolume": if changed == "proposed_config" { 0.43 } else { 0.42 }
+                }),
+            )
+            .await;
+
+            assert_eq!(confirmed.status(), StatusCode::CONFLICT);
+            let body = body::to_bytes(confirmed.into_body(), usize::MAX)
+                .await
+                .expect("confirm response body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+            assert_eq!(
+                body["code"],
+                match changed {
+                    "observation" | "observation_aba" => {
+                        "audio_output_test_evidence_observation_changed"
+                    }
+                    "proposed_config" => "audio_output_test_evidence_config_changed",
+                    "effective_config" | "effective_config_aba" | "device_writer" => {
+                        "audio_output_test_evidence_effective_config_changed"
+                    }
+                    _ => unreachable!(),
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn audio_output_confirmation_does_not_change_binding_during_an_active_sale() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        ctx.audio_output_playback =
+            Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+        let state = ctx.state.clone();
+        let config_store = ctx.config_store.clone();
+        let app = build_router(ctx);
+        let settings = json!({
+            "audioCueSettings": {
+                "enabled": true,
+                "categories": { "presence": true, "transaction": false }
+            },
+            "machineAudioVolume": 0.42
+        });
+        let tested = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "audioCueSettings": settings["audioCueSettings"].clone(),
+                "machineAudioVolume": settings["machineAudioVolume"].clone()
+            }),
+        )
+        .await;
+        assert_eq!(tested.status(), StatusCode::OK);
+        let body = body::to_bytes(tested.into_body(), usize::MAX)
+            .await
+            .expect("test response body");
+        let tested: serde_json::Value = serde_json::from_slice(&body).expect("test response json");
+        state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-ACTIVE-AUDIO",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "paid",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed active sale");
+
+        let confirmed = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "testEvidenceToken": tested["testEvidenceToken"].clone(),
+                "heard": true,
+                "audioCueSettings": settings["audioCueSettings"].clone(),
+                "machineAudioVolume": settings["machineAudioVolume"].clone()
+            }),
+        )
+        .await;
+
+        assert_eq!(confirmed.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(confirmed.into_body(), usize::MAX)
+            .await
+            .expect("confirm response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_active_sale");
+        let config = config_store
+            .load_effective_public_config()
+            .await
+            .expect("effective config");
+        assert!(config.machine_audio_output_binding.is_none());
+    }
+
+    #[tokio::test]
+    async fn audio_output_confirmation_loses_a_race_to_sale_start_without_consuming_evidence() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        ctx.audio_output_playback =
+            Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+        let sale_binding_gate = ctx.sale_binding_gate.clone();
+        let config_store = ctx.config_store.clone();
+        let app = build_router(ctx);
+        let request = json!({
+            "endpointId": "endpoint-speaker",
+            "audioCueSettings": {
+                "enabled": true,
+                "categories": { "presence": true, "transaction": false }
+            },
+            "machineAudioVolume": 0.42
+        });
+        let tested = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            request.clone(),
+        )
+        .await;
+        let body = body::to_bytes(tested.into_body(), usize::MAX)
+            .await
+            .expect("test response body");
+        let tested: serde_json::Value = serde_json::from_slice(&body).expect("test response json");
+        let sale_start = sale_binding_gate
+            .try_acquire_sale_start()
+            .expect("sale start lease");
+        let confirmation = json!({
+            "endpointId": request["endpointId"].clone(),
+            "testEvidenceToken": tested["testEvidenceToken"].clone(),
+            "heard": true,
+            "audioCueSettings": request["audioCueSettings"].clone(),
+            "machineAudioVolume": request["machineAudioVolume"].clone()
+        });
+
+        let blocked = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            confirmation.clone(),
+        )
+        .await;
+        assert_eq!(blocked.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(blocked.into_body(), usize::MAX)
+            .await
+            .expect("blocked response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_sale_start_in_progress");
+        assert!(config_store
+            .load_effective_public_config()
+            .await
+            .expect("effective config")
+            .machine_audio_output_binding
+            .is_none());
+
+        drop(sale_start);
+        let retried = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            confirmation,
+        )
+        .await;
+        assert_eq!(retried.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn audio_output_test_evidence_expires_and_rejects_cross_context_confirmation() {
+        for (changed, expected_code) in [
+            ("session", "audio_output_test_evidence_session_changed"),
+            ("endpoint", "audio_output_test_evidence_target_changed"),
+            (
+                "observation",
+                "audio_output_test_evidence_observation_changed",
+            ),
+            (
+                "observation_generation",
+                "audio_output_test_evidence_observation_changed",
+            ),
+            (
+                "effective_config",
+                "audio_output_test_evidence_effective_config_changed",
+            ),
+            (
+                "effective_config_generation",
+                "audio_output_test_evidence_effective_config_changed",
+            ),
+            (
+                "proposed_config",
+                "audio_output_test_evidence_config_changed",
+            ),
+        ] {
+            let store = AudioOutputTestEvidenceStore::default();
+            let (token, _) = store
+                .issue(
+                    "session-a".to_string(),
+                    "endpoint-a".to_string(),
+                    "observation-a".to_string(),
+                    7,
+                    "effective-config-a".to_string(),
+                    11,
+                    "proposed-config-a".to_string(),
+                )
+                .await;
+            let result = store
+                .consume(
+                    &token,
+                    if changed == "session" {
+                        "session-b"
+                    } else {
+                        "session-a"
+                    },
+                    if changed == "endpoint" {
+                        "endpoint-b"
+                    } else {
+                        "endpoint-a"
+                    },
+                    if changed == "observation" {
+                        "observation-b"
+                    } else {
+                        "observation-a"
+                    },
+                    if changed == "observation_generation" {
+                        8
+                    } else {
+                        7
+                    },
+                    if changed == "effective_config" {
+                        "effective-config-b"
+                    } else {
+                        "effective-config-a"
+                    },
+                    if changed == "effective_config_generation" {
+                        12
+                    } else {
+                        11
+                    },
+                    if changed == "proposed_config" {
+                        "proposed-config-b"
+                    } else {
+                        "proposed-config-a"
+                    },
+                )
+                .await
+                .expect_err("cross-context evidence must fail closed");
+            assert_eq!(result.0, expected_code, "{changed}");
+        }
+
+        let expiring = AudioOutputTestEvidenceStore::with_ttl(Duration::from_millis(1));
+        let (token, _) = expiring
+            .issue(
+                "session-a".to_string(),
+                "endpoint-a".to_string(),
+                "observation-a".to_string(),
+                7,
+                "effective-config-a".to_string(),
+                11,
+                "proposed-config-a".to_string(),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let expired = expiring
+            .consume(
+                &token,
+                "session-a",
+                "endpoint-a",
+                "observation-a",
+                7,
+                "effective-config-a",
+                11,
+                "proposed-config-a",
+            )
+            .await
+            .expect_err("expired evidence must fail closed");
+        assert_eq!(expired.0, "audio_output_test_evidence_invalid");
+    }
+
+    #[tokio::test]
+    async fn legacy_audio_settings_endpoint_cannot_bypass_test_and_heard_confirmation() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let app = build_router(ctx);
         let response = put_json(
             &app,
             "/v1/config/audio-settings",
             "token-1",
             json!({
                 "machineAudioOutputBinding": {
-                    "endpointId": "{0.0.0.00000000}.{field-speaker-1}",
-                    "friendlyName": "现场喇叭",
-                    "confirmedHeardAt": "2026-07-15T10:00:00.000Z"
+                        "endpointId": "{0.0.0.00000000}.{field-speaker-1}",
+                        "friendlyName": "现场喇叭",
+                        "confirmedHeardAt": "2026-07-15T10:00:00.000Z",
+                        "confirmedObservationRevision": "ui-forged"
                 },
                 "audioCueSettings": {
                     "enabled": true,
@@ -8997,47 +12441,13 @@ mod tests {
             }),
         )
         .await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let payload: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(
-            payload["effectivePublic"]["machineAudioOutputBinding"]["endpointId"],
-            "{0.0.0.00000000}.{field-speaker-1}"
-        );
-        assert_eq!(
-            payload["effectivePublic"]["machineAudioOutputBinding"]["friendlyName"],
-            "现场喇叭"
-        );
-        assert_eq!(
-            payload["effectivePublic"]["machineAudioOutputBinding"]["confirmedHeardAt"],
-            "2026-07-15T10:00:00.000Z"
-        );
-        assert_eq!(
-            payload["effectivePublic"]["audioCueSettings"]["enabled"],
-            true
-        );
-        assert_eq!(
-            payload["effectivePublic"]["audioCueSettings"]["categories"]["presence"],
-            false
-        );
-        assert_eq!(
-            payload["effectivePublic"]["audioCueSettings"]["categories"]["transaction"],
-            true
-        );
-        assert_eq!(payload["effectivePublic"]["machineAudioVolume"], 0.42);
-        assert_eq!(
-            payload["localBringUpSettings"]["machineAudioOutputBinding"]["endpointId"],
-            "{0.0.0.00000000}.{field-speaker-1}"
-        );
-        assert_eq!(payload["localBringUpSettings"]["machineAudioVolume"], 0.42);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn provisioning_claim_does_not_apply_planogram_and_keeps_readiness_blocked() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -9138,6 +12548,7 @@ mod tests {
     #[tokio::test]
     async fn same_device_reclaim_keeps_intact_local_stock_ledger_trusted() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
 
         let temp_dir = tempdir().expect("tmp");
         write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
@@ -9281,6 +12692,7 @@ mod tests {
     #[tokio::test]
     async fn ledger_missing_reclaim_keeps_newly_applied_slots_blocked_until_counted() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -9419,6 +12831,7 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_returns_safe_diagnostic_without_echoing_sensitive_inputs() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!({
@@ -9456,6 +12869,7 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_treats_service_unauthorized_as_invalid_claim() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(401).set_body_json(json!({
@@ -9492,6 +12906,7 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_treats_missing_claim_endpoint_as_backend_unavailable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(404).set_body_json(json!({
@@ -9522,6 +12937,7 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_preserves_safe_backend_claim_code_without_echoing_payload() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(409).set_body_json(json!({
@@ -9636,6 +13052,7 @@ mod tests {
     #[tokio::test]
     async fn successful_claim_requests_runtime_reconfiguration() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -10109,6 +13526,7 @@ mod tests {
     #[tokio::test]
     async fn claim_rejects_a_response_for_a_different_factory_profile() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let mut profile = valid_provisioning_profile();
         profile["provisioningProfile"] = json!("testbed");
         Mock::given(method("POST"))
@@ -10140,6 +13558,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_claim_records_metadata_and_public_profile_diagnostics() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -10212,6 +13631,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_provisioning_profile_is_rejected_before_persistence() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let mut profile = valid_provisioning_profile();
         profile["metadata"]["profileVersion"] = json!(2);
         Mock::given(method("POST"))
@@ -10267,6 +13687,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_profile_with_mock_payment_capability_is_rejected() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let mut profile = valid_provisioning_profile();
         profile["paymentCapability"]["mockEnabled"] = json!(true);
         Mock::given(method("POST"))
@@ -10367,6 +13788,7 @@ mod tests {
     async fn provisioning_persistence_failure_is_not_reported_as_invalid_profile_or_partial_secrets(
     ) {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -10460,10 +13882,14 @@ mod tests {
         );
 
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "options": [],
+                "defaultOptionKey": null,
+                "defaultProviderCode": null,
+                "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
             .await;
@@ -10914,6 +14340,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_catalog_keeps_cached_items_when_backend_fails() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machines/MACHINE-1/catalog"))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
@@ -10954,6 +14381,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_catalog_updates_source_on_success() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machines/MACHINE-1/catalog"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -10991,6 +14419,7 @@ mod tests {
     #[tokio::test]
     async fn sync_planogram_applies_published_version_and_acknowledges_platform() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let slot_id = "550e8400-e29b-41d4-a716-446655440091";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440092";
         let planogram = one_slot_planogram("PLAN-SYNC-ACK", slot_id, inventory_id);
@@ -11070,6 +14499,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_rejects_malformed_payment_options() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -11142,6 +14572,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_are_filtered_by_persisted_machine_payment_capability() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -11220,7 +14651,7 @@ mod tests {
             .iter()
             .filter_map(|option| option["optionKey"].as_str())
             .collect();
-        assert_eq!(option_keys, vec!["qr_code:alipay", "mock:mock"]);
+        assert_eq!(option_keys, vec!["qr_code:alipay"]);
         assert_eq!(options["defaultOptionKey"], "qr_code:alipay");
         assert_eq!(options["defaultProviderCode"], "alipay");
     }
@@ -11228,6 +14659,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_use_profile_cache_capability_when_legacy_config_is_stale() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with({
@@ -11333,6 +14765,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_uses_machine_payment_capability_before_scanner_readiness() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -11408,6 +14841,7 @@ mod tests {
     #[tokio::test]
     async fn unavailable_vision_does_not_block_sale_readiness_or_payment_options() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -11561,6 +14995,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_disable_stale_ready_payment_code_and_default_to_qr() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -11645,6 +15080,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_preserve_available_platform_default_and_safe_scanner_reason() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -11727,6 +15163,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_disable_unhealthy_scanner_payment_code_without_hiding_qr() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -11803,6 +15240,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_treats_stale_ready_scanner_as_payment_code_unavailable_only() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -11934,6 +15372,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_rechecks_readiness_before_backend_call() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -12015,6 +15454,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_rejects_multi_quantity_for_v1_lower_controller_protocol() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -12127,8 +15567,266 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn production_factory_profile_blocks_sandbox_payment_but_testbed_accepts_it() {
+        let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "qr_code:alipay",
+                    "providerCode": "alipay",
+                    "method": "qr_code",
+                    "displayName": "支付宝扫码",
+                    "description": "请使用支付宝扫描屏幕二维码",
+                    "icon": "alipay",
+                    "disabled": false,
+                    "disabledReason": null,
+                    "recommended": true
+                }],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path(
+                "/machine-orders/payment-environment-diagnostic",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "sandbox",
+                "readiness": "ready",
+                "errorCategory": "none"
+            })))
+            .mount(&server)
+            .await;
+
+        let production_dir = tempdir().expect("production tmp");
+        let production = test_ipc_context(
+            production_dir.path(),
+            "token-production",
+            Some("MACHINE-PRODUCTION".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let production_readiness = machine_sale_readiness_snapshot(&production)
+            .await
+            .expect("production readiness");
+        assert!(production_readiness["blockingCodes"]
+            .as_array()
+            .expect("production blockers")
+            .contains(&json!("PAYMENT_ENVIRONMENT_NOT_READY")));
+        assert!(production_readiness["components"]["paymentOptions"]
+            .get("providerEnvironment")
+            .is_none());
+        assert!(!production_readiness.to_string().contains("sandbox"));
+
+        let testbed_dir = tempdir().expect("testbed tmp");
+        let testbed = test_ipc_context(
+            testbed_dir.path(),
+            "token-testbed",
+            Some("MACHINE-TESTBED".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let mut manifest = testbed
+            .config_store
+            .load_factory_manifest()
+            .await
+            .expect("load manifest")
+            .expect("factory manifest");
+        manifest.environment = FactoryProfile::Testbed;
+        manifest.hardware_mode = RuntimeHardwareMode::Simulated;
+        tokio::fs::write(
+            testbed.config_store.factory_manifest_path(),
+            serde_json::to_vec_pretty(&manifest).expect("serialize testbed manifest"),
+        )
+        .await
+        .expect("write testbed manifest");
+        let testbed_readiness = machine_sale_readiness_snapshot(&testbed)
+            .await
+            .expect("testbed readiness");
+        assert!(!testbed_readiness["blockingCodes"]
+            .as_array()
+            .expect("testbed blockers")
+            .contains(&json!("PAYMENT_ENVIRONMENT_NOT_READY")));
+    }
+
+    #[tokio::test]
+    async fn testbed_keeps_published_mock_options_when_real_provider_is_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "mock:mock",
+                        "providerCode": "mock",
+                        "method": "mock",
+                        "displayName": "模拟支付",
+                        "description": "测试平台显式模拟支付",
+                        "icon": "mock",
+                        "disabled": false,
+                        "disabledReason": null,
+                        "recommended": true
+                    },
+                    {
+                        "optionKey": "payment_code:mock",
+                        "providerCode": "mock",
+                        "method": "payment_code",
+                        "displayName": "模拟付款码",
+                        "description": "测试平台显式模拟付款码",
+                        "icon": "mock",
+                        "disabled": false,
+                        "disabledReason": null,
+                        "recommended": false
+                    }
+                ],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "unavailable",
+                "readiness": "blocked",
+                "errorCategory": "provider_unconfigured"
+            })))
+            .mount(&server)
+            .await;
+
+        let testbed_dir = tempdir().expect("testbed tmp");
+        let testbed = test_ipc_context(
+            testbed_dir.path(),
+            "token-testbed",
+            Some("MACHINE-TESTBED".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_factory_testbed(&testbed).await;
+        let testbed_app = build_router(testbed.clone());
+        let testbed_options =
+            get_ipc_json(&testbed_app, "/v1/payment-options", Some("token-testbed")).await;
+        assert_eq!(
+            testbed_options["options"]
+                .as_array()
+                .expect("testbed options")
+                .iter()
+                .filter_map(|option| option["optionKey"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["mock:mock", "payment_code:mock"]
+        );
+        assert_eq!(testbed_options["defaultOptionKey"], "mock:mock");
+        let testbed_readiness = machine_sale_readiness_snapshot(&testbed)
+            .await
+            .expect("testbed readiness");
+        assert_eq!(
+            testbed_readiness["components"]["paymentOptions"]["ready"],
+            true
+        );
+        assert_eq!(
+            testbed_readiness["components"]["paymentOptions"]["methods"]
+                .as_array()
+                .expect("testbed readiness methods")
+                .iter()
+                .filter_map(|option| option["optionKey"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["mock:mock", "payment_code:mock"]
+        );
+
+        let production_dir = tempdir().expect("production tmp");
+        let production = test_ipc_context(
+            production_dir.path(),
+            "token-production",
+            Some("MACHINE-PRODUCTION".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let production_app = build_router(production.clone());
+        let production_options = get_ipc_json(
+            &production_app,
+            "/v1/payment-options",
+            Some("token-production"),
+        )
+        .await;
+        assert_eq!(production_options["options"], json!([]));
+        assert_eq!(
+            production_options["defaultOptionKey"],
+            serde_json::Value::Null
+        );
+        let production_readiness = machine_sale_readiness_snapshot(&production)
+            .await
+            .expect("production readiness");
+        assert_eq!(
+            production_readiness["components"]["paymentOptions"]["ready"],
+            false
+        );
+        assert_eq!(
+            production_readiness["components"]["paymentOptions"]["methods"],
+            json!([])
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_factory_profile_fails_closed_instead_of_becoming_testbed() {
+        let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "qr_code:alipay",
+                    "providerCode": "alipay",
+                    "method": "qr_code",
+                    "displayName": "支付宝扫码",
+                    "description": "请使用支付宝扫描屏幕二维码",
+                    "icon": "alipay",
+                    "disabled": false,
+                    "disabledReason": null,
+                    "recommended": true
+                }],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "production",
+                "readiness": "ready",
+                "errorCategory": "none"
+            })))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        tokio::fs::remove_file(ctx.config_store.factory_manifest_path())
+            .await
+            .expect("remove factory profile");
+        let app = build_router(ctx);
+
+        let response = get_ipc_json(&app, "/v1/payment-options", Some("token-1")).await;
+        assert_eq!(response["options"], json!([]));
+        assert_eq!(response["defaultOptionKey"], serde_json::Value::Null);
+        assert!(!response.to_string().contains("production"));
+    }
+
+    #[tokio::test]
     async fn sale_readiness_enforces_production_dispense_path_for_production_machine() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -12666,6 +16364,7 @@ mod tests {
     async fn preclaim_network_probe_keeps_bring_up_network_required_when_platform_api_is_unhealthy()
     {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(path("/api/health"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -12795,6 +16494,43 @@ mod tests {
         allow: bool,
     }
 
+    #[derive(Default)]
+    struct CountingManualDispenseAdapter {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl vending_core::hardware::HardwareAdapter for CountingManualDispenseAdapter {
+        fn adapter_name(&self) -> &str {
+            "serial"
+        }
+        async fn self_check(&self) -> vending_core::hardware::HardwareStatus {
+            vending_core::hardware::HardwareStatus {
+                adapter: "serial".to_string(),
+                online: true,
+                message: "resolved controller ready".to_string(),
+                port_path: Some("COM5".to_string()),
+                resolution_source: Some("stable_device_binding".to_string()),
+                bound_usb_identity: None,
+                candidates: vec![],
+            }
+        }
+        async fn dispense(
+            &self,
+            command: vending_core::hardware::DispenseCommandPayload,
+        ) -> vending_core::hardware::DispenseResultPayload {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            vending_core::hardware::DispenseResultPayload {
+                command_no: command.command_no,
+                success: true,
+                error_code: None,
+                message: "controller completed".to_string(),
+                reported_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
     #[async_trait]
     impl MaintenanceAuthorization for TestMaintenanceAuthorization {
         fn as_any(&self) -> &dyn StdAny {
@@ -12832,6 +16568,65 @@ mod tests {
     async fn mark_claim_task_available(ctx: &IpcContext) {
         *ctx.ui.status_cache.network.write().await =
             Some(completed_preclaim_network_response("field-network"));
+    }
+
+    #[tokio::test]
+    async fn payment_environment_diagnostic_requires_a_protected_maintenance_session() {
+        let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "sandbox",
+                "readiness": "ready",
+                "errorCategory": "none"
+            })))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: true });
+        let app = build_router(ctx);
+
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/maintenance/payment-environment")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let allowed = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/maintenance/payment-environment")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(allowed.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let diagnostic: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(diagnostic["environment"], "sandbox");
+        assert!(diagnostic.get("privateKeyPem").is_none());
     }
 
     #[tokio::test]
@@ -12897,6 +16692,286 @@ mod tests {
             json!(["maintenance.mutate", "maintenance.reclaim"])
         );
         assert!(issued["expiresAt"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_scope_is_dedicated_immutable_expiring_and_revocable() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let authority = Arc::new(DaemonMaintenanceAuthorization::with_ttl(
+            ctx.config_store.clone(),
+            Duration::from_millis(40),
+        ));
+        let ordinary = authority
+            .issue_verified("ordinary".to_string(), vec![])
+            .await
+            .unwrap();
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: ordinary.session_id
+            })
+            .await
+            .is_err());
+        let session = authority
+            .issue_verified(
+                "operator-7".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        let principal = authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: session.session_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(principal.operator_id, "operator-7");
+        assert_eq!(principal.scope, MAINTENANCE_SCOPE_MANUAL_DISPENSE);
+        assert!(!principal
+            .session_correlation_id
+            .contains(&session.session_id));
+        assert!(authority.revoke(&session.session_id).await);
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: session.session_id
+            })
+            .await
+            .is_err());
+
+        let expiring = authority
+            .issue_verified(
+                "operator-8".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: expiring.session_id
+            })
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn maintenance_logout_endpoint_revokes_the_presented_session_only() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx =
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let authority = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let first = authority
+            .issue_verified(
+                "first".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        let second = authority
+            .issue_verified(
+                "second".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        ctx.maintenance_authorization = authority.clone();
+        let response = build_router(ctx)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/maintenance/sessions/revoke")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", &first.session_id)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: first.session_id
+            })
+            .await
+            .is_err());
+        assert!(authority
+            .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+                session_id: second.session_id
+            })
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_endpoint_uses_two_tokens_and_executes_one_isolated_command() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx =
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let authority = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let session = authority
+            .issue_verified(
+                "operator-9".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        ctx.maintenance_authorization = authority;
+        ctx.config_store
+            .save_local_device_binding(
+                crate::device_binding::LocalDeviceRole::LowerController,
+                crate::device_binding::LocalSerialRoleBinding {
+                    identity: crate::device_binding::StableSerialDeviceIdentity {
+                        identity_key: "container:11111111-2222-3333-4444-555555555555".to_string(),
+                        instance_id: Some("USB\\VID_1234&PID_5678\\SERIAL-1".to_string()),
+                        container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                        hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                        serial_number: Some("SERIAL-1".to_string()),
+                    },
+                    confirmed_at: crate::state::store::now_iso(),
+                    confirmed_by: "operator-9".to_string(),
+                    test_evidence_code: "passed".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let matching_controller = crate::device_binding::ObservedSerialDevice {
+            current_port: "COM5".to_string(),
+            instance_id: Some("USB\\VID_1234&PID_5678\\SERIAL-1".to_string()),
+            container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SERIAL-1".to_string()),
+            friendly_name: Some("lower controller".to_string()),
+        };
+        let observed_devices = Arc::new(tokio::sync::RwLock::new(vec![
+            crate::device_binding::ObservedSerialDevice {
+                current_port: "COM5".to_string(),
+                instance_id: Some("USB\\VID_9999&PID_0001\\OTHER".to_string()),
+                container_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
+                hardware_ids: vec!["USB\\VID_9999&PID_0001".to_string()],
+                serial_number: Some("OTHER".to_string()),
+                friendly_name: Some("unrelated device on the same COM port".to_string()),
+            },
+        ]));
+        ctx.serial_device_platform = Arc::new(SwitchableFixtureSerialDevicePlatform {
+            devices: observed_devices.clone(),
+        });
+        let adapter = Arc::new(CountingManualDispenseAdapter::default());
+        ctx.hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let state = ctx.state.clone();
+        let app = build_router(ctx);
+        let request = |idempotency_key: &str| {
+            Request::builder().method(Method::POST)
+            .uri("/v1/maintenance/manual-dispense-diagnostic")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", &session.session_id)
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(json!({
+                "idempotencyKey":idempotency_key,"slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5
+            }).to_string())).unwrap()
+        };
+        let wrong_identity = app
+            .clone()
+            .oneshot(request("field-click-wrong-identity"))
+            .await
+            .unwrap();
+        assert_eq!(wrong_identity.status(), StatusCode::CONFLICT);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        *observed_devices.write().await = vec![matching_controller];
+        let (first, concurrent) = tokio::join!(
+            app.clone().oneshot(request("field-click-1")),
+            app.clone().oneshot(request("field-click-1")),
+        );
+        let first = first.unwrap();
+        let concurrent = concurrent.unwrap();
+        assert!([first.status(), concurrent.status()].contains(&StatusCode::OK));
+        assert!([first.status(), concurrent.status()].contains(&StatusCode::CONFLICT));
+        let replay = app.clone().oneshot(request("field-click-1")).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        for table in [
+            "order_sessions",
+            "command_log",
+            "stock_movements",
+            "outbox_events",
+        ] {
+            let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(state.pool())
+                .await
+                .unwrap();
+            assert_eq!(count.0, 0, "business table {table} must remain untouched");
+        }
+        let evidence = state
+            .manual_dispense_diagnostic(first_manual_dispense_id(state.pool()).await.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.reconciliation_status, "open");
+        assert!(evidence.controller.get("stableIdentity").is_some());
+
+        let interrupted = crate::state::store::ManualDispenseDiagnostic {
+            diagnostic_id: "manual-dispense-interrupted".to_string(),
+            idempotency_key: "field-click-after-restart".to_string(),
+            status: "pending".to_string(),
+            completed_at: None,
+            raw_result: None,
+            normalized_result: None,
+            ..evidence
+        };
+        assert!(matches!(
+            state
+                .reserve_manual_dispense_diagnostic(&interrupted)
+                .await
+                .unwrap(),
+            crate::state::store::ManualDispenseReservation::Reserved(_)
+        ));
+        let recovered = app
+            .clone()
+            .oneshot(request("field-click-after-restart"))
+            .await
+            .unwrap();
+        assert_eq!(recovered.status(), StatusCode::OK);
+        let recovered_body = body::to_bytes(recovered.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let recovered_body: serde_json::Value = serde_json::from_slice(&recovered_body).unwrap();
+        assert_eq!(recovered_body["outcome"], "result_unknown");
+        assert_eq!(recovered_body["replayed"], true);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            state
+                .manual_dispense_diagnostic("manual-dispense-interrupted")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "result_unknown"
+        );
+
+        sqlx::query("DROP TABLE manual_dispense_diagnostics")
+            .execute(state.pool())
+            .await
+            .unwrap();
+        let failed_reservation = app
+            .clone()
+            .oneshot(request("field-click-db-failure"))
+            .await
+            .unwrap();
+        assert_eq!(
+            failed_reservation.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    async fn first_manual_dispense_id(pool: &sqlx::SqlitePool) -> String {
+        sqlx::query_scalar("SELECT diagnostic_id FROM manual_dispense_diagnostics LIMIT 1")
+            .fetch_one(pool)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -13367,6 +17442,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_claim_rejects_client_selected_identity_rotation() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -13398,6 +17474,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_legacy_and_typed_claims_share_one_cursor_mutation() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -13758,6 +17835,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_rechecks_local_slot_saleability() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13796,6 +17874,7 @@ mod tests {
             &server.uri(),
         )
         .await;
+        mark_factory_testbed(&ctx).await;
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440201";
@@ -13885,6 +17964,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_rejects_unready_selected_payment_code_when_scanner_unavailable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13901,19 +17981,19 @@ mod tests {
                         "disabledReason": null
                     },
                     {
-                        "optionKey": "mock:mock",
-                        "providerCode": "mock",
-                        "method": "mock",
-                        "displayName": "模拟支付",
-                        "description": "本地模拟",
-                        "icon": "mock",
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请扫描屏幕二维码",
+                        "icon": "alipay",
                         "recommended": false,
                         "disabled": false,
                         "disabledReason": null
                     }
                 ],
-                "defaultOptionKey": "mock:mock",
-                "defaultProviderCode": "mock",
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -14050,6 +18130,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_allows_ready_qr_code_when_scanner_unavailable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14175,6 +18256,7 @@ mod tests {
     #[tokio::test]
     async fn dev_submit_payment_code_rechecks_scanner_before_backend_submit() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14316,6 +18398,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_allows_ready_mock_when_scanner_unavailable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14355,6 +18438,7 @@ mod tests {
             &server.uri(),
         )
         .await;
+        mark_factory_testbed(&ctx).await;
         mark_runtime_sale_ready(&ctx).await;
         {
             let mut scanner = ctx.ui.status_cache.scanner.write().await;
@@ -14427,6 +18511,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_sends_verified_planogram_slot_context_to_platform() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14479,6 +18564,7 @@ mod tests {
             &server.uri(),
         )
         .await;
+        mark_factory_testbed(&ctx).await;
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx.clone());
         assert_eq!(
@@ -14535,6 +18621,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_surfaces_platform_refusal_without_mutating_local_stock() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14574,6 +18661,7 @@ mod tests {
             &server.uri(),
         )
         .await;
+        mark_factory_testbed(&ctx).await;
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx.clone());
         assert_eq!(
@@ -14760,6 +18848,7 @@ mod tests {
     #[tokio::test]
     async fn first_planogram_application_requires_stock_count_before_slot_is_sale_ready() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14859,6 +18948,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_reports_frozen_slots_while_other_slots_remain_saleable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -15568,6 +19658,7 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_reports_blocked_after_lock_clear_when_production_path_is_blocked() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -15888,6 +19979,7 @@ mod tests {
     #[tokio::test]
     async fn sale_view_and_readiness_report_stock_ledger_loss_blocker() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -15985,6 +20077,7 @@ mod tests {
     async fn physical_stock_attestation_endpoint_keeps_production_cursor_pending_until_platform_acknowledgement(
     ) {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
         let movement_id = format!("ATT-PROD-001:{slot_id}");
@@ -16389,6 +20482,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_reports_outbox_capacity_pressure_without_losing_stock_facts() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -16510,6 +20604,7 @@ mod tests {
     #[tokio::test]
     async fn disk_pressure_blocks_readiness_without_losing_stock_facts() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({

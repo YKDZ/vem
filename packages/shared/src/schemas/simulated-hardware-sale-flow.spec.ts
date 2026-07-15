@@ -55,6 +55,67 @@ function completeFacts(): SimulatedHardwareSaleFlowFacts {
       expectedVersion: "2026-06-adr0026",
       verified: true,
     },
+    daemonSerialConfiguration: {
+      hardwareAdapter: "serial",
+      scannerAdapter: "serial_text",
+      lowerControllerPort: "COM31",
+      scannerPort: "COM32",
+      lowerControllerPortObserved: true,
+      scannerPortObserved: true,
+    },
+    guestSerialEvidence: {
+      status: "captured",
+      serialSessionId: "serial-session-180",
+      deviceMappingDigest: "sha256:serial-mapping-180",
+      scannerInputTransport: "guest_serial_frame",
+      mappings: [
+        {
+          role: "lower-controller",
+          guestPort: "COM31",
+          connectionState: "connected",
+        },
+        {
+          role: "scanner",
+          guestPort: "COM32",
+          connectionState: "connected",
+        },
+      ],
+      frames: [
+        {
+          role: "scanner",
+          event: "scanner-injection",
+          source: "guest-serial-session",
+          sequence: 1,
+          digest: "sha256:scanner-frame-180",
+          byteLength: 12,
+          orderId: "ORDER-ID-180",
+          paymentId: "PAYMENT-ID-180",
+          vendingCommandId: "VEND-CMD-180",
+        },
+        {
+          role: "lower-controller",
+          event: "dispense-request",
+          source: "guest-serial-session",
+          sequence: 2,
+          digest: "sha256:dispense-request-180",
+          byteLength: 12,
+          orderId: "ORDER-ID-180",
+          paymentId: "PAYMENT-ID-180",
+          vendingCommandId: "VEND-CMD-180",
+        },
+        {
+          role: "lower-controller",
+          event: "dispense-result",
+          source: "guest-serial-session",
+          sequence: 3,
+          digest: "sha256:dispense-result-180",
+          byteLength: 12,
+          orderId: "ORDER-ID-180",
+          paymentId: "PAYMENT-ID-180",
+          vendingCommandId: "VEND-CMD-180",
+        },
+      ],
+    },
     planogram: {
       syncedFromPlatform: true,
       applied: true,
@@ -258,5 +319,46 @@ describe("Simulated Hardware Sale Flow Report contract", () => {
         (diagnostic) => diagnostic.code,
       ),
     ).toContain("platform_sale_state_not_updated");
+  });
+
+  it("fails closed without real, distinct Windows COM and guest serial frame evidence", () => {
+    const cases: Array<
+      [string, (facts: SimulatedHardwareSaleFlowFacts) => void]
+    > = [
+      [
+        "mock adapter",
+        (facts) => (facts.daemonSerialConfiguration.hardwareAdapter = "mock"),
+      ],
+      [
+        "TCP lower controller",
+        (facts) =>
+          (facts.daemonSerialConfiguration.lowerControllerPort =
+            "tcp://127.0.0.1:17991"),
+      ],
+      [
+        "reused COM port",
+        (facts) => (facts.daemonSerialConfiguration.scannerPort = "COM31"),
+      ],
+      [
+        "software injection",
+        (facts) =>
+          (facts.guestSerialEvidence.scannerInputTransport =
+            "software_injection"),
+      ],
+      [
+        "missing guest frame",
+        (facts) => (facts.guestSerialEvidence.frames = []),
+      ],
+    ];
+
+    for (const [_name, mutate] of cases) {
+      const facts = completeFacts();
+      mutate(facts);
+      const report = classifySimulatedHardwareSaleFlowReport(facts);
+      expect(report.result.simulatedHardwareReady).toEqual({
+        status: "failed",
+        asserted: false,
+      });
+    }
   });
 });

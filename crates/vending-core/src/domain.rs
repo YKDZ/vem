@@ -41,9 +41,10 @@ pub enum OrderSessionStatus {
 }
 
 /// Internal daemon runtime checkout projection, not a Daemon IPC boundary DTO.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum InternalCheckoutFlowAction {
+    #[default]
     WaitPayment,
     Dispensing,
     Success,
@@ -94,12 +95,6 @@ impl InternalCheckoutFlowAction {
             "collect_goods" => Some(Self::Dispensing),
             current => Self::from_current_contract(current),
         }
-    }
-}
-
-impl Default for InternalCheckoutFlowAction {
-    fn default() -> Self {
-        Self::WaitPayment
     }
 }
 

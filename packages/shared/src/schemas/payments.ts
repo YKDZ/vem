@@ -11,6 +11,7 @@ import {
   machinePaymentOptionKeySchema,
   machinePaymentOptionSchema,
   machinePaymentProviderCodeSchema,
+  paymentProviderEnvironmentDiagnosticSchema,
 } from "./orders";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
@@ -219,18 +220,48 @@ export const wechatPaySensitiveConfigSchema = z.object({
   merchantApiKeyPem: z.string().min(1).optional(),
 });
 
-export const alipayPublicConfigSchema = paymentTimingConfigSchema
+const alipayGatewayByMode = {
+  sandbox: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+  production: "https://openapi.alipay.com/gateway.do",
+} as const;
+
+export const alipayEffectiveEnvironmentSchema = z
+  .object({
+    mode: z.enum(["sandbox", "production"]).default("sandbox"),
+    gatewayUrl: z.url().default(alipayGatewayByMode.sandbox),
+  })
+  .superRefine(validateAlipayEnvironmentGateway);
+
+function validateAlipayEnvironmentGateway(
+  value: { mode?: unknown; gatewayUrl?: unknown },
+  ctx: z.RefinementCtx,
+): void {
+  if (
+    (value.mode === "sandbox" || value.mode === "production") &&
+    typeof value.gatewayUrl === "string" &&
+    value.gatewayUrl !== alipayGatewayByMode[value.mode]
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["gatewayUrl"],
+      message: `Alipay ${value.mode} mode requires its canonical gateway URL`,
+    });
+  }
+}
+
+const alipayPublicConfigObjectSchema = paymentTimingConfigSchema
   .extend({
     mode: z.enum(["sandbox", "production"]).default("sandbox"),
-    gatewayUrl: z
-      .url()
-      .default("https://openapi-sandbox.dl.alipaydev.com/gateway.do"),
+    gatewayUrl: z.url().default(alipayGatewayByMode.sandbox),
     keyType: z.enum(["PKCS8", "PKCS1"]).default("PKCS8"),
     storeId: z.string().min(1).max(32).optional(),
     terminalId: z.string().min(1).max(32).optional(),
   })
   .extend(paymentCodeRuntimeConfigSchema.shape)
   .strict();
+
+export const alipayPublicConfigSchema =
+  alipayPublicConfigObjectSchema.superRefine(validateAlipayEnvironmentGateway);
 
 export const alipaySensitiveConfigSchema = z.object({
   privateKeyPem: z.string().min(1).optional(),
@@ -260,7 +291,8 @@ const alipayPublicConfigPatchSchema = paymentTimingConfigPatchSchema
     terminalId: z.string().min(1).max(32).optional(),
   })
   .extend(paymentCodeRuntimeConfigSchema.shape)
-  .strict();
+  .strict()
+  .superRefine(validateAlipayEnvironmentGateway);
 
 export const providerSecretStatusValueSchema = z.object({
   configured: z.boolean(),
@@ -314,7 +346,7 @@ export const upsertPaymentProviderConfigSchema = z
       providerCode: z.literal("alipay"),
       merchantNo: z.string().max(128).nullable().optional(),
       appId: z.string().max(128).nullable().optional(),
-      publicConfigJson: alipayPublicConfigSchema.partial().optional(),
+      publicConfigJson: alipayPublicConfigObjectSchema.partial().optional(),
       sensitiveConfigJson: paymentProviderSensitiveConfigSchema.optional(),
     }),
   ])
@@ -345,7 +377,7 @@ export const upsertPaymentProviderConfigSchema = z
       }
     }
     if (value.providerCode === "alipay") {
-      const result = alipayPublicConfigSchema
+      const result = alipayPublicConfigObjectSchema
         .partial()
         .safeParse(value.publicConfigJson ?? {});
       if (!result.success) {
@@ -355,6 +387,7 @@ export const upsertPaymentProviderConfigSchema = z
           message: "alipay public config is invalid",
         });
       }
+      validateAlipayEnvironmentGateway(value.publicConfigJson ?? {}, ctx);
     }
   });
 
@@ -775,6 +808,11 @@ export const paymentOpsReadinessSchema = z.object({
   status: z.enum(["ready", "blocked"]),
   checkedAt: z.iso.datetime(),
   environment: z.enum(["development", "test", "production"]),
+  providerEnvironment: paymentProviderEnvironmentDiagnosticSchema.default({
+    environment: "unavailable",
+    readiness: "blocked",
+    errorCategory: "provider_unconfigured",
+  }),
   checks: z.array(paymentOpsCheckSchema),
 });
 

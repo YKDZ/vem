@@ -2848,6 +2848,86 @@ describe("PaymentsService", () => {
       });
     });
 
+    it("atomically derives the canonical gateway for a partial Alipay mode upsert", async () => {
+      const db = makeDb();
+      const existingRow = {
+        id: "550e8400-e29b-41d4-a716-446655440111",
+        merchantNo: "MCH001",
+        appId: "APP001",
+        publicConfigJson: {
+          mode: "production",
+          gatewayUrl: "https://openapi.alipay.com/gateway.do",
+          keyType: "PKCS8",
+        },
+        configEncryptedJson: null,
+        status: "disabled",
+      };
+      const now = new Date("2026-06-26T04:00:00.000Z");
+      let persistedPublicConfig: Record<string, unknown> | undefined;
+
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: "550e8400-e29b-41d4-a716-446655440222",
+                  name: "Alipay",
+                },
+              ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([existingRow]),
+            }),
+          }),
+        });
+      db.update.mockReturnValue({
+        set: vi.fn((value: Record<string, unknown>) => {
+          persistedPublicConfig = value["publicConfigJson"] as Record<
+            string,
+            unknown
+          >;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([
+                {
+                  ...existingRow,
+                  ...value,
+                  providerId: "550e8400-e29b-41d4-a716-446655440222",
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ]),
+            }),
+          };
+        }),
+      });
+
+      const service = makeService({ db });
+      const result = await service.upsertProviderConfig(
+        "550e8400-e29b-41d4-a716-446655440333",
+        {
+          providerCode: "alipay",
+          publicConfigJson: { mode: "sandbox" },
+          status: "disabled",
+        },
+      );
+
+      const canonical = {
+        mode: "sandbox",
+        gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+        keyType: "PKCS8",
+        qrExpiresMinutes: 15,
+        timeoutCompensationSeconds: 120,
+      };
+      expect(persistedPublicConfig).toEqual(canonical);
+      expect(result.publicConfigJson).toEqual(canonical);
+    });
+
     it("throws ConflictException when enabled wechat_pay config is missing required fields", async () => {
       const { ConflictException } = await import("@nestjs/common");
       const db = makeDb();

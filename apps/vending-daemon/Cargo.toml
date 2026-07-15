@@ -12,6 +12,7 @@ async-trait.workspace = true
 axum = { version = "0.7", features = ["ws"] }
 base64.workspace = true
 chrono.workspace = true
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 getrandom.workspace = true
 hmac.workspace = true
 keyring.workspace = true
@@ -55,6 +56,10 @@ wiremock = "0.6"
 tower = "0.5"
 
 [target.'cfg(windows)'.dependencies]
+rodio = { version = "0.22.2", default-features = false, features = [
+  "playback",
+  "wav",
+] }
 windows-service = "0.7"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",

@@ -10,10 +10,16 @@ import {
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
+  paymentProviderEnvironmentDiagnosticSchema,
   machineSaleViewSnapshotSchema,
   parseDaemonIpcTransactionSnapshotBoundary,
+  visionCameraMaintenanceConfirmResponseSchema,
+  visionCameraMaintenanceContractSchema,
+  visionCameraMaintenanceTestResponseSchema,
 } from "@vem/shared";
 import { z } from "zod";
+
+export { paymentProviderEnvironmentDiagnosticSchema };
 
 const usbIdentitySchema = z.object({
   vendorId: z.string(),
@@ -39,6 +45,7 @@ const machineAudioOutputBindingSchema = z
     endpointId: z.string().trim().min(1),
     friendlyName: z.string().trim().min(1).nullable().default(null),
     confirmedHeardAt: z.iso.datetime(),
+    confirmedObservationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
   .nullable()
   .default(null);
@@ -492,6 +499,13 @@ export const visionStatusSchema = z.object({
   latestDiagnosticPayload: z.unknown().nullable().optional(),
 });
 
+export const visionCameraMaintenanceContractResponseSchema =
+  visionCameraMaintenanceContractSchema;
+export const visionCameraMaintenanceTestResponseProxySchema =
+  visionCameraMaintenanceTestResponseSchema;
+export const visionCameraMaintenanceConfirmResponseProxySchema =
+  visionCameraMaintenanceConfirmResponseSchema;
+
 export const remoteOpsStatusSchema = z.object({
   lastPolledAt: z.string().nullable(),
   pending: z.number().int().nonnegative(),
@@ -667,6 +681,16 @@ export const hardwareSelfCheckSchema = z.object({
   configUpdated: z.boolean().default(false),
 });
 
+export const manualDispenseDiagnosticResultSchema = z.object({
+  diagnosticId: z.string().min(1),
+  outcome: z.enum(["completed", "failed", "result_unknown"]),
+  errorCode: z.string().nullable().optional(),
+  reportedAt: z.string().optional(),
+  stockReconciliationRequired: z.literal(true),
+  reconciliationStatus: z.literal("open"),
+  replayed: z.boolean(),
+});
+
 export const environmentControlResultSchema =
   environmentControlResultPayloadSchema;
 
@@ -751,15 +775,30 @@ export type DeviceBindingActivation = z.infer<
   typeof deviceBindingActivationSchema
 >;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;
+export type VisionCameraMaintenanceContract = z.infer<
+  typeof visionCameraMaintenanceContractResponseSchema
+>;
+export type VisionCameraMaintenanceTestResponse = z.infer<
+  typeof visionCameraMaintenanceTestResponseProxySchema
+>;
+export type VisionCameraMaintenanceConfirmResponse = z.infer<
+  typeof visionCameraMaintenanceConfirmResponseProxySchema
+>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
 export type NaturalContextSnapshot = z.infer<
   typeof naturalContextSnapshotSchema
 >;
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
+export type ManualDispenseDiagnosticResult = z.infer<
+  typeof manualDispenseDiagnosticResultSchema
+>;
 export type EnvironmentControlResult = z.infer<
   typeof environmentControlResultSchema
 >;
 export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
+export type PaymentProviderEnvironmentDiagnostic = z.infer<
+  typeof paymentProviderEnvironmentDiagnosticSchema
+>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
 export type SaleViewMediaDiagnostic = {
   reference: string | null;

@@ -24,6 +24,7 @@ use vending_core::{
 
 const DISPENSE_LOCAL_TIMEOUT_GRACE_SECONDS: u64 = 15;
 const DISPENSE_RESTART_RECOVERY_GRACE_SECONDS: i64 = 30;
+const DISPENSE_SIDE_EFFECT_RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct OutboxFlushResult {
@@ -194,27 +195,32 @@ impl MqttSyncRuntime {
             .map_err(|error| format!("parse dispense command failed: {error}"))?;
 
         if let Some(existing) = self.state.get_command(&command.command_no).await? {
-            if existing.result_payload.is_some() {
-                let mut ack = crate::state::store::OutboxInput::dispense_result(
-                    &self.machine_code,
-                    &existing.result_payload.unwrap_or_else(|| {
-                        vending_core::hardware::DispenseResultPayload {
-                            command_no: command.command_no.clone(),
-                            success: false,
-                            error_code: Some("missing_result".to_string()),
-                            message: "existing command has no result payload".to_string(),
-                            reported_at: crate::state::store::now_iso(),
-                        }
-                    }),
+            if existing.command_payload != command {
+                return Err(
+                    "dispense command number was reused with a different payload".to_string(),
                 );
+            }
+            if let Some(result) = existing.result_payload {
+                let mut ack =
+                    crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
                 ack.payload_json = self.sign_outbox_payload(
                     format!("result:{}", command.command_no),
                     ack.payload_json,
                 )?;
                 self.state
-                    .enqueue_outbox(&ack)
+                    .commit_journaled_dispense_side_effects(&command, &result, &ack)
                     .await
                     .map_err(|error| error.to_string())?;
+                if !result.success {
+                    self.state
+                        .block_slot_for_dispense_failure(
+                            &command,
+                            result.error_code.as_deref(),
+                            Some(result.message.as_str()),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 return Ok(CommandHandlingResult::DuplicateFinal {
                     command_no: command.command_no,
                 });
@@ -259,7 +265,7 @@ impl MqttSyncRuntime {
             let events = progress_events.clone();
             tokio::spawn(async move {
                 let order_no = event.order_no.clone();
-                if state.record_dispense_progress(&event).await.is_ok() {
+                if matches!(state.record_dispense_progress(&event).await, Ok(true)) {
                     let _ = events.send(DaemonEvent::TransactionChanged {
                         event_id: Uuid::new_v4().simple().to_string(),
                         updated_at: crate::state::store::now_iso(),
@@ -294,13 +300,12 @@ impl MqttSyncRuntime {
             format!("result:{}", command.command_no),
             result_event.payload_json,
         )?;
-        let result_recorded = self
-            .state
-            .record_command_result_and_enqueue_tx(&command, &result, &result_event)
+        self.state
+            .record_command_result_journal(&command, &result)
             .await
             .map_err(|error| error.to_string())?;
         self.state
-            .apply_dispense_result_to_order_session(&command, &result)
+            .commit_journaled_dispense_side_effects(&command, &result, &result_event)
             .await
             .map_err(|error| error.to_string())?;
         let _ = self.events.send(DaemonEvent::TransactionChanged {
@@ -313,12 +318,7 @@ impl MqttSyncRuntime {
                 "dispense_failed".to_string()
             },
         });
-        if result_recorded && result.success {
-            self.state
-                .apply_dispense_success_to_local_stock(&command)
-                .await
-                .map_err(|error| error.to_string())?;
-        } else if !result.success {
+        if !result.success {
             self.state
                 .block_slot_for_dispense_failure(
                     &command,
@@ -337,6 +337,70 @@ impl MqttSyncRuntime {
     pub async fn recover_stale_active_dispense_commands(&self) -> Result<usize, String> {
         self.recover_stale_active_dispense_commands_at(Utc::now())
             .await
+    }
+
+    pub async fn recover_journaled_dispense_side_effects(&self) -> Result<usize, String> {
+        let commands = self
+            .state
+            .list_journaled_commands_pending_side_effects()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut recovered = 0_usize;
+        for record in commands {
+            let Some(result) = record.result_payload else {
+                continue;
+            };
+            let mut result_event =
+                crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
+            result_event.payload_json = self.sign_outbox_payload(
+                format!("result:{}", record.command_payload.command_no),
+                result_event.payload_json,
+            )?;
+            match self
+                .state
+                .commit_journaled_dispense_side_effects(
+                    &record.command_payload,
+                    &result,
+                    &result_event,
+                )
+                .await
+            {
+                Ok(changed) => {
+                    recovered += usize::from(changed);
+                }
+                Err(error) => {
+                    self.state
+                        .append_health_event(&vending_core::health::ComponentHealth {
+                            component: "dispense_recovery".to_string(),
+                            level: vending_core::health::HealthLevel::Degraded,
+                            code: "DISPENSE_RESULT_RECOVERY_DEFERRED".to_string(),
+                            message: format!(
+                                "terminal dispense {} is journaled but side effects remain recoverable: {error}",
+                                record.command_no
+                            ),
+                            updated_at: crate::state::store::now_iso(),
+                        })
+                        .await
+                        .map_err(|store_error| store_error.to_string())?;
+                }
+            }
+        }
+        Ok(recovered)
+    }
+
+    async fn run_journaled_dispense_recovery_worker(self: Arc<Self>, interval: Duration) {
+        let mut ticker = tokio::time::interval(interval);
+        // Startup performs the first scan synchronously. Consume tokio's
+        // immediate tick so subsequent attempts remain bounded by the interval.
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = self.shutdown.cancelled() => break,
+                _ = ticker.tick() => {
+                    let _ = self.recover_journaled_dispense_side_effects().await;
+                }
+            }
+        }
     }
 
     async fn recover_stale_active_dispense_commands_at(
@@ -370,11 +434,7 @@ impl MqttSyncRuntime {
 
             let result_recorded = self
                 .state
-                .record_command_result_and_enqueue_tx(
-                    &record.command_payload,
-                    &result,
-                    &result_event,
-                )
+                .record_command_result_journal(&record.command_payload, &result)
                 .await
                 .map_err(|error| error.to_string())?;
             if !result_recorded {
@@ -382,7 +442,11 @@ impl MqttSyncRuntime {
             }
 
             self.state
-                .apply_dispense_result_to_order_session(&record.command_payload, &result)
+                .commit_journaled_dispense_side_effects(
+                    &record.command_payload,
+                    &result,
+                    &result_event,
+                )
                 .await
                 .map_err(|error| error.to_string())?;
             self.state
@@ -1107,10 +1171,16 @@ impl MqttSyncRuntime {
                 .subscribe(secure_decommission_ack_topic.clone(), QoS::AtLeastOnce)
                 .await;
         }
+        let _ = self.recover_journaled_dispense_side_effects().await;
         let _ = self.recover_stale_active_dispense_commands().await;
         // The bounded AsyncClient queue is drained only by event_loop.poll().
         // Never await an initial backlog here, before this loop can poll it.
         self.schedule_due_outbox();
+
+        let recovery_task = tokio::spawn(
+            self.clone()
+                .run_journaled_dispense_recovery_worker(DISPENSE_SIDE_EFFECT_RECOVERY_INTERVAL),
+        );
 
         let heartbeat = self.clone();
         let heartbeat_task = tokio::spawn(async move {
@@ -1214,6 +1284,7 @@ impl MqttSyncRuntime {
 
         heartbeat_task.abort();
         sampler_task.abort();
+        recovery_task.abort();
         result
     }
 }
@@ -1486,6 +1557,17 @@ mod tests {
             runtime_tx: runtime_tx.clone(),
             scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
             serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
+            audio_output_platform: Arc::new(crate::audio_output::WindowsAudioOutputPlatform),
+            audio_output_playback: Arc::new(
+                crate::audio_output::WindowsAudioOutputPlayback::default(),
+            ),
+            audio_output_calibration_lock: Arc::new(tokio::sync::Mutex::new(())),
+            audio_output_observation_generation: Arc::new(
+                crate::ipc::AudioOutputObservationGenerationTracker::default(),
+            ),
+            audio_output_test_evidence: Arc::new(
+                crate::ipc::AudioOutputTestEvidenceStore::default(),
+            ),
             device_binding_test_evidence: Arc::new(
                 crate::ipc::DeviceBindingTestEvidenceStore::default(),
             ),
@@ -1598,6 +1680,11 @@ mod tests {
             result,
             CommandHandlingResult::ActiveDuplicate { command_no } if command_no == "CMD-DUP-ACK"
         ));
+        let conflict = runtime
+            .handle_dispense_command(&signed_dispense_command("CMD-DUP-ACK", 6))
+            .await
+            .expect_err("same command number cannot change payload");
+        assert!(conflict.contains("reused with a different payload"));
         let operations = adapter.operations.lock().await.clone();
         assert!(
             !operations
@@ -1658,6 +1745,173 @@ mod tests {
             event.topic.as_deref() == Some("vem/machines/M1/events/dispense-result")
         }));
         assert!(adapter.operations.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn v17_to_v18_worker_recovers_terminal_journal_after_its_slot_returns() {
+        let temp = tempfile::tempdir().expect("temp");
+        let database = temp.path().join("state.db");
+        let state = crate::state::LocalStateStore::open(&database)
+            .await
+            .expect("state");
+        let command = dispense_command_payload("CMD-STARTUP-JOURNAL", 5);
+        state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: &command.order_no,
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: serde_json::json!([{ "slotCode": "A1", "quantity": 1 }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(serde_json::json!({
+                    "orderNo": command.order_no,
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": { "commandNo": command.command_no, "status": "dispensing" }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("order");
+        let result = vending_core::hardware::DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "F2 reset completed".to_string(),
+            reported_at: crate::state::store::now_iso(),
+        };
+        state
+            .record_command_result_journal(&command, &result)
+            .await
+            .expect("journal");
+        sqlx::query("ALTER TABLE command_log DROP COLUMN side_effects_committed_at")
+            .execute(state.pool())
+            .await
+            .expect("restore v17 command_log shape");
+        state
+            .put_metadata("schema_version", &17_i64)
+            .await
+            .expect("mark v17");
+        drop(state);
+
+        let reopened = crate::state::LocalStateStore::open(&database)
+            .await
+            .expect("migrate v17 to v18");
+        sqlx::query(
+            "UPDATE command_log SET updated_at='2000-01-01T00:00:00Z',expires_at='2000-01-02T00:00:00Z' WHERE command_no=?1",
+        )
+        .bind(&command.command_no)
+        .execute(reopened.pool())
+        .await
+        .expect("age migrated pending journal");
+        reopened
+            .prune_command_log()
+            .await
+            .expect("prune migrated log");
+        assert!(reopened
+            .get_command(&command.command_no)
+            .await
+            .expect("read migrated journal")
+            .is_some());
+        let adapter = Arc::new(RecordingEnvironmentAdapter::default());
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let shutdown = CancellationToken::new();
+        let runtime = Arc::new(MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            reopened.clone(),
+            hardware,
+            event_tx,
+            shutdown.clone(),
+        ));
+        let recovery_worker = tokio::spawn(
+            runtime
+                .clone()
+                .run_journaled_dispense_recovery_worker(Duration::from_millis(250)),
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let deferred: (i64,) = sqlx::query_as(
+                    "SELECT COUNT(*) FROM health_events WHERE code='DISPENSE_RESULT_RECOVERY_DEFERRED'",
+                )
+                .fetch_one(reopened.pool())
+                .await
+                .expect("deferred diagnostic");
+                if deferred.0 > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("startup recovery attempt");
+        let deferred: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM health_events WHERE code='DISPENSE_RESULT_RECOVERY_DEFERRED'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .expect("deferred diagnostic");
+        assert_eq!(deferred.0, 1);
+        assert!(reopened
+            .outbox_record("M1:result:CMD-STARTUP-JOURNAL")
+            .await
+            .expect("outbox")
+            .is_none());
+
+        seed_single_slot_planogram(&reopened).await;
+        reopened
+            .record_stock_movement(crate::state::store::StockMovementInput {
+                movement_id: "COUNT-STARTUP-JOURNAL".to_string(),
+                planogram_version: "PLAN-MQTT".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655441001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if reopened
+                    .outbox_record("M1:result:CMD-STARTUP-JOURNAL")
+                    .await
+                    .expect("outbox")
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("worker repairs after slot recovery");
+        assert_eq!(
+            reopened.sale_view(None).await.unwrap().items[0].physical_stock,
+            3
+        );
+        let outbox = reopened
+            .outbox_record("M1:result:CMD-STARTUP-JOURNAL")
+            .await
+            .expect("outbox")
+            .expect("signed result outbox");
+        let envelope: vending_core::mqtt::MqttEnvelope =
+            serde_json::from_value(outbox.payload_json).expect("signed envelope");
+        assert_eq!(envelope.message_id, "result:CMD-STARTUP-JOURNAL");
+        assert!(adapter.operations.lock().await.is_empty());
+        shutdown.cancel();
+        recovery_worker.await.expect("recovery worker stops");
+        assert_eq!(
+            runtime
+                .recover_journaled_dispense_side_effects()
+                .await
+                .expect("idempotent startup"),
+            0
+        );
     }
 
     #[tokio::test]
@@ -2516,6 +2770,19 @@ mod tests {
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
             .await
             .expect("state");
+        seed_single_slot_planogram(&state).await;
+        state
+            .record_stock_movement(crate::state::store::StockMovementInput {
+                movement_id: "COUNT-MQTT-SUCCESS".to_string(),
+                planogram_version: "PLAN-MQTT".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655441001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count stock");
         state
             .upsert_order_session(crate::state::store::OrderSessionUpsert {
                 order_no: "ORD-MQTT",

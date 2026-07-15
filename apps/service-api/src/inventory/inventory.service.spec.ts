@@ -219,7 +219,7 @@ describe("InventoryService.releaseReservation", () => {
 });
 
 describe("MachineStockMovementsService pending failed line refunds", () => {
-  it("creates a partial refund for an earlier failed line when the final open line is confirmed dispensed", async () => {
+  it("dispatches the durable partial refund staged with the final line confirmation", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -290,12 +290,10 @@ describe("MachineStockMovementsService pending failed line refunds", () => {
         },
       }),
     };
-    const requestPartialRefund = vi.fn().mockResolvedValue({
-      status: "partial_refund_pending",
-    });
+    const dispatchPendingRefunds = vi.fn().mockResolvedValue(1);
     const service = new MachineStockMovementsService(
       repository as never,
-      { requestPartialRefund } as never,
+      { dispatchPendingRefunds } as never,
     );
 
     const result = await service.receiveRawMovement(
@@ -315,22 +313,7 @@ describe("MachineStockMovementsService pending failed line refunds", () => {
     expect(fieldStockApplications).toHaveLength(0);
     expect(
       repository.buildPendingFailedLinePartialRefundDecision,
-    ).toHaveBeenCalledWith(
-      "order-1",
-      expect.objectContaining({
-        rawMovementId: "raw-line-b",
-        movementId: "MOVE-LINE-B",
-      }),
-    );
-    expect(requestPartialRefund).toHaveBeenCalledWith({
-      orderId: "order-1",
-      orderItemIds: ["line-a"],
-      amountCents: 300,
-      reason: "auto_partial_dispense_failed",
-      metadata: {
-        rawMovementId: "raw-line-b",
-        movementId: "MOVE-LINE-B",
-      },
-    });
+    ).not.toHaveBeenCalled();
+    expect(dispatchPendingRefunds).toHaveBeenCalledOnce();
   });
 });

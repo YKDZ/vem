@@ -47,11 +47,139 @@ import {
   buildScpCommand,
   classifyProvisioningFailure,
   evaluateFirstClaimPrecondition,
+  evaluateSimulatedHardwareSerialEvidence,
   findActiveKioskSession,
   getRuntimeAcceptanceExitStatus,
   isStrictTauriHashRouteUrl,
   sanitizeFactoryPreclaimReport,
 } from "./win10-vem-e2e.mjs";
+
+function completedSerialSaleEvidence(overrides = {}) {
+  const sale = {
+    orderId: "ORDER-180",
+    paymentId: "PAYMENT-180",
+    vendingCommandId: "VEND-180",
+  };
+  const serialSessionId = "serial-session-180";
+  const deviceMappingDigest = "sha256:serial-mapping-180";
+  const frame = (role, event, sequence) => ({
+    role,
+    event,
+    deviceMappingDigest,
+    saleBinding: sale,
+    capturedFrame: {
+      source: "guest-serial-session",
+      sequence,
+      digest: `sha256:frame-${sequence}`,
+      byteLength: 12,
+    },
+  });
+  return {
+    saleFlow: {
+      simulatedHardwareSaleFlow: {
+        phase: "complete",
+        hostSerialEvidencePending: true,
+        sale,
+        daemonSerialConfiguration: {
+          hardwareAdapter: "serial",
+          scannerAdapter: "serial_text",
+          lowerControllerPort: "COM31",
+          scannerPort: "COM32",
+          lowerControllerPortObserved: true,
+          scannerPortObserved: true,
+        },
+      },
+    },
+    serialConformance: {
+      reports: {
+        start: {
+          result: "succeeded",
+          serialSession: {
+            serialSessionId,
+            deviceMappingDigest,
+            deviceMappings: [
+              {
+                role: "lower-controller",
+                guestDeviceIdentity: "windows-com://COM31",
+                connectionState: "connected",
+              },
+              {
+                role: "scanner",
+                guestDeviceIdentity: "windows-com://COM32",
+                connectionState: "connected",
+              },
+            ],
+          },
+        },
+        collect: {
+          result: "succeeded",
+          serialEvidence: {
+            serialSessionId,
+            deviceMappingDigest,
+            records: [
+              frame("scanner", "scanner-injection", 1),
+              frame("lower-controller", "dispense-request", 2),
+              frame("lower-controller", "dispense-result", 3),
+            ],
+          },
+        },
+        firstStop: {
+          result: "succeeded",
+          serialSession: {
+            serialSessionId,
+            deviceMappingDigest,
+            simulatorCleanup: {
+              idempotencyVerified: false,
+              survivingProcessCount: 0,
+            },
+          },
+        },
+        repeatedStop: {
+          result: "succeeded",
+          serialSession: {
+            serialSessionId,
+            deviceMappingDigest,
+            simulatorCleanup: {
+              idempotencyVerified: true,
+              survivingProcessCount: 0,
+            },
+          },
+        },
+      },
+      failureMatrix: [
+        "malformed-frame",
+        "device-disconnected",
+        "scanner-timeout",
+        "dispense-failed",
+        "swapped-roles",
+        "missing-device",
+      ].map((failureMode) => ({
+        failureMode,
+        result: "observed_failure",
+        adapterResult: "succeeded",
+        diagnosticCode: {
+          "malformed-frame": "serial_malformed_frame",
+          "device-disconnected": "serial_device_disconnected",
+          "scanner-timeout": "serial_scanner_timeout",
+          "dispense-failed": "serial_dispense_failed",
+          "swapped-roles": "serial_swapped_roles",
+          "missing-device": "serial_missing_device",
+        }[failureMode],
+        ...(["swapped-roles", "missing-device"].includes(failureMode)
+          ? {
+              recovery: {
+                runtimeReady: "passed",
+                hardwareOnline: true,
+                scannerOnline: true,
+                ready: true,
+              },
+            }
+          : {}),
+      })),
+    },
+    ...overrides,
+  };
+}
 
 function extractPowerShellFunction(script, name) {
   const start = script.indexOf(`function ${name}(`);
@@ -368,6 +496,132 @@ describe("transient SSH operation retry", () => {
     assert.equal(result.status, 255);
     assert.equal(calls, 1);
   });
+});
+
+describe("simulated hardware serial acceptance evidence", () => {
+  it("binds the completed sale to real Windows COM mappings and guest frames", () => {
+    const evidence = evaluateSimulatedHardwareSerialEvidence(
+      completedSerialSaleEvidence(),
+    );
+
+    assert.deepEqual(
+      { status: evidence.status, asserted: evidence.asserted },
+      { status: "passed", asserted: true },
+    );
+    assert.deepEqual(evidence.diagnostics, []);
+  });
+
+  for (const [name, mutate, code] of [
+    [
+      "mock hardware adapter",
+      (input) => {
+        input.saleFlow.simulatedHardwareSaleFlow.daemonSerialConfiguration.hardwareAdapter =
+          "mock";
+      },
+      "serial_adapter_evidence_required",
+    ],
+    [
+      "TCP lower controller path",
+      (input) => {
+        input.saleFlow.simulatedHardwareSaleFlow.daemonSerialConfiguration.lowerControllerPort =
+          "tcp://127.0.0.1:17991";
+      },
+      "windows_com_path_evidence_required",
+    ],
+    [
+      "reused COM mapping",
+      (input) => {
+        input.saleFlow.simulatedHardwareSaleFlow.daemonSerialConfiguration.scannerPort =
+          "COM31";
+      },
+      "distinct_virtual_com_mapping_required",
+    ],
+    [
+      "software scanner injection",
+      (input) => {
+        input.serialConformance.reports.collect.serialEvidence.records[0].capturedFrame.source =
+          "software-injection";
+      },
+      "guest_serial_frame_evidence_required",
+    ],
+    [
+      "missing lower controller frame",
+      (input) => {
+        input.serialConformance.reports.collect.serialEvidence.records.pop();
+      },
+      "guest_serial_frame_evidence_required",
+    ],
+  ]) {
+    it(`fails closed for ${name}`, () => {
+      const input = completedSerialSaleEvidence();
+      mutate(input);
+      const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+      assert.equal(evidence.status, "failed");
+      assert.equal(evidence.asserted, false);
+      assert.ok(
+        evidence.diagnostics.some((diagnostic) => diagnostic.code === code),
+      );
+    });
+  }
+
+  for (const [name, mutate] of [
+    [
+      "missing repeated stop evidence",
+      (input) => {
+        delete input.serialConformance.reports.repeatedStop;
+      },
+    ],
+    [
+      "non-idempotent repeated stop",
+      (input) => {
+        input.serialConformance.reports.repeatedStop.serialSession.simulatorCleanup.idempotencyVerified = false;
+      },
+    ],
+    [
+      "surviving simulator process",
+      (input) => {
+        input.serialConformance.reports.repeatedStop.serialSession.simulatorCleanup.survivingProcessCount = 1;
+      },
+    ],
+    [
+      "incomplete failure matrix",
+      (input) => {
+        input.serialConformance.failureMatrix.pop();
+      },
+    ],
+    [
+      "mismatched failure diagnostic",
+      (input) => {
+        input.serialConformance.failureMatrix[0].diagnosticCode =
+          "serial_device_disconnected";
+      },
+    ],
+    [
+      "missing mapping recovery",
+      (input) => {
+        const mappingFailure = input.serialConformance.failureMatrix.find(
+          (entry) => entry.failureMode === "swapped-roles",
+        );
+        delete mappingFailure.recovery;
+      },
+    ],
+  ]) {
+    it(`does not assert readiness for ${name}`, () => {
+      const input = completedSerialSaleEvidence();
+      mutate(input);
+      const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+      assert.equal(evidence.status, "failed");
+      assert.equal(evidence.asserted, false);
+      assert.ok(
+        evidence.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === "guest_serial_lifecycle_evidence_required",
+        ),
+      );
+    });
+  }
 });
 
 describe("factory acceptance cancellation cleanup", () => {

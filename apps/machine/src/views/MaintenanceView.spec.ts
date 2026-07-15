@@ -24,21 +24,25 @@ const {
   getRemoteOpsStatusMock,
   getStockMaintenanceTaskMock,
   submitStockMaintenanceBatchMock,
+  getPaymentEnvironmentDiagnosticMock,
   clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
   getConfigMock,
   saveConfigMock,
-  saveMachineAudioSettingsMock,
+  getAudioOutputBindingMock,
+  testAudioOutputMock,
+  confirmAudioOutputMock,
   downloadLogExportMock,
   beginMaintenanceSessionMock,
   clearMaintenanceSessionMock,
   handoffMaintenanceSessionToBringUpMock,
   getMaintenanceSessionForRouteMock,
   releaseMaintenanceSessionRouteMock,
+  revokeMaintenanceSessionRouteMock,
+  runManualDispenseDiagnosticMock,
   onMaintenanceSessionInvalidatedMock,
   callTauriCommandMock,
   openVisionTryOnSessionMock,
-  machineAudioPlaybackFactoryOverride,
 } = vi.hoisted(() => ({
   routeMock: { query: {} as Record<string, unknown> },
   routerReplaceMock: vi.fn(),
@@ -55,23 +59,25 @@ const {
   getRemoteOpsStatusMock: vi.fn(),
   getStockMaintenanceTaskMock: vi.fn(),
   submitStockMaintenanceBatchMock: vi.fn(),
+  getPaymentEnvironmentDiagnosticMock: vi.fn(),
   clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
   getConfigMock: vi.fn(),
   saveConfigMock: vi.fn(),
-  saveMachineAudioSettingsMock: vi.fn(),
+  getAudioOutputBindingMock: vi.fn(),
+  testAudioOutputMock: vi.fn(),
+  confirmAudioOutputMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
   beginMaintenanceSessionMock: vi.fn(),
   clearMaintenanceSessionMock: vi.fn(),
   handoffMaintenanceSessionToBringUpMock: vi.fn(),
   getMaintenanceSessionForRouteMock: vi.fn(),
   releaseMaintenanceSessionRouteMock: vi.fn(),
+  revokeMaintenanceSessionRouteMock: vi.fn().mockResolvedValue(undefined),
+  runManualDispenseDiagnosticMock: vi.fn(),
   onMaintenanceSessionInvalidatedMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
-  machineAudioPlaybackFactoryOverride: {
-    current: null as null | ((options: unknown) => unknown),
-  },
 }));
 
 vi.mock("vue-router", () => ({
@@ -85,6 +91,14 @@ vi.mock("@/layouts/KioskLayout.vue", () => ({
 
 vi.mock("@/components/MockHardwareControls.vue", () => ({
   default: { template: "<div>MockHardwareControls</div>" },
+}));
+
+vi.mock("@/components/VisionCameraMaintenancePanel.vue", () => ({
+  default: {
+    props: ["maintenanceAuthorized", "mode"],
+    template:
+      "<div data-test='vision-camera-maintenance-stub'>VisionCameraMaintenancePanel</div>",
+  },
 }));
 
 vi.mock("@/daemon/client", async (importOriginal) => {
@@ -105,11 +119,14 @@ vi.mock("@/daemon/client", async (importOriginal) => {
       getRemoteOpsStatus: getRemoteOpsStatusMock,
       getStockMaintenanceTask: getStockMaintenanceTaskMock,
       submitStockMaintenanceBatch: submitStockMaintenanceBatchMock,
+      getPaymentEnvironmentDiagnostic: getPaymentEnvironmentDiagnosticMock,
       clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
       runHardwareSelfCheck: runHardwareSelfCheckMock,
       getConfig: getConfigMock,
       saveConfig: saveConfigMock,
-      saveMachineAudioSettings: saveMachineAudioSettingsMock,
+      getAudioOutputBinding: getAudioOutputBindingMock,
+      testAudioOutput: testAudioOutputMock,
+      confirmAudioOutput: confirmAudioOutputMock,
       downloadLogExport: downloadLogExportMock,
       beginMaintenanceSession: beginMaintenanceSessionMock,
       clearMaintenanceSession: clearMaintenanceSessionMock,
@@ -117,6 +134,8 @@ vi.mock("@/daemon/client", async (importOriginal) => {
         handoffMaintenanceSessionToBringUpMock,
       getMaintenanceSessionForRoute: getMaintenanceSessionForRouteMock,
       releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
+      revokeMaintenanceSessionRoute: revokeMaintenanceSessionRouteMock,
+      runManualDispenseDiagnostic: runManualDispenseDiagnosticMock,
       onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
     },
   };
@@ -130,27 +149,6 @@ vi.mock("@/native/tauri", () => ({
 vi.mock("@/native/vision", () => ({
   openVisionTryOnSession: openVisionTryOnSessionMock,
 }));
-
-vi.mock("@/audio-playback/machine-audio-playback", async (importOriginal) => {
-  const actual =
-    await importOriginal<
-      typeof import("@/audio-playback/machine-audio-playback")
-    >();
-  return {
-    ...actual,
-    createMachineAudioPlayback: (
-      options: Parameters<typeof actual.createMachineAudioPlayback>[0],
-    ) => {
-      const override = machineAudioPlaybackFactoryOverride.current;
-      if (override) {
-        return override(options) as ReturnType<
-          typeof actual.createMachineAudioPlayback
-        >;
-      }
-      return actual.createMachineAudioPlayback(options);
-    },
-  };
-});
 
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useMachineStore } from "@/stores/machine";
@@ -419,7 +417,9 @@ beforeEach(() => {
     testEvidenceToken: "11111111-2222-4333-8444-555555555555",
     testEvidenceExpiresAt: "2026-07-15T00:01:00Z",
     observationRevision: `sha256:${"a".repeat(64)}`,
+    observationGeneration: 1,
     configRevision: `sha256:${"b".repeat(64)}`,
+    configGeneration: 1,
   });
   confirmDeviceBindingMock.mockResolvedValue({
     binding: {
@@ -501,6 +501,11 @@ beforeEach(() => {
     task: { ...stockMaintenanceTaskFixture(), status: "pending" },
     duplicate: false,
   });
+  getPaymentEnvironmentDiagnosticMock.mockResolvedValue({
+    environment: "sandbox",
+    readiness: "ready",
+    errorCategory: "none",
+  });
   clearWholeMachineMaintenanceLockMock.mockResolvedValue({ cleared: true });
   runHardwareSelfCheckMock.mockResolvedValue({
     online: true,
@@ -513,7 +518,37 @@ beforeEach(() => {
   });
   getConfigMock.mockResolvedValue(provisionedConfigSummary());
   saveConfigMock.mockResolvedValue({});
-  saveMachineAudioSettingsMock.mockResolvedValue(provisionedConfigSummary());
+  getAudioOutputBindingMock.mockResolvedValue({
+    binding: null,
+    currentObservation: null,
+    observationRevision: `sha256:${"a".repeat(64)}`,
+    candidates: [
+      {
+        endpointId: "{0.0.0.00000000}.speaker-1",
+        friendlyName: "Near-field speaker",
+        isDefault: true,
+      },
+      {
+        endpointId: "{0.0.0.00000000}.hdmi-1",
+        friendlyName: "HDMI monitor",
+        isDefault: false,
+      },
+    ],
+    ready: false,
+    code: "AUDIO_OUTPUT_BINDING_REQUIRED",
+    message: "binding required",
+  });
+  testAudioOutputMock.mockResolvedValue({
+    endpointId: "wasapi:endpoint-speaker",
+    testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+    testEvidenceExpiresAt: "2030-07-15T00:01:00Z",
+    observationRevision: `sha256:${"a".repeat(64)}`,
+    observationGeneration: 1,
+    configRevision: `sha256:${"b".repeat(64)}`,
+    configGeneration: 1,
+    proposedSettingsDigest: `sha256:${"c".repeat(64)}`,
+  });
+  confirmAudioOutputMock.mockResolvedValue(provisionedConfigSummary());
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
   beginMaintenanceSessionMock.mockResolvedValue({
     sessionId: "maintenance-session-1",
@@ -532,23 +567,7 @@ beforeEach(() => {
       };
     },
   );
-  callTauriCommandMock.mockImplementation((command: string) => {
-    if (command === "list_machine_audio_outputs") {
-      return Promise.resolve([
-        {
-          endpointId: "{0.0.0.00000000}.speaker-1",
-          friendlyName: "Near-field speaker",
-          isDefault: true,
-        },
-        {
-          endpointId: "{0.0.0.00000000}.hdmi-1",
-          friendlyName: "HDMI monitor",
-          isDefault: false,
-        },
-      ]);
-    }
-    return Promise.resolve(undefined);
-  });
+  callTauriCommandMock.mockResolvedValue(undefined);
   openVisionTryOnSessionMock.mockResolvedValue({
     sessionId: "maintenance-session-1",
     previewUrl: "http://127.0.0.1:7892/try-on/maintenance.mjpeg",
@@ -556,7 +575,6 @@ beforeEach(() => {
     stop: vi.fn().mockResolvedValue(undefined),
   });
   useMachineStore().$patch({ configLoaded: true });
-  machineAudioPlaybackFactoryOverride.current = null;
 });
 
 afterEach(() => {
@@ -615,11 +633,160 @@ it("verifies the PIN through daemon IPC before enabling protected maintenance ac
   await vi.waitFor(() => {
     expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
       "2468",
-      ["maintenance.reclaim"],
+      ["maintenance.reclaim", "maintenance.manual_dispense"],
       "operator-console",
     );
   });
   expect(clearMaintenanceSessionMock).not.toHaveBeenCalled();
+});
+
+it("shows only the secret-free payment environment diagnostic after maintenance authorization", async () => {
+  const host = await mountView();
+
+  expect(host.textContent).not.toContain("支付环境");
+  await unlockMaintenance(host);
+  await vi.waitFor(() => {
+    expect(getPaymentEnvironmentDiagnosticMock).toHaveBeenCalled();
+    expect(host.textContent).toContain("支付环境");
+    expect(host.textContent).toContain("沙箱");
+    expect(host.textContent).toContain("已就绪");
+  });
+  expect(host.textContent).not.toMatch(/privateKeyPem|certificate|密钥|证书/);
+});
+
+it("runs one protected manual dispense diagnostic and requires explicit stock reconciliation", async () => {
+  runManualDispenseDiagnosticMock.mockResolvedValue({
+    diagnosticId: "manual-dispense-1",
+    outcome: "completed",
+    errorCode: null,
+    reportedAt: "2026-07-15T00:00:00.000Z",
+    stockReconciliationRequired: true,
+    reconciliationStatus: "open",
+    replayed: false,
+  });
+  const host = await mountView();
+  await unlockMaintenance(host);
+  buttonByText(host, "出货一件").click();
+  await vi.waitFor(() => {
+    expect(runManualDispenseDiagnosticMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slotCode: "A1",
+        layerNo: 1,
+        cellNo: 1,
+        quantity: 1,
+      }),
+    );
+    expect(host.textContent).toContain("请立即执行库存核对");
+  });
+  expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
+});
+
+it("reuses one manual dispense idempotency key after response loss and view reload", async () => {
+  runManualDispenseDiagnosticMock
+    .mockRejectedValueOnce(new Error("daemon response lost"))
+    .mockResolvedValue({
+      diagnosticId: "manual-dispense-replayed",
+      outcome: "result_unknown",
+      errorCode: "UNKNOWN",
+      reportedAt: "2026-07-15T00:00:00.000Z",
+      stockReconciliationRequired: true,
+      reconciliationStatus: "open",
+      replayed: true,
+    });
+  let host = await mountView();
+  await unlockMaintenance(host);
+
+  const retryButton = host.querySelector(
+    '[data-test="manual-dispense-diagnostic"] button[type="submit"]',
+  );
+  expect(retryButton).toBeInstanceOf(HTMLButtonElement);
+  (retryButton as HTMLButtonElement).click();
+  await vi.waitFor(() => {
+    expect(runManualDispenseDiagnosticMock).toHaveBeenCalledTimes(1);
+    const submit = host.querySelector(
+      '[data-test="manual-dispense-diagnostic"] button[type="submit"]',
+    );
+    expect(submit?.textContent).toContain("出货一件");
+    expect(submit).toHaveProperty("disabled", false);
+  });
+  const responseLossRetry = host.querySelector(
+    '[data-test="manual-dispense-diagnostic"] form',
+  );
+  expect(responseLossRetry).toBeInstanceOf(HTMLFormElement);
+  responseLossRetry?.dispatchEvent(
+    new Event("submit", { bubbles: true, cancelable: true }),
+  );
+  await vi.waitFor(() => {
+    expect(runManualDispenseDiagnosticMock).toHaveBeenCalledTimes(2);
+  });
+
+  mountedApp?.unmount();
+  mountedApp = null;
+  host.remove();
+  host = await mountView();
+  await unlockMaintenance(host);
+  buttonByText(host, "出货一件").click();
+  await vi.waitFor(() => {
+    expect(runManualDispenseDiagnosticMock).toHaveBeenCalledTimes(3);
+  });
+
+  const keys = runManualDispenseDiagnosticMock.mock.calls.map(
+    ([request]) => (request as { idempotencyKey: string }).idempotencyKey,
+  );
+  expect(new Set(keys).size).toBe(1);
+});
+
+it("rotates the manual dispense key only for changed parameters or an explicit new diagnostic", async () => {
+  runManualDispenseDiagnosticMock.mockResolvedValue({
+    diagnosticId: "manual-dispense-complete",
+    outcome: "completed",
+    errorCode: null,
+    reportedAt: "2026-07-15T00:00:00.000Z",
+    stockReconciliationRequired: true,
+    reconciliationStatus: "open",
+    replayed: false,
+  });
+  const host = await mountView();
+  await unlockMaintenance(host);
+  const submit = async (expectedCalls: number) => {
+    const form = host.querySelector(
+      '[data-test="manual-dispense-diagnostic"] form',
+    );
+    expect(form).toBeInstanceOf(HTMLFormElement);
+    form?.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(() => {
+      expect(runManualDispenseDiagnosticMock).toHaveBeenCalledTimes(
+        expectedCalls,
+      );
+      expect(
+        host.querySelector(
+          '[data-test="manual-dispense-diagnostic"] button[type="submit"]',
+        ),
+      ).toHaveProperty("disabled", false);
+    });
+  };
+
+  await submit(1);
+  const firstKey =
+    runManualDispenseDiagnosticMock.mock.calls[0][0].idempotencyKey;
+  const slotInput = host.querySelector(
+    '[data-test="manual-dispense-diagnostic"] input[maxlength="32"]',
+  );
+  expect(slotInput).toBeInstanceOf(HTMLInputElement);
+  (slotInput as HTMLInputElement).value = "B2";
+  slotInput?.dispatchEvent(new Event("input", { bubbles: true }));
+  await submit(2);
+  const changedParameterKey =
+    runManualDispenseDiagnosticMock.mock.calls[1][0].idempotencyKey;
+  expect(changedParameterKey).not.toBe(firstKey);
+
+  buttonByText(host, "新建诊断").click();
+  await submit(3);
+  const explicitNewKey =
+    runManualDispenseDiagnosticMock.mock.calls[2][0].idempotencyKey;
+  expect(explicitNewKey).not.toBe(changedParameterKey);
 });
 
 it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {
@@ -630,6 +797,7 @@ it("returns the rendered maintenance session to read-only when the daemon invali
   await nextTick();
 
   expect(host.textContent).toContain("只读");
+  expect(host.textContent).not.toContain("支付环境");
   expect(host.textContent).toContain("守护进程连接已更新");
   expect(clearMaintenanceSessionMock).toHaveBeenCalled();
 });
@@ -1232,7 +1400,7 @@ describe("MaintenanceView hardware config", () => {
     expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
-  it("tests Machine Audio playback against the selected stable output endpoint instead of the OS default", async () => {
+  it("asks daemon to test the selected stable endpoint before enabling heard confirmation", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -1242,17 +1410,8 @@ describe("MaintenanceView hardware config", () => {
         advancedMaintenanceConfig: true,
       },
     });
-    const capturedOptions: Array<Record<string, unknown>> = [];
-    machineAudioPlaybackFactoryOverride.current = (options) => {
-      capturedOptions.push(options as Record<string, unknown>);
-      return {
-        playLocal: vi.fn(async () => true),
-        stop: vi.fn(),
-        currentDriver: () => "native",
-        latestDiagnostic: () => null,
-      };
-    };
     const host = await mountView();
+    await unlockMaintenance(host);
     const candidate = host.querySelector(
       'input[type="radio"][value="{0.0.0.00000000}.hdmi-1"]',
     );
@@ -1262,16 +1421,32 @@ describe("MaintenanceView hardware config", () => {
     candidate.click();
     await nextTick();
 
-    buttonByText(host, "播放测试音频").click();
-    await nextTick();
+    const heard = Array.from(host.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("我已经"))
+      ?.querySelector('input[type="checkbox"]');
+    expect(heard).toBeInstanceOf(HTMLInputElement);
+    expect((heard as HTMLInputElement).disabled).toBe(true);
 
-    expect(capturedOptions.length).toBeGreaterThan(0);
-    expect(capturedOptions[capturedOptions.length - 1]?.outputDeviceId).toBe(
-      "{0.0.0.00000000}.hdmi-1",
+    buttonByText(host, "播放测试音频").click();
+    await vi.waitFor(() => {
+      expect(testAudioOutputMock).toHaveBeenCalledOnce();
+    });
+
+    expect(callTauriCommandMock).not.toHaveBeenCalledWith(
+      "test_machine_audio_output",
+      expect.anything(),
     );
-    expect(
-      capturedOptions[capturedOptions.length - 1]?.requireNativeOutputBinding,
-    ).toBe(true);
+    expect(testAudioOutputMock).toHaveBeenCalledWith({
+      endpointId: "{0.0.0.00000000}.hdmi-1",
+      audioCueSettings: {
+        enabled: false,
+        categories: { presence: false, transaction: false },
+      },
+      machineAudioVolume: 0.7,
+    });
+    await vi.waitFor(() => {
+      expect((heard as HTMLInputElement).disabled).toBe(false);
+    });
   });
 
   it("persists the heard output binding together with audio cue settings through protected maintenance", async () => {
@@ -1284,7 +1459,7 @@ describe("MaintenanceView hardware config", () => {
         advancedMaintenanceConfig: true,
       },
     });
-    saveMachineAudioSettingsMock.mockResolvedValue({
+    confirmAudioOutputMock.mockResolvedValue({
       ...provisionedConfigSummary(),
       public: {
         ...provisionedConfigSummary().public,
@@ -1293,6 +1468,8 @@ describe("MaintenanceView hardware config", () => {
           endpointId: "{0.0.0.00000000}.speaker-1",
           friendlyName: "Near-field speaker",
           confirmedHeardAt: "2026-07-15T06:10:00.000Z",
+          confirmedObservationRevision:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         },
         audioCueSettings: {
           enabled: true,
@@ -1305,7 +1482,6 @@ describe("MaintenanceView hardware config", () => {
     });
     const host = await mountView();
     await unlockMaintenance(host);
-    vi.useFakeTimers();
 
     const selected = host.querySelector(
       'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
@@ -1316,6 +1492,16 @@ describe("MaintenanceView hardware config", () => {
     selected.click();
     await nextTick();
 
+    const volume = inputByTest(host, "machine-audio-volume-percent");
+    volume.value = "42";
+    volume.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
+    buttonByText(host, "播放测试音频").click();
+    await vi.waitFor(() => {
+      expect(testAudioOutputMock).toHaveBeenCalledOnce();
+    });
+
     const heardLabel = Array.from(host.querySelectorAll("label")).find((item) =>
       item.textContent?.includes("我已经在近场顾客扬声器上听到了测试音频"),
     );
@@ -1323,32 +1509,21 @@ describe("MaintenanceView hardware config", () => {
     if (!(heardCheckbox instanceof HTMLInputElement)) {
       throw new Error("heard confirmation checkbox not found");
     }
-    const volume = inputByTest(host, "machine-audio-volume-percent");
-    volume.value = "42";
-    volume.dispatchEvent(new Event("input", { bubbles: true }));
-    await nextTick();
-
-    const saveButton = buttonByText(host, "保存顾客扬声器绑定与音频提示设置");
-    expect(saveButton.disabled).toBe(true);
-
-    buttonByText(host, "播放测试音频").click();
-    await vi.runAllTimersAsync();
-    await nextTick();
-
-    expect(heardCheckbox.disabled).toBe(false);
+    await vi.waitFor(() => {
+      expect(heardCheckbox.disabled).toBe(false);
+    });
     heardCheckbox.click();
     await nextTick();
 
-    saveButton.click();
+    buttonByText(host, "保存顾客扬声器绑定与音频提示设置").click();
 
     await vi.waitFor(() => {
-      expect(saveMachineAudioSettingsMock).toHaveBeenCalledTimes(1);
+      expect(confirmAudioOutputMock).toHaveBeenCalledTimes(1);
     });
-    expect(saveMachineAudioSettingsMock.mock.calls[0]?.[0]).toMatchObject({
-      machineAudioOutputBinding: {
-        endpointId: "{0.0.0.00000000}.speaker-1",
-        friendlyName: "Near-field speaker",
-      },
+    expect(confirmAudioOutputMock.mock.calls[0]?.[0]).toEqual({
+      endpointId: "{0.0.0.00000000}.speaker-1",
+      testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+      heard: true,
       audioCueSettings: {
         enabled: false,
         categories: {
@@ -1358,6 +1533,9 @@ describe("MaintenanceView hardware config", () => {
       },
       machineAudioVolume: 0.42,
     });
+    expect(confirmAudioOutputMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      "confirmedAt",
+    );
     await vi.waitFor(() => {
       expect(host.textContent).toContain(
         "顾客音频输出绑定与音频提示设置已保存",
@@ -1365,156 +1543,118 @@ describe("MaintenanceView hardware config", () => {
     });
   });
 
-  it("clears heard confirmation when the tested endpoint or form volume changes", async () => {
+  it("clears heard evidence when the candidate or proposed audio settings change", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
       source: "tauri_ready_file",
       mock: false,
-      runtimeFlags: { advancedMaintenanceConfig: true },
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
     });
     const host = await mountView();
     await unlockMaintenance(host);
-    vi.useFakeTimers();
-    const selected = host.querySelector(
+    const candidate = host.querySelector(
       'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
     );
-    if (!(selected instanceof HTMLInputElement)) {
-      throw new Error("near-field speaker radio not found");
+    if (!(candidate instanceof HTMLInputElement)) {
+      throw new Error("audio output candidate radio not found");
     }
-    selected.click();
+    candidate.click();
     await nextTick();
 
     buttonByText(host, "播放测试音频").click();
-    await vi.runAllTimersAsync();
-    await nextTick();
+    await vi.waitFor(() => {
+      expect(testAudioOutputMock).toHaveBeenCalledOnce();
+    });
 
-    const heardLabel = Array.from(host.querySelectorAll("label")).find((item) =>
-      item.textContent?.includes("我已经在近场顾客扬声器上听到了测试音频"),
-    );
-    const heardCheckbox = heardLabel?.querySelector('input[type="checkbox"]');
-    if (!(heardCheckbox instanceof HTMLInputElement)) {
+    const heard = Array.from(host.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("我已经"))
+      ?.querySelector('input[type="checkbox"]');
+    if (!(heard instanceof HTMLInputElement)) {
       throw new Error("heard confirmation checkbox not found");
     }
-    heardCheckbox.click();
+    await vi.waitFor(() => {
+      expect(heard.disabled).toBe(false);
+    });
+    heard.click();
     await nextTick();
-    expect(heardCheckbox.checked).toBe(true);
+    expect(heard.checked).toBe(true);
 
     const volume = inputByTest(host, "machine-audio-volume-percent");
-    volume.value = "0";
+    volume.value = "42";
     volume.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
-    expect(heardCheckbox.checked).toBe(false);
-    expect(heardCheckbox.disabled).toBe(true);
+
+    expect(heard.checked).toBe(false);
+    expect(heard.disabled).toBe(true);
     expect(
       buttonByText(host, "保存顾客扬声器绑定与音频提示设置").disabled,
     ).toBe(true);
+  });
 
-    const alternative = host.querySelector(
-      'input[type="radio"][value="{0.0.0.00000000}.hdmi-1"]',
+  it("clears heard evidence when daemon observation revision changes", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const candidate = host.querySelector(
+      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
     );
-    if (!(alternative instanceof HTMLInputElement)) {
-      throw new Error("HDMI output candidate radio not found");
+    if (!(candidate instanceof HTMLInputElement)) {
+      throw new Error("audio output candidate radio not found");
     }
-    alternative.click();
+    candidate.click();
     await nextTick();
-    expect(heardCheckbox.checked).toBe(false);
-    expect(heardCheckbox.disabled).toBe(true);
-    expect(saveMachineAudioSettingsMock).not.toHaveBeenCalled();
-  });
 
-  it("plays protected maintenance Machine Audio test playback with mock diagnostics and global volume", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
+    buttonByText(host, "播放测试音频").click();
+    await vi.waitFor(() => {
+      expect(testAudioOutputMock).toHaveBeenCalledOnce();
     });
-    useMachineStore().$patch({
-      configSummary: {
-        ...provisionedConfigSummary(),
-        public: {
-          ...provisionedConfigSummary().public,
-          machineAudioVolume: 0.35,
+    const heard = Array.from(host.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("我已经"))
+      ?.querySelector('input[type="checkbox"]');
+    if (!(heard instanceof HTMLInputElement)) {
+      throw new Error("heard confirmation checkbox not found");
+    }
+    heard.click();
+    await nextTick();
+
+    getAudioOutputBindingMock.mockResolvedValueOnce({
+      binding: null,
+      currentObservation: null,
+      observationRevision: `sha256:${"c".repeat(64)}`,
+      candidates: [
+        {
+          endpointId: "{0.0.0.00000000}.speaker-1",
+          friendlyName: "Near-field speaker",
+          isDefault: false,
         },
-      },
-      configLoaded: true,
+      ],
+      ready: false,
+      code: "AUDIO_OUTPUT_BINDING_REQUIRED",
+      message: "binding required",
     });
-    const host = await mountView();
-    vi.useFakeTimers();
-
-    expect(host.textContent).toContain("机器音频测试播放");
-    expect(host.textContent).toContain("当前播放驱动 · mock");
-    expect(host.textContent).toContain(
-      "现场检查：通过近场顾客扬声器确认顾客音频区域清晰可听",
-    );
-    expect(host.textContent).toContain("机器音频音量 · 35%");
-
-    buttonByText(host, "播放测试音频").click();
-    await vi.advanceTimersByTimeAsync(10);
-    await nextTick();
-
-    expect(host.textContent).toContain("播放状态 · 已开始");
-    expect(host.textContent).toContain("当前播放驱动 · mock");
-    expect(host.textContent).toContain("播放音量 · 35%");
-  });
-
-  it("shows requested and completed Machine Audio test playback diagnostics without real audio hardware", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
+    buttonByText(host, "刷新端点").click();
+    await vi.waitFor(() => {
+      expect(getAudioOutputBindingMock).toHaveBeenCalledTimes(2);
     });
-    const host = await mountView();
-    vi.useFakeTimers();
-
-    buttonByText(host, "播放测试音频").click();
-    await nextTick();
-
-    expect(host.textContent).toContain("播放状态 · 已请求");
-
-    await vi.runAllTimersAsync();
-    await nextTick();
-
-    expect(host.textContent).toContain("播放状态 · 已完成");
-    expect(host.textContent).toContain("当前播放驱动 · mock");
-  });
-
-  it("stops protected maintenance Machine Audio test playback and shows a stopped diagnostic", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const host = await mountView();
-    vi.useFakeTimers();
-
-    buttonByText(host, "播放测试音频").click();
-    await vi.advanceTimersByTimeAsync(10);
-    await nextTick();
-
-    expect(host.textContent).toContain("播放状态 · 已开始");
-
-    buttonByText(host, "停止当前播放").click();
 
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("播放状态 · 已停止");
+      expect(heard.checked).toBe(false);
+      expect(heard.disabled).toBe(true);
     });
-    expect(host.textContent).toContain("当前播放驱动 · mock");
   });
 
-  it("renders Machine Audio test playback fallback diagnostics", async () => {
+  it("fails closed when native maintenance test playback is unavailable", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -1524,39 +1664,31 @@ describe("MaintenanceView hardware config", () => {
         advancedMaintenanceConfig: true,
       },
     });
-    const fallbackDiagnostic = {
-      requestId: "maintenance-fallback-1",
-      status: "started" as const,
-      driver: "browser" as const,
-      sourceUrl: "/assets/maintenance-test-tone.wav",
-      message: "native playback degraded: native output unavailable",
-      recordedAt: "2026-07-03T08:05:00.000Z",
-    };
-    machineAudioPlaybackFactoryOverride.current = (options) => {
-      const playbackOptions = options as {
-        onDiagnostic?: (diagnostic: typeof fallbackDiagnostic) => void;
-      };
-      return {
-        playLocal: vi.fn(async () => {
-          playbackOptions.onDiagnostic?.(fallbackDiagnostic);
-          return true;
-        }),
-        stop: vi.fn(),
-        currentDriver: () => "browser" as const,
-        latestDiagnostic: () => fallbackDiagnostic,
-      };
-    };
+    testAudioOutputMock.mockRejectedValueOnce(
+      new Error("native output unavailable"),
+    );
     const host = await mountView();
+    await unlockMaintenance(host);
+    const candidate = host.querySelector(
+      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
+    );
+    if (!(candidate instanceof HTMLInputElement)) {
+      throw new Error("audio output candidate radio not found");
+    }
+    candidate.click();
+    await nextTick();
 
     buttonByText(host, "播放测试音频").click();
 
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("当前播放驱动 · browser");
+      expect(host.textContent).toContain("native output unavailable");
     });
-    expect(host.textContent).toContain(
-      "降级诊断 · native playback degraded: native output unavailable",
-    );
-    expect(host.textContent).toContain("播放状态 · 已开始");
+    expect(testAudioOutputMock).toHaveBeenCalledOnce();
+    expect(host.textContent).not.toContain("当前播放驱动 · browser");
+    const heard = Array.from(host.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("我已经"))
+      ?.querySelector('input[type="checkbox"]');
+    expect(heard).toHaveProperty("disabled", true);
   });
 
   it("shows latest Machine Audio Cue diagnostic details without full history", async () => {
@@ -1818,7 +1950,11 @@ describe("MaintenanceView hardware config", () => {
     await vi.waitFor(() => {
       expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
         "2468",
-        ["maintenance.reclaim", "maintenance.desktop_exit"],
+        [
+          "maintenance.reclaim",
+          "maintenance.manual_dispense",
+          "maintenance.desktop_exit",
+        ],
         "operator-console",
       );
       expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop", {

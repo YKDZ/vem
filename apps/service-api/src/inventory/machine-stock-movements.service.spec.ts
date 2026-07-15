@@ -55,6 +55,7 @@ class InMemoryMovementRepository {
   };
   orderBoundDispenseContextPlanogramVersion: string | null = null;
   readonly confirmationInputs: ConfirmOrderBoundDispenseInput[] = [];
+  readonly repairedCommandNos: string[] = [];
   confirmOrderBoundDispenseResult = true;
   readonly fieldStockApplicationInputs: Array<{
     machineId: string;
@@ -122,6 +123,16 @@ class InMemoryMovementRepository {
     }
     this.rows.set(`${input.machineId}:${input.input.movementId}`, row);
     return row;
+  }
+
+  async repairAcceptedOrderBoundDispenseCommand(
+    _machineId: string,
+    input: RawMachineStockMovement & { movementType: "dispense_succeeded" },
+  ): Promise<boolean> {
+    const commandNo = input.orderContext?.vendingCommandNo;
+    if (!commandNo) return false;
+    this.repairedCommandNos.push(commandNo);
+    return true;
   }
 
   async insertReconciliation(

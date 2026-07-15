@@ -2594,6 +2594,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const approvedPreclaimBaseReport = `${evidenceRoot}/approved-preclaim-base-response.json`;
   const runtimeAcceptanceReport = `${evidenceRoot}/runtime-acceptance-response.json`;
   const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
+  const serialConformanceReport = `${evidenceRoot}/serial-com-scanner-sale-conformance.json`;
   const approvedPreclaimOptions = options.factoryGuestEndpointJson
     ? { ...options, remote: undefined, sshPort: undefined }
     : options;
@@ -2666,7 +2667,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     "--runtime-recovery-command-json",
     JSON.stringify(runtimeCommand),
     "--out",
-    `${evidenceRoot}/serial-com-scanner-sale-conformance.json`,
+    serialConformanceReport,
   ];
 
   const cleanBaseStep = cleanBaseFactoryAcceptance
@@ -2717,6 +2718,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       approvedPreclaimBase: approvedPreclaimBaseReport,
       runtimeAcceptance: runtimeAcceptanceReport,
       simulatedHardwareSaleFlow: saleFlowReport,
+      serialConformance: serialConformanceReport,
     },
     ci: {
       entrypoint:
@@ -3405,6 +3407,242 @@ function evaluateApprovedPreclaimBaseStep(step) {
   };
 }
 
+function windowsComPathFromGuestIdentity(identity) {
+  const match = String(identity ?? "").match(
+    /^(?:windows-com|guest-com|serial-com):\/\/(COM[1-9][0-9]*)$/i,
+  );
+  return match ? match[1].toUpperCase() : null;
+}
+
+function serialAcceptanceDiagnostic(code, message) {
+  return { code, message };
+}
+
+export function evaluateSimulatedHardwareSerialEvidence({
+  saleFlow,
+  serialConformance,
+} = {}) {
+  const diagnostics = [];
+  const facts = saleFlow?.simulatedHardwareSaleFlow ?? saleFlow;
+  const serialConfiguration = facts?.daemonSerialConfiguration;
+  const sale = facts?.sale;
+  const session = serialConformance?.reports?.start?.serialSession;
+  const collect = serialConformance?.reports?.collect;
+  const records = collect?.serialEvidence?.records;
+  const firstStop = serialConformance?.reports?.firstStop;
+  const repeatedStop = serialConformance?.reports?.repeatedStop;
+
+  if (
+    facts?.phase !== "complete" ||
+    facts?.hostSerialEvidencePending !== true
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "serial_acceptance_intermediate_evidence_required",
+        "Serial acceptance requires the completed guest sale-flow intermediate evidence.",
+      ),
+    );
+  }
+  if (
+    serialConfiguration?.hardwareAdapter !== "serial" ||
+    serialConfiguration?.scannerAdapter !== "serial_text"
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "serial_adapter_evidence_required",
+        "Acceptance requires daemon hardwareAdapter=serial and scannerAdapter=serial_text.",
+      ),
+    );
+  }
+  const lowerPort = String(
+    serialConfiguration?.lowerControllerPort ?? "",
+  ).toUpperCase();
+  const scannerPort = String(
+    serialConfiguration?.scannerPort ?? "",
+  ).toUpperCase();
+  if (
+    !/^COM[1-9][0-9]*$/.test(lowerPort) ||
+    !/^COM[1-9][0-9]*$/.test(scannerPort) ||
+    serialConfiguration?.lowerControllerPortObserved !== true ||
+    serialConfiguration?.scannerPortObserved !== true
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "windows_com_path_evidence_required",
+        "Acceptance requires observed non-TCP Windows COM paths for both daemon adapters.",
+      ),
+    );
+  }
+  if (!lowerPort || !scannerPort || lowerPort === scannerPort) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "distinct_virtual_com_mapping_required",
+        "Acceptance requires distinct lower-controller and scanner COM mappings.",
+      ),
+    );
+  }
+  const mappings = session?.deviceMappings;
+  if (
+    serialConformance?.reports?.start?.result !== "succeeded" ||
+    !Array.isArray(mappings) ||
+    !session?.serialSessionId ||
+    !session?.deviceMappingDigest
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "guest_serial_session_evidence_required",
+        "Acceptance requires a successful guest serial session and device mapping digest.",
+      ),
+    );
+  } else {
+    const byRole = new Map(mappings.map((mapping) => [mapping?.role, mapping]));
+    const lowerMapping = byRole.get("lower-controller");
+    const scannerMapping = byRole.get("scanner");
+    if (
+      byRole.size !== 2 ||
+      mappings.length !== 2 ||
+      lowerMapping?.connectionState !== "connected" ||
+      scannerMapping?.connectionState !== "connected" ||
+      windowsComPathFromGuestIdentity(lowerMapping?.guestDeviceIdentity) !==
+        lowerPort ||
+      windowsComPathFromGuestIdentity(scannerMapping?.guestDeviceIdentity) !==
+        scannerPort
+    ) {
+      diagnostics.push(
+        serialAcceptanceDiagnostic(
+          "guest_serial_mapping_mismatch",
+          "Guest serial mappings must be connected, role-distinct Windows COM identities matching the daemon configuration.",
+        ),
+      );
+    }
+  }
+  const hasBoundFrame = (role, event) =>
+    Array.isArray(records) &&
+    records.some(
+      (record) =>
+        record?.role === role &&
+        record?.event === event &&
+        record?.capturedFrame?.source === "guest-serial-session" &&
+        Number.isInteger(record?.capturedFrame?.sequence) &&
+        record.capturedFrame.sequence > 0 &&
+        typeof record.capturedFrame.digest === "string" &&
+        record.capturedFrame.digest.startsWith("sha256:") &&
+        Number.isInteger(record.capturedFrame.byteLength) &&
+        record.capturedFrame.byteLength > 0 &&
+        record?.saleBinding?.orderId === sale?.orderId &&
+        record?.saleBinding?.paymentId === sale?.paymentId &&
+        record?.saleBinding?.vendingCommandId === sale?.vendingCommandId &&
+        record?.deviceMappingDigest === session?.deviceMappingDigest,
+    );
+  if (
+    collect?.result !== "succeeded" ||
+    collect?.serialEvidence?.serialSessionId !== session?.serialSessionId ||
+    collect?.serialEvidence?.deviceMappingDigest !==
+      session?.deviceMappingDigest ||
+    !hasBoundFrame("scanner", "scanner-injection") ||
+    !hasBoundFrame("lower-controller", "dispense-request") ||
+    !hasBoundFrame("lower-controller", "dispense-result")
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "guest_serial_frame_evidence_required",
+        "Acceptance requires guest-captured scanner and lower-controller frames bound to this sale; software injection or missing frames are rejected.",
+      ),
+    );
+  }
+  const expectedFailureDiagnostics = new Map([
+    ["malformed-frame", "serial_malformed_frame"],
+    ["device-disconnected", "serial_device_disconnected"],
+    ["scanner-timeout", "serial_scanner_timeout"],
+    ["dispense-failed", "serial_dispense_failed"],
+    ["swapped-roles", "serial_swapped_roles"],
+    ["missing-device", "serial_missing_device"],
+  ]);
+  const failureMatrix = serialConformance?.failureMatrix;
+  const failureByMode = new Map(
+    Array.isArray(failureMatrix)
+      ? failureMatrix.map((entry) => [entry?.failureMode, entry])
+      : [],
+  );
+  const lifecycleMatchesSession = (report) =>
+    report?.result === "succeeded" &&
+    report?.serialSession?.serialSessionId === session?.serialSessionId &&
+    report?.serialSession?.deviceMappingDigest ===
+      session?.deviceMappingDigest &&
+    report?.serialSession?.simulatorCleanup?.survivingProcessCount === 0;
+  const failureMatrixComplete =
+    Array.isArray(failureMatrix) &&
+    failureMatrix.length === expectedFailureDiagnostics.size &&
+    failureByMode.size === expectedFailureDiagnostics.size &&
+    [...expectedFailureDiagnostics].every(([failureMode, diagnosticCode]) => {
+      const failure = failureByMode.get(failureMode);
+      const recoveryRequired =
+        failureMode === "swapped-roles" || failureMode === "missing-device";
+      return (
+        failure?.result === "observed_failure" &&
+        failure?.adapterResult === "succeeded" &&
+        failure?.diagnosticCode === diagnosticCode &&
+        (!recoveryRequired ||
+          (failure?.recovery?.runtimeReady === "passed" &&
+            failure?.recovery?.hardwareOnline === true &&
+            failure?.recovery?.scannerOnline === true &&
+            failure?.recovery?.ready === true))
+      );
+    });
+  if (
+    !lifecycleMatchesSession(firstStop) ||
+    !lifecycleMatchesSession(repeatedStop) ||
+    repeatedStop?.serialSession?.simulatorCleanup?.idempotencyVerified !==
+      true ||
+    !failureMatrixComplete
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "guest_serial_lifecycle_evidence_required",
+        "Acceptance requires idempotent serial-session cleanup and the complete observed failure matrix before hardware readiness can be asserted.",
+      ),
+    );
+  }
+  return {
+    status: diagnostics.length === 0 ? "passed" : "failed",
+    asserted: diagnostics.length === 0,
+    diagnostics,
+    evidence: {
+      daemonSerialConfiguration: serialConfiguration ?? null,
+      guestSerialEvidence: {
+        status: session && Array.isArray(records) ? "captured" : "missing",
+        serialSessionId: session?.serialSessionId ?? null,
+        deviceMappingDigest: session?.deviceMappingDigest ?? null,
+        scannerInputTransport: hasBoundFrame("scanner", "scanner-injection")
+          ? "guest_serial_frame"
+          : null,
+        mappings: Array.isArray(mappings)
+          ? mappings.map((mapping) => ({
+              role: mapping.role ?? "unknown",
+              guestPort: windowsComPathFromGuestIdentity(
+                mapping.guestDeviceIdentity,
+              ),
+              connectionState: mapping.connectionState ?? "unknown",
+            }))
+          : [],
+        frames: Array.isArray(records)
+          ? records.map((record) => ({
+              role: record.role ?? "unknown",
+              event: record.event ?? "unknown",
+              source: record.capturedFrame?.source ?? "unknown",
+              sequence: record.capturedFrame?.sequence ?? null,
+              digest: record.capturedFrame?.digest ?? null,
+              byteLength: record.capturedFrame?.byteLength ?? null,
+              orderId: record.saleBinding?.orderId ?? null,
+              paymentId: record.saleBinding?.paymentId ?? null,
+              vendingCommandId: record.saleBinding?.vendingCommandId ?? null,
+            }))
+          : [],
+      },
+    },
+  };
+}
+
 export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const stepMap = new Map(steps.map((step) => [step.name, step]));
   const cleanBase = stepMap.get("clean-base factory preparation acceptance");
@@ -3414,6 +3652,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const ephemeral = stepMap.get("ephemeral platform setup");
   const runtime = stepMap.get("runtime acceptance");
   const saleFlow = stepMap.get("simulated hardware sale flow");
+  const serialEvidence = evaluateSimulatedHardwareSerialEvidence({
+    saleFlow: saleFlow?.parsed,
+    serialConformance: saleFlow?.serialConformance,
+  });
   const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
   const approvedPreclaimBaseEvaluation =
     evaluateApprovedPreclaimBaseStep(approvedPreclaimBase);
@@ -3422,6 +3664,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     ...(approvedPreclaimBaseEvaluation.diagnostic
       ? [approvedPreclaimBaseEvaluation.diagnostic]
       : []),
+    ...serialEvidence.diagnostics,
     ...steps
       .filter((step) => step.status !== "passed")
       .filter((step) => step !== cleanBase && step !== approvedPreclaimBase)
@@ -3470,6 +3713,8 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     simulatedHardwareMode: {
       status: saleFlow?.status ?? "missing",
       evidencePath: plan.artifacts.simulatedHardwareSaleFlow,
+      serialConformancePath: plan.artifacts.serialConformance,
+      serialEvidence: serialEvidence.evidence,
       sellReady: {
         status: "not_asserted",
         asserted: false,
@@ -3489,10 +3734,9 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         status: runtime?.status ?? "missing",
         asserted: false,
       },
-      simulatedHardwareReady: saleFlow?.parsed?.simulatedHardwareSaleFlow
-        ?.result?.simulatedHardwareReady ?? {
-        status: saleFlow?.status ?? "missing",
-        asserted: false,
+      simulatedHardwareReady: {
+        status: serialEvidence.status,
+        asserted: serialEvidence.asserted,
       },
       sellReady: {
         status: "not_asserted",
@@ -3566,6 +3810,11 @@ function runVmRuntimeAcceptance(options) {
       error:
         status === "passed" ? null : result.stderr || result.stdout || null,
     };
+    if (step.name === "simulated hardware sale flow") {
+      stepResult.serialConformance = readJsonIfPresent(
+        plan.artifacts.serialConformance,
+      );
+    }
     steps.push(stepResult);
     if (status !== "passed" && step.blocksOnFailure) {
       blocked = true;
@@ -4259,6 +4508,10 @@ function Convert-ConfigSnapshotEvidence($Config) {
       machineCode = $null
       apiBaseUrl = $null
       mqttUrl = $null
+      hardwareAdapter = $null
+      scannerAdapter = $null
+      serialPortPath = $null
+      scannerSerialPortPath = $null
       machineSecretConfigured = $false
       mqttSigningSecretConfigured = $false
       mqttPasswordConfigured = $false
@@ -4272,6 +4525,10 @@ function Convert-ConfigSnapshotEvidence($Config) {
     machineCode = if ($null -ne $Config.public) { $Config.public.machineCode } else { $null }
     apiBaseUrl = if ($null -ne $Config.public) { $Config.public.apiBaseUrl } else { $null }
     mqttUrl = if ($null -ne $Config.public) { $Config.public.mqttUrl } else { $null }
+    hardwareAdapter = if ($null -ne $Config.public) { $Config.public.hardwareAdapter } else { $null }
+    scannerAdapter = if ($null -ne $Config.public) { $Config.public.scannerAdapter } else { $null }
+    serialPortPath = if ($null -ne $Config.public) { $Config.public.serialPortPath } else { $null }
+    scannerSerialPortPath = if ($null -ne $Config.public) { $Config.public.scannerSerialPortPath } else { $null }
     machineSecretConfigured = [bool]$Config.machineSecretConfigured
     mqttSigningSecretConfigured = [bool]$Config.mqttSigningSecretConfigured
     mqttPasswordConfigured = [bool]$Config.mqttPasswordConfigured
@@ -6583,6 +6840,29 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if (-not [bool]$Facts.topology.verified) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "hardware_topology_not_verified" "Daemon must verify the expected hardware slot topology before simulated sale flow."
   }
+  $lowerControllerPort = [string]$Facts.daemonSerialConfiguration.lowerControllerPort
+  $scannerPort = [string]$Facts.daemonSerialConfiguration.scannerPort
+  if ([string]$Facts.daemonSerialConfiguration.hardwareAdapter -ne "serial") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "serial_lower_controller_adapter_required" "Simulated hardware acceptance requires hardwareAdapter=serial; daemon mock adapters are not serial evidence."
+  }
+  if ([string]$Facts.daemonSerialConfiguration.scannerAdapter -ne "serial_text") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "serial_scanner_adapter_required" "Simulated hardware acceptance requires scannerAdapter=serial_text."
+  }
+  if (
+    -not (Test-WindowsComPath $lowerControllerPort) -or
+    -not (Test-WindowsComPath $scannerPort) -or
+    -not [bool]$Facts.daemonSerialConfiguration.lowerControllerPortObserved -or
+    -not [bool]$Facts.daemonSerialConfiguration.scannerPortObserved
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "windows_com_path_evidence_required" "Both daemon adapters must use observed Windows COM paths; TCP and unobserved paths are not acceptance evidence."
+  }
+  if (
+    [string]::IsNullOrWhiteSpace($lowerControllerPort) -or
+    [string]::IsNullOrWhiteSpace($scannerPort) -or
+    $lowerControllerPort.Equals($scannerPort, [StringComparison]::OrdinalIgnoreCase)
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "distinct_virtual_com_mapping_required" "Lower-controller and scanner evidence must bind two distinct virtual COM mappings."
+  }
   if (
     -not [bool]$Facts.planogram.syncedFromPlatform -or
     -not [bool]$Facts.planogram.applied -or
@@ -6645,12 +6925,14 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     provisioning = $Facts.provisioning
     platformSetup = $Facts.platformSetup
     topology = $Facts.topology
+    daemonSerialConfiguration = $Facts.daemonSerialConfiguration
+    guestSerialEvidence = $Facts.guestSerialEvidence
     planogram = $Facts.planogram
     stock = $Facts.stock
     sale = $Facts.sale
     platformState = $Facts.platformState
     result = [ordered]@{
-      simulatedHardwareReady = if ($diagnostics.Count -eq 0) { New-RuntimeAcceptanceAssertion "passed" $true } else { New-RuntimeAcceptanceAssertion "failed" $false }
+      simulatedHardwareReady = if ($diagnostics.Count -eq 0) { New-RuntimeAcceptanceAssertion "not_asserted" $false } else { New-RuntimeAcceptanceAssertion "failed" $false }
       sellReady = [ordered]@{
         status = "not_asserted"
         asserted = $false
@@ -6663,6 +6945,27 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
 function Test-SharedPlatformTarget($Value) {
   $text = ([string]$Value).ToLowerInvariant()
   return $text.Contains("vem-vps") -or $text.Contains("118.25.104.160")
+}
+
+function Test-WindowsComPath([string]$Value) {
+  return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -match '^COM[1-9][0-9]*$'
+}
+
+function Get-WindowsComPortEvidence([string]$Port) {
+  $normalizedPort = ([string]$Port).Trim().ToUpperInvariant()
+  if (-not (Test-WindowsComPath $normalizedPort)) {
+    return [ordered]@{ port = $null; observed = $false }
+  }
+  try {
+    $observed = @(
+      Get-CimInstance -ClassName Win32_SerialPort -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).Equals($normalizedPort, [StringComparison]::OrdinalIgnoreCase)
+      }
+    ).Count -eq 1
+    return [ordered]@{ port = $normalizedPort; observed = $observed }
+  } catch {
+    return [ordered]@{ port = $normalizedPort; observed = $false }
+  }
 }
 
 function Assert-SimulatedSaleFlowPreMutationTarget($Target, $DaemonMachineCode, $DaemonApiBaseUrl, $DaemonMqttUrl, [string]$HardwareMode, $PlatformSetup) {
@@ -7288,6 +7591,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $null
   }
+  $lowerControllerCom = Get-WindowsComPortEvidence ([string]$daemonIpc.config.serialPortPath)
+  $scannerCom = Get-WindowsComPortEvidence ([string]$daemonIpc.config.scannerSerialPortPath)
   if ($null -ne $orderId -and $null -ne $vendingCommandId) {
     $orderQuery = [uri]::EscapeDataString($orderId)
     $commandQuery = [uri]::EscapeDataString($vendingCommandId)
@@ -7348,6 +7653,22 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       expectedIdentity = ${psString(ephemeralPlatformSetup?.hardwareTopologyIdentity ?? "unknown")}
       expectedVersion = ${psString(ephemeralPlatformSetup?.hardwareTopologyVersion ?? "unknown")}
       verified = $null -ne $bringUp -and @($bringUp.diagnostics | Where-Object { [string]$_.component -eq "topology" -or [string]$_.code -match "TOPOLOGY|HARDWARE_SLOT" }).Count -eq 0 -and [string]$bringUp.state -ne "topology_mismatch"
+    }
+    daemonSerialConfiguration = [ordered]@{
+      hardwareAdapter = if ($null -ne $daemonIpc.config.hardwareAdapter) { [string]$daemonIpc.config.hardwareAdapter } else { "unknown" }
+      scannerAdapter = if ($null -ne $daemonIpc.config.scannerAdapter) { [string]$daemonIpc.config.scannerAdapter } else { "unknown" }
+      lowerControllerPort = $lowerControllerCom.port
+      scannerPort = $scannerCom.port
+      lowerControllerPortObserved = [bool]$lowerControllerCom.observed
+      scannerPortObserved = [bool]$scannerCom.observed
+    }
+    guestSerialEvidence = [ordered]@{
+      status = "pending_host_serial_conformance"
+      serialSessionId = $null
+      deviceMappingDigest = $null
+      scannerInputTransport = $null
+      mappings = @()
+      frames = @()
     }
     planogram = [ordered]@{
       syncedFromPlatform = $null -ne $syncPlanogram
@@ -7420,6 +7741,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $classified = Classify-SimulatedHardwareSaleFlowReport $facts
     $classified["phase"] = "complete"
+    $classified["hostSerialEvidencePending"] = $true
     $classified
   }
   if ($null -ne $flowError) {
@@ -7721,7 +8043,7 @@ $cleanBaseFactoryAcceptanceOk = if ($mode -eq "clean-base-factory-acceptance") {
 $simulatedHardwareSaleFlowOk = if ($mode -eq "simulated-hardware-sale-flow") {
   $null -ne $simulatedHardwareSaleFlowReport -and (
     ([string]$simulatedHardwareSaleFlowReport.phase -eq "prepare" -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "awaiting_scanner") -or
-    ([string]$simulatedHardwareSaleFlowReport.phase -eq "complete" -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "passed")
+    ([string]$simulatedHardwareSaleFlowReport.phase -eq "complete" -and [bool]$simulatedHardwareSaleFlowReport.hostSerialEvidencePending -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "not_asserted")
   )
 } else {
   $true
@@ -8317,7 +8639,10 @@ export function getRuntimeAcceptanceExitStatus({
       return output?.ok === true &&
         ((phase === "prepare" &&
           simulatedHardwareReady === "awaiting_scanner") ||
-          (phase === "complete" && simulatedHardwareReady === "passed"))
+          (phase === "complete" &&
+            output?.simulatedHardwareSaleFlow?.hostSerialEvidencePending ===
+              true &&
+            simulatedHardwareReady === "not_asserted"))
         ? 0
         : 1;
     } catch {

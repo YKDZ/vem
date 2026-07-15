@@ -641,6 +641,16 @@ impl BackendClient {
         .await
     }
 
+    pub async fn get_payment_environment_diagnostic(&self) -> Result<serde_json::Value, String> {
+        self.request_json(
+            reqwest::Method::GET,
+            "/machine-orders/payment-environment-diagnostic",
+            None,
+            true,
+        )
+        .await
+    }
+
     pub async fn get_external_natural_environment(
         &self,
         machine_code: &str,

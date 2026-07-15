@@ -1,0 +1,676 @@
+import { createPrivateKey } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { inflateRawSync } from "node:zlib";
+
+const MAX_INPUT_BYTES = 256 * 1024 * 1024;
+const MAX_DECODED_BYTES = 16 * 1024 * 1024;
+const MAX_BASE64_CANDIDATE_BYTES = 1024 * 1024;
+const MAX_RECURSION_DEPTH = 3;
+const MAX_ARCHIVE_ENTRY_BYTES = 16 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES = 256;
+const privateKeyPemPattern =
+  /-----BEGIN\s+(?:(?:RSA|EC)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/i;
+const providerCredentialFieldPattern =
+  /(?:^|[,{;\r\n])\s*["']?(?:privateKeyPem|appCertPem|alipayPublicCertPem|alipayRootCertPem|apiV[23]Key|merchantApiCertPem|merchantApiKeyPem|platformCertificatePem|platformPublicKeyPem|paymentProviderCredentials)["']?\s*[:=]/im;
+const base64Pattern =
+  /(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?/g;
+const pkcs12PrivateBagOids = [
+  Buffer.from("2a864886f70d010c0a0101", "hex"),
+  Buffer.from("2a864886f70d010c0a0102", "hex"),
+];
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function isDerPrivateKey(bytes) {
+  if (bytes.length < 32 || bytes.length > MAX_BASE64_CANDIDATE_BYTES) {
+    return false;
+  }
+  for (const type of ["pkcs8", "pkcs1", "sec1"]) {
+    try {
+      createPrivateKey({ key: bytes, format: "der", type });
+      return true;
+    } catch {
+      // Try the next standard private-key encoding.
+    }
+  }
+  return false;
+}
+
+function readDerElement(bytes, offset, limit = bytes.length) {
+  if (offset + 2 > limit) return null;
+  const tag = bytes[offset];
+  if ((tag & 0x1f) === 0x1f) return null;
+  const firstLength = bytes[offset + 1];
+  let headerBytes = 2;
+  let length = firstLength;
+  if ((firstLength & 0x80) !== 0) {
+    const lengthBytes = firstLength & 0x7f;
+    if (
+      lengthBytes === 0 ||
+      lengthBytes > 4 ||
+      offset + 2 + lengthBytes > limit ||
+      bytes[offset + 2] === 0
+    ) {
+      return null;
+    }
+    length = 0;
+    for (let index = 0; index < lengthBytes; index += 1) {
+      length = length * 256 + bytes[offset + 2 + index];
+    }
+    if (length < 128) return null;
+    headerBytes += lengthBytes;
+  }
+  const contentStart = offset + headerBytes;
+  const end = contentStart + length;
+  if (end > limit) return null;
+  return { tag, contentStart, end, next: end };
+}
+
+function isValidDerOidValue(value) {
+  if (value.length === 0) return false;
+  let atSubidentifierStart = true;
+  for (const byte of value) {
+    if (atSubidentifierStart && byte === 0x80) return false;
+    atSubidentifierStart = (byte & 0x80) === 0;
+  }
+  return atSubidentifierStart;
+}
+
+function isPasswordEncryptedPkcs8(bytes) {
+  const outer = readDerElement(bytes, 0);
+  if (!outer || outer.tag !== 0x30 || outer.end !== bytes.length) return false;
+  const algorithm = readDerElement(bytes, outer.contentStart, outer.end);
+  if (!algorithm || algorithm.tag !== 0x30) return false;
+  const oid = readDerElement(bytes, algorithm.contentStart, algorithm.end);
+  if (
+    !oid ||
+    oid.tag !== 0x06 ||
+    !isValidDerOidValue(bytes.subarray(oid.contentStart, oid.end))
+  ) {
+    return false;
+  }
+  if (oid.next < algorithm.end) {
+    const parameters = readDerElement(bytes, oid.next, algorithm.end);
+    if (!parameters || parameters.next !== algorithm.end) return false;
+  } else if (oid.next !== algorithm.end) {
+    return false;
+  }
+  const encryptedData = readDerElement(bytes, algorithm.next, outer.end);
+  return (
+    encryptedData?.tag === 0x04 &&
+    encryptedData.next === outer.end &&
+    encryptedData.end > encryptedData.contentStart
+  );
+}
+
+function scanStructuredPrivateBagOid(bytes) {
+  const state = {
+    visited: 0,
+    inspectedBytes: 0,
+    indefiniteSeen: false,
+    unexpectedEoc: false,
+    budgetExceeded: false,
+    recognizedContainer: false,
+  };
+  const readBerHeader = (offset, limit) => {
+    if (offset + 2 > limit) return null;
+    const tag = bytes[offset];
+    if ((tag & 0x1f) === 0x1f) return null;
+    const firstLength = bytes[offset + 1];
+    if (firstLength === 0x80) {
+      return {
+        tag,
+        constructed: (tag & 0x20) !== 0,
+        indefinite: true,
+        headerBytes: 2,
+        contentStart: offset + 2,
+      };
+    }
+    let headerBytes = 2;
+    let length = firstLength;
+    if ((firstLength & 0x80) !== 0) {
+      const lengthBytes = firstLength & 0x7f;
+      if (
+        lengthBytes === 0 ||
+        lengthBytes > 4 ||
+        offset + 2 + lengthBytes > limit ||
+        bytes[offset + 2] === 0
+      ) {
+        return null;
+      }
+      length = 0;
+      for (let index = 0; index < lengthBytes; index += 1) {
+        length = length * 256 + bytes[offset + 2 + index];
+      }
+      if (length < 128) return null;
+      headerBytes += lengthBytes;
+    }
+    const contentStart = offset + headerBytes;
+    const end = contentStart + length;
+    if (end > limit) return null;
+    return {
+      tag,
+      constructed: (tag & 0x20) !== 0,
+      indefinite: false,
+      headerBytes,
+      contentStart,
+      end,
+      next: end,
+    };
+  };
+  const invalid = (next = 0) => ({
+    valid: false,
+    found: false,
+    next,
+    eoc: false,
+  });
+  const root = readBerHeader(0, bytes.length);
+  state.recognizedContainer =
+    root?.tag === 0x30 &&
+    root.constructed &&
+    (root.indefinite || root.end === bytes.length);
+  const walk = (start, end, depth, expectEoc = false) => {
+    if (depth > 16) {
+      state.budgetExceeded = true;
+      return invalid(start);
+    }
+    let offset = start;
+    while (offset < end) {
+      if (offset + 2 <= end && bytes[offset] === 0 && bytes[offset + 1] === 0) {
+        if (expectEoc) {
+          return { valid: true, found: false, next: offset + 2, eoc: true };
+        }
+        state.unexpectedEoc = true;
+        return invalid(offset);
+      }
+      state.visited += 1;
+      if (state.visited > 4096) {
+        state.budgetExceeded = true;
+        return invalid(offset);
+      }
+      const element = readBerHeader(offset, end);
+      if (!element) return invalid(offset);
+      state.inspectedBytes += element.headerBytes;
+      if (state.inspectedBytes > MAX_DECODED_BYTES) {
+        state.budgetExceeded = true;
+        return invalid(offset);
+      }
+      if (element.indefinite) {
+        state.indefiniteSeen = true;
+        if (!element.constructed) return invalid(offset);
+        const nested = walk(element.contentStart, end, depth + 1, true);
+        if (nested.found) return nested;
+        if (!nested.valid || !nested.eoc) return invalid(offset);
+        offset = nested.next;
+        continue;
+      }
+      const value = bytes.subarray(element.contentStart, element.end);
+      if (!element.constructed) {
+        state.inspectedBytes += value.length;
+        if (state.inspectedBytes > MAX_DECODED_BYTES) {
+          state.budgetExceeded = true;
+          return invalid(offset);
+        }
+      }
+      if (
+        element.tag === 0x06 &&
+        isValidDerOidValue(value) &&
+        pkcs12PrivateBagOids.some((oid) => value.equals(oid))
+      ) {
+        return { valid: true, found: true, next: element.next, eoc: false };
+      }
+      if (element.constructed) {
+        const nested = walk(element.contentStart, element.end, depth + 1);
+        if (nested.found) return nested;
+        if (!nested.valid) return nested;
+      } else if (
+        element.tag === 0x04 &&
+        value.length >= 2 &&
+        value[0] === 0x30
+      ) {
+        const nested = walk(element.contentStart, element.end, depth + 1);
+        if (nested.found) return nested;
+      }
+      offset = element.next;
+    }
+    if (expectEoc) return invalid(offset);
+    return { valid: offset === end, found: false, next: offset, eoc: false };
+  };
+  const result = walk(0, bytes.length, 0);
+  return { ...result, ...state };
+}
+
+function textRepresentations(bytes) {
+  const texts = [bytes.toString("utf8")];
+  if (bytes.length >= 4) texts.push(bytes.toString("utf16le"));
+  return texts;
+}
+
+function scanZipEntries(bytes, label, state, depth) {
+  const invalidArchive = () => {
+    throw new Error(`${label} contains an invalid archive structure`);
+  };
+  const startsWithLocalHeader =
+    bytes.length >= 4 && bytes.readUInt32LE(0) === 0x04034b50;
+  const findRecognizableContainer = () => {
+    const endSignature = Buffer.from("504b0506", "hex");
+    const centralSignature = Buffer.from("504b0102", "hex");
+    const localSignature = Buffer.from("504b0304", "hex");
+    const plausibleLocalBefore = (centralOffset) => {
+      let searchFrom = centralOffset - 1;
+      for (let checked = 0; checked <= MAX_ARCHIVE_ENTRIES; checked += 1) {
+        const localOffset = bytes.lastIndexOf(localSignature, searchFrom);
+        if (localOffset < 0) return false;
+        searchFrom = localOffset - 1;
+        if (localOffset + 30 > centralOffset) continue;
+        const nameLength = bytes.readUInt16LE(localOffset + 26);
+        const extraLength = bytes.readUInt16LE(localOffset + 28);
+        if (localOffset + 30 + nameLength + extraLength <= centralOffset) {
+          return true;
+        }
+      }
+      return true;
+    };
+    const findPhysicalShape = (centralPhysicalEnd) => {
+      let searchFrom = centralPhysicalEnd - 1;
+      let completeBest = null;
+      let partialBest = null;
+      let lastCentralStart = -1;
+      for (let checked = 0; checked <= MAX_ARCHIVE_ENTRIES + 1; checked += 1) {
+        const centralStart = bytes.lastIndexOf(centralSignature, searchFrom);
+        if (centralStart < 0) return completeBest ?? partialBest;
+        lastCentralStart = centralStart;
+        searchFrom = centralStart - 1;
+        if (centralStart + 46 > centralPhysicalEnd) continue;
+
+        let centralOffset = centralStart;
+        let entryCount = 0;
+        while (
+          centralOffset + 46 <= centralPhysicalEnd &&
+          bytes.readUInt32LE(centralOffset) === 0x02014b50 &&
+          entryCount <= MAX_ARCHIVE_ENTRIES
+        ) {
+          const nameLength = bytes.readUInt16LE(centralOffset + 28);
+          const extraLength = bytes.readUInt16LE(centralOffset + 30);
+          const commentLength = bytes.readUInt16LE(centralOffset + 32);
+          const nextOffset =
+            centralOffset + 46 + nameLength + extraLength + commentLength;
+          if (nextOffset > centralPhysicalEnd) break;
+          centralOffset = nextOffset;
+          entryCount += 1;
+        }
+        if (entryCount > 0 && plausibleLocalBefore(centralStart)) {
+          const shape = {
+            centralStart,
+            centralEnd: centralOffset,
+            entryCount,
+            ambiguous: entryCount > MAX_ARCHIVE_ENTRIES,
+          };
+          if (centralOffset === centralPhysicalEnd) completeBest = shape;
+          else partialBest = shape;
+        }
+      }
+      const best = completeBest ?? partialBest;
+      if (best) return { ...best, ambiguous: true };
+      return lastCentralStart >= 0 && plausibleLocalBefore(lastCentralStart)
+        ? {
+            centralStart: lastCentralStart,
+            centralEnd: -1,
+            entryCount: -1,
+            ambiguous: true,
+          }
+        : null;
+    };
+    let searchFrom = bytes.length - 4;
+    while (searchFrom >= 0) {
+      const endOffset = bytes.lastIndexOf(endSignature, searchFrom);
+      if (endOffset < 0) return null;
+      searchFrom = endOffset - 1;
+      if (endOffset + 22 > bytes.length) continue;
+      const archiveEnd = endOffset + 22 + bytes.readUInt16LE(endOffset + 20);
+      if (archiveEnd > bytes.length) continue;
+      const diskNumber = bytes.readUInt16LE(endOffset + 4);
+      const centralDisk = bytes.readUInt16LE(endOffset + 6);
+      const diskEntryCount = bytes.readUInt16LE(endOffset + 8);
+      const entryCount = bytes.readUInt16LE(endOffset + 10);
+      const centralSize = bytes.readUInt32LE(endOffset + 12);
+      const centralStart = bytes.readUInt32LE(endOffset + 16);
+      const centralPhysicalEnd = endOffset;
+      const shape = findPhysicalShape(centralPhysicalEnd);
+      if (!shape) continue;
+
+      const finiteCentralMetadata =
+        centralSize !== 0xffffffff && centralStart !== 0xffffffff;
+      const prefixBias = finiteCentralMetadata
+        ? endOffset - centralSize - centralStart
+        : -1;
+      const metadataCentralAbsoluteStart =
+        prefixBias >= 0 ? prefixBias + centralStart : -1;
+      return {
+        archiveEnd,
+        invalidMetadata:
+          shape.ambiguous ||
+          diskNumber !== 0 ||
+          centralDisk !== 0 ||
+          diskEntryCount !== entryCount ||
+          entryCount === 0xffff ||
+          !finiteCentralMetadata ||
+          metadataCentralAbsoluteStart !== shape.centralStart ||
+          shape.centralEnd !== centralPhysicalEnd ||
+          shape.entryCount !== entryCount,
+      };
+    }
+    return null;
+  };
+  const recognizableContainer = findRecognizableContainer();
+  if (
+    recognizableContainer &&
+    (recognizableContainer.invalidMetadata ||
+      !startsWithLocalHeader ||
+      recognizableContainer.archiveEnd !== bytes.length)
+  ) {
+    invalidArchive();
+  }
+  if (!startsWithLocalHeader) return;
+  if (bytes.length < 30) invalidArchive();
+  const parseExtraFields = (extra) => {
+    let offset = 0;
+    while (offset < extra.length) {
+      if (offset + 4 > extra.length) invalidArchive();
+      const id = extra.readUInt16LE(offset);
+      const size = extra.readUInt16LE(offset + 2);
+      offset += 4;
+      if (offset + size > extra.length || id === 0x0001) invalidArchive();
+      offset += size;
+    }
+  };
+  const scanEntry = ({
+    compressedSize,
+    uncompressedSize,
+    method,
+    crc,
+    name,
+    dataStart,
+    expandedBytes,
+  }) => {
+    if (
+      uncompressedSize > MAX_ARCHIVE_ENTRY_BYTES ||
+      expandedBytes > MAX_DECODED_BYTES ||
+      (compressedSize > 0 && uncompressedSize / compressedSize > 200)
+    ) {
+      throw new Error(`${label} exceeds the bounded archive scan budget`);
+    }
+    const dataEnd = dataStart + compressedSize;
+    if (dataEnd > bytes.length) {
+      throw new Error(`${label} contains a truncated archive entry`);
+    }
+    const compressed = bytes.subarray(dataStart, dataEnd);
+    let content;
+    if (method === 0) content = compressed;
+    else if (method === 8) {
+      const inflated = inflateRawSync(compressed, {
+        info: true,
+        maxOutputLength: MAX_ARCHIVE_ENTRY_BYTES + 1,
+      });
+      content = inflated.buffer;
+      if (inflated.engine.bytesWritten !== compressedSize) invalidArchive();
+    } else {
+      throw new Error(
+        `${label} uses an unsupported archive compression method`,
+      );
+    }
+    if (content.length > MAX_ARCHIVE_ENTRY_BYTES) {
+      throw new Error(`${label} exceeds the bounded archive scan budget`);
+    }
+    if (content.length !== uncompressedSize || crc32(content) !== crc) {
+      invalidArchive();
+    }
+    scanBytes(content, `${label}:${name}`, state, depth + 1);
+  };
+
+  let endOffset = -1;
+  const minimumEndOffset = Math.max(0, bytes.length - 65_557);
+  for (
+    let offset = bytes.length - 22;
+    offset >= minimumEndOffset;
+    offset -= 1
+  ) {
+    if (
+      bytes.readUInt32LE(offset) === 0x06054b50 &&
+      offset + 22 + bytes.readUInt16LE(offset + 20) === bytes.length
+    ) {
+      endOffset = offset;
+      break;
+    }
+  }
+  if (endOffset < 0) invalidArchive();
+
+  const diskNumber = bytes.readUInt16LE(endOffset + 4);
+  const centralDisk = bytes.readUInt16LE(endOffset + 6);
+  const diskEntryCount = bytes.readUInt16LE(endOffset + 8);
+  const entryCount = bytes.readUInt16LE(endOffset + 10);
+  const centralSize = bytes.readUInt32LE(endOffset + 12);
+  const centralStart = bytes.readUInt32LE(endOffset + 16);
+  if (
+    diskNumber !== 0 ||
+    centralDisk !== 0 ||
+    diskEntryCount !== entryCount ||
+    entryCount === 0xffff ||
+    centralSize === 0xffffffff ||
+    centralStart === 0xffffffff ||
+    centralStart + centralSize !== endOffset
+  ) {
+    invalidArchive();
+  }
+  if (entryCount > MAX_ARCHIVE_ENTRIES) {
+    throw new Error(`${label} exceeds the bounded archive scan budget`);
+  }
+  const endComment = bytes.subarray(endOffset + 22);
+  if (endComment.indexOf(Buffer.from("504b0304", "hex")) >= 0) invalidArchive();
+
+  const centralEntries = new Map();
+  let centralOffset = centralStart;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (
+      centralOffset + 46 > endOffset ||
+      bytes.readUInt32LE(centralOffset) !== 0x02014b50
+    ) {
+      invalidArchive();
+    }
+    const flags = bytes.readUInt16LE(centralOffset + 8);
+    const method = bytes.readUInt16LE(centralOffset + 10);
+    const crc = bytes.readUInt32LE(centralOffset + 16);
+    const compressedSize = bytes.readUInt32LE(centralOffset + 20);
+    const uncompressedSize = bytes.readUInt32LE(centralOffset + 24);
+    const nameLength = bytes.readUInt16LE(centralOffset + 28);
+    const extraLength = bytes.readUInt16LE(centralOffset + 30);
+    const commentLength = bytes.readUInt16LE(centralOffset + 32);
+    const entryDisk = bytes.readUInt16LE(centralOffset + 34);
+    const localOffset = bytes.readUInt32LE(centralOffset + 42);
+    const centralEnd =
+      centralOffset + 46 + nameLength + extraLength + commentLength;
+    if (
+      centralEnd > endOffset ||
+      entryDisk !== 0 ||
+      compressedSize === 0xffffffff ||
+      uncompressedSize === 0xffffffff ||
+      localOffset === 0xffffffff ||
+      localOffset >= centralStart ||
+      centralEntries.has(localOffset)
+    ) {
+      invalidArchive();
+    }
+    if ((flags & 0x41) !== 0) {
+      throw new Error(`${label} contains an encrypted archive entry`);
+    }
+    if ((flags & 0x08) !== 0) {
+      throw new Error(
+        `${label} uses an unsupported archive form for bounded scanning`,
+      );
+    }
+    const nameBytes = bytes.subarray(
+      centralOffset + 46,
+      centralOffset + 46 + nameLength,
+    );
+    parseExtraFields(
+      bytes.subarray(
+        centralOffset + 46 + nameLength,
+        centralOffset + 46 + nameLength + extraLength,
+      ),
+    );
+    centralEntries.set(localOffset, {
+      flags,
+      method,
+      crc,
+      compressedSize,
+      uncompressedSize,
+      nameBytes,
+    });
+    centralOffset = centralEnd;
+  }
+  if (centralOffset !== endOffset) invalidArchive();
+
+  let localOffset = 0;
+  let expandedBytes = 0;
+  let localEntryCount = 0;
+  while (localOffset < centralStart) {
+    if (
+      localOffset + 30 > centralStart ||
+      bytes.readUInt32LE(localOffset) !== 0x04034b50
+    ) {
+      invalidArchive();
+    }
+    const central = centralEntries.get(localOffset);
+    if (!central) invalidArchive();
+    const flags = bytes.readUInt16LE(localOffset + 6);
+    const method = bytes.readUInt16LE(localOffset + 8);
+    const crc = bytes.readUInt32LE(localOffset + 14);
+    const compressedSize = bytes.readUInt32LE(localOffset + 18);
+    const uncompressedSize = bytes.readUInt32LE(localOffset + 22);
+    const nameLength = bytes.readUInt16LE(localOffset + 26);
+    const extraLength = bytes.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + nameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    if (
+      dataStart > centralStart ||
+      dataEnd > centralStart ||
+      compressedSize === 0xffffffff ||
+      uncompressedSize === 0xffffffff ||
+      flags !== central.flags ||
+      method !== central.method ||
+      crc !== central.crc ||
+      compressedSize !== central.compressedSize ||
+      uncompressedSize !== central.uncompressedSize ||
+      !bytes
+        .subarray(localOffset + 30, localOffset + 30 + nameLength)
+        .equals(central.nameBytes)
+    ) {
+      invalidArchive();
+    }
+    if ((flags & 0x41) !== 0) {
+      throw new Error(`${label} contains an encrypted archive entry`);
+    }
+    if ((flags & 0x08) !== 0) {
+      throw new Error(
+        `${label} uses an unsupported archive form for bounded scanning`,
+      );
+    }
+    parseExtraFields(bytes.subarray(localOffset + 30 + nameLength, dataStart));
+    expandedBytes += uncompressedSize;
+    scanEntry({
+      compressedSize,
+      uncompressedSize,
+      method,
+      crc,
+      name: central.nameBytes.toString("utf8"),
+      dataStart,
+      expandedBytes,
+    });
+    centralEntries.delete(localOffset);
+    localEntryCount += 1;
+    localOffset = dataEnd;
+  }
+  if (
+    localOffset !== centralStart ||
+    localEntryCount !== entryCount ||
+    centralEntries.size !== 0
+  ) {
+    invalidArchive();
+  }
+}
+
+function scanBytes(bytes, label, state, depth) {
+  if (depth > MAX_RECURSION_DEPTH) {
+    throw new Error(`${label} exceeds the bounded private-key scan budget`);
+  }
+  if (depth > 0) state.decodedBytes += bytes.length;
+  if (state.decodedBytes > MAX_DECODED_BYTES) {
+    throw new Error(`${label} exceeds the bounded private-key scan budget`);
+  }
+  const privateBagScan = scanStructuredPrivateBagOid(bytes);
+  if (privateBagScan.budgetExceeded && privateBagScan.recognizedContainer) {
+    throw new Error(`${label} exceeds the bounded private-key scan budget`);
+  }
+  if (
+    isDerPrivateKey(bytes) ||
+    isPasswordEncryptedPkcs8(bytes) ||
+    privateBagScan.found
+  ) {
+    throw new Error(`${label} contains platform private-key material`);
+  }
+  if (
+    !privateBagScan.valid &&
+    privateBagScan.recognizedContainer &&
+    (privateBagScan.indefiniteSeen || privateBagScan.unexpectedEoc)
+  ) {
+    throw new Error(`${label} contains an invalid BER structure`);
+  }
+  scanZipEntries(bytes, label, state, depth);
+
+  for (const text of textRepresentations(bytes)) {
+    if (providerCredentialFieldPattern.test(text)) {
+      throw new Error(`${label} contains provider credential field`);
+    }
+    if (privateKeyPemPattern.test(text)) {
+      throw new Error(`${label} contains platform private-key material`);
+    }
+    for (const match of text.matchAll(base64Pattern)) {
+      const encoded = match[0];
+      if (encoded.length > MAX_BASE64_CANDIDATE_BYTES * 2) continue;
+      const decoded = Buffer.from(encoded, "base64");
+      if (decoded.length < 24 || decoded.length > MAX_BASE64_CANDIDATE_BYTES) {
+        continue;
+      }
+      scanBytes(decoded, `${label} (base64)`, state, depth + 1);
+    }
+  }
+}
+
+export function assertNoPlatformPrivateKeyMaterial(input, label) {
+  const bytes = Buffer.from(input);
+  if (bytes.length > MAX_INPUT_BYTES) {
+    throw new Error(
+      `${label} exceeds the bounded private-key scan input limit`,
+    );
+  }
+  scanBytes(bytes, label, { decodedBytes: 0 }, 0);
+}
+
+export async function assertNoPlatformPrivateKeyMaterialFile(path, label) {
+  const file = await stat(path);
+  if (file.size > MAX_INPUT_BYTES) {
+    throw new Error(
+      `${label} exceeds the bounded private-key scan input limit`,
+    );
+  }
+  assertNoPlatformPrivateKeyMaterial(await readFile(path), label);
+}
