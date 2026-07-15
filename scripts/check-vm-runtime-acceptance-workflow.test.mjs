@@ -398,6 +398,10 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.doesNotMatch(restore, /windowsSshReadiness=failed/);
     assert.match(display, /if:\s+success\(\)/);
     assert.match(display, /--tauri-route\s+"\$VEM_ACTIVE_KIOSK_TAURI_ROUTE"/);
+    assert.match(
+      display,
+      /--maintenance-relay-session-json\s+"\$VEM_MAINTENANCE_RELAY_SESSION_JSON"/,
+    );
     assert.match(audio, /if:\s+success\(\)/);
     assert.match(bindAudioSession, /win10-runtime-acceptance-report\.json/);
     assert.match(bindAudioSession, /value\.runtimeAcceptanceReport/);
@@ -418,6 +422,10 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.match(audio, /--active-kiosk-session-id/);
     assert.match(audio, /--selected-audio-endpoint-id/);
     assert.match(audio, /--daemon-calibration-response-out/);
+    assert.match(
+      audio,
+      /--maintenance-relay-session-json\s+"\$VEM_MAINTENANCE_RELAY_SESSION_JSON"/,
+    );
     assert.match(verifyAudio, /windows-native-audio-evidence\.mjs/);
     assert.match(verifyAudio, /--daemon-calibration-response/);
     assert.match(verifyAudio, /windows-native-audio-evidence\.json/);

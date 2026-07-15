@@ -4139,6 +4139,20 @@ if ($errors.Count -gt 0) {
     const temp = mkdtempSync(join(tmpdir(), "vem-vm-acceptance-artifacts-"));
     try {
       const outputPath = join(temp, "vm-runtime-acceptance-plan.json");
+      const maintenanceRelaySession = {
+        sessionId: "550e8400-e29b-41d4-a716-446655440000",
+        relayPeer: {
+          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          tunnelAddress: "10.91.0.1",
+        },
+        sourceTunnelAddress: "10.91.2.10",
+        endpointTunnelAddress: "10.91.16.10",
+      };
+      const maintenanceEndpointPolicy = {
+        transport: "testbed-runner-direct",
+        runnerSourceAllowlist: ["192.0.2.10/32"],
+        lifecycleReference: "vm-lifecycle://run-181.runtime-acceptance",
+      };
 
       const result = spawnSync(
         process.execPath,
@@ -4156,11 +4170,16 @@ if ($errors.Count -gt 0) {
           "mqtt://127.0.0.1:1883",
           "--factory-guest-endpoint-json",
           JSON.stringify({
+            transport: "testbed-runner-direct",
             protocol: "ssh",
             host: "10.91.2.10",
             port: 22,
             reachability: "discovered",
           }),
+          "--maintenance-relay-session-json",
+          JSON.stringify(maintenanceRelaySession),
+          "--maintenance-endpoint-policy-json",
+          JSON.stringify(maintenanceEndpointPolicy),
           "--expected-testbed-user",
           "YKDZ",
           "--ssh-known-hosts-path",
@@ -4207,12 +4226,21 @@ if ($errors.Count -gt 0) {
         plan.artifacts.ephemeralPlatformEvidence,
         "artifacts/vm-runtime-acceptance/RUN-181/ephemeral-platform.json",
       );
+      assert.equal(
+        plan.artifacts.simulatedHardwareSaleFlow,
+        "artifacts/vm-runtime-acceptance/RUN-181/simulated-hardware-sale-flow-response.json",
+      );
+      assert.equal(
+        plan.artifacts.serialConformance,
+        "artifacts/vm-runtime-acceptance/RUN-181/serial-com-scanner-sale-conformance.json",
+      );
       assert.deepEqual(
         plan.steps.map((step) => step.name),
         [
           "approved preclaim base verification",
           "ephemeral platform setup",
           "runtime acceptance",
+          "simulated hardware sale flow",
           "installed kiosk sale normal",
           "installed kiosk sale route competition",
         ],
@@ -4223,6 +4251,7 @@ if ($errors.Count -gt 0) {
       assert.equal(
         commandArg(plan.steps[0].command, "--factory-guest-endpoint-json"),
         JSON.stringify({
+          transport: "testbed-runner-direct",
           protocol: "ssh",
           host: "10.91.2.10",
           port: 22,
@@ -4249,10 +4278,30 @@ if ($errors.Count -gt 0) {
         plan.steps[1].command.includes("--allow-mock-payment"),
         "ephemeral setup must carry explicit mock-payment acknowledgement",
       );
-      assert.equal(plan.steps[3].mode, "installed-kiosk-sale");
+      assert.equal(plan.steps[3].mode, "simulated-hardware-sale-flow");
+      assert.deepEqual(
+        JSON.parse(
+          commandArg(plan.steps[3].command, "--maintenance-relay-session-json"),
+        ),
+        maintenanceRelaySession,
+      );
+      assert.deepEqual(
+        JSON.parse(
+          commandArg(
+            plan.steps[3].command,
+            "--maintenance-endpoint-policy-json",
+          ),
+        ),
+        maintenanceEndpointPolicy,
+      );
       assert.equal(plan.steps[4].mode, "installed-kiosk-sale");
+      assert.equal(plan.steps[5].mode, "installed-kiosk-sale");
       assert.equal(
         plan.steps[3].ephemeralPlatformEvidence,
+        plan.artifacts.ephemeralPlatformEvidence,
+      );
+      assert.equal(
+        plan.steps[5].ephemeralPlatformEvidence,
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(
@@ -4277,6 +4326,77 @@ if ($errors.Count -gt 0) {
         /pass@127\.0\.0\.1/,
       );
       assert.doesNotMatch(result.stdout, /postgres(?:ql)?:\/\//i);
+
+      const wireGuardOutputPath = join(
+        temp,
+        "vm-runtime-acceptance-wireguard-plan.json",
+      );
+      const wireGuardResult = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/win10-vem-e2e.mjs",
+          "--mode",
+          "vm-runtime-acceptance",
+          "--run-id",
+          "RUN-181",
+          "--platform-target",
+          "ephemeral-run-181",
+          "--ephemeral-api-base-url",
+          "http://127.0.0.1:26849/api",
+          "--ephemeral-mqtt-url",
+          "mqtt://127.0.0.1:1883",
+          "--factory-guest-endpoint-json",
+          JSON.stringify({
+            transport: "wireguard",
+            protocol: "ssh",
+            host: "10.91.16.10",
+            port: 22,
+            reachability: "authenticated",
+          }),
+          "--maintenance-relay-session-json",
+          JSON.stringify(maintenanceRelaySession),
+          "--expected-testbed-user",
+          "YKDZ",
+          "--ssh-known-hosts-path",
+          "/tmp/vem-runtime-known-hosts",
+          "--ssh-host-key-alias",
+          "vem-runtime-run-181",
+          "--identity",
+          "/tmp/vem-runtime-id",
+          "--certificate",
+          "/tmp/vem-runtime-id-cert.pub",
+          "--out",
+          wireGuardOutputPath,
+          "--dry-run",
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            VEM_EPHEMERAL_DATABASE_URL:
+              "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+          },
+        },
+      );
+      assert.equal(wireGuardResult.status, 0, wireGuardResult.stderr);
+      const wireGuardPlan = JSON.parse(wireGuardResult.stdout);
+      assert.deepEqual(
+        JSON.parse(
+          commandArg(
+            wireGuardPlan.steps[3].command,
+            "--maintenance-relay-session-json",
+          ),
+        ),
+        maintenanceRelaySession,
+      );
+      assert.equal(
+        commandArg(
+          wireGuardPlan.steps[3].command,
+          "--maintenance-endpoint-policy-json",
+        ),
+        undefined,
+      );
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
@@ -5511,6 +5631,7 @@ if ($errors.Count -gt 0) {
         "approved preclaim base verification",
         "ephemeral platform setup",
         "runtime acceptance",
+        "simulated hardware sale flow",
         "installed kiosk sale normal",
         "installed kiosk sale route competition",
       ],

@@ -11,6 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -1810,10 +1811,32 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
     openSshPackageSha256: packageInputs[0].hash,
     wireGuardPackageSha256: packageInputs[1].hash,
     maintenanceCaPublicKeySha256: packageInputs[2].hash,
-    wireGuardListenAddress: String(options.maintenanceWireGuardListenAddress),
+    wireGuardListenAddress: normalizeWireGuardHostAddress(
+      options.maintenanceWireGuardListenAddress,
+    ),
     runnerSources,
     maintainerSources,
   };
+}
+
+function normalizeWireGuardHostAddress(value) {
+  const parts = String(value ?? "")
+    .trim()
+    .split("/");
+  const address = parts[0];
+  const version = isIP(address);
+  const expectedPrefix = version === 6 ? "128" : "32";
+  if (
+    version === 0 ||
+    ["0.0.0.0", "::", "127.0.0.1", "::1"].includes(address) ||
+    parts.length > 2 ||
+    (parts.length === 2 && parts[1] !== expectedPrefix)
+  ) {
+    throw new Error(
+      "maintenance WireGuard listen address must be a concrete bare IP or single-host CIDR",
+    );
+  }
+  return address;
 }
 
 function resolveCleanBaseArtifactInputs(options = {}) {
@@ -2808,6 +2831,8 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     options.cleanBaseEvidence ?? options.cleanBaseFactoryAcceptance ?? null;
   const approvedPreclaimBaseReport = `${evidenceRoot}/approved-preclaim-base-response.json`;
   const runtimeAcceptanceReport = `${evidenceRoot}/runtime-acceptance-response.json`;
+  const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
+  const serialConformanceReport = `${evidenceRoot}/serial-com-scanner-sale-conformance.json`;
   const customerUiSaleNormalRoot = `${evidenceRoot}/installed-kiosk-sale-normal`;
   const customerUiSaleCompetitionRoot = `${evidenceRoot}/installed-kiosk-sale-route-competition`;
   const customerUiSaleNormalReport = `${customerUiSaleNormalRoot}/report.json`;
@@ -2831,6 +2856,56 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     { ...options, runId, machineCode, platformTarget },
     ["--out", runtimeAcceptanceReport],
   );
+  const salePrepareCommand = buildAcceptanceScriptCommand(
+    "simulated-hardware-sale-flow",
+    { ...options, runId, machineCode, platformTarget },
+    [
+      "--ephemeral-platform-evidence",
+      ephemeralPlatformEvidence,
+      "--sale-phase",
+      "prepare",
+      "--out",
+      `${evidenceRoot}/simulated-hardware-sale-prepare-response.json`,
+    ],
+  );
+  const saleCompleteCommand = buildAcceptanceScriptCommand(
+    "simulated-hardware-sale-flow",
+    { ...options, runId, machineCode, platformTarget },
+    [
+      "--ephemeral-platform-evidence",
+      ephemeralPlatformEvidence,
+      "--sale-phase",
+      "complete",
+      "--out",
+      saleFlowReport,
+    ],
+  );
+  const failureMatrixArtifacts = {
+    "malformed-frame": {
+      report: `${evidenceRoot}/failure-matrix/malformed-frame/serial-conformance-failure.json`,
+    },
+    "device-disconnected": {
+      report: `${evidenceRoot}/failure-matrix/device-disconnected/serial-conformance-failure.json`,
+    },
+    "swapped-roles": {
+      report: `${evidenceRoot}/failure-matrix/swapped-roles/serial-conformance-failure.json`,
+      salePrepare: `${evidenceRoot}/failure-matrix/swapped-roles/sale-prepare-response.json`,
+      runtimeRecovery: `${evidenceRoot}/failure-matrix/swapped-roles/runtime-recovery-response.json`,
+    },
+    "missing-device": {
+      report: `${evidenceRoot}/failure-matrix/missing-device/serial-conformance-failure.json`,
+      salePrepare: `${evidenceRoot}/failure-matrix/missing-device/sale-prepare-response.json`,
+      runtimeRecovery: `${evidenceRoot}/failure-matrix/missing-device/runtime-recovery-response.json`,
+    },
+    "scanner-timeout": {
+      report: `${evidenceRoot}/failure-matrix/scanner-timeout/serial-conformance-failure.json`,
+      salePrepare: `${evidenceRoot}/failure-matrix/scanner-timeout/sale-prepare-response.json`,
+    },
+    "dispense-failed": {
+      report: `${evidenceRoot}/failure-matrix/dispense-failed/serial-conformance-failure.json`,
+      saleComplete: `${evidenceRoot}/failure-matrix/dispense-failed/sale-complete-response.json`,
+    },
+  };
   const buildInstalledKioskSaleCommand = (profile, out, alreadyClaimed) => {
     const command = [
       process.execPath,
@@ -2895,6 +2970,136 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     customerUiSaleCompetitionReport,
     true,
   );
+  const failureMatrixCommands = {
+    "swapped-roles": {
+      salePrepareCommand: buildAcceptanceScriptCommand(
+        "simulated-hardware-sale-flow",
+        { ...options, runId, machineCode, platformTarget },
+        [
+          "--ephemeral-platform-evidence",
+          ephemeralPlatformEvidence,
+          "--sale-phase",
+          "prepare",
+          "--out",
+          failureMatrixArtifacts["swapped-roles"].salePrepare,
+        ],
+      ),
+      runtimeRecoveryCommand: buildAcceptanceScriptCommand(
+        "runtime-acceptance",
+        { ...options, runId, machineCode, platformTarget },
+        ["--out", failureMatrixArtifacts["swapped-roles"].runtimeRecovery],
+      ),
+    },
+    "missing-device": {
+      salePrepareCommand: buildAcceptanceScriptCommand(
+        "simulated-hardware-sale-flow",
+        { ...options, runId, machineCode, platformTarget },
+        [
+          "--ephemeral-platform-evidence",
+          ephemeralPlatformEvidence,
+          "--sale-phase",
+          "prepare",
+          "--out",
+          failureMatrixArtifacts["missing-device"].salePrepare,
+        ],
+      ),
+      runtimeRecoveryCommand: buildAcceptanceScriptCommand(
+        "runtime-acceptance",
+        { ...options, runId, machineCode, platformTarget },
+        ["--out", failureMatrixArtifacts["missing-device"].runtimeRecovery],
+      ),
+    },
+    "scanner-timeout": {
+      salePrepareCommand: buildAcceptanceScriptCommand(
+        "simulated-hardware-sale-flow",
+        { ...options, runId, machineCode, platformTarget },
+        [
+          "--ephemeral-platform-evidence",
+          ephemeralPlatformEvidence,
+          "--sale-phase",
+          "prepare",
+          "--out",
+          failureMatrixArtifacts["scanner-timeout"].salePrepare,
+        ],
+      ),
+    },
+    "dispense-failed": {
+      saleCompleteCommand: buildAcceptanceScriptCommand(
+        "simulated-hardware-sale-flow",
+        { ...options, runId, machineCode, platformTarget },
+        [
+          "--ephemeral-platform-evidence",
+          ephemeralPlatformEvidence,
+          "--sale-phase",
+          "complete",
+          "--out",
+          failureMatrixArtifacts["dispense-failed"].saleComplete,
+        ],
+      ),
+    },
+  };
+  const saleCorrelationId = `sale-correlation://vm-runtime-${runId.toLowerCase()}`;
+  const saleFlowCommand = [
+    process.execPath,
+    "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+    "--adapter",
+    process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
+    "--scanner-code-file",
+    options.scannerCodeFile ?? "runner-owned-scanner-code-file-required",
+    "--runner-signing-key-file",
+    options.serialRunnerSigningKeyFile ??
+      "runner-owned-serial-signing-key-file-required",
+    "--expected-runner-public-key",
+    options.expectedSerialRunnerPublicKey ??
+      "expected-serial-runner-public-key-required",
+    "--run-id",
+    runId,
+    "--target-identity",
+    process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
+    "--approved-runtime-base",
+    options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
+    "--lifecycle-reference",
+    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`,
+    "--sale-correlation-id",
+    saleCorrelationId,
+    "--machine-code",
+    machineCode,
+    "--ephemeral-platform-evidence",
+    ephemeralPlatformEvidence,
+    "--sale-prepare-command-json",
+    JSON.stringify(salePrepareCommand),
+    "--sale-complete-command-json",
+    JSON.stringify(saleCompleteCommand),
+    "--runtime-recovery-command-json",
+    JSON.stringify(runtimeCommand),
+    "--failure-matrix-commands-json",
+    JSON.stringify(failureMatrixCommands),
+    "--failure-matrix-artifact-paths-json",
+    JSON.stringify(failureMatrixArtifacts),
+    "--out",
+    serialConformanceReport,
+  ];
+  if (options.maintenanceEndpointPolicy !== undefined) {
+    if (options.maintenanceRelaySession === undefined)
+      throw new Error(
+        "VM runtime serial conformance endpoint policy requires a maintenance relay session",
+      );
+  }
+  if (options.maintenanceRelaySession !== undefined) {
+    saleFlowCommand.splice(
+      saleFlowCommand.indexOf("--out"),
+      0,
+      "--maintenance-relay-session-json",
+      JSON.stringify(options.maintenanceRelaySession),
+    );
+    if (options.maintenanceEndpointPolicy !== undefined)
+      saleFlowCommand.splice(
+        saleFlowCommand.indexOf("--out"),
+        0,
+        "--maintenance-endpoint-policy-json",
+        JSON.stringify(options.maintenanceEndpointPolicy),
+      );
+  }
 
   const cleanBaseStep = cleanBaseFactoryAcceptance
     ? [
@@ -2943,10 +3148,15 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       cleanBaseFactoryAcceptance,
       approvedPreclaimBase: approvedPreclaimBaseReport,
       runtimeAcceptance: runtimeAcceptanceReport,
+      simulatedHardwareSaleFlow: saleFlowReport,
+      serialConformance: serialConformanceReport,
+      failureMatrix: failureMatrixArtifacts,
       customerUiSaleNormal: customerUiSaleNormalReport,
       customerUiSaleRouteCompetition: customerUiSaleCompetitionReport,
       customerUiSale: customerUiSaleCompetitionReport,
     },
+    serialRunnerExpectedPublicKey:
+      options.expectedSerialRunnerPublicKey ?? null,
     expectedAdapterIdentity:
       process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY ?? null,
     ci: {
@@ -2963,7 +3173,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         ? "asserted_by_clean_base_step"
         : "not_asserted",
       runtimeReady: "asserted_by_runtime_acceptance_step",
-      simulatedHardwareReady: "asserted_by_installed_kiosk_sale_step",
+      simulatedHardwareReady: "asserted_by_sale_flow_step",
       sellReady: "not_asserted",
     },
     steps: [
@@ -3014,6 +3224,16 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         command: runtimeCommand,
         report: runtimeAcceptanceReport,
         blocksOnFailure: true,
+      },
+      {
+        name: "simulated hardware sale flow",
+        mode: "simulated-hardware-sale-flow",
+        status: "planned",
+        command: saleFlowCommand,
+        ephemeralPlatformEvidence,
+        report: saleFlowReport,
+        blocksOnFailure: true,
+        requiresEphemeralDatabase: true,
       },
       {
         name: "installed kiosk sale normal",
@@ -4075,8 +4295,15 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   );
   const ephemeral = stepMap.get("ephemeral platform setup");
   const runtime = stepMap.get("runtime acceptance");
+  const saleFlow = stepMap.get("simulated hardware sale flow");
   const saleNormal = stepMap.get("installed kiosk sale normal");
   const saleCompetition = stepMap.get("installed kiosk sale route competition");
+  const simulatedHardwareEvidence = evaluateSimulatedHardwareSerialEvidence({
+    saleFlow: saleFlow?.parsed,
+    serialConformance: saleFlow?.serialConformance,
+    expectedRunnerPublicKey: plan.serialRunnerExpectedPublicKey,
+    expectedAdapterIdentity: plan.expectedAdapterIdentity,
+  });
   const normalSaleEvidence = evaluateInstalledKioskSaleEvidence(
     saleNormal,
     plan,
@@ -4085,7 +4312,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     saleCompetition,
     plan,
   );
-  const serialEvidence = {
+  const installedKioskEvidence = {
     status:
       normalSaleEvidence.status === "passed" &&
       competitionSaleEvidence.status === "passed"
@@ -4111,7 +4338,8 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     ...(approvedPreclaimBaseEvaluation.diagnostic
       ? [approvedPreclaimBaseEvaluation.diagnostic]
       : []),
-    ...serialEvidence.diagnostics,
+    ...simulatedHardwareEvidence.diagnostics,
+    ...installedKioskEvidence.diagnostics,
     ...steps
       .filter((step) => step.status !== "passed")
       .filter((step) => step !== cleanBase && step !== approvedPreclaimBase)
@@ -4141,6 +4369,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       approvedPreclaimBase: approvedPreclaimBaseEvaluation.status,
       ephemeralPlatformSetup: ephemeral?.status ?? "missing",
       runtimeAcceptance: runtime?.status ?? "missing",
+      simulatedHardwareSaleFlow: saleFlow?.status ?? "missing",
       installedKioskSaleNormal: saleNormal?.status ?? "missing",
       installedKioskSaleRouteCompetition: saleCompetition?.status ?? "missing",
     },
@@ -4158,8 +4387,14 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         : null,
     },
     evidenceReview: buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }),
+    simulatedHardwareMode: {
+      status: saleFlow?.status ?? "missing",
+      evidencePath: plan.artifacts.simulatedHardwareSaleFlow,
+      serialConformancePath: plan.artifacts.serialConformance,
+      serialEvidence: simulatedHardwareEvidence.evidence,
+    },
     installedKioskSale: {
-      status: serialEvidence.status,
+      status: installedKioskEvidence.status,
       normal: {
         status: saleNormal?.status ?? "missing",
         evidencePath: plan.artifacts.customerUiSaleNormal,
@@ -4168,7 +4403,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         status: saleCompetition?.status ?? "missing",
         evidencePath: plan.artifacts.customerUiSaleRouteCompetition,
       },
-      serialEvidence: serialEvidence.evidence,
+      serialEvidence: installedKioskEvidence.evidence,
       sellReady: {
         status: "not_asserted",
         asserted: false,
@@ -4189,8 +4424,8 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         asserted: false,
       },
       simulatedHardwareReady: {
-        status: serialEvidence.status,
-        asserted: serialEvidence.asserted,
+        status: simulatedHardwareEvidence.status,
+        asserted: simulatedHardwareEvidence.asserted,
       },
       sellReady: {
         status: "not_asserted",
@@ -4219,6 +4454,7 @@ async function runVmRuntimeAcceptance(options) {
 
   const steps = [];
   let blocked = false;
+  let serialRunnerTrust = null;
   {
     for (const [index, originalStep] of plan.steps.entries()) {
       let step = originalStep;
@@ -4241,6 +4477,22 @@ async function runVmRuntimeAcceptance(options) {
           error: "blocked_by_previous_failed_step",
         });
         continue;
+      }
+      if (step.name === "simulated hardware sale flow") {
+        serialRunnerTrust = createSerialRunnerTrustAnchor();
+        plan.serialRunnerExpectedPublicKey = serialRunnerTrust.publicKey;
+        step = {
+          ...step,
+          command: replaceCommandOption(
+            replaceCommandOption(
+              step.command,
+              "--runner-signing-key-file",
+              serialRunnerTrust.signingKeyFile,
+            ),
+            "--expected-runner-public-key",
+            serialRunnerTrust.publicKey,
+          ),
+        };
       }
       const result = spawnSync(step.command[0], step.command.slice(1), {
         cwd: step.cwd ?? process.cwd(),
@@ -4277,6 +4529,11 @@ async function runVmRuntimeAcceptance(options) {
         error:
           status === "passed" ? null : result.stderr || result.stdout || null,
       };
+      if (step.name === "simulated hardware sale flow") {
+        stepResult.serialConformance = readJsonIfPresent(
+          plan.artifacts.serialConformance,
+        );
+      }
       steps.push(stepResult);
       if (status !== "passed" && step.blocksOnFailure) {
         blocked = true;
@@ -9121,6 +9378,12 @@ function parseArgs(argv) {
     } else if (arg === "--factory-guest-endpoint-json") {
       options.factoryGuestEndpointJson = next;
       index += 1;
+    } else if (arg === "--maintenance-relay-session-json") {
+      options.maintenanceRelaySession = parseJsonObjectArgument(arg, next);
+      index += 1;
+    } else if (arg === "--maintenance-endpoint-policy-json") {
+      options.maintenanceEndpointPolicy = parseJsonObjectArgument(arg, next);
+      index += 1;
     } else if (arg === "--factory-assembly-mode") {
       options.factoryAssemblyMode = next;
       index += 1;
@@ -9223,7 +9486,26 @@ function parseArgs(argv) {
   return options;
 }
 
+function parseJsonObjectArgument(option, value) {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new Error("not an object");
+    return parsed;
+  } catch {
+    throw new Error(`${option} must be a JSON object`);
+  }
+}
+
 function applyFactoryGuestEndpoint(options) {
+  if (
+    options.maintenanceEndpointPolicy !== undefined &&
+    options.maintenanceRelaySession === undefined
+  ) {
+    throw new Error(
+      "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
+    );
+  }
   if (!options.factoryGuestEndpointJson) return options;
   let endpoint;
   try {
@@ -9236,10 +9518,10 @@ function applyFactoryGuestEndpoint(options) {
   if (
     endpoint?.protocol !== "ssh" ||
     typeof endpoint.host !== "string" ||
-    !endpoint.host ||
+    isIP(endpoint.host) === 0 ||
+    ["0.0.0.0", "::", "127.0.0.1", "::1"].includes(endpoint.host) ||
     !Number.isInteger(endpoint.port) ||
-    endpoint.port < 1 ||
-    endpoint.port > 65535 ||
+    endpoint.port !== 22 ||
     !["discovered", "authenticated"].includes(endpoint.reachability) ||
     !options.expectedTestbedUser ||
     options.remote ||
@@ -9247,6 +9529,25 @@ function applyFactoryGuestEndpoint(options) {
   ) {
     throw new Error(
       "Factory verification and post-claim acceptance require an adapter-discovered SSH endpoint, --expected-testbed-user, and no caller-supplied remote or SSH port",
+    );
+  }
+  if (endpoint.transport === "testbed-runner-direct") {
+    if (
+      endpoint.relayProof !== undefined ||
+      ![
+        "factory-preclaim-verify",
+        "provision",
+        "runtime-acceptance",
+        "vm-runtime-acceptance",
+      ].includes(options.mode)
+    ) {
+      throw new Error(
+        "testbed runner-direct Factory endpoint is valid only for Factory lifecycle SSH without Relay proof",
+      );
+    }
+  } else if (endpoint.transport !== "wireguard") {
+    throw new Error(
+      "Factory endpoint transport must be wireguard or testbed-runner-direct",
     );
   }
   return {

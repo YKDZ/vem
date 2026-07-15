@@ -161,6 +161,51 @@ function maintenanceRelaySession(value, label) {
   return value;
 }
 
+function concreteHostAddress(value, label) {
+  if (
+    typeof value !== "string" ||
+    isIP(value) === 0 ||
+    ["0.0.0.0", "::", "127.0.0.1", "::1"].includes(value)
+  ) {
+    throw new Error(`${label} must be a concrete non-loopback IP address`);
+  }
+  return value;
+}
+
+function testbedBootstrapPolicy(value, label) {
+  exactKeys(value, ["transport", "runnerSourceAllowlist"], label);
+  if (value.transport !== "testbed-runner-direct")
+    throw new Error(`${label}.transport must be testbed-runner-direct`);
+  if (
+    !Array.isArray(value.runnerSourceAllowlist) ||
+    value.runnerSourceAllowlist.length === 0
+  )
+    throw new Error(
+      `${label}.runnerSourceAllowlist must contain explicit runner source addresses`,
+    );
+  const seen = new Set();
+  value.runnerSourceAllowlist.forEach((source, index) => {
+    const parts = typeof source === "string" ? source.split("/") : [];
+    const address = parts[0];
+    const version = isIP(address ?? "");
+    concreteHostAddress(address, `${label}.runnerSourceAllowlist[${index}]`);
+    if (
+      parts.length > 2 ||
+      (parts.length === 2 && parts[1] !== (version === 6 ? "128" : "32"))
+    ) {
+      throw new Error(
+        `${label}.runnerSourceAllowlist[${index}] must be a concrete bare IP or single-host CIDR`,
+      );
+    }
+    if (seen.has(address))
+      throw new Error(
+        `${label}.runnerSourceAllowlist[${index}] must not be duplicated`,
+      );
+    seen.add(address);
+  });
+  return value;
+}
+
 export function validateFactoryImageAcceptanceInput(input) {
   exactKeys(
     input,
@@ -246,7 +291,7 @@ export function validateFactoryImageAcceptanceInput(input) {
   }
   exactKeys(
     input.endpoint,
-    ["expectedTestbedUser", "maintenanceRelaySession"],
+    ["expectedTestbedUser", "maintenanceRelaySession", "bootstrap"],
     "endpoint",
   );
   nonEmpty(input.endpoint.expectedTestbedUser, "endpoint.expectedTestbedUser");
@@ -254,6 +299,7 @@ export function validateFactoryImageAcceptanceInput(input) {
     input.endpoint.maintenanceRelaySession,
     "endpoint.maintenanceRelaySession",
   );
+  testbedBootstrapPolicy(input.endpoint.bootstrap, "endpoint.bootstrap");
   const attestedSession = input.maintenanceRelayAttestation.session;
   if (
     input.endpoint.maintenanceRelaySession.sessionId !== attestedSession.id ||
@@ -421,6 +467,12 @@ function adapterRequest(
     assets,
     requestedCapabilities: capabilities,
     maintenanceRelaySession: input.endpoint.maintenanceRelaySession,
+    maintenanceEndpointPolicy: ["cleanup", "cancel"].includes(operation)
+      ? null
+      : {
+          ...input.endpoint.bootstrap,
+          lifecycleReference: lifecycleReference(input),
+        },
     serialSession: null,
   });
 }
@@ -452,11 +504,10 @@ async function admitFactoryInput(input) {
   });
 }
 
-function endpointArgument(endpoint, expectedRelaySession) {
+function endpointArgument(endpoint, inputEndpoint) {
   if (
     endpoint?.protocol !== "ssh" ||
-    typeof endpoint.host !== "string" ||
-    !endpoint.host ||
+    !concreteHostAddress(endpoint.host, "adapter endpoint host") ||
     !Number.isInteger(endpoint.port) ||
     endpoint.port < 1 ||
     endpoint.port > 65535 ||
@@ -466,23 +517,40 @@ function endpointArgument(endpoint, expectedRelaySession) {
       "adapter must return a discovered authenticated SSH guest endpoint",
     );
   }
-  const proof = endpoint.relayProof;
-  if (
-    !proof ||
-    JSON.stringify({
-      sessionId: proof.sessionId,
-      relayPeer: proof.relayPeer,
-      sourceTunnelAddress: proof.sourceTunnelAddress,
-      endpointTunnelAddress: proof.endpointTunnelAddress,
-    }) !== JSON.stringify(expectedRelaySession) ||
-    endpoint.host !== expectedRelaySession.endpointTunnelAddress ||
-    proof.endpointAllowedIp !== `${endpoint.host}/32` ||
-    proof.endpointRoute !== `${endpoint.host}/32` ||
-    !Number.isInteger(proof.handshakeUnixSeconds) ||
-    proof.handshakeUnixSeconds < 1
-  ) {
+  if (endpoint.transport === "testbed-runner-direct") {
+    if (
+      endpoint.relayProof !== undefined ||
+      inputEndpoint.bootstrap.transport !== "testbed-runner-direct" ||
+      inputEndpoint.bootstrap.runnerSourceAllowlist.length === 0
+    ) {
+      throw new Error(
+        "adapter testbed runner-direct endpoint requires explicit Factory runner sources",
+      );
+    }
+  } else if (endpoint.transport === "wireguard") {
+    const expectedRelaySession = inputEndpoint.maintenanceRelaySession;
+    const proof = endpoint.relayProof;
+    if (
+      !proof ||
+      JSON.stringify({
+        sessionId: proof.sessionId,
+        relayPeer: proof.relayPeer,
+        sourceTunnelAddress: proof.sourceTunnelAddress,
+        endpointTunnelAddress: proof.endpointTunnelAddress,
+      }) !== JSON.stringify(expectedRelaySession) ||
+      endpoint.host !== expectedRelaySession.endpointTunnelAddress ||
+      proof.endpointAllowedIp !== `${endpoint.host}/32` ||
+      proof.endpointRoute !== `${endpoint.host}/32` ||
+      !Number.isInteger(proof.handshakeUnixSeconds) ||
+      proof.handshakeUnixSeconds < 1
+    ) {
+      throw new Error(
+        "adapter endpoint must prove the exact maintenance-session Relay peer and endpoint /32 route",
+      );
+    }
+  } else {
     throw new Error(
-      "adapter endpoint must prove the exact maintenance-session Relay peer and endpoint /32 route",
+      "adapter endpoint transport must be wireguard or testbed-runner-direct",
     );
   }
   return JSON.stringify(endpoint);
@@ -516,11 +584,25 @@ function isPaymentBarrierRoute(value) {
   });
 }
 
+export function overlayMaintenanceEndpoint(reports) {
+  const endpoint = reports.overlay?.guest?.maintenanceEndpoint;
+  if (!endpoint) {
+    throw new Error(
+      "disposable overlay did not publish a maintenance endpoint",
+    );
+  }
+  return endpoint;
+}
+
 function commonVerifierArgs(
   input,
   endpoint,
   { ephemeralPlatform = true, sshKnownHostsPath = null } = {},
 ) {
+  const maintenanceEndpointPolicy = {
+    ...input.endpoint.bootstrap,
+    lifecycleReference: lifecycleReference(input),
+  };
   const args = [
     "--run-id",
     input.runId,
@@ -533,7 +615,11 @@ function commonVerifierArgs(
     "--certificate",
     input.ssh.certificatePath,
     "--factory-guest-endpoint-json",
-    endpointArgument(endpoint, input.endpoint.maintenanceRelaySession),
+    endpointArgument(endpoint, input.endpoint),
+    "--maintenance-relay-session-json",
+    JSON.stringify(input.endpoint.maintenanceRelaySession),
+    "--maintenance-endpoint-policy-json",
+    JSON.stringify(maintenanceEndpointPolicy),
   ];
   if (sshKnownHostsPath) {
     args.push("--ssh-known-hosts-path", sshKnownHostsPath);
@@ -582,7 +668,9 @@ export function buildFactoryMachineClaimInvocation(
     "scripts/testbed/win10-vem-e2e.mjs",
     "--mode",
     "provision",
-    ...commonVerifierArgs(accepted, endpoint, { sshKnownHostsPath }),
+    ...commonVerifierArgs(accepted, endpoint, {
+      sshKnownHostsPath,
+    }),
     "--out",
     verifierOutput(accepted, "machine-claim.json"),
   ];
@@ -599,7 +687,9 @@ export function buildFactoryRuntimeAcceptanceInvocation(
     "scripts/testbed/win10-vem-e2e.mjs",
     "--mode",
     "runtime-acceptance",
-    ...commonVerifierArgs(accepted, endpoint, { sshKnownHostsPath }),
+    ...commonVerifierArgs(accepted, endpoint, {
+      sshKnownHostsPath,
+    }),
     "--out",
     verifierOutput(accepted, "runtime-acceptance.json"),
   ];
@@ -624,10 +714,20 @@ export function buildFactoryInstalledKioskSaleInvocation(
       "installed kiosk sale acceptance requires VEMKiosk runtime display binding",
     );
   }
+  const verifierArgs = commonVerifierArgs(accepted, endpoint, {
+    sshKnownHostsPath,
+  });
+  for (const option of [
+    "--maintenance-relay-session-json",
+    "--maintenance-endpoint-policy-json",
+  ]) {
+    const index = verifierArgs.indexOf(option);
+    if (index !== -1) verifierArgs.splice(index, 2);
+  }
   return [
     "node",
     "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
-    ...commonVerifierArgs(accepted, endpoint, { sshKnownHostsPath }),
+    ...verifierArgs,
     "--runtime-acceptance-report",
     verifierOutput(accepted, "runtime-acceptance.json"),
     "--adapter",
@@ -1258,7 +1358,7 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
         "ephemeral platform evidence is unavailable before Machine Claim",
       );
     }
-    const endpoint = reports.overlay.guest.maintenanceEndpoint;
+    const endpoint = overlayMaintenanceEndpoint(reports);
     const claim = buildFactoryMachineClaimInvocation(
       input,
       endpoint,

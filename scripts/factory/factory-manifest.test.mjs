@@ -352,5 +352,27 @@ describe("Factory Manifest v1", () => {
       () => createFactoryManifest(broadIngress),
       /runnerSourceAllowlist|exact IPv4/,
     );
+    const bareHostAddress = validInput();
+    bareHostAddress.factoryPreparation.maintenance.wireGuardListenAddress =
+      "10.0.0.2";
+    assert.equal(
+      createFactoryManifest(bareHostAddress).factoryPreparation.maintenance
+        .wireGuardListenAddress,
+      "10.0.0.2",
+    );
+    for (const invalidAddress of [
+      "10.0.0.0/24",
+      "127.0.0.1",
+      "0.0.0.0",
+      "fd00::2/64",
+    ]) {
+      const invalid = validInput();
+      invalid.factoryPreparation.maintenance.wireGuardListenAddress =
+        invalidAddress;
+      assert.throws(
+        () => createFactoryManifest(invalid),
+        /wireGuardListenAddress/,
+      );
+    }
   });
 });

@@ -512,7 +512,8 @@ function Get-SecurityPostureEvidence {
   $missingExclusions = @($requiredExclusions | Where-Object { $actualExclusions -notcontains $_ })
   $firewallEnabled = @($firewallProfiles | Where-Object { -not [bool]$_.Enabled }).Count -eq 0 -and @($firewallProfiles).Count -gt 0
   $enabledVemInboundRules = @($vemRules | Where-Object { [string]$_.Enabled -eq "True" } | ForEach-Object { [string]$_.DisplayName })
-  $disallowedEnabledVemInboundRules = @($enabledVemInboundRules | Where-Object { $_ -ne "VEM Controlled Maintenance SSH" })
+  $allowedVemInboundRules = @("VEM Controlled Maintenance SSH", "VEM Testbed Runner Direct SSH")
+  $disallowedEnabledVemInboundRules = @($enabledVemInboundRules | Where-Object { $_ -notin $allowedVemInboundRules })
   $defenderEnabled = if ($null -ne $defenderStatus) { [bool]$defenderStatus.AntispywareEnabled } else { $true }
 
   return [ordered]@{
@@ -777,11 +778,20 @@ function Get-MaintenanceIngressEvidence {
   $mode = [string]$policy.ingressMode
   $listenAddress = [string]$policy.effectiveListenAddress
   $interfaceScope = [string]$policy.effectiveFirewallInterfaceScope
-  $expected = if ($profile -eq "production" -or $profile -eq "testbed") {
+  $wireGuardAddress = $null
+  try { $wireGuardAddress = ConvertTo-WireGuardHostAddress -Value ([string]$policy.wireGuardListenAddress) } catch { }
+  $normalizedWireGuardListenAddress = if ($null -ne $wireGuardAddress) { [string]$wireGuardAddress.address } else { [string]$policy.wireGuardListenAddress }
+  $expected = if ($profile -eq "production") {
     [ordered]@{
       mode = "wireguard-only"
-      listenAddress = [string]$policy.wireGuardListenAddress
+      listenAddress = $normalizedWireGuardListenAddress
       interfaceScope = [string]$policy.wireGuardInterfaceAlias
+    }
+  } elseif ($profile -eq "testbed") {
+    [ordered]@{
+      mode = "testbed-runner-direct-plus-wireguard"
+      listenAddress = "0.0.0.0"
+      interfaceScope = "Any"
     }
   } else {
     $null
@@ -800,7 +810,12 @@ function Get-MaintenanceIngressEvidence {
       $interfaceScope -ceq [string]$expected.interfaceScope
     wireGuardOnly = $mode -ceq "wireguard-only" -and
       -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardInterfaceAlias) -and
-      -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardListenAddress)
+      $null -ne $wireGuardAddress
+    runnerDirectPlusWireGuard = $mode -ceq "testbed-runner-direct-plus-wireguard" -and
+      [bool]$policy.runnerDirectEnabled -and
+      @($policy.runnerSourceAllowlist).Count -gt 0 -and
+      -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardInterfaceAlias) -and
+      $null -ne $wireGuardAddress
   }
 }
 
@@ -809,16 +824,12 @@ function Get-WireGuardListenAddressEvidence {
 
   $policy = $Manifest.maintenanceSsh
   $interfaceAlias = [string]$policy.wireGuardInterfaceAlias
-  $listenAddress = [string]$policy.wireGuardListenAddress
-  $parsedAddress = [System.Net.IPAddress]::None
-  $validAddress = -not [string]::IsNullOrWhiteSpace($listenAddress) -and
-    [System.Net.IPAddress]::TryParse($listenAddress, [ref]$parsedAddress) -and
-    -not $parsedAddress.Equals([System.Net.IPAddress]::Any) -and
-    -not $parsedAddress.Equals([System.Net.IPAddress]::IPv6Any) -and
-    -not $parsedAddress.Equals([System.Net.IPAddress]::Loopback) -and
-    -not $parsedAddress.Equals([System.Net.IPAddress]::IPv6Loopback)
+  $normalized = $null
+  try { $normalized = ConvertTo-WireGuardHostAddress -Value ([string]$policy.wireGuardListenAddress) } catch { }
+  $listenAddress = if ($null -ne $normalized) { [string]$normalized.address } else { [string]$policy.wireGuardListenAddress }
+  $validAddress = $null -ne $normalized
   $ownedAddress = if ($validAddress -and -not [string]::IsNullOrWhiteSpace($interfaceAlias)) {
-    Get-NetIPAddress -InterfaceAlias $interfaceAlias -IPAddress $parsedAddress.IPAddressToString -ErrorAction SilentlyContinue | Select-Object -First 1
+    Get-NetIPAddress -InterfaceAlias $interfaceAlias -IPAddress $listenAddress -ErrorAction SilentlyContinue | Select-Object -First 1
   } else {
     $null
   }
@@ -827,9 +838,27 @@ function Get-WireGuardListenAddressEvidence {
     wireGuardListenAddress = $listenAddress
     addressIsConcrete = $validAddress
     addressOwnedByInterface = $null -ne $ownedAddress
-    effectiveListenerMatchesWireGuardAddress = [string]$policy.effectiveListenAddress -ceq $listenAddress
-    effectiveFirewallMatchesWireGuardInterface = [string]$policy.effectiveFirewallInterfaceScope -ceq $interfaceAlias
+    effectiveListenerMatchesWireGuardAddress = [string]$Manifest.factoryProfile -eq "production" -and [string]$policy.effectiveListenAddress -ceq $listenAddress
+    effectiveFirewallMatchesWireGuardInterface = [string]$Manifest.factoryProfile -eq "production" -and [string]$policy.effectiveFirewallInterfaceScope -ceq $interfaceAlias
   }
+}
+
+function ConvertTo-WireGuardHostAddress {
+  param([string]$Value)
+
+  $parts = @([string]$Value -split "/", 2)
+  $address = [System.Net.IPAddress]::None
+  if ($parts.Count -eq 0 -or [string]::IsNullOrWhiteSpace($parts[0]) -or
+      -not [System.Net.IPAddress]::TryParse($parts[0], [ref]$address) -or
+      $address.Equals([System.Net.IPAddress]::Any) -or $address.Equals([System.Net.IPAddress]::IPv6Any) -or
+      $address.Equals([System.Net.IPAddress]::Loopback) -or $address.Equals([System.Net.IPAddress]::IPv6Loopback)) {
+    throw "WireGuard tunnel ListenAddress must be a concrete bare IP or single-host CIDR"
+  }
+  $prefixLength = if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+  if ($parts.Count -eq 2 -and ([string]::IsNullOrWhiteSpace($parts[1]) -or $parts[1] -ne [string]$prefixLength)) {
+    throw "WireGuard tunnel ListenAddress must use the single-host /$prefixLength prefix"
+  }
+  return [pscustomobject]@{ address = [string]$address.IPAddressToString; prefixLength = $prefixLength }
 }
 
 function Get-SshdEffectiveConfigEvidence {
@@ -1060,26 +1089,54 @@ function Get-MaintenanceFirewallEvidence {
       }
     }
   }
-  $managedRules = @($sshRules | Where-Object { $_.displayName -ceq "VEM Controlled Maintenance SSH" })
-  $rule = if ($managedRules.Count -eq 1) { $managedRules[0] } else { $null }
-  $actual = if ($null -ne $rule) { @($rule.remoteAddress | Sort-Object -Unique) } else { @() }
-  $expected = @(@($policy.runnerSourceAllowlist) + @($policy.maintainerSourceAllowlist) | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+  $wireGuardRules = @($sshRules | Where-Object { $_.displayName -ceq "VEM Controlled Maintenance SSH" })
+  $runnerDirectRules = @($sshRules | Where-Object { $_.displayName -ceq "VEM Testbed Runner Direct SSH" })
+  $wireGuardRule = if ($wireGuardRules.Count -eq 1) { $wireGuardRules[0] } else { $null }
+  $runnerDirectRule = if ($runnerDirectRules.Count -eq 1) { $runnerDirectRules[0] } else { $null }
+  $expectedWireGuardSources = @(@($policy.runnerSourceAllowlist) + @($policy.maintainerSourceAllowlist) | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+  $expectedRunnerDirectSources = @($policy.runnerSourceAllowlist | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+  $actualWireGuardSources = if ($null -ne $wireGuardRule) { @($wireGuardRule.remoteAddress | Sort-Object -Unique) } else { @() }
+  $actualRunnerDirectSources = if ($null -ne $runnerDirectRule) { @($runnerDirectRule.remoteAddress | Sort-Object -Unique) } else { @() }
   $listeners = @(Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
       [pscustomobject]@{ localAddress = [string]$_.LocalAddress; localPort = [int]$_.LocalPort; owningProcess = [int]$_.OwningProcess }
     })
   $expectedListenAddress = [string]$policy.effectiveListenAddress
-  $unexpectedRules = @($sshRules | Where-Object { $_.displayName -cne "VEM Controlled Maintenance SSH" })
+  $expectedRuleNames = if ([string]$policy.ingressMode -eq "testbed-runner-direct-plus-wireguard") {
+    @("VEM Controlled Maintenance SSH", "VEM Testbed Runner Direct SSH")
+  } else {
+    @("VEM Controlled Maintenance SSH")
+  }
+  $unexpectedRules = @($sshRules | Where-Object { $_.displayName -notin $expectedRuleNames })
   $unexpectedListeners = @($listeners | Where-Object { $_.localAddress -cne $expectedListenAddress })
+  $wireGuardRuleMatches = $null -ne $wireGuardRule -and
+    [string]$wireGuardRule.protocol -eq "TCP" -and
+    [string]$wireGuardRule.localPort -eq "22" -and
+    [string]$wireGuardRule.interfaceAlias -ceq [string]$policy.wireGuardInterfaceAlias -and
+    ($actualWireGuardSources -join ",") -eq ($expectedWireGuardSources -join ",")
+  $runnerDirectRuleMatches = [string]$policy.ingressMode -ne "testbed-runner-direct-plus-wireguard" -or (
+    $null -ne $runnerDirectRule -and
+    [string]$runnerDirectRule.protocol -eq "TCP" -and
+    [string]$runnerDirectRule.localPort -eq "22" -and
+    [string]$runnerDirectRule.interfaceAlias -ceq "Any" -and
+    ($actualRunnerDirectSources -join ",") -eq ($expectedRunnerDirectSources -join ",")
+  )
   return [ordered]@{
-    exists = $null -ne $rule
-    enabled = $null -ne $rule
-    protocol = if ($null -ne $rule) { [string]$rule.protocol } else { $null }
-    localPort = if ($null -ne $rule) { [string]$rule.localPort } else { $null }
-    interfaceAlias = if ($null -ne $rule) { [string]$rule.interfaceAlias } else { $null }
-    expectedInterfaceAlias = [string]$policy.effectiveFirewallInterfaceScope
-    sourceRolePools = $actual
-    expectedSourceRolePools = $expected
-    sourceRolePoolsMatch = ($actual -join ",") -eq ($expected -join ",")
+    exists = $null -ne $wireGuardRule
+    enabled = $null -ne $wireGuardRule
+    protocol = if ($null -ne $wireGuardRule) { [string]$wireGuardRule.protocol } else { $null }
+    localPort = if ($null -ne $wireGuardRule) { [string]$wireGuardRule.localPort } else { $null }
+    interfaceAlias = if ($null -ne $wireGuardRule) { [string]$wireGuardRule.interfaceAlias } else { $null }
+    expectedInterfaceAlias = [string]$policy.wireGuardInterfaceAlias
+    sourceRolePools = $actualWireGuardSources
+    expectedSourceRolePools = $expectedWireGuardSources
+    sourceRolePoolsMatch = ($actualWireGuardSources -join ",") -eq ($expectedWireGuardSources -join ",")
+    wireGuardRule = $wireGuardRule
+    runnerDirectRule = $runnerDirectRule
+    wireGuardRuleMatches = $wireGuardRuleMatches
+    runnerDirectRuleMatches = $runnerDirectRuleMatches
+    expectedRunnerDirectSourceAllowlist = $expectedRunnerDirectSources
+    runnerDirectSourceAllowlist = $actualRunnerDirectSources
+    roleScopedRulesMatch = $wireGuardRuleMatches -and $runnerDirectRuleMatches
     expectedListenAddress = $expectedListenAddress
     enabledInboundTcp22Rules = @($sshRules)
     unexpectedEnabledInboundTcp22Rules = $unexpectedRules
@@ -1574,7 +1631,8 @@ if ($null -ne $manifest) {
     Add-Failure $failures "Defender VEM runtime exclusions missing: $($checks.securityPosture.missingDefenderExclusions -join ', ')"
   }
   $enabledVemInboundRules = @($checks.securityPosture.enabledVemInboundRules)
-  $disallowedVemInboundRules = @($enabledVemInboundRules | Where-Object { [string]$_ -ne "VEM Controlled Maintenance SSH" })
+  $allowedVemInboundRules = @("VEM Controlled Maintenance SSH", "VEM Testbed Runner Direct SSH")
+  $disallowedVemInboundRules = @($enabledVemInboundRules | Where-Object { [string]$_ -notin $allowedVemInboundRules })
   if (@($disallowedVemInboundRules).Count -gt 0) {
     Add-Failure $failures "default Factory Runtime Image must not enable product-managed inbound remote access rules: $($disallowedVemInboundRules -join ', ')"
   }
@@ -1618,15 +1676,20 @@ if ($null -ne $manifest) {
   if (-not [bool]$maintenanceIngress.profileBound) {
     Add-Failure $failures "Factory Maintenance SSH ingress mode, listen address, and firewall interface scope must match the selected profile"
   }
-  if ([string]$maintenanceIngress.effectiveListenAddress -eq "0.0.0.0" -or [string]$maintenanceIngress.effectiveFirewallInterfaceScope -eq "Any") {
-    Add-Failure $failures "Factory verifier rejects wildcard SSH listener or firewall interface scope"
+  if (-not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressIsConcrete -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressOwnedByInterface) {
+    Add-Failure $failures "Factory verifier requires the declared concrete WireGuard address on its interface"
   }
-  if (-not [bool]$maintenanceIngress.wireGuardOnly -or
-      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressIsConcrete -or
-      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressOwnedByInterface -or
-      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.effectiveListenerMatchesWireGuardAddress -or
-      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.effectiveFirewallMatchesWireGuardInterface) {
-    Add-Failure $failures "Factory verifier requires SSH listener and firewall scope on the declared WireGuard interface/address"
+  if ([string]$manifest.factoryProfile -eq "production" -and
+      (-not [bool]$maintenanceIngress.wireGuardOnly -or
+       -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.effectiveListenerMatchesWireGuardAddress -or
+       -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.effectiveFirewallMatchesWireGuardInterface)) {
+    Add-Failure $failures "production Factory verifier requires SSH listener and firewall scope on the declared WireGuard interface/address"
+  }
+  if ([string]$manifest.factoryProfile -eq "testbed" -and
+      (-not [bool]$maintenanceIngress.runnerDirectPlusWireGuard -or
+       @($manifest.maintenanceSsh.runnerSourceAllowlist).Count -eq 0)) {
+    Add-Failure $failures "testbed runner-direct SSH bootstrap requires an explicit non-empty runner source allowlist"
   }
   if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.hardware.mode -ne "production") {
     Add-Failure $failures "production verifier rejects simulated hardware mode"
@@ -1663,15 +1726,11 @@ if ($null -ne $manifest) {
   }
   if (-not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.exists -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.enabled -or
-      [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.protocol -ne "TCP" -or
-      [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.localPort -ne "22" -or
-      [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.interfaceAlias -ne [string]$manifest.maintenanceSsh.effectiveFirewallInterfaceScope -or
-      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressOwnedByInterface -or
-      -not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.sourceRolePoolsMatch -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.roleScopedRulesMatch -or
       @($checks.factoryRemoteMaintenanceCapability.firewallScope.unexpectedEnabledInboundTcp22Rules).Count -gt 0 -or
       @($checks.factoryRemoteMaintenanceCapability.firewallScope.listeners).Count -eq 0 -or
       @($checks.factoryRemoteMaintenanceCapability.firewallScope.unexpectedListeners).Count -gt 0) {
-    Add-Failure $failures "Controlled Maintenance SSH firewall must be TCP 22 with the profile-bound listener/interface scope and exact runner/maintainer role pools"
+    Add-Failure $failures "Controlled Maintenance SSH firewall must match the profile listener and exact role-scoped source allowlists"
   }
   if ([string]$checks.factoryRemoteMaintenanceCapability.wireGuardService.startupType -ne "Automatic" -or
       [string]$checks.factoryRemoteMaintenanceCapability.wireGuardService.status -ne "Running" -or

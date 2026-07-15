@@ -54,6 +54,24 @@ function isExactHostSourceList(value) {
     });
   });
 }
+
+function isWireGuardHostAddress(value) {
+  if (typeof value !== "string" || value.length === 0) return false;
+  const parts = value.split("/");
+  if (parts.length > 2 || parts[0].trim().length === 0) return false;
+  const address = parts[0].trim();
+  const version = isIP(address);
+  if (
+    version === 0 ||
+    address === "0.0.0.0" ||
+    address === "::" ||
+    address === "127.0.0.1" ||
+    address === "::1"
+  ) {
+    return false;
+  }
+  return parts.length === 1 || parts[1] === (version === 6 ? "128" : "32");
+}
 const TOP_LEVEL_KEYS = [
   "schemaVersion",
   "kind",
@@ -248,11 +266,17 @@ function assertFactoryPreparation(value, profile, issues) {
     issues,
   );
   if (isRecord(value.maintenance)) {
-    for (const key of ["wireGuardInterfaceAlias", "wireGuardListenAddress"])
-      requiredString(
-        value.maintenance[key],
-        `factoryPreparation.maintenance.${key}`,
-        issues,
+    requiredString(
+      value.maintenance.wireGuardInterfaceAlias,
+      "factoryPreparation.maintenance.wireGuardInterfaceAlias",
+      issues,
+    );
+    if (!isWireGuardHostAddress(value.maintenance.wireGuardListenAddress))
+      issues.push(
+        issue(
+          "factoryPreparation.maintenance.wireGuardListenAddress",
+          "must be a concrete bare IP or single-host IPv4 /32 or IPv6 /128 CIDR",
+        ),
       );
     for (const key of ["runnerSourceAllowlist", "maintainerSourceAllowlist"]) {
       if (!isExactHostSourceList(value.maintenance[key]))

@@ -780,6 +780,7 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --maintenance-relay-session-json "$VEM_MAINTENANCE_RELAY_SESSION_JSON" \
             --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
             --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
             --tauri-route "$VEM_ACTIVE_KIOSK_TAURI_ROUTE" \
@@ -795,6 +796,7 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --maintenance-relay-session-json "$VEM_MAINTENANCE_RELAY_SESSION_JSON" \
             --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
             --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
             --selected-audio-endpoint-id "$VEM_VM_AUDIO_ENDPOINT_ID" \
