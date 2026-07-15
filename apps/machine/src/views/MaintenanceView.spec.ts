@@ -519,6 +519,7 @@ beforeEach(() => {
     testEvidenceExpiresAt: "2030-07-15T00:01:00Z",
     observationRevision: `sha256:${"a".repeat(64)}`,
     configRevision: `sha256:${"b".repeat(64)}`,
+    proposedSettingsDigest: `sha256:${"c".repeat(64)}`,
   });
   confirmAudioOutputMock.mockResolvedValue(provisionedConfigSummary());
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
