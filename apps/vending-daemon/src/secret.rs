@@ -1009,7 +1009,9 @@ Set-Acl -LiteralPath $path -AclObject $acl"#,
             // Both ordinary and WireGuard secrets use this exact production
             // process invocation; the probe never passes the path as an argv
             // token and therefore also exercises a path containing spaces.
-            harden_machine_secret_file_permissions(&path).await.unwrap();
+            harden_machine_protected_file_permissions(&path)
+                .await
+                .unwrap();
 
             let probe = run_windows_acl_probe(
                 &path,
