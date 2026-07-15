@@ -201,22 +201,137 @@ function Assert-NoPlatformPaymentSecretBytes {
       '2A864886F70D010C0A0101',
       '2A864886F70D010C0A0102'
     )
-    $derState = @{ Visited = 0 }
-    $walkStructuredDer = $null
-    $walkStructuredDer = {
-      param([int]$Start, [int]$End, [int]$DerDepth)
-      if ($DerDepth -gt 16) {
-        return [pscustomobject]@{ valid = $false; found = $false }
+    $berState = @{
+      Visited = 0
+      InspectedBytes = 0L
+      IndefiniteSeen = $false
+      UnexpectedEoc = $false
+      BudgetExceeded = $false
+      RecognizedContainer = $false
+    }
+    $readBerHeader = {
+      param([int]$Offset, [int]$Limit)
+      if ($Offset + 2 -gt $Limit) { return $null }
+      $tag = $Bytes[$Offset]
+      if (($tag -band 0x1f) -eq 0x1f) { return $null }
+      $firstLength = $Bytes[$Offset + 1]
+      if ($firstLength -eq 0x80) {
+        return [pscustomobject]@{
+          tag = $tag
+          constructed = ($tag -band 0x20) -ne 0
+          indefinite = $true
+          headerBytes = 2
+          contentStart = $Offset + 2
+        }
+      }
+      $headerBytes = 2
+      [long]$length = $firstLength
+      if (($firstLength -band 0x80) -ne 0) {
+        $lengthBytes = $firstLength -band 0x7f
+        if (
+          $lengthBytes -eq 0 -or
+          $lengthBytes -gt 4 -or
+          $Offset + 2 + $lengthBytes -gt $Limit -or
+          $Bytes[$Offset + 2] -eq 0
+        ) {
+          return $null
+        }
+        $length = 0
+        for ($index = 0; $index -lt $lengthBytes; $index += 1) {
+          $length = $length * 256 + $Bytes[$Offset + 2 + $index]
+        }
+        if ($length -lt 128) { return $null }
+        $headerBytes += $lengthBytes
+      }
+      [long]$contentStart = $Offset + $headerBytes
+      [long]$end = $contentStart + $length
+      if ($end -gt $Limit -or $end -gt [int]::MaxValue) { return $null }
+      return [pscustomobject]@{
+        tag = $tag
+        constructed = ($tag -band 0x20) -ne 0
+        indefinite = $false
+        headerBytes = $headerBytes
+        contentStart = [int]$contentStart
+        end = [int]$end
+        next = [int]$end
+      }
+    }
+    $invalidBerResult = {
+      param([int]$Next)
+      return [pscustomobject]@{
+        valid = $false
+        found = $false
+        next = $Next
+        eoc = $false
+      }
+    }
+    $berRoot = & $readBerHeader 0 $Bytes.Length
+    $berState.RecognizedContainer =
+      $null -ne $berRoot -and
+      $berRoot.tag -eq 0x30 -and
+      $berRoot.constructed -and
+      ($berRoot.indefinite -or $berRoot.end -eq $Bytes.Length)
+    $walkStructuredBer = $null
+    $walkStructuredBer = {
+      param([int]$Start, [int]$End, [int]$BerDepth, [bool]$ExpectEoc = $false)
+      if ($BerDepth -gt 16) {
+        $berState.BudgetExceeded = $true
+        return & $invalidBerResult $Start
       }
       $offset = $Start
       while ($offset -lt $End) {
-        $derState.Visited = [int]$derState.Visited + 1
-        if ($derState.Visited -gt 4096) {
-          return [pscustomobject]@{ valid = $false; found = $false }
+        if (
+          $offset + 2 -le $End -and
+          $Bytes[$offset] -eq 0 -and
+          $Bytes[$offset + 1] -eq 0
+        ) {
+          if ($ExpectEoc) {
+            return [pscustomobject]@{
+              valid = $true
+              found = $false
+              next = $offset + 2
+              eoc = $true
+            }
+          }
+          $berState.UnexpectedEoc = $true
+          return & $invalidBerResult $offset
         }
-        $element = & $readDerElement $offset $End
+        $berState.Visited = [int]$berState.Visited + 1
+        if ($berState.Visited -gt 4096) {
+          $berState.BudgetExceeded = $true
+          return & $invalidBerResult $offset
+        }
+        $element = & $readBerHeader $offset $End
         if ($null -eq $element) {
-          return [pscustomobject]@{ valid = $false; found = $false }
+          return & $invalidBerResult $offset
+        }
+        $berState.InspectedBytes =
+          [long]$berState.InspectedBytes + $element.headerBytes
+        if ($berState.InspectedBytes -gt $maxExpandedBytes) {
+          $berState.BudgetExceeded = $true
+          return & $invalidBerResult $offset
+        }
+        if ($element.indefinite) {
+          $berState.IndefiniteSeen = $true
+          if (-not $element.constructed) {
+            return & $invalidBerResult $offset
+          }
+          $nested =
+            & $walkStructuredBer $element.contentStart $End ($BerDepth + 1) $true
+          if ($nested.found) { return $nested }
+          if (-not $nested.valid -or -not $nested.eoc) {
+            return & $invalidBerResult $offset
+          }
+          $offset = $nested.next
+          continue
+        }
+        if (-not $element.constructed) {
+          $berState.InspectedBytes =
+            [long]$berState.InspectedBytes + $element.end - $element.contentStart
+          if ($berState.InspectedBytes -gt $maxExpandedBytes) {
+            $berState.BudgetExceeded = $true
+            return & $invalidBerResult $offset
+          }
         }
         if (
           $element.tag -eq 0x06 -and
@@ -224,11 +339,17 @@ function Assert-NoPlatformPaymentSecretBytes {
         ) {
           [byte[]]$oidValue = $Bytes[$element.contentStart..($element.end - 1)]
           if ($privateBagOidValues -contains [Convert]::ToHexString($oidValue)) {
-            return [pscustomobject]@{ valid = $true; found = $true }
+            return [pscustomobject]@{
+              valid = $true
+              found = $true
+              next = $element.next
+              eoc = $false
+            }
           }
         }
-        if (($element.tag -band 0x20) -ne 0) {
-          $nested = & $walkStructuredDer $element.contentStart $element.end ($DerDepth + 1)
+        if ($element.constructed) {
+          $nested =
+            & $walkStructuredBer $element.contentStart $element.end ($BerDepth + 1)
           if ($nested.found) { return $nested }
           if (-not $nested.valid) { return $nested }
         } elseif (
@@ -236,16 +357,33 @@ function Assert-NoPlatformPaymentSecretBytes {
           $element.end - $element.contentStart -ge 2 -and
           $Bytes[$element.contentStart] -eq 0x30
         ) {
-          $nested = & $walkStructuredDer $element.contentStart $element.end ($DerDepth + 1)
+          $nested =
+            & $walkStructuredBer $element.contentStart $element.end ($BerDepth + 1)
           if ($nested.found) { return $nested }
         }
         $offset = $element.next
       }
-      return [pscustomobject]@{ valid = $offset -eq $End; found = $false }
+      if ($ExpectEoc) { return & $invalidBerResult $offset }
+      return [pscustomobject]@{
+        valid = $offset -eq $End
+        found = $false
+        next = $offset
+        eoc = $false
+      }
     }
-    $privateBagScan = & $walkStructuredDer 0 $Bytes.Length 0
-    if ($privateBagScan.valid -and $privateBagScan.found) {
+    $privateBagScan = & $walkStructuredBer 0 $Bytes.Length 0
+    if ($berState.BudgetExceeded -and $berState.RecognizedContainer) {
+      throw "artifact exceeds bounded platform private-key scan budget: $Label"
+    }
+    if ($privateBagScan.found) {
       throw "artifact contains platform private-key material: $Label"
+    }
+    if (
+      -not $privateBagScan.valid -and
+      $berState.RecognizedContainer -and
+      ($berState.IndefiniteSeen -or $berState.UnexpectedEoc)
+    ) {
+      throw "artifact contains an invalid BER structure: $Label"
     }
 
     $privateKeyDetected = $false

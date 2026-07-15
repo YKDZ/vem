@@ -304,6 +304,86 @@ async function generatePbes1EncryptedPkcs8(root) {
   return readFile(encryptedPath);
 }
 
+function indefiniteOuterSequence(der) {
+  assert.equal(der[0], 0x30);
+  const firstLength = der[1];
+  const lengthBytes = firstLength & 0x7f;
+  const headerBytes = firstLength < 0x80 ? 2 : 2 + lengthBytes;
+  let contentLength = firstLength;
+  if (firstLength >= 0x80) {
+    contentLength = 0;
+    for (let index = 0; index < lengthBytes; index += 1) {
+      contentLength = contentLength * 256 + der[2 + index];
+    }
+  }
+  assert.equal(headerBytes + contentLength, der.length);
+  return Buffer.concat([
+    Buffer.from([0x30, 0x80]),
+    der.subarray(headerBytes),
+    Buffer.from([0x00, 0x00]),
+  ]);
+}
+
+function nestedIndefiniteSequences(depth) {
+  return Buffer.concat([
+    ...Array.from({ length: depth }, () => Buffer.from([0x30, 0x80])),
+    Buffer.from([0x02, 0x01, 0x01]),
+    ...Array.from({ length: depth }, () => Buffer.from([0x00, 0x00])),
+  ]);
+}
+
+async function generateCertificateAndPkcs12(root) {
+  const key = join(root, "ber-key.pem");
+  const cert = join(root, "ber-cert.pem");
+  const certDer = join(root, "ber-cert.der");
+  const bundle = join(root, "ber-bundle.p12");
+  const created = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:1024",
+      "-nodes",
+      "-subj",
+      "/CN=VEM BER scanner fixture",
+      "-keyout",
+      key,
+      "-out",
+      cert,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(created.status, 0, created.stderr);
+  const converted = spawnSync(
+    "openssl",
+    ["x509", "-in", cert, "-outform", "der", "-out", certDer],
+    { encoding: "utf8" },
+  );
+  assert.equal(converted.status, 0, converted.stderr);
+  const exported = spawnSync(
+    "openssl",
+    [
+      "pkcs12",
+      "-export",
+      "-inkey",
+      key,
+      "-in",
+      cert,
+      "-out",
+      bundle,
+      "-passout",
+      "pass:",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(exported.status, 0, exported.stderr);
+  return {
+    certificate: await readFile(certDer),
+    pkcs12: await readFile(bundle),
+  };
+}
+
 async function runGuards(value, artifactBytes = "machine-runtime") {
   const root = await mkdtemp(join(tmpdir(), "vem-payment-secret-guard-"));
   try {
@@ -458,6 +538,56 @@ describe("managed-update payment secret guard", () => {
       );
       assert.equal(incidental.status, 0, incidental.stderr);
     }
+  });
+
+  it("rejects a valid BER-indefinite PKCS#12 without rejecting a BER public certificate", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-private-key-ber-"));
+    try {
+      const fixture = await generateCertificateAndPkcs12(root);
+      const certificate = await runGuards(
+        { updateId: "field-public-ber", components: [] },
+        indefiniteOuterSequence(fixture.certificate),
+      );
+      assert.equal(certificate.status, 0, certificate.stderr);
+
+      const bundle = indefiniteOuterSequence(fixture.pkcs12);
+      const bundlePath = join(root, "indefinite-bundle.p12");
+      await writeFile(bundlePath, bundle);
+      const verified = spawnSync(
+        "openssl",
+        ["pkcs12", "-in", bundlePath, "-passin", "pass:", "-noout"],
+        { encoding: "utf8" },
+      );
+      assert.equal(verified.status, 0, verified.stderr);
+      const result = await runGuards(
+        { updateId: "field-private-ber", components: [] },
+        bundle,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /platform private-key material/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for malformed or excessively nested BER containers", async () => {
+    for (const artifact of [
+      Buffer.from([0x30, 0x80, 0x02, 0x01, 0x01]),
+      Buffer.from([0x30, 0x80, 0x00, 0x00, 0x00, 0x00]),
+    ]) {
+      const result = await runGuards(
+        { updateId: "field-invalid-ber", components: [] },
+        artifact,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /invalid BER structure/i);
+    }
+    const nested = await runGuards(
+      { updateId: "field-nested-ber", components: [] },
+      nestedIndefiniteSequences(18),
+    );
+    assert.notEqual(nested.status, 0);
+    assert.match(nested.stderr, /bounded platform private-key scan budget/i);
   });
 
   it("scans every recursive manifest string for encoded private-key bytes", async () => {

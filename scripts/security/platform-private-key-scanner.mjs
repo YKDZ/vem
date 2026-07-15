@@ -112,25 +112,123 @@ function isPasswordEncryptedPkcs8(bytes) {
   );
 }
 
-function containsStructuredPrivateBagOid(bytes) {
-  let visited = 0;
-  const walk = (start, end, depth) => {
-    if (depth > 16) return { valid: false, found: false };
+function scanStructuredPrivateBagOid(bytes) {
+  const state = {
+    visited: 0,
+    inspectedBytes: 0,
+    indefiniteSeen: false,
+    unexpectedEoc: false,
+    budgetExceeded: false,
+    recognizedContainer: false,
+  };
+  const readBerHeader = (offset, limit) => {
+    if (offset + 2 > limit) return null;
+    const tag = bytes[offset];
+    if ((tag & 0x1f) === 0x1f) return null;
+    const firstLength = bytes[offset + 1];
+    if (firstLength === 0x80) {
+      return {
+        tag,
+        constructed: (tag & 0x20) !== 0,
+        indefinite: true,
+        headerBytes: 2,
+        contentStart: offset + 2,
+      };
+    }
+    let headerBytes = 2;
+    let length = firstLength;
+    if ((firstLength & 0x80) !== 0) {
+      const lengthBytes = firstLength & 0x7f;
+      if (
+        lengthBytes === 0 ||
+        lengthBytes > 4 ||
+        offset + 2 + lengthBytes > limit ||
+        bytes[offset + 2] === 0
+      ) {
+        return null;
+      }
+      length = 0;
+      for (let index = 0; index < lengthBytes; index += 1) {
+        length = length * 256 + bytes[offset + 2 + index];
+      }
+      if (length < 128) return null;
+      headerBytes += lengthBytes;
+    }
+    const contentStart = offset + headerBytes;
+    const end = contentStart + length;
+    if (end > limit) return null;
+    return {
+      tag,
+      constructed: (tag & 0x20) !== 0,
+      indefinite: false,
+      headerBytes,
+      contentStart,
+      end,
+      next: end,
+    };
+  };
+  const invalid = (next = 0) => ({
+    valid: false,
+    found: false,
+    next,
+    eoc: false,
+  });
+  const root = readBerHeader(0, bytes.length);
+  state.recognizedContainer =
+    root?.tag === 0x30 &&
+    root.constructed &&
+    (root.indefinite || root.end === bytes.length);
+  const walk = (start, end, depth, expectEoc = false) => {
+    if (depth > 16) {
+      state.budgetExceeded = true;
+      return invalid(start);
+    }
     let offset = start;
     while (offset < end) {
-      visited += 1;
-      if (visited > 4096) return { valid: false, found: false };
-      const element = readDerElement(bytes, offset, end);
-      if (!element) return { valid: false, found: false };
+      if (offset + 2 <= end && bytes[offset] === 0 && bytes[offset + 1] === 0) {
+        if (expectEoc) {
+          return { valid: true, found: false, next: offset + 2, eoc: true };
+        }
+        state.unexpectedEoc = true;
+        return invalid(offset);
+      }
+      state.visited += 1;
+      if (state.visited > 4096) {
+        state.budgetExceeded = true;
+        return invalid(offset);
+      }
+      const element = readBerHeader(offset, end);
+      if (!element) return invalid(offset);
+      state.inspectedBytes += element.headerBytes;
+      if (state.inspectedBytes > MAX_DECODED_BYTES) {
+        state.budgetExceeded = true;
+        return invalid(offset);
+      }
+      if (element.indefinite) {
+        state.indefiniteSeen = true;
+        if (!element.constructed) return invalid(offset);
+        const nested = walk(element.contentStart, end, depth + 1, true);
+        if (nested.found) return nested;
+        if (!nested.valid || !nested.eoc) return invalid(offset);
+        offset = nested.next;
+        continue;
+      }
       const value = bytes.subarray(element.contentStart, element.end);
+      if (!element.constructed) {
+        state.inspectedBytes += value.length;
+        if (state.inspectedBytes > MAX_DECODED_BYTES) {
+          state.budgetExceeded = true;
+          return invalid(offset);
+        }
+      }
       if (
         element.tag === 0x06 &&
         isValidDerOidValue(value) &&
         pkcs12PrivateBagOids.some((oid) => value.equals(oid))
       ) {
-        return { valid: true, found: true };
+        return { valid: true, found: true, next: element.next, eoc: false };
       }
-      if ((element.tag & 0x20) !== 0) {
+      if (element.constructed) {
         const nested = walk(element.contentStart, element.end, depth + 1);
         if (nested.found) return nested;
         if (!nested.valid) return nested;
@@ -144,10 +242,11 @@ function containsStructuredPrivateBagOid(bytes) {
       }
       offset = element.next;
     }
-    return { valid: offset === end, found: false };
+    if (expectEoc) return invalid(offset);
+    return { valid: offset === end, found: false, next: offset, eoc: false };
   };
   const result = walk(0, bytes.length, 0);
-  return result.valid && result.found;
+  return { ...result, ...state };
 }
 
 function textRepresentations(bytes) {
@@ -517,12 +616,23 @@ function scanBytes(bytes, label, state, depth) {
   if (state.decodedBytes > MAX_DECODED_BYTES) {
     throw new Error(`${label} exceeds the bounded private-key scan budget`);
   }
+  const privateBagScan = scanStructuredPrivateBagOid(bytes);
+  if (privateBagScan.budgetExceeded && privateBagScan.recognizedContainer) {
+    throw new Error(`${label} exceeds the bounded private-key scan budget`);
+  }
   if (
     isDerPrivateKey(bytes) ||
     isPasswordEncryptedPkcs8(bytes) ||
-    containsStructuredPrivateBagOid(bytes)
+    privateBagScan.found
   ) {
     throw new Error(`${label} contains platform private-key material`);
+  }
+  if (
+    !privateBagScan.valid &&
+    privateBagScan.recognizedContainer &&
+    (privateBagScan.indefiniteSeen || privateBagScan.unexpectedEoc)
+  ) {
+    throw new Error(`${label} contains an invalid BER structure`);
   }
   scanZipEntries(bytes, label, state, depth);
 

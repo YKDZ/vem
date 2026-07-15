@@ -64,7 +64,9 @@ addCheck(
     ) &&
     paymentSecretBytesGuardBlock.includes("ImportPkcs8PrivateKey") &&
     paymentSecretBytesGuardBlock.includes("$isEncryptedPrivateKeyInfo") &&
-    paymentSecretBytesGuardBlock.includes("$walkStructuredDer") &&
+    paymentSecretBytesGuardBlock.includes("$walkStructuredBer") &&
+    paymentSecretBytesGuardBlock.includes("IndefiniteSeen") &&
+    paymentSecretBytesGuardBlock.includes("UnexpectedEoc") &&
     paymentSecretBytesGuardBlock.includes("provider credential field") &&
     !paymentSecretBytesGuardBlock.includes("06092A864886F70D01050D") &&
     paymentSecretBytesGuardBlock.includes("encrypted archive entry") &&
