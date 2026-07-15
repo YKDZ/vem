@@ -194,27 +194,32 @@ impl MqttSyncRuntime {
             .map_err(|error| format!("parse dispense command failed: {error}"))?;
 
         if let Some(existing) = self.state.get_command(&command.command_no).await? {
-            if existing.result_payload.is_some() {
-                let mut ack = crate::state::store::OutboxInput::dispense_result(
-                    &self.machine_code,
-                    &existing.result_payload.unwrap_or_else(|| {
-                        vending_core::hardware::DispenseResultPayload {
-                            command_no: command.command_no.clone(),
-                            success: false,
-                            error_code: Some("missing_result".to_string()),
-                            message: "existing command has no result payload".to_string(),
-                            reported_at: crate::state::store::now_iso(),
-                        }
-                    }),
+            if existing.command_payload != command {
+                return Err(
+                    "dispense command number was reused with a different payload".to_string(),
                 );
+            }
+            if let Some(result) = existing.result_payload {
+                let mut ack =
+                    crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
                 ack.payload_json = self.sign_outbox_payload(
                     format!("result:{}", command.command_no),
                     ack.payload_json,
                 )?;
                 self.state
-                    .enqueue_outbox(&ack)
+                    .commit_journaled_dispense_side_effects(&command, &result, &ack)
                     .await
                     .map_err(|error| error.to_string())?;
+                if !result.success {
+                    self.state
+                        .block_slot_for_dispense_failure(
+                            &command,
+                            result.error_code.as_deref(),
+                            Some(result.message.as_str()),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 return Ok(CommandHandlingResult::DuplicateFinal {
                     command_no: command.command_no,
                 });
@@ -259,7 +264,7 @@ impl MqttSyncRuntime {
             let events = progress_events.clone();
             tokio::spawn(async move {
                 let order_no = event.order_no.clone();
-                if state.record_dispense_progress(&event).await.is_ok() {
+                if matches!(state.record_dispense_progress(&event).await, Ok(true)) {
                     let _ = events.send(DaemonEvent::TransactionChanged {
                         event_id: Uuid::new_v4().simple().to_string(),
                         updated_at: crate::state::store::now_iso(),
@@ -294,13 +299,12 @@ impl MqttSyncRuntime {
             format!("result:{}", command.command_no),
             result_event.payload_json,
         )?;
-        let result_recorded = self
-            .state
-            .record_command_result_and_enqueue_tx(&command, &result, &result_event)
+        self.state
+            .record_command_result_journal(&command, &result)
             .await
             .map_err(|error| error.to_string())?;
         self.state
-            .apply_dispense_result_to_order_session(&command, &result)
+            .commit_journaled_dispense_side_effects(&command, &result, &result_event)
             .await
             .map_err(|error| error.to_string())?;
         let _ = self.events.send(DaemonEvent::TransactionChanged {
@@ -313,12 +317,7 @@ impl MqttSyncRuntime {
                 "dispense_failed".to_string()
             },
         });
-        if result_recorded && result.success {
-            self.state
-                .apply_dispense_success_to_local_stock(&command)
-                .await
-                .map_err(|error| error.to_string())?;
-        } else if !result.success {
+        if !result.success {
             self.state
                 .block_slot_for_dispense_failure(
                     &command,
@@ -1609,6 +1608,11 @@ mod tests {
             result,
             CommandHandlingResult::ActiveDuplicate { command_no } if command_no == "CMD-DUP-ACK"
         ));
+        let conflict = runtime
+            .handle_dispense_command(&signed_dispense_command("CMD-DUP-ACK", 6))
+            .await
+            .expect_err("same command number cannot change payload");
+        assert!(conflict.contains("reused with a different payload"));
         let operations = adapter.operations.lock().await.clone();
         assert!(
             !operations
@@ -2527,6 +2531,19 @@ mod tests {
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
             .await
             .expect("state");
+        seed_single_slot_planogram(&state).await;
+        state
+            .record_stock_movement(crate::state::store::StockMovementInput {
+                movement_id: "COUNT-MQTT-SUCCESS".to_string(),
+                planogram_version: "PLAN-MQTT".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655441001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count stock");
         state
             .upsert_order_session(crate::state::store::OrderSessionUpsert {
                 order_no: "ORD-MQTT",

@@ -957,6 +957,13 @@ struct ManualDispenseDiagnosticRequest {
     timeout_seconds: u64,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReconcileManualDispenseDiagnosticRequest {
+    diagnostic_id: String,
+    stock_count_movement_id: String,
+}
+
 fn default_manual_dispense_quantity() -> u32 {
     1
 }
@@ -1258,6 +1265,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route(
             "/v1/maintenance/manual-dispense-diagnostic",
             post(manual_dispense_diagnostic),
+        )
+        .route(
+            "/v1/maintenance/manual-dispense-diagnostic/reconcile",
+            post(reconcile_manual_dispense_diagnostic),
         )
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
         .route(
@@ -5842,10 +5853,10 @@ async fn clear_whole_machine_maintenance_lock(
 }
 
 fn store_error_response(code: &'static str, error: StoreError) -> axum::response::Response {
-    let status = if matches!(error, StoreError::InvalidStockInput(_)) {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
+    let status = match error {
+        StoreError::InvalidStockInput(_) => StatusCode::BAD_REQUEST,
+        StoreError::ManualDispenseIdempotencyConflict => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
         status,
@@ -7174,6 +7185,44 @@ async fn manual_dispense_diagnostic(
         )
             .into_response();
     };
+    let observed = match ctx.serial_device_platform.discover().await {
+        Ok(observed) => observed,
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "manual_dispense_controller_discovery_unavailable",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let resolved_port =
+        match crate::device_binding::resolve_bound_port(&binding.identity, &observed) {
+            crate::device_binding::BindingResolution::Resolved(port) => port,
+            crate::device_binding::BindingResolution::Missing => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "manual_dispense_controller_binding_missing",
+                        message: "the bound lower controller is not currently attached".to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+            crate::device_binding::BindingResolution::Ambiguous(_) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "manual_dispense_controller_binding_ambiguous",
+                        message: "the bound lower controller does not resolve to one current port"
+                            .to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
     let config = match ctx.config_store.load_effective_public_config().await {
         Ok(config) => config,
         Err(message) => {
@@ -7203,12 +7252,12 @@ async fn manual_dispense_diagnostic(
     let controller = ctx.hardware.self_check().await;
     // A mock or an unresolved serial binding must never turn this diagnostic
     // into a hidden alternative sale path.
-    if !controller.online || controller.port_path.is_none() {
+    if !controller.online || controller.port_path.as_deref() != Some(resolved_port.as_str()) {
         return (
             StatusCode::CONFLICT,
             Json(ErrorMessage {
                 code: "manual_dispense_controller_unresolved",
-                message: "manual dispense requires an online resolved lower controller".to_string(),
+                message: "manual dispense requires the online runtime to match the bound controller's current port".to_string(),
             }),
         )
             .into_response();
@@ -7232,6 +7281,13 @@ async fn manual_dispense_diagnostic(
     let pending = crate::state::store::ManualDispenseDiagnostic {
         diagnostic_id: diagnostic_id.clone(),
         idempotency_key: key.to_string(),
+        request_fingerprint: crate::state::store::manual_dispense_request_fingerprint(
+            request.slot_code.trim(),
+            u64::from(request.layer_no),
+            u64::from(request.cell_no),
+            u64::from(request.quantity),
+            request.timeout_seconds,
+        ),
         status: "pending".to_string(),
         operator_id: principal.operator_id.clone(),
         session_correlation_id: principal.session_correlation_id.clone(),
@@ -7342,6 +7398,64 @@ async fn manual_dispense_diagnostic(
         "replayed": false,
     }))
     .into_response()
+}
+
+async fn reconcile_manual_dispense_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<ReconcileManualDispenseDiagnosticRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    if let Err(message) = ctx
+        .maintenance_authorization
+        .authorize_manual_dispense(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage {
+                code: "protected_manual_dispense_authorization_denied",
+                message,
+            }),
+        )
+            .into_response();
+    }
+    if request.diagnostic_id.trim().is_empty() || request.stock_count_movement_id.trim().is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "invalid_manual_dispense_reconciliation",
+                message: "diagnosticId and stockCountMovementId are required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    match ctx
+        .state
+        .reconcile_manual_dispense_diagnostic(
+            request.diagnostic_id.trim(),
+            request.stock_count_movement_id.trim(),
+        )
+        .await
+    {
+        Ok(record) => Json(serde_json::json!({
+            "diagnosticId": record.diagnostic_id,
+            "reconciliationStatus": record.reconciliation_status,
+            "stockCountMovementId": request.stock_count_movement_id,
+        }))
+        .into_response(),
+        Err(error) => store_error_response("manual_dispense_reconciliation_failed", error),
+    }
 }
 
 fn bounded_manual_dispense_raw_result(
@@ -7921,6 +8035,10 @@ mod tests {
         devices: Vec<crate::device_binding::ObservedSerialDevice>,
     }
 
+    struct SwitchableFixtureSerialDevicePlatform {
+        devices: Arc<tokio::sync::RwLock<Vec<crate::device_binding::ObservedSerialDevice>>>,
+    }
+
     #[cfg(unix)]
     struct RecordingProbeSerialDevicePlatform {
         device: crate::device_binding::ObservedSerialDevice,
@@ -7970,6 +8088,24 @@ mod tests {
                 message: "fixture role probe ready".to_string(),
                 tested_at: crate::state::store::now_iso(),
             }
+        }
+    }
+
+    #[async_trait]
+    impl crate::device_binding::SerialDevicePlatform for SwitchableFixtureSerialDevicePlatform {
+        async fn discover(
+            &self,
+        ) -> Result<Vec<crate::device_binding::ObservedSerialDevice>, String> {
+            Ok(self.devices.read().await.clone())
+        }
+
+        async fn test_candidate(
+            &self,
+            _role: crate::device_binding::LocalDeviceRole,
+            _candidate: &crate::device_binding::ObservedSerialDevice,
+            _probe_config: &crate::device_binding::SerialDeviceRoleProbeConfig,
+        ) -> crate::device_binding::DeviceBindingTestResult {
+            unreachable!("manual dispense only needs discovery")
         }
     }
 
@@ -16140,9 +16276,9 @@ mod tests {
                 crate::device_binding::LocalDeviceRole::LowerController,
                 crate::device_binding::LocalSerialRoleBinding {
                     identity: crate::device_binding::StableSerialDeviceIdentity {
-                        identity_key: "container:controller-1".to_string(),
-                        instance_id: None,
-                        container_id: Some("controller-1".to_string()),
+                        identity_key: "container:11111111-2222-3333-4444-555555555555".to_string(),
+                        instance_id: Some("USB\\VID_1234&PID_5678\\SERIAL-1".to_string()),
+                        container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
                         hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
                         serial_number: Some("SERIAL-1".to_string()),
                     },
@@ -16153,6 +16289,27 @@ mod tests {
             )
             .await
             .unwrap();
+        let matching_controller = crate::device_binding::ObservedSerialDevice {
+            current_port: "COM5".to_string(),
+            instance_id: Some("USB\\VID_1234&PID_5678\\SERIAL-1".to_string()),
+            container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SERIAL-1".to_string()),
+            friendly_name: Some("lower controller".to_string()),
+        };
+        let observed_devices = Arc::new(tokio::sync::RwLock::new(vec![
+            crate::device_binding::ObservedSerialDevice {
+                current_port: "COM5".to_string(),
+                instance_id: Some("USB\\VID_9999&PID_0001\\OTHER".to_string()),
+                container_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
+                hardware_ids: vec!["USB\\VID_9999&PID_0001".to_string()],
+                serial_number: Some("OTHER".to_string()),
+                friendly_name: Some("unrelated device on the same COM port".to_string()),
+            },
+        ]));
+        ctx.serial_device_platform = Arc::new(SwitchableFixtureSerialDevicePlatform {
+            devices: observed_devices.clone(),
+        });
         let adapter = Arc::new(CountingManualDispenseAdapter::default());
         ctx.hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
         let state = ctx.state.clone();
@@ -16167,6 +16324,14 @@ mod tests {
                 "idempotencyKey":idempotency_key,"slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5
             }).to_string())).unwrap()
         };
+        let wrong_identity = app
+            .clone()
+            .oneshot(request("field-click-wrong-identity"))
+            .await
+            .unwrap();
+        assert_eq!(wrong_identity.status(), StatusCode::CONFLICT);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        *observed_devices.write().await = vec![matching_controller];
         let (first, concurrent) = tokio::join!(
             app.clone().oneshot(request("field-click-1")),
             app.clone().oneshot(request("field-click-1")),
