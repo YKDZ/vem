@@ -631,15 +631,19 @@ test("fixture evidence contains no credential or private-key material", () => {
   assert.equal(evidence.checks.passwordAuthentication.passwordFallback, false);
   assert.deepEqual(evidence.checks.factoryRemoteMaintenanceCapability.ingress, {
     profile: "testbed",
-    mode: "testbed-bootstrap-certificate",
+    mode: "testbed-runner-direct-plus-wireguard",
     effectiveListenAddress: "0.0.0.0",
     effectiveFirewallInterfaceScope: "Any",
+    expectedMode: "testbed-runner-direct-plus-wireguard",
+    expectedListenAddress: "0.0.0.0",
+    expectedFirewallInterfaceScope: "Any",
     profileBound: true,
-    bootstrapTestbedOnly: true,
+    wireGuardOnly: false,
+    runnerDirectPlusWireGuard: true,
   });
   assert.equal(
     evidence.checks.factoryRemoteMaintenanceCapability.firewallScope
-      .sourceRolePoolsMatch,
+      .roleScopedRulesMatch,
     true,
   );
   assert.doesNotMatch(

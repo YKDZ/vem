@@ -175,6 +175,7 @@ describe("Factory Image Acceptance workflow", () => {
       "DATABASE_URL",
       "EPHEMERAL_API_READY_URL",
       "VEM_FACTORY_PLATFORM_INGRESS_HOST",
+      "VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE",
       "MAINTENANCE_CONTROL_PLANE_URL",
       "MAINTENANCE_ALLOW_INSECURE_HTTP",
       "MAINTENANCE_RUNNER_PEER_ID",
@@ -190,6 +191,13 @@ describe("Factory Image Acceptance workflow", () => {
     }
     assert.match(workflow, /if: \$\{\{ always\(\) \}\}/);
     assert.match(workflow, /factory-image-acceptance-input\.json/);
+    const input = stepBlock("Generate Typed Factory Lifecycle Input");
+    assert.match(input, /bootstrap:\s*\{/);
+    assert.match(input, /transport: "testbed-runner-direct"/);
+    assert.match(
+      input,
+      /runnerSourceAllowlist: \[process\.env\.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE\]/,
+    );
     assert.match(
       workflow,
       /--api-base-url\s+"http:\/\/\$\{VEM_FACTORY_PLATFORM_INGRESS_HOST\}:26850\/api"/,

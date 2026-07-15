@@ -6,15 +6,19 @@
     "factoryRemoteMaintenanceCapability": {
       "ingress": {
         "profile": "testbed",
-        "mode": "testbed-bootstrap-certificate",
+        "mode": "testbed-runner-direct-plus-wireguard",
         "effectiveListenAddress": "0.0.0.0",
         "effectiveFirewallInterfaceScope": "Any",
+        "expectedMode": "testbed-runner-direct-plus-wireguard",
+        "expectedListenAddress": "0.0.0.0",
+        "expectedFirewallInterfaceScope": "Any",
         "profileBound": true,
-        "bootstrapTestbedOnly": true
+        "wireGuardOnly": false,
+        "runnerDirectPlusWireGuard": true
       },
       "firewallScope": {
-        "sourceRolePoolsMatch": true,
-        "interfaceAlias": "Any",
+        "roleScopedRulesMatch": true,
+        "interfaceAlias": "VEM-Maintenance",
         "unexpectedEnabledInboundTcp22Rules": [],
         "unexpectedListeners": []
       }

@@ -62,6 +62,18 @@ export const VM_HOST_ADAPTER_OPERATIONS = new Set([
   "cancel",
 ]);
 
+const TESTBED_RUNNER_DIRECT_ENDPOINT_OPERATIONS = new Set([
+  "clean-install",
+  "capture-approved-base",
+  "create-disposable-overlay",
+  "capture-display",
+  "capture-default-audio",
+  "start-serial-session",
+  "inject-scanner-code",
+  "collect-serial-evidence",
+  "stop-serial-session",
+]);
+
 export const VM_HOST_ADAPTER_CAPABILITIES = new Set([
   "clean-install",
   "approved-base-capture",
@@ -2299,40 +2311,118 @@ function assertMaintenanceRelayProof(proof, session, endpoint, path, issues) {
     );
 }
 
-function assertGuestMaintenanceEndpoint(endpoint, session, path, issues) {
+function isConcreteHostIp(value) {
+  return (
+    typeof value === "string" &&
+    isIP(value) !== 0 &&
+    !["0.0.0.0", "::", "127.0.0.1", "::1"].includes(value)
+  );
+}
+
+function assertMaintenanceEndpointPolicy(policy, request, path, issues) {
+  if (policy === null) return;
+  if (
+    !assertExactKeys(
+      policy,
+      ["transport", "runnerSourceAllowlist", "lifecycleReference"],
+      path,
+      issues,
+    )
+  )
+    return;
+  if (policy.transport !== "testbed-runner-direct")
+    issue(issues, `${path}.transport`, "must be testbed-runner-direct");
+  if (policy.lifecycleReference !== request.lifecycleReference)
+    issue(
+      issues,
+      `${path}.lifecycleReference`,
+      "must bind this request lifecycle",
+    );
+  if (!TESTBED_RUNNER_DIRECT_ENDPOINT_OPERATIONS.has(request.operation))
+    issue(
+      issues,
+      path,
+      "is permitted only for Factory lifecycle guest-endpoint operations",
+    );
+  if (request.maintenanceRelaySession === null)
+    issue(issues, path, "requires the retained maintenance Relay session");
+  if (
+    !Array.isArray(policy.runnerSourceAllowlist) ||
+    policy.runnerSourceAllowlist.length === 0
+  )
+    issue(
+      issues,
+      `${path}.runnerSourceAllowlist`,
+      "must contain explicit runner host addresses",
+    );
+  else {
+    const seen = new Set();
+    policy.runnerSourceAllowlist.forEach((source, index) => {
+      const parts = typeof source === "string" ? source.split("/") : [];
+      const address = parts[0];
+      const version = isIP(address ?? "");
+      const expectedPrefix = version === 6 ? "128" : "32";
+      if (
+        !isConcreteHostIp(address) ||
+        parts.length > 2 ||
+        (parts.length === 2 && parts[1] !== expectedPrefix)
+      )
+        issue(
+          issues,
+          `${path}.runnerSourceAllowlist[${index}]`,
+          "must be a concrete bare IP or single-host CIDR",
+        );
+      if (seen.has(address))
+        issue(
+          issues,
+          `${path}.runnerSourceAllowlist[${index}]`,
+          "must not be duplicated",
+        );
+      seen.add(address);
+    });
+  }
+}
+
+function assertGuestMaintenanceEndpoint(
+  endpoint,
+  session,
+  policy,
+  operation,
+  path,
+  issues,
+) {
+  const transport = endpoint?.transport;
   if (
     !assertExactKeys(
       endpoint,
       [
+        "transport",
         "protocol",
         "host",
         "port",
         "reachability",
-        ...(session ? ["relayProof"] : []),
+        ...(transport === "wireguard" && session !== null
+          ? ["relayProof"]
+          : []),
       ],
       path,
       issues,
     )
   )
     return;
-  if (endpoint.protocol !== "ssh")
-    issue(issues, `${path}.protocol`, "must be ssh");
-  const addressFamily =
-    typeof endpoint.host === "string" ? isIP(endpoint.host) : 0;
-  const unspecifiedOrLoopback =
-    endpoint.host === "0.0.0.0" ||
-    endpoint.host === "::" ||
-    endpoint.host === "127.0.0.1" ||
-    endpoint.host === "::1";
-  if (
-    endpoint.reachability !== "unavailable" &&
-    (addressFamily === 0 || unspecifiedOrLoopback)
-  )
+  if (!new Set(["wireguard", "testbed-runner-direct"]).has(transport))
     issue(
       issues,
-      `${path}.host`,
-      "must be a concrete WireGuard tunnel IP address",
+      `${path}.transport`,
+      "must be wireguard or testbed-runner-direct",
     );
+  if (endpoint.protocol !== "ssh")
+    issue(issues, `${path}.protocol`, "must be ssh");
+  if (
+    endpoint.reachability !== "unavailable" &&
+    !isConcreteHostIp(endpoint.host)
+  )
+    issue(issues, `${path}.host`, "must be a concrete IP address");
   else assertNoHostReference(endpoint.host, `${path}.host`, issues);
   if (endpoint.port !== 22)
     issue(issues, `${path}.port`, "must be the SSH port 22");
@@ -2346,14 +2436,28 @@ function assertGuestMaintenanceEndpoint(endpoint, session, path, issues) {
       `${path}.reachability`,
       "must be a supported reachability state",
     );
-  if (session)
-    assertMaintenanceRelayProof(
-      endpoint.relayProof,
-      session,
-      endpoint,
-      `${path}.relayProof`,
-      issues,
-    );
+  if (transport === "wireguard") {
+    if (session !== null)
+      assertMaintenanceRelayProof(
+        endpoint.relayProof,
+        session,
+        endpoint,
+        `${path}.relayProof`,
+        issues,
+      );
+  }
+  if (transport === "testbed-runner-direct") {
+    if (
+      policy === null ||
+      policy.transport !== "testbed-runner-direct" ||
+      !TESTBED_RUNNER_DIRECT_ENDPOINT_OPERATIONS.has(operation)
+    )
+      issue(
+        issues,
+        `${path}.transport`,
+        "is allowed only for Factory lifecycle guest-endpoint operations with the explicit testbed runner-direct policy",
+      );
+  }
 }
 
 function assertCleanupObservation(observed, path, issues) {
@@ -2426,6 +2530,7 @@ function requestEcho(request) {
     audioCapture: request.audioCapture,
     requestedCapabilities: [...request.requestedCapabilities],
     maintenanceRelaySession: request.maintenanceRelaySession,
+    maintenanceEndpointPolicy: request.maintenanceEndpointPolicy,
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
@@ -2452,6 +2557,7 @@ function reconstructRequest(request) {
     })),
     requestedCapabilities: [...(request.requestedCapabilities ?? [])],
     maintenanceRelaySession: request.maintenanceRelaySession ?? null,
+    maintenanceEndpointPolicy: request.maintenanceEndpointPolicy ?? null,
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
@@ -2474,6 +2580,8 @@ export function validateVmHostAdapterRequest(input) {
   const request = structuredClone(input);
   if (!("maintenanceRelaySession" in request))
     request.maintenanceRelaySession = null;
+  if (!("maintenanceEndpointPolicy" in request))
+    request.maintenanceEndpointPolicy = null;
   const issues = [];
   assertExactKeys(
     request,
@@ -2494,6 +2602,7 @@ export function validateVmHostAdapterRequest(input) {
       "assets",
       "requestedCapabilities",
       "maintenanceRelaySession",
+      "maintenanceEndpointPolicy",
       ...(isV2Request(request) ? ["serialSession"] : []),
     ],
     "request",
@@ -2571,6 +2680,12 @@ export function validateVmHostAdapterRequest(input) {
       "request.maintenanceRelaySession",
       issues,
     );
+  assertMaintenanceEndpointPolicy(
+    request.maintenanceEndpointPolicy,
+    request,
+    "request.maintenanceEndpointPolicy",
+    issues,
+  );
   if (assertExactKeys(request.target, ["identity"], "request.target", issues)) {
     if (
       typeof request.target.identity !== "string" ||
@@ -2884,6 +2999,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "audioCapture",
         "requestedCapabilities",
         "maintenanceRelaySession",
+        "maintenanceEndpointPolicy",
         ...(isV2Request(request) ? ["serialSession"] : []),
       ],
       "report.request",
@@ -3078,6 +3194,8 @@ export function validateVmHostAdapterReport(input, requestInput) {
     assertGuestMaintenanceEndpoint(
       report.guest.maintenanceEndpoint,
       request.maintenanceRelaySession,
+      request.maintenanceEndpointPolicy,
+      request.operation,
       "report.guest.maintenanceEndpoint",
       issues,
     );
@@ -3355,11 +3473,13 @@ export function validateVmHostAdapterReport(input, requestInput) {
     guest: {
       maintenanceEndpointIdentity: report.guest.maintenanceEndpointIdentity,
       maintenanceEndpoint: {
+        transport: report.guest.maintenanceEndpoint.transport,
         protocol: report.guest.maintenanceEndpoint.protocol,
         host: report.guest.maintenanceEndpoint.host,
         port: report.guest.maintenanceEndpoint.port,
         reachability: report.guest.maintenanceEndpoint.reachability,
-        ...(request.maintenanceRelaySession
+        ...(report.guest.maintenanceEndpoint.transport === "wireguard" &&
+        report.guest.maintenanceEndpoint.relayProof
           ? {
               relayProof: {
                 ...report.guest.maintenanceEndpoint.relayProof,
@@ -3960,6 +4080,8 @@ function cleanupRequestFor(request) {
     factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
+    maintenanceRelaySession: null,
+    maintenanceEndpointPolicy: null,
     requestedCapabilities: ["cleanup", "cancellation"],
     ...(isV2Request(request)
       ? {
@@ -3980,6 +4102,8 @@ function cancelRequestFor(request) {
     factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
+    maintenanceRelaySession: null,
+    maintenanceEndpointPolicy: null,
     requestedCapabilities: ["cancellation", "cleanup"],
     ...(isV2Request(request)
       ? {

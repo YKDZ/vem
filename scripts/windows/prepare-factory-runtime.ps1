@@ -220,27 +220,54 @@ function Get-FactoryMaintenanceIngressPolicy {
     [string]$WireGuardListenAddress
   )
 
+  $wireGuardAddress = ConvertTo-WireGuardHostAddress -Value $WireGuardListenAddress
   if ($Profile -eq "production") {
     if ([string]::IsNullOrWhiteSpace($WireGuardInterfaceAlias)) {
       throw "production FactoryProfile requires a WireGuard maintenance interface alias"
     }
-    if ([string]::IsNullOrWhiteSpace($WireGuardListenAddress) -or $WireGuardListenAddress -eq "0.0.0.0") {
-      throw "production FactoryProfile requires a concrete WireGuard maintenance ListenAddress"
-    }
     return [ordered]@{
       mode = "wireguard-only"
-      effectiveListenAddress = $WireGuardListenAddress
+      wireGuardListenAddress = [string]$wireGuardAddress.address
+      effectiveListenAddress = [string]$wireGuardAddress.address
       effectiveFirewallInterfaceScope = $WireGuardInterfaceAlias
     }
   }
   if ($Profile -eq "testbed") {
+    if ([string]::IsNullOrWhiteSpace($WireGuardInterfaceAlias)) {
+      throw "testbed FactoryProfile requires a WireGuard maintenance interface alias"
+    }
     return [ordered]@{
-      mode = "testbed-bootstrap-certificate"
+      mode = "testbed-runner-direct-plus-wireguard"
+      wireGuardListenAddress = [string]$wireGuardAddress.address
       effectiveListenAddress = "0.0.0.0"
       effectiveFirewallInterfaceScope = "Any"
+      runnerDirectEnabled = $true
     }
   }
   throw "FactoryProfile must be production or testbed"
+}
+
+function ConvertTo-WireGuardHostAddress {
+  param([string]$Value)
+
+  $parts = @([string]$Value -split "/", 2)
+  if ($parts.Count -eq 0 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+    throw "WireGuard tunnel ListenAddress must be a concrete bare IP or single-host CIDR"
+  }
+  $address = [System.Net.IPAddress]::None
+  if (-not [System.Net.IPAddress]::TryParse($parts[0], [ref]$address) -or
+      $address.Equals([System.Net.IPAddress]::Any) -or $address.Equals([System.Net.IPAddress]::IPv6Any) -or
+      $address.Equals([System.Net.IPAddress]::Loopback) -or $address.Equals([System.Net.IPAddress]::IPv6Loopback)) {
+    throw "WireGuard tunnel ListenAddress must be a concrete bare IP or single-host CIDR"
+  }
+  $prefixLength = if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+  if ($parts.Count -eq 2 -and [string]::IsNullOrWhiteSpace($parts[1])) {
+    throw "WireGuard tunnel ListenAddress CIDR prefix is required"
+  }
+  if ($parts.Count -eq 2 -and $parts[1] -ne [string]$prefixLength) {
+    throw "WireGuard tunnel ListenAddress must use the single-host /$prefixLength prefix"
+  }
+  return [pscustomobject]@{ address = [string]$address.IPAddressToString; prefixLength = $prefixLength }
 }
 
 function Assert-ProductionHostIsolation {
@@ -988,7 +1015,7 @@ function Assert-FactoryRuntimePreflight {
     RunnerSourceAllowlist = @($rolePools.Runner)
     MaintainerSourceAllowlist = @($rolePools.Maintainer)
     WireGuardInterfaceAlias = $MaintenanceWireGuardInterfaceAlias
-    WireGuardListenAddress = $MaintenanceWireGuardListenAddress
+    WireGuardListenAddress = [string]$maintenanceIngress.wireGuardListenAddress
     MaintenanceIngress = $maintenanceIngress
     SupportScripts = @($supportScripts)
   }
@@ -1219,11 +1246,9 @@ function Ensure-LocalWireGuardTunnelService {
     if ($privateKey -notmatch "^[A-Za-z0-9+/]{42,45}={0,2}$") {
       throw "WireGuard did not generate a valid local private key"
     }
-    $listenAddress = [System.Net.IPAddress]::None
-    if (-not [System.Net.IPAddress]::TryParse([string]$Plan.inputs.wireGuardListenAddress, [ref]$listenAddress)) {
-      throw "WireGuard tunnel ListenAddress is invalid: $($Plan.inputs.wireGuardListenAddress)"
-    }
-    $prefixLength = if ($listenAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+    $wireGuardAddress = ConvertTo-WireGuardHostAddress -Value ([string]$Plan.inputs.wireGuardListenAddress)
+    $listenAddress = [System.Net.IPAddress]::Parse([string]$wireGuardAddress.address)
+    $prefixLength = [int]$wireGuardAddress.prefixLength
     $config = @(
       "[Interface]",
       "PrivateKey = $privateKey",
@@ -1300,7 +1325,7 @@ function Get-FactoryMaintenanceResetTargets {
       "C:\ProgramData\VEM\factory\factory-runtime-manifest.json",
       "C:\ProgramData\ssh\sshd_config"
     )
-    firewallDisplayNames = @("VEM Controlled Maintenance SSH")
+    firewallDisplayNames = @("VEM Controlled Maintenance SSH", "VEM Testbed Runner Direct SSH")
   }
 }
 
@@ -1621,6 +1646,7 @@ function Write-FactoryRuntimeFiles {
       ingressMode = [string]$Preflight.MaintenanceIngress.mode
       effectiveListenAddress = [string]$Preflight.MaintenanceIngress.effectiveListenAddress
       effectiveFirewallInterfaceScope = [string]$Preflight.MaintenanceIngress.effectiveFirewallInterfaceScope
+      runnerDirectEnabled = [bool]$Preflight.MaintenanceIngress.runnerDirectEnabled
     }
     wireGuard = [ordered]@{
       serviceName = Get-WireGuardTunnelServiceName

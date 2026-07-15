@@ -447,26 +447,29 @@ addCheck(
 );
 
 addCheck(
-  "all-factory-profiles-require-relay-wireguard-ssh-ingress",
+  "factory-profiles-bind-ssh-ingress-to-explicit-role-policy",
   setupTasks.includes('mode = "wireguard-only"') &&
-    !setupTasks.includes('mode = "testbed-bootstrap-certificate"') &&
-    !setupTasks.includes('sshListenAddress = "0.0.0.0"') &&
-    !setupTasks.includes('firewallInterfaceScope = "Any"') &&
+    setupTasks.includes('mode = "testbed-runner-direct-plus-wireguard"') &&
+    setupTasks.includes('sshListenAddresses = @("0.0.0.0")') &&
+    setupTasks.includes(
+      "testbed runner-direct SSH ingress requires a non-empty MaintenanceRunnerSourceAllowlist",
+    ) &&
+    setupTasks.includes("VEM Testbed Runner Direct SSH") &&
     setupTasks.includes("Assert-WireGuardListenAddress") &&
-    setupTasks.includes("requiresWireGuardAddress = $true") &&
     setupTasks.includes(
       "WireGuard tunnel ListenAddress must not be wildcard or loopback",
     ) &&
     prepare.includes("Get-FactoryMaintenanceIngressPolicy") &&
+    prepare.includes("runnerDirectEnabled") &&
     prepare.includes("effectiveListenAddress") &&
     prepare.includes("effectiveFirewallInterfaceScope") &&
     verifier.includes("Get-MaintenanceIngressEvidence") &&
-    !verifier.includes("bootstrapTestbedOnly") &&
+    verifier.includes("runnerDirectPlusWireGuard") &&
+    verifier.includes("runnerDirectRuleMatches") &&
     verifier.includes(
-      "Factory verifier rejects wildcard SSH listener or firewall interface scope",
-    ) &&
-    verifier.includes("sourceRolePoolsMatch"),
-  "Factory testbed and production SSH ingress must be certificate-only on the declared WireGuard listener/interface, never a wildcard bootstrap listener",
+      "testbed runner-direct SSH bootstrap requires an explicit non-empty runner source allowlist",
+    ),
+  "production SSH ingress must remain WireGuard-only while testbed runner-direct bootstrap is explicitly runner-allowlisted and retains WireGuard",
 );
 
 addCheck(
@@ -565,7 +568,7 @@ addCheck(
 );
 
 addCheck(
-  "factory-verifier-proves-wireguard-listener-interface-and-certificate-only-sshd",
+  "factory-verifier-proves-profile-bound-listener-firewall-and-certificate-only-sshd",
   verifier.includes("Get-WireGuardListenAddressEvidence") &&
     verifier.includes("Get-NetIPAddress -InterfaceAlias") &&
     verifier.includes("wireGuardListenAddress") &&
@@ -577,11 +580,14 @@ addCheck(
     verifier.includes('"nobody"') &&
     verifier.includes("trustedUserCaKeys") &&
     verifier.includes(
-      "Factory verifier rejects wildcard SSH listener or firewall interface scope",
+      "production Factory verifier requires SSH listener and firewall scope on the declared WireGuard interface/address",
+    ) &&
+    verifier.includes(
+      "testbed runner-direct SSH bootstrap requires an explicit non-empty runner source allowlist",
     ) &&
     verifier.includes("sshdEffectiveConfig.pubkeyAuthentication") &&
     verifier.includes("wireGuardListenAddressEvidence.addressOwnedByInterface"),
-  `${verifierPath} should prove sshd listens only on the declared WireGuard address, the firewall scopes that interface, and the effective policy is CA certificate/public-key only`,
+  `${verifierPath} should prove the production WireGuard-only and testbed runner-direct-plus-WireGuard listener/firewall policies while requiring CA certificate/public-key-only SSH`,
 );
 
 addCheck(

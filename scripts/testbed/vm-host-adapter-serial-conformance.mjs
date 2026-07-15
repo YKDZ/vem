@@ -712,6 +712,34 @@ function readOption(name, { optional = false } = {}) {
   return process.argv[index + 1];
 }
 
+function readStrictJsonObjectOption(name) {
+  const value = readOption(name, { optional: true });
+  if (value === null) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new Error("not an object");
+    return parsed;
+  } catch {
+    throw new Error(`${name} must be a JSON object`);
+  }
+}
+
+function readMaintenanceEndpointContext() {
+  const maintenanceRelaySession = readStrictJsonObjectOption(
+    "--maintenance-relay-session-json",
+  );
+  const maintenanceEndpointPolicy = readStrictJsonObjectOption(
+    "--maintenance-endpoint-policy-json",
+  );
+  if (maintenanceEndpointPolicy !== null && maintenanceRelaySession === null) {
+    throw new Error(
+      "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
+    );
+  }
+  return { maintenanceRelaySession, maintenanceEndpointPolicy };
+}
+
 function readProtectedScannerCode() {
   const fromFile = process.argv.includes("--scanner-code-file")
     ? readOption("--scanner-code-file")
@@ -778,6 +806,8 @@ function requestFor({
   saleBinding,
   operationEvidence = null,
   idempotencyCheck = false,
+  maintenanceRelaySession = null,
+  maintenanceEndpointPolicy = null,
 }) {
   const operationNonce = nonce();
   const serialOperationEvidence =
@@ -835,6 +865,8 @@ function requestFor({
         "cancellation",
       ],
     }[operation],
+    maintenanceRelaySession,
+    maintenanceEndpointPolicy,
     serialSession: null,
   };
   request.serialSession =
@@ -874,6 +906,7 @@ function requestFor({
 async function main() {
   const adapter = readOption("--adapter");
   const out = readOption("--out");
+  const maintenanceEndpointContext = readMaintenanceEndpointContext();
   const scannerCode = readProtectedScannerCode();
   const runId = readOption("--run-id");
   const targetIdentity = readOption("--target-identity");
@@ -922,6 +955,7 @@ async function main() {
       approvedRuntimeBase,
       saleCorrelationId,
       saleBinding: null,
+      ...maintenanceEndpointContext,
     });
     start = await runVmHostAdapter({
       request: startRequest,
@@ -956,6 +990,7 @@ async function main() {
       scannerDescriptor,
       saleCorrelationId,
       saleBinding: preparedSale,
+      ...maintenanceEndpointContext,
     });
     inject = await runVmHostAdapter({
       request: injectRequest,
@@ -1002,6 +1037,7 @@ async function main() {
         startReportDigest,
         injectReportDigest,
       },
+      ...maintenanceEndpointContext,
     });
     collect = await runVmHostAdapter({
       request: collectRequest,
@@ -1018,6 +1054,7 @@ async function main() {
       session,
       saleCorrelationId,
       saleBinding: completedSale,
+      ...maintenanceEndpointContext,
     });
     firstStop = await runVmHostAdapter({
       request: firstStopRequest,
@@ -1034,6 +1071,7 @@ async function main() {
       saleCorrelationId,
       saleBinding: completedSale,
       idempotencyCheck: true,
+      ...maintenanceEndpointContext,
     });
     repeatedStop = await runVmHostAdapter({
       request: repeatedStopRequest,
@@ -1054,6 +1092,7 @@ async function main() {
             scannerCode,
             workDirectory,
             environment,
+            ...maintenanceEndpointContext,
           })
         ).map((entry) =>
           entry.failureMode === "swapped-roles" ||
@@ -1082,6 +1121,7 @@ async function main() {
           failureCommands: readFailureMatrixCommands(
             readOption("--failure-matrix-commands-json"),
           ),
+          ...maintenanceEndpointContext,
         });
     if (failureMatrixArtifactPaths)
       writeFailureMatrixArtifacts(failureMatrix, failureMatrixArtifactPaths);
@@ -1100,6 +1140,7 @@ async function main() {
           saleCorrelationId,
           saleBinding: completedSale ?? preparedSale ?? null,
           idempotencyCheck: true,
+          ...maintenanceEndpointContext,
         });
         recoveryStop = await runVmHostAdapter({
           request: recoveryStopRequest,
@@ -1816,6 +1857,8 @@ async function runFailureMatrix({
   scannerCode,
   workDirectory,
   environment,
+  maintenanceRelaySession = null,
+  maintenanceEndpointPolicy = null,
   failureModes = [
     "malformed-frame",
     "device-disconnected",
@@ -1853,6 +1896,8 @@ async function runFailureMatrix({
         approvedRuntimeBase,
         saleCorrelationId,
         saleBinding: failureSaleBinding,
+        maintenanceRelaySession,
+        maintenanceEndpointPolicy,
       });
       const start = await runVmHostAdapter({
         request: startRequest,
@@ -1896,6 +1941,8 @@ async function runFailureMatrix({
         scannerDescriptor,
         saleCorrelationId,
         saleBinding: failureSaleBinding,
+        maintenanceRelaySession,
+        maintenanceEndpointPolicy,
       });
       const inject = await runVmHostAdapter({
         request: injectRequest,
@@ -1925,6 +1972,8 @@ async function runFailureMatrix({
               },
               saleCorrelationId,
               saleBinding: failureSaleBinding,
+              maintenanceRelaySession,
+              maintenanceEndpointPolicy,
             });
       const observation =
         failureMode === "scanner-timeout"
@@ -1970,6 +2019,8 @@ async function runFailureMatrix({
             saleCorrelationId,
             workDirectory,
             environment,
+            maintenanceRelaySession,
+            maintenanceEndpointPolicy,
           },
           session,
           mappingFailure ? saleBinding : failureSaleBinding,

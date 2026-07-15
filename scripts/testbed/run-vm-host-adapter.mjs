@@ -313,16 +313,32 @@ function serialSessionForOperation(operation, scannerCode) {
   };
 }
 
-function maintenanceRelaySessionFromOptions() {
-  const raw = readOption("--maintenance-relay-session-json", {
-    optional: true,
-  });
+function readStrictJsonObjectOption(name) {
+  const raw = readOption(name, { optional: true });
   if (raw === null) return null;
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new Error("not an object");
+    return parsed;
   } catch {
-    throw new Error("--maintenance-relay-session-json must be valid JSON");
+    throw new Error(`${name} must be a JSON object`);
   }
+}
+
+function maintenanceEndpointContextFromOptions() {
+  const maintenanceRelaySession = readStrictJsonObjectOption(
+    "--maintenance-relay-session-json",
+  );
+  const maintenanceEndpointPolicy = readStrictJsonObjectOption(
+    "--maintenance-endpoint-policy-json",
+  );
+  if (maintenanceEndpointPolicy !== null && maintenanceRelaySession === null) {
+    throw new Error(
+      "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
+    );
+  }
+  return { maintenanceRelaySession, maintenanceEndpointPolicy };
 }
 
 async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
@@ -389,7 +405,7 @@ async function main() {
   const audioCapture = audioCaptureForOperation(operation);
   const scannerCode = protectedScannerCode(operation);
   const serialSession = serialSessionForOperation(operation, scannerCode);
-  const maintenanceRelaySession = maintenanceRelaySessionFromOptions();
+  const maintenanceEndpointContext = maintenanceEndpointContextFromOptions();
   if (serialSession?.scannerInjection?.operationNonce === null)
     serialSession.scannerInjection.operationNonce = nonce;
   const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
@@ -412,7 +428,7 @@ async function main() {
     audioCapture,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
-    maintenanceRelaySession,
+    ...maintenanceEndpointContext,
     serialSession,
   });
   mkdirSync(dirname(out), { recursive: true });
