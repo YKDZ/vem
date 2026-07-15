@@ -26,6 +26,13 @@ function stepBlock(workflow, stepName) {
 }
 
 describe("VM runtime acceptance workflow maintenance relay path", () => {
+  it("delegates serial trust-anchor creation to the E2E runner before serial adapter invocation", () => {
+    const workflow = readWorkflow();
+    const runtimeAcceptance = stepBlock(workflow, "Run VM Runtime Acceptance");
+    assert.match(runtimeAcceptance, /scripts\/testbed\/win10-vem-e2e\.mjs/);
+    assert.doesNotMatch(workflow, /VEM_SERIAL_RUNNER_SIGNING_KEY_FILE/);
+  });
+
   it("checks out the dispatched commit before using repository validation code", () => {
     const workflow = readWorkflow();
     const checkout = stepBlock(workflow, "Checkout Trusted Commit");

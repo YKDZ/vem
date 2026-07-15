@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   createHash,
   createPublicKey,
+  createPrivateKey,
   generateKeyPairSync,
   randomBytes,
   sign,
@@ -56,6 +57,67 @@ function createRunnerEvidence() {
   };
 }
 
+function publicKeyEncoding(publicKey) {
+  return `ed25519-public-key:base64:${publicKey
+    .export({ type: "spki", format: "der" })
+    .toString("base64")}`;
+}
+
+function protectedRunnerSigningKey() {
+  const signingKeyFile = readOption("--runner-signing-key-file", {
+    optional: true,
+  });
+  const expectedRunnerPublicKey = readOption("--expected-runner-public-key", {
+    optional: true,
+  });
+  if (!signingKeyFile && !expectedRunnerPublicKey) {
+    if (process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY !== "1")
+      throw new Error(
+        "serial conformance requires --runner-signing-key-file and --expected-runner-public-key",
+      );
+    const evidence = createRunnerEvidence();
+    return { ...evidence, expectedRunnerPublicKey: evidence.publicKey };
+  }
+  if (!signingKeyFile || !expectedRunnerPublicKey)
+    throw new Error(
+      "serial conformance requires --runner-signing-key-file and --expected-runner-public-key together",
+    );
+  if (!isAbsolute(signingKeyFile))
+    throw new Error(
+      "--runner-signing-key-file must be an absolute runner-owned path",
+    );
+  const runnerScope = resolve(process.env.RUNNER_TEMP ?? "");
+  const keyPath = resolve(signingKeyFile);
+  if (
+    !runnerScope ||
+    (keyPath !== runnerScope && !keyPath.startsWith(`${runnerScope}${sep}`))
+  )
+    throw new Error("--runner-signing-key-file must be inside RUNNER_TEMP");
+  const keyStat = statSync(keyPath);
+  if (!keyStat.isFile() || (keyStat.mode & 0o777) !== 0o600)
+    throw new Error("--runner-signing-key-file must be a regular 0600 file");
+  if (
+    typeof process.getuid === "function" &&
+    typeof keyStat.uid === "number" &&
+    keyStat.uid !== process.getuid()
+  )
+    throw new Error(
+      "--runner-signing-key-file must be owned by the runner user",
+    );
+  let privateKey;
+  try {
+    privateKey = createPrivateKey(readFileSync(keyPath, "utf8"));
+  } finally {
+    rmSync(keyPath, { force: true });
+  }
+  const publicKey = publicKeyEncoding(createPublicKey(privateKey));
+  if (publicKey !== expectedRunnerPublicKey)
+    throw new Error(
+      "--runner-signing-key-file does not match --expected-runner-public-key",
+    );
+  return { privateKey, publicKey, expectedRunnerPublicKey, operations: {} };
+}
+
 function commitRunnerOperation(evidence, stage, report) {
   const reportDigest = deriveSerialOperationReportDigest(report);
   evidence.operations[stage] = {
@@ -70,7 +132,12 @@ function commitRunnerOperation(evidence, stage, report) {
   return reportDigest;
 }
 
-function validateRunnerOperationEvidence(evidence, stage, report) {
+function validateRunnerOperationEvidence(
+  evidence,
+  stage,
+  report,
+  expectedRunnerPublicKey,
+) {
   const receipt = evidence?.operations?.[stage];
   assertConformance(
     receipt &&
@@ -93,13 +160,20 @@ function validateRunnerOperationEvidence(evidence, stage, report) {
       receipt.signature.startsWith(signaturePrefix),
     "runner operation evidence must use an Ed25519 public key and signature",
   );
+  assertConformance(
+    evidence.publicKey === expectedRunnerPublicKey,
+    "runner operation evidence does not match the expected runner public key",
+  );
   let valid = false;
   try {
     valid = verify(
       null,
       Buffer.from(receipt.reportDigest),
       createPublicKey({
-        key: Buffer.from(evidence.publicKey.slice(keyPrefix.length), "base64"),
+        key: Buffer.from(
+          expectedRunnerPublicKey.slice(keyPrefix.length),
+          "base64",
+        ),
         format: "der",
         type: "spki",
       }),
@@ -115,8 +189,16 @@ function validateRunnerOperationEvidence(evidence, stage, report) {
   return receipt;
 }
 
-export function validateSerialConformanceReport(input) {
+export function validateSerialConformanceReport(
+  input,
+  { expectedRunnerPublicKey } = {},
+) {
   const conformance = structuredClone(input);
+  assertConformance(
+    typeof expectedRunnerPublicKey === "string" &&
+      expectedRunnerPublicKey.startsWith("ed25519-public-key:base64:"),
+    "expected runner public key is required",
+  );
   assertConformance(
     conformance?.schemaVersion === "vem-vm-host-adapter-serial-conformance/v1",
     "serial conformance schemaVersion is invalid",
@@ -170,16 +252,19 @@ export function validateSerialConformanceReport(input) {
     conformance.runnerEvidence,
     "start",
     start,
+    expectedRunnerPublicKey,
   );
   const injectReceipt = validateRunnerOperationEvidence(
     conformance.runnerEvidence,
     "inject",
     inject,
+    expectedRunnerPublicKey,
   );
   validateRunnerOperationEvidence(
     conformance.runnerEvidence,
     "collect",
     collect,
+    expectedRunnerPublicKey,
   );
   assertConformance(
     start.result === "succeeded" &&
@@ -259,10 +344,12 @@ export function validateSerialConformanceReport(input) {
   return { conformance, reports: validatedReports };
 }
 
-function readOption(name) {
+function readOption(name, { optional = false } = {}) {
   const index = process.argv.indexOf(name);
-  if (index === -1 || !process.argv[index + 1])
+  if (index === -1 || !process.argv[index + 1]) {
+    if (optional) return null;
     throw new Error(`${name} is required`);
+  }
   return process.argv[index + 1];
 }
 
@@ -457,7 +544,7 @@ async function main() {
   let preparedSale;
   let completedSale;
   let primaryError;
-  const runnerEvidence = createRunnerEvidence();
+  const runnerEvidence = protectedRunnerSigningKey();
   const serialRunnerChallenge = runnerChallenge();
   try {
     startRequest = requestFor({
@@ -632,45 +719,44 @@ async function main() {
         if (!primaryError) primaryError = error;
       }
     }
-    writeFileSync(
-      out,
-      `${JSON.stringify(
-        {
-          schemaVersion: "vem-vm-host-adapter-serial-conformance/v1",
-          runId,
-          requests: {
-            start: startRequest,
-            inject: injectRequest,
-            collect: collectRequest,
-          },
-          runnerEvidence: {
-            publicKey: runnerEvidence.publicKey,
-            runnerChallenge: serialRunnerChallenge,
-            operations: runnerEvidence.operations,
-          },
-          session:
-            session === undefined
-              ? null
-              : {
-                  serialSessionId: session.serialSessionId,
-                  sessionBindingToken: session.sessionBindingToken,
-                  deviceMappingDigest: session.deviceMappingDigest,
-                },
-          reports: {
-            start,
-            inject,
-            collect,
-            firstStop,
-            repeatedStop,
-            recoveryStop,
-          },
-          failureMatrix,
-        },
-        null,
-        2,
-      )}\n`,
-      { mode: 0o600 },
-    );
+    const conformance = {
+      schemaVersion: "vem-vm-host-adapter-serial-conformance/v1",
+      runId,
+      requests: {
+        start: startRequest,
+        inject: injectRequest,
+        collect: collectRequest,
+      },
+      runnerEvidence: {
+        publicKey: runnerEvidence.publicKey,
+        runnerChallenge: serialRunnerChallenge,
+        operations: runnerEvidence.operations,
+      },
+      session:
+        session === undefined
+          ? null
+          : {
+              serialSessionId: session.serialSessionId,
+              sessionBindingToken: session.sessionBindingToken,
+              deviceMappingDigest: session.deviceMappingDigest,
+            },
+      reports: {
+        start,
+        inject,
+        collect,
+        firstStop,
+        repeatedStop,
+        recoveryStop,
+      },
+      failureMatrix,
+    };
+    writeFileSync(out, `${JSON.stringify(conformance, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    if (!primaryError)
+      validateSerialConformanceReport(conformance, {
+        expectedRunnerPublicKey: runnerEvidence.expectedRunnerPublicKey,
+      });
   }
   if (primaryError) throw primaryError;
 }

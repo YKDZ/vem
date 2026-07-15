@@ -138,6 +138,7 @@ function completedSerialSaleEvidence(overrides = {}) {
       },
     },
     serialConformance: structuredClone(capturedSerialConformance),
+    expectedRunnerPublicKey: capturedSerialConformance.runnerEvidence.publicKey,
     ...overrides,
   };
 }
@@ -4464,6 +4465,17 @@ try {
     assert.equal(
       commandArg(plan.steps[3].command, "--machine-code"),
       "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
+    );
+    const saleStep = plan.steps.find(
+      (step) => step.name === "simulated hardware sale flow",
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--runner-signing-key-file"),
+      "runner-owned-serial-signing-key-file-required",
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--expected-runner-public-key"),
+      "expected-serial-runner-public-key-required",
     );
 
     assert.throws(

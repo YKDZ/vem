@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -2519,6 +2520,12 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
     "--scanner-code-file",
     options.scannerCodeFile ?? "runner-owned-scanner-code-file-required",
+    "--runner-signing-key-file",
+    options.serialRunnerSigningKeyFile ??
+      "runner-owned-serial-signing-key-file-required",
+    "--expected-runner-public-key",
+    options.expectedSerialRunnerPublicKey ??
+      "expected-serial-runner-public-key-required",
     "--run-id",
     runId,
     "--target-identity",
@@ -2593,6 +2600,8 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       simulatedHardwareSaleFlow: saleFlowReport,
       serialConformance: serialConformanceReport,
     },
+    serialRunnerExpectedPublicKey:
+      options.expectedSerialRunnerPublicKey ?? null,
     ci: {
       entrypoint:
         "node scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance",
@@ -3291,6 +3300,7 @@ function serialAcceptanceDiagnostic(code, message) {
 export function evaluateSimulatedHardwareSerialEvidence({
   saleFlow,
   serialConformance,
+  expectedRunnerPublicKey,
 } = {}) {
   const diagnostics = [];
   const facts = saleFlow?.simulatedHardwareSaleFlow ?? saleFlow;
@@ -3298,7 +3308,9 @@ export function evaluateSimulatedHardwareSerialEvidence({
   const sale = facts?.sale;
   let validatedConformance = null;
   try {
-    validatedConformance = validateSerialConformanceReport(serialConformance);
+    validatedConformance = validateSerialConformanceReport(serialConformance, {
+      expectedRunnerPublicKey,
+    });
   } catch {
     diagnostics.push(
       serialAcceptanceDiagnostic(
@@ -3481,6 +3493,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const serialEvidence = evaluateSimulatedHardwareSerialEvidence({
     saleFlow: saleFlow?.parsed,
     serialConformance: saleFlow?.serialConformance,
+    expectedRunnerPublicKey: plan.serialRunnerExpectedPublicKey,
   });
   const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
   const approvedPreclaimBaseEvaluation =
@@ -3587,75 +3600,131 @@ function runVmRuntimeAcceptance(options) {
 
   const steps = [];
   let blocked = false;
-  for (const [index, step] of plan.steps.entries()) {
-    const startedAt = new Date().toISOString();
-    const stdoutPath = `${plan.artifacts.logsRoot}/${String(index + 1).padStart(
-      2,
-      "0",
-    )}-${step.mode}.stdout.log`;
-    const stderrPath = `${plan.artifacts.logsRoot}/${String(index + 1).padStart(
-      2,
-      "0",
-    )}-${step.mode}.stderr.log`;
-    if (blocked) {
-      steps.push({
+  let serialRunnerTrust = null;
+  try {
+    for (const [index, originalStep] of plan.steps.entries()) {
+      let step = originalStep;
+      const startedAt = new Date().toISOString();
+      const stdoutPath = `${plan.artifacts.logsRoot}/${String(
+        index + 1,
+      ).padStart(2, "0")}-${step.mode}.stdout.log`;
+      const stderrPath = `${plan.artifacts.logsRoot}/${String(
+        index + 1,
+      ).padStart(2, "0")}-${step.mode}.stderr.log`;
+      if (blocked) {
+        steps.push({
+          ...step,
+          status: "blocked",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          exitCode: null,
+          stdoutPath,
+          stderrPath,
+          error: "blocked_by_previous_failed_step",
+        });
+        continue;
+      }
+      if (step.name === "simulated hardware sale flow") {
+        serialRunnerTrust = createSerialRunnerTrustAnchor();
+        plan.serialRunnerExpectedPublicKey = serialRunnerTrust.publicKey;
+        step = {
+          ...step,
+          command: replaceCommandOption(
+            replaceCommandOption(
+              step.command,
+              "--runner-signing-key-file",
+              serialRunnerTrust.signingKeyFile,
+            ),
+            "--expected-runner-public-key",
+            serialRunnerTrust.publicKey,
+          ),
+        };
+      }
+
+      const result = spawnSync(step.command[0], step.command.slice(1), {
+        cwd: step.cwd ?? process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, ...(step.env ?? {}) },
+      });
+      writeFileSync(stdoutPath, result.stdout ?? "", "utf8");
+      writeFileSync(stderrPath, result.stderr ?? "", "utf8");
+      const status = result.status === 0 ? "passed" : "failed";
+      const parsed =
+        status === "passed"
+          ? (readJsonIfPresent(step.report) ??
+            JSON.parse(result.stdout || "null"))
+          : readJsonIfPresent(step.report);
+      const stepResult = {
         ...step,
-        status: "blocked",
+        status,
         startedAt,
         finishedAt: new Date().toISOString(),
-        exitCode: null,
+        exitCode: result.status,
         stdoutPath,
         stderrPath,
-        error: "blocked_by_previous_failed_step",
-      });
-      continue;
+        parsed,
+        error:
+          status === "passed" ? null : result.stderr || result.stdout || null,
+      };
+      if (step.name === "simulated hardware sale flow") {
+        stepResult.serialConformance = readJsonIfPresent(
+          plan.artifacts.serialConformance,
+        );
+      }
+      steps.push(stepResult);
+      if (status !== "passed" && step.blocksOnFailure) {
+        blocked = true;
+      }
     }
 
-    const result = spawnSync(step.command[0], step.command.slice(1), {
-      cwd: step.cwd ?? process.cwd(),
-      encoding: "utf8",
-      env: { ...process.env, ...(step.env ?? {}) },
-    });
-    writeFileSync(stdoutPath, result.stdout ?? "", "utf8");
-    writeFileSync(stderrPath, result.stderr ?? "", "utf8");
-    const status = result.status === 0 ? "passed" : "failed";
-    const parsed =
-      status === "passed"
-        ? (readJsonIfPresent(step.report) ??
-          JSON.parse(result.stdout || "null"))
-        : readJsonIfPresent(step.report);
-    const stepResult = {
-      ...step,
-      status,
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      exitCode: result.status,
-      stdoutPath,
-      stderrPath,
-      parsed,
-      error:
-        status === "passed" ? null : result.stderr || result.stdout || null,
-    };
-    if (step.name === "simulated hardware sale flow") {
-      stepResult.serialConformance = readJsonIfPresent(
-        plan.artifacts.serialConformance,
+    const report = buildVmRuntimeAcceptanceReport({ plan, steps });
+    if (options.factoryMediaAdmission) {
+      report.factoryMediaAdmission = structuredClone(
+        options.factoryMediaAdmission,
       );
     }
-    steps.push(stepResult);
-    if (status !== "passed" && step.blocksOnFailure) {
-      blocked = true;
-    }
-  }
-
-  const report = buildVmRuntimeAcceptanceReport({ plan, steps });
-  if (options.factoryMediaAdmission) {
-    report.factoryMediaAdmission = structuredClone(
-      options.factoryMediaAdmission,
+    writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
+    writeFileSync(
+      plan.artifacts.report,
+      `${JSON.stringify(report, null, 2)}\n`,
     );
+    return report;
+  } finally {
+    serialRunnerTrust?.cleanup();
   }
-  writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
-  writeFileSync(plan.artifacts.report, `${JSON.stringify(report, null, 2)}\n`);
-  return report;
+}
+
+function createSerialRunnerTrustAnchor() {
+  const root = mkdtempSync(
+    join(process.env.RUNNER_TEMP ?? tmpdir(), "vem-serial-runner-trust-"),
+  );
+  chmodSync(root, 0o700);
+  const signingKeyFile = join(root, "runner-ed25519.pem");
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  writeFileSync(
+    signingKeyFile,
+    privateKey.export({ type: "pkcs8", format: "pem" }),
+    { mode: 0o600 },
+  );
+  chmodSync(signingKeyFile, 0o600);
+  return {
+    signingKeyFile,
+    publicKey: `ed25519-public-key:base64:${publicKey
+      .export({ type: "spki", format: "der" })
+      .toString("base64")}`,
+    cleanup() {
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function replaceCommandOption(command, option, value) {
+  const index = command.indexOf(option);
+  if (index === -1 || !command[index + 1])
+    throw new Error(`${option} is required for serial conformance`);
+  const replaced = [...command];
+  replaced[index + 1] = value;
+  return replaced;
 }
 
 function runFactoryImageDeliveryUnit(options) {
@@ -8261,6 +8330,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--scanner-code-file") {
       options.scannerCodeFile = next;
+      index += 1;
+    } else if (arg === "--serial-runner-signing-key-file") {
+      options.serialRunnerSigningKeyFile = next;
+      index += 1;
+    } else if (arg === "--expected-serial-runner-public-key") {
+      options.expectedSerialRunnerPublicKey = next;
       index += 1;
     } else if (arg === "--approved-runtime-base") {
       options.approvedRuntimeBase = next;

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -607,6 +608,14 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
 
 const requestPath = readOption("--request");
 const reportPath = readOption("--report");
+if (process.env.VEM_VM_HOST_ADAPTER_EXPECT_ABSENT_ENV) {
+  for (const name of process.env.VEM_VM_HOST_ADAPTER_EXPECT_ABSENT_ENV.split(
+    ",",
+  )) {
+    if (process.env[name])
+      throw new Error(`adapter received protected ${name}`);
+  }
+}
 const request = validateVmHostAdapterRequest(
   JSON.parse(readFileSync(requestPath, "utf8")),
 );
@@ -728,12 +737,34 @@ if (
   });
   setInterval(() => {}, 1000);
 } else {
+  if (
+    scenarioForOperation === "spawn-descendant" &&
+    request.operation !== "cleanup" &&
+    request.operation !== "cancel"
+  ) {
+    const descendant = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {
+        detached: false,
+        stdio: "ignore",
+      },
+    );
+    descendant.unref();
+    const descendantPidFile =
+      process.env.VEM_VM_HOST_ADAPTER_DESCENDANT_PID_FILE;
+    if (!descendantPidFile || !Number.isInteger(descendant.pid))
+      throw new Error("spawn-descendant requires a descendant PID file");
+    writeFileSync(descendantPidFile, `${descendant.pid}\n`, { mode: 0o600 });
+  }
   const scenario =
     request.operation === "cleanup" || request.operation === "cancel"
       ? "success"
       : scenarioForOperation === "hang"
         ? "success"
-        : scenarioForOperation;
+        : scenarioForOperation === "spawn-descendant"
+          ? "success"
+          : scenarioForOperation;
   const statePath = process.env.VEM_VM_HOST_ADAPTER_STATE_FILE;
   const state = readState(statePath);
   const report = fakeReport(request, scenario, state, observedSerialFaultCode);

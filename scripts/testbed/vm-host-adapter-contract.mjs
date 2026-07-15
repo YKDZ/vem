@@ -3561,11 +3561,39 @@ function signalProcessGroup(child, signal) {
   }
 }
 
+function adapterEnvironment(environment) {
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      ([name]) =>
+        !/^(?:VEM_VM_HOST_SCANNER_CODE|VEM_SERIAL_RUNNER_SIGNING_KEY_FILE|VEM_SERIAL_RUNNER_EXPECTED_PUBLIC_KEY)$/i.test(
+          name,
+        ) && !/(?:^|_)(?:PRIVATE|SIGNING)_?KEY(?:_|$)/i.test(name),
+    ),
+  );
+}
+
+function terminateWindowsProcessTree(child) {
+  if (!Number.isInteger(child.pid)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const taskkill = spawn(
+      "taskkill",
+      ["/pid", String(child.pid), "/t", "/f"],
+      { stdio: "ignore", windowsHide: true },
+    );
+    taskkill.once("error", resolve);
+    taskkill.once("close", resolve);
+  });
+}
+
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function terminate(child) {
+  if (process.platform === "win32") {
+    await terminateWindowsProcessTree(child);
+    return;
+  }
   signalProcessGroup(child, "SIGTERM");
   const gracefulDeadline = Date.now() + 250;
   while (processGroupExists(child) && Date.now() < gracefulDeadline)
@@ -3632,16 +3660,10 @@ async function invokeAdapter({
               ? ["--scanner-code-file", scannerInputPath]
               : []),
           ];
-      const {
-        VEM_VM_HOST_SCANNER_CODE: _inheritedProtectedScannerCode,
-        ...processEnvironment
-      } = process.env;
-      const {
-        VEM_VM_HOST_SCANNER_CODE: _configuredProtectedScannerCode,
-        ...configuredEnvironment
-      } = environment;
+      const processEnvironment = adapterEnvironment(process.env);
+      const configuredEnvironment = adapterEnvironment(environment);
       const child = spawn(command, args, {
-        detached: process.platform !== "win32",
+        detached: true,
         stdio: "ignore",
         cwd: workDirectory,
         env: {
@@ -3688,7 +3710,7 @@ async function invokeAdapter({
           void termination.then(() => finish({ code, reason }));
           return;
         }
-        finish({ code, reason });
+        void terminate(child).then(() => finish({ code, reason }));
       });
     });
     const completedAt = new Date().toISOString();
