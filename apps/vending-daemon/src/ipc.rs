@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
+use uuid::Uuid;
 
 use crate::{
     backend::BackendClient,
@@ -892,6 +893,25 @@ struct LocalEnvironmentControlRequest {
     timeout_seconds: Option<u64>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManualDispenseDiagnosticRequest {
+    slot_code: String,
+    layer_no: u32,
+    cell_no: u32,
+    #[serde(default = "default_manual_dispense_quantity")]
+    quantity: u32,
+    #[serde(default = "default_manual_dispense_timeout_seconds")]
+    timeout_seconds: u64,
+}
+
+fn default_manual_dispense_quantity() -> u32 {
+    1
+}
+fn default_manual_dispense_timeout_seconds() -> u64 {
+    30
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VisionStatusSnapshot {
@@ -1172,6 +1192,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(transaction_by_order_no))
         .route("/v1/hardware/self-check", post(hardware_self_check))
+        .route(
+            "/v1/maintenance/manual-dispense-diagnostic",
+            post(manual_dispense_diagnostic),
+        )
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
         .route(
             "/v1/hardware-bindings/:role/test",
@@ -6944,6 +6968,122 @@ async fn control_environment(
     };
 
     Json(result).into_response()
+}
+
+async fn manual_dispense_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<ManualDispenseDiagnosticRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(
+        &ctx,
+        &headers,
+        "hardware.manual_dispense_diagnostic",
+    )
+    .await
+    {
+        return response;
+    }
+    if request.slot_code.trim().is_empty() || request.quantity == 0 || request.timeout_seconds == 0
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "invalid_manual_dispense_diagnostic_request",
+                message: "slotCode, positive quantity and positive timeoutSeconds are required"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let context = MaintenanceAuthorizationContext {
+        session_id: session_id.to_string(),
+    };
+    let operator_id = ctx
+        .maintenance_authorization
+        .operator_id(&context)
+        .await
+        .unwrap_or_else(|| "local-operator".to_string());
+    let controller = ctx.hardware.self_check().await;
+    // A mock or an unresolved serial binding must never turn this diagnostic
+    // into a hidden alternative sale path.
+    if !controller.online || controller.port_path.is_none() {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "manual_dispense_controller_unresolved",
+                message: "manual dispense requires an online resolved lower controller".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let diagnostic_id = format!("manual-dispense-{}", Uuid::new_v4().simple());
+    let command = vending_core::hardware::DispenseCommandPayload {
+        command_no: diagnostic_id.clone(),
+        // This sentinel is intentionally not an order number. It keeps the
+        // controller protocol observable without creating sale evidence.
+        order_no: "MANUAL-DIAGNOSTIC".to_string(),
+        slot: vending_core::hardware::SlotPayload {
+            layer_no: request.layer_no,
+            cell_no: request.cell_no,
+            slot_code: request.slot_code.trim().to_string(),
+        },
+        quantity: request.quantity,
+        timeout_seconds: request.timeout_seconds,
+    };
+    let started_at = crate::state::store::now_iso();
+    let result = ctx.hardware.dispense(command.clone()).await;
+    let completed_at = crate::state::store::now_iso();
+    let normalized = serde_json::json!({
+        "outcome": if result.success { "completed" } else { "failed" },
+        "errorCode": result.error_code,
+        "reportedAt": result.reported_at,
+    });
+    let record = crate::state::store::ManualDispenseDiagnostic {
+        diagnostic_id: diagnostic_id.clone(),
+        operator_id: operator_id.clone(),
+        session_correlation_id: maintenance_session_correlation_id(session_id),
+        controller: serde_json::json!({
+            "adapter": controller.adapter, "portPath": controller.port_path,
+            "resolutionSource": controller.resolution_source,
+        }),
+        command: serde_json::json!({
+            "commandNo": command.command_no, "slotCode": command.slot.slot_code,
+            "layerNo": command.slot.layer_no, "cellNo": command.slot.cell_no,
+            "quantity": command.quantity, "timeoutSeconds": command.timeout_seconds,
+        }),
+        started_at: started_at.clone(),
+        completed_at: completed_at.clone(),
+        raw_result: serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+        normalized_result: normalized.clone(),
+    };
+    if let Err(error) = ctx.state.record_manual_dispense_diagnostic(&record).await {
+        return store_error_response("manual_dispense_diagnostic_write_failed", error);
+    }
+    append_local_diagnostic_log(
+        &ctx,
+        "info",
+        "maintenance_audit",
+        "manual dispense diagnostic completed",
+        Some(serde_json::json!({
+            "diagnosticId": diagnostic_id, "operatorId": operator_id,
+            "sessionCorrelationId": record.session_correlation_id, "outcome": normalized["outcome"],
+        })),
+    )
+    .await;
+    Json(serde_json::json!({
+        "diagnosticId": record.diagnostic_id, "outcome": normalized["outcome"],
+        "errorCode": normalized["errorCode"], "reportedAt": normalized["reportedAt"],
+        "stockReconciliationRequired": true,
+    }))
+    .into_response()
 }
 
 fn hardware_fault_injection_enabled() -> bool {
