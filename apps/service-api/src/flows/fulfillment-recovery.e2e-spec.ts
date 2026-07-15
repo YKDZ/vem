@@ -31,6 +31,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AppModule } from "../app.module";
 import { AppConfigService } from "../config/app-config.service";
+import { MachineStockMovementsService } from "../inventory/machine-stock-movements.service";
 import {
   cleanupBusinessTables,
   connectMqtt,
@@ -64,6 +65,7 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
   let appConfig: AppConfigService;
   let db: DrizzleDB;
   let mqttClient: MqttClient;
+  let machineStockMovementsService: MachineStockMovementsService;
   let api: ReturnType<typeof request>;
 
   beforeAll(async () => {
@@ -76,6 +78,7 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
     await app.init();
 
     appConfig = app.get(AppConfigService);
+    machineStockMovementsService = app.get(MachineStockMovementsService);
     db = new DrizzleDB(appConfig.databaseUrl);
     await db.connect();
 
@@ -163,8 +166,14 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
 
   async function publishDispenseResult(
     ctx: PaidCommandContext,
-    payload: { success: boolean; errorCode: string | null; message: string },
+    payload: {
+      success: boolean;
+      errorCode: string | null;
+      message: string;
+      reportedAt?: string;
+    },
   ) {
+    const reportedAt = payload.reportedAt ?? new Date().toISOString();
     await publishMqtt(
       mqttClient,
       `vem/machines/${ctx.seeded.machineCode}/events/dispense-result`,
@@ -177,10 +186,11 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
           success: payload.success,
           errorCode: payload.errorCode,
           message: payload.message,
-          reportedAt: new Date().toISOString(),
+          reportedAt,
         },
       }),
     );
+    return reportedAt;
   }
 
   async function eventually(assertion: () => Promise<void>) {
@@ -483,6 +493,109 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       .from(machineEvents)
       .where(eq(machineEvents.messageId, messageId));
     expect(Number(events.total)).toBe(1);
+  }, 60_000);
+
+  it("atomically confirms a crash-after-publish success while the command is still pending", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-PENDING-SUCCESS");
+    await db.client
+      .update(vendingCommands)
+      .set({
+        status: "pending",
+        sentAt: null,
+        ackAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(vendingCommands.id, ctx.commandId));
+
+    const occurredAt = await publishDispenseResult(ctx, {
+      success: true,
+      errorCode: null,
+      message: "success published before sent-state durability",
+    });
+    await eventually(async () => {
+      const [command] = await db.client
+        .select({ status: vendingCommands.status })
+        .from(vendingCommands)
+        .where(eq(vendingCommands.id, ctx.commandId));
+      expect(command.status).toBe("succeeded");
+    });
+    expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(1);
+
+    await db.client
+      .update(vendingCommands)
+      .set({ status: "pending", updatedAt: new Date() })
+      .where(eq(vendingCommands.id, ctx.commandId));
+    const replay = await machineStockMovementsService.receiveRawMovement(
+      {
+        id: ctx.seeded.machineId,
+        code: ctx.seeded.machineCode,
+        status: "online",
+      },
+      {
+        movementId: `mqtt-dispense:${ctx.commandNo}`,
+        planogramVersion: ctx.seeded.planogramVersion,
+        slotId: ctx.seeded.slotId,
+        movementType: "dispense_succeeded",
+        quantity: 1,
+        source: "vending_command",
+        attributedTo: ctx.commandNo,
+        orderContext: {
+          orderNo: ctx.orderNo,
+          orderItemId: ctx.orderItemId,
+          vendingCommandNo: ctx.commandNo,
+          inventoryId: ctx.seeded.inventoryId,
+        },
+        occurredAt,
+      },
+    );
+    expect(replay.status).toBe("already_accepted");
+    const [repaired] = await db.client
+      .select({ status: vendingCommands.status })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.id, ctx.commandId));
+    expect(repaired.status).toBe("succeeded");
+    expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(1);
+  }, 60_000);
+
+  it("keeps command, reservation and inventory coherent when success and failure race", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-RESULT-RACE");
+    await Promise.all([
+      publishDispenseResult(ctx, {
+        success: true,
+        errorCode: null,
+        message: "concurrent terminal success",
+      }),
+      publishDispenseResult(ctx, {
+        success: false,
+        errorCode: "NO_DROP",
+        message: "concurrent terminal failure",
+      }),
+    ]);
+
+    await eventually(async () => {
+      const [command] = await db.client
+        .select({ status: vendingCommands.status })
+        .from(vendingCommands)
+        .where(eq(vendingCommands.id, ctx.commandId));
+      expect(["succeeded", "failed"]).toContain(command.status);
+    });
+    const [command] = await db.client
+      .select({ status: vendingCommands.status })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.id, ctx.commandId));
+    const [reservation] = await db.client
+      .select({ status: inventoryReservations.status })
+      .from(inventoryReservations)
+      .where(eq(inventoryReservations.orderId, ctx.orderId));
+    const confirmed = await movementCount(ctx.orderId, "purchase_confirmed");
+    const released = await movementCount(ctx.orderId, "reservation_released");
+    if (command.status === "succeeded") {
+      expect(reservation.status).toBe("confirmed");
+      expect({ confirmed, released }).toEqual({ confirmed: 1, released: 0 });
+    } else {
+      expect(reservation.status).toBe("released");
+      expect({ confirmed, released }).toEqual({ confirmed: 0, released: 1 });
+    }
   }, 60_000);
 
   it("stock movement replay after unknown is idempotent", async () => {

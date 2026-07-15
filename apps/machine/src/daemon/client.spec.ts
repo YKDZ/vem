@@ -320,6 +320,55 @@ describe("DaemonApiClient", () => {
     }
   });
 
+  it("bounds an unreachable expiry revoke without letting the getter clear first", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-07-14T12:00:00.000Z"));
+    try {
+      vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+        baseUrl: "http://127.0.0.1:7891",
+        token: "daemon-token",
+        source: "browser_env",
+        mock: true,
+      });
+      let revokeSignal: AbortSignal | undefined;
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              sessionId: "unreachable-expiry-session",
+              expiresAt: "2030-07-14T12:00:01.000Z",
+              scopes: ["maintenance.mutate"],
+            }),
+            { status: 201 },
+          ),
+        )
+        .mockImplementationOnce((_input, init) => {
+          revokeSignal = init?.signal ?? undefined;
+          return new Promise<Response>((_resolve, reject) => {
+            revokeSignal?.addEventListener("abort", () => {
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          });
+        });
+      const invalidated = vi.fn();
+      daemonClient.onMaintenanceSessionInvalidated(invalidated);
+
+      await daemonClient.beginMaintenanceSession("2468");
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(daemonClient.currentMaintenanceSession).toBeNull();
+      expect(invalidated).not.toHaveBeenCalled();
+      expect(revokeSignal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(revokeSignal?.aborted).toBe(true);
+      expect(invalidated).toHaveBeenCalledOnce();
+      expect(daemonClient.currentMaintenanceSession).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clears a maintenance session when the daemon rejects it", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

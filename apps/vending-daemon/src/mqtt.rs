@@ -24,6 +24,7 @@ use vending_core::{
 
 const DISPENSE_LOCAL_TIMEOUT_GRACE_SECONDS: u64 = 15;
 const DISPENSE_RESTART_RECOVERY_GRACE_SECONDS: i64 = 30;
+const DISPENSE_SIDE_EFFECT_RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct OutboxFlushResult {
@@ -385,6 +386,21 @@ impl MqttSyncRuntime {
             }
         }
         Ok(recovered)
+    }
+
+    async fn run_journaled_dispense_recovery_worker(self: Arc<Self>, interval: Duration) {
+        let mut ticker = tokio::time::interval(interval);
+        // Startup performs the first scan synchronously. Consume tokio's
+        // immediate tick so subsequent attempts remain bounded by the interval.
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = self.shutdown.cancelled() => break,
+                _ = ticker.tick() => {
+                    let _ = self.recover_journaled_dispense_side_effects().await;
+                }
+            }
+        }
     }
 
     async fn recover_stale_active_dispense_commands_at(
@@ -1161,6 +1177,11 @@ impl MqttSyncRuntime {
         // Never await an initial backlog here, before this loop can poll it.
         self.schedule_due_outbox();
 
+        let recovery_task = tokio::spawn(
+            self.clone()
+                .run_journaled_dispense_recovery_worker(DISPENSE_SIDE_EFFECT_RECOVERY_INTERVAL),
+        );
+
         let heartbeat = self.clone();
         let heartbeat_task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -1263,6 +1284,7 @@ impl MqttSyncRuntime {
 
         heartbeat_task.abort();
         sampler_task.abort();
+        recovery_task.abort();
         result
     }
 }
@@ -1726,7 +1748,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_recovery_repairs_a_reopened_terminal_journal_after_its_slot_returns() {
+    async fn v17_to_v18_worker_recovers_terminal_journal_after_its_slot_returns() {
         let temp = tempfile::tempdir().expect("temp");
         let database = temp.path().join("state.db");
         let state = crate::state::LocalStateStore::open(&database)
@@ -1764,30 +1786,69 @@ mod tests {
             .record_command_result_journal(&command, &result)
             .await
             .expect("journal");
+        sqlx::query("ALTER TABLE command_log DROP COLUMN side_effects_committed_at")
+            .execute(state.pool())
+            .await
+            .expect("restore v17 command_log shape");
+        state
+            .put_metadata("schema_version", &17_i64)
+            .await
+            .expect("mark v17");
         drop(state);
 
         let reopened = crate::state::LocalStateStore::open(&database)
             .await
-            .expect("reopen");
+            .expect("migrate v17 to v18");
+        sqlx::query(
+            "UPDATE command_log SET updated_at='2000-01-01T00:00:00Z',expires_at='2000-01-02T00:00:00Z' WHERE command_no=?1",
+        )
+        .bind(&command.command_no)
+        .execute(reopened.pool())
+        .await
+        .expect("age migrated pending journal");
+        reopened
+            .prune_command_log()
+            .await
+            .expect("prune migrated log");
+        assert!(reopened
+            .get_command(&command.command_no)
+            .await
+            .expect("read migrated journal")
+            .is_some());
         let adapter = Arc::new(RecordingEnvironmentAdapter::default());
         let hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
         let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
-        let runtime = MqttSyncRuntime::new(
+        let shutdown = CancellationToken::new();
+        let runtime = Arc::new(MqttSyncRuntime::new(
             "M1".to_string(),
             "secret".to_string(),
             reopened.clone(),
             hardware,
             event_tx,
-            CancellationToken::new(),
+            shutdown.clone(),
+        ));
+        let recovery_worker = tokio::spawn(
+            runtime
+                .clone()
+                .run_journaled_dispense_recovery_worker(Duration::from_millis(250)),
         );
 
-        assert_eq!(
-            runtime
-                .recover_journaled_dispense_side_effects()
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let deferred: (i64,) = sqlx::query_as(
+                    "SELECT COUNT(*) FROM health_events WHERE code='DISPENSE_RESULT_RECOVERY_DEFERRED'",
+                )
+                .fetch_one(reopened.pool())
                 .await
-                .expect("defer missing slot"),
-            0
-        );
+                .expect("deferred diagnostic");
+                if deferred.0 > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("startup recovery attempt");
         let deferred: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM health_events WHERE code='DISPENSE_RESULT_RECOVERY_DEFERRED'",
         )
@@ -1814,13 +1875,21 @@ mod tests {
             })
             .await
             .expect("count");
-        assert_eq!(
-            runtime
-                .recover_journaled_dispense_side_effects()
-                .await
-                .expect("repair"),
-            1
-        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if reopened
+                    .outbox_record("M1:result:CMD-STARTUP-JOURNAL")
+                    .await
+                    .expect("outbox")
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("worker repairs after slot recovery");
         assert_eq!(
             reopened.sale_view(None).await.unwrap().items[0].physical_stock,
             3
@@ -1834,6 +1903,8 @@ mod tests {
             serde_json::from_value(outbox.payload_json).expect("signed envelope");
         assert_eq!(envelope.message_id, "result:CMD-STARTUP-JOURNAL");
         assert!(adapter.operations.lock().await.is_empty());
+        shutdown.cancel();
+        recovery_worker.await.expect("recovery worker stops");
         assert_eq!(
             runtime
                 .recover_journaled_dispense_side_effects()
