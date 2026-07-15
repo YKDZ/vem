@@ -14,7 +14,7 @@
     "tauri": "tauri",
     "tauri:build:kiosk:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
     "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" playwright test",
     "test:e2e:screenshots": "playwright test --project=machine-runtime-screenshots",
     "test:e2e:touch-smoke": "playwright test --project=machine-touchscreen-smoke",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"

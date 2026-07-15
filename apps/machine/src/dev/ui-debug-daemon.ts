@@ -1,5 +1,7 @@
 import {
   daemonIpcMachinePaymentProviderSchema,
+  type InstalledKioskSaleAcceptanceFacts,
+  type InstalledKioskSaleDisturbance,
   paymentMethodSchema,
   type StockMaintenanceBatchResponse,
   type StockMaintenanceTask,
@@ -20,6 +22,9 @@ import type { DaemonConnectionInfo } from "@/native/daemon-connection";
 
 import { daemonClient } from "@/daemon/client";
 import { transactionSnapshotSchema } from "@/daemon/schemas";
+import { useCatalogStore } from "@/stores/catalog";
+import { useCheckoutStore } from "@/stores/checkout";
+import { useVisionStore } from "@/stores/vision";
 
 import {
   getActiveUiDebugScenario,
@@ -44,6 +49,35 @@ const UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY =
 
 let installed = false;
 let currentTransaction: TransactionSnapshot | null = null;
+let currentTransactionFailuresRemaining = 0;
+
+type UiDebugSaleEvidence = Omit<
+  InstalledKioskSaleAcceptanceFacts,
+  "profile" | "disturbance" | "timeline"
+>;
+
+function emptySaleEvidence(): UiDebugSaleEvidence {
+  return {
+    correlation: {
+      checkoutIdempotencyKeys: [],
+      orderIds: [],
+      paymentIds: [],
+      reservationIds: [],
+      transactionIds: [],
+      vendingCommandIds: [],
+      stockMovementIds: [],
+      paymentUrls: [],
+    },
+    counts: {
+      orderCreation: 0,
+      paymentStatusDeliveries: 0,
+      vendingCommandCreation: 0,
+      stockMovementCreation: 0,
+    },
+  };
+}
+
+let saleEvidence = emptySaleEvidence();
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -87,6 +121,11 @@ function clearTransactionMarkers(): void {
   if (!storage) return;
   storage.removeItem(UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY);
   storage.removeItem(UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY);
+}
+
+function resetSaleEvidence(): void {
+  saleEvidence = emptySaleEvidence();
+  currentTransactionFailuresRemaining = 0;
 }
 
 function currentScenario() {
@@ -247,6 +286,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
     inventoryId?: string;
     paymentMethod?: unknown;
     paymentProviderCode?: unknown;
+    idempotencyKey?: unknown;
   };
   const item =
     currentSaleView().items.find(
@@ -262,9 +302,16 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
     paymentMethod === "qr_code"
       ? "https://pay.example.test/ui-debug-created"
       : null;
+  const idempotencyKey =
+    typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
+      ? input.idempotencyKey
+      : "missing-ui-idempotency-key";
+  const orderId = "550e8400-e29b-41d4-a716-446655449901";
+  const paymentId = "550e8400-e29b-41d4-a716-446655449902";
+  const orderNo = `UI-DEBUG-${Date.now()}`;
   const transaction: TransactionSnapshot = {
-    orderId: "550e8400-e29b-41d4-a716-446655449901",
-    orderNo: `UI-DEBUG-${Date.now()}`,
+    orderId,
+    orderNo,
     productSummary: item
       ? {
           name: item.productName,
@@ -273,7 +320,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
           color: item.color,
         }
       : null,
-    paymentId: null,
+    paymentId,
     paymentNo: "UI-DEBUG-PAY",
     paymentMethod,
     paymentProvider: providerCode,
@@ -292,6 +339,13 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
       paymentMethod === "payment_code" ? "请出示付款码" : "等待用户支付",
     updatedAt: nowIso(),
   };
+  saleEvidence.correlation.checkoutIdempotencyKeys.push(idempotencyKey);
+  saleEvidence.correlation.orderIds.push(orderId);
+  saleEvidence.correlation.paymentIds.push(paymentId);
+  saleEvidence.correlation.reservationIds.push(`UI-DEBUG-RES-${orderNo}`);
+  saleEvidence.correlation.transactionIds.push(orderId);
+  if (paymentUrl) saleEvidence.correlation.paymentUrls.push(paymentUrl);
+  saleEvidence.counts.orderCreation += 1;
   currentTransaction = transaction;
   persistTransaction(currentTransaction);
   return transaction;
@@ -299,6 +353,15 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
 
 function transitionMockPayment(succeed: boolean): TransactionSnapshot {
   const snapshot = currentTransactionOrScenario();
+  saleEvidence.counts.paymentStatusDeliveries += 1;
+  const commandId =
+    snapshot.vending?.commandId ??
+    saleEvidence.correlation.vendingCommandIds[0] ??
+    `UI-DEBUG-CMD-${snapshot.orderNo}`;
+  if (succeed && saleEvidence.correlation.vendingCommandIds.length === 0) {
+    saleEvidence.correlation.vendingCommandIds.push(commandId);
+    saleEvidence.counts.vendingCommandCreation += 1;
+  }
   currentTransaction = {
     ...snapshot,
     paymentStatus: succeed ? "succeeded" : "failed",
@@ -306,8 +369,8 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
     nextAction: succeed ? "dispensing" : "payment_failed",
     vending: succeed
       ? {
-          commandId: null,
-          commandNo: "UI-DEBUG-CMD",
+          commandId,
+          commandNo: commandId,
           status: "sent",
           lastError: null,
         }
@@ -316,6 +379,101 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
   };
   persistTransaction(currentTransaction);
   return currentTransaction;
+}
+
+function completeSimulatedDispense(): TransactionSnapshot {
+  const snapshot = currentTransactionOrScenario();
+  const commandId =
+    snapshot.vending?.commandId ??
+    saleEvidence.correlation.vendingCommandIds[0] ??
+    `UI-DEBUG-CMD-${snapshot.orderNo}`;
+  if (saleEvidence.correlation.vendingCommandIds.length === 0) {
+    saleEvidence.correlation.vendingCommandIds.push(commandId);
+    saleEvidence.counts.vendingCommandCreation += 1;
+  }
+  if (saleEvidence.correlation.stockMovementIds.length === 0) {
+    saleEvidence.correlation.stockMovementIds.push(
+      `UI-DEBUG-STOCK-${snapshot.orderNo}`,
+    );
+    saleEvidence.counts.stockMovementCreation += 1;
+  }
+  currentTransaction = {
+    ...snapshot,
+    paymentStatus: "succeeded",
+    orderStatus: "fulfilled",
+    nextAction: "success",
+    vending: {
+      commandId,
+      commandNo: commandId,
+      status: "succeeded",
+      lastError: null,
+      pickupReminder: null,
+    },
+    updatedAt: nowIso(),
+  };
+  persistTransaction(currentTransaction);
+  return currentTransaction;
+}
+
+async function routeToTransactionProjection(): Promise<void> {
+  const { router } = await import("@/router");
+  const target = useCheckoutStore().customerCheckoutView.routeTarget;
+  if ("path" in target) {
+    await router.replace(target.path);
+    return;
+  }
+  await router.replace(target);
+}
+
+async function injectInstalledKioskSaleDisturbance(
+  disturbance: InstalledKioskSaleDisturbance,
+): Promise<void> {
+  switch (disturbance) {
+    case "none":
+      return;
+    case "catalog_refresh":
+      await useCatalogStore().refresh();
+      return;
+    case "readiness_refresh":
+      await useCheckoutStore().refreshCustomerCheckoutReadiness();
+      return;
+    case "presence_departure":
+      useVisionStore().applyPersonDeparted({
+        eventId: "ui-debug-presence-departure",
+        detectedAt: nowIso(),
+        lastSeenAt: nowIso(),
+        reason: "left_frame",
+      });
+      return;
+    case "duplicate_payment_status":
+      // Replay the same authoritative Payment snapshot twice. The UI must
+      // retain its existing order and the later success can create one command.
+      saleEvidence.counts.paymentStatusDeliveries += 2;
+      await useCheckoutStore().refreshCurrentTransaction();
+      await useCheckoutStore().refreshCurrentTransaction();
+      return;
+    case "ipc_interruption":
+      currentTransactionFailuresRemaining = 1;
+      await useCheckoutStore().refreshCurrentTransaction();
+      await useCheckoutStore().refreshCurrentTransaction();
+      return;
+  }
+}
+
+function installInstalledKioskSaleDebugControl(): void {
+  if (typeof window === "undefined") return;
+  Reflect.set(window, "__VEM_INSTALLED_KIOSK_SALE_DEBUG__", {
+    inject: injectInstalledKioskSaleDisturbance,
+    readEvidence: (): UiDebugSaleEvidence => structuredClone(saleEvidence),
+    completePayment: async (): Promise<void> => {
+      await useCheckoutStore().markMockSucceeded();
+      await routeToTransactionProjection();
+    },
+    completeDispense: async (): Promise<void> => {
+      useCheckoutStore().applyTransaction(completeSimulatedDispense());
+      await routeToTransactionProjection();
+    },
+  });
 }
 
 function closedTransaction(): TransactionSnapshot {
@@ -339,6 +497,7 @@ export function resetUiDebugTransaction(): void {
   currentTransaction = null;
   persistTransaction(null);
   clearTransactionMarkers();
+  resetSaleEvidence();
 }
 
 export function hasStoredUiDebugTransaction(): boolean {
@@ -433,7 +592,13 @@ export function installUiDebugDaemon(): void {
     createTransactionFromOrder(body);
   client.cancelOrder = async () => closedTransaction();
   client.submitDevPaymentCode = async () => transitionMockPayment(true);
-  client.getCurrentTransaction = async () => currentTransactionOrScenario();
+  client.getCurrentTransaction = async () => {
+    if (currentTransactionFailuresRemaining > 0) {
+      currentTransactionFailuresRemaining -= 1;
+      throw new Error("UI debug bounded IPC interruption");
+    }
+    return currentTransactionOrScenario();
+  };
   client.getSyncStatus = async () => currentScenario().sync;
   client.getScannerStatus = async () => currentScenario().scanner;
   client.getVisionStatus = async () => currentScenario().vision;
@@ -455,6 +620,7 @@ export function installUiDebugDaemon(): void {
       headers: { "Content-Type": "text/plain" },
     });
   client.subscribeEvents = () => ({ close: () => undefined });
+  installInstalledKioskSaleDebugControl();
   client.getNaturalContext = async (): Promise<NaturalContextSnapshot> => {
     const now = new Date();
     return {
