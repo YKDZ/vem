@@ -199,13 +199,7 @@ export class MachineStockMovementsService {
         orderBoundDispenseContext.context &&
         isOrderBoundDispenseMovement(trustedInput)
       ) {
-        await this.requestPartialRefundForPendingFailedLines(
-          orderBoundDispenseContext.context.orderId,
-          {
-            rawMovementId: stored.id,
-            movementId: trustedInput.movementId,
-          },
-        );
+        await this.refundsService?.dispatchPendingRefunds();
       }
       if (isAutoAppliedFieldStockMovement(trustedInput)) {
         const applied = await this.repository.applyTrustedFieldStockMovement({
@@ -280,25 +274,6 @@ export class MachineStockMovementsService {
       return null;
     }
     return { ...movement, status: "accepted" };
-  }
-
-  private async requestPartialRefundForPendingFailedLines(
-    orderId: string,
-    metadata: Record<string, unknown>,
-  ): Promise<void> {
-    if (!this.refundsService) return;
-
-    const decision =
-      await this.repository.buildPendingFailedLinePartialRefundDecision(
-        orderId,
-        metadata,
-      );
-    if (!decision) return;
-
-    await this.refundsService.requestPartialRefund({
-      ...decision,
-      reason: "auto_partial_dispense_failed",
-    });
   }
 }
 
