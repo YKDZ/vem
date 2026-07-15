@@ -72,13 +72,16 @@ export const useMachineStore = defineStore("machine", {
     applyHealth(snapshot: HealthSnapshot): void {
       this.health = snapshot;
     },
+    applyConfigSummary(summary: ConfigSummary): void {
+      this.configSummary = summary;
+      applyRuntimeAudioCueSettings(summary);
+      this.configLoaded = true;
+    },
     async loadConfig(): Promise<void> {
       this.loading = true;
       this.error = null;
       try {
-        this.configSummary = await daemonClient.getConfig();
-        applyRuntimeAudioCueSettings(this.configSummary);
-        this.configLoaded = true;
+        this.applyConfigSummary(await daemonClient.getConfig());
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
         throw error;

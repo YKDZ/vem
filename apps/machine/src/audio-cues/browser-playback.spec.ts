@@ -57,6 +57,8 @@ function createPlaybackHarness(
   created: CapturedPlayback[];
   playbackFactory: (options: {
     volume: number;
+    outputDeviceId: string | null;
+    requireNativeOutputBinding: boolean;
     onDiagnostic: (diagnostic: MachineAudioPlaybackDiagnostic) => void;
   }) => MachineAudioPlayback;
 } {
@@ -69,6 +71,8 @@ function createPlaybackHarness(
       const playback = createMachineAudioPlayback({
         driver,
         volume: options.volume,
+        outputDeviceId: options.outputDeviceId,
+        requireNativeOutputBinding: options.requireNativeOutputBinding,
         onDiagnostic: (diagnostic) => {
           diagnostics.push(diagnostic);
           options.onDiagnostic(diagnostic);
@@ -495,6 +499,28 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("delegates autonomous cue playback to the native-capable Machine Audio Playback path", async () => {
+    getConfigMock.mockResolvedValue({
+      public: {
+        ...normalizeMachineConfig({
+          machineCode: "MACHINE-NATIVE",
+          audioCueSettings: {
+            enabled: true,
+            categories: {
+              presence: true,
+              transaction: true,
+            },
+          },
+          machineAudioOutputBinding: {
+            endpointId: "{0.0.0.00000000}.bound-speaker",
+            friendlyName: "Near-field speaker",
+            confirmedHeardAt: "2026-07-15T06:00:00.000Z",
+          },
+        }),
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
     const nativeDriver = createMockMachineAudioPlaybackDriver("native");
     const browserDriver = createMockMachineAudioPlaybackDriver("browser");
     const adapter = createMachineAudioCuePlaybackAdapter({
@@ -503,10 +529,13 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
           nativeDriver,
           browserDriver,
           volume: options.volume,
+          outputDeviceId: options.outputDeviceId,
+          requireNativeOutputBinding: options.requireNativeOutputBinding,
           onDiagnostic: options.onDiagnostic,
         }),
     });
 
+    await useMachineStore().loadConfig();
     await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:01:30.000Z",
@@ -515,10 +544,61 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     expect(nativeDriver.requests).toHaveLength(1);
     expect(nativeDriver.requests[0].sourceUrl).toContain("presence-detected");
+    expect(nativeDriver.requests[0].outputDeviceId).toBe(
+      "{0.0.0.00000000}.bound-speaker",
+    );
     expect(browserDriver.requests).toHaveLength(0);
     expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
       cueKey: "presence.detected",
       outcome: "played",
+    });
+  });
+
+  it("rejects customer cue playback in native runtime until a confirmed output binding exists", async () => {
+    getConfigMock.mockResolvedValue({
+      public: {
+        ...normalizeMachineConfig({
+          machineCode: "MACHINE-NATIVE",
+          audioCueSettings: {
+            enabled: true,
+            categories: {
+              presence: true,
+              transaction: true,
+            },
+          },
+        }),
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+    const nativeDriver = createMockMachineAudioPlaybackDriver("native");
+    const browserDriver = createMockMachineAudioPlaybackDriver("browser");
+    const adapter = createMachineAudioCuePlaybackAdapter({
+      playbackFactory: (options) =>
+        createMachineAudioPlayback({
+          nativeDriver,
+          browserDriver,
+          volume: options.volume,
+          outputDeviceId: options.outputDeviceId,
+          requireNativeOutputBinding: options.requireNativeOutputBinding,
+          onDiagnostic: options.onDiagnostic,
+        }),
+    });
+
+    await useMachineStore().loadConfig();
+    await adapter.handleCustomerEvent({
+      type: "presence.detected",
+      requestedAt: "2026-06-29T08:01:30.000Z",
+      nowMs: 30_000,
+    });
+
+    expect(nativeDriver.requests).toHaveLength(0);
+    expect(browserDriver.requests).toHaveLength(0);
+    expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
+      cueKey: "presence.detected",
+      outcome: "failed",
+      message: "confirmed audio output binding is required",
     });
   });
 

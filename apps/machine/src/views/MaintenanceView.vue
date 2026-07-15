@@ -27,6 +27,7 @@ import {
   machineConfigDefaults,
   type HardwareAdapter,
   type MachineConfig,
+  type MachineAudioOutputBinding,
   type ScannerAdapter,
 } from "@/config/machine-config";
 import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
@@ -134,6 +135,73 @@ const audioCueSettingsRows = computed(() => [
     value: `${machineAudioVolumePercent(machineStore.config.machineAudioVolume)}%`,
   },
 ]);
+
+type MachineAudioOutputCandidate = {
+  endpointId: string;
+  friendlyName: string;
+  isDefault: boolean;
+};
+
+const machineAudioOutputMaintenance = reactive({
+  loading: false,
+  saving: false,
+  message: null as string | null,
+  candidates: [] as MachineAudioOutputCandidate[],
+  selectedEndpointId: null as string | null,
+  heardConfirmation: false,
+});
+
+const confirmedMachineAudioOutputBinding = computed<MachineAudioOutputBinding | null>(
+  () => machineStore.config.machineAudioOutputBinding,
+);
+const observedMachineAudioOutputBinding = computed(() =>
+  machineAudioOutputMaintenance.candidates.find(
+    (candidate) =>
+      candidate.endpointId === confirmedMachineAudioOutputBinding.value?.endpointId,
+  ) ?? null,
+);
+const selectedMachineAudioOutputCandidate = computed(() =>
+  machineAudioOutputMaintenance.candidates.find(
+    (candidate) =>
+      candidate.endpointId === machineAudioOutputMaintenance.selectedEndpointId,
+  ) ?? null,
+);
+const machineAudioOutputBindingRows = computed(() => {
+  const binding = confirmedMachineAudioOutputBinding.value;
+  const observed = observedMachineAudioOutputBinding.value;
+  if (!binding) {
+    return [
+      { label: "绑定状态", value: "未确认近场顾客扬声器" },
+      { label: "当前观察", value: "必须先选择端点并确认“我听到了”" },
+    ];
+  }
+  return [
+    {
+      label: "绑定状态",
+      value: observed ? "已确认" : "已确认，但当前未检测到端点",
+    },
+    {
+      label: "端点",
+      value: observed?.friendlyName ?? binding.friendlyName ?? binding.endpointId,
+    },
+    {
+      label: "端点 ID",
+      value: binding.endpointId,
+    },
+    {
+      label: "当前观察",
+      value: observed
+        ? observed.isDefault
+          ? "已检测到（当前也是 Windows 默认输出）"
+          : "已检测到"
+        : "未检测到；顾客音频会保持阻塞",
+    },
+    {
+      label: "人工确认时间",
+      value: binding.confirmedHeardAt,
+    },
+  ];
+});
 const latestAudioCueDiagnosticRows = computed(() => {
   const diagnostic = audioCueStore.latestPlaybackDiagnostic;
   if (!diagnostic) return [];
@@ -353,6 +421,9 @@ function syncFormFromStore(): void {
     },
   };
   form.kioskMode = machineStore.config.kioskMode;
+  machineAudioOutputMaintenance.selectedEndpointId =
+    machineStore.config.machineAudioOutputBinding?.endpointId ?? null;
+  machineAudioOutputMaintenance.heardConfirmation = false;
 }
 
 type DiagnosticSerializationState = {
@@ -520,6 +591,7 @@ onMounted(async () => {
         await machineStore.loadConfig();
       }
       syncFormFromStore();
+      await refreshMachineAudioOutputs();
       ensureMachineAudioTestPlayback();
     } catch {
       // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
@@ -723,6 +795,75 @@ const machineAudioTestPlayback = reactive({
 });
 let activeMachineAudioPlayback: MachineAudioPlayback | null = null;
 let activeMachineAudioPlaybackVolume: number | null = null;
+let activeMachineAudioPlaybackOutputDeviceId: string | null = null;
+
+async function refreshMachineAudioOutputs(): Promise<void> {
+  machineAudioOutputMaintenance.loading = true;
+  machineAudioOutputMaintenance.message = null;
+  try {
+    const outputs = await callTauriCommand<MachineAudioOutputCandidate[]>(
+      "list_machine_audio_outputs",
+    );
+    machineAudioOutputMaintenance.candidates = outputs;
+    if (
+      !machineAudioOutputMaintenance.selectedEndpointId &&
+      machineStore.config.machineAudioOutputBinding?.endpointId
+    ) {
+      machineAudioOutputMaintenance.selectedEndpointId =
+        machineStore.config.machineAudioOutputBinding.endpointId;
+    }
+  } catch (error) {
+    machineAudioOutputMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    machineAudioOutputMaintenance.loading = false;
+  }
+}
+
+async function saveMachineAudioSettings(): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) {
+    machineAudioOutputMaintenance.message = "请先验证维护 PIN。";
+    return;
+  }
+  const selected = selectedMachineAudioOutputCandidate.value;
+  if (!selected) {
+    machineAudioOutputMaintenance.message = "请先选择顾客扬声器端点。";
+    return;
+  }
+  if (!machineAudioOutputMaintenance.heardConfirmation) {
+    machineAudioOutputMaintenance.message = "请确认“我听到了”后再保存绑定。";
+    return;
+  }
+  machineAudioOutputMaintenance.saving = true;
+  machineAudioOutputMaintenance.message = null;
+  try {
+    const summary = await daemonClient.saveMachineAudioSettings({
+      machineAudioOutputBinding: {
+        endpointId: selected.endpointId,
+        friendlyName: selected.friendlyName,
+        confirmedHeardAt: new Date().toISOString(),
+      },
+      audioCueSettings: {
+        enabled: form.audioCueSettings.enabled,
+        categories: {
+          presence: form.audioCueSettings.categories.presence,
+          transaction: form.audioCueSettings.categories.transaction,
+        },
+      },
+      machineAudioVolume: form.machineAudioVolumePercent / 100,
+    });
+    machineStore.applyConfigSummary(summary);
+    syncFormFromStore();
+    await refreshMachineAudioOutputs();
+    machineAudioOutputMaintenance.message = "顾客音频输出绑定与音频提示设置已保存。";
+  } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
+    machineAudioOutputMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    machineAudioOutputMaintenance.saving = false;
+  }
+}
 
 const latestMachineAudioTestPlaybackRows = computed(() => {
   const diagnostic = machineAudioTestPlayback.diagnostic;
@@ -785,14 +926,20 @@ function stopMachineAudioTestPlayback(): void {
 
 function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
   const volume = machineStore.config.machineAudioVolume;
+  const outputDeviceId =
+    machineAudioOutputMaintenance.selectedEndpointId ??
+    machineStore.config.machineAudioOutputBinding?.endpointId ??
+    null;
   if (
     activeMachineAudioPlayback &&
-    activeMachineAudioPlaybackVolume === volume
+    activeMachineAudioPlaybackVolume === volume &&
+    activeMachineAudioPlaybackOutputDeviceId === outputDeviceId
   ) {
     return activeMachineAudioPlayback;
   }
   activeMachineAudioPlayback?.stop();
   activeMachineAudioPlaybackVolume = volume;
+  activeMachineAudioPlaybackOutputDeviceId = outputDeviceId;
   machineAudioTestPlayback.volume = volume;
   activeMachineAudioPlayback = createMachineAudioPlayback({
     driver:
@@ -806,6 +953,8 @@ function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
       machineAudioTestPlayback.driver = diagnostic.driver;
       machineAudioTestPlayback.diagnostic = diagnostic;
     },
+    outputDeviceId,
+    requireNativeOutputBinding: isTauriRuntime(),
     volume,
   });
   machineAudioTestPlayback.driver = activeMachineAudioPlayback.currentDriver();
@@ -2074,6 +2223,24 @@ async function submitStockMaintenanceTask(): Promise<void> {
           </dl>
         </section>
 
+        <section class="mt-5 border-t border-white/10 pt-4 text-left">
+          <h3 class="text-sm font-semibold text-slate-200">顾客扬声器绑定</h3>
+          <dl class="mt-3 grid gap-3 md:grid-cols-2">
+            <div
+              v-for="row in machineAudioOutputBindingRows"
+              :key="row.label"
+              class="rounded-xl bg-slate-950/35 p-3"
+            >
+              <dt class="text-xs font-semibold text-slate-400">
+                {{ row.label }}
+              </dt>
+              <dd class="mt-1 font-bold break-all text-white">
+                {{ row.label }} · {{ row.value }}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
         <section
           class="mt-5 border-t border-white/10 pt-4 text-left"
           data-test="audio-cue-diagnostic"
@@ -2519,6 +2686,93 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 {{ tryOnPreviewDiagnostic.message }}
               </p>
             </div>
+
+            <section class="grid gap-4 rounded-2xl border border-cyan-200/20 bg-cyan-500/10 p-4 text-left">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="grid gap-1">
+                  <h3 class="text-base font-bold text-cyan-100">
+                    顾客扬声器绑定
+                  </h3>
+                  <p class="text-sm leading-6 text-cyan-50/85">
+                    选择稳定的 WASAPI 输出端点，测试播放并在听到近场顾客扬声器后确认保存。
+                  </p>
+                </div>
+                <button
+                  class="kiosk-touch-target rounded-2xl border border-cyan-100/40 px-4 py-3 font-bold text-cyan-50 disabled:opacity-50"
+                  type="button"
+                  :disabled="machineAudioOutputMaintenance.loading"
+                  @click="refreshMachineAudioOutputs"
+                >
+                  刷新端点
+                </button>
+              </div>
+
+              <div
+                v-if="machineAudioOutputMaintenance.candidates.length === 0"
+                class="rounded-2xl bg-slate-950/35 p-4 text-sm text-cyan-50"
+              >
+                {{ machineAudioOutputMaintenance.loading ? "正在枚举音频端点…" : "尚未发现可用输出端点。" }}
+              </div>
+
+              <div v-else class="grid gap-3">
+                <label
+                  v-for="candidate in machineAudioOutputMaintenance.candidates"
+                  :key="candidate.endpointId"
+                  class="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/35 p-4"
+                >
+                  <input
+                    v-model="machineAudioOutputMaintenance.selectedEndpointId"
+                    :value="candidate.endpointId"
+                    class="mt-1 size-5 accent-cyan-300"
+                    type="radio"
+                  />
+                  <span class="grid gap-1">
+                    <span class="text-sm font-semibold text-white">
+                      {{ candidate.friendlyName }}
+                      <span
+                        v-if="candidate.isDefault"
+                        class="text-cyan-100/80"
+                      >
+                        · 默认
+                      </span>
+                    </span>
+                    <span class="text-xs break-all text-cyan-50/80">
+                      {{ candidate.endpointId }}
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              <label class="flex items-center gap-3 text-left">
+                <input
+                  v-model="machineAudioOutputMaintenance.heardConfirmation"
+                  class="size-5 accent-cyan-300"
+                  type="checkbox"
+                />
+                <span class="text-sm font-semibold text-cyan-50">
+                  我已经在近场顾客扬声器上听到了测试音频
+                </span>
+              </label>
+
+              <button
+                class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                type="button"
+                :disabled="
+                  machineAudioOutputMaintenance.saving ||
+                  !machineAudioOutputMaintenance.selectedEndpointId
+                "
+                @click="saveMachineAudioSettings"
+              >
+                保存顾客扬声器绑定与音频提示设置
+              </button>
+
+              <p
+                v-if="machineAudioOutputMaintenance.message"
+                class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
+              >
+                {{ machineAudioOutputMaintenance.message }}
+              </p>
+            </section>
 
             <fieldset class="grid gap-3 text-left md:grid-cols-3">
               <label class="flex items-center gap-3">

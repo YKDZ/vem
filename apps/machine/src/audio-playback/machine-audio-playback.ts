@@ -20,6 +20,7 @@ export type MachineAudioPlaybackDiagnostic = {
 
 type MachineAudioPlaybackDriverPlayOptions = {
   volume: number;
+  outputDeviceId?: string | null;
   onCompleted?: () => void;
 };
 
@@ -64,11 +65,17 @@ type MachineAudioPlaybackOptions = {
   nativeDriver?: MachineAudioPlaybackDriver | null;
   browserDriver?: MachineAudioPlaybackDriver;
   volume?: number;
+  outputDeviceId?: string | null;
+  requireNativeOutputBinding?: boolean;
   onDiagnostic?: (diagnostic: MachineAudioPlaybackDiagnostic) => void;
 };
 
 type MockMachineAudioPlaybackDriver = MachineAudioPlaybackDriver & {
-  readonly requests: Array<{ sourceUrl: string; volume: number }>;
+  readonly requests: Array<{
+    sourceUrl: string;
+    volume: number;
+    outputDeviceId?: string | null;
+  }>;
   readonly stops: string[];
   completeActive(): void;
 };
@@ -106,6 +113,8 @@ export function createMachineAudioPlayback(
   const browserDriver =
     options.browserDriver ??
     (!options.driver ? createBrowserMachineAudioPlaybackDriver() : undefined);
+  const requireNativeOutputBinding = options.requireNativeOutputBinding === true;
+  const outputDeviceId = options.outputDeviceId ?? null;
   const nativePlaybackUnavailable =
     !options.driver &&
     shouldPreferNative &&
@@ -128,6 +137,21 @@ export function createMachineAudioPlayback(
       status: "requested",
       sourceUrl,
     });
+    if (
+      requireNativeOutputBinding &&
+      driver.name === "native" &&
+      (!outputDeviceId || outputDeviceId.trim().length === 0)
+    ) {
+      activePlayback = null;
+      recordDiagnostic({
+        requestId,
+        status: "failed",
+        sourceUrl,
+        driver: "native",
+        message: "confirmed audio output binding is required",
+      });
+      return false;
+    }
     if (nativePlaybackUnavailable) {
       const fallbackResult = await tryStartPlayback({
         driver,
@@ -143,7 +167,12 @@ export function createMachineAudioPlayback(
       sourceUrl,
     });
     if (primaryResult.started) return true;
-    if (primaryResult.error && driver.name === "native" && browserDriver) {
+    if (
+      primaryResult.error &&
+      driver.name === "native" &&
+      browserDriver &&
+      !requireNativeOutputBinding
+    ) {
       activePlayback = {
         requestId,
         sourceUrl,
@@ -170,6 +199,7 @@ export function createMachineAudioPlayback(
     try {
       await input.driver.playLocal(input.sourceUrl, {
         volume,
+        outputDeviceId,
         onCompleted: () => {
           if (activePlayback?.requestId !== input.requestId) return;
           activePlayback = null;
@@ -197,7 +227,11 @@ export function createMachineAudioPlayback(
         return { started: false, error: null };
       }
       const message = error instanceof Error ? error.message : String(error);
-      if (input.driver.name === "native" && browserDriver) {
+      if (
+        input.driver.name === "native" &&
+        browserDriver &&
+        !requireNativeOutputBinding
+      ) {
         return { started: false, error: message };
       }
       activePlayback = null;
@@ -263,7 +297,11 @@ export function createMockMachineAudioPlaybackDriver(
           startDelayMs: input.startDelayMs,
           completeAfterMs: input.completeAfterMs,
         };
-  const requests: Array<{ sourceUrl: string; volume: number }> = [];
+  const requests: Array<{
+    sourceUrl: string;
+    volume: number;
+    outputDeviceId?: string | null;
+  }> = [];
   const stops: string[] = [];
   let activePlayback: MachineAudioPlaybackDriverPlayOptions | null = null;
   function completeActive(): void {
@@ -279,7 +317,16 @@ export function createMockMachineAudioPlaybackDriver(
       sourceUrl: string,
       playOptions?: MachineAudioPlaybackDriverPlayOptions,
     ): Promise<void> {
-      requests.push({ sourceUrl, volume: playOptions?.volume ?? 1 });
+      const request = {
+        sourceUrl,
+        volume: playOptions?.volume ?? 1,
+        outputDeviceId: playOptions?.outputDeviceId ?? null,
+      };
+      requests.push(
+        request.outputDeviceId
+          ? request
+          : { sourceUrl: request.sourceUrl, volume: request.volume },
+      );
       if (options.startDelayMs && options.startDelayMs > 0) {
         await new Promise<void>((resolve) => {
           setTimeout(resolve, options.startDelayMs);
@@ -348,6 +395,7 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
       await callTauriCommand<void>("play_machine_audio", {
         sourceUrl,
         volume: playOptions?.volume ?? 1,
+        outputDeviceId: playOptions?.outputDeviceId ?? undefined,
       });
     },
     stop(): void {
