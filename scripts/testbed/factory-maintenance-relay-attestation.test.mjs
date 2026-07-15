@@ -144,10 +144,10 @@ describe("Factory maintenance relay attestation", () => {
       },
     ],
     [
-      "a handshake from before the CI session",
+      "a handshake older than the bounded rekey window",
       (value) => {
         value.runner.relayPeer.latestHandshakeEpochSeconds =
-          Math.floor(Date.parse(value.session.issuedAt) / 1000) - 1;
+          Math.ceil(Date.parse(value.completedAt) / 1000) - 181;
       },
     ],
     [

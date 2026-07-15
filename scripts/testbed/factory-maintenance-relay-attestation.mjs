@@ -277,14 +277,13 @@ export function validateFactoryMaintenanceRelayAttestation(value) {
     );
   }
   const handshake = runner.relayPeer.latestHandshakeEpochSeconds;
+  const completedAtSeconds = Math.ceil(completedAt / 1000);
   if (
     !Number.isInteger(handshake) ||
-    handshake < Math.floor(issuedAt / 1000) ||
-    handshake > Math.ceil(completedAt / 1000)
+    handshake < completedAtSeconds - 180 ||
+    handshake > completedAtSeconds
   ) {
-    throw new Error(
-      "runner relay peer handshake is not fresh for this session",
-    );
+    throw new Error("runner relay peer handshake is not recent");
   }
   exactKeys(runner.route, ["destination", "device", "source"], "runner.route");
   if (
