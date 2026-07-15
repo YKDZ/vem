@@ -1342,8 +1342,9 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.equal(windowsJob["runs-on"], "windows-2022");
     assert.equal(windowsJob.defaults.run.shell, "pwsh");
     const nodeSetupStep = windowsJob.steps.find(
-      ({ name }) => name === "Setup Node.js",
+      ({ uses }) => uses === "actions/setup-node@v6",
     );
+    assert.ok(nodeSetupStep, "Windows PowerShell job must set up Node.js");
     assert.equal(nodeSetupStep.with.cache, "pnpm");
     const installStep = windowsJob.steps.find(
       ({ name }) => name === "Install Dependencies",

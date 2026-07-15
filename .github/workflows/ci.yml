@@ -620,13 +620,15 @@ jobs:
       - rust-tests
       - windows-service-check
     if: always()
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: Summarize job queue, run, and cache timing
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
-            const jobs = await github.paginate(
+            const workflowJobs = await github.paginate(
               github.rest.actions.listJobsForWorkflowRun,
               {
                 owner: context.repo.owner,
@@ -635,10 +637,22 @@ jobs:
                 per_page: 100,
               },
             );
+            const jobs = workflowJobs.filter(
+              (job) => job.status === "completed",
+            );
 
             const millisecondsBetween = (start, end) => {
               if (!start || !end) return null;
-              return Date.parse(end) - Date.parse(start);
+              const startMilliseconds = Date.parse(start);
+              const endMilliseconds = Date.parse(end);
+              if (
+                !Number.isFinite(startMilliseconds) ||
+                !Number.isFinite(endMilliseconds) ||
+                endMilliseconds < startMilliseconds
+              ) {
+                return null;
+              }
+              return endMilliseconds - startMilliseconds;
             };
             const formatDuration = (milliseconds) => {
               if (milliseconds === null || milliseconds < 0) return "-";
@@ -724,6 +738,7 @@ jobs:
 
       - name: Upload CI timing summary
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ci-timing-summary
