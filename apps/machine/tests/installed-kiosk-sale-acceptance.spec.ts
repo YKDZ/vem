@@ -4,8 +4,8 @@ import {
   classifyBrowserInstalledKioskSaleContract,
   type InstalledKioskSaleDisturbance,
 } from "@vem/shared";
-import * as QRCode from "qrcode";
 
+import { renderPaymentQrDataUrl } from "../src/utils/payment-qr";
 import { runInstalledKioskSaleScenario } from "./support/installed-kiosk-sale-driver";
 import { PlaywrightInstalledKioskSaleAdapter } from "./support/playwright-installed-kiosk-sale-adapter";
 
@@ -73,7 +73,7 @@ test.describe("Installed Kiosk Sale browser UI contract", () => {
     });
   }
 
-  test("rejects a QR payload replaced on the rendered customer surface", async ({
+  test("rejects an img src replaced on the rendered customer surface", async ({
     page,
   }) => {
     const adapter = new PlaywrightInstalledKioskSaleAdapter(page);
@@ -82,23 +82,18 @@ test.describe("Installed Kiosk Sale browser UI contract", () => {
     await adapter.assertPaymentQrPresented();
 
     const unrelatedPaymentUrl = "https://pay.example.test/unrelated-order";
-    const unrelatedQrSvg = await QRCode.toString(unrelatedPaymentUrl, {
-      type: "svg",
-    });
-    const unrelatedQrSource = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(unrelatedQrSvg)}`;
+    const unrelatedQrSource = await renderPaymentQrDataUrl(unrelatedPaymentUrl);
     await page.locator("[data-installed-kiosk-sale-qr]").evaluate(
       (element, replacement) => {
         element.setAttribute("src", replacement.source);
-        element.setAttribute("data-qr-payload", replacement.paymentUrl);
       },
       {
         source: unrelatedQrSource,
-        paymentUrl: unrelatedPaymentUrl,
       },
     );
-    expect((await adapter.assertPaymentQrPresented()).paymentUrl).toBe(
-      unrelatedPaymentUrl,
-    );
+    const replacedSurface = await adapter.assertPaymentQrPresented();
+    expect(replacedSurface.paymentUrl).not.toBe(unrelatedPaymentUrl);
+    expect(replacedSurface.renderedQrSource).toBe(unrelatedQrSource);
 
     await adapter.injectDisturbance("catalog_refresh");
     await adapter.assertPaymentQrPresented();
@@ -114,11 +109,6 @@ test.describe("Installed Kiosk Sale browser UI contract", () => {
       classifyBrowserInstalledKioskSaleContract(evidence).diagnostics.map(
         (diagnostic) => diagnostic.code,
       ),
-    ).toEqual(
-      expect.arrayContaining([
-        "timeline_payment_qr_mismatch",
-        "disturbance_barrier_payment_qr_mismatch",
-      ]),
-    );
+    ).toEqual(expect.arrayContaining(["rendered_payment_qr_source_mismatch"]));
   });
 });

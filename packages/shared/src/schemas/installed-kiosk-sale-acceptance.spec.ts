@@ -40,6 +40,12 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
               deliveryId: "payment-status-payment-1-succeeded",
               status: "succeeded",
               deliveredAt: "2026-07-15T00:00:01.750Z",
+              payload: {
+                orderId: identity.orderId,
+                paymentId: identity.paymentId,
+                transactionId: identity.transactionId,
+                paymentStatus: "succeeded",
+              },
             },
           ],
         },
@@ -81,6 +87,8 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
         observedAt: "2026-07-15T00:00:01.000Z",
         route: "payment",
         identitySource: "customer_payment_surface",
+        renderedQrSource: "data:image/svg+xml,expected-qr",
+        expectedQrSource: "data:image/svg+xml,expected-qr",
         ...identity,
       },
       {
@@ -88,6 +96,8 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
         observedAt: "2026-07-15T00:00:02.000Z",
         route: "fulfillment",
         identitySource: "router_transaction_state",
+        renderedQrSource: null,
+        expectedQrSource: null,
         ...identity,
       },
       {
@@ -95,6 +105,8 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
         observedAt: "2026-07-15T00:00:03.000Z",
         route: "result",
         identitySource: "router_transaction_state",
+        renderedQrSource: null,
+        expectedQrSource: null,
         ...identity,
       },
     ],
@@ -230,6 +242,48 @@ describe("browser Installed Kiosk Sale UI contract", () => {
     ).toEqual([]);
   });
 
+  it("rejects a third failed delivery appended to duplicate succeeded statuses", () => {
+    const facts = completeFacts();
+    facts.disturbanceInjections[0].kind = "duplicate_payment_status";
+    facts.transactions[0].payment.statusDeliveries.push(
+      {
+        ...facts.transactions[0].payment.statusDeliveries[0],
+        deliveredAt: "2026-07-15T00:00:01.800Z",
+      },
+      {
+        ...facts.transactions[0].payment.statusDeliveries[0],
+        deliveryId: "payment-status-payment-1-failed",
+        status: "failed",
+        deliveredAt: "2026-07-15T00:00:01.900Z",
+      },
+    );
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("payment_status_delivery_count_mismatch");
+  });
+
+  it("rejects duplicate succeeded deliveries with a different payload", () => {
+    const facts = completeFacts();
+    facts.disturbanceInjections[0].kind = "duplicate_payment_status";
+    facts.transactions[0].payment.statusDeliveries.push({
+      ...facts.transactions[0].payment.statusDeliveries[0],
+      deliveredAt: "2026-07-15T00:00:01.800Z",
+      payload: {
+        ...facts.transactions[0].payment.statusDeliveries[0].payload,
+        transactionId: "unrelated-transaction",
+      },
+    });
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("payment_status_delivery_count_mismatch");
+  });
+
   it("rejects duplicate fulfillment command or stock movement creation", () => {
     const facts = completeFacts();
     const record = facts.transactions[0];
@@ -257,6 +311,18 @@ describe("browser Installed Kiosk Sale UI contract", () => {
     ).toContain("timeline_payment_qr_mismatch");
   });
 
+  it("rejects a rendered QR image source unrelated to its declared payload", () => {
+    const facts = completeFacts();
+    facts.timeline[0].renderedQrSource =
+      "data:image/svg+xml,unrelated-rendered-qr";
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("rendered_payment_qr_source_mismatch");
+  });
+
   it("rejects a timeline whose observation timestamps move backwards", () => {
     const facts = completeFacts();
     facts.timeline[1].observedAt = "2026-07-15T00:00:00.500Z";
@@ -266,6 +332,41 @@ describe("browser Installed Kiosk Sale UI contract", () => {
         (diagnostic) => diagnostic.code,
       ),
     ).toContain("timeline_observed_at_not_nondecreasing");
+  });
+
+  it("rejects Fulfillment before Payment even when timestamps are equal", () => {
+    const facts = completeFacts();
+    const payment = facts.timeline[0];
+    const fulfillment = facts.timeline[1];
+    const result = facts.timeline[2];
+    const observedAt = payment.observedAt;
+    facts.timeline = [
+      { ...fulfillment, observedAt },
+      { ...payment, observedAt },
+      { ...result, observedAt },
+    ];
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("timeline_route_sequence_invalid");
+  });
+
+  it("rejects duplicate observation IDs and a non-unique barrier resolution", () => {
+    const facts = completeFacts();
+    facts.timeline[1].observationId = facts.timeline[0].observationId;
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        "timeline_observation_id_not_unique",
+        "disturbance_barrier_payment_qr_mismatch",
+      ]),
+    );
   });
 
   it.each([

@@ -8,6 +8,7 @@ import { expect, type Page } from "@playwright/test";
 import type { InstalledKioskSaleScenarioAdapter } from "./installed-kiosk-sale-driver";
 
 import { getMachineRuntimeScenario } from "../../src/dev/runtime-scenarios";
+import { renderPaymentQrDataUrl } from "../../src/utils/payment-qr";
 import { tapLocator } from "./touchscreen";
 import { loadMachineRuntimeScenario } from "./ui-debug";
 
@@ -57,12 +58,14 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
           orderId: element.getAttribute("data-order-id"),
           paymentId: element.getAttribute("data-payment-id"),
           paymentUrl: qr?.getAttribute("data-qr-payload") ?? null,
+          renderedQrSource: qr?.getAttribute("src") ?? null,
         };
       });
     if (
       !surface.orderId ||
       !surface.paymentId ||
       !surface.paymentUrl ||
+      !surface.renderedQrSource ||
       !URL.canParse(surface.paymentUrl)
     ) {
       throw new Error("Rendered customer payment identity is incomplete");
@@ -72,6 +75,8 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
       orderId: surface.orderId,
       paymentId: surface.paymentId,
       paymentUrl: surface.paymentUrl,
+      renderedQrSource: surface.renderedQrSource,
+      expectedQrSource: await renderPaymentQrDataUrl(surface.paymentUrl),
     };
     await this.control("observePaymentSurface", observedSurface);
     return observedSurface;

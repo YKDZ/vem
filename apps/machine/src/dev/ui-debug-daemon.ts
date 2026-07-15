@@ -391,6 +391,12 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
       deliveryId: `payment-status-${record.payment.paymentId}-${succeed ? "succeeded" : "failed"}`,
       status: succeed ? "succeeded" : "failed",
       deliveredAt: nowIso(),
+      payload: {
+        orderId: record.order.orderId,
+        paymentId: record.payment.paymentId,
+        transactionId: record.transaction.transactionId,
+        paymentStatus: succeed ? "succeeded" : "failed",
+      },
     });
     record.payment.status = succeed ? "succeeded" : "failed";
     record.order.status = succeed ? "dispensing" : "failed";
@@ -516,6 +522,8 @@ function recordInstalledKioskSaleRoute(path: string): void {
     observedAt: nowIso(),
     route,
     identitySource: "router_transaction_state",
+    renderedQrSource: null,
+    expectedQrSource: null,
     orderId: record.order.orderId,
     paymentId: record.payment.paymentId,
     transactionId: record.transaction.transactionId,
@@ -539,6 +547,8 @@ function recordCustomerPaymentSurface(
     paymentId: surface.paymentId,
     transactionId: record.transaction.transactionId,
     paymentUrl: surface.paymentUrl,
+    renderedQrSource: surface.renderedQrSource,
+    expectedQrSource: surface.expectedQrSource,
   });
 }
 

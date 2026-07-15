@@ -36,6 +36,8 @@ export const installedKioskSaleCustomerPaymentSurfaceSchema = z.object({
   orderId: z.string().min(1),
   paymentId: z.string().min(1),
   paymentUrl: z.url(),
+  renderedQrSource: z.string().min(1),
+  expectedQrSource: z.string().min(1),
 });
 
 export type InstalledKioskSaleCustomerPaymentSurface = z.infer<
@@ -51,6 +53,8 @@ export const installedKioskSaleTimelineEntrySchema =
       "customer_payment_surface",
       "router_transaction_state",
     ]),
+    renderedQrSource: z.string().min(1).nullable(),
+    expectedQrSource: z.string().min(1).nullable(),
   });
 
 export const installedKioskSaleLinkedTransactionSchema = z.object({
@@ -78,6 +82,12 @@ export const installedKioskSaleLinkedTransactionSchema = z.object({
         deliveryId: z.string().min(1),
         status: z.enum(["succeeded", "failed"]),
         deliveredAt: z.iso.datetime(),
+        payload: z.object({
+          orderId: z.string().min(1),
+          paymentId: z.string().min(1),
+          transactionId: z.string().min(1),
+          paymentStatus: z.enum(["succeeded", "failed"]),
+        }),
       }),
     ),
   }),
@@ -242,19 +252,22 @@ function inspectSideEffectCounts(
   diagnostics: BrowserInstalledKioskSaleContractReport["diagnostics"],
 ): void {
   const injection = facts.disturbanceInjections[0];
-  const successfulDeliveries = record.payment.statusDeliveries.filter(
-    (delivery) => delivery.status === "succeeded",
-  );
+  const deliveries = record.payment.statusDeliveries;
   const expectedDeliveryCount =
     injection?.kind === "duplicate_payment_status" ? 2 : 1;
-  const duplicatesMatch =
-    expectedDeliveryCount !== 2 ||
-    new Set(successfulDeliveries.map((delivery) => delivery.deliveryId))
-      .size === 1;
-  if (
-    successfulDeliveries.length !== expectedDeliveryCount ||
-    !duplicatesMatch
-  ) {
+  const firstDelivery = deliveries[0];
+  const deliveriesMatch = deliveries.every(
+    (delivery) =>
+      delivery.status === "succeeded" &&
+      delivery.deliveryId === firstDelivery?.deliveryId &&
+      delivery.payload.orderId === record.order.orderId &&
+      delivery.payload.paymentId === record.payment.paymentId &&
+      delivery.payload.transactionId === record.transaction.transactionId &&
+      delivery.payload.paymentStatus === "succeeded" &&
+      JSON.stringify(delivery.payload) ===
+        JSON.stringify(firstDelivery?.payload),
+  );
+  if (deliveries.length !== expectedDeliveryCount || !deliveriesMatch) {
     addDiagnostic(
       diagnostics,
       "payment_status_delivery_count_mismatch",
@@ -278,6 +291,16 @@ function inspectTimeline(
   record: InstalledKioskSaleLinkedTransaction,
   diagnostics: BrowserInstalledKioskSaleContractReport["diagnostics"],
 ): void {
+  if (
+    new Set(facts.timeline.map((entry) => entry.observationId)).size !==
+    facts.timeline.length
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "timeline_observation_id_not_unique",
+      "Every timeline observationId must be globally unique.",
+    );
+  }
   const timestamps = facts.timeline.map((entry) =>
     Date.parse(entry.observedAt),
   );
@@ -297,6 +320,9 @@ function inspectTimeline(
   );
   const terminalIndex = facts.timeline.findIndex(
     (entry, index) => index >= paymentIndex && entry.route === "result",
+  );
+  const fulfillmentIndex = facts.timeline.findIndex(
+    (entry) => entry.route === "fulfillment",
   );
   if (paymentIndex === -1 || terminalIndex === -1) {
     addDiagnostic(
@@ -320,6 +346,17 @@ function inspectTimeline(
       diagnostics,
       "fulfillment_route_missing",
       "UI contract timeline must observe Fulfillment before the result.",
+    );
+  }
+  if (
+    fulfillmentIndex === -1 ||
+    paymentIndex >= fulfillmentIndex ||
+    fulfillmentIndex >= terminalIndex
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "timeline_route_sequence_invalid",
+      "Timeline indexes must strictly order Payment before Fulfillment before Result.",
     );
   }
   for (const entry of activeTimeline) {
@@ -359,6 +396,19 @@ function inspectTimeline(
         diagnostics,
         "timeline_payment_qr_mismatch",
         "Every UI route observation must retain the QR bound to the linked payment.",
+      );
+      break;
+    }
+    if (
+      entry.route === "payment" &&
+      (entry.renderedQrSource === null ||
+        entry.expectedQrSource === null ||
+        entry.renderedQrSource !== entry.expectedQrSource)
+    ) {
+      addDiagnostic(
+        diagnostics,
+        "rendered_payment_qr_source_mismatch",
+        "The rendered QR image source must encode the declared linked transaction payment URL.",
       );
       break;
     }
@@ -403,17 +453,22 @@ function inspectDisturbance(
         "The deterministic disturbance must complete at the declared barrier.",
       );
     }
-    const barrierObservation = facts.timeline.find(
+    const barrierMatches = facts.timeline.filter(
       (entry) => entry.observationId === injection.barrierObservationId,
     );
+    const barrierObservation = barrierMatches[0];
     if (
       !record ||
+      barrierMatches.length !== 1 ||
       !barrierObservation ||
       barrierObservation.route !== "payment" ||
       barrierObservation.identitySource !== "customer_payment_surface" ||
       barrierObservation.orderId !== record.order.orderId ||
       barrierObservation.paymentId !== record.payment.paymentId ||
-      barrierObservation.paymentUrl !== record.payment.paymentUrl
+      barrierObservation.paymentUrl !== record.payment.paymentUrl ||
+      barrierObservation.renderedQrSource === null ||
+      barrierObservation.renderedQrSource !==
+        barrierObservation.expectedQrSource
     ) {
       addDiagnostic(
         diagnostics,
