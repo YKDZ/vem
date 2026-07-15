@@ -68,7 +68,7 @@ type EnabledChannelProviderSetup = {
   method: "qr_code" | "payment_code";
   ready: boolean;
   missingCredentialKeys: string[];
-  environment: "sandbox" | "production" | null;
+  environments: Array<"sandbox" | "production">;
 };
 
 type HeartbeatSaleReadinessMethod = {
@@ -879,11 +879,11 @@ export class PaymentOpsService {
     const readyEnabledChannels = enabledChannelReadiness.filter(
       (channel) => channel.ready,
     );
-    const sandboxChannelRows = readyEnabledChannels.filter(
-      (channel) => channel.environment === "sandbox",
+    const sandboxChannelRows = enabledChannelReadiness.filter((channel) =>
+      channel.environments.includes("sandbox"),
     );
-    const productionChannelRows = readyEnabledChannels.filter(
-      (channel) => channel.environment === "production",
+    const productionChannelRows = enabledChannelReadiness.filter((channel) =>
+      channel.environments.includes("production"),
     );
     const sandboxProviders = [
       ...new Set(sandboxChannelRows.map((row) => row.providerCode)),
@@ -1025,10 +1025,7 @@ export class PaymentOpsService {
   ): EnabledChannelProviderSetup {
     const [method, providerCode] = parsePaymentChannelKey(channelKey);
     const candidates = inspections.filter(
-      (row) =>
-        row.providerCode === providerCode &&
-        row.providerStatus === "enabled" &&
-        row.configStatus === "enabled",
+      (row) => row.providerCode === providerCode,
     );
     if (candidates.length === 0) {
       return {
@@ -1037,36 +1034,72 @@ export class PaymentOpsService {
         method,
         ready: false,
         missingCredentialKeys: ["providerConfig"],
-        environment: null,
+        environments: [],
       };
     }
 
-    const candidateResults = candidates.map((candidate) => ({
+    const globalCandidates = candidates.filter(
+      (candidate) => candidate.machineId === null,
+    );
+    const relevantMachineIds = [
+      ...new Set(
+        candidates.flatMap((candidate) =>
+          candidate.machineId === null ? [] : [candidate.machineId],
+        ),
+      ),
+    ];
+    const effectiveCandidates = [
+      ...globalCandidates,
+      ...relevantMachineIds.flatMap((machineId) =>
+        candidates.filter((candidate) => candidate.machineId === machineId),
+      ),
+    ];
+    const candidateResults = effectiveCandidates.map((candidate) => ({
       candidate,
       missingCredentialKeys: this.missingProviderConfigKeys(candidate, method),
     }));
-    const ready = candidateResults.find(
+    const readyResults = candidateResults.filter(
       (result) => result.missingCredentialKeys.length === 0,
     );
-    const bestAttempt = candidateResults.reduce((best, current) =>
-      current.missingCredentialKeys.length < best.missingCredentialKeys.length
-        ? current
-        : best,
+    const blockedResults = candidateResults.filter(
+      (result) => result.missingCredentialKeys.length > 0,
     );
+    const bestAttempt = blockedResults.reduce<
+      (typeof blockedResults)[number] | undefined
+    >(
+      (best, current) =>
+        !best ||
+        current.missingCredentialKeys.length < best.missingCredentialKeys.length
+          ? current
+          : best,
+      undefined,
+    );
+    const ready =
+      candidateResults.length > 0 &&
+      readyResults.length === candidateResults.length;
+    const environments = [
+      ...new Set(
+        readyResults.flatMap((result) => {
+          const environment = this.providerEnvironment(
+            providerCode,
+            result.candidate.publicConfig,
+          );
+          return environment === null ? [] : [environment];
+        }),
+      ),
+    ];
 
     return {
       channelKey,
       providerCode,
       method,
-      ready: ready !== undefined,
+      ready,
       missingCredentialKeys: ready
         ? []
-        : bestAttempt.missingCredentialKeys.length > 0
+        : bestAttempt && bestAttempt.missingCredentialKeys.length > 0
           ? bestAttempt.missingCredentialKeys
           : ["providerConfig"],
-      environment: ready
-        ? this.providerEnvironment(providerCode, ready.candidate.publicConfig)
-        : null,
+      environments,
     };
   }
 

@@ -664,18 +664,16 @@ namespace Vem.Security {
       }
     }
 
-    if ($Depth -lt 3) {
-      foreach ($text in $texts) {
-        foreach ($match in [regex]::Matches($text, '(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')) {
-          if ($match.Value.Length -gt 2MB) { continue }
-          try {
-            $decoded = [Convert]::FromBase64String($match.Value)
-          } catch {
-            continue
-          }
-          if ($decoded.Length -ge 24 -and $decoded.Length -le 1MB) {
-            & $scan $decoded "$Label (base64)" ($Depth + 1) $State
-          }
+    foreach ($text in $texts) {
+      foreach ($match in [regex]::Matches($text, '(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')) {
+        if ($match.Value.Length -gt 2MB) { continue }
+        try {
+          $decoded = [Convert]::FromBase64String($match.Value)
+        } catch {
+          continue
+        }
+        if ($decoded.Length -ge 24 -and $decoded.Length -le 1MB) {
+          & $scan $decoded "$Label (base64)" ($Depth + 1) $State
         }
       }
     }

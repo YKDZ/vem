@@ -647,6 +647,113 @@ describe("PaymentOpsService.getReadiness", () => {
     });
   });
 
+  it.each(["global-first", "machine-first"])(
+    "blocks production readiness for a machine sandbox override regardless of row order: %s",
+    async (order) => {
+      const db = makeDb();
+      const globalProduction = {
+        providerCode: "alipay",
+        providerStatus: "enabled",
+        configStatus: "enabled",
+        machineId: null,
+        merchantNo: "MERCHANT001",
+        appId: "APP001",
+        publicConfigJson: {
+          mode: "production",
+          gatewayUrl: "https://openapi.alipay.com/gateway.do",
+          keyType: "PKCS8",
+        },
+        configEncryptedJson: {
+          v: 1,
+          alg: "aes-256-gcm",
+          iv: "global-iv",
+          tag: "global-tag",
+          ciphertext: "global-ciphertext",
+        },
+      };
+      const machineSandbox = {
+        ...globalProduction,
+        machineId: "machine-sandbox",
+        publicConfigJson: {
+          mode: "sandbox",
+          gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+          keyType: "PKCS8",
+        },
+        configEncryptedJson: {
+          v: 1,
+          alg: "aes-256-gcm",
+          iv: "machine-iv",
+          tag: "machine-tag",
+          ciphertext: "machine-ciphertext",
+        },
+      };
+      const providerRows =
+        order === "global-first"
+          ? [globalProduction, machineSandbox]
+          : [machineSandbox, globalProduction];
+      let selectCallCount = 0;
+      db.select.mockImplementation(() => {
+        const callIdx = selectCallCount++;
+        return {
+          from: vi.fn().mockImplementation(() => {
+            if (callIdx === 1) {
+              return {
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue(providerRows),
+                }),
+              };
+            }
+            const zeroRow = [{ total: 0 }];
+            const whereResult = Object.assign(Promise.resolve(zeroRow), {
+              limit: vi.fn().mockResolvedValue([]),
+            });
+            return {
+              where: vi.fn().mockReturnValue(whereResult),
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+              limit: vi.fn().mockResolvedValue([]),
+            };
+          }),
+        };
+      });
+      const secrets = makeSecrets();
+      vi.mocked(secrets.decrypt).mockReturnValue({
+        privateKeyPem: "configured",
+        appCertPem: "configured",
+        alipayPublicCertPem: "configured",
+        alipayRootCertPem: "configured",
+      });
+
+      const service = makeService({
+        db,
+        config: makeConfig({ nodeEnv: "production" }),
+        secrets,
+        channelPolicies: makeChannelPolicies({
+          enabledChannelKeys: ["qr_code:alipay"],
+        }),
+      });
+      const result = await service.getReadiness();
+      const environmentCheck = result.checks.find(
+        (check) => check.code === "provider_environment.production_ready",
+      );
+
+      expect(environmentCheck).toMatchObject({
+        severity: "critical",
+        passed: false,
+        evidence: {
+          sandboxProviders: ["alipay"],
+          productionProviders: ["alipay"],
+        },
+      });
+      expect(result.providerEnvironment).toEqual({
+        environment: "mixed",
+        readiness: "blocked",
+        errorCategory: "mixed_environment",
+      });
+    },
+  );
+
   it("allows sandbox provider setup in test readiness while marking it as test-only", async () => {
     const db = makeDb();
     let selectCallCount = 0;
