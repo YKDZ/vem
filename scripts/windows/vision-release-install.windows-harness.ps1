@@ -1991,7 +1991,7 @@ Assert-True ($acl.AreAccessRulesProtected) "selection ACL is not protected"
 $system = [Security.Principal.SecurityIdentifier]::new("S-1-5-18")
 $administrators = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
 $kiosk = (Get-LocalUser -Name "VEMKiosk" -ErrorAction Stop).SID
-Assert-True ($acl.Owner.Translate([Security.Principal.SecurityIdentifier]).Value -ceq $system.Value) "selection ACL owner is not LocalSystem"
+Assert-True (([Security.Principal.NTAccount]::new([string]$acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value -ceq $system.Value) "selection ACL owner is not LocalSystem"
 $expectedRules = @(
   [Security.AccessControl.FileSystemAccessRule]::new($system, "FullControl", "None", "None", "Allow"),
   [Security.AccessControl.FileSystemAccessRule]::new($administrators, "FullControl", "None", "None", "Allow"),
