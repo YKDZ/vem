@@ -55,6 +55,7 @@ struct ActivePlayback<T> {
 #[cfg_attr(not(windows), allow(dead_code))]
 struct PlaybackLifecycle<T> {
     active: Arc<Mutex<Option<ActivePlayback<T>>>>,
+    completion_generation: Arc<Mutex<Option<u64>>>,
     next_generation: AtomicU64,
 }
 
@@ -62,6 +63,7 @@ impl<T> Default for PlaybackLifecycle<T> {
     fn default() -> Self {
         Self {
             active: Arc::new(Mutex::new(None)),
+            completion_generation: Arc::new(Mutex::new(None)),
             next_generation: AtomicU64::new(1),
         }
     }
@@ -74,6 +76,11 @@ impl<T> PlaybackLifecycle<T> {
     }
 
     #[cfg_attr(not(windows), allow(dead_code))]
+    fn completion_gate_handle(&self) -> Arc<Mutex<Option<u64>>> {
+        Arc::clone(&self.completion_generation)
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn replace(
         &self,
         request_id: String,
@@ -82,12 +89,18 @@ impl<T> PlaybackLifecycle<T> {
     ) -> Result<u64, String> {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let replaced = {
+            let mut completion_generation = self
+                .completion_generation
+                .lock()
+                .map_err(|_| "audio state poisoned")?;
             let mut active = self.active.lock().map_err(|_| "audio state poisoned")?;
-            active.replace(ActivePlayback {
+            let replaced = active.replace(ActivePlayback {
                 generation,
                 request_id,
                 payload,
-            })
+            });
+            *completion_generation = Some(generation);
+            replaced
         };
         if let Some(replaced) = replaced {
             stop_replaced(&replaced.payload);
@@ -97,7 +110,14 @@ impl<T> PlaybackLifecycle<T> {
     }
 
     fn stop(&self, stop_active: impl FnOnce(&T)) {
-        let stopped = self.active.lock().ok().and_then(|mut active| active.take());
+        let stopped =
+            self.completion_generation
+                .lock()
+                .ok()
+                .and_then(|mut completion_generation| {
+                    *completion_generation = None;
+                    self.active.lock().ok().and_then(|mut active| active.take())
+                });
         if let Some(stopped) = stopped {
             stop_active(&stopped.payload);
             drop(stopped);
@@ -152,15 +172,33 @@ fn take_completed<T>(
     }
 }
 
+fn commit_completion(
+    completion_generation: &Arc<Mutex<Option<u64>>>,
+    signal: CompletionSignal,
+    on_completed: impl FnOnce(),
+) {
+    let Ok(mut committable_generation) = completion_generation.lock() else {
+        return;
+    };
+    if *committable_generation == Some(signal.generation) {
+        *committable_generation = None;
+        on_completed();
+    }
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
-fn spawn_completion_worker<T, F>(
+fn spawn_completion_worker<T, E, F, G>(
     active: Arc<Mutex<Option<ActivePlayback<T>>>>,
+    completion_generation: Arc<Mutex<Option<u64>>>,
     completion_rx: Receiver<CompletionSignal>,
-    mut on_completed: F,
+    mut teardown: F,
+    mut on_completed: G,
 ) -> JoinHandle<()>
 where
     T: Send + 'static,
-    F: FnMut(String, T) + Send + 'static,
+    E: Send + 'static,
+    F: FnMut(T) -> E + Send + 'static,
+    G: FnMut(String, E) + Send + 'static,
 {
     // Stream teardown may join the audio thread, so completion ownership must
     // always cross this worker boundary before the payload is dropped.
@@ -171,7 +209,11 @@ where
                 let Some(completed) = take_completed(&active, signal) else {
                     continue;
                 };
-                on_completed(completed.request_id, completed.payload);
+                let request_id = completed.request_id;
+                let event_context = teardown(completed.payload);
+                commit_completion(&completion_generation, signal, || {
+                    on_completed(request_id, event_context);
+                });
             }
         })
         .expect("spawn machine audio completion worker")
@@ -225,11 +267,15 @@ impl Default for MachineAudioState {
             let (completion_tx, completion_rx) = mpsc::channel();
             let _worker = spawn_completion_worker(
                 lifecycle.active_handle(),
+                lifecycle.completion_gate_handle(),
                 completion_rx,
-                |request_id, completed: ActiveMachineAudio| {
+                |completed: ActiveMachineAudio| {
                     let ActiveMachineAudio { app, player, sink } = completed;
                     drop(player);
                     drop(sink);
+                    app
+                },
+                |request_id, app| {
                     let _ = app.emit(
                         "machine-audio-completed",
                         MachineAudioCompletedEvent { request_id },
@@ -633,10 +679,13 @@ mod tests {
         let worker_observations = Arc::clone(&observations);
         let worker = spawn_completion_worker(
             Arc::clone(&active),
+            lifecycle.completion_gate_handle(),
             completion_rx,
-            move |request_id, payload| {
-                assert_eq!(request_id, "request-1");
+            move |payload| {
                 drop(payload);
+            },
+            move |request_id, ()| {
+                assert_eq!(request_id, "request-1");
                 let lock_available = worker_active.try_lock().is_ok();
                 worker_observations
                     .lock()
@@ -781,7 +830,9 @@ mod tests {
         let worker_emitted = Arc::clone(&emitted);
         let worker = spawn_completion_worker(
             lifecycle.active_handle(),
+            lifecycle.completion_gate_handle(),
             completion_rx,
+            |()| (),
             move |request_id, ()| {
                 worker_emitted
                     .lock()
@@ -791,6 +842,84 @@ mod tests {
         );
 
         OnceCompletionSignal::new(completion_tx, generation).send();
+        worker.join().expect("completion worker");
+
+        assert!(emitted.lock().expect("emitted requests").is_empty());
+    }
+
+    #[test]
+    fn completion_claimed_before_stop_cannot_emit_after_stop_returns() {
+        let lifecycle = PlaybackLifecycle::default();
+        let generation = lifecycle
+            .replace("request-1".to_string(), (), |_| {})
+            .expect("install playback");
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let (claimed_tx, claimed_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let worker_emitted = Arc::clone(&emitted);
+        let worker = spawn_completion_worker(
+            lifecycle.active_handle(),
+            lifecycle.completion_gate_handle(),
+            completion_rx,
+            move |()| {
+                claimed_tx.send(()).expect("completion claimed");
+                resume_rx.recv().expect("resume completion teardown");
+            },
+            move |request_id, ()| {
+                worker_emitted
+                    .lock()
+                    .expect("emitted requests")
+                    .push(request_id);
+            },
+        );
+
+        OnceCompletionSignal::new(completion_tx, generation).send();
+        claimed_rx
+            .recv()
+            .expect("completion worker claims playback");
+        lifecycle.stop(|_| {});
+        resume_tx.send(()).expect("resume completion worker");
+        worker.join().expect("completion worker");
+
+        assert!(emitted.lock().expect("emitted requests").is_empty());
+    }
+
+    #[test]
+    fn completion_claimed_before_replacement_cannot_emit_after_new_playback_starts() {
+        let lifecycle = PlaybackLifecycle::default();
+        let generation = lifecycle
+            .replace("request-1".to_string(), (), |_| {})
+            .expect("install playback");
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let (claimed_tx, claimed_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let worker_emitted = Arc::clone(&emitted);
+        let worker = spawn_completion_worker(
+            lifecycle.active_handle(),
+            lifecycle.completion_gate_handle(),
+            completion_rx,
+            move |()| {
+                claimed_tx.send(()).expect("completion claimed");
+                resume_rx.recv().expect("resume completion teardown");
+            },
+            move |request_id, ()| {
+                worker_emitted
+                    .lock()
+                    .expect("emitted requests")
+                    .push(request_id);
+            },
+        );
+
+        OnceCompletionSignal::new(completion_tx, generation).send();
+        claimed_rx
+            .recv()
+            .expect("completion worker claims playback");
+        lifecycle
+            .replace("request-2".to_string(), (), |_| {})
+            .expect("replace playback");
+        resume_tx.send(()).expect("resume completion worker");
         worker.join().expect("completion worker");
 
         assert!(emitted.lock().expect("emitted requests").is_empty());
