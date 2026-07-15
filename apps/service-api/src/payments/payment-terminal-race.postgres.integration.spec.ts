@@ -9,6 +9,7 @@ import {
   orders,
   orderStatusEvents,
   paymentEvents,
+  paymentProviderConfigs,
   paymentProviders,
   payments,
   products,
@@ -21,6 +22,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { InventoryService } from "../inventory/inventory.service";
 import { VendingService } from "../vending/vending.service";
+import { PaymentConfigSecretService } from "./payment-config-secret.service";
+import { PaymentProviderConfigService } from "./payment-provider-config.service";
+import { PaymentWebhookAttemptRecorderService } from "./payment-webhook-attempt-recorder.service";
 import { PaymentsService } from "./payments.service";
 
 const databaseUrl = process.env.VEM_TEST_POSTGRES_URL;
@@ -59,7 +63,7 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
     await database?.disconnect();
   });
 
-  it("applies only the successful winner when success and failure race", async () => {
+  it("applies only the successful webhook winner when success and failure race", async () => {
     const suffix = Date.now().toString();
     const machineId = randomUUID();
     const providerId = randomUUID();
@@ -70,6 +74,8 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
     const orderId = randomUUID();
     const paymentId = randomUUID();
     const orderItemId = randomUUID();
+    const providerConfigId = randomUUID();
+    const providerCode = `terminal-race-provider-${suffix}`;
 
     await database.client.insert(machines).values({
       id: machineId,
@@ -79,10 +85,31 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
     });
     await database.client.insert(paymentProviders).values({
       id: providerId,
-      code: `terminal-race-provider-${suffix}`,
+      code: providerCode,
       name: "Terminal race provider",
       type: "mock",
       capabilities: {},
+    });
+    const appConfig = {
+      paymentConfigEncryptionKey: `terminal-race-key-${suffix}`,
+      paymentMockEnabled: false,
+      buildPaymentNotifyUrl: () =>
+        "https://pay.example.test/api/payments/webhooks/terminal-race",
+    };
+    const paymentConfigSecrets = new PaymentConfigSecretService(
+      appConfig as never,
+    );
+    const paymentProviderConfigService = new PaymentProviderConfigService(
+      database.client,
+      paymentConfigSecrets,
+      appConfig as never,
+    );
+    await database.client.insert(paymentProviderConfigs).values({
+      id: providerConfigId,
+      providerId,
+      publicConfigJson: {},
+      configEncryptedJson: paymentConfigSecrets.encrypt({ token: "test" }),
+      status: "enabled",
     });
     await database.client.insert(products).values({
       id: productId,
@@ -134,6 +161,7 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
       paymentNo: `PAY-PG-TERMINAL-RACE-${suffix}`,
       orderId,
       providerId,
+      paymentProviderConfigId: providerConfigId,
       method: "qr_code",
       status: "pending",
       amountCents: 100,
@@ -172,40 +200,63 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
         ),
       dispatchPendingCommandsForOrder: async () => [],
     };
+    const provider = {
+      async handleWebhook(input: { body: unknown }) {
+        const status = Reflect.get(input.body as object, "status") as
+          | "succeeded"
+          | "failed";
+        return {
+          eventKind: "payment" as const,
+          eventType: `terminal-race.${status}`,
+          providerEventId:
+            status === "succeeded"
+              ? `terminal-race-success:${suffix}`
+              : `terminal-race-failed:${suffix}`,
+          paymentNo: `PAY-PG-TERMINAL-RACE-${suffix}`,
+          providerTradeNo:
+            status === "succeeded" ? "TRADE-PG-TERMINAL-RACE-01" : null,
+          paymentStatus: status,
+          signatureValid: true,
+          rawPayload: { status },
+          matchedConfigId: providerConfigId,
+        };
+      },
+    };
     const service = new PaymentsService(
       database.client,
       inventoryService,
       vendingService as never,
+      appConfig as never,
+      { get: () => provider, has: () => true } as never,
       {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
+      paymentConfigSecrets,
+      paymentProviderConfigService,
+      new PaymentWebhookAttemptRecorderService(database.client),
       {} as never,
     );
 
-    const success = service.applyProviderPaymentResult({
-      paymentId,
-      providerTradeNo: "TRADE-PG-TERMINAL-RACE-01",
-      status: "succeeded",
-      eventType: "terminal-race.succeeded",
-      providerEventId: "terminal-race-success:01",
-      rawPayload: { status: "succeeded" },
-    });
+    const success = service.handleProviderWebhook(
+      providerCode,
+      {},
+      { status: "succeeded" },
+    );
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const failure = service.applyProviderPaymentResult({
-      paymentId,
-      providerTradeNo: null,
-      status: "failed",
-      failedReason: "racing_failure",
-      eventType: "terminal-race.failed",
-      providerEventId: "terminal-race-failed:01",
-      rawPayload: { status: "failed" },
-    });
+    const failure = service.handleProviderWebhook(
+      providerCode,
+      {},
+      { status: "failed" },
+    );
 
-    const applied = await Promise.all([success, failure]);
-    expect(applied).toEqual([true, false]);
+    const handled = await Promise.all([success, failure]);
+    expect(handled).toEqual([
+      { handled: true, duplicate: false },
+      {
+        handled: true,
+        duplicate: false,
+        stale: true,
+        reason: "stale_terminal_status",
+      },
+    ]);
 
     const [payment] = await database.client
       .select({ status: payments.status })
@@ -223,6 +274,10 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
       .select({ status: inventoryReservations.status })
       .from(inventoryReservations)
       .where(eq(inventoryReservations.orderId, orderId));
+    const [inventory] = await database.client
+      .select({ reservedQty: inventories.reservedQty })
+      .from(inventories)
+      .where(eq(inventories.id, inventoryId));
     const events = await database.client
       .select({ eventType: paymentEvents.eventType })
       .from(paymentEvents)
@@ -243,8 +298,9 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
       fulfillmentState: "awaiting_fulfillment",
     });
     expect(reservation.status).toBe("active");
+    expect(inventory.reservedQty).toBe(1);
     expect(events).toEqual([{ eventType: "terminal-race.succeeded" }]);
-    expect(orderEvents).toEqual([{ reason: "reconcile_succeeded" }]);
+    expect(orderEvents).toEqual([{ reason: "webhook_payment_succeeded" }]);
     expect(commands).toEqual([{ status: "pending" }]);
   });
 });

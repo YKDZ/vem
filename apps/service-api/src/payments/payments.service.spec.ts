@@ -1484,12 +1484,10 @@ describe("PaymentsService", () => {
           machineId: "mach-001",
         },
       ]);
-
-      // insert event → no rows (duplicate)
-      db.insert.mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          onConflictDoNothing: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([]), // empty = duplicate
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: "evt-existing" }]),
           }),
         }),
       });
@@ -1693,6 +1691,13 @@ describe("PaymentsService", () => {
           providerConfigSnapshotJson: null,
         },
       ]);
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
       db.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
