@@ -17,6 +17,30 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_INVENTORY = [
   {
+    path: "scripts/check-machine-customer-payment-copy.mjs",
+    owner: "machine-runtime-console",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance"],
+  },
+  {
+    path: "scripts/check-machine-customer-payment-copy.test.mjs",
+    owner: "machine-runtime-console",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance"],
+  },
+  {
+    path: "scripts/factory/payment-secret-boundary.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
+    path: "scripts/security/platform-private-key-scanner.mjs",
+    owner: "platform-security",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
     path: "scripts/check-admin-api-contracts.mjs",
     owner: "shared-contracts",
     category: "verifier-test guard",
@@ -624,6 +648,36 @@ const DEFAULT_INVENTORY = [
     },
   },
   {
+    path: "scripts/windows/payment-secret-guard.test.mjs",
+    owner: "platform-security",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
+    path: "scripts/windows/prepare-unified-field-delivery.mjs",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/windows/prepare-unified-field-delivery.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/windows/verify-progressive-delivery.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/windows/verify-progressive-delivery.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
+  },
+  {
     path: "scripts/windows/vision-release-install.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -785,6 +839,13 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
       "scripts/windows/setup-scheduled-tasks.ps1",
       "scripts/windows/test-vision-candidate.ps1",
       "scripts/windows/verify-vem-runtime.ps1",
+    ],
+  },
+  {
+    path: "public/unified-field-delivery.md",
+    scripts: [
+      "scripts/windows/prepare-unified-field-delivery.mjs",
+      "scripts/windows/verify-progressive-delivery.mjs",
     ],
   },
 ];

@@ -4,7 +4,7 @@
 
 - Runtime exact artifacts 只认 `WINDOWS-RUNTIME-ARTIFACTS.json` 描述的 `vending-daemon.exe`、`machine.exe`、`WebView2Loader.dll`。
 - Vision 只认一个操作员钉住的 immutable Candidate digest；非 ISO 预批准与后续 Factory/ISO 必须引用同一个 digest。当前试验约束要求该 Candidate 自带固定 Python 3.11.9 与 pinned dependencies。
-- Power-on 前的全部材料放在仓库外临时目录；Tailscale/SSH 只能传输、调用、取证，不得直接替换 exe。
+- Power-on 前的全部材料放在仓库外临时目录；现场传输通道只负责传输、调用、取证，不得直接替换 exe。
 - 非 ISO 仍然通过 `apply-managed-update.ps1` 执行 daemon/UI 更新、校验、服务/任务生命周期和 rollback。
 
 ## 标准准备入口
