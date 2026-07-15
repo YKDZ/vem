@@ -1305,6 +1305,7 @@ describe("MaintenanceView hardware config", () => {
     });
     const host = await mountView();
     await unlockMaintenance(host);
+    vi.useFakeTimers();
 
     const selected = host.querySelector(
       'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
@@ -1322,15 +1323,23 @@ describe("MaintenanceView hardware config", () => {
     if (!(heardCheckbox instanceof HTMLInputElement)) {
       throw new Error("heard confirmation checkbox not found");
     }
-    heardCheckbox.click();
-    await nextTick();
-
     const volume = inputByTest(host, "machine-audio-volume-percent");
     volume.value = "42";
     volume.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
 
-    buttonByText(host, "保存顾客扬声器绑定与音频提示设置").click();
+    const saveButton = buttonByText(host, "保存顾客扬声器绑定与音频提示设置");
+    expect(saveButton.disabled).toBe(true);
+
+    buttonByText(host, "播放测试音频").click();
+    await vi.runAllTimersAsync();
+    await nextTick();
+
+    expect(heardCheckbox.disabled).toBe(false);
+    heardCheckbox.click();
+    await nextTick();
+
+    saveButton.click();
 
     await vi.waitFor(() => {
       expect(saveMachineAudioSettingsMock).toHaveBeenCalledTimes(1);
@@ -1354,6 +1363,64 @@ describe("MaintenanceView hardware config", () => {
         "顾客音频输出绑定与音频提示设置已保存",
       );
     });
+  });
+
+  it("clears heard confirmation when the tested endpoint or form volume changes", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: { advancedMaintenanceConfig: true },
+    });
+    const host = await mountView();
+    await unlockMaintenance(host);
+    vi.useFakeTimers();
+    const selected = host.querySelector(
+      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
+    );
+    if (!(selected instanceof HTMLInputElement)) {
+      throw new Error("near-field speaker radio not found");
+    }
+    selected.click();
+    await nextTick();
+
+    buttonByText(host, "播放测试音频").click();
+    await vi.runAllTimersAsync();
+    await nextTick();
+
+    const heardLabel = Array.from(host.querySelectorAll("label")).find((item) =>
+      item.textContent?.includes("我已经在近场顾客扬声器上听到了测试音频"),
+    );
+    const heardCheckbox = heardLabel?.querySelector('input[type="checkbox"]');
+    if (!(heardCheckbox instanceof HTMLInputElement)) {
+      throw new Error("heard confirmation checkbox not found");
+    }
+    heardCheckbox.click();
+    await nextTick();
+    expect(heardCheckbox.checked).toBe(true);
+
+    const volume = inputByTest(host, "machine-audio-volume-percent");
+    volume.value = "0";
+    volume.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    expect(heardCheckbox.checked).toBe(false);
+    expect(heardCheckbox.disabled).toBe(true);
+    expect(
+      buttonByText(host, "保存顾客扬声器绑定与音频提示设置").disabled,
+    ).toBe(true);
+
+    const alternative = host.querySelector(
+      'input[type="radio"][value="{0.0.0.00000000}.hdmi-1"]',
+    );
+    if (!(alternative instanceof HTMLInputElement)) {
+      throw new Error("HDMI output candidate radio not found");
+    }
+    alternative.click();
+    await nextTick();
+    expect(heardCheckbox.checked).toBe(false);
+    expect(heardCheckbox.disabled).toBe(true);
+    expect(saveMachineAudioSettingsMock).not.toHaveBeenCalled();
   });
 
   it("plays protected maintenance Machine Audio test playback with mock diagnostics and global volume", async () => {

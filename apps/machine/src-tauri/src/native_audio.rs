@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use base64::prelude::*;
 use serde::Serialize;
@@ -8,21 +8,25 @@ use serde::Serialize;
 use {
     rodio::{
         cpal::traits::{DeviceTrait, HostTrait},
+        source::EmptyCallback,
         Decoder, DeviceSinkBuilder, MixerDeviceSink, Player,
     },
     std::fs::File,
     std::io::{BufReader, Cursor},
+    tauri::Emitter,
 };
 
 pub struct MachineAudioState {
-    active: Mutex<Option<ActiveMachineAudio>>,
+    active: Arc<Mutex<Option<ActiveMachineAudio>>>,
 }
 
 struct ActiveMachineAudio {
     #[cfg(windows)]
     _sink: MixerDeviceSink,
     #[cfg(windows)]
-    player: Player,
+    player: Arc<Player>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    request_id: String,
 }
 
 #[derive(Debug)]
@@ -41,6 +45,8 @@ enum MachineAudioSourcePath {
 
 #[derive(Debug)]
 pub struct PlayMachineAudioRequest {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub request_id: String,
     pub source_url: String,
     pub volume: f32,
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -48,6 +54,7 @@ pub struct PlayMachineAudioRequest {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
 #[serde(rename_all = "camelCase")]
 pub struct MachineAudioOutputCandidate {
     pub endpoint_id: String,
@@ -55,10 +62,17 @@ pub struct MachineAudioOutputCandidate {
     pub is_default: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAudioCompletedEvent {
+    pub request_id: String,
+}
+
 impl Default for MachineAudioState {
     fn default() -> Self {
         Self {
-            active: Mutex::new(None),
+            active: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -110,11 +124,13 @@ impl MachineAudioSource {
 impl MachineAudioState {
     fn play(
         &self,
+        app: tauri::AppHandle,
         input: PlayMachineAudioRequest,
         resolve_asset: impl FnOnce(&str) -> Result<Option<Vec<u8>>, String>,
     ) -> Result<(), String> {
         #[cfg(not(windows))]
         {
+            let _ = app;
             let _ = MachineAudioSource::from_source_url(&input.source_url, resolve_asset)?;
             let _ = normalize_volume(input.volume);
             return Err("native audio playback is only supported on Windows".to_string());
@@ -125,29 +141,71 @@ impl MachineAudioState {
             self.stop();
             let source = MachineAudioSource::from_source_url(&input.source_url, resolve_asset)?;
             let sink = open_requested_output_sink(input.output_device_id.as_deref())?;
-            let player = Player::connect_new(&sink.mixer());
+            let player = Arc::new(Player::connect_new(&sink.mixer()));
             player.set_volume(normalize_volume(input.volume));
+            player.pause();
             match source {
                 MachineAudioSource::Bytes(bytes) => {
                     let decoder = Decoder::try_from(Cursor::new(bytes))
                         .map_err(|error| format!("decode audio source failed: {error}"))?;
-                    player.append(decoder);
+                    self.start_player(app, sink, player, input.request_id, decoder)?;
                 }
                 MachineAudioSource::File(path) => {
                     let file = File::open(&path)
                         .map_err(|error| format!("open audio source failed: {error}"))?;
                     let decoder = Decoder::try_from(BufReader::new(file))
                         .map_err(|error| format!("decode audio source failed: {error}"))?;
-                    player.append(decoder);
+                    self.start_player(app, sink, player, input.request_id, decoder)?;
                 }
             }
+            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    fn start_player<S>(
+        &self,
+        app: tauri::AppHandle,
+        sink: MixerDeviceSink,
+        player: Arc<Player>,
+        request_id: String,
+        source: S,
+    ) -> Result<(), String>
+    where
+        S: rodio::Source<Item = f32> + Send + 'static,
+    {
+        let completed_active = Arc::clone(&self.active);
+        let completed_request_id = request_id.clone();
+        let completed_app = app.clone();
+        {
             let mut active = self.active.lock().map_err(|_| "audio state poisoned")?;
             *active = Some(ActiveMachineAudio {
                 _sink: sink,
-                player,
+                player: Arc::clone(&player),
+                request_id,
             });
-            Ok(())
         }
+        player.append(source);
+        player.append(EmptyCallback::new(Box::new(move || {
+            let completed = completed_active
+                .lock()
+                .ok()
+                .and_then(|mut active| match active.as_ref() {
+                    Some(current) if current.request_id == completed_request_id => active.take(),
+                    _ => None,
+                })
+                .is_some();
+            if completed {
+                let _ = completed_app.emit(
+                    "machine-audio-completed",
+                    MachineAudioCompletedEvent {
+                        request_id: completed_request_id.clone(),
+                    },
+                );
+            }
+        })));
+        player.play();
+        Ok(())
     }
 
     fn stop(&self) {
@@ -169,12 +227,16 @@ pub fn play_machine_audio(
     app: tauri::AppHandle,
     state: tauri::State<'_, MachineAudioState>,
     source_url: String,
+    request_id: String,
     volume: Option<f32>,
     output_device_id: Option<String>,
 ) -> Result<(), String> {
     let resolver = app.asset_resolver();
+    let request_id = normalize_request_id(request_id)?;
     state.play(
+        app,
         PlayMachineAudioRequest {
+            request_id,
             source_url,
             volume: volume.unwrap_or_else(default_volume),
             output_device_id,
@@ -214,22 +276,20 @@ fn default_volume() -> f32 {
     1.0
 }
 
+fn normalize_request_id(request_id: String) -> Result<String, String> {
+    let request_id = request_id.trim().to_string();
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err("audio playback request id is invalid".to_string());
+    }
+    Ok(request_id)
+}
+
 fn normalize_volume(volume: f32) -> f32 {
     if volume.is_finite() {
         volume.clamp(0.0, 1.0)
     } else {
         1.0
     }
-}
-
-#[cfg(windows)]
-fn open_os_default_sink() -> Result<MixerDeviceSink, String> {
-    let default_device = rodio::cpal::default_host().default_output_device();
-    open_required_default_sink(default_device, |device| {
-        DeviceSinkBuilder::from_device(device)
-            .and_then(|builder| builder.open_stream())
-            .map_err(|error| error.to_string())
-    })
 }
 
 #[cfg(windows)]
@@ -245,7 +305,7 @@ fn open_requested_output_sink(output_device_id: Option<&str>) -> Result<MixerDev
                 .and_then(|builder| builder.open_stream())
                 .map_err(|error| format!("open configured audio output failed: {error}"))
         }
-        None => open_os_default_sink(),
+        None => Err("configured audio output binding is required".to_string()),
     }
 }
 
@@ -264,12 +324,8 @@ fn list_windows_audio_outputs() -> Result<Vec<MachineAudioOutputCandidate>, Stri
                 .map_err(|error| format!("read audio output identity failed: {error}"))?
                 .1;
             let friendly_name = device
-                .name()
-                .or_else(|_| {
-                    device
-                        .description()
-                        .map(|description| description.name().to_string())
-                })
+                .description()
+                .map(|description| description.name().to_string())
                 .map_err(|error| format!("read audio output name failed: {error}"))?;
             Ok(MachineAudioOutputCandidate {
                 is_default: default_output_id
@@ -306,17 +362,6 @@ fn find_output_device_by_id(output_device_id: &str) -> Result<Option<rodio::cpal
         }
     }
     Ok(None)
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn open_required_default_sink<Device, Sink>(
-    default_device: Option<Device>,
-    open_default_device: impl FnOnce(Device) -> Result<Sink, String>,
-) -> Result<Sink, String> {
-    let default_device = default_device
-        .ok_or_else(|| "open default audio output failed: no default output device".to_string())?;
-    open_default_device(default_device)
-        .map_err(|error| format!("open default audio output failed: {error}"))
 }
 
 fn source_path_from_url(source_url: &str) -> Result<MachineAudioSourcePath, String> {
@@ -396,6 +441,16 @@ fn safe_relative_path(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_empty_or_overlong_playback_request_ids() {
+        assert!(normalize_request_id("  ".to_string()).is_err());
+        assert!(normalize_request_id("a".repeat(129)).is_err());
+        assert_eq!(
+            normalize_request_id(" native-request-1 ".to_string()).expect("request id"),
+            "native-request-1"
+        );
+    }
 
     #[test]
     fn accepts_base64_audio_data_url_as_in_memory_audio() {
@@ -484,31 +539,6 @@ mod tests {
             }
             _ => panic!("expected dev asset file path"),
         }
-    }
-
-    #[test]
-    fn fails_when_the_os_default_output_device_cannot_open() {
-        let result = open_required_default_sink::<&str, ()>(Some("os-default"), |device| {
-            assert_eq!(device, "os-default");
-            Err("default stream busy".to_string())
-        });
-
-        assert_eq!(
-            result.expect_err("default output failure should be returned"),
-            "open default audio output failed: default stream busy"
-        );
-    }
-
-    #[test]
-    fn fails_when_there_is_no_os_default_output_device() {
-        let result = open_required_default_sink::<&str, ()>(None, |_| {
-            panic!("must not open a non-default output device")
-        });
-
-        assert_eq!(
-            result.expect_err("missing default output should be returned"),
-            "open default audio output failed: no default output device"
-        );
     }
 
     #[test]

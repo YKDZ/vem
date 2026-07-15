@@ -2694,6 +2694,7 @@ impl ConfigStore {
         &self,
         request: MachineAudioSettingsUpdateRequest,
     ) -> Result<RuntimeConfigurationSummary, String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
         let mut settings = self
             .load_local_bring_up_settings()
             .await?
@@ -2701,7 +2702,9 @@ impl ConfigStore {
         settings.machine_audio_output_binding = Some(request.machine_audio_output_binding);
         settings.audio_cue_settings = Some(request.audio_cue_settings);
         settings.machine_audio_volume = Some(request.machine_audio_volume);
-        self.write_local_bring_up_settings(&settings).await?;
+        self.write_local_bring_up_settings_unlocked(&settings)
+            .await?;
+        drop(_mutation);
         self.load_runtime_configuration_summary().await
     }
 
@@ -5172,6 +5175,94 @@ mod tests {
         assert_eq!(saved["audioCueSettings"]["categories"]["presence"], false);
         assert_eq!(saved["audioCueSettings"]["categories"]["transaction"], true);
         assert_eq!(saved["machineAudioVolume"], 0.42);
+    }
+
+    #[tokio::test]
+    async fn save_machine_audio_settings_update_preserves_concurrent_network_and_device_changes() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = Arc::new(ConfigStore::new(
+            data_dir,
+            state,
+            Arc::new(InMemorySecretStore::default()),
+        ));
+        let audio_request = MachineAudioSettingsUpdateRequest {
+            machine_audio_output_binding: MachineAudioOutputBinding {
+                endpoint_id: "{0.0.0.00000000}.{field-speaker-2}".to_string(),
+                friendly_name: Some("现场喇叭".to_string()),
+                confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+            },
+            audio_cue_settings: AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: true,
+                    transaction: false,
+                },
+            },
+            machine_audio_volume: 0.42,
+        };
+
+        // Queue a network update before the audio save. The audio path must not
+        // read the old file before it owns the same mutation lock.
+        let held_lock = store.local_settings_mutation_lock.lock().await;
+        let network_store = Arc::clone(&store);
+        let network = tokio::spawn(async move {
+            network_store
+                .save_local_bring_up_network_profile("field-network-updated")
+                .await
+        });
+        tokio::task::yield_now().await;
+        let device_store = Arc::clone(&store);
+        let device = tokio::spawn(async move {
+            device_store
+                .save_local_device_binding(
+                    crate::device_binding::LocalDeviceRole::Scanner,
+                    local_binding_fixture("container:scanner"),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        let audio_store = Arc::clone(&store);
+        let audio = tokio::spawn(async move {
+            audio_store
+                .save_machine_audio_settings_update(audio_request)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(held_lock);
+
+        network.await.expect("network task").expect("network save");
+        device.await.expect("device task").expect("device save");
+        audio.await.expect("audio task").expect("audio save");
+
+        let settings = store
+            .load_local_bring_up_settings()
+            .await
+            .expect("settings")
+            .expect("persisted settings");
+        assert_eq!(
+            settings.network_profile.as_deref(),
+            Some("field-network-updated")
+        );
+        assert_eq!(
+            settings
+                .scanner_binding
+                .expect("scanner binding preserved")
+                .identity
+                .identity_key,
+            "container:scanner"
+        );
+        assert_eq!(
+            settings
+                .machine_audio_output_binding
+                .expect("audio binding preserved")
+                .endpoint_id,
+            "{0.0.0.00000000}.{field-speaker-2}"
+        );
+        assert_eq!(settings.machine_audio_volume, Some(0.42));
     }
 
     #[test]

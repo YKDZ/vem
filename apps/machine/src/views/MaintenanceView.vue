@@ -3,7 +3,7 @@ import {
   formatMachineSlotCoordinate,
   type StockMaintenanceTask,
 } from "@vem/shared";
-import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import type {
@@ -150,21 +150,31 @@ const machineAudioOutputMaintenance = reactive({
   selectedEndpointId: null as string | null,
   heardConfirmation: false,
 });
+const machineAudioTestEvidence = ref<{
+  requestId: string;
+  endpointId: string;
+  volume: number;
+} | null>(null);
 
-const confirmedMachineAudioOutputBinding = computed<MachineAudioOutputBinding | null>(
-  () => machineStore.config.machineAudioOutputBinding,
+const confirmedMachineAudioOutputBinding =
+  computed<MachineAudioOutputBinding | null>(
+    () => machineStore.config.machineAudioOutputBinding,
+  );
+const observedMachineAudioOutputBinding = computed(
+  () =>
+    machineAudioOutputMaintenance.candidates.find(
+      (candidate) =>
+        candidate.endpointId ===
+        confirmedMachineAudioOutputBinding.value?.endpointId,
+    ) ?? null,
 );
-const observedMachineAudioOutputBinding = computed(() =>
-  machineAudioOutputMaintenance.candidates.find(
-    (candidate) =>
-      candidate.endpointId === confirmedMachineAudioOutputBinding.value?.endpointId,
-  ) ?? null,
-);
-const selectedMachineAudioOutputCandidate = computed(() =>
-  machineAudioOutputMaintenance.candidates.find(
-    (candidate) =>
-      candidate.endpointId === machineAudioOutputMaintenance.selectedEndpointId,
-  ) ?? null,
+const selectedMachineAudioOutputCandidate = computed(
+  () =>
+    machineAudioOutputMaintenance.candidates.find(
+      (candidate) =>
+        candidate.endpointId ===
+        machineAudioOutputMaintenance.selectedEndpointId,
+    ) ?? null,
 );
 const machineAudioOutputBindingRows = computed(() => {
   const binding = confirmedMachineAudioOutputBinding.value;
@@ -182,7 +192,8 @@ const machineAudioOutputBindingRows = computed(() => {
     },
     {
       label: "端点",
-      value: observed?.friendlyName ?? binding.friendlyName ?? binding.endpointId,
+      value:
+        observed?.friendlyName ?? binding.friendlyName ?? binding.endpointId,
     },
     {
       label: "端点 ID",
@@ -379,6 +390,32 @@ const form = reactive({
   machineSecretInput: "",
   mqttSigningSecretInput: "",
   mqttPasswordInput: "",
+});
+
+watch(
+  [
+    () => machineAudioOutputMaintenance.selectedEndpointId,
+    () => form.machineAudioVolumePercent,
+  ],
+  () => {
+    machineAudioOutputMaintenance.heardConfirmation = false;
+    machineAudioTestEvidence.value = null;
+  },
+);
+
+const machineAudioTestVolume = computed(
+  () => form.machineAudioVolumePercent / 100,
+);
+const hasCurrentMachineAudioTestEvidence = computed(() => {
+  const selectedEndpointId = machineAudioOutputMaintenance.selectedEndpointId;
+  const evidence = machineAudioTestEvidence.value;
+  return (
+    selectedEndpointId !== null &&
+    machineAudioTestVolume.value > 0 &&
+    evidence !== null &&
+    evidence.endpointId === selectedEndpointId &&
+    evidence.volume === machineAudioTestVolume.value
+  );
 });
 
 const tryOnPreviewDiagnostic = reactive({
@@ -830,6 +867,11 @@ async function saveMachineAudioSettings(): Promise<void> {
     machineAudioOutputMaintenance.message = "请先选择顾客扬声器端点。";
     return;
   }
+  if (!hasCurrentMachineAudioTestEvidence.value) {
+    machineAudioOutputMaintenance.message =
+      "请先以当前端点和当前音量完成测试播放。";
+    return;
+  }
   if (!machineAudioOutputMaintenance.heardConfirmation) {
     machineAudioOutputMaintenance.message = "请确认“我听到了”后再保存绑定。";
     return;
@@ -850,12 +892,13 @@ async function saveMachineAudioSettings(): Promise<void> {
           transaction: form.audioCueSettings.categories.transaction,
         },
       },
-      machineAudioVolume: form.machineAudioVolumePercent / 100,
+      machineAudioVolume: machineAudioTestVolume.value,
     });
     machineStore.applyConfigSummary(summary);
     syncFormFromStore();
     await refreshMachineAudioOutputs();
-    machineAudioOutputMaintenance.message = "顾客音频输出绑定与音频提示设置已保存。";
+    machineAudioOutputMaintenance.message =
+      "顾客音频输出绑定与音频提示设置已保存。";
   } catch (error) {
     clearMaintenanceSessionAfterAuthorizationFailure(error);
     machineAudioOutputMaintenance.message =
@@ -900,6 +943,8 @@ const latestMachineAudioTestPlaybackRows = computed(() => {
 });
 
 async function playMachineAudioTestPlayback(): Promise<void> {
+  machineAudioTestEvidence.value = null;
+  machineAudioOutputMaintenance.heardConfirmation = false;
   machineAudioTestPlayback.loading = true;
   machineAudioTestPlayback.message = null;
   try {
@@ -925,7 +970,7 @@ function stopMachineAudioTestPlayback(): void {
 }
 
 function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
-  const volume = machineStore.config.machineAudioVolume;
+  const volume = machineAudioTestVolume.value;
   const outputDeviceId =
     machineAudioOutputMaintenance.selectedEndpointId ??
     machineStore.config.machineAudioOutputBinding?.endpointId ??
@@ -952,6 +997,13 @@ function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
     onDiagnostic: (diagnostic) => {
       machineAudioTestPlayback.driver = diagnostic.driver;
       machineAudioTestPlayback.diagnostic = diagnostic;
+      if (diagnostic.status === "completed" && outputDeviceId) {
+        machineAudioTestEvidence.value = {
+          requestId: diagnostic.requestId,
+          endpointId: outputDeviceId,
+          volume,
+        };
+      }
     },
     outputDeviceId,
     requireNativeOutputBinding: isTauriRuntime(),
@@ -2687,14 +2739,17 @@ async function submitStockMaintenanceTask(): Promise<void> {
               </p>
             </div>
 
-            <section class="grid gap-4 rounded-2xl border border-cyan-200/20 bg-cyan-500/10 p-4 text-left">
+            <section
+              class="grid gap-4 rounded-2xl border border-cyan-200/20 bg-cyan-500/10 p-4 text-left"
+            >
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div class="grid gap-1">
                   <h3 class="text-base font-bold text-cyan-100">
                     顾客扬声器绑定
                   </h3>
                   <p class="text-sm leading-6 text-cyan-50/85">
-                    选择稳定的 WASAPI 输出端点，测试播放并在听到近场顾客扬声器后确认保存。
+                    选择稳定的 WASAPI
+                    输出端点，测试播放并在听到近场顾客扬声器后确认保存。
                   </p>
                 </div>
                 <button
@@ -2711,7 +2766,11 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 v-if="machineAudioOutputMaintenance.candidates.length === 0"
                 class="rounded-2xl bg-slate-950/35 p-4 text-sm text-cyan-50"
               >
-                {{ machineAudioOutputMaintenance.loading ? "正在枚举音频端点…" : "尚未发现可用输出端点。" }}
+                {{
+                  machineAudioOutputMaintenance.loading
+                    ? "正在枚举音频端点…"
+                    : "尚未发现可用输出端点。"
+                }}
               </div>
 
               <div v-else class="grid gap-3">
@@ -2729,10 +2788,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                   <span class="grid gap-1">
                     <span class="text-sm font-semibold text-white">
                       {{ candidate.friendlyName }}
-                      <span
-                        v-if="candidate.isDefault"
-                        class="text-cyan-100/80"
-                      >
+                      <span v-if="candidate.isDefault" class="text-cyan-100/80">
                         · 默认
                       </span>
                     </span>
@@ -2747,6 +2803,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 <input
                   v-model="machineAudioOutputMaintenance.heardConfirmation"
                   class="size-5 accent-cyan-300"
+                  :disabled="!hasCurrentMachineAudioTestEvidence"
                   type="checkbox"
                 />
                 <span class="text-sm font-semibold text-cyan-50">
@@ -2759,7 +2816,8 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 type="button"
                 :disabled="
                   machineAudioOutputMaintenance.saving ||
-                  !machineAudioOutputMaintenance.selectedEndpointId
+                  !hasCurrentMachineAudioTestEvidence ||
+                  !machineAudioOutputMaintenance.heardConfirmation
                 "
                 @click="saveMachineAudioSettings"
               >

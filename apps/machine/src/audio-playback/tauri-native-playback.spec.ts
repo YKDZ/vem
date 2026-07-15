@@ -1,13 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { callTauriCommandMock, isTauriRuntimeMock } = vi.hoisted(() => ({
-  callTauriCommandMock: vi.fn(),
-  isTauriRuntimeMock: vi.fn(),
-}));
+const { callTauriCommandMock, isTauriRuntimeMock, listenMock } = vi.hoisted(
+  () => ({
+    callTauriCommandMock: vi.fn(),
+    isTauriRuntimeMock: vi.fn(),
+    listenMock: vi.fn(),
+  }),
+);
 
 vi.mock("@/native/tauri", () => ({
   callTauriCommand: callTauriCommandMock,
   isTauriRuntime: isTauriRuntimeMock,
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: listenMock,
 }));
 
 import {
@@ -37,6 +44,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   isTauriRuntimeMock.mockReturnValue(false);
   callTauriCommandMock.mockResolvedValue(undefined);
+  listenMock.mockResolvedValue(vi.fn());
 });
 
 describe("Tauri native Machine Audio playback driver", () => {
@@ -49,16 +57,46 @@ describe("Tauri native Machine Audio playback driver", () => {
     const driver = createTauriNativeMachineAudioPlaybackDriver();
 
     await driver?.playLocal("/assets/payment-succeeded.wav", {
+      requestId: "native-test-1",
       volume: 0.35,
       outputDeviceId: "{0.0.0.00000000}.bound-speaker",
     });
 
     expect(driver?.name).toBe("native");
     expect(callTauriCommandMock).toHaveBeenCalledWith("play_machine_audio", {
+      requestId: "native-test-1",
       sourceUrl: "/assets/payment-succeeded.wav",
       volume: 0.35,
       outputDeviceId: "{0.0.0.00000000}.bound-speaker",
     });
+  });
+
+  it("reports completion only after the matching native playback completion event", async () => {
+    isTauriRuntimeMock.mockReturnValue(true);
+    let completionListener!: (event: {
+      payload: { requestId: string };
+    }) => void;
+    listenMock.mockImplementation(async (_event, listener) => {
+      completionListener = listener;
+      return vi.fn();
+    });
+    const diagnostics: string[] = [];
+    const playback = createMachineAudioPlayback({
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.status),
+    });
+
+    await playback.playLocal("/assets/payment-succeeded.wav");
+
+    expect(diagnostics).toEqual(["requested", "started"]);
+    completionListener({ payload: { requestId: "another-request" } });
+    expect(diagnostics).toEqual(["requested", "started"]);
+
+    const requestId = (
+      callTauriCommandMock.mock.calls[0]?.[1] as { requestId: string }
+    ).requestId;
+    completionListener({ payload: { requestId } });
+
+    expect(diagnostics).toEqual(["requested", "started", "completed"]);
   });
 
   it("automatically prefers native playback in Tauri with browser fallback available", async () => {
@@ -75,6 +113,7 @@ describe("Tauri native Machine Audio playback driver", () => {
     expect(played).toBe(true);
     expect(playback.currentDriver()).toBe("native");
     expect(callTauriCommandMock).toHaveBeenCalledWith("play_machine_audio", {
+      requestId: expect.any(String),
       sourceUrl: "/assets/payment-succeeded.wav",
       volume: 1,
     });
@@ -97,6 +136,7 @@ describe("Tauri native Machine Audio playback driver", () => {
 
     expect(played).toBe(true);
     expect(callTauriCommandMock).toHaveBeenCalledWith("play_machine_audio", {
+      requestId: expect.any(String),
       sourceUrl: "/assets/refund-pending.wav",
       volume: 1,
     });

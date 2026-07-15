@@ -1,3 +1,5 @@
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
 import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
 
 export type MachineAudioPlaybackDriverName = "browser" | "mock" | "native";
@@ -19,6 +21,7 @@ export type MachineAudioPlaybackDiagnostic = {
 };
 
 type MachineAudioPlaybackDriverPlayOptions = {
+  requestId?: string;
   volume: number;
   outputDeviceId?: string | null;
   onCompleted?: () => void;
@@ -199,6 +202,7 @@ export function createMachineAudioPlayback(
     currentDriverName = input.driver.name;
     try {
       await input.driver.playLocal(input.sourceUrl, {
+        requestId: input.requestId,
         volume,
         outputDeviceId,
         onCompleted: () => {
@@ -387,19 +391,85 @@ function defaultBrowserAudioFactory(
 
 export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlaybackDriver | null {
   if (!isTauriRuntime()) return null;
+  let activePlayback: {
+    requestId: string;
+    commandAccepted: boolean;
+    completed: boolean;
+    onCompleted?: () => void;
+    unlisten: UnlistenFn | null;
+  } | null = null;
+
+  function completeActivePlayback(
+    playback: NonNullable<typeof activePlayback>,
+  ): void {
+    if (activePlayback !== playback) return;
+    activePlayback = null;
+    playback.unlisten?.();
+    playback.onCompleted?.();
+  }
+
   return {
     name: "native",
     async playLocal(
       sourceUrl: string,
       playOptions?: MachineAudioPlaybackDriverPlayOptions,
     ): Promise<void> {
-      await callTauriCommand<void>("play_machine_audio", {
-        sourceUrl,
-        volume: playOptions?.volume ?? 1,
-        outputDeviceId: playOptions?.outputDeviceId ?? undefined,
-      });
+      const requestId =
+        playOptions?.requestId ?? `tauri-machine-audio-${requestSequence}`;
+      requestSequence += 1;
+      const playback = {
+        requestId,
+        commandAccepted: false,
+        completed: false,
+        onCompleted: playOptions?.onCompleted,
+        unlisten: null as UnlistenFn | null,
+      };
+      activePlayback?.unlisten?.();
+      activePlayback = playback;
+      try {
+        const unlisten = await listen<{ requestId: string }>(
+          "machine-audio-completed",
+          (event) => {
+            if (
+              activePlayback !== playback ||
+              event.payload.requestId !== playback.requestId
+            ) {
+              return;
+            }
+            playback.completed = true;
+            if (playback.commandAccepted) {
+              completeActivePlayback(playback);
+            }
+          },
+        );
+        if (activePlayback !== playback) {
+          unlisten();
+          return;
+        }
+        playback.unlisten = unlisten;
+        await callTauriCommand<void>("play_machine_audio", {
+          requestId,
+          sourceUrl,
+          volume: playOptions?.volume ?? 1,
+          outputDeviceId: playOptions?.outputDeviceId ?? undefined,
+        });
+        if (activePlayback !== playback) return;
+        playback.commandAccepted = true;
+        if (playback.completed) {
+          setTimeout(() => completeActivePlayback(playback), 0);
+        }
+      } catch (error) {
+        if (activePlayback === playback) {
+          activePlayback = null;
+          playback.unlisten?.();
+        }
+        throw error;
+      }
     },
     stop(): void {
+      const playback = activePlayback;
+      activePlayback = null;
+      playback?.unlisten?.();
       void callTauriCommand<void>("stop_machine_audio").catch(() => undefined);
     },
   };
