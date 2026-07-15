@@ -1737,6 +1737,35 @@ describe("MaintenanceView stock maintenance", () => {
     expect(second.quantity).toBe(2);
   });
 
+  it("clears a session-rejected refill fingerprint before the operator reauthorizes editing", async () => {
+    const host = await mountView();
+    await unlockMaintenance(host);
+    recordStockMovementMock.mockRejectedValueOnce(
+      new DaemonUnavailableError(
+        "maintenance session denied (/v1/stock/movements returned HTTP 403)",
+        undefined,
+        {
+          statusCode: 403,
+          responseCode: "maintenance_session_invalid",
+        },
+      ),
+    );
+
+    submitButton(host).click();
+    await vi.waitFor(() => {
+      expect(
+        globalThis.localStorage.getItem(
+          "vem.machine.pending-stock-movement.v1",
+        ),
+      ).toBeNull();
+      expect(host.textContent).toContain("维护会话已失效");
+    });
+
+    await unlockMaintenance(host);
+    expect(stockInputByLabel(host, "数量").disabled).toBe(false);
+    expect(host.textContent).not.toContain("查询并恢复待确认库存动作");
+  });
+
   it("keeps the same locked refill fingerprint after a typed 5xx outcome", async () => {
     const host = await mountView();
     await unlockMaintenance(host);
@@ -1773,6 +1802,30 @@ describe("MaintenanceView stock maintenance", () => {
       movementId: string;
     };
     expect(second.movementId).toBe(first.movementId);
+  });
+
+  it("keeps a possibly committed 409 conflict locked to the original fingerprint", async () => {
+    const host = await mountView();
+    await unlockMaintenance(host);
+    recordStockMovementMock.mockRejectedValueOnce(
+      new DaemonUnavailableError("movement may already exist", undefined, {
+        statusCode: 409,
+        responseCode: "stock_movement_already_recorded",
+      }),
+    );
+
+    submitButton(host).click();
+    await vi.waitFor(() => {
+      expect(recordStockMovementMock).toHaveBeenCalledTimes(1);
+    });
+    const submitted = recordStockMovementMock.mock.calls[0]?.[0] as {
+      movementId: string;
+    };
+    expect(stockInputByLabel(host, "数量").disabled).toBe(true);
+    expect(
+      globalThis.localStorage.getItem("vem.machine.pending-stock-movement.v1"),
+    ).toContain(submitted.movementId);
+    expect(host.textContent).toContain("查询并恢复待确认库存动作");
   });
 
   it("restores and locks an unknown refill fingerprint until the daemon resolves its original key", async () => {

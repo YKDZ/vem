@@ -24,7 +24,8 @@ import {
   type ScannerAdapter,
 } from "@/config/machine-config";
 import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
-import { daemonClient, DaemonUnavailableError } from "@/daemon/client";
+import { daemonClient } from "@/daemon/client";
+import { isDefiniteStockMovementRejection } from "@/daemon/stock-movement-retry";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
 import {
@@ -1272,18 +1273,6 @@ function nextMovementId(): string {
   return `LOCAL-${randomId}`;
 }
 
-function isDefiniteStockMovementValidationFailure(
-  error: unknown,
-): error is DaemonUnavailableError {
-  return (
-    error instanceof DaemonUnavailableError &&
-    error.statusCode !== undefined &&
-    error.statusCode >= 400 &&
-    error.statusCode < 500 &&
-    error.responseCode === "stock_movement_record_failed"
-  );
-}
-
 async function submitStockMovement(): Promise<void> {
   stockMaintenance.loading = true;
   stockMaintenance.message = null;
@@ -1317,7 +1306,7 @@ async function submitStockMovement(): Promise<void> {
     await refreshStockMaintenanceView();
   } catch (error) {
     clearMaintenanceSessionAfterAuthorizationFailure(error);
-    if (isDefiniteStockMovementValidationFailure(error)) {
+    if (isDefiniteStockMovementRejection(error)) {
       pendingStockMovement.value = null;
       savePendingStockMovement(null);
       stockMaintenance.message = `${error.responseMessage ?? error.message}；本次动作未记录，可修正后重新提交。`;
