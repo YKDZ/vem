@@ -50,6 +50,7 @@ jobs:
       VEM_FACTORY_PLATFORM_INGRESS_HOST: ${{ vars.VEM_FACTORY_PLATFORM_INGRESS_HOST }}
       MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
       MAINTENANCE_ALLOW_INSECURE_HTTP: ${{ vars.VEM_MAINTENANCE_ALLOW_INSECURE_HTTP }}
+      MAINTENANCE_RELAY_ENDPOINT: ${{ vars.VEM_MAINTENANCE_RELAY_ENDPOINT }}
       MAINTENANCE_RUNNER_PEER_ID: ${{ vars.VEM_MAINTENANCE_RUNNER_PEER_ID }}
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
       VEM_MAINTENANCE_RELAY_INTERFACE: ${{ vars.VEM_MAINTENANCE_RELAY_INTERFACE }}
@@ -89,11 +90,17 @@ jobs:
             VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY \
             VEM_VM_HOST_EXPECTED_ADAPTER_SHA256 \
             VEM_FACTORY_EXPECTED_TESTBED_USER \
-            VEM_FACTORY_PLATFORM_INGRESS_HOST; do
+            VEM_FACTORY_PLATFORM_INGRESS_HOST \
+            MAINTENANCE_RELAY_ENDPOINT; do
             test -n "${!name:-}" || { echo "missing protected factory host variable: $name" >&2; exit 1; }
           done
           [[ "$VEM_FACTORY_PLATFORM_INGRESS_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$ ]] || {
             echo "VEM_FACTORY_PLATFORM_INGRESS_HOST must be a hostname or IP literal" >&2
+            exit 1
+          }
+          [[ "$MAINTENANCE_RELAY_ENDPOINT" =~ ^([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\]):([0-9]{1,5})$ ]] &&
+            (( 10#${BASH_REMATCH[2]} >= 1 && 10#${BASH_REMATCH[2]} <= 65535 )) || {
+            echo "MAINTENANCE_RELAY_ENDPOINT must be host:port with a valid port" >&2
             exit 1
           }
           [[ "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR" = /* ]] || {
