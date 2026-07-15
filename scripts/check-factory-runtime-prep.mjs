@@ -528,6 +528,8 @@ addCheck(
     verifier.includes("Get-DisplayEvidence") &&
     verifier.includes("topologyIdentity = $manifest.topology.identity") &&
     verifier.includes("topologyVersion = $manifest.topology.version") &&
+    verifier.includes("oobe-kiosk-autologon-password") &&
+    verifier.includes("retainedKioskAutologonHandoffPresent") &&
     verifier.includes("Write-Evidence") &&
     verifier.includes('schemaVersion = "vem-factory-runtime-verification/v2"'),
   `${verifierPath} should verify fixed paths, hashes, daemon service, UI task, accounts, kiosk/autologon, CDP exclusion, recovery path, display expectations, and evidence`,

@@ -3110,6 +3110,9 @@ try {
     assert.match(script, /VEMFactoryOobeCleanup/);
     assert.match(script, /VEM_PERSONALIZATION/);
     assert.match(script, /oobe-unattend\.xml/);
+    assert.match(script, /oobe-kiosk-autologon-password/);
+    assert.match(script, /retainedKioskAutologonHandoffPresent/);
+    assert.match(script, /-not \$retainedKioskAutologonHandoffPresent/);
     assert.match(script, /Get-LocalUser -Name 'VEMOobeBootstrap'/);
     assert.match(script, /oobe-cleanup-status\.json/);
     assert.match(script, /cleanupStatus\.phase -ceq 'complete'/);

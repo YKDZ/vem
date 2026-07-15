@@ -1208,7 +1208,10 @@ if ($cleanupPhase -notin @('account-removed', 'credentials-removed', 'media-ejec
   $cleanupPhase = 'account-removed'
 }
 if ($cleanupPhase -notin @('credentials-removed', 'media-ejected')) {
-  Remove-Item -LiteralPath $kioskAutologonStatePath -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $kioskAutologonStatePath -PathType Leaf) {
+    Remove-Item -LiteralPath $kioskAutologonStatePath -Force -ErrorAction Stop
+  }
+  if (Test-Path -LiteralPath $kioskAutologonStatePath) { throw 'Factory OOBE kiosk autologon handoff remains after cleanup' }
   Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
   Write-CleanupStatus 'credentials-removed'
   $cleanupPhase = 'credentials-removed'

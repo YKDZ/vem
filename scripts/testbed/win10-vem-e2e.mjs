@@ -3989,6 +3989,8 @@ export function buildFactoryPreclaimVerificationScript(options = {}) {
     "C:\\ProgramData\\VEM\\factory\\oobe-cleanup-status.json";
   const deprecatedOobeAnswerPath =
     "C:\\ProgramData\\VEM\\factory\\oobe-unattend.xml";
+  const retainedKioskAutologonHandoffPath =
+    "C:\\ProgramData\\VEM\\factory\\oobe-kiosk-autologon-password";
   const identityPaths = [
     "C:\\ProgramData\\VEM\\provisioning\\machine-profile.json",
     "C:\\ProgramData\\VEM\\provisioning\\provisioning-profile.json",
@@ -4001,6 +4003,7 @@ $machineConfigPath = ${psString(machineConfigPath)}
 $oobeStatusPath = ${psString(oobeStatusPath)}
 $cleanupStatusPath = ${psString(cleanupStatusPath)}
 $deprecatedOobeAnswerPath = ${psString(deprecatedOobeAnswerPath)}
+$retainedKioskAutologonHandoffPath = ${psString(retainedKioskAutologonHandoffPath)}
 $identityPaths = ${psString(JSON.stringify(identityPaths))} | ConvertFrom-Json
 if (-not (Test-Path -LiteralPath $verifierPath -PathType Leaf)) {
   throw "Factory ISO verifier is missing: $verifierPath"
@@ -4022,6 +4025,7 @@ try {
     $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
     $cleanupTask = Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue
     $personalizationVolumes = @(Get-Volume -FileSystemLabel 'VEM_PERSONALIZATION' -ErrorAction SilentlyContinue)
+    $retainedKioskAutologonHandoffPresent = Test-Path -LiteralPath $retainedKioskAutologonHandoffPath
     $currentBoot = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
     $currentBootIdentity = ConvertTo-BootIdentity $currentBoot.LastBootUpTime
     $console = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
@@ -4053,6 +4057,7 @@ try {
       [int]$setupState.SetupType -eq 0 -and
     [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
     -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
+      -not $retainedKioskAutologonHandoffPresent -and
       $null -eq (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue) -and
       $null -eq $cleanupTask -and
       $personalizationVolumes.Count -eq 0 -and
@@ -4164,6 +4169,8 @@ try {
         setupType = $setupState.SetupType
         unattendOverride = $setupState.UnattendFile
         deprecatedAnswerPresent = Test-Path -LiteralPath $deprecatedOobeAnswerPath
+        retainedKioskAutologonHandoffPresent = $retainedKioskAutologonHandoffPresent
+        retainedKioskAutologonHandoffPath = $retainedKioskAutologonHandoffPath
         bootstrapAccountPresent = $null -ne (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue)
         cleanupTaskPresent = $null -ne $cleanupTask
         personalizationVolumeCount = $personalizationVolumes.Count

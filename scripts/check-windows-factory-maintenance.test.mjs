@@ -328,6 +328,79 @@ if ($script:RestartRequests -ne 0) { throw 'completed cleanup reentry requested 
   }
 });
 
+test("Factory OOBE cleanup refuses credentials-removed while kiosk autologon handoff is retained", () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-oobe-cleanup-retained-"));
+  const bootstrapStatusPath = join(root, "oobe-bootstrap-status.json");
+  const cleanupStatusPath = join(root, "oobe-cleanup-status.json");
+  const kioskAutologonStatePath = join(root, "oobe-kiosk-autologon-password");
+  const personalizationPath = join(root, "one-time-personalization.json");
+  try {
+    writeFileSync(
+      bootstrapStatusPath,
+      JSON.stringify({
+        schemaVersion: "vem-factory-oobe-bootstrap-status/v1",
+        state: "succeeded",
+        stage: "complete",
+        errorType: "",
+      }),
+    );
+    const escapedRoot = root.replaceAll("'", "''");
+    const completion = factoryOobeCompletionScript().replace(
+      "$factoryRoot = 'C:\\ProgramData\\VEM\\factory'",
+      `$factoryRoot = '${escapedRoot}'`,
+    );
+    const commonPrefix = `$ErrorActionPreference = 'Stop'
+function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
+function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Start-Sleep { param($Seconds) throw "retained cleanup fixture must not wait: $Seconds" }
+`;
+
+    for (const [scenario, removeItemOverride, expected] of [
+      [
+        "delete-fails",
+        `function Remove-Item { param($LiteralPath, [switch]$Force, $ErrorAction) if ($LiteralPath -ceq '${kioskAutologonStatePath.replaceAll("'", "''")}') { throw 'simulated kiosk handoff retention' }; Microsoft.PowerShell.Management\\Remove-Item -LiteralPath $LiteralPath -Force:$Force -ErrorAction $ErrorAction }`,
+        /simulated kiosk handoff retention/,
+      ],
+      [
+        "retained-after-delete",
+        `function Remove-Item { param($LiteralPath, [switch]$Force, $ErrorAction) if ($LiteralPath -ceq '${kioskAutologonStatePath.replaceAll("'", "''")}') { return }; Microsoft.PowerShell.Management\\Remove-Item -LiteralPath $LiteralPath -Force:$Force -ErrorAction $ErrorAction }`,
+        /Factory OOBE kiosk autologon handoff remains after cleanup/,
+      ],
+    ]) {
+      writeFileSync(kioskAutologonStatePath, "fixture-kiosk-password", "utf8");
+      writeFileSync(personalizationPath, "fixture-personalization", "utf8");
+      writeFileSync(
+        cleanupStatusPath,
+        JSON.stringify({
+          schemaVersion: "vem-factory-oobe-cleanup-status/v1",
+          phase: "account-removed",
+        }),
+      );
+      const fixturePath = join(root, `${scenario}.ps1`);
+      writeFileSync(
+        fixturePath,
+        `${commonPrefix}
+${removeItemOverride}
+try { ${completion}; throw '${scenario} unexpectedly succeeded' } catch { if ([string]$_ -notmatch '${expected.source.replaceAll("'", "''")}') { throw } }
+$cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
+if ($cleanupStatus.phase -cne 'account-removed') { throw '${scenario} recorded credentials-removed despite retained kiosk handoff' }
+if (-not (Test-Path -LiteralPath '${kioskAutologonStatePath.replaceAll("'", "''")}')) { throw '${scenario} fixture lost retained kiosk handoff proof' }
+`,
+      );
+      const result = run("pwsh", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        fixturePath,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("all factory maintenance PowerShell entrypoints parse", () => {
   for (const path of [
     "scripts/windows/prepare-factory-runtime.ps1",

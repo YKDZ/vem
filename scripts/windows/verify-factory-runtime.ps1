@@ -1199,11 +1199,14 @@ function Get-FactoryPersonalizationRedaction {
 function Get-FactoryPersonalizationEvidence {
   param($Manifest)
 
+  $factoryRoot = "C:\ProgramData\VEM\factory"
   $markerPath = "C:\ProgramData\VEM\factory\personalization-consumed.json"
+  $retainedKioskAutologonHandoffPath = Join-Path $factoryRoot "oobe-kiosk-autologon-password"
+  $retainedKioskAutologonHandoffPresent = Test-Path -LiteralPath $retainedKioskAutologonHandoffPath
   $markerExists = Test-Path -LiteralPath $markerPath -PathType Leaf
   $marker = if ($markerExists) { Read-JsonFile -Path $markerPath } else { $null }
   $retainedMedia = @(
-    Get-ChildItem -LiteralPath "C:\ProgramData\VEM\factory" -Recurse -File -ErrorAction SilentlyContinue |
+    Get-ChildItem -LiteralPath $factoryRoot -Recurse -File -ErrorAction SilentlyContinue |
       Where-Object { $_.Name -match "(?i)personalization.*media|personalization\.json" }
   )
   $redaction = Get-FactoryPersonalizationRedaction -Manifest $Manifest
@@ -1212,6 +1215,8 @@ function Get-FactoryPersonalizationEvidence {
     consumed = $markerExists
     profileMatches = $markerExists -and [string]$marker.profile -ceq [string]$Manifest.factoryProfile
     retainedMediaPresent = $retainedMedia.Count -gt 0
+    retainedKioskAutologonHandoffPresent = $retainedKioskAutologonHandoffPresent
+    retainedKioskAutologonHandoffPath = $retainedKioskAutologonHandoffPath
     credentials = $redaction.credentials
   }
 }
@@ -1295,7 +1300,8 @@ try {
   $checks.personalizationLifecycle = Get-FactoryPersonalizationEvidence -Manifest $manifest
   if (-not [bool]$checks.personalizationLifecycle.consumed -or
       -not [bool]$checks.personalizationLifecycle.profileMatches -or
-      [bool]$checks.personalizationLifecycle.retainedMediaPresent) {
+      [bool]$checks.personalizationLifecycle.retainedMediaPresent -or
+      [bool]$checks.personalizationLifecycle.retainedKioskAutologonHandoffPresent) {
     Add-Failure $failures "Factory Personalization Media lifecycle marker or staging cleanup is invalid"
   }
 } catch {

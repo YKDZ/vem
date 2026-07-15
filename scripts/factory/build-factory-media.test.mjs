@@ -1859,7 +1859,7 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(completeOobe, /vem-factory-oobe-cleanup-status\/v1/);
       assert.match(
         completeOobe,
-        /Write-CleanupStatus 'ready'[\s\S]+Write-CleanupStatus 'autologon-restored'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'[\s\S]+Remove-Item[^\n]+\$kioskAutologonStatePath[\s\S]+Remove-Item[^\n]+\$personalizationPath[\s\S]+Write-CleanupStatus 'credentials-removed'/,
+        /Write-CleanupStatus 'ready'[\s\S]+Write-CleanupStatus 'autologon-restored'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'[\s\S]+Remove-Item[^\n]+\$kioskAutologonStatePath[^\n]+ErrorAction Stop[\s\S]+Test-Path -LiteralPath \$kioskAutologonStatePath[\s\S]+handoff remains after cleanup[\s\S]+Remove-Item[^\n]+\$personalizationPath[\s\S]+Write-CleanupStatus 'credentials-removed'/,
       );
       assert.match(
         completeOobe,
