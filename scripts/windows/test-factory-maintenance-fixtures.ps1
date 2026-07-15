@@ -61,6 +61,13 @@ try {
       cache = "forbidden"
       retention = "installation-lifecycle-only"
     }
+    maintenancePinVerifier = [ordered]@{
+      version = 1
+      algorithm = "pbkdf2_hmac_sha256"
+      iterations = 120000
+      salt = "ABEiM0RVZneImaq7zN3u/w=="
+      digest = "jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="
+    }
     credentials = [ordered]@{
       administrator = [ordered]@{ user = "Admin"; password = "unique-production-admin-1" }
       kiosk = [ordered]@{ user = "VEMKiosk"; password = "unique-production-kiosk-1" }

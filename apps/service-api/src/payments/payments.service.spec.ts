@@ -20,6 +20,7 @@ function makeDb() {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    execute: vi.fn().mockResolvedValue(undefined),
     transaction: vi.fn(),
   };
 
@@ -120,6 +121,8 @@ function makeService(overrides: {
   }
   const vendingService: VendingService = {
     createAndDispatchCommands: vi.fn().mockResolvedValue(undefined),
+    createPendingDispatchCommands: vi.fn().mockResolvedValue([]),
+    dispatchPendingCommandsForOrder: vi.fn().mockResolvedValue([]),
     ...overrides.vendingService,
   } as unknown as VendingService;
   const inventoryService: InventoryService = {
@@ -376,7 +379,8 @@ describe("PaymentsService", () => {
 
   describe("applyProviderPaymentResult", () => {
     it("dispatches only once for duplicate providerEventId", async () => {
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const createPendingDispatchCommands = vi.fn().mockResolvedValue([]);
+      const dispatchPendingCommandsForOrder = vi.fn().mockResolvedValue([]);
       const db = makeDb();
       db.select
         .mockReturnValueOnce({
@@ -455,7 +459,10 @@ describe("PaymentsService", () => {
 
       const service = makeService({
         db,
-        vendingService: { createAndDispatchCommands },
+        vendingService: {
+          createPendingDispatchCommands,
+          dispatchPendingCommandsForOrder,
+        },
       });
 
       await service.applyProviderPaymentResult({
@@ -464,7 +471,13 @@ describe("PaymentsService", () => {
         status: "succeeded",
         eventType: "payment_code.succeeded",
         providerEventId: "payment_code:PCA001:succeeded",
-        rawPayload: {},
+        rawPayload: {
+          out_trade_no: "PAY001",
+          total_amount: "1.00",
+          app_id: "app-001",
+          seller_id: "seller-001",
+          trade_status: "TRADE_SUCCESS",
+        },
       });
       await service.applyProviderPaymentResult({
         paymentId: "pay-001",
@@ -475,8 +488,10 @@ describe("PaymentsService", () => {
         rawPayload: {},
       });
 
-      expect(createAndDispatchCommands).toHaveBeenCalledTimes(1);
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+      expect(createPendingDispatchCommands).toHaveBeenCalledTimes(1);
+      expect(createPendingDispatchCommands).toHaveBeenCalledWith(db, "ord-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledTimes(1);
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith("ord-001");
     });
 
     it("does not dispatch when a late success arrives after cancellation", async () => {
@@ -700,8 +715,10 @@ describe("PaymentsService", () => {
       expect(queryPayment).not.toHaveBeenCalled();
     });
 
-    it("applies succeeded status and calls createAndDispatchCommands once", async () => {
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+    it("applies succeeded status and dispatches the durable command once", async () => {
+      const dispatchPendingCommandsForOrder = vi
+        .fn()
+        .mockResolvedValue(undefined);
       const queryPayment = vi.fn().mockResolvedValue({
         status: "succeeded",
         providerTradeNo: "TXN001",
@@ -799,13 +816,13 @@ describe("PaymentsService", () => {
           has: vi.fn().mockReturnValue(true),
           get: vi.fn().mockReturnValue(provider),
         } as unknown as PaymentProviderRegistry,
-        vendingService: { createAndDispatchCommands },
+        vendingService: { dispatchPendingCommandsForOrder },
       });
 
       const { reconciled } = await service.reconcilePendingPayments();
       expect(reconciled).toBe(1);
       expect(queryPayment).toHaveBeenCalledOnce();
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith("ord-001");
     });
 
     it("skips createAndDispatchCommands when status remains pending", async () => {
@@ -1442,11 +1459,20 @@ describe("PaymentsService", () => {
         providerEventId: "EVT001",
         signatureValid: true,
         paymentStatus: "succeeded",
-        rawPayload: {},
+        rawPayload: {
+          out_trade_no: "PAY001",
+          total_amount: "1.00",
+          app_id: "app-001",
+          seller_id: "seller-001",
+          trade_status: "TRADE_SUCCESS",
+        },
       });
       const provider = { handleWebhook };
 
       const db = makeDb();
+      const dispatchPendingCommandsForOrder = vi
+        .fn()
+        .mockResolvedValue(undefined);
       makePaymentSelectMock(db, [
         {
           id: "pay-001",
@@ -1458,12 +1484,10 @@ describe("PaymentsService", () => {
           machineId: "mach-001",
         },
       ]);
-
-      // insert event → no rows (duplicate)
-      db.insert.mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          onConflictDoNothing: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([]), // empty = duplicate
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: "evt-existing" }]),
           }),
         }),
       });
@@ -1474,17 +1498,28 @@ describe("PaymentsService", () => {
           get: vi.fn().mockReturnValue(provider),
         } as unknown as PaymentProviderRegistry,
         configService: {
-          listCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
+          listCandidateConfigsForProvider: vi.fn().mockResolvedValue([
+            {
+              id: "cfg-duplicate",
+              providerCode: "alipay",
+              appId: "app-001",
+              merchantNo: "seller-001",
+              publicConfigJson: {},
+              sensitiveConfigJson: {},
+            },
+          ]),
         },
+        vendingService: { dispatchPendingCommandsForOrder },
       });
 
       const result = await service.handleProviderWebhook(
-        "wechat_pay",
+        "alipay",
         {},
         { resource: {} },
         "",
       );
       expect(result).toMatchObject({ handled: true, duplicate: true });
+      expect(dispatchPendingCommandsForOrder).not.toHaveBeenCalled();
     });
 
     it("returns {handled:false,reason:'payment_not_found'} when paymentNo not in db", async () => {
@@ -1523,7 +1558,15 @@ describe("PaymentsService", () => {
       });
     });
 
-    it("passes webhook candidate configs that can include payment-time bindings", async () => {
+    it("passes a historically matched config from a refund webhook to RefundsService", async () => {
+      const currentConfig = {
+        id: "cfg-current",
+        providerCode: "wechat_pay",
+        merchantNo: "MCH-CURRENT",
+        appId: "APP-CURRENT",
+        publicConfigJson: {},
+        sensitiveConfigJson: { apiV3Key: "current-secret" },
+      };
       const oldBoundConfig = {
         id: "cfg-old-bound",
         providerCode: "wechat_pay",
@@ -1533,13 +1576,20 @@ describe("PaymentsService", () => {
         sensitiveConfigJson: { apiV3Key: "old-secret" },
       };
       const handleWebhook = vi.fn().mockResolvedValue({
-        paymentNo: null,
-        eventType: "wechat_pay.webhook",
+        eventKind: "refund",
+        refundNo: "RFD001",
+        providerRefundNo: "WX-RFD001",
+        paymentNo: "PAY_WX_001",
+        refundStatus: "succeeded",
+        eventType: "wechat_pay.refund",
         providerEventId: "WX_EVT_OLD",
         signatureValid: true,
-        paymentStatus: "succeeded",
         rawPayload: {},
+        matchedConfigId: oldBoundConfig.id,
       });
+      const applyProviderRefundWebhook = vi
+        .fn()
+        .mockResolvedValue({ handled: true });
       const service = makeService({
         registry: {
           get: vi.fn().mockReturnValue({ handleWebhook }),
@@ -1547,15 +1597,86 @@ describe("PaymentsService", () => {
         configService: {
           listWebhookCandidateConfigsForProvider: vi
             .fn()
-            .mockResolvedValue([oldBoundConfig]),
+            .mockResolvedValue([currentConfig, oldBoundConfig]),
         },
+        refundsService: { applyProviderRefundWebhook },
       });
 
       await service.handleProviderWebhook("wechat_pay", {}, {}, "");
 
       expect(handleWebhook).toHaveBeenCalledWith(
         expect.objectContaining({
-          candidateConfigs: [oldBoundConfig],
+          candidateConfigs: [currentConfig, oldBoundConfig],
+        }),
+      );
+      expect(applyProviderRefundWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerCode: "wechat_pay",
+          refundNo: "RFD001",
+          paymentNo: "PAY_WX_001",
+          matchedConfigId: "cfg-old-bound",
+        }),
+      );
+    });
+
+    it("passes the payment's exact Alipay config binding into signature verification", async () => {
+      const handleWebhook = vi.fn().mockResolvedValue({
+        eventKind: "payment",
+        paymentNo: null,
+        eventType: "alipay.webhook",
+        providerEventId: "ALI-BOUND-VERIFY",
+        signatureValid: true,
+        paymentStatus: null,
+        rawPayload: {},
+      });
+      const immutableBinding = {
+        id: "cfg-payment-bound",
+        providerCode: "alipay",
+        merchantNo: "seller-bound",
+        appId: "app-bound",
+        publicConfigJson: {},
+        sensitiveConfigJson: { alipayPublicCertPem: "old-cert" },
+      };
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  providerConfigId: "cfg-payment-bound",
+                  providerConfigSnapshotJson: { version: 1 },
+                  machineId: "machine-bound",
+                },
+              ]),
+            }),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listWebhookCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
+          resolveForExistingPayment: vi
+            .fn()
+            .mockResolvedValue(immutableBinding),
+        },
+      });
+
+      await service.handleProviderWebhook(
+        "alipay",
+        {},
+        { out_trade_no: "PAY-BOUND-VERIFY" },
+        "out_trade_no=PAY-BOUND-VERIFY",
+      );
+
+      expect(handleWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedConfigId: "cfg-payment-bound",
+          expectedConfig: immutableBinding,
         }),
       );
     });
@@ -1577,7 +1698,7 @@ describe("PaymentsService", () => {
           amountCurrency: "CNY",
           tradeState: "SUCCESS",
         },
-        matchedConfigId: null,
+        matchedConfigId: "cfg-old",
       });
       const db = makeDb();
       makePaymentSelectMock(db, [
@@ -1594,6 +1715,13 @@ describe("PaymentsService", () => {
           providerConfigSnapshotJson: null,
         },
       ]);
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
       db.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
@@ -1661,6 +1789,53 @@ describe("PaymentsService", () => {
       await expect(
         service.handleProviderWebhook("wechat_pay", {}, {}, "tampered"),
       ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it("rejects an Alipay callback verified by a different payment config binding", async () => {
+      const handleWebhook = vi.fn().mockResolvedValue({
+        paymentNo: "PAY_ALI_BINDING",
+        eventType: "alipay.webhook",
+        providerEventId: "ALI_BINDING_EVT",
+        signatureValid: true,
+        paymentStatus: "succeeded",
+        providerTradeNo: "2024000",
+        matchedConfigId: "cfg-rotated",
+        rawPayload: {
+          out_trade_no: "PAY_ALI_BINDING",
+          total_amount: "1.00",
+          app_id: "APP-BOUND",
+          seller_id: "MERCHANT-BOUND",
+          trade_status: "TRADE_SUCCESS",
+        },
+      });
+      const db = makeDb();
+      makePaymentSelectMock(db, [
+        {
+          id: "pay-ali-binding",
+          providerId: "prov-alipay",
+          status: "pending",
+          orderId: "ord-ali-binding",
+          orderNo: "ORD-ALI-BINDING",
+          paymentNo: "PAY_ALI_BINDING",
+          amountCents: 100,
+          machineId: "mach-001",
+          providerConfigId: "cfg-bound",
+          providerConfigSnapshotJson: {},
+        },
+      ]);
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+      });
+
+      await expect(
+        service.handleProviderWebhook("alipay", {}, {}, ""),
+      ).resolves.toMatchObject({
+        handled: false,
+        reason: "payment_config_binding_mismatch",
+      });
     });
 
     it("alipay: total_amount mismatch → {handled:false, reason:'alipay_total_amount_mismatch'}", async () => {
@@ -2153,7 +2328,8 @@ describe("PaymentsService", () => {
     it("keeps reservations active and does not confirm inventory on payment success", async () => {
       const db = makeDb();
       const confirmReservation = vi.fn().mockResolvedValue(undefined);
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const createPendingDispatchCommands = vi.fn().mockResolvedValue([]);
+      const dispatchPendingCommandsForOrder = vi.fn().mockResolvedValue([]);
 
       db.select
         .mockReturnValueOnce({
@@ -2189,7 +2365,10 @@ describe("PaymentsService", () => {
       const service = makeService({
         db,
         inventoryService: { confirmReservation } as unknown as InventoryService,
-        vendingService: { createAndDispatchCommands },
+        vendingService: {
+          createPendingDispatchCommands,
+          dispatchPendingCommandsForOrder,
+        },
       });
 
       const result = await service.markMockSucceeded("PAY001", "admin-1");
@@ -2201,7 +2380,8 @@ describe("PaymentsService", () => {
         alreadyHandled: false,
       });
       expect(confirmReservation).not.toHaveBeenCalled();
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+      expect(createPendingDispatchCommands).toHaveBeenCalledWith(db, "ord-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith("ord-001");
     });
   });
 
@@ -2721,6 +2901,49 @@ describe("PaymentsService", () => {
       });
     }
 
+    function makeLocalExpiryTransitionMocks(
+      db: ReturnType<typeof makeDb>,
+      input: {
+        paymentId: string;
+        orderId: string;
+        expiresAt: Date;
+      },
+    ) {
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                paymentId: input.paymentId,
+                paymentStatus: "pending",
+                paymentExpiresAt: input.expiresAt,
+                paymentIsDrill: false,
+                orderId: input.orderId,
+                orderStatus: "pending_payment",
+                paymentState: "awaiting_payment",
+                fulfillmentState: "awaiting_fulfillment",
+                orderIsDrill: false,
+              },
+            ]),
+          }),
+        }),
+      });
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
+      db.update.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: input.paymentId }]),
+          }),
+        }),
+      });
+    }
+
     it("query succeeds → calls applyPaymentStatusUpdate + dispatches, no cancel", async () => {
       const now = new Date();
       const expiresAt = new Date(now.getTime() - 10_000); // 10s ago
@@ -2790,7 +3013,9 @@ describe("PaymentsService", () => {
         }),
       }));
 
-      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const dispatchPendingCommandsForOrder = vi
+        .fn()
+        .mockResolvedValue(undefined);
       const service = makeService({
         db,
         registry: {
@@ -2813,13 +3038,15 @@ describe("PaymentsService", () => {
             sensitiveConfigJson: {},
           }),
         },
-        vendingService: { createAndDispatchCommands },
+        vendingService: { dispatchPendingCommandsForOrder },
       });
 
       const result = await service.expireOverduePayments(now);
       expect(queryPayment).toHaveBeenCalled();
       expect(cancelPayment).not.toHaveBeenCalled();
-      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-exp-001");
+      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith(
+        "ord-exp-001",
+      );
       expect(result.processed).toBeGreaterThanOrEqual(1);
       expect(insertedValues).toContainEqual(
         expect.objectContaining({
@@ -2945,6 +3172,11 @@ describe("PaymentsService", () => {
             publicConfigJson: {},
           },
         ]);
+        makeLocalExpiryTransitionMocks(db, {
+          paymentId: `pay-exp-${providerStatus}-001`,
+          orderId: `ord-exp-${providerStatus}-001`,
+          expiresAt,
+        });
         db.select.mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -3018,6 +3250,11 @@ describe("PaymentsService", () => {
           publicConfigJson: {},
         },
       ]);
+      makeLocalExpiryTransitionMocks(db, {
+        paymentId: "pay-exp-002",
+        orderId: "ord-exp-002",
+        expiresAt,
+      });
 
       // reservation query resolves directly at .where() level (no .limit() call)
       db.select.mockReturnValueOnce({
@@ -3080,6 +3317,11 @@ describe("PaymentsService", () => {
           publicConfigJson: {},
         },
       ]);
+      makeLocalExpiryTransitionMocks(db, {
+        paymentId: "pay-missing-trade-001",
+        orderId: "ord-missing-trade-001",
+        expiresAt,
+      });
 
       db.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

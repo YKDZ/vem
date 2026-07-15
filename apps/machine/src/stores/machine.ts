@@ -38,6 +38,7 @@ export const useMachineStore = defineStore("machine", {
           mqttSigningSecretConfigured: false,
           mqttPassword: null,
           mqttPasswordConfigured: false,
+          maintenancePinConfigured: false,
         };
       }
       return {
@@ -51,6 +52,8 @@ export const useMachineStore = defineStore("machine", {
           configSummary?.mqttSigningSecretConfigured ?? false,
         mqttPassword: null,
         mqttPasswordConfigured: configSummary?.mqttPasswordConfigured ?? false,
+        maintenancePinConfigured:
+          configSummary?.maintenancePinConfigured ?? false,
       };
     },
     machineCode: (state): string | null =>
@@ -69,54 +72,16 @@ export const useMachineStore = defineStore("machine", {
     applyHealth(snapshot: HealthSnapshot): void {
       this.health = snapshot;
     },
+    applyConfigSummary(summary: ConfigSummary): void {
+      this.configSummary = summary;
+      applyRuntimeAudioCueSettings(summary);
+      this.configLoaded = true;
+    },
     async loadConfig(): Promise<void> {
       this.loading = true;
       this.error = null;
       try {
-        this.configSummary = await daemonClient.getConfig();
-        applyRuntimeAudioCueSettings(this.configSummary);
-        this.configLoaded = true;
-      } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
-        throw error;
-      } finally {
-        this.loading = false;
-      }
-    },
-    async saveConfig(config: MachineConfig): Promise<void> {
-      this.loading = true;
-      this.error = null;
-      try {
-        this.configSummary = await daemonClient.saveConfig({
-          public: {
-            machineCode: config.machineCode,
-            machineLocationLabel: config.machineLocationLabel,
-            apiBaseUrl: config.apiBaseUrl,
-            mqttUrl: config.mqttUrl,
-            mqttUsername: config.mqttUsername,
-            hardwareAdapter: config.hardwareAdapter,
-            serialPortPath: config.serialPortPath,
-            lowerControllerUsbIdentity: config.lowerControllerUsbIdentity,
-            scannerAdapter: config.scannerAdapter,
-            scannerSerialPortPath: config.scannerSerialPortPath,
-            scannerBaudRate: config.scannerBaudRate,
-            scannerFrameSuffix: config.scannerFrameSuffix,
-            visionEnabled: config.visionEnabled,
-            visionWsUrl: config.visionWsUrl,
-            visionRequestTimeoutMs: config.visionRequestTimeoutMs,
-            machineAudioVolume: config.machineAudioVolume,
-            audioCueSettings: config.audioCueSettings,
-            kioskMode: config.kioskMode,
-            stockMovementRetentionDays: config.stockMovementRetentionDays,
-          },
-          secrets: {
-            machineSecret: config.machineSecret,
-            mqttSigningSecret: config.mqttSigningSecret,
-            mqttPassword: config.mqttPassword,
-          },
-        });
-        applyRuntimeAudioCueSettings(this.configSummary);
-        this.configLoaded = true;
+        this.applyConfigSummary(await daemonClient.getConfig());
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
         throw error;

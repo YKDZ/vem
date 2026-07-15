@@ -96,4 +96,15 @@ describe("ui debug daemon", () => {
     expect(hasStoredUiDebugTransaction()).toBe(false);
     expect(localStorage.getItem(UI_DEBUG_TRANSACTION_STORAGE_KEY)).toBeNull();
   });
+
+  it("provides a protected maintenance session for interactive UI fixtures", async () => {
+    installUiDebugDaemon();
+
+    await expect(
+      daemonClient.beginMaintenanceSession("2468"),
+    ).resolves.toMatchObject({
+      sessionId: "ui-debug-maintenance-session",
+      scopes: ["maintenance.mutate"],
+    });
+  });
 });

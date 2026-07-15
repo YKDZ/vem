@@ -1,16 +1,44 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  cpSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, parse, relative, resolve, sep } from "node:path";
 import { describe, it } from "node:test";
 
 const fixture = "scripts/windows/vision-release-install.fixtures.ps1";
+const candidateFixture = "scripts/windows/test-vision-candidate.fixtures.ps1";
+const candidateWindowsHarness =
+  "scripts/windows/test-vision-candidate.windows-harness.ps1";
 const behaviorHarness =
   "scripts/windows/vision-release-install-harness.behavior.ps1";
 const windowsHarness =
   "scripts/windows/vision-release-install.windows-harness.ps1";
+const wireGuardAcceptance =
+  "scripts/windows/test-wireguard-localsystem-acceptance.ps1";
 const ciWorkflow = ".github/workflows/ci.yml";
 const SPAWN_TIMEOUT_MS = 45_000;
 const TEST_TIMEOUT_MS = 60_000;
+const FACTORY_VISION_INSTALLER_MEMBERS = [
+  "install-vision-release.ps1",
+  "provision-vision-factory-release.ps1",
+  "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1",
+];
+
+function sha256(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
 
 function boundedIt(name, options, fn) {
   if (typeof options === "function") {
@@ -43,7 +71,115 @@ function parsePowerShell(path) {
   ]);
 }
 
+function getNonReparseFileIdentity(path) {
+  const absolute = resolve(path);
+  const root = parse(absolute).root;
+  let cursor = root;
+  for (const part of relative(root, absolute).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    assert.equal(
+      lstatSync(cursor).isSymbolicLink(),
+      false,
+      `delivery destination must not traverse a reparse point: ${cursor}`,
+    );
+  }
+
+  const stats = lstatSync(absolute, { bigint: true });
+  assert.equal(stats.isFile(), true, `${absolute} must be a regular file`);
+  const canonical = realpathSync.native(absolute);
+  return {
+    canonical:
+      process.platform === "win32"
+        ? canonical.replaceAll("/", "\\").toLowerCase()
+        : canonical,
+    device: stats.dev,
+    inode: stats.ino,
+  };
+}
+
+function assertSameNonReparseFile(actual, expected) {
+  const actualIdentity = getNonReparseFileIdentity(actual);
+  const expectedIdentity = getNonReparseFileIdentity(expected);
+  assert.equal(
+    actualIdentity.canonical,
+    expectedIdentity.canonical,
+    "delivery evidence and expected destination must resolve to the same canonical file",
+  );
+  assert.equal(
+    actualIdentity.device,
+    expectedIdentity.device,
+    "delivery evidence and expected destination must identify the same file device",
+  );
+  assert.equal(
+    actualIdentity.inode,
+    expectedIdentity.inode,
+    "delivery evidence and expected destination must identify the same file",
+  );
+}
+
 describe("Vision release installer fixtures", () => {
+  boundedIt(
+    "compares delivery evidence by canonical non-reparse file identity",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vision-path-identity-"));
+      try {
+        const expected = join(root, "expected.bin");
+        const different = join(root, "different.bin");
+        writeFileSync(expected, "expected");
+        writeFileSync(different, "different");
+
+        assert.doesNotThrow(() => assertSameNonReparseFile(expected, expected));
+        assert.throws(
+          () => assertSameNonReparseFile(different, expected),
+          /same canonical file/,
+        );
+
+        const targetDirectory = join(root, "target");
+        const reparseDirectory = join(root, "reparse");
+        mkdirSync(targetDirectory);
+        const target = join(targetDirectory, "artifact.bin");
+        writeFileSync(target, "artifact");
+        symlinkSync(
+          targetDirectory,
+          reparseDirectory,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        assert.throws(
+          () =>
+            assertSameNonReparseFile(
+              join(reparseDirectory, "artifact.bin"),
+              target,
+            ),
+          /reparse point/,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  boundedIt(
+    "treats Windows 8.3 and long paths to one file as the same delivery destination",
+    { skip: process.platform !== "win32" },
+    (context) => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vision-short-path-"));
+      try {
+        const shortPath = join(root, "artifact.bin");
+        writeFileSync(shortPath, "artifact");
+        const longPath = realpathSync.native(shortPath);
+        if (shortPath.toLowerCase() === longPath.toLowerCase()) {
+          context.skip("the Windows host does not expose an 8.3 alias");
+          return;
+        }
+        assert.doesNotThrow(() =>
+          assertSameNonReparseFile(shortPath, longPath),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   for (const testCase of [
     "archive",
     "bytes",
@@ -69,11 +205,113 @@ describe("Vision release installer fixtures", () => {
       ]);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
       assert.match(result.stdout, new RegExp(`${testCase} fixtures passed`));
+      if (testCase === "archive") {
+        assert.match(result.stdout, /candidate digest mismatch rejected/);
+        assert.match(result.stdout, /archive entry-count limit rejected/);
+        assert.match(result.stdout, /archive expanded-size limit rejected/);
+        assert.match(result.stdout, /archive expansion-ratio limit rejected/);
+      }
     });
   }
 
+  boundedIt(
+    "runs candidate reparse and redaction fixtures through PowerShell",
+    () => {
+      const result = spawnBounded("pwsh", [
+        "-NoProfile",
+        "-File",
+        candidateFixture,
+      ]);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stdout, /candidate fixtures passed/);
+    },
+  );
+
+  boundedIt(
+    "runs the Candidate entrypoint harness with Windows PowerShell 5.1",
+    { skip: process.platform !== "win32" },
+    () => {
+      const pollutedModulePath = mkdtempSync(
+        join(tmpdir(), "vem-pwsh-only-module-path-"),
+      );
+      try {
+        const result = spawnBounded(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            candidateWindowsHarness,
+          ],
+          {
+            env: {
+              ...process.env,
+              PSModulePath: pollutedModulePath,
+            },
+          },
+        );
+        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+        assert.match(result.stdout, /candidate entrypoint harness passed/);
+      } finally {
+        rmSync(pollutedModulePath, { recursive: true, force: true });
+      }
+    },
+  );
+
+  boundedIt(
+    "resolves the Candidate harness default path after Windows PowerShell parameter binding",
+    () => {
+      const source = readFileSync(candidateWindowsHarness, "utf8");
+      assert.match(source, /param\(\s*\[string\]\$CandidatePath\s*\)/);
+      assert.match(
+        source,
+        /if \(\[string\]::IsNullOrWhiteSpace\(\$CandidatePath\)\) \{\s*\$CandidatePath = Join-Path \$PSScriptRoot "test-vision-candidate\.ps1"\s*\}/,
+      );
+      assert.doesNotMatch(
+        source,
+        /\$CandidatePath\s*=\s*\(Join-Path \$PSScriptRoot/,
+      );
+    },
+  );
+
+  boundedIt(
+    "hashes Candidate harness files without Windows PowerShell module autoload",
+    () => {
+      const source = readFileSync(candidateWindowsHarness, "utf8");
+      assert.doesNotMatch(source, /Get-FileHash/);
+      assert.match(source, /\[Security\.Cryptography\.SHA256\]::Create\(\)/);
+      assert.match(source, /\[IO\.File\]::Open\(/);
+      assert.match(source, /\.ComputeHash\(\$stream\)/);
+      assert.match(source, /\$stream\.Dispose\(\)/);
+      assert.match(
+        source,
+        /lock-target\.bin[\s\S]*\[IO\.FileShare\]::None[\s\S]*Assert-CandidateFailureReport/,
+      );
+      for (const code of [
+        "preapproval-delivery-digest-invalid",
+        "reparse-path-rejected",
+        "entrypoint-process-binding-failed",
+      ]) {
+        assert.match(source, new RegExp(`"${code}"`));
+      }
+      for (const scenario of ["primary-cleanup-report", "cleanup-report"]) {
+        assert.match(source, new RegExp(`"${scenario}"`));
+      }
+      assert.match(source, /CANDIDATE_TERMINAL_EVIDENCE=/);
+      assert.match(
+        source,
+        /\[IO\.File\]::Delete\(\$lockedPath\)[\s\S]*report-parent-is-a-file/,
+      );
+    },
+  );
+
   for (const [name, path] of [
     ["production installer", "scripts/windows/install-vision-release.ps1"],
+    [
+      "shared Vision materialization module",
+      "scripts/windows/vision-release-materialization.psm1",
+    ],
     [
       "Factory Vision provisioner",
       "scripts/windows/provision-vision-factory-release.ps1",
@@ -83,14 +321,301 @@ describe("Vision release installer fixtures", () => {
       "Vision Candidate test harness",
       "scripts/windows/test-vision-candidate.ps1",
     ],
+    ["Vision Candidate fixture", candidateFixture],
+    ["Vision Candidate Windows entrypoint harness", candidateWindowsHarness],
     ["Windows harness library seam", windowsHarness],
     ["Windows behavior harness", behaviorHarness],
+    ["Windows LocalSystem WireGuard acceptance", wireGuardAcceptance],
   ]) {
     boundedIt(`parses the ${name}`, () => {
       const result = parsePowerShell(path);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     });
   }
+
+  boundedIt(
+    "runs Factory runtime and Vision provisioner delivery paths into disposable roots with byte-derived evidence",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-factory-delivery-"));
+      try {
+        const runtimeRoot = join(root, "runtime scripts");
+        const runtime = spawnBounded("pwsh", [
+          "-NoProfile",
+          "-File",
+          "scripts/windows/prepare-factory-runtime.ps1",
+          "-DeliveryAssemblyEvidenceOnly",
+          "-DeliveryAssemblyOutputRoot",
+          runtimeRoot,
+        ]);
+        assert.equal(runtime.status, 0, `${runtime.stdout}\n${runtime.stderr}`);
+        const runtimeEvidence = JSON.parse(runtime.stdout);
+        assert.equal(runtimeEvidence.kind, "factory-runtime-support-scripts");
+        for (const name of FACTORY_VISION_INSTALLER_MEMBERS) {
+          const source = readFileSync(join("scripts/windows", name));
+          const staged = readFileSync(join(runtimeRoot, name));
+          assert.deepEqual(staged, source, `${name} was not copied by runtime`);
+          assert.equal(runtimeEvidence.files[name], sha256(source));
+        }
+
+        const mediaRoot = join(root, "factory media");
+        const mediaInstallerRoot = join(mediaRoot, "VISION-INSTALLER");
+        mkdirSync(mediaInstallerRoot, { recursive: true });
+        const files = {};
+        for (const name of FACTORY_VISION_INSTALLER_MEMBERS) {
+          const source = join("scripts/windows", name);
+          const destination = join(mediaInstallerRoot, name);
+          cpSync(source, destination);
+          files[`VISION-INSTALLER/${name}`] = sha256(readFileSync(source));
+        }
+        writeFileSync(
+          join(mediaRoot, "VISION-FACTORY-PROVISIONING.JSON"),
+          JSON.stringify({
+            schemaVersion: "vem-vision-factory-provisioning/v1",
+            kind: "vision-factory-provisioning",
+            files,
+          }),
+        );
+        const provisionRoot = join(root, "provisioned scripts");
+        const provision = spawnBounded("pwsh", [
+          "-NoProfile",
+          "-File",
+          "scripts/windows/provision-vision-factory-release.ps1",
+          "-FactoryMediaRoot",
+          mediaRoot,
+          "-DeliveryAssemblyEvidenceOnly",
+          "-DeliveryAssemblyOutputRoot",
+          provisionRoot,
+        ]);
+        assert.equal(
+          provision.status,
+          0,
+          `${provision.stdout}\n${provision.stderr}`,
+        );
+        const provisionEvidence = JSON.parse(provision.stdout);
+        assert.equal(
+          provisionEvidence.kind,
+          "factory-vision-provisioning-evidence",
+        );
+        for (const name of FACTORY_VISION_INSTALLER_MEMBERS) {
+          const relative = `VISION-INSTALLER/${name}`;
+          const destination = join(provisionRoot, "bringup", name);
+          assert.deepEqual(
+            readFileSync(destination),
+            readFileSync(join(mediaInstallerRoot, name)),
+            `${name} was not copied by Factory provisioning`,
+          );
+          assert.equal(
+            provisionEvidence.files[relative].digest,
+            files[relative],
+          );
+          assertSameNonReparseFile(
+            provisionEvidence.files[relative].destination,
+            destination,
+          );
+          assert.equal(
+            sha256(readFileSync(provisionEvidence.files[relative].destination)),
+            provisionEvidence.files[relative].digest,
+          );
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  boundedIt(
+    "uses one explicit materialization boundary without installer library mode or implicit bundles",
+    () => {
+      const installer = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
+      const candidate = readFileSync(
+        "scripts/windows/test-vision-candidate.ps1",
+        "utf8",
+      );
+      const materialization = readFileSync(
+        "scripts/windows/vision-release-materialization.psm1",
+        "utf8",
+      );
+      assert.match(
+        materialization,
+        /function Invoke-VisionReleaseMaterialization/,
+      );
+      for (const source of [installer, candidate]) {
+        assert.match(source, /Invoke-VisionReleaseMaterialization/);
+        assert.doesNotMatch(
+          source,
+          /\[switch\]\$Library|Expand-ZipSafely|Get-VerifiedBundleStream/,
+        );
+      }
+      assert.match(
+        materialization,
+        /CandidatePath[\s\S]*ExpectedDigest[\s\S]*Descriptor[\s\S]*Destination[\s\S]*ExtractionPolicy/,
+      );
+      assert.match(
+        installer,
+        /# Merge preservation: VEM materializes the supplier's exact candidate bytes/,
+      );
+      assert.doesNotMatch(
+        installer,
+        /\$staging=Join-Path \$StateRoot[\s\S]{0,180}New-Item -ItemType Directory -Path \$staging/,
+        "the installer must leave create-new ownership to the materializer",
+      );
+      assert.doesNotMatch(
+        candidate,
+        /\$staging = Join-Path \$WorkRoot[\s\S]{0,180}New-Item -ItemType Directory -Path \$staging/,
+        "preapproval must leave create-new ownership to the materializer",
+      );
+    },
+  );
+
+  boundedIt(
+    "requires and byte-pins the self-contained preapproval delivery unit",
+    () => {
+      const candidate = readFileSync(
+        "scripts/windows/test-vision-candidate.ps1",
+        "utf8",
+      );
+      const harness = readFileSync(candidateWindowsHarness, "utf8");
+      assert.match(
+        candidate,
+        /\[Parameter\(Mandatory = \$true\)\]\[string\]\$PreapprovalManifestPath/,
+      );
+      assert.doesNotMatch(
+        candidate,
+        /if \(\[string\]::IsNullOrWhiteSpace\(\$Path\)\) \{ return \}/,
+      );
+      for (const name of [
+        "bundle.bin",
+        "vision-release-descriptor.json",
+        "test-vision-candidate.ps1",
+        "vision-release-materialization.psm1",
+        "vision-diagnostic-redaction.psm1",
+      ]) {
+        assert.match(candidate, new RegExp(`"${name}"`));
+        assert.match(harness, new RegExp(`"${name}"`));
+      }
+      assert.match(harness, /-PreapprovalManifestPath \$delivery\.manifest/);
+      assert.match(harness, /Get-HarnessSha256Bytes/);
+      assert.match(
+        harness,
+        /Candidate imported a tampered delivery module before manifest verification/,
+      );
+    },
+  );
+
+  boundedIt(
+    "verifies every self-contained Candidate member before importing either module",
+    () => {
+      const candidate = readFileSync(
+        "scripts/windows/test-vision-candidate.ps1",
+        "utf8",
+      );
+      const verification = candidate.indexOf(
+        "Assert-PreapprovalDeliveryManifest $PreapprovalManifestPath",
+      );
+      const materializerImport = candidate.indexOf(
+        'Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1")',
+      );
+      const redactorImport = candidate.indexOf(
+        'Import-Module (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1")',
+      );
+
+      assert.ok(verification >= 0, "Candidate entrypoint must verify delivery");
+      assert.ok(
+        verification < materializerImport && verification < redactorImport,
+        "Candidate entrypoint imports unverified delivery modules",
+      );
+    },
+  );
+
+  boundedIt(
+    "keeps Factory installer media and runtime support closure complete for redacted diagnostics",
+    () => {
+      const builder = readFileSync(
+        "scripts/factory/build-factory-media.mjs",
+        "utf8",
+      );
+      const provisioner = readFileSync(
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "utf8",
+      );
+      const prepare = readFileSync(
+        "scripts/windows/prepare-factory-runtime.ps1",
+        "utf8",
+      );
+      const installer = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
+
+      assert.match(
+        installer,
+        /Import-Module \(Join-Path \$PSScriptRoot "vision-diagnostic-redaction\.psm1"\)/,
+      );
+      assert.match(builder, /"vision-diagnostic-redaction\.psm1"/);
+      assert.match(
+        builder,
+        /VISION-INSTALLER\/vision-diagnostic-redaction\.psm1/,
+      );
+      assert.match(
+        provisioner,
+        /"VISION-INSTALLER\/vision-diagnostic-redaction\.psm1" = \(Join-Path \$bringupRoot "vision-diagnostic-redaction\.psm1"\)/,
+      );
+      assert.match(
+        prepare,
+        /\$FactoryRuntimeSupportScripts = @\([\s\S]*"vision-diagnostic-redaction\.psm1"[\s\S]*\)/,
+      );
+      assert.match(
+        prepare,
+        /\$supportScriptEvidence = @\(\$FactoryRuntimeSupportScripts \| ForEach-Object \{[\s\S]*Copy-ScriptIfPresent -Name \$_ -TargetDirectory \$scriptsRoot/,
+      );
+      const harness = readFileSync(windowsHarness, "utf8");
+      assert.match(
+        harness,
+        /Copy-Item -LiteralPath \(Join-Path \(Split-Path -Parent \$context\.installerPath\) "vision-diagnostic-redaction\.psm1"\) -Destination \(Join-Path \$context\.installerMedia "vision-diagnostic-redaction\.psm1"\)/,
+      );
+    },
+  );
+
+  boundedIt(
+    "revalidates reparse-safe containment after materialization and before configuration selection writes",
+    () => {
+      const installer = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
+      const candidate = readFileSync(
+        "scripts/windows/test-vision-candidate.ps1",
+        "utf8",
+      );
+      assert.match(
+        installer,
+        /Invoke-VisionReleaseMaterialization[\s\S]{0,500}Assert-NonReparsePath \$staging "Vision materialization destination"[\s\S]{0,500}Move-Item -LiteralPath \$staging -Destination \$install/,
+      );
+      assert.match(
+        installer,
+        /Get-CanonicalContainedPath \$configurationRoot \$ConfigurationPath "Vision configuration before selection"/,
+      );
+      assert.match(
+        installer,
+        /Write-AtomicJson \$selectionPath \$next \$StateRoot/,
+      );
+      assert.match(
+        installer,
+        /Get-CanonicalContainedPath \$StateRoot \$selectionPath "Vision current selection before rollback write"[\s\S]{0,160}Write-AtomicJson \$selectionPath \$Previous \$StateRoot/,
+      );
+      assert.match(
+        candidate,
+        /Assert-CandidateNonReparsePath \$staging "Vision Candidate materialization destination"/,
+      );
+      assert.match(
+        candidate,
+        /Assert-CandidateContainedPath \$staging \$configurationPath "Vision Candidate configuration"/,
+      );
+    },
+  );
 
   boundedIt(
     "waits for the launcher process record before validating it",
@@ -127,20 +652,140 @@ describe("Vision release installer fixtures", () => {
       );
       assert.match(
         source,
-        /\. \$InstallerLibraryPath -BundlePath \$BundlePath -Library/,
-      );
-      assert.match(source, /Get-VerifiedBundleStream \$descriptor/);
-      assert.match(
-        source,
-        /Expand-ZipSafely \$bundleStream \$staging \$descriptor/,
+        /Import-Module \(Join-Path \$PSScriptRoot "vision-release-materialization\.psm1"\)/,
       );
       assert.match(
         source,
-        /Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\\VEM\\"/,
+        /ExpectedDigest[\s\S]*Vision Candidate expected digest does not match the descriptor[\s\S]*Invoke-VisionReleaseMaterialization -CandidatePath \$BundlePath -ExpectedDigest \$ExpectedDigest/,
+      );
+      assert.match(
+        source,
+        /Get-VerifiedPreviousVisionRuntime[\s\S]*Stop-VerifiedPreviousVisionRuntime[\s\S]*Restore-VerifiedPreviousVisionRuntime/,
+      );
+      assert.match(
+        source,
+        /previous Vision process record does not bind the selected release/,
+      );
+      assert.match(
+        source,
+        /previous Vision process identity no longer matches its record/,
+      );
+      assert.match(
+        source,
+        /previous Vision release did not restore with its verified active identity/,
+      );
+      assert.match(source, /Get-CandidateSha256Hex/);
+      assert.doesNotMatch(source, /SHA256\]::HashData|Convert\]::ToHexString/);
+      assert.match(
+        source,
+        /\$restored\.active[\s\S]*\$restored\.selection\.revision[\s\S]*\$Runtime\.selection\.revision[\s\S]*\$restored\.selection\.installDirectory[\s\S]*\$Runtime\.selection\.installDirectory[\s\S]*\$restored\.selection\.bundleDigest[\s\S]*\$Runtime\.selection\.bundleDigest/,
+      );
+      assert.doesNotMatch(
+        source,
+        /\$restored\.processId\s+-eq\s+\$Runtime\.processId|\$restored\.creationTimeUtcTicks\s+-eq\s+\$Runtime\.creationTimeUtcTicks/,
+      );
+      assert.match(source, /\$primaryFailure = \$null/);
+      assert.match(
+        source,
+        /\$cleanupFailures = \[Collections\.Generic\.List\[Exception\]\]::new\(\)/,
+      );
+      assert.match(
+        source,
+        /\$cleanupResiduals = \[Collections\.Generic\.List\[Exception\]\]::new\(\)/,
+      );
+      assert.match(
+        source,
+        /catch \{\s*\$primaryFailure = \$_[\s\S]*\$report\.primaryFailureCode = Get-CandidateFailureCode/,
+      );
+      assert.match(
+        source,
+        /taskkill\.exe" \/PID \(\[string\]\$candidateProcess\.Id\) \/T \/F/,
+      );
+      assert.match(
+        source,
+        /\$report\.cleanupFailureCodes = @\(Get-CandidateEvidenceCodes \$cleanupFailures\)/,
+      );
+      assert.match(
+        source,
+        /New-CandidateTerminalFailure[\s\S]*\[AggregateException\]::new/,
+      );
+      const evidenceException = source.slice(
+        source.indexOf("function New-CandidateEvidenceException"),
+        source.indexOf("function Get-CandidateEvidenceCodes"),
+      );
+      assert.doesNotMatch(
+        evidenceException,
+        /SourceException\.(?:Message|StackTrace)|InnerException/,
+      );
+      assert.doesNotMatch(
+        source,
+        /finally \{[\s\S]*if \(-not \$cleanupOk\) \{ throw "Vision Candidate cleanup failed" \}[\s\S]*\}\s*$/,
+      );
+      assert.match(
+        source,
+        /\$terminalFailure = New-CandidateTerminalFailure[\s\S]*if \(\$null -ne \$terminalFailure\) \{ throw \$terminalFailure \}/,
+      );
+      assert.match(source, /Assert-CandidateNonReparsePath/);
+      assert.match(
+        source,
+        /Get-VisionRedactedDiagnostic "candidate preapproval"/,
       );
       assert.match(source, /modelReady -ne \$true/);
       assert.match(source, /protocolVersion = "vem\.vision\.v1"/);
       assert.doesNotMatch(source, /mockScenario\s*=|VEM_VISION_MOCK_SCENARIO/);
+    },
+  );
+
+  boundedIt(
+    "accepts a new bound prior-runtime process but fails closed when the launcher produces none",
+    () => {
+      const fixtureSource = readFileSync(candidateFixture, "utf8");
+      assert.match(
+        fixtureSource,
+        /newly launched Vision runtime did not receive a new process ID/,
+      );
+      assert.match(fixtureSource, /new process ID/);
+      assert.match(
+        fixtureSource,
+        /no-process Start-ScheduledTask fixture[\s\S]*Restore-VerifiedPreviousVisionRuntime[\s\S]*expected inactive restore failure/,
+      );
+    },
+  );
+
+  boundedIt(
+    "documents the Candidate as a self-contained preapproval delivery unit rather than a resident bringup script",
+    () => {
+      const runbook = readFileSync("public/managed-machine-update.md", "utf8");
+      assert.match(runbook, /VEM-VISION-PREAPPROVAL/);
+      assert.match(runbook, /preapproval-manifest\.json/);
+      assert.match(runbook, /vision-release-materialization\.psm1/);
+      assert.match(runbook, /vision-diagnostic-redaction\.psm1/);
+      assert.match(
+        runbook,
+        /C:\\VEM\\updates\\vision-preapproval\\test-vision-candidate\.ps1/,
+      );
+      assert.doesNotMatch(
+        runbook,
+        /C:\\VEM\\bringup\\scripts\\test-vision-candidate\.ps1/,
+      );
+    },
+  );
+
+  boundedIt(
+    "runs both Vision entry scripts through non-AST Windows entrypoint harnesses",
+    () => {
+      const workflow = readFileSync(ciWorkflow, "utf8");
+      const job = workflow.match(
+        /windows-vision-release-installer:([\s\S]*?)(?=\n  [a-z0-9-]+:|$)/,
+      )?.[1];
+      assert.ok(job, "Windows Vision installer job is missing");
+      assert.match(job, /test-vision-candidate\.windows-harness\.ps1/);
+      assert.match(job, /vision-release-install\.windows-harness\.ps1/);
+      assert.ok(
+        job.indexOf("test-vision-candidate.windows-harness.ps1") <
+          job.indexOf("vision-release-install.windows-harness.ps1"),
+        "Candidate entrypoint must execute before the production installer harness",
+      );
     },
   );
 
@@ -160,6 +805,31 @@ describe("Vision release installer fixtures", () => {
       /-RequireVisionOnline -VisionOnly/,
     );
   });
+
+  boundedIt(
+    "keeps WireGuard claim-to-handshake acceptance on the real Windows services",
+    () => {
+      const source = readFileSync(wireGuardAcceptance, "utf8");
+      assert.match(source, /Get-CimInstance Win32_Service/);
+      assert.match(source, /Restart-Service -Name \$TunnelServiceName/);
+      assert.match(source, /Restart-Service -Name \$DaemonServiceName/);
+      assert.match(
+        source,
+        /WireGuard encrypted configuration ACL is not restricted to SYSTEM and Administrators/,
+      );
+      assert.match(source, /\/v1\/maintenance\/status/);
+      assert.match(source, /handshakeVerified -eq \$true/);
+      assert.match(source, /tunnelConnected -eq \$true/);
+      assert.match(source, /firstHandshakeVerifiedAt/);
+      assert.match(source, /claimRetainedAfterRestart/);
+      assert.match(source, /configReplayIdempotent/);
+      assert.match(source, /& \$wg show \$Name latest-handshakes/);
+      assert.doesNotMatch(
+        source,
+        /FakeTunnel|mock handshake|simulated handshake/i,
+      );
+    },
+  );
 
   boundedIt("stops non-reparse traversal at a Windows drive root", () => {
     for (const path of [
@@ -258,8 +928,14 @@ describe("Vision release installer fixtures", () => {
       "scripts/windows/provision-vision-factory-release.ps1",
       "utf8",
     );
-    assert.match(provisioner, /\$installedFiles \+= \$destination/);
-    assert.match(provisioner, /\+ \$installedFiles \| Select-Object -Unique/);
+    assert.match(
+      provisioner,
+      /\$installedFiles \+= \[ordered\]@\{\s*relative=\$relative;\s*path=\$destination;\s*digest=\$expected\s*\}/,
+    );
+    assert.match(
+      provisioner,
+      /\+ @\(\$installedFiles \| ForEach-Object \{ \[string\]\$_\.path \}\) \| Select-Object -Unique/,
+    );
     const installer = readFileSync(
       "scripts/windows/install-vision-release.ps1",
       "utf8",
@@ -269,6 +945,34 @@ describe("Vision release installer fixtures", () => {
       2,
     );
   });
+
+  boundedIt(
+    "creates every protected Factory Vision root before ACL inspection",
+    () => {
+      const source = readFileSync(
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "utf8",
+      );
+      assert.match(
+        source,
+        /\$protectedRoots = @\(\$factoryRoot, \$trustRoot, \$bringupRoot, \(Join-Path \$factoryRoot "vision-release"\)\)[\s\S]*?foreach \(\$path in \$protectedRoots\) \{[\s\S]*?if \(-not \(Test-Path -LiteralPath \$path -PathType Container\)\) \{\s*New-Item -ItemType Directory -Path \$path -Force \| Out-Null\s*\}[\s\S]*?foreach \(\$path in \$protectedRoots \+ @\(\$installedFiles[\s\S]*?Set-SystemOnlyAcl \$path/,
+      );
+    },
+  );
+
+  boundedIt(
+    "resolves Windows ACL owners through a strongly typed account",
+    () => {
+      for (const path of [fixture, windowsHarness]) {
+        const source = readFileSync(path, "utf8");
+        assert.match(
+          source,
+          /\[Security\.Principal\.NTAccount\]::new\(\[string\]\$acl\.Owner\)\)\.Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/,
+        );
+        assert.doesNotMatch(source, /\$acl\.Owner\.Translate\(/);
+      }
+    },
+  );
 
   boundedIt("uses object fields for strict install evidence", () => {
     const source = readFileSync(
@@ -2185,14 +2889,14 @@ try {
         installer,
         /\[Convert\]::ToHexString|\[Security\.Cryptography\.SHA256\]::HashData|\.Kill\(\$true\)/,
       );
-      assert.match(installer, /function ConvertTo-WindowsCommandLineArgument/);
-      assert.match(installer, /\$start\.Arguments\s*=/);
-      const result = spawnBounded("pwsh", [
-        "-NoProfile",
-        "-Command",
-        ". ./scripts/windows/install-vision-release.ps1 -Library -VisionRoot ([IO.Path]::GetTempPath()) -StateRoot ([IO.Path]::GetTempPath()); $actual=@('plain', 'space value', 'quote\"value', 'trailing\\' | ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join '|'; if($actual -cne '\"plain\"|\"space value\"|\"quote\\\"value\"|\"trailing\\\\\"'){throw \"unexpected quote: $actual\"}",
-      ]);
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.match(
+        installer,
+        /Import-Module \(Join-Path \$PSScriptRoot "vision-release-materialization\.psm1"\)/,
+      );
+      assert.doesNotMatch(
+        installer,
+        /\[switch\]\$Library|Get-VerifiedBundleStream|Expand-ZipSafely/,
+      );
     },
   );
 

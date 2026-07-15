@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import type { CatalogTopCategoryKey } from "@/catalog/view-model";
@@ -16,7 +16,11 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import listTitleImage from "@/assets/home/list-title.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
-import { groupItemsByTopCategory } from "@/catalog/view-model";
+import {
+  groupItemsByTopCategory,
+  usesFallbackTopCategory,
+} from "@/catalog/view-model";
+import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
 import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
@@ -24,11 +28,13 @@ import { useVisionRecommendations } from "@/composables/useVisionRecommendations
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
+import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
 const router = useRouter();
 const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
+const machineStore = useMachineStore();
 useVisionRecommendations();
 const { presenceClass } = usePresenceInteraction();
 const { primaryNotification } = useCatalogNotifications();
@@ -37,7 +43,7 @@ const CAROUSEL_AUTO_ADVANCE_INTERVAL_MS = 5000;
 const CAROUSEL_SWIPE_THRESHOLD_PX = 60;
 const RUNTIME_SCREENSHOT_STORAGE_KEY = "vem.machine.runtimeScreenshot";
 
-const selectedTopCategoryKey = ref<CatalogTopCategoryKey | null>(null);
+const selectedTopCategoryKey = ref<CatalogSelectionKey | null>(null);
 const activeGenderFilter = ref<ProductGenderFilter>("all");
 const activeCarouselIndex = ref(0);
 const carouselSwipeStartX = ref<number | null>(null);
@@ -46,11 +52,12 @@ let readinessRefreshInFlight: Promise<void> | null = null;
 let carouselAutoAdvanceTimer: number | null = null;
 
 type ProductGenderFilter = "all" | "male" | "female" | "kids" | "elder";
+type CatalogSelectionKey = CatalogTopCategoryKey | "other";
 
 type DisplayProduct = {
   id: string;
   name: string;
-  categoryKey: CatalogTopCategoryKey;
+  categoryKey: CatalogSelectionKey;
   gender: ProductGenderFilter;
   genderLabel: string;
   colors: number;
@@ -101,13 +108,21 @@ const genderFilters: {
 const categoryGroups = computed(() =>
   groupItemsByTopCategory(catalogStore.availableItems),
 );
-const displayProducts = computed(() =>
-  categoryGroups.value.flatMap((group) =>
+const fallbackCategoryItems = computed(() =>
+  catalogStore.availableItems.filter(usesFallbackTopCategory),
+);
+const displayProducts = computed(() => [
+  ...categoryGroups.value.flatMap((group) =>
     group.items.map((item) => toDisplayProduct(item, group.key)),
   ),
-);
+  ...fallbackCategoryItems.value.map((item) => toDisplayProduct(item, "other")),
+]);
 const availableCategoryKeys = computed(
-  () => new Set(categoryGroups.value.map((group) => group.key)),
+  () =>
+    new Set<CatalogSelectionKey>([
+      ...categoryGroups.value.map((group) => group.key),
+      ...(fallbackCategoryItems.value.length > 0 ? ["other" as const] : []),
+    ]),
 );
 const activeProducts = computed(() =>
   displayProducts.value.filter((product) => {
@@ -120,13 +135,31 @@ const activeProducts = computed(() =>
   }),
 );
 const hasAnySaleableProduct = computed(() => displayProducts.value.length > 0);
+const homeNotification = computed(
+  () =>
+    primaryNotification.value ??
+    (hasAnySaleableProduct.value
+      ? null
+      : {
+          id: "catalog-sold-out",
+          message: "暂无可售商品，请稍后再来或联系工作人员。",
+          tone: "warning" as const,
+        }),
+);
 
-function shouldEnterMaintenance(): boolean {
-  return (
-    connectivityStore.ready?.canSell === false &&
-    connectivityStore.ready.suggestedRoute === "maintenance"
-  );
-}
+watch(
+  fallbackCategoryItems,
+  (items) => {
+    for (const item of items) {
+      catalogStore.recordCatalogDiagnostic(
+        "category",
+        item.catalogKey,
+        "saleable item is available through the Other products fallback because its category is missing or unknown",
+      );
+    }
+  },
+  { immediate: true },
+);
 
 async function refreshReadinessAndRoute(): Promise<void> {
   if (readinessRefreshInFlight) {
@@ -134,11 +167,6 @@ async function refreshReadinessAndRoute(): Promise<void> {
   }
   readinessRefreshInFlight = connectivityStore
     .refresh()
-    .then(async () => {
-      if (shouldEnterMaintenance()) {
-        await router.replace("/maintenance");
-      }
-    })
     .catch(() => undefined)
     .finally(() => {
       readinessRefreshInFlight = null;
@@ -226,13 +254,13 @@ function isRuntimeScreenshotMode(): boolean {
   );
 }
 
-function selectTopCategory(key: CatalogTopCategoryKey): void {
+function selectTopCategory(key: CatalogSelectionKey): void {
   if (!categoryHasProducts(key)) return;
   selectedTopCategoryKey.value = key;
   activeGenderFilter.value = "all";
 }
 
-function categoryHasProducts(key: CatalogTopCategoryKey): boolean {
+function categoryHasProducts(key: CatalogSelectionKey): boolean {
   return (
     availableCategoryKeys.value.has(key) &&
     displayProducts.value.some(
@@ -267,13 +295,13 @@ function genderLabelForFilter(filter: ProductGenderFilter): string {
   return "通用";
 }
 
-function fallbackImageForCategory(key: CatalogTopCategoryKey): string {
-  return homeCategoryMeta[key].icon;
+function fallbackImageForCategory(key: CatalogSelectionKey): string {
+  return key === "other" ? iconTshirtImage : homeCategoryMeta[key].icon;
 }
 
 function toDisplayProduct(
   item: MachineCatalogItem,
-  categoryKey: CatalogTopCategoryKey,
+  categoryKey: CatalogSelectionKey,
 ): DisplayProduct {
   const gender = genderForItem(item);
   const colorCount = new Set(
@@ -367,9 +395,9 @@ onUnmounted(() => {
       </div>
 
       <div
-        v-if="primaryNotification"
+        v-if="homeNotification"
         class="catalog-notification home-readiness-message"
-        :class="`catalog-notification-${primaryNotification.tone}`"
+        :class="`catalog-notification-${homeNotification.tone}`"
         role="status"
       >
         <span class="catalog-notification-icon" aria-hidden="true">
@@ -390,7 +418,7 @@ onUnmounted(() => {
             />
           </svg>
         </span>
-        <span>{{ primaryNotification.message }}</span>
+        <span>{{ homeNotification.message }}</span>
       </div>
 
       <div
@@ -408,6 +436,12 @@ onUnmounted(() => {
           v-for="category in homeCategoryEntries"
           :key="category.key"
           class="home-category-card kiosk-touch-target"
+          :class="{
+            'home-category-card-sold-out': !categoryHasProducts(category.key),
+          }"
+          :data-sale-state="
+            categoryHasProducts(category.key) ? 'available' : 'sold-out'
+          "
           :disabled="!categoryHasProducts(category.key)"
           type="button"
           @click="selectTopCategory(category.key)"
@@ -430,12 +464,15 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <p
-        v-if="!hasAnySaleableProduct"
-        class="home-empty-message relative z-10 mt-5 shrink-0 rounded-2xl border border-[#d8cfb9] bg-white/82 p-4 text-center text-base font-semibold text-[#5f644f]"
+      <button
+        v-if="categoryHasProducts('other')"
+        class="home-other-products-entry kiosk-touch-target relative z-10 mt-3 shrink-0"
+        type="button"
+        @click="selectTopCategory('other')"
       >
-        暂无可售商品，请稍后再来或联系工作人员。
-      </p>
+        其他商品
+        <span>发现更多可售商品</span>
+      </button>
 
       <div
         class="home-quick-grid relative z-30 mt-7 grid shrink-0 grid-cols-4 gap-2 pr-28"
@@ -591,6 +628,20 @@ onUnmounted(() => {
               <small>{{ category.english }}</small>
             </span>
           </button>
+          <button
+            v-if="categoryHasProducts('other')"
+            class="sidebar-category kiosk-touch-target"
+            :class="{
+              'sidebar-category-active': selectedTopCategoryKey === 'other',
+            }"
+            type="button"
+            @click="selectTopCategory('other')"
+          >
+            <span>
+              <strong>其他商品</strong>
+              <small>OTHER</small>
+            </span>
+          </button>
         </aside>
 
         <main class="product-main">
@@ -619,12 +670,22 @@ onUnmounted(() => {
                 @click="openProductDetail(product)"
               >
                 <div class="product-image-panel">
-                  <img
-                    :src="product.image"
+                  <ManagedMediaImage
+                    :reference="product.item.coverImageUrl"
+                    :diagnostic-key="`media:${product.item.slotId}:coverImageUrl`"
+                    :api-base-url="machineStore.config.apiBaseUrl"
+                    :fallback="fallbackImageForCategory(product.categoryKey)"
                     :alt="product.name"
                     :class="{
                       'product-image-fallback': !product.hasProductImage,
                     }"
+                    @diagnostic="
+                      catalogStore.recordMediaDiagnostic(
+                        product.item.coverImageUrl,
+                        $event.message,
+                        $event.diagnosticKey,
+                      )
+                    "
                   />
                   <span class="product-bamboo" aria-hidden="true"></span>
                 </div>
@@ -675,11 +736,6 @@ onUnmounted(() => {
 .catalog-home,
 .catalog-list {
   container-type: inline-size;
-}
-
-.catalog-home.presence-present,
-.catalog-list.presence-present {
-  filter: saturate(1.03) brightness(1.01);
 }
 
 .catalog-home {
@@ -1379,7 +1435,39 @@ onUnmounted(() => {
 
 .home-category-card:disabled {
   cursor: not-allowed;
-  opacity: 0.52;
+}
+
+.home-other-products-entry {
+  display: inline-flex;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  border: 1px solid rgba(126, 145, 104, 0.52);
+  border-radius: 999px;
+  background: rgba(255, 253, 248, 0.88);
+  padding: 0.72rem 1.1rem;
+  color: #4e6242;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.home-other-products-entry span {
+  color: #7b8d67;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.home-category-card-sold-out {
+  border-color: #c7c7c7;
+  background: linear-gradient(180deg, #f4f4f4, #e5e5e5);
+  color: #707070;
+  filter: grayscale(1);
+  opacity: 0.72;
+}
+
+.home-category-card-sold-out .home-category-action {
+  background: linear-gradient(180deg, #a2a2a2, #858585);
 }
 
 .product-empty-message {

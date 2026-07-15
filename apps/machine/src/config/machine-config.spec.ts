@@ -12,6 +12,7 @@ describe("machine config", () => {
       machineLocationLabel: null,
       machineSecret: null,
       machineSecretConfigured: false,
+      maintenancePinConfigured: false,
       mqttSigningSecret: null,
       mqttSigningSecretConfigured: false,
       mqttUsername: null,
@@ -35,6 +36,7 @@ describe("machine config", () => {
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
       machineAudioVolume: 0.7,
+      machineAudioOutputBinding: null,
       audioCueSettings: {
         enabled: false,
         categories: {

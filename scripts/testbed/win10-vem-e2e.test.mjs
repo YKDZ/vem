@@ -96,6 +96,163 @@ function runPowerShellSemanticHarness(functionSource, harness) {
   }
 }
 
+function projectFactoryRuntimeBoundary(profile) {
+  const directory = mkdtempSync(join(tmpdir(), "vem-factory-boundary-"));
+  const projectionPath = join(directory, `${profile}-projection.json`);
+  const daemonSha256 = "a".repeat(64);
+  const machineUiSha256 = "b".repeat(64);
+  const artifactSha256 = "c".repeat(64);
+  const signerThumbprint = "d".repeat(40);
+  const rootThumbprint = "e".repeat(40);
+  const isProduction = profile === "production";
+  const result = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      "scripts/windows/prepare-factory-runtime.ps1",
+      "-ProjectionOnly",
+      "-DaemonArtifactPath",
+      "C:\\input\\vending-daemon.exe",
+      "-DaemonSha256",
+      daemonSha256,
+      "-MachineUiArtifactPath",
+      "C:\\input\\machine.exe",
+      "-MachineUiSha256",
+      machineUiSha256,
+      "-EnvironmentName",
+      `vps-fresh-${profile}-clean-base`,
+      "-DeploymentBatch",
+      `clean-base-${profile}-v1`,
+      "-ProvisioningEndpoint",
+      "https://factory.example.com/api",
+      "-MqttUrl",
+      "mqtt://factory.example.com:1883",
+      "-HardwareMode",
+      isProduction ? "production" : "simulated",
+      "-HardwareModel",
+      isProduction ? "VEM-PROD-24" : "VEM-TESTBED-24",
+      "-TopologyIdentity",
+      `vem-${profile}-24`,
+      "-TopologyVersion",
+      "2026-07-14",
+      "-ExpectedDisplayWidth",
+      "1080",
+      "-ExpectedDisplayHeight",
+      "1920",
+      "-ExpectedDisplayOrientation",
+      "portrait",
+      "-ExpectedKioskUser",
+      "VemKiosk",
+      "-ExpectedMaintenanceUser",
+      isProduction ? "Admin" : "YKDZ",
+      "-ExpectedAutoLogonUser",
+      "VemKiosk",
+      "-ExpectedKioskShell",
+      "C:\\VEM\\bringup\\machine.exe",
+      "-TargetLayoutVersion",
+      "1",
+      "-FactoryProfile",
+      profile,
+      "-OpenSshPackagePath",
+      "C:\\input\\openssh.msi",
+      "-OpenSshPackageSource",
+      "local-pinned",
+      "-OpenSshPackageVersion",
+      "1.0.0",
+      "-OpenSshPackageSha256",
+      artifactSha256,
+      "-OpenSshApprovedSignerThumbprint",
+      signerThumbprint,
+      "-OpenSshApprovedRootThumbprint",
+      rootThumbprint,
+      "-WireGuardPackagePath",
+      "C:\\input\\wireguard.msi",
+      "-WireGuardPackageSource",
+      "local-pinned",
+      "-WireGuardPackageVersion",
+      "1.0.0",
+      "-WireGuardPackageSha256",
+      artifactSha256,
+      "-WireGuardApprovedSignerThumbprint",
+      signerThumbprint,
+      "-WireGuardApprovedRootThumbprint",
+      rootThumbprint,
+      "-MaintenanceSshCaPublicKeyPath",
+      "C:\\input\\maintenance-ca.pub",
+      "-MaintenanceSshCaPublicKeySha256",
+      artifactSha256,
+      "-MaintenanceRunnerSourceAllowlist",
+      "10.0.0.0/8",
+      "-MaintenanceMaintainerSourceAllowlist",
+      "10.0.0.0/8",
+      "-MaintenanceWireGuardListenAddress",
+      "10.66.0.1",
+      ...(isProduction
+        ? [
+            "-FactoryMediaRoot",
+            "C:\\Factory Media\\VEM",
+            "-VisionConfigurationSourcePath",
+            "C:\\Factory Media\\VEM\\vision-site-config.json",
+          ]
+        : []),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    result.status,
+    0,
+    `prepare projection failed:\n${result.stdout}\n${result.stderr}`,
+  );
+  const projection = JSON.parse(result.stdout);
+  writeFileSync(projectionPath, JSON.stringify(projection));
+
+  const verifier = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      "scripts/windows/verify-factory-runtime.ps1",
+      "-ProjectionPath",
+      projectionPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    verifier.status,
+    0,
+    `projection verifier failed:\n${verifier.stdout}\n${verifier.stderr}`,
+  );
+  assert.equal(JSON.parse(verifier.stdout).ok, true);
+
+  const rust = spawnSync(
+    "cargo",
+    [
+      "test",
+      "-p",
+      "vending-daemon",
+      "config::tests::prepare_projection_from_powershell_deserializes_daemon_factory_manifest",
+      "--",
+      "--exact",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        VEM_FACTORY_RUNTIME_PROJECTION: JSON.stringify(projection),
+      },
+    },
+  );
+  assert.equal(
+    rust.status,
+    0,
+    `Rust projection parse failed:\n${rust.stdout}\n${rust.stderr}`,
+  );
+  return { directory, projection };
+}
+
 describe("transient SSH operation retry", () => {
   it("retries a legacy SCP upload after a startup-window connection reset", async () => {
     const calls = [];
@@ -425,7 +582,7 @@ function runtimeAcceptanceFacts(overrides = {}) {
     },
     provisioning: {
       provisioned: true,
-      usedDaemonIpcClaimPath: true,
+      usedDaemonIpcTaskExecute: true,
       machineCode: "VEM-TESTBED-WINVM-01",
     },
     daemonRuntime: {
@@ -718,6 +875,23 @@ function approvedPreclaimBaseEvidence() {
 }
 
 describe("win10-vem-e2e reset planning", () => {
+  it("stages the complete Vision installer closure for dirty-host and clean-base Factory acceptance", () => {
+    const source = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
+
+    assert.match(
+      source,
+      /const FACTORY_SUPPORT_SCRIPT_NAMES = \[[\s\S]*?"install-vision-release\.ps1"[\s\S]*?"vision-release-materialization\.psm1"[\s\S]*?"vision-diagnostic-redaction\.psm1"[\s\S]*?\];/,
+    );
+    assert.match(
+      source,
+      /foreach \(\$scriptName in \$\{psArray\(FACTORY_SUPPORT_SCRIPT_NAMES\)\}\)[\s\S]*?Copy-Item -LiteralPath \$source -Destination \(Join-Path \$scriptRoot \$scriptName\)/,
+    );
+    assert.match(
+      source,
+      /for \(const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES\)[\s\S]*?scripts\/windows\/\$\{scriptName\}/,
+    );
+  });
+
   it("requires the exact protected GitHub gate and runner identity before secret media can be opened", () => {
     const trusted = {
       GITHUB_ACTIONS: "true",
@@ -1672,17 +1846,33 @@ describe("win10-vem-e2e reset planning", () => {
       /C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready\.json/,
     );
     assert.match(script, /Authorization = "Bearer \$\(\$ready\.ipcToken\)"/);
-    assert.match(script, /Invoke-IpcJson "PUT" "\$baseUrl\/v1\/config"/);
     assert.match(
       script,
-      /apiBaseUrl = 'http:\/\/118\.25\.104\.160:26849\/api'/,
+      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/config\/summary" \$headers/,
     );
-    assert.match(script, /mqttUrl = 'mqtt:\/\/118\.25\.104\.160:1883'/);
+    assert.match(script, /Get-ConfigSnapshotFromRuntimeSummary/);
+    assert.doesNotMatch(script, /"\$baseUrl\/v1\/config" \$headers/);
     assert.match(
       script,
-      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/provisioning\/claim"/,
+      /Factory bootstrap provisioning endpoint does not match the isolated Testbed platform/,
     );
-    assert.match(script, /usedDaemonIpcClaimPath = \$true/);
+    assert.match(script, /preClaimFactoryConfigVerified = \$true/);
+    assert.match(
+      script,
+      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/bring-up" \$headers/,
+    );
+    assert.match(script, /mutation = \[ordered\]@\{ type = "probe_network" \}/);
+    assert.match(script, /networkProbe = \[ordered\]@\{/);
+    assert.match(script, /daemon IPC existing-network probe failed/);
+    assert.match(script, /taskId = \[string\]\$currentTask\.taskId/);
+    assert.match(script, /taskVersion = \[uint64\]\$currentTask\.taskVersion/);
+    assert.match(script, /kind = \[string\]\$currentTask\.kind/);
+    assert.match(script, /intent = \[string\]\$currentTask\.intent/);
+    assert.match(
+      script,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/bring-up\/tasks\/execute"/,
+    );
+    assert.match(script, /usedDaemonIpcTaskExecute = \$true/);
     assert.match(script, /machineCode = \$claimResult\.machineCode/);
     assert.match(script, /provisioned = \$configEvidence\.provisioned/);
     assert.match(script, /claimResult = \[ordered\]@{/);
@@ -1702,7 +1892,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /vms_local/);
   });
 
-  it("waits for daemon IPC before the first provisioning config read and claim", () => {
+  it("uses the daemon cursor to probe the existing network before obtaining the claim cursor", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
@@ -1718,15 +1908,31 @@ describe("win10-vem-e2e reset planning", () => {
       provisioningStart,
     );
     const configRead = script.indexOf(
-      'Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers',
+      'Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers',
       provisioningStart,
+    );
+    const taskSnapshot = script.indexOf(
+      'Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers',
+      provisioningStart,
+    );
+    const networkProbe = script.indexOf(
+      'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $probePayload',
+      provisioningStart,
+    );
+    const claimTaskSnapshot = script.indexOf(
+      'Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers',
+      taskSnapshot + 1,
     );
     const claim = script.indexOf(
-      'Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim"',
+      'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $claimPayload',
       provisioningStart,
     );
-    const restart = script.indexOf(
-      "$recoveredIpc = Restart-DaemonIpcAfterProvisioning ",
+    const generationSnapshot = script.indexOf(
+      "$preClaimReadyGeneration = [long](Get-Item ",
+      provisioningStart,
+    );
+    const convergence = script.indexOf(
+      "$recoveredIpc = Wait-DaemonIpcAfterProvisioning ",
       provisioningStart,
     );
     const claimHttpCatch = script.indexOf("} catch {", claim);
@@ -1745,13 +1951,29 @@ describe("win10-vem-e2e reset planning", () => {
     assert.ok(readyRead < healthz);
     assert.ok(daemonIpcWait >= provisioningStart);
     assert.ok(daemonIpcWait < configRead);
-    assert.ok(configRead < claim);
+    assert.ok(configRead < taskSnapshot);
+    assert.ok(taskSnapshot < networkProbe);
+    assert.ok(networkProbe < claimTaskSnapshot);
+    assert.ok(claimTaskSnapshot < claim);
+    assert.ok(claimTaskSnapshot < generationSnapshot);
+    assert.ok(generationSnapshot < claim);
     assert.ok(claim < claimHttpCatch);
-    assert.ok(claimHttpCatch < restart);
-    assert.match(script, /restartAttempted = \$true/);
+    assert.ok(claimHttpCatch < convergence);
     assert.match(
       script,
-      /recoveredAfterRestart = \[bool\]\$recoveredIpc\.recovered/,
+      /if \(-not \[bool\]\$evidence\.claimResult\.restartRequested\) \{/,
+    );
+    assert.match(
+      script,
+      /throw "daemon Claim did not request the required runtime reconfigure"/,
+    );
+    assert.match(
+      script,
+      /\$RecoveryEvidence\["runtimeReconfigureObserved"\] = \$true/,
+    );
+    assert.match(
+      script,
+      /\$RecoveryEvidence\["recoveredAfterReconfigure"\] = \$true/,
     );
     assert.match(script, /recoveryFailure = \$_\.Exception\.Message/);
     assert.match(script, /claimStatus = "provisioned"/);
@@ -1875,86 +2097,135 @@ try {
     assert.match(result.failure, /last service start error.*SCM access denied/);
   });
 
-  it("restarts the daemon service before accepting post-claim IPC recovery", () => {
+  it("observes a new ready-file generation before accepting daemon-owned post-claim recovery", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
       machineCode: "VEM-TESTBED-WINVM-01",
     });
     const result = runPowerShellSemanticHarness(
-      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Restart-DaemonIpcAfterProvisioning")}`,
+      `${extractPowerShellFunction(script, "Get-ConfigSnapshotFromRuntimeSummary")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioning")}`,
       `
 $calls = [System.Collections.Generic.List[string]]::new()
 $calls.Add("claim")
-function Restart-Service {
-  param([string]$Name, [switch]$Force, $ErrorAction)
-  $calls.Add("restart-service")
+$recovery = [ordered]@{
+  runtimeReconfigureObserved = $false
+  previousReadyGeneration = $null
+  observedReadyGeneration = $null
+  observedHealthAfterReconfigure = $null
+  observedMachineCodeAfterReconfigure = $null
+  observedProvisionedAfterReconfigure = $null
+  recoveredAfterReconfigure = $null
+  recoveryAttempts = $null
+  recoveryEvidence = $null
 }
 function Get-Service {
   param([string]$Name, $ErrorAction)
   $calls.Add("get-service")
   [pscustomobject]@{ Status = "Running" }
 }
-function Start-Service { throw "not reached" }
+function Get-Item {
+  param([string]$LiteralPath, $ErrorAction)
+  $calls.Add("get-ready-generation")
+  $generation = if (($calls | Where-Object { $_ -eq "get-ready-generation" }).Count -eq 1) { 100 } else { 101 }
+  [pscustomobject]@{ LastWriteTimeUtc = [pscustomobject]@{ Ticks = $generation } }
+}
 function Read-JsonFile {
   param([string]$Path)
   $calls.Add("read-ready")
-  [pscustomobject]@{ ipcToken = "token"; healthzUrl = "http://127.0.0.1:7891/healthz" }
+  [pscustomobject]@{ ipcToken = "token-2"; healthzUrl = "http://127.0.0.1:7891/healthz" }
 }
 function Get-IpcBaseUrl { param($Ready) "http://127.0.0.1:7891" }
 function Invoke-IpcJson {
   param([string]$Method, [string]$Uri, $Headers, $Body = $null, [int]$TimeoutSec = 20)
-  $calls.Add("health:$TimeoutSec")
-  [pscustomobject]@{ status = "ok" }
+  if ($Uri.EndsWith("/healthz")) {
+    $calls.Add("health:$TimeoutSec")
+    return [pscustomobject]@{ status = "ok" }
+  }
+  $calls.Add("summary:$TimeoutSec")
+  [pscustomobject]@{
+    effectivePublic = [pscustomobject]@{ machineCode = "VEM-TESTBED-WINVM-01"; mqttUsername = $null }
+    configuredState = [pscustomobject]@{
+      provisioningProfileCache = $true
+      machineSecretConfigured = $true
+      mqttSigningSecretConfigured = $true
+      mqttPasswordConfigured = $false
+      maintenancePinConfigured = $true
+      factoryManifest = $true
+    }
+  }
 }
 function Start-Sleep {
   param([int]$Milliseconds)
   $calls.Add("sleep:$Milliseconds")
 }
 
-$daemonIpc = Restart-DaemonIpcAfterProvisioning "C:\\daemon-ready.json"
+$daemonIpc = Wait-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" 100 "VEM-TESTBED-WINVM-01" $recovery 3000 1
 @{
   calls = @($calls)
   recovered = $daemonIpc.recovered
   attempts = $daemonIpc.attempts
   recoveryEvidence = $daemonIpc.recoveryEvidence
+  persistedEvidence = $recovery
 } | ConvertTo-Json -Compress
 `,
     );
 
     assert.deepEqual(result.calls, [
       "claim",
-      "restart-service",
       "get-service",
+      "get-ready-generation",
+      "sleep:1",
+      "get-service",
+      "get-ready-generation",
       "read-ready",
       "health:2",
+      "summary:2",
     ]);
     assert.equal(result.recovered, true);
-    assert.equal(result.attempts, 1);
+    assert.equal(result.attempts, 2);
     assert.equal(
       result.recoveryEvidence,
-      "scm_restart_completed_then_ipc_healthy",
+      "daemon_ready_generation_advanced_then_runtime_healthy",
     );
+    assert.equal(result.persistedEvidence.previousReadyGeneration, 100);
+    assert.equal(result.persistedEvidence.observedReadyGeneration, 101);
+    assert.equal(result.persistedEvidence.runtimeReconfigureObserved, true);
+    assert.equal(result.persistedEvidence.observedHealthAfterReconfigure, true);
+    assert.equal(
+      result.persistedEvidence.observedMachineCodeAfterReconfigure,
+      "VEM-TESTBED-WINVM-01",
+    );
+    assert.equal(
+      result.persistedEvidence.observedProvisionedAfterReconfigure,
+      true,
+    );
+    assert.equal(result.persistedEvidence.recoveredAfterReconfigure, true);
+    const waitFunction = extractPowerShellFunction(
+      script,
+      "Wait-DaemonIpcAfterProvisioning",
+    );
+    assert.doesNotMatch(waitFunction, /Start-Service|Restart-Service/);
   });
 
-  it("fails post-claim recovery when the SCM restart fails", () => {
+  it("fails post-claim recovery when the daemon service leaves Running", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
       machineCode: "VEM-TESTBED-WINVM-01",
     });
     const result = runPowerShellSemanticHarness(
-      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Restart-DaemonIpcAfterProvisioning")}`,
+      `${extractPowerShellFunction(script, "Get-ConfigSnapshotFromRuntimeSummary")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioning")}`,
       `
 $calls = [System.Collections.Generic.List[string]]::new()
 $calls.Add("claim")
-function Restart-Service {
-  param([string]$Name, [switch]$Force, $ErrorAction)
-  $calls.Add("restart-service")
-  throw "SCM restart denied"
+$recovery = [ordered]@{ runtimeReconfigureObserved = $false }
+function Get-Service {
+  param([string]$Name, $ErrorAction)
+  $calls.Add("get-service")
+  [pscustomobject]@{ Status = "Stopped" }
 }
-function Get-Service { throw "not reached" }
-function Start-Service { throw "not reached" }
+function Get-Item { throw "not reached" }
 function Read-JsonFile { throw "not reached" }
 function Get-IpcBaseUrl { throw "not reached" }
 function Invoke-IpcJson { throw "not reached" }
@@ -1962,7 +2233,7 @@ function Start-Sleep { throw "not reached" }
 
 $failure = $null
 try {
-  Restart-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" | Out-Null
+  Wait-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" 100 "VEM-TESTBED-WINVM-01" $recovery 3000 1 | Out-Null
 } catch {
   $failure = $_.Exception.Message
 }
@@ -1970,9 +2241,79 @@ try {
 `,
     );
 
-    assert.deepEqual(result.calls, ["claim", "restart-service"]);
-    assert.match(result.failure, /Restart-Service.*SCM restart denied/);
+    assert.deepEqual(result.calls, ["claim", "get-service"]);
+    assert.match(result.failure, /left Running during post-claim reconfigure/);
   });
+
+  for (const fixture of [
+    {
+      name: "ready generation does not advance",
+      generation: 100,
+      machineCode: "VEM-TESTBED-WINVM-01",
+      provisioned: true,
+      expected: /ready generation has not advanced/,
+    },
+    {
+      name: "runtime exposes the wrong machine code",
+      generation: 101,
+      machineCode: "WRONG-MACHINE",
+      provisioned: true,
+      expected: /daemon runtime machineCode is WRONG-MACHINE/,
+    },
+    {
+      name: "runtime is not provisioned",
+      generation: 101,
+      machineCode: "VEM-TESTBED-WINVM-01",
+      provisioned: false,
+      expected: /daemon runtime config is not provisioned/,
+    },
+  ]) {
+    it(`fails closed when post-claim ${fixture.name}`, () => {
+      const script = buildRemotePowerShellScript({
+        mode: "provision",
+        claimCode: "ABCD-2345",
+        machineCode: "VEM-TESTBED-WINVM-01",
+      });
+      const result = runPowerShellSemanticHarness(
+        `${extractPowerShellFunction(script, "Get-ConfigSnapshotFromRuntimeSummary")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioning")}`,
+        `
+$recovery = [ordered]@{ runtimeReconfigureObserved = $false }
+function Get-Service { [pscustomobject]@{ Status = "Running" } }
+function Get-Item { [pscustomobject]@{ LastWriteTimeUtc = [pscustomobject]@{ Ticks = ${fixture.generation} } } }
+function Read-JsonFile { [pscustomobject]@{ ipcToken = "token"; healthzUrl = "http://127.0.0.1:7891/healthz" } }
+function Get-IpcBaseUrl { "http://127.0.0.1:7891" }
+function Invoke-IpcJson {
+  param([string]$Method, [string]$Uri)
+  if ($Uri.EndsWith("/healthz")) { return [pscustomobject]@{ status = "ok" } }
+  [pscustomobject]@{
+    effectivePublic = [pscustomobject]@{ machineCode = ${JSON.stringify(fixture.machineCode)}; mqttUsername = $null }
+    configuredState = [pscustomobject]@{
+      provisioningProfileCache = ${fixture.provisioned ? "$true" : "$false"}
+      machineSecretConfigured = ${fixture.provisioned ? "$true" : "$false"}
+      mqttSigningSecretConfigured = ${fixture.provisioned ? "$true" : "$false"}
+      mqttPasswordConfigured = $false
+      maintenancePinConfigured = ${fixture.provisioned ? "$true" : "$false"}
+      factoryManifest = $true
+    }
+  }
+}
+$failure = $null
+try {
+  Wait-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" 100 "VEM-TESTBED-WINVM-01" $recovery 20 1 | Out-Null
+} catch { $failure = $_.Exception.Message }
+@{ failure = $failure; recovery = $recovery } | ConvertTo-Json -Compress
+`,
+      );
+
+      assert.match(result.failure, /did not converge within 20 ms/);
+      assert.match(result.failure, fixture.expected);
+      assert.equal(result.recovery.observedReadyGeneration, fixture.generation);
+      assert.equal(
+        result.recovery.runtimeReconfigureObserved,
+        fixture.generation > 100,
+      );
+    });
+  }
 
   it("emits provision diagnostics for missing ready file and token failures", () => {
     const script = buildRemotePowerShellScript({
@@ -2060,8 +2401,8 @@ try {
         actions: [
           {
             evidence: {
-              usedDaemonIpcClaimPath: true,
-              endpoint: "http://127.0.0.1:3921/v1/provisioning/claim",
+              usedDaemonIpcTaskExecute: true,
+              endpoint: "http://127.0.0.1:3921/v1/bring-up/tasks/execute",
               claimStatus: "provisioned",
             },
           },
@@ -2069,7 +2410,7 @@ try {
       }),
       {
         provisioned: true,
-        usedDaemonIpcClaimPath: true,
+        usedDaemonIpcTaskExecute: true,
         machineCode: "VEM-TESTBED-WINVM-01",
         machineSecretConfigured: true,
         mqttSigningSecretConfigured: true,
@@ -2084,13 +2425,13 @@ try {
         actions: [
           {
             evidence: {
-              usedDaemonIpcClaimPath: true,
+              usedDaemonIpcTaskExecute: true,
               endpoint: "http://127.0.0.1:3921/v1/config",
               claimStatus: "not_attempted",
             },
           },
         ],
-      }).usedDaemonIpcClaimPath,
+      }).usedDaemonIpcTaskExecute,
       false,
     );
     assert.equal(
@@ -2103,14 +2444,14 @@ try {
         actions: [
           {
             evidence: {
-              usedDaemonIpcClaimPath: true,
-              endpoint: "http://127.0.0.1:3921/v1/provisioning/claim",
+              usedDaemonIpcTaskExecute: true,
+              endpoint: "http://127.0.0.1:3921/v1/bring-up/tasks/execute",
               claimStatus: "failed",
               claimFailureCode: "machine_profile_persistence_failed",
             },
           },
         ],
-      }).usedDaemonIpcClaimPath,
+      }).usedDaemonIpcTaskExecute,
       true,
     );
   });
@@ -2620,6 +2961,16 @@ try {
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/stock\/attestation"/,
     );
+    assert.match(script, /function Wait-PlatformAcceptedStockAttestation/);
+    assert.match(
+      script,
+      /\$stockAcceptance = Wait-PlatformAcceptedStockAttestation/,
+    );
+    assert.match(
+      script,
+      /PHYSICAL_STOCK_ATTESTATION_PENDING.*must not expose saleable stock/s,
+    );
+    assert.match(script, /\$physicalStockAttestation\.status -eq "ready"/);
     assert.match(
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/create-order"/,
@@ -2671,6 +3022,18 @@ try {
         script.indexOf(
           'Invoke-IpcJson "POST" "$baseUrl/v1/stock/planogram/sync"',
         ),
+    );
+    assert.ok(
+      script.indexOf(
+        "$stockAcceptance = Wait-PlatformAcceptedStockAttestation",
+      ) <
+        script.indexOf(
+          'Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order"',
+        ),
+    );
+    assert.ok(
+      script.indexOf("$selectedItem = @($saleView.items") <
+        script.indexOf("platformMovementId ="),
     );
   });
 
@@ -2981,6 +3344,114 @@ try {
     assert.equal(plan.readinessLevels.runtimeReady, "not_asserted");
     assert.equal(plan.readinessLevels.simulatedHardwareReady, "not_asserted");
     assert.equal(plan.readinessLevels.sellReady, "not_asserted");
+  });
+
+  it("projects production Factory Vision media and configuration through the clean-base plan and child prepare entrypoint", () => {
+    const factoryMediaRoot = "C:\\Factory Media\\VEM";
+    const visionConfigurationSourcePath =
+      "C:\\Factory Media\\VEM\\vision-site-config.json";
+    const plan = buildCleanBaseFactoryAcceptancePlan({
+      runId: "RUN-191",
+      cleanBaseSource: "factory-media://clean-windows-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      factoryProfile: "production",
+      factoryMediaRoot,
+      visionConfigurationSourcePath,
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+    assert.deepEqual(plan.cleanBase.visionInputs, {
+      factoryMediaRoot,
+      visionConfigurationSourcePath,
+    });
+
+    const script = buildRemotePowerShellScript({
+      mode: "clean-base-factory-acceptance",
+      runId: "RUN-191",
+      cleanBaseSource: "factory-media://clean-windows-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      factoryProfile: "production",
+      factoryMediaRoot,
+      visionConfigurationSourcePath,
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      remoteSupportScriptRoot: "C:\\Windows\\Temp\\vem-clean-base-support",
+      remoteUploadedArtifactRoot:
+        "C:\\Windows\\Temp\\vem-clean-base-support\\input-artifacts",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+    assert.match(script, /FactoryMediaRoot = 'C:\\Factory Media\\VEM'/);
+    assert.match(
+      script,
+      /VisionConfigurationSourcePath = 'C:\\Factory Media\\VEM\\vision-site-config\.json'/,
+    );
+    assert.match(script, /EnvironmentName = 'vps-fresh-production-clean-base'/);
+    assert.match(script, /DeploymentBatch = 'clean-base-production-v1'/);
+  });
+
+  it("keeps batch-like testbed labels separate from the strict Factory profile", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "clean-base-factory-acceptance",
+      runId: "RUN-192",
+      cleanBaseSource: "factory-media://clean-windows-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      factoryProfile: "testbed",
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      remoteSupportScriptRoot: "C:\\Windows\\Temp\\vem-clean-base-support",
+      remoteUploadedArtifactRoot:
+        "C:\\Windows\\Temp\\vem-clean-base-support\\input-artifacts",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+    assert.match(script, /FactoryProfile = 'testbed'/);
+    assert.match(script, /EnvironmentName = 'vps-fresh-testbed-clean-base'/);
+    assert.match(script, /DeploymentBatch = 'clean-base-testbed-v1'/);
+  });
+
+  it("carries production and testbed clean-base labels through PowerShell, Rust, and the verifier", () => {
+    for (const profile of ["production", "testbed"]) {
+      const result = projectFactoryRuntimeBoundary(profile);
+      try {
+        assert.equal(result.projection.factoryProfile, profile);
+        assert.equal(
+          result.projection.inputs.environmentName,
+          `vps-fresh-${profile}-clean-base`,
+        );
+        assert.equal(
+          result.projection.inputs.deploymentBatch,
+          `clean-base-${profile}-v1`,
+        );
+        assert.equal(
+          result.projection.daemonFactoryManifest.environment,
+          profile,
+        );
+        assert.equal(
+          Object.hasOwn(
+            result.projection.daemonFactoryManifest,
+            "environmentName",
+          ),
+          false,
+        );
+        assert.equal(
+          Object.hasOwn(
+            result.projection.daemonFactoryManifest,
+            "deploymentBatch",
+          ),
+          false,
+        );
+        if (profile === "production") {
+          assert.deepEqual(result.projection.inputs.visionInputs, {
+            factoryMediaRoot: "C:\\Factory Media\\VEM",
+            visionConfigurationSourcePath:
+              "C:\\Factory Media\\VEM\\vision-site-config.json",
+          });
+        }
+      } finally {
+        rmSync(result.directory, { recursive: true, force: true });
+      }
+    }
   });
 
   it("declares the Factory Windows Baseline policy and evidence contract", () => {
@@ -4451,7 +4922,7 @@ try {
         runtimeAcceptanceFacts({
           provisioning: {
             provisioned: true,
-            usedDaemonIpcClaimPath: true,
+            usedDaemonIpcTaskExecute: true,
             machineCode,
           },
         }),

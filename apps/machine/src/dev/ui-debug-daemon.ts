@@ -1,6 +1,8 @@
 import {
   daemonIpcMachinePaymentProviderSchema,
   paymentMethodSchema,
+  type StockMaintenanceBatchResponse,
+  type StockMaintenanceTask,
 } from "@vem/shared";
 
 import type {
@@ -135,6 +137,7 @@ function currentBringUp(): BringUpSnapshot {
       configureNetwork: true,
       claimMachine: false,
       retryClaim: true,
+      convergeMaintenanceTunnel: false,
       syncProfile: true,
       resolveTopology: true,
       runRuntimeAcceptance: true,
@@ -142,6 +145,8 @@ function currentBringUp(): BringUpSnapshot {
       attestStock: false,
       startSales: false,
     },
+    currentTask: null,
+    progress: [],
     updatedAt: nowIso(),
   };
 }
@@ -359,6 +364,19 @@ export function installUiDebugDaemon(): void {
   client.getHealth = async () => currentScenario().health;
   client.getReady = async () => currentScenario().ready;
   client.getBringUp = async () => currentBringUp();
+  client.beginMaintenanceSession = async (
+    pin: string,
+    requestedScopes: string[] = [],
+  ) => {
+    if (pin !== "2468") {
+      throw new Error("维护 PIN 验证失败");
+    }
+    return {
+      sessionId: "ui-debug-maintenance-session",
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      scopes: Array.from(new Set(["maintenance.mutate", ...requestedScopes])),
+    };
+  };
   client.applyNetworkSettings = async () => applyUiDebugNetworkSettings();
   client.getConfig = async () => currentScenario().config;
   client.saveConfig = async (body: unknown) => ({
@@ -375,6 +393,39 @@ export function installUiDebugDaemon(): void {
   client.refreshCatalog = async () => catalogFromSaleView(currentSaleView());
   client.getSaleView = async () => currentSaleView();
   client.recordStockMovement = async () => currentSaleView();
+  const currentStockMaintenanceTask = (): StockMaintenanceTask => {
+    const saleView = currentSaleView();
+    return {
+      taskId: "ui-debug-stock-task",
+      mode: "routine_refill",
+      status: "ready",
+      slots: saleView.items.map((item) => ({
+        slotCode: item.slotCode,
+        layerNo: item.layerNo,
+        cellNo: item.cellNo,
+        productName: item.productName,
+        sku: item.sku,
+        capacity: item.capacity,
+        currentQuantity: item.physicalStock,
+        submittedQuantity: null,
+        submittedAddition: null,
+        previewQuantity: null,
+        syncStatus: "not_submitted",
+        salesState: item.slotSalesState,
+        reconciliationReason: null,
+      })),
+    };
+  };
+  client.getStockMaintenanceTask = async (): Promise<StockMaintenanceTask> =>
+    currentStockMaintenanceTask();
+  client.submitStockMaintenanceBatch =
+    async (): Promise<StockMaintenanceBatchResponse> => ({
+      task: {
+        ...currentStockMaintenanceTask(),
+        status: "pending",
+      },
+      duplicate: false,
+    });
   client.clearWholeMachineMaintenanceLock = async () => ({ ok: true });
   client.getSaleReadiness = async () => currentScenario().saleReadiness;
   client.getPaymentOptions = async () => currentScenario().paymentOptions;

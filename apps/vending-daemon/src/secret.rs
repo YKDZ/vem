@@ -16,14 +16,24 @@ pub const MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT: &str = "machine_wireguard_priva
 pub const MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT: &str =
     "machine_wireguard_pending_private_key";
 pub const MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT: &str = "machine_maintenance_lifecycle";
+/// The field-maintenance PIN is deliberately a daemon-only secret.  It is
+/// never part of the IPC config summary or a UI runtime flag.
+pub const MACHINE_MAINTENANCE_PIN_ACCOUNT: &str = "machine_maintenance_pin";
+/// One-shot Factory bootstrap capability verifier. The raw capability is
+/// delivered only to the local maintenance account and is consumed before
+/// any provisioning mutation is accepted.
+pub const MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT: &str =
+    "machine_factory_bootstrap_capability";
 
-const SECRET_ACCOUNTS: [&str; 6] = [
+const SECRET_ACCOUNTS: [&str; 8] = [
     MACHINE_SECRET_ACCOUNT,
     MQTT_SIGNING_SECRET_ACCOUNT,
     MQTT_PASSWORD_ACCOUNT,
     MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
     MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
     MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+    MACHINE_MAINTENANCE_PIN_ACCOUNT,
+    MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT,
 ];
 
 #[cfg(any(windows, test))]
@@ -44,6 +54,7 @@ pub struct SecretStoreStatus {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub maintenance_pin_configured: bool,
     pub machine_wireguard_private_key_configured: bool,
     pub last_error: Option<String>,
 }
@@ -94,6 +105,8 @@ impl FileSecretStore {
                 "machine_wireguard_pending_private_key"
             }
             MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle",
+            MACHINE_MAINTENANCE_PIN_ACCOUNT => "machine_maintenance_pin",
+            MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => "machine_factory_bootstrap_capability",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -117,6 +130,10 @@ impl ProtectedLocalSecretStore {
                 "machine_wireguard_pending_private_key.dpapi"
             }
             MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle.dpapi",
+            MACHINE_MAINTENANCE_PIN_ACCOUNT => "machine_maintenance_pin.dpapi",
+            MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => {
+                "machine_factory_bootstrap_capability.dpapi"
+            }
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -174,6 +191,7 @@ impl SecretStore for InMemorySecretStore {
             machine_secret_configured: values.contains_key(MACHINE_SECRET_ACCOUNT),
             mqtt_signing_secret_configured: values.contains_key(MQTT_SIGNING_SECRET_ACCOUNT),
             mqtt_password_configured: values.contains_key(MQTT_PASSWORD_ACCOUNT),
+            maintenance_pin_configured: values.contains_key(MACHINE_MAINTENANCE_PIN_ACCOUNT),
             machine_wireguard_private_key_configured: values
                 .contains_key(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT),
             last_error: None,
@@ -189,6 +207,8 @@ fn env_account_name(account: &str) -> Option<&'static str> {
         MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => Some("VEM_MACHINE_WIREGUARD_PRIVATE_KEY"),
         MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => None,
         MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => None,
+        MACHINE_MAINTENANCE_PIN_ACCOUNT => None,
+        MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => None,
         _ => None,
     }
 }
@@ -226,6 +246,10 @@ impl SecretStore for EnvSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            maintenance_pin_configured: self
+                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
+                .await?
+                .is_some(),
             machine_wireguard_private_key_configured: self
                 .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
                 .await?
@@ -291,6 +315,10 @@ impl SecretStore for FileSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            maintenance_pin_configured: self
+                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
+                .await?
+                .is_some(),
             machine_wireguard_private_key_configured: self
                 .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
                 .await?
@@ -359,10 +387,14 @@ impl SecretStore for ProtectedLocalSecretStore {
             .await;
         let (mqtt_password_configured, mqtt_password_error) =
             self.configured_for_status(MQTT_PASSWORD_ACCOUNT).await;
+        let (maintenance_pin_configured, maintenance_pin_error) = self
+            .configured_for_status(MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await;
         let mut last_error = [
             machine_secret_error,
             mqtt_signing_secret_error,
             mqtt_password_error,
+            maintenance_pin_error,
         ]
         .into_iter()
         .flatten()
@@ -375,6 +407,7 @@ impl SecretStore for ProtectedLocalSecretStore {
             machine_secret_configured,
             mqtt_signing_secret_configured,
             mqtt_password_configured,
+            maintenance_pin_configured,
             machine_wireguard_private_key_configured: {
                 let (configured, error) = self
                     .configured_for_status(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
@@ -404,20 +437,69 @@ pub(crate) async fn harden_machine_protected_file_permissions(
 
     #[cfg(windows)]
     {
-        let status = tokio::process::Command::new("icacls.exe")
-            .arg(path)
-            .args(WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS)
+        // Do not use account names here: localized Windows images can resolve
+        // them differently.  Rebuild the explicit DACL so a pre-existing temp
+        // file cannot retain an unrelated allow or deny ACE after replacement.
+        let status = windows_secret_acl_process(path)
             .status()
             .await
-            .map_err(|error| format!("run icacls for file secret failed: {error}"))?;
+            .map_err(|error| format!("set file secret ACL failed: {error}"))?;
         if !status.success() {
-            return Err(format!(
-                "icacls for file secret failed with status {status}"
-            ));
+            return Err(format!("set file secret ACL failed with status {status}"));
         }
     }
 
     Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn windows_secret_acl_script() -> &'static str {
+    r#"if ($args.Count -ne 0) { throw 'secret ACL command must not receive positional arguments' }
+$path = [Environment]::GetEnvironmentVariable('VEM_DAEMON_SECRET_ACL_PATH', 'Process')
+if ([string]::IsNullOrWhiteSpace($path)) { throw 'secret ACL path environment variable is missing' }
+$path = [IO.Path]::GetFullPath($path)
+$acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+$system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$administrators = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$acl.SetOwner($system)
+foreach ($sid in @($system, $administrators)) {
+  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+    $sid, 'FullControl', 'None', 'None', 'Allow'
+  ))
+}
+Set-Acl -LiteralPath $path -AclObject $acl"#
+}
+
+#[cfg(any(windows, test))]
+fn windows_secret_acl_command() -> Vec<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let script = windows_secret_acl_script();
+    let utf16le = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    vec![
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-EncodedCommand".to_string(),
+        STANDARD.encode(utf16le),
+    ]
+}
+
+#[cfg(any(windows, test))]
+fn windows_secret_acl_process(path: &std::path::Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("powershell.exe");
+    command
+        .args(windows_secret_acl_command())
+        .env("VEM_DAEMON_SECRET_ACL_PATH", path)
+        // A daemon started by pwsh can inherit PowerShell 7's module search
+        // path. Windows PowerShell then finds but cannot load its own Security
+        // module. Let powershell.exe reconstruct its native module boundary.
+        .env_remove("PSModulePath");
+    command
 }
 
 fn protected_secret_protection_name() -> &'static str {
@@ -457,23 +539,28 @@ async fn unprotect_secret_blob(blob: Vec<u8>) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
-    let value = value.as_bytes().to_vec();
-    tokio::task::spawn_blocking(move || protect_secret_blob_blocking(&value))
+pub(crate) async fn protect_machine_local_bytes(value: &[u8]) -> Result<Vec<u8>, String> {
+    let value = value.to_vec();
+    tokio::task::spawn_blocking(move || protect_machine_local_bytes_blocking(&value))
         .await
         .map_err(|error| format!("join DPAPI protect failed: {error}"))?
 }
 
 #[cfg(windows)]
+async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
+    protect_machine_local_bytes(value.as_bytes()).await
+}
+
+#[cfg(windows)]
 async fn unprotect_secret_blob(blob: Vec<u8>) -> Result<String, String> {
-    let plain = tokio::task::spawn_blocking(move || unprotect_secret_blob_blocking(&blob))
+    let plain = tokio::task::spawn_blocking(move || unprotect_machine_local_bytes_blocking(&blob))
         .await
         .map_err(|error| format!("join DPAPI unprotect failed: {error}"))??;
     String::from_utf8(plain).map_err(|error| format!("decode DPAPI secret failed: {error}"))
 }
 
 #[cfg(windows)]
-fn protect_secret_blob_blocking(value: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn protect_machine_local_bytes_blocking(value: &[u8]) -> Result<Vec<u8>, String> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
@@ -516,7 +603,7 @@ fn protect_secret_blob_blocking(value: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(windows)]
-fn unprotect_secret_blob_blocking(blob: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn unprotect_machine_local_bytes_blocking(blob: &[u8]) -> Result<Vec<u8>, String> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
@@ -615,6 +702,10 @@ impl SecretStore for KeyringSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            maintenance_pin_configured: self
+                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
+                .await?
+                .is_some(),
             machine_wireguard_private_key_configured: self
                 .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
                 .await?
@@ -625,17 +716,16 @@ impl SecretStore for KeyringSecretStore {
 }
 
 pub fn default_secret_store(data_dir: PathBuf) -> Arc<dyn SecretStore> {
-    match std::env::var("VEM_DAEMON_SECRET_STORE").ok().as_deref() {
-        Some("env") => Arc::new(EnvSecretStore),
-        Some("file") => Arc::new(FileSecretStore::new(data_dir)),
-        Some("keyring") => Arc::new(KeyringSecretStore),
-        _ => Arc::new(ProtectedLocalSecretStore::new(data_dir)),
-    }
+    // Production startup has one machine-scope secret lifecycle. Test stores
+    // are injected into ConfigStore/DaemonRuntime directly, never selected by
+    // inherited service environment variables.
+    Arc::new(ProtectedLocalSecretStore::new(data_dir))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn protected_file_acl_uses_language_independent_builtin_sids() {
@@ -648,6 +738,23 @@ mod tests {
                 "*S-1-5-32-544:F",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn production_secret_store_ignores_legacy_inherited_selector() {
+        let temp = tempfile::tempdir().unwrap();
+        // SAFETY: this focused test restores the inherited compatibility selector.
+        unsafe { std::env::set_var("VEM_DAEMON_SECRET_STORE", "env") };
+
+        let status = default_secret_store(temp.path().to_path_buf())
+            .status()
+            .await
+            .unwrap();
+
+        // SAFETY: restore the process environment after this test.
+        unsafe { std::env::remove_var("VEM_DAEMON_SECRET_STORE") };
+        assert_eq!(status.kind, "protected_local_file");
+        assert_eq!(status.protection, protected_secret_protection_name());
     }
 
     #[tokio::test]
@@ -785,5 +892,162 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn protected_machine_store_recovers_provisioned_secret_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().to_path_buf();
+        let provisioned = ProtectedLocalSecretStore::new(data_dir.clone());
+        provisioned
+            .write_secret(MACHINE_SECRET_ACCOUNT, "machine-secret-after-restart")
+            .await
+            .unwrap();
+
+        let restarted = ProtectedLocalSecretStore::new(data_dir);
+        assert_eq!(
+            restarted
+                .read_secret(MACHINE_SECRET_ACCOUNT)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("machine-secret-after-restart"),
+        );
+    }
+
+    #[test]
+    fn windows_secret_acl_replaces_existing_explicit_rules_with_stable_sids() {
+        let script = windows_secret_acl_script();
+        assert!(script.contains("SetAccessRuleProtection($true, $false)"));
+        assert!(script.contains("RemoveAccessRuleSpecific"));
+        assert!(script.contains("S-1-5-18"));
+        assert!(script.contains("S-1-5-32-544"));
+        assert!(script.contains("$acl.SetOwner($system)"));
+        assert!(!script.contains("Administrators:F"));
+        assert!(!script.contains("SYSTEM:F"));
+    }
+
+    #[test]
+    fn windows_secret_acl_command_keeps_the_path_out_of_the_script_argument_boundary() {
+        let args = windows_secret_acl_command();
+        assert!(args.windows(2).any(|pair| pair[0] == "-EncodedCommand"));
+        assert!(!args.iter().any(|argument| argument == "-Command"));
+
+        let encoded = args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "-EncodedCommand").then_some(pair[1].as_str()))
+            .expect("encoded command");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("encoded PowerShell script");
+        let words = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        let script = String::from_utf16(&words).expect("PowerShell UTF-16 script");
+        assert!(script.contains("VEM_DAEMON_SECRET_ACL_PATH"));
+        assert!(script.contains("$args.Count -ne 0"));
+        assert!(!script.contains("$args[0]"));
+    }
+
+    #[test]
+    fn windows_secret_acl_process_does_not_inherit_powershell_module_path() {
+        let command = windows_secret_acl_process(Path::new("secret with spaces.bin"));
+        let (name, value) = command
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| name.eq_ignore_ascii_case("PSModulePath"))
+            .expect("PowerShell module path must have an explicit child-process policy");
+
+        assert_eq!(name, std::ffi::OsStr::new("PSModulePath"));
+        assert!(value.is_none(), "the child must not inherit pwsh modules");
+        assert!(command.as_std().get_envs().any(|(name, value)| {
+            name == std::ffi::OsStr::new("VEM_DAEMON_SECRET_ACL_PATH") && value.is_some()
+        }));
+    }
+
+    #[cfg(windows)]
+    fn run_windows_acl_probe(path: &Path, script: &str) -> std::process::Output {
+        use std::process::Command;
+
+        let utf16le = script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(utf16le);
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+            .env("VEM_DAEMON_SECRET_ACL_PATH", path)
+            .output()
+            .expect("run PowerShell ACL probe")
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_secret_acl_hardens_spaced_common_and_wireguard_secret_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let secret_root = temp.path().join("secret paths with spaces");
+        std::fs::create_dir_all(&secret_root).unwrap();
+
+        for name in ["ordinary machine secret", "wireguard private key"] {
+            let path = secret_root.join(name);
+            std::fs::write(&path, "secret").unwrap();
+            let setup = run_windows_acl_probe(
+                &path,
+                r#"$path = [Environment]::GetEnvironmentVariable('VEM_DAEMON_SECRET_ACL_PATH', 'Process')
+$acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+$everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($everyone, 'ReadAndExecute', 'None', 'None', 'Allow'))
+Set-Acl -LiteralPath $path -AclObject $acl"#,
+            );
+            assert!(
+                setup.status.success(),
+                "failed to create preexisting ACE: {}",
+                String::from_utf8_lossy(&setup.stderr)
+            );
+
+            // Both ordinary and WireGuard secrets use this exact production
+            // process invocation; the probe never passes the path as an argv
+            // token and therefore also exercises a path containing spaces.
+            harden_machine_protected_file_permissions(&path)
+                .await
+                .unwrap();
+
+            let probe = run_windows_acl_probe(
+                &path,
+                r#"$path = [Environment]::GetEnvironmentVariable('VEM_DAEMON_SECRET_ACL_PATH', 'Process')
+$acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+$owner = $acl.Owner.Translate([Security.Principal.SecurityIdentifier]).Value
+$rules = @($acl.Access | Where-Object { -not $_.IsInherited } | ForEach-Object {
+  [ordered]@{
+    sid = $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    rights = [int]$_.FileSystemRights
+    type = [string]$_.AccessControlType
+    inheritance = [string]$_.InheritanceFlags
+    propagation = [string]$_.PropagationFlags
+  }
+})
+[ordered]@{ protected = [bool]$acl.AreAccessRulesProtected; owner = $owner; rules = $rules } | ConvertTo-Json -Depth 8 -Compress"#,
+            );
+            assert!(
+                probe.status.success(),
+                "failed to read hardened ACL: {}",
+                String::from_utf8_lossy(&probe.stderr)
+            );
+            let value: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+            assert_eq!(value["protected"], true);
+            assert_eq!(value["owner"], "S-1-5-18");
+            let rules = value["rules"].as_array().unwrap();
+            assert_eq!(rules.len(), 2, "stale ACE survived for {name}");
+            for sid in ["S-1-5-18", "S-1-5-32-544"] {
+                assert!(rules.iter().any(|rule| {
+                    rule["sid"] == sid
+                        && rule["type"] == "Allow"
+                        && rule["inheritance"] == "None"
+                        && rule["propagation"] == "None"
+                }));
+            }
+            assert!(rules.iter().all(|rule| rule["sid"] != "S-1-1-0"));
+        }
     }
 }

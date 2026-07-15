@@ -1,24 +1,222 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc::{Receiver, Sender},
+    Arc, Mutex,
+};
+use std::thread::{self, JoinHandle};
+
+#[cfg(any(windows, test))]
+use std::sync::mpsc;
 
 use base64::prelude::*;
+use serde::Serialize;
 
 #[cfg(windows)]
 use {
-    rodio::{cpal::traits::HostTrait, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player},
+    rodio::{
+        cpal::traits::{DeviceTrait, HostTrait},
+        source::EmptyCallback,
+        Decoder, DeviceSinkBuilder, MixerDeviceSink, Player,
+    },
     std::fs::File,
     std::io::{BufReader, Cursor},
+    tauri::Emitter,
 };
 
 pub struct MachineAudioState {
-    active: Mutex<Option<ActiveMachineAudio>>,
+    lifecycle: PlaybackLifecycle<ActiveMachineAudio>,
+    #[cfg(windows)]
+    completion_tx: Sender<CompletionSignal>,
 }
 
 struct ActiveMachineAudio {
     #[cfg(windows)]
-    _sink: MixerDeviceSink,
+    app: tauri::AppHandle,
     #[cfg(windows)]
-    player: Player,
+    player: Arc<Player>,
+    #[cfg(windows)]
+    sink: MixerDeviceSink,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct CompletionSignal {
+    generation: u64,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+struct ActivePlayback<T> {
+    generation: u64,
+    request_id: String,
+    payload: T,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+struct PlaybackLifecycle<T> {
+    active: Arc<Mutex<Option<ActivePlayback<T>>>>,
+    completion_generation: Arc<Mutex<Option<u64>>>,
+    next_generation: AtomicU64,
+}
+
+impl<T> Default for PlaybackLifecycle<T> {
+    fn default() -> Self {
+        Self {
+            active: Arc::new(Mutex::new(None)),
+            completion_generation: Arc::new(Mutex::new(None)),
+            next_generation: AtomicU64::new(1),
+        }
+    }
+}
+
+impl<T> PlaybackLifecycle<T> {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn active_handle(&self) -> Arc<Mutex<Option<ActivePlayback<T>>>> {
+        Arc::clone(&self.active)
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn completion_gate_handle(&self) -> Arc<Mutex<Option<u64>>> {
+        Arc::clone(&self.completion_generation)
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn replace(
+        &self,
+        request_id: String,
+        payload: T,
+        stop_replaced: impl FnOnce(&T),
+    ) -> Result<u64, String> {
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let replaced = {
+            let mut completion_generation = self
+                .completion_generation
+                .lock()
+                .map_err(|_| "audio state poisoned")?;
+            let mut active = self.active.lock().map_err(|_| "audio state poisoned")?;
+            let replaced = active.replace(ActivePlayback {
+                generation,
+                request_id,
+                payload,
+            });
+            *completion_generation = Some(generation);
+            replaced
+        };
+        if let Some(replaced) = replaced {
+            stop_replaced(&replaced.payload);
+            drop(replaced);
+        }
+        Ok(generation)
+    }
+
+    fn stop(&self, stop_active: impl FnOnce(&T)) {
+        let stopped =
+            self.completion_generation
+                .lock()
+                .ok()
+                .and_then(|mut completion_generation| {
+                    *completion_generation = None;
+                    self.active.lock().ok().and_then(|mut active| active.take())
+                });
+        if let Some(stopped) = stopped {
+            stop_active(&stopped.payload);
+            drop(stopped);
+        }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+struct OnceCompletionSignal {
+    completion_tx: Sender<CompletionSignal>,
+    generation: u64,
+    sent: AtomicBool,
+}
+
+impl OnceCompletionSignal {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn new(completion_tx: Sender<CompletionSignal>, generation: u64) -> Self {
+        Self {
+            completion_tx,
+            generation,
+            sent: AtomicBool::new(false),
+        }
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn send(&self) {
+        if self
+            .sent
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let _ = self.completion_tx.send(CompletionSignal {
+                generation: self.generation,
+            });
+        }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn take_completed<T>(
+    active: &Arc<Mutex<Option<ActivePlayback<T>>>>,
+    signal: CompletionSignal,
+) -> Option<ActivePlayback<T>> {
+    let mut active = active.lock().ok()?;
+    if active
+        .as_ref()
+        .is_some_and(|current| current.generation == signal.generation)
+    {
+        active.take()
+    } else {
+        None
+    }
+}
+
+fn commit_completion(
+    completion_generation: &Arc<Mutex<Option<u64>>>,
+    signal: CompletionSignal,
+    on_completed: impl FnOnce(),
+) {
+    let Ok(mut committable_generation) = completion_generation.lock() else {
+        return;
+    };
+    if *committable_generation == Some(signal.generation) {
+        *committable_generation = None;
+        on_completed();
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn spawn_completion_worker<T, E, F, G>(
+    active: Arc<Mutex<Option<ActivePlayback<T>>>>,
+    completion_generation: Arc<Mutex<Option<u64>>>,
+    completion_rx: Receiver<CompletionSignal>,
+    mut teardown: F,
+    mut on_completed: G,
+) -> JoinHandle<()>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    F: FnMut(T) -> E + Send + 'static,
+    G: FnMut(String, E) + Send + 'static,
+{
+    // Stream teardown may join the audio thread, so completion ownership must
+    // always cross this worker boundary before the payload is dropped.
+    thread::Builder::new()
+        .name("machine-audio-completion".to_string())
+        .spawn(move || {
+            while let Ok(signal) = completion_rx.recv() {
+                let Some(completed) = take_completed(&active, signal) else {
+                    continue;
+                };
+                let request_id = completed.request_id;
+                let event_context = teardown(completed.payload);
+                commit_completion(&completion_generation, signal, || {
+                    on_completed(request_id, event_context);
+                });
+            }
+        })
+        .expect("spawn machine audio completion worker")
 }
 
 #[derive(Debug)]
@@ -37,14 +235,59 @@ enum MachineAudioSourcePath {
 
 #[derive(Debug)]
 pub struct PlayMachineAudioRequest {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub request_id: String,
     pub source_url: String,
     pub volume: f32,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub output_device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAudioOutputCandidate {
+    pub endpoint_id: String,
+    pub friendly_name: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAudioCompletedEvent {
+    pub request_id: String,
 }
 
 impl Default for MachineAudioState {
     fn default() -> Self {
+        let lifecycle = PlaybackLifecycle::default();
+        #[cfg(windows)]
+        let completion_tx = {
+            let (completion_tx, completion_rx) = mpsc::channel();
+            let _worker = spawn_completion_worker(
+                lifecycle.active_handle(),
+                lifecycle.completion_gate_handle(),
+                completion_rx,
+                |completed: ActiveMachineAudio| {
+                    let ActiveMachineAudio { app, player, sink } = completed;
+                    drop(player);
+                    drop(sink);
+                    app
+                },
+                |request_id, app| {
+                    let _ = app.emit(
+                        "machine-audio-completed",
+                        MachineAudioCompletedEvent { request_id },
+                    );
+                },
+            );
+            completion_tx
+        };
         Self {
-            active: Mutex::new(None),
+            lifecycle,
+            #[cfg(windows)]
+            completion_tx,
         }
     }
 }
@@ -96,11 +339,13 @@ impl MachineAudioSource {
 impl MachineAudioState {
     fn play(
         &self,
+        app: tauri::AppHandle,
         input: PlayMachineAudioRequest,
         resolve_asset: impl FnOnce(&str) -> Result<Option<Vec<u8>>, String>,
     ) -> Result<(), String> {
         #[cfg(not(windows))]
         {
+            let _ = app;
             let _ = MachineAudioSource::from_source_url(&input.source_url, resolve_asset)?;
             let _ = normalize_volume(input.volume);
             return Err("native audio playback is only supported on Windows".to_string());
@@ -110,43 +355,64 @@ impl MachineAudioState {
         {
             self.stop();
             let source = MachineAudioSource::from_source_url(&input.source_url, resolve_asset)?;
-            let sink = open_os_default_sink()?;
-            let player = Player::connect_new(&sink.mixer());
+            let sink = open_requested_output_sink(input.output_device_id.as_deref())?;
+            let player = Arc::new(Player::connect_new(&sink.mixer()));
             player.set_volume(normalize_volume(input.volume));
+            player.pause();
             match source {
                 MachineAudioSource::Bytes(bytes) => {
                     let decoder = Decoder::try_from(Cursor::new(bytes))
                         .map_err(|error| format!("decode audio source failed: {error}"))?;
-                    player.append(decoder);
+                    self.start_player(app, sink, player, input.request_id, decoder)?;
                 }
                 MachineAudioSource::File(path) => {
                     let file = File::open(&path)
                         .map_err(|error| format!("open audio source failed: {error}"))?;
                     let decoder = Decoder::try_from(BufReader::new(file))
                         .map_err(|error| format!("decode audio source failed: {error}"))?;
-                    player.append(decoder);
+                    self.start_player(app, sink, player, input.request_id, decoder)?;
                 }
             }
-            let mut active = self.active.lock().map_err(|_| "audio state poisoned")?;
-            *active = Some(ActiveMachineAudio {
-                _sink: sink,
-                player,
-            });
             Ok(())
         }
     }
 
+    #[cfg(windows)]
+    fn start_player<S>(
+        &self,
+        app: tauri::AppHandle,
+        sink: MixerDeviceSink,
+        player: Arc<Player>,
+        request_id: String,
+        source: S,
+    ) -> Result<(), String>
+    where
+        S: rodio::Source<Item = f32> + Send + 'static,
+    {
+        let generation = self.lifecycle.replace(
+            request_id,
+            ActiveMachineAudio {
+                app,
+                player: Arc::clone(&player),
+                sink,
+            },
+            |replaced| replaced.player.stop(),
+        )?;
+        let completion = OnceCompletionSignal::new(self.completion_tx.clone(), generation);
+        player.append(source);
+        // This closure runs on the audio thread and must remain signal-only.
+        player.append(EmptyCallback::new(Box::new(move || {
+            completion.send();
+        })));
+        player.play();
+        Ok(())
+    }
+
     fn stop(&self) {
-        if let Ok(mut active) = self.active.lock() {
-            #[cfg(windows)]
-            if let Some(current) = active.take() {
-                current.player.stop();
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = active.take();
-            }
-        }
+        #[cfg(windows)]
+        self.lifecycle.stop(|current| current.player.stop());
+        #[cfg(not(windows))]
+        self.lifecycle.stop(|_| {});
     }
 }
 
@@ -155,13 +421,19 @@ pub fn play_machine_audio(
     app: tauri::AppHandle,
     state: tauri::State<'_, MachineAudioState>,
     source_url: String,
+    request_id: String,
     volume: Option<f32>,
+    output_device_id: Option<String>,
 ) -> Result<(), String> {
     let resolver = app.asset_resolver();
+    let request_id = normalize_request_id(request_id)?;
     state.play(
+        app,
         PlayMachineAudioRequest {
+            request_id,
             source_url,
             volume: volume.unwrap_or_else(default_volume),
+            output_device_id,
         },
         |asset_path| {
             Ok(resolver.get(asset_path.to_string()).and_then(|asset| {
@@ -181,8 +453,29 @@ pub fn stop_machine_audio(state: tauri::State<'_, MachineAudioState>) -> Result<
     Ok(())
 }
 
+#[tauri::command]
+pub fn list_machine_audio_outputs() -> Result<Vec<MachineAudioOutputCandidate>, String> {
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+
+    #[cfg(windows)]
+    {
+        list_windows_audio_outputs()
+    }
+}
+
 fn default_volume() -> f32 {
     1.0
+}
+
+fn normalize_request_id(request_id: String) -> Result<String, String> {
+    let request_id = request_id.trim().to_string();
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err("audio playback request id is invalid".to_string());
+    }
+    Ok(request_id)
 }
 
 fn normalize_volume(volume: f32) -> f32 {
@@ -194,24 +487,75 @@ fn normalize_volume(volume: f32) -> f32 {
 }
 
 #[cfg(windows)]
-fn open_os_default_sink() -> Result<MixerDeviceSink, String> {
-    let default_device = rodio::cpal::default_host().default_output_device();
-    open_required_default_sink(default_device, |device| {
-        DeviceSinkBuilder::from_device(device)
-            .and_then(|builder| builder.open_stream())
-            .map_err(|error| error.to_string())
-    })
+fn open_requested_output_sink(output_device_id: Option<&str>) -> Result<MixerDeviceSink, String> {
+    match output_device_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(device_id) => {
+            let device = find_output_device_by_id(device_id)?
+                .ok_or_else(|| "configured audio output binding not found".to_string())?;
+            DeviceSinkBuilder::from_device(device)
+                .and_then(|builder| builder.open_stream())
+                .map_err(|error| format!("open configured audio output failed: {error}"))
+        }
+        None => Err("configured audio output binding is required".to_string()),
+    }
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-fn open_required_default_sink<Device, Sink>(
-    default_device: Option<Device>,
-    open_default_device: impl FnOnce(Device) -> Result<Sink, String>,
-) -> Result<Sink, String> {
-    let default_device = default_device
-        .ok_or_else(|| "open default audio output failed: no default output device".to_string())?;
-    open_default_device(default_device)
-        .map_err(|error| format!("open default audio output failed: {error}"))
+#[cfg(windows)]
+fn list_windows_audio_outputs() -> Result<Vec<MachineAudioOutputCandidate>, String> {
+    let host = rodio::cpal::default_host();
+    let default_output_id = host
+        .default_output_device()
+        .and_then(|device| device.id().ok().map(|id| id.1));
+    let mut outputs = host
+        .output_devices()
+        .map_err(|error| format!("enumerate audio outputs failed: {error}"))?
+        .map(|device| {
+            let endpoint_id = device
+                .id()
+                .map_err(|error| format!("read audio output identity failed: {error}"))?
+                .1;
+            let friendly_name = device
+                .description()
+                .map(|description| description.name().to_string())
+                .map_err(|error| format!("read audio output name failed: {error}"))?;
+            Ok(MachineAudioOutputCandidate {
+                is_default: default_output_id
+                    .as_deref()
+                    .is_some_and(|default_id| default_id == endpoint_id),
+                endpoint_id,
+                friendly_name,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    outputs.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.friendly_name.cmp(&right.friendly_name))
+            .then_with(|| left.endpoint_id.cmp(&right.endpoint_id))
+    });
+    Ok(outputs)
+}
+
+#[cfg(windows)]
+fn find_output_device_by_id(output_device_id: &str) -> Result<Option<rodio::cpal::Device>, String> {
+    let host = rodio::cpal::default_host();
+    for device in host
+        .output_devices()
+        .map_err(|error| format!("enumerate audio outputs failed: {error}"))?
+    {
+        let device_id = device
+            .id()
+            .map_err(|error| format!("read audio output identity failed: {error}"))?
+            .1;
+        if device_id == output_device_id {
+            return Ok(Some(device));
+        }
+    }
+    Ok(None)
 }
 
 fn source_path_from_url(source_url: &str) -> Result<MachineAudioSourcePath, String> {
@@ -291,6 +635,320 @@ fn safe_relative_path(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct LifecycleObservation {
+        action: &'static str,
+        thread_id: thread::ThreadId,
+        lock_available: bool,
+    }
+
+    struct DropProbe {
+        active: Arc<Mutex<Option<ActivePlayback<DropProbe>>>>,
+        observations: Arc<Mutex<Vec<LifecycleObservation>>>,
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            let lock_available = self.active.try_lock().is_ok();
+            self.observations
+                .lock()
+                .expect("observations")
+                .push(LifecycleObservation {
+                    action: "drop",
+                    thread_id: thread::current().id(),
+                    lock_available,
+                });
+        }
+    }
+
+    #[test]
+    fn completion_worker_drops_payload_then_emits_off_the_signaling_thread() {
+        let lifecycle = PlaybackLifecycle::default();
+        let active = lifecycle.active_handle();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let probe = DropProbe {
+            active: Arc::clone(&active),
+            observations: Arc::clone(&observations),
+        };
+        let generation = lifecycle
+            .replace("request-1".to_string(), probe, |_| {})
+            .expect("install playback");
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let worker_active = Arc::clone(&active);
+        let worker_observations = Arc::clone(&observations);
+        let worker = spawn_completion_worker(
+            Arc::clone(&active),
+            lifecycle.completion_gate_handle(),
+            completion_rx,
+            move |payload| {
+                drop(payload);
+            },
+            move |request_id, ()| {
+                assert_eq!(request_id, "request-1");
+                let lock_available = worker_active.try_lock().is_ok();
+                worker_observations
+                    .lock()
+                    .expect("observations")
+                    .push(LifecycleObservation {
+                        action: "emit",
+                        thread_id: thread::current().id(),
+                        lock_available,
+                    });
+            },
+        );
+        let signaling_thread = thread::current().id();
+
+        OnceCompletionSignal::new(completion_tx, generation).send();
+        worker.join().expect("completion worker");
+
+        let observations = observations.lock().expect("observations");
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.action)
+                .collect::<Vec<_>>(),
+            vec!["drop", "emit"]
+        );
+        assert!(observations
+            .iter()
+            .all(|observation| observation.lock_available));
+        assert!(observations
+            .iter()
+            .all(|observation| observation.thread_id != signaling_thread));
+        assert_eq!(observations[0].thread_id, observations[1].thread_id);
+    }
+
+    #[test]
+    fn stop_and_replace_release_the_active_lock_before_stopping_or_dropping_payload() {
+        let lifecycle = PlaybackLifecycle::default();
+        let active = lifecycle.active_handle();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        lifecycle
+            .replace(
+                "request-1".to_string(),
+                DropProbe {
+                    active: Arc::clone(&active),
+                    observations: Arc::clone(&observations),
+                },
+                |_| {},
+            )
+            .expect("install playback");
+
+        lifecycle.stop(|_| {
+            observations
+                .lock()
+                .expect("observations")
+                .push(LifecycleObservation {
+                    action: "stop",
+                    thread_id: thread::current().id(),
+                    lock_available: active.try_lock().is_ok(),
+                });
+        });
+
+        lifecycle
+            .replace(
+                "request-2".to_string(),
+                DropProbe {
+                    active: Arc::clone(&active),
+                    observations: Arc::clone(&observations),
+                },
+                |_| {},
+            )
+            .expect("install replacement source");
+        lifecycle
+            .replace(
+                "request-3".to_string(),
+                DropProbe {
+                    active: Arc::clone(&active),
+                    observations: Arc::clone(&observations),
+                },
+                |_| {
+                    observations
+                        .lock()
+                        .expect("observations")
+                        .push(LifecycleObservation {
+                            action: "replace",
+                            thread_id: thread::current().id(),
+                            lock_available: active.try_lock().is_ok(),
+                        });
+                },
+            )
+            .expect("replace playback");
+        lifecycle.stop(|_| {});
+
+        let observations = observations.lock().expect("observations");
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.action)
+                .collect::<Vec<_>>(),
+            vec!["stop", "drop", "replace", "drop", "drop"]
+        );
+        assert!(observations
+            .iter()
+            .all(|observation| observation.lock_available));
+    }
+
+    #[test]
+    fn stale_completion_generation_cannot_take_replacement_playback() {
+        let lifecycle = PlaybackLifecycle::default();
+        let first_generation = lifecycle
+            .replace("request-1".to_string(), "first", |_| {})
+            .expect("install first playback");
+        let second_generation = lifecycle
+            .replace("request-1".to_string(), "second", |_| {})
+            .expect("replace playback");
+
+        assert!(take_completed(
+            &lifecycle.active_handle(),
+            CompletionSignal {
+                generation: first_generation,
+            },
+        )
+        .is_none());
+        let completed = take_completed(
+            &lifecycle.active_handle(),
+            CompletionSignal {
+                generation: second_generation,
+            },
+        )
+        .expect("current playback completes");
+        assert_eq!(completed.request_id, "request-1");
+        assert_eq!(completed.payload, "second");
+    }
+
+    #[test]
+    fn stopped_playback_completion_signal_does_not_emit() {
+        let lifecycle = PlaybackLifecycle::default();
+        let generation = lifecycle
+            .replace("request-1".to_string(), (), |_| {})
+            .expect("install playback");
+        lifecycle.stop(|_| {});
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let worker_emitted = Arc::clone(&emitted);
+        let worker = spawn_completion_worker(
+            lifecycle.active_handle(),
+            lifecycle.completion_gate_handle(),
+            completion_rx,
+            |()| (),
+            move |request_id, ()| {
+                worker_emitted
+                    .lock()
+                    .expect("emitted requests")
+                    .push(request_id);
+            },
+        );
+
+        OnceCompletionSignal::new(completion_tx, generation).send();
+        worker.join().expect("completion worker");
+
+        assert!(emitted.lock().expect("emitted requests").is_empty());
+    }
+
+    #[test]
+    fn completion_claimed_before_stop_cannot_emit_after_stop_returns() {
+        let lifecycle = PlaybackLifecycle::default();
+        let generation = lifecycle
+            .replace("request-1".to_string(), (), |_| {})
+            .expect("install playback");
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let (claimed_tx, claimed_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let worker_emitted = Arc::clone(&emitted);
+        let worker = spawn_completion_worker(
+            lifecycle.active_handle(),
+            lifecycle.completion_gate_handle(),
+            completion_rx,
+            move |()| {
+                claimed_tx.send(()).expect("completion claimed");
+                resume_rx.recv().expect("resume completion teardown");
+            },
+            move |request_id, ()| {
+                worker_emitted
+                    .lock()
+                    .expect("emitted requests")
+                    .push(request_id);
+            },
+        );
+
+        OnceCompletionSignal::new(completion_tx, generation).send();
+        claimed_rx
+            .recv()
+            .expect("completion worker claims playback");
+        lifecycle.stop(|_| {});
+        resume_tx.send(()).expect("resume completion worker");
+        worker.join().expect("completion worker");
+
+        assert!(emitted.lock().expect("emitted requests").is_empty());
+    }
+
+    #[test]
+    fn completion_claimed_before_replacement_cannot_emit_after_new_playback_starts() {
+        let lifecycle = PlaybackLifecycle::default();
+        let generation = lifecycle
+            .replace("request-1".to_string(), (), |_| {})
+            .expect("install playback");
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let (claimed_tx, claimed_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let worker_emitted = Arc::clone(&emitted);
+        let worker = spawn_completion_worker(
+            lifecycle.active_handle(),
+            lifecycle.completion_gate_handle(),
+            completion_rx,
+            move |()| {
+                claimed_tx.send(()).expect("completion claimed");
+                resume_rx.recv().expect("resume completion teardown");
+            },
+            move |request_id, ()| {
+                worker_emitted
+                    .lock()
+                    .expect("emitted requests")
+                    .push(request_id);
+            },
+        );
+
+        OnceCompletionSignal::new(completion_tx, generation).send();
+        claimed_rx
+            .recv()
+            .expect("completion worker claims playback");
+        lifecycle
+            .replace("request-2".to_string(), (), |_| {})
+            .expect("replace playback");
+        resume_tx.send(()).expect("resume completion worker");
+        worker.join().expect("completion worker");
+
+        assert!(emitted.lock().expect("emitted requests").is_empty());
+    }
+
+    #[test]
+    fn audio_completion_signal_is_sent_only_once() {
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let completion = OnceCompletionSignal::new(completion_tx, 42);
+
+        completion.send();
+        completion.send();
+
+        assert_eq!(
+            completion_rx.recv().expect("completion signal"),
+            CompletionSignal { generation: 42 }
+        );
+        assert!(completion_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_or_overlong_playback_request_ids() {
+        assert!(normalize_request_id("  ".to_string()).is_err());
+        assert!(normalize_request_id("a".repeat(129)).is_err());
+        assert_eq!(
+            normalize_request_id(" native-request-1 ".to_string()).expect("request id"),
+            "native-request-1"
+        );
+    }
 
     #[test]
     fn accepts_base64_audio_data_url_as_in_memory_audio() {
@@ -379,31 +1037,6 @@ mod tests {
             }
             _ => panic!("expected dev asset file path"),
         }
-    }
-
-    #[test]
-    fn fails_when_the_os_default_output_device_cannot_open() {
-        let result = open_required_default_sink::<&str, ()>(Some("os-default"), |device| {
-            assert_eq!(device, "os-default");
-            Err("default stream busy".to_string())
-        });
-
-        assert_eq!(
-            result.expect_err("default output failure should be returned"),
-            "open default audio output failed: default stream busy"
-        );
-    }
-
-    #[test]
-    fn fails_when_there_is_no_os_default_output_device() {
-        let result = open_required_default_sink::<&str, ()>(None, |_| {
-            panic!("must not open a non-default output device")
-        });
-
-        assert_eq!(
-            result.expect_err("missing default output should be returned"),
-            "open default audio output failed: no default output device"
-        );
     }
 
     #[test]

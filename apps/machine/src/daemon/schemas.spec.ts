@@ -200,11 +200,128 @@ describe("daemon schemas", () => {
         attestStock: true,
         startSales: false,
       },
+      currentTask: {
+        contractVersion: 1,
+        taskId: "bring_up.attest_stock",
+        taskVersion: 1,
+        kind: "attest_stock",
+        intent: "record_stock",
+        rotateMaintenanceIdentity: false,
+        projection: {
+          type: "stock_attestation",
+          entryMode: "final_actual_quantities",
+        },
+      },
+      progress: [
+        {
+          kind: "provisioning",
+          status: "completed",
+          evidence: "durable",
+        },
+        {
+          kind: "stock",
+          status: "current",
+          evidence: "durable",
+        },
+      ],
       updatedAt: "2026-07-04T00:00:00Z",
     });
 
     expect(parsed.state).toBe("stock_attestation_required");
+    expect(parsed.currentTask).toEqual({
+      contractVersion: 1,
+      taskId: "bring_up.attest_stock",
+      taskVersion: 1,
+      kind: "attest_stock",
+      intent: "record_stock",
+      rotateMaintenanceIdentity: false,
+      projection: {
+        type: "stock_attestation",
+        entryMode: "final_actual_quantities",
+      },
+    });
+    expect(parsed.progress?.[0]).toMatchObject({
+      kind: "provisioning",
+      status: "completed",
+      evidence: "durable",
+    });
     expect(JSON.stringify(parsed)).not.toContain("secret");
+  });
+
+  it("fails closed when a daemon task omits either cursor field", () => {
+    const snapshot = {
+      state: "claim_required",
+      readinessLevel: "not_ready",
+      hardwareMode: "production",
+      blockingReasons: [],
+      diagnostics: [],
+      allowedActions: {
+        configureNetwork: false,
+        claimMachine: true,
+        retryClaim: true,
+        syncProfile: false,
+        resolveTopology: false,
+        runRuntimeAcceptance: false,
+        runHardwareAcceptance: false,
+        attestStock: false,
+        startSales: false,
+      },
+      currentTask: {
+        contractVersion: 1,
+        taskId: "bring_up.claim_machine",
+        taskVersion: 1,
+        kind: "claim_machine",
+        intent: "claim_machine",
+        rotateMaintenanceIdentity: false,
+        projection: {
+          type: "claim_code",
+          rotateMaintenanceIdentity: false,
+        },
+      },
+      progress: [],
+      updatedAt: "2026-07-14T00:00:00Z",
+    };
+
+    const { taskId: _taskId, ...withoutTaskId } = snapshot.currentTask;
+    expect(() =>
+      bringUpSnapshotSchema.parse({
+        ...snapshot,
+        currentTask: withoutTaskId,
+      }),
+    ).toThrow();
+
+    const { taskVersion: _taskVersion, ...withoutTaskVersion } =
+      snapshot.currentTask;
+    expect(() =>
+      bringUpSnapshotSchema.parse({
+        ...snapshot,
+        currentTask: withoutTaskVersion,
+      }),
+    ).toThrow();
+  });
+
+  it("fails closed when a daemon omits the versioned task projection", () => {
+    expect(() =>
+      bringUpSnapshotSchema.parse({
+        state: "sell_ready",
+        blockingReasons: [],
+        diagnostics: [],
+        readinessLevel: "sell_ready",
+        hardwareMode: "production",
+        allowedActions: {
+          configureNetwork: false,
+          claimMachine: false,
+          retryClaim: false,
+          syncProfile: false,
+          resolveTopology: false,
+          runRuntimeAcceptance: false,
+          runHardwareAcceptance: false,
+          attestStock: false,
+          startSales: true,
+        },
+        updatedAt: "2026-07-14T00:00:00Z",
+      }),
+    ).toThrow();
   });
 
   it("parses Protected Network Settings response without password fields", () => {

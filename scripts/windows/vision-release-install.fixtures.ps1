@@ -2,8 +2,8 @@
 param([ValidateSet("archive", "bytes", "first-install", "acl", "task", "process-record", "launcher", "protocol", "rollback", "orphan", "mutex", "reinstall", "runtime-verifier")][string]$Case = "archive")
 
 $ErrorActionPreference = "Stop"
-$libraryRoot = Join-Path ([IO.Path]::GetTempPath()) "vem-vision-installer-library"
-. (Join-Path $PSScriptRoot "install-vision-release.ps1") -Library -VisionRoot $libraryRoot -StateRoot (Join-Path $libraryRoot "state")
+Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
+Import-Module (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1") -Force -ErrorAction Stop
 
 function Assert-Throws([scriptblock]$Action, [string]$Label) {
   try { & $Action } catch { return }
@@ -26,12 +26,28 @@ function New-Zip([string]$Path, [object[]]$Entries) {
     try {
       foreach ($pair in $Entries) {
         $entry = $archive.CreateEntry([string]$pair[0])
+        if ($pair.Count -gt 2) { $entry.ExternalAttributes = [int]$pair[2] }
         $writer = [IO.StreamWriter]::new($entry.Open())
         try { $writer.Write([string]$pair[1]) } finally { $writer.Dispose() }
       }
     } finally { $archive.Dispose() }
   } finally { $stream.Dispose() }
 }
+
+function Import-InstallerFunctions {
+  $installerPath = Join-Path $PSScriptRoot "install-vision-release.ps1"
+  $tokens = $null; $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($installerPath, [ref]$tokens, [ref]$errors)
+  if (@($errors).Count -ne 0) { throw "production installer does not parse" }
+  foreach ($functionAst in @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false))) {
+    Invoke-Expression ($functionAst.Extent.Text.Replace(("function " + $functionAst.Name), ("function global:" + $functionAst.Name)))
+  }
+}
+
+# Portable cases exercise function bodies extracted from the actual installer
+# entry point.  This is intentionally not an installer -Library mode: release
+# mutation remains available only through the production entry script.
+Import-InstallerFunctions
 
 function Test-SourceBoundary([string[]]$Needles) {
   $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot "install-vision-release.ps1") -Raw -Encoding UTF8
@@ -40,19 +56,98 @@ function Test-SourceBoundary([string[]]$Needles) {
   }
 }
 
+function Assert-ExactSystemInstallerAcl([string]$Path, [bool]$KioskReadable) {
+  if ($env:OS -ne "Windows_NT") { return }
+  $acl = Get-Acl -LiteralPath $Path
+  if (-not $acl.AreAccessRulesProtected) {
+    throw "installer ACL must be protected"
+  }
+  $owner = ([Security.Principal.NTAccount]::new([string]$acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value
+  if ($owner -cne "S-1-5-18") { throw "installer ACL owner must be LocalSystem" }
+  $expected = @{
+    "S-1-5-18" = [int][Security.AccessControl.FileSystemRights]::FullControl
+    "S-1-5-32-544" = [int][Security.AccessControl.FileSystemRights]::FullControl
+  }
+  if ($KioskReadable) {
+    $kioskSid = ([Security.Principal.NTAccount]::new("VEMKiosk")).Translate([Security.Principal.SecurityIdentifier]).Value
+    $expected[$kioskSid] = [int][Security.AccessControl.FileSystemRights]::ReadAndExecute
+  }
+  $actual = @($acl.Access | Where-Object { -not $_.IsInherited })
+  if ($actual.Count -ne $expected.Count) { throw "installer ACL contains unexpected explicit ACEs" }
+  foreach ($rule in $actual) {
+    if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw "installer ACL ACE must allow" }
+    if ($rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit" -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw "installer ACL inheritance is not exact" }
+    $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    if (-not $expected.ContainsKey($sid) -or [int]$rule.FileSystemRights -ne $expected[$sid]) { throw "installer ACL contains an unexpected stable-SID ACE" }
+  }
+}
+
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-installer-fixture-" + [guid]::NewGuid().ToString("N"))
 try {
   New-Item -ItemType Directory -Path $root | Out-Null
   if ($Case -eq "archive") {
-    foreach ($attack in @(@(,@("../escape.exe", "x")), @(,@("/absolute.exe", "x")), @(,@("runtime.exe:stream", "x")), @(@("Runtime.EXE", "a"), @("runtime.exe", "b")))) {
+    foreach ($attack in @(@(,@("../escape.exe", "x")), @(,@("/absolute.exe", "x")), @(,@("runtime.exe:stream", "x")), @(@("Runtime.EXE", "a"), @("runtime.exe", "b")), @(,@("unix-link", "target", -1610612736)), @(,@("windows-reparse", "target", 0x00000400)), @(,@("unix-link-dir/", "target", -1610612736)), @(,@("windows-reparse-dir/", "target", 0x00000400)))) {
       $bundle = Join-Path $root ([guid]::NewGuid().ToString("N") + ".zip")
       $target = Join-Path $root ([guid]::NewGuid().ToString("N"))
       New-Zip $bundle $attack
-      $stream = [IO.File]::OpenRead($bundle)
-      try { Assert-Throws { Expand-ZipSafely $stream $target ([pscustomobject]@{}) } "unsafe archive" } finally { $stream.Dispose() }
+      $bytes = [IO.File]::ReadAllBytes($bundle)
+      $digest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
+      $descriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$digest; bytes=[Int64]$bytes.Length } }
+      Assert-Throws { Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination $target -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 } } "unsafe archive"
     }
-    Assert-Throws { Get-SafeArchivePath "folder/../escape.exe" } "traversal"
-    Assert-Throws { Get-SafeArchivePath "C:\\escape.exe" } "drive path"
+    $bundle = Join-Path $root "safe.zip"
+    New-Zip $bundle @(,@("bin/runtime.exe", "safe runtime"))
+    $bytes = [IO.File]::ReadAllBytes($bundle)
+    $digest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
+    $descriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$digest; bytes=[Int64]$bytes.Length } }
+    $wrongDigest = "sha256:" + ("0" * 64)
+    $wrongDescriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$wrongDigest; bytes=[Int64]$bytes.Length } }
+    $digestMismatchTarget = Join-Path $root "digest-mismatch-materialization"
+    Assert-ThrowsMessage {
+      Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $wrongDigest -Descriptor $wrongDescriptor -Destination $digestMismatchTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 }
+    } "candidate exact bytes do not match expected digest" "candidate digest mismatch"
+    if (Test-Path -LiteralPath $digestMismatchTarget) { throw "digest mismatch left a partial materialization" }
+    Write-Output "candidate digest mismatch rejected"
+    $entryCountBundle = Join-Path $root "entry-count.zip"
+    New-Zip $entryCountBundle @(@("bin/runtime.exe", "runtime"), @("models/model.bin", "model"))
+    $entryCountBytes = [IO.File]::ReadAllBytes($entryCountBundle)
+    $entryCountDigest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($entryCountBytes))).ToLowerInvariant()
+    $entryCountDescriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$entryCountDigest; bytes=[Int64]$entryCountBytes.Length } }
+    $entryCountTarget = Join-Path $root "entry-count-materialization"
+    Assert-ThrowsMessage {
+      Invoke-VisionReleaseMaterialization -CandidatePath $entryCountBundle -ExpectedDigest $entryCountDigest -Descriptor $entryCountDescriptor -Destination $entryCountTarget -ExtractionPolicy @{ MaxArchiveEntries=1; MaxExpandedBytes=4096; MaxExpansionRatio=20 }
+    } "archive entry count is unsafe" "archive entry-count limit"
+    if (Test-Path -LiteralPath $entryCountTarget) { throw "entry-count rejection left a partial materialization" }
+    Write-Output "archive entry-count limit rejected"
+    $expandedSizeTarget = Join-Path $root "expanded-size-materialization"
+    Assert-ThrowsMessage {
+      Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination $expandedSizeTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=1; MaxExpansionRatio=100000 }
+    } "archive expansion budget is unsafe" "archive expanded-size limit"
+    if (Test-Path -LiteralPath $expandedSizeTarget) { throw "expanded-size rejection left a partial materialization" }
+    Write-Output "archive expanded-size limit rejected"
+    $expansionRatioBundle = Join-Path $root "expansion-ratio.zip"
+    New-Zip $expansionRatioBundle @(,@("models/compressible.bin", ("A" * 8192)))
+    $expansionRatioBytes = [IO.File]::ReadAllBytes($expansionRatioBundle)
+    $expansionRatioDigest = "sha256:" + ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($expansionRatioBytes))).ToLowerInvariant()
+    $expansionRatioDescriptor = [pscustomobject]@{ bundle=[pscustomobject]@{ digest=$expansionRatioDigest; bytes=[Int64]$expansionRatioBytes.Length } }
+    $expansionRatioTarget = Join-Path $root "expansion-ratio-materialization"
+    Assert-ThrowsMessage {
+      Invoke-VisionReleaseMaterialization -CandidatePath $expansionRatioBundle -ExpectedDigest $expansionRatioDigest -Descriptor $expansionRatioDescriptor -Destination $expansionRatioTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=1048576; MaxExpansionRatio=1 }
+    } "archive expansion budget is unsafe" "archive expansion-ratio limit"
+    if (Test-Path -LiteralPath $expansionRatioTarget) { throw "expansion-ratio rejection left a partial materialization" }
+    Write-Output "archive expansion-ratio limit rejected"
+    $safeTarget = Join-Path $root "safe-materialization"
+    Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination $safeTarget -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 } | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $safeTarget "bin/runtime.exe") -PathType Leaf)) { throw "safe archive was not materialized" }
+    $guarded = Join-Path $root "guarded\nested"; $outside = Join-Path $root "outside"
+    New-Item -ItemType Directory -Path $guarded,$outside -Force | Out-Null
+    $reparse = Join-Path $guarded "redirect"
+    try {
+      New-Item -ItemType SymbolicLink -Path $reparse -Target $outside | Out-Null
+      Assert-ThrowsMessage {
+        Invoke-VisionReleaseMaterialization -CandidatePath $bundle -ExpectedDigest $digest -Descriptor $descriptor -Destination (Join-Path $reparse "materialization") -ExtractionPolicy @{ MaxArchiveEntries=16; MaxExpandedBytes=4096; MaxExpansionRatio=20 }
+      } "destination must not traverse a reparse point" "destination ancestor reparse"
+    } catch [System.UnauthorizedAccessException] { Write-Output "destination reparse fixture skipped by host policy" }
     Write-Output "archive fixtures passed"
   } elseif ($Case -eq "bytes") {
     $file = Join-Path $root "record.json"; [IO.File]::WriteAllText($file, '{"ok":true}', [Text.UTF8Encoding]::new($false))
@@ -66,13 +161,26 @@ try {
     $delivery = Join-Path $root "factory\vision-release"; New-Item -ItemType Directory -Path $delivery -Force | Out-Null
     foreach ($name in @("bundle.bin", "descriptor.json", "attestation.json", "sbom.json", "provenance.json", "conformance.json", "approval.json", "factory-manifest.json")) { [IO.File]::WriteAllText((Join-Path $delivery $name), "fixture", [Text.UTF8Encoding]::new($false)) }
     Assert-NonReparsePath $delivery "first install delivery"
-    Test-SourceBoundary @("FactoryVisionDeliveryRoot", "Get-FactoryTrustPolicy", "Set-SystemInstallerAcl", "Assert-ReleaseContracts")
+    $outside = Join-Path $root "outside-delivery"; New-Item -ItemType Directory -Path $outside -Force | Out-Null
+    $redirect = Join-Path $delivery "redirect"
+    try {
+      New-Item -ItemType SymbolicLink -Path $redirect -Target $outside | Out-Null
+      Assert-Throws { Assert-NonReparsePath (Join-Path $redirect "descriptor.json") "first install delivery" } "installer delivery ancestor reparse"
+      Assert-Throws { Get-CanonicalContainedPath $delivery (Join-Path $redirect "descriptor.json") "installer delivery file" } "installer delivery contained reparse"
+    } catch [System.UnauthorizedAccessException] { Write-Output "installer reparse fixture skipped by host policy" }
+    Test-SourceBoundary @('$FactoryTrustRoot', "Get-FactoryTrustPolicy", "Set-SystemInstallerAcl", "Assert-ReleaseContracts")
     Write-Output "first-install fixtures passed"
   } elseif ($Case -eq "acl") {
     $protected = Join-Path $root "protected"; New-Item -ItemType Directory -Path $protected | Out-Null
+    if ($env:OS -eq "Windows_NT") {
+      $before = Get-Acl -LiteralPath $protected
+      $before.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new("S-1-1-0"), "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow"))
+      Set-Acl -LiteralPath $protected -AclObject $before
+    }
     Set-SystemInstallerAcl $protected $false
     Assert-NonReparsePath $protected "fixture ACL root"
-    Test-SourceBoundary @("SetAccessRuleProtection", "SYSTEM", "BUILTIN\\Administrators", "VEMKiosk")
+    Assert-ExactSystemInstallerAcl $protected $false
+    Test-SourceBoundary @("SetAccessRuleProtection", "S-1-5-18", "S-1-5-32-544", "VEMKiosk")
     Write-Output "acl fixtures passed"
   } elseif ($Case -eq "task") {
     $script:registeredTask = $null

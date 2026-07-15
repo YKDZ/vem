@@ -7,6 +7,7 @@ import {
   groupItemsByTopCategory,
   groupSubcategories,
   topCategoryForItem,
+  usesFallbackTopCategory,
 } from "./view-model";
 
 function item(
@@ -73,6 +74,19 @@ describe("machine catalog view model", () => {
       "tshirts",
     ]);
     expect(groups.map((group) => group.saleableStock)).toEqual([5, 3, 2]);
+  });
+
+  it("keeps unknown products out of the three fixed category cards", () => {
+    const unknownItem = item("未知品类的可售商品", null, 1, 2);
+    const groups = groupItemsByTopCategory([
+      unknownItem,
+      item("另一未知商品", "季节限定", 2, 1),
+    ]);
+
+    expect(groups).toHaveLength(3);
+    expect(groups.map((group) => group.saleableStock)).toEqual([0, 0, 0]);
+    expect(topCategoryForItem(unknownItem)).toBeNull();
+    expect(usesFallbackTopCategory(unknownItem)).toBe(true);
   });
 
   it("groups second-level product types by current category snapshot", () => {

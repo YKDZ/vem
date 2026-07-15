@@ -2,6 +2,73 @@ import { describe, expect, it, vi } from "vitest";
 
 import { VendingService } from "./vending.service";
 
+describe("VendingService durable command dispatcher", () => {
+  it("keeps an unpublished command pending and retries the same commandNo", async () => {
+    const command = {
+      id: "cmd-pending-1",
+      commandNo: "CMD-PENDING-1",
+      machineCode: "M001",
+      payloadJson: {
+        commandNo: "CMD-PENDING-1",
+        orderNo: "ORD-1",
+        slot: { layerNo: 1, cellNo: 1, slotCode: "A1" },
+        quantity: 1,
+        timeoutSeconds: 120,
+      },
+    };
+    const persistedSets: Array<Record<string, unknown>> = [];
+    const db = {
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([command]),
+            }),
+          }),
+        }),
+      })),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockImplementation((set: Record<string, unknown>) => {
+          persistedSets.push(set);
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...command, ...set }]),
+            }),
+          };
+        }),
+      }),
+    };
+    const publish = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("MQTT unavailable"))
+      .mockResolvedValueOnce(undefined);
+    const signForMachine = vi.fn().mockResolvedValue({ payload: {} });
+    const service = new VendingService(
+      db as never,
+      { bindVendingService: vi.fn(), publish } as never,
+      { signForMachine } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await service.dispatchPendingCommandsForOrder("order-1");
+    expect(persistedSets[0]).not.toHaveProperty("status", "failed");
+
+    await service.dispatchPendingCommandsForOrder("order-1");
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(signForMachine).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ messageId: "command:CMD-PENDING-1" }),
+    );
+    expect(persistedSets[1]).toEqual(
+      expect.objectContaining({ status: "sent" }),
+    );
+  });
+});
+
 describe("VendingService heartbeat ingestion", () => {
   it("persists nested environment heartbeat data", async () => {
     const statusPayload = {

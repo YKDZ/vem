@@ -543,6 +543,70 @@ jobs:
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
 
+      - name: Accept Windows LocalSystem WireGuard Claim To Handshake
+        if: success()
+        run: |
+          set -euo pipefail
+          artifact_dir="artifacts/vm-runtime-acceptance/${RUN_ID}"
+          mkdir -p "$artifact_dir"
+          endpoint_host="$(node -e 'process.stdout.write(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).host)' )"
+          endpoint_port="$(node -e 'process.stdout.write(String(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).port))' )"
+          remote_script='C:/Windows/Temp/vem-wireguard-localsystem-acceptance.ps1'
+          remote_evidence='C:/ProgramData/VEM/evidence/wireguard-localsystem-acceptance.json'
+          ssh_common=(
+            -p "$endpoint_port"
+            -i "$MAINTENANCE_SSH_DIR/id_ed25519"
+            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
+            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH"
+            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS"
+            -o StrictHostKeyChecking=yes
+          )
+          target="${WINDOWS_SSH_USER}@${endpoint_host}"
+          ssh "${ssh_common[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -Command \"Remove-Item -LiteralPath 'C:\\ProgramData\\VEM\\evidence\\wireguard-localsystem-acceptance.json' -Force -ErrorAction SilentlyContinue\""
+          scp -P "$endpoint_port" \
+            -i "$MAINTENANCE_SSH_DIR/id_ed25519" \
+            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
+            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH" \
+            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS" \
+            -o StrictHostKeyChecking=yes \
+            scripts/windows/test-wireguard-localsystem-acceptance.ps1 \
+            "${target}:${remote_script}"
+          set +e
+          ssh "${ssh_common[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\Windows\\Temp\\vem-wireguard-localsystem-acceptance.ps1"
+          acceptance_status="$?"
+          scp -P "$endpoint_port" \
+            -i "$MAINTENANCE_SSH_DIR/id_ed25519" \
+            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
+            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH" \
+            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS" \
+            -o StrictHostKeyChecking=yes \
+            "${target}:${remote_evidence}" \
+            "$artifact_dir/wireguard-localsystem-acceptance.json"
+          copy_status="$?"
+          set -e
+          test "$copy_status" -eq 0
+          node - "$artifact_dir/wireguard-localsystem-acceptance.json" "$acceptance_status" <<'NODE'
+          const fs = require("node:fs");
+          const [path, sshStatus] = process.argv.slice(2);
+          const evidence = JSON.parse(fs.readFileSync(path, "utf8"));
+          if (
+            evidence.schemaVersion !== "vem-wireguard-localsystem-acceptance/v2" ||
+            evidence.ok !== true ||
+            evidence.daemonService?.localSystem !== true ||
+            evidence.tunnelService?.localSystem !== true ||
+            evidence.configAclProtected !== true ||
+            evidence.daemonRestartRead !== true ||
+            evidence.tunnelConnectedAfterRestart !== true ||
+            evidence.claimRetainedAfterRestart !== true ||
+            evidence.configReplayIdempotent !== true ||
+            typeof evidence.firstHandshakeVerifiedAt !== "string" ||
+            evidence.firstHandshakeVerifiedAt.length < 1 ||
+            !Number.isInteger(evidence.handshakeUnixSeconds) ||
+            evidence.handshakeUnixSeconds < 1
+          ) throw new Error("Windows LocalSystem WireGuard acceptance evidence is incomplete");
+          if (Number(sshStatus) !== 0) console.log("wireguard-acceptance-ssh-disconnected-during-tunnel-restart=true");
+          NODE
+
       - name: Remove Protected Simulated Scanner Code
         if: always()
         shell: bash

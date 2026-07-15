@@ -33,6 +33,7 @@ const installBlock = functionBlock(script, "Install-Component");
 const daemonHealthBlock = functionBlock(script, "Test-DaemonHealth");
 const uiHealthBlock = functionBlock(script, "Test-UiHealth");
 const stopBlock = functionBlock(script, "Stop-ComponentForReplace");
+const sourceBindingBlock = functionBlock(script, "New-ManifestSourceBinding");
 
 addCheck(
   "script-exists",
@@ -271,10 +272,25 @@ addCheck(
 );
 
 addCheck(
+  "evidence-immutably-binds-manifest-source",
+  sourceBindingBlock.includes('"managed-update-source-binding/v1"') &&
+    sourceBindingBlock.includes("Get-FileHash") &&
+    sourceBindingBlock.includes("manifestSha256") &&
+    sourceBindingBlock.includes("sourceCommit") &&
+    sourceBindingBlock.includes("updateId") &&
+    sourceBindingBlock.includes("components") &&
+    script.includes("sourceBinding = $sourceBinding"),
+  `${scriptPath} evidence should snapshot the exact manifest bytes, Git source, update id, and normalized delivery component hashes`,
+);
+
+addCheck(
   "runbook-documents-local-managed-update",
   runbook.includes("托管机器更新") &&
     runbook.includes("清单") &&
     runbook.includes("updateId") &&
+    runbook.includes("sourceCommit") &&
+    runbook.includes("manifestSha256") &&
+    runbook.includes("managed-update-source-binding/v1") &&
     runbook.includes("C:\\VEM\\bringup\\vending-daemon.exe") &&
     runbook.includes("C:\\VEM\\bringup\\machine.exe") &&
     runbook.includes("C:\\VEM\\bringup\\WebView2Loader.dll") &&

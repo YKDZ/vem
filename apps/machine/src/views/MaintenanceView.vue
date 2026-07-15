@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { formatMachineSlotCoordinate } from "@vem/shared";
-import { computed, onMounted, onUnmounted, reactive } from "vue";
+import {
+  formatMachineSlotCoordinate,
+  type StockMaintenanceTask,
+} from "@vem/shared";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+
+import type {
+  DeviceBindingSnapshot,
+  MaintenanceSession,
+} from "@/daemon/schemas";
 
 import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
@@ -17,9 +25,9 @@ import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import {
   machineConfigDefaults,
-  normalizeMachineConfig,
   type HardwareAdapter,
   type MachineConfig,
+  type MachineAudioOutputBinding,
   type ScannerAdapter,
 } from "@/config/machine-config";
 import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
@@ -39,6 +47,7 @@ import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
+import { setMaintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
 
 const router = useRouter();
 const route = useRoute();
@@ -52,6 +61,19 @@ const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
 const { handleMaintenanceTap } = useMaintenanceEntry();
+const maintenanceAuthentication = reactive({
+  pin: "",
+  loading: false,
+  message: null as string | null,
+});
+const maintenanceSession = ref<MaintenanceSession | null>(null);
+const maintenanceSessionAuthorized = computed(
+  () =>
+    maintenanceSession.value !== null &&
+    Date.parse(maintenanceSession.value.expiresAt) > Date.now(),
+);
+let maintenanceSessionExpiryTimer: number | null = null;
+let removeMaintenanceSessionInvalidationListener: (() => void) | null = null;
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
 const DIAGNOSTIC_DISPLAY_MAX_CHARS = 12_000;
 const DIAGNOSTIC_DISPLAY_MAX_DEPTH = 8;
@@ -82,6 +104,9 @@ const saleCriticalBlockers = computed(() =>
     operatorAction: saleCriticalBlockerAction(reason.code),
   })),
 );
+const catalogOperatorDiagnostics = computed(
+  () => catalogStore.operatorDiagnostics,
+);
 const latestVisionDiagnosticPayloadText = computed(() => {
   if (visionStore.latestDiagnosticPayload === null) {
     return "尚未返回诊断载荷。";
@@ -110,6 +135,84 @@ const audioCueSettingsRows = computed(() => [
     value: `${machineAudioVolumePercent(machineStore.config.machineAudioVolume)}%`,
   },
 ]);
+
+type MachineAudioOutputCandidate = {
+  endpointId: string;
+  friendlyName: string;
+  isDefault: boolean;
+};
+
+const machineAudioOutputMaintenance = reactive({
+  loading: false,
+  saving: false,
+  message: null as string | null,
+  candidates: [] as MachineAudioOutputCandidate[],
+  selectedEndpointId: null as string | null,
+  heardConfirmation: false,
+});
+const machineAudioTestEvidence = ref<{
+  requestId: string;
+  endpointId: string;
+  volume: number;
+} | null>(null);
+
+const confirmedMachineAudioOutputBinding =
+  computed<MachineAudioOutputBinding | null>(
+    () => machineStore.config.machineAudioOutputBinding,
+  );
+const observedMachineAudioOutputBinding = computed(
+  () =>
+    machineAudioOutputMaintenance.candidates.find(
+      (candidate) =>
+        candidate.endpointId ===
+        confirmedMachineAudioOutputBinding.value?.endpointId,
+    ) ?? null,
+);
+const selectedMachineAudioOutputCandidate = computed(
+  () =>
+    machineAudioOutputMaintenance.candidates.find(
+      (candidate) =>
+        candidate.endpointId ===
+        machineAudioOutputMaintenance.selectedEndpointId,
+    ) ?? null,
+);
+const machineAudioOutputBindingRows = computed(() => {
+  const binding = confirmedMachineAudioOutputBinding.value;
+  const observed = observedMachineAudioOutputBinding.value;
+  if (!binding) {
+    return [
+      { label: "绑定状态", value: "未确认近场顾客扬声器" },
+      { label: "当前观察", value: "必须先选择端点并确认“我听到了”" },
+    ];
+  }
+  return [
+    {
+      label: "绑定状态",
+      value: observed ? "已确认" : "已确认，但当前未检测到端点",
+    },
+    {
+      label: "端点",
+      value:
+        observed?.friendlyName ?? binding.friendlyName ?? binding.endpointId,
+    },
+    {
+      label: "端点 ID",
+      value: binding.endpointId,
+    },
+    {
+      label: "当前观察",
+      value: observed
+        ? observed.isDefault
+          ? "已检测到（当前也是 Windows 默认输出）"
+          : "已检测到"
+        : "未检测到；顾客音频会保持阻塞",
+    },
+    {
+      label: "人工确认时间",
+      value: binding.confirmedHeardAt,
+    },
+  ];
+});
 const latestAudioCueDiagnosticRows = computed(() => {
   const diagnostic = audioCueStore.latestPlaybackDiagnostic;
   if (!diagnostic) return [];
@@ -148,6 +251,7 @@ const naturalContextDiagnosticMessage = computed(() =>
 const clearWholeMachineLockDisabled = computed(
   () =>
     wholeMachineLockMaintenance.loading ||
+    !maintenanceSessionAuthorized.value ||
     !wholeMachineMaintenanceLock.value ||
     !wholeMachineLockMaintenance.selfCheckEvidence?.online ||
     wholeMachineLockMaintenance.operatorNote.trim().length === 0,
@@ -171,6 +275,75 @@ const operatorEnteredMaintenance = computed(() => {
     ? source.includes("operator")
     : source === "operator";
 });
+
+async function beginProtectedMaintenance(): Promise<void> {
+  maintenanceAuthentication.loading = true;
+  maintenanceAuthentication.message = null;
+  try {
+    const scopes = [
+      ...(operatorEnteredMaintenance.value ? ["maintenance.reclaim"] : []),
+      ...(showProtectedDesktopExit.value ? ["maintenance.desktop_exit"] : []),
+    ];
+    const session = await daemonClient.beginMaintenanceSession(
+      maintenanceAuthentication.pin,
+      scopes,
+      operatorEnteredMaintenance.value ? "operator-console" : "front-panel",
+    );
+    setMaintenanceSession(session);
+    maintenanceAuthentication.pin = "";
+    maintenanceAuthentication.message = `已验证维护会话，${new Date(session.expiresAt).toLocaleTimeString("zh-CN")} 前有效。`;
+  } catch (error) {
+    clearMaintenanceSession();
+    maintenanceAuthentication.message =
+      error instanceof Error ? error.message : "维护 PIN 验证失败";
+  } finally {
+    maintenanceAuthentication.loading = false;
+  }
+}
+
+function setMaintenanceSession(session: MaintenanceSession): void {
+  clearRenderedMaintenanceSession();
+  maintenanceSession.value = session;
+  setMaintenanceTouchKeyboardSession(session.sessionId);
+  const delayMs = Date.parse(session.expiresAt) - Date.now();
+  if (delayMs <= 0) {
+    clearMaintenanceSession();
+    return;
+  }
+  maintenanceSessionExpiryTimer = window.setTimeout(
+    () => {
+      clearMaintenanceSession();
+      maintenanceAuthentication.message = "维护会话已过期，请重新验证 PIN。";
+    },
+    Math.min(delayMs, 2_147_483_647),
+  );
+}
+
+function clearRenderedMaintenanceSession(): void {
+  if (maintenanceSessionExpiryTimer !== null) {
+    window.clearTimeout(maintenanceSessionExpiryTimer);
+    maintenanceSessionExpiryTimer = null;
+  }
+  maintenanceSession.value = null;
+  setMaintenanceTouchKeyboardSession(null);
+}
+
+function clearMaintenanceSession(): void {
+  clearRenderedMaintenanceSession();
+  daemonClient.clearMaintenanceSession();
+}
+
+function clearMaintenanceSessionAfterAuthorizationFailure(
+  error: unknown,
+): void {
+  if (
+    error instanceof Error &&
+    /HTTP 403|authorization_denied/i.test(error.message)
+  ) {
+    clearMaintenanceSession();
+    maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
+  }
+}
 
 function cloneLowerControllerUsbIdentity(
   identity: MachineConfig["lowerControllerUsbIdentity"],
@@ -219,6 +392,32 @@ const form = reactive({
   mqttPasswordInput: "",
 });
 
+watch(
+  [
+    () => machineAudioOutputMaintenance.selectedEndpointId,
+    () => form.machineAudioVolumePercent,
+  ],
+  () => {
+    machineAudioOutputMaintenance.heardConfirmation = false;
+    machineAudioTestEvidence.value = null;
+  },
+);
+
+const machineAudioTestVolume = computed(
+  () => form.machineAudioVolumePercent / 100,
+);
+const hasCurrentMachineAudioTestEvidence = computed(() => {
+  const selectedEndpointId = machineAudioOutputMaintenance.selectedEndpointId;
+  const evidence = machineAudioTestEvidence.value;
+  return (
+    selectedEndpointId !== null &&
+    machineAudioTestVolume.value > 0 &&
+    evidence !== null &&
+    evidence.endpointId === selectedEndpointId &&
+    evidence.volume === machineAudioTestVolume.value
+  );
+});
+
 const tryOnPreviewDiagnostic = reactive({
   loading: false,
   message: null as string | null,
@@ -259,6 +458,9 @@ function syncFormFromStore(): void {
     },
   };
   form.kioskMode = machineStore.config.kioskMode;
+  machineAudioOutputMaintenance.selectedEndpointId =
+    machineStore.config.machineAudioOutputBinding?.endpointId ?? null;
+  machineAudioOutputMaintenance.heardConfirmation = false;
 }
 
 type DiagnosticSerializationState = {
@@ -395,6 +597,18 @@ function boundDiagnosticString(
 
 onMounted(async () => {
   maintenanceViewMounted = true;
+  const handedOffSession =
+    daemonClient.getMaintenanceSessionForRoute("maintenance");
+  if (handedOffSession) {
+    setMaintenanceSession(handedOffSession);
+    maintenanceAuthentication.message = "已继续首次部署的维护会话。";
+  }
+  removeMaintenanceSessionInvalidationListener =
+    daemonClient.onMaintenanceSessionInvalidated(() => {
+      clearMaintenanceSession();
+      maintenanceAuthentication.message =
+        "守护进程连接已更新，维护会话已失效，请重新验证 PIN。";
+    });
   try {
     const connection = await daemonClient.initialize();
     runtimeFlags.advancedMaintenanceConfig =
@@ -414,6 +628,7 @@ onMounted(async () => {
         await machineStore.loadConfig();
       }
       syncFormFromStore();
+      await refreshMachineAudioOutputs();
       ensureMachineAudioTestPlayback();
     } catch {
       // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
@@ -428,8 +643,12 @@ onMounted(async () => {
 
 onUnmounted(() => {
   maintenanceViewMounted = false;
+  removeMaintenanceSessionInvalidationListener?.();
+  removeMaintenanceSessionInvalidationListener = null;
   stopDiagnosticsAutoRefresh();
   activeMachineAudioPlayback?.stop();
+  clearRenderedMaintenanceSession();
+  daemonClient.releaseMaintenanceSessionRoute("maintenance");
   void stopTryOnPreviewDiagnostic();
 });
 
@@ -443,6 +662,83 @@ const hardwareMaintenance = reactive({
   loading: false,
   message: null as string | null,
 });
+
+const deviceBindingMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
+  snapshot: null as DeviceBindingSnapshot | null,
+  tested: {} as Partial<
+    Record<
+      "lower_controller" | "scanner",
+      { identityKey: string; testEvidenceToken: string }
+    >
+  >,
+});
+
+async function refreshDeviceBindings(): Promise<void> {
+  delete deviceBindingMaintenance.tested.lower_controller;
+  delete deviceBindingMaintenance.tested.scanner;
+  try {
+    deviceBindingMaintenance.snapshot = await daemonClient.getDeviceBindings();
+  } catch (error) {
+    deviceBindingMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function testDeviceBinding(
+  role: "lower_controller" | "scanner",
+  identityKey: string,
+): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) return;
+  deviceBindingMaintenance.loading = true;
+  deviceBindingMaintenance.message = null;
+  try {
+    const result = await daemonClient.testDeviceBinding(role, identityKey);
+    deviceBindingMaintenance.tested[role] = {
+      identityKey,
+      testEvidenceToken: result.testEvidenceToken,
+    };
+    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}测试通过：${result.currentPort}`;
+  } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
+    deviceBindingMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    deviceBindingMaintenance.loading = false;
+  }
+}
+
+async function confirmDeviceBinding(
+  role: "lower_controller" | "scanner",
+  identityKey: string,
+): Promise<void> {
+  if (
+    !maintenanceSessionAuthorized.value ||
+    deviceBindingMaintenance.tested[role]?.identityKey !== identityKey
+  )
+    return;
+  deviceBindingMaintenance.loading = true;
+  deviceBindingMaintenance.message = null;
+  try {
+    const tested = deviceBindingMaintenance.tested[role];
+    if (!tested) return;
+    delete deviceBindingMaintenance.tested[role];
+    const result = await daemonClient.confirmDeviceBinding(
+      role,
+      identityKey,
+      tested.testEvidenceToken,
+    );
+    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}已绑定到 ${result.currentPort}`;
+    await Promise.all([refreshDeviceBindings(), refreshDiagnostics()]);
+  } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
+    deviceBindingMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    deviceBindingMaintenance.loading = false;
+  }
+}
 
 const visionMaintenance = reactive({
   loading: false,
@@ -473,25 +769,52 @@ const catalogNavigation = reactive({
 const stockMaintenance = reactive({
   loading: false,
   message: null as string | null,
-  planogramVersion: null as string | null,
-  source: null as string | null,
-  slots: [] as Array<{
-    slotId: string;
-    slotCode: string;
-    layerNo: number;
-    cellNo: number;
-    productName: string;
-    physicalStock: number;
-    capacity: number;
-  }>,
+  task: null as StockMaintenanceTask | null,
+  values: {} as Record<string, number | string>,
 });
 
-const stockForm = reactive({
-  movementType: "planned_refill" as "planned_refill" | "stock_count_correction",
-  planogramVersion: "",
-  slotId: "",
-  quantity: 1,
-  attributedTo: "front-panel",
+const stockTaskIsRefill = computed(
+  () => stockMaintenance.task?.mode === "routine_refill",
+);
+function isValidStockInteger(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= 0
+  );
+}
+function refillValueFits(
+  slot: StockMaintenanceTask["slots"][number],
+  addition: unknown,
+): addition is number {
+  if (!isValidStockInteger(addition)) return false;
+  if (addition === slot.submittedAddition && slot.previewQuantity !== null) {
+    return slot.previewQuantity <= slot.capacity;
+  }
+  return slot.currentQuantity + addition <= slot.capacity;
+}
+const stockTaskCanSubmit = computed(() => {
+  const task = stockMaintenance.task;
+  if (!task) return false;
+  if (task.mode === "routine_refill") {
+    const additions = task.slots.map((slot) => ({
+      slot,
+      addition: stockMaintenance.values[slot.slotCode] ?? 0,
+    }));
+    return (
+      additions.some(
+        ({ addition }) => isValidStockInteger(addition) && addition > 0,
+      ) &&
+      additions.every(({ slot, addition }) => {
+        return refillValueFits(slot, addition);
+      })
+    );
+  }
+  return task.slots.every((slot) => {
+    const quantity = stockMaintenance.values[slot.slotCode];
+    return isValidStockInteger(quantity) && quantity <= slot.capacity;
+  });
 });
 
 const adapters: HardwareAdapter[] = ["mock", "serial"];
@@ -509,6 +832,81 @@ const machineAudioTestPlayback = reactive({
 });
 let activeMachineAudioPlayback: MachineAudioPlayback | null = null;
 let activeMachineAudioPlaybackVolume: number | null = null;
+let activeMachineAudioPlaybackOutputDeviceId: string | null = null;
+
+async function refreshMachineAudioOutputs(): Promise<void> {
+  machineAudioOutputMaintenance.loading = true;
+  machineAudioOutputMaintenance.message = null;
+  try {
+    const outputs = await callTauriCommand<MachineAudioOutputCandidate[]>(
+      "list_machine_audio_outputs",
+    );
+    machineAudioOutputMaintenance.candidates = outputs;
+    if (
+      !machineAudioOutputMaintenance.selectedEndpointId &&
+      machineStore.config.machineAudioOutputBinding?.endpointId
+    ) {
+      machineAudioOutputMaintenance.selectedEndpointId =
+        machineStore.config.machineAudioOutputBinding.endpointId;
+    }
+  } catch (error) {
+    machineAudioOutputMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    machineAudioOutputMaintenance.loading = false;
+  }
+}
+
+async function saveMachineAudioSettings(): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) {
+    machineAudioOutputMaintenance.message = "请先验证维护 PIN。";
+    return;
+  }
+  const selected = selectedMachineAudioOutputCandidate.value;
+  if (!selected) {
+    machineAudioOutputMaintenance.message = "请先选择顾客扬声器端点。";
+    return;
+  }
+  if (!hasCurrentMachineAudioTestEvidence.value) {
+    machineAudioOutputMaintenance.message =
+      "请先以当前端点和当前音量完成测试播放。";
+    return;
+  }
+  if (!machineAudioOutputMaintenance.heardConfirmation) {
+    machineAudioOutputMaintenance.message = "请确认“我听到了”后再保存绑定。";
+    return;
+  }
+  machineAudioOutputMaintenance.saving = true;
+  machineAudioOutputMaintenance.message = null;
+  try {
+    const summary = await daemonClient.saveMachineAudioSettings({
+      machineAudioOutputBinding: {
+        endpointId: selected.endpointId,
+        friendlyName: selected.friendlyName,
+        confirmedHeardAt: new Date().toISOString(),
+      },
+      audioCueSettings: {
+        enabled: form.audioCueSettings.enabled,
+        categories: {
+          presence: form.audioCueSettings.categories.presence,
+          transaction: form.audioCueSettings.categories.transaction,
+        },
+      },
+      machineAudioVolume: machineAudioTestVolume.value,
+    });
+    machineStore.applyConfigSummary(summary);
+    syncFormFromStore();
+    await refreshMachineAudioOutputs();
+    machineAudioOutputMaintenance.message =
+      "顾客音频输出绑定与音频提示设置已保存。";
+  } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
+    machineAudioOutputMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    machineAudioOutputMaintenance.saving = false;
+  }
+}
 
 const latestMachineAudioTestPlaybackRows = computed(() => {
   const diagnostic = machineAudioTestPlayback.diagnostic;
@@ -545,6 +943,8 @@ const latestMachineAudioTestPlaybackRows = computed(() => {
 });
 
 async function playMachineAudioTestPlayback(): Promise<void> {
+  machineAudioTestEvidence.value = null;
+  machineAudioOutputMaintenance.heardConfirmation = false;
   machineAudioTestPlayback.loading = true;
   machineAudioTestPlayback.message = null;
   try {
@@ -570,15 +970,21 @@ function stopMachineAudioTestPlayback(): void {
 }
 
 function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
-  const volume = machineStore.config.machineAudioVolume;
+  const volume = machineAudioTestVolume.value;
+  const outputDeviceId =
+    machineAudioOutputMaintenance.selectedEndpointId ??
+    machineStore.config.machineAudioOutputBinding?.endpointId ??
+    null;
   if (
     activeMachineAudioPlayback &&
-    activeMachineAudioPlaybackVolume === volume
+    activeMachineAudioPlaybackVolume === volume &&
+    activeMachineAudioPlaybackOutputDeviceId === outputDeviceId
   ) {
     return activeMachineAudioPlayback;
   }
   activeMachineAudioPlayback?.stop();
   activeMachineAudioPlaybackVolume = volume;
+  activeMachineAudioPlaybackOutputDeviceId = outputDeviceId;
   machineAudioTestPlayback.volume = volume;
   activeMachineAudioPlayback = createMachineAudioPlayback({
     driver:
@@ -591,7 +997,16 @@ function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
     onDiagnostic: (diagnostic) => {
       machineAudioTestPlayback.driver = diagnostic.driver;
       machineAudioTestPlayback.diagnostic = diagnostic;
+      if (diagnostic.status === "completed" && outputDeviceId) {
+        machineAudioTestEvidence.value = {
+          requestId: diagnostic.requestId,
+          endpointId: outputDeviceId,
+          volume,
+        };
+      }
     },
+    outputDeviceId,
+    requireNativeOutputBinding: isTauriRuntime(),
     volume,
   });
   machineAudioTestPlayback.driver = activeMachineAudioPlayback.currentDriver();
@@ -665,31 +1080,8 @@ async function stopTryOnPreviewDiagnostic(): Promise<void> {
   }
 }
 
-async function saveAndReboot(): Promise<void> {
-  if (!runtimeFlags.advancedMaintenanceConfig) {
-    return;
-  }
-  try {
-    const normalized = normalizeMachineConfig({
-      ...form,
-      machineAudioVolume: form.machineAudioVolumePercent / 100,
-      machineSecret: form.machineSecretInput.trim() || null,
-      mqttSigningSecret: form.mqttSigningSecretInput.trim() || null,
-      mqttPassword: form.mqttPasswordInput.trim() || null,
-    });
-    await machineStore.saveConfig(normalized);
-    syncFormFromStore();
-    await router.replace("/boot");
-  } catch (error) {
-    machineStore.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    form.machineSecretInput = "";
-    form.mqttSigningSecretInput = "";
-    form.mqttPasswordInput = "";
-  }
-}
-
 async function runHardwareCheck(): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) return;
   hardwareMaintenance.loading = true;
   hardwareMaintenance.message = null;
   try {
@@ -725,6 +1117,7 @@ async function runHardwareCheck(): Promise<void> {
       result.online ? "硬件就绪" : "硬件告警"
     }：${result.message}${details.length > 0 ? `（${details.join("；")}）` : ""}`;
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     hardwareMaintenance.message =
       error instanceof Error ? error.message : String(error);
   } finally {
@@ -779,6 +1172,7 @@ async function runDiagnosticsRefresh(): Promise<void> {
       visionStore.refresh(),
       naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
+      refreshDeviceBindings(),
     ]);
     await returnToCatalogAfterSystemRecovery();
   } catch (error) {
@@ -813,6 +1207,7 @@ async function returnToCatalogAfterSystemRecovery(): Promise<void> {
 }
 
 async function clearWholeMachineLock(): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) return;
   wholeMachineLockMaintenance.loading = true;
   wholeMachineLockMaintenance.message = null;
   try {
@@ -823,6 +1218,7 @@ async function clearWholeMachineLock(): Promise<void> {
     wholeMachineLockMaintenance.operatorNote = "";
     await refreshDiagnostics();
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     const message = error instanceof Error ? error.message : String(error);
     wholeMachineLockMaintenance.message = message.includes(
       "must be healthy before clearing whole-machine lock",
@@ -867,6 +1263,53 @@ function saleCriticalBlockerAction(code: string): string {
     NO_SALEABLE_SLOTS: "补货、盘点或处理货道冻结后恢复可售库存。",
   };
   return actions[code] ?? "按现场 SOP 排查该阻塞项。";
+}
+
+function blockerRecoveryLabel(code: string): string {
+  if (
+    code === "LOWER_CONTROLLER_UNAVAILABLE" ||
+    code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
+    code.startsWith("PRODUCTION_DISPENSE_PATH_")
+  ) {
+    return "执行硬件自检";
+  }
+  if (code === "NO_SALEABLE_SLOTS") return "打开库存维护";
+  if (code === "MACHINE_AUTH_MISSING") return "打开首次部署控制台";
+  return "刷新关联诊断";
+}
+
+function blockerRecoveryRequiresSession(code: string): boolean {
+  return (
+    code === "MACHINE_AUTH_MISSING" ||
+    code === "LOWER_CONTROLLER_UNAVAILABLE" ||
+    code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
+    code.startsWith("PRODUCTION_DISPENSE_PATH_")
+  );
+}
+
+function blockerRecoveryDisabled(code: string): boolean {
+  return (
+    (blockerRecoveryRequiresSession(code) &&
+      !maintenanceSessionAuthorized.value) ||
+    hardwareMaintenance.loading ||
+    diagnostics.loading
+  );
+}
+
+async function runBlockerRecovery(code: string): Promise<void> {
+  if (code === "MACHINE_AUTH_MISSING") {
+    await openProtectedBringUpConsole();
+    return;
+  }
+  if (blockerRecoveryRequiresSession(code)) {
+    await runHardwareCheck();
+    return;
+  }
+  if (code === "NO_SALEABLE_SLOTS") {
+    stockMaintenance.message = "请使用下方库存维护完成补货或盘点修正。";
+    return;
+  }
+  await refreshDiagnostics();
 }
 
 function audioCueMeaningLabel(cueKey: string): string {
@@ -981,7 +1424,12 @@ async function returnToCatalog(): Promise<void> {
 }
 
 async function returnToDesktop(): Promise<void> {
-  if (!showProtectedDesktopExit.value) {
+  const session = maintenanceSession.value;
+  if (
+    !showProtectedDesktopExit.value ||
+    !session ||
+    !maintenanceSessionAuthorized.value
+  ) {
     return;
   }
   desktopMaintenance.loading = true;
@@ -991,8 +1439,11 @@ async function returnToDesktop(): Promise<void> {
       desktopMaintenance.message = "当前不是 Tauri 运行环境，无法退出全屏应用";
       return;
     }
-    await callTauriCommand<void>("return_to_desktop");
+    await callTauriCommand<void>("return_to_desktop", {
+      sessionId: session.sessionId,
+    });
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     desktopMaintenance.message =
       error instanceof Error ? error.message : String(error);
     desktopMaintenance.loading = false;
@@ -1000,13 +1451,24 @@ async function returnToDesktop(): Promise<void> {
 }
 
 async function openProtectedBringUpConsole(): Promise<void> {
-  if (!showAdvancedDebugConfig.value) {
+  if (!maintenanceSessionAuthorized.value) {
     return;
   }
-  await router.replace({
-    path: "/bring-up",
-    query: { source: "protected-maintenance" },
-  });
+  if (!daemonClient.handoffMaintenanceSessionToBringUp()) {
+    clearMaintenanceSession();
+    maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
+    return;
+  }
+  try {
+    await router.replace({
+      path: "/bring-up",
+      query: { source: "protected-maintenance" },
+    });
+  } catch (error) {
+    clearMaintenanceSession();
+    maintenanceAuthentication.message =
+      error instanceof Error ? error.message : "无法打开首次部署控制台";
+  }
 }
 
 async function exportLogs(): Promise<void> {
@@ -1020,26 +1482,23 @@ async function exportLogs(): Promise<void> {
   }
 }
 
+function applyStockMaintenanceTask(task: StockMaintenanceTask): void {
+  const values = Object.fromEntries(
+    task.slots.map((slot) => [
+      slot.slotCode,
+      task.mode === "routine_refill"
+        ? (slot.submittedAddition ?? 0)
+        : (slot.submittedQuantity ?? slot.currentQuantity),
+    ]),
+  );
+  stockMaintenance.task = task;
+  stockMaintenance.values = values;
+}
+
 async function refreshStockMaintenanceView(): Promise<void> {
   stockMaintenance.loading = true;
   try {
-    const snapshot = await daemonClient.getSaleView();
-    stockMaintenance.planogramVersion = snapshot.planogramVersion;
-    stockMaintenance.source = snapshot.source;
-    stockMaintenance.slots = snapshot.items.map((item) => ({
-      slotId: item.slotId,
-      slotCode: item.slotCode,
-      layerNo: item.layerNo,
-      cellNo: item.cellNo,
-      productName: item.productName,
-      physicalStock: item.physicalStock,
-      capacity: item.capacity,
-    }));
-    stockForm.planogramVersion =
-      snapshot.planogramVersion ?? stockForm.planogramVersion;
-    if (!stockForm.slotId && stockMaintenance.slots[0]) {
-      stockForm.slotId = stockMaintenance.slots[0].slotId;
-    }
+    applyStockMaintenanceTask(await daemonClient.getStockMaintenanceTask());
   } catch (error) {
     stockMaintenance.message =
       error instanceof Error ? error.message : String(error);
@@ -1048,30 +1507,75 @@ async function refreshStockMaintenanceView(): Promise<void> {
   }
 }
 
-function nextMovementId(): string {
-  const randomId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`;
-  return `LOCAL-${randomId}`;
+function stockSyncLabel(status: string): string {
+  return (
+    {
+      not_submitted: "未提交",
+      pending: "同步中",
+      failed: "等待重试",
+      accepted: "已确认",
+      rejected: "已拒绝",
+      reconciliation: "待对账",
+    }[status] ?? status
+  );
 }
 
-async function submitStockMovement(): Promise<void> {
+function resultingStock(
+  slot: StockMaintenanceTask["slots"][number],
+): number | null {
+  const value = stockMaintenance.values[slot.slotCode];
+  if (!isValidStockInteger(value) || value > slot.capacity) return null;
+  if (stockTaskIsRefill.value) {
+    if (value === slot.submittedAddition && slot.previewQuantity !== null) {
+      return slot.previewQuantity;
+    }
+    return slot.currentQuantity + value <= slot.capacity
+      ? slot.currentQuantity + value
+      : null;
+  }
+  return value;
+}
+
+async function submitStockMaintenanceTask(): Promise<void> {
+  const task = stockMaintenance.task;
+  if (!task) return;
+  if (!stockTaskCanSubmit.value) {
+    stockMaintenance.message = "库存数量必须是容量范围内的非负整数。";
+    return;
+  }
   stockMaintenance.loading = true;
   stockMaintenance.message = null;
   try {
-    const snapshot = await daemonClient.recordStockMovement({
-      movementId: nextMovementId(),
-      planogramVersion: stockForm.planogramVersion.trim(),
-      slotId: stockForm.slotId,
-      movementType: stockForm.movementType,
-      quantity: Number(stockForm.quantity),
-      source: "local_maintenance",
-      attributedTo: stockForm.attributedTo.trim() || "front-panel",
-    });
-    catalogStore.applySnapshot(snapshot);
-    stockMaintenance.message = "库存动作已记录";
-    await refreshStockMaintenanceView();
+    const response =
+      task.mode === "routine_refill"
+        ? await daemonClient.submitStockMaintenanceBatch({
+            taskId: task.taskId,
+            mode: "routine_refill",
+            slots: task.slots
+              .map((slot) => ({
+                slotCode: slot.slotCode,
+                addition: stockMaintenance.values[slot.slotCode] as number,
+              }))
+              .filter((slot) => slot.addition > 0),
+          })
+        : await daemonClient.submitStockMaintenanceBatch({
+            taskId: task.taskId,
+            mode: task.mode,
+            slots: task.slots.map((slot) => ({
+              slotCode: slot.slotCode,
+              quantity: stockMaintenance.values[slot.slotCode] as number,
+            })),
+          });
+    applyStockMaintenanceTask(response.task);
+    stockMaintenance.message = response.duplicate
+      ? "批次已存在，已恢复原同步状态。"
+      : "库存批次已提交，等待平台逐货道确认。";
   } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
     stockMaintenance.message =
-      error instanceof Error ? error.message : String(error);
+      error instanceof Error
+        ? `${error.message}；本机服务保留批次状态，可刷新后恢复。`
+        : "库存批次提交结果未确认，可刷新后恢复。";
   } finally {
     stockMaintenance.loading = false;
   }
@@ -1092,93 +1596,360 @@ async function submitStockMovement(): Promise<void> {
         </div>
       </header>
 
+      <section
+        class="mt-4 rounded-3xl border border-white/10 bg-slate-950/30 p-4"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="text-left">
+            <p class="text-sm font-semibold text-slate-100">维护授权</p>
+            <p class="mt-1 text-sm text-slate-300">
+              健康与阻塞诊断始终可查看；修改机器前需验证 PIN。
+            </p>
+          </div>
+          <span
+            class="text-sm font-semibold"
+            :class="
+              maintenanceSessionAuthorized
+                ? 'text-emerald-200'
+                : 'text-amber-200'
+            "
+          >
+            {{ maintenanceSessionAuthorized ? "已授权" : "只读" }}
+          </span>
+        </div>
+        <form
+          v-if="!maintenanceSessionAuthorized"
+          class="mt-3 flex flex-wrap gap-3"
+          @submit.prevent="beginProtectedMaintenance"
+        >
+          <input
+            v-model="maintenanceAuthentication.pin"
+            class="kiosk-touch-target min-w-40 rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-white outline-none"
+            type="password"
+            inputmode="numeric"
+            autocomplete="off"
+            placeholder="维护 PIN"
+            aria-label="维护 PIN"
+          />
+          <button
+            class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+            type="submit"
+            :disabled="
+              maintenanceAuthentication.loading ||
+              !maintenanceAuthentication.pin
+            "
+          >
+            验证并解锁
+          </button>
+        </form>
+        <p
+          v-if="maintenanceAuthentication.message"
+          class="mt-3 text-sm text-slate-200"
+          aria-live="polite"
+        >
+          {{ maintenanceAuthentication.message }}
+        </p>
+      </section>
+
+      <section
+        v-if="saleCriticalBlockers.length > 0"
+        class="mt-4 grid gap-3"
+        aria-label="当前阻塞项"
+      >
+        <h3 class="text-left text-sm font-semibold text-rose-100">
+          当前阻塞项
+        </h3>
+        <article
+          v-for="blocker in saleCriticalBlockers"
+          :key="`${blocker.component}-${blocker.code}`"
+          class="rounded-3xl border border-rose-300/30 bg-rose-500/15 p-4 text-left"
+        >
+          <p class="font-semibold text-rose-50">{{ blocker.operatorLabel }}</p>
+          <p class="mt-1 text-sm text-rose-100/90">
+            {{ blocker.operatorAction }}
+          </p>
+          <button
+            class="kiosk-touch-target mt-3 rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
+            type="button"
+            :disabled="blockerRecoveryDisabled(blocker.code)"
+            @click="runBlockerRecovery(blocker.code)"
+          >
+            {{
+              blockerRecoveryRequiresSession(blocker.code) &&
+              !maintenanceSessionAuthorized
+                ? "先验证 PIN"
+                : blockerRecoveryLabel(blocker.code)
+            }}
+          </button>
+          <details class="mt-3 text-sm text-rose-100/80">
+            <summary>技术证据</summary>
+            <p class="mt-2">{{ blocker.code }} · {{ blocker.message }}</p>
+          </details>
+        </article>
+      </section>
+
+      <section
+        v-if="operatorEnteredMaintenance"
+        class="mt-4 grid gap-3 md:grid-cols-2"
+        aria-label="维护任务概览"
+      >
+        <article
+          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
+        >
+          <p class="font-semibold text-white">健康与连接</p>
+          <p class="mt-1 text-sm text-slate-300">
+            查看本地服务、平台与 MQTT 状态。
+          </p>
+          <button
+            class="kiosk-touch-target mt-3 rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100"
+            type="button"
+            :disabled="diagnostics.loading"
+            @click="refreshDiagnostics"
+          >
+            刷新诊断
+          </button>
+          <details class="mt-3 text-sm text-slate-300">
+            <summary>技术证据</summary>
+            <p class="mt-2">
+              {{ machineStore.health?.process.code ?? "未读取" }}
+            </p>
+          </details>
+        </article>
+        <article
+          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
+        >
+          <p class="font-semibold text-white">硬件与绑定</p>
+          <p class="mt-1 text-sm text-slate-300">
+            检查下位机、扫码器与视觉运行状态。
+          </p>
+          <button
+            class="kiosk-touch-target mt-3 rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
+            type="button"
+            :disabled="
+              !maintenanceSessionAuthorized || hardwareMaintenance.loading
+            "
+            @click="runHardwareCheck"
+          >
+            执行设备检查
+          </button>
+          <details class="mt-3 text-sm text-slate-300">
+            <summary>技术证据</summary>
+            <p class="mt-2">
+              {{
+                machineStore.health?.hardwareOnline
+                  ? "下位机在线"
+                  : "下位机不可用"
+              }}
+            </p>
+          </details>
+        </article>
+      </section>
+
+      <section
+        v-if="operatorEnteredMaintenance && deviceBindingMaintenance.snapshot"
+        class="mt-4 grid gap-3"
+        aria-label="设备稳定身份绑定"
+      >
+        <article
+          v-for="role in deviceBindingMaintenance.snapshot.roles"
+          :key="role.role"
+          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
+          :data-test="`device-binding-${role.role}`"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <p class="font-semibold text-white">
+              {{
+                role.role === "lower_controller" ? "下位机绑定" : "扫码器绑定"
+              }}
+            </p>
+            <span :class="role.ready ? 'text-emerald-200' : 'text-amber-200'">
+              {{ role.ready ? `已就绪 · ${role.currentPort}` : "待处理" }}
+            </span>
+          </div>
+          <p v-if="!role.ready" class="mt-2 text-sm text-amber-100">
+            {{ operatorMessageLabel(role.message) }}
+          </p>
+          <div
+            v-if="role.ambiguityKind === 'duplicate_observation'"
+            class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200/20 bg-amber-500/10 p-3"
+          >
+            <p class="text-sm font-semibold text-amber-100">
+              检测到重复设备。请拔除重复设备后刷新，再进行测试和绑定。
+            </p>
+            <button
+              class="kiosk-touch-target rounded-xl border border-amber-200/30 px-3 py-2 font-bold text-amber-100 disabled:opacity-40"
+              type="button"
+              :disabled="deviceBindingMaintenance.loading"
+              @click="refreshDeviceBindings"
+            >
+              刷新设备
+            </button>
+          </div>
+          <div v-else class="mt-3 grid gap-2">
+            <div
+              v-for="(candidate, candidateIndex) in role.candidates"
+              :key="`${candidate.identity.identityKey}:${candidate.currentPort}:${candidateIndex}`"
+              class="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 p-3"
+            >
+              <div>
+                <p class="font-semibold text-slate-100">
+                  {{ candidate.friendlyName ?? "串口设备" }} ·
+                  {{ candidate.currentPort }}
+                </p>
+                <p class="mt-1 text-xs text-slate-400">
+                  {{ candidate.identity.identityKey }}
+                </p>
+              </div>
+              <div class="flex gap-2">
+                <button
+                  class="kiosk-touch-target rounded-xl border border-sky-200/30 px-3 py-2 font-bold text-sky-100 disabled:opacity-40"
+                  type="button"
+                  :disabled="
+                    !maintenanceSessionAuthorized ||
+                    deviceBindingMaintenance.loading
+                  "
+                  @click="
+                    testDeviceBinding(role.role, candidate.identity.identityKey)
+                  "
+                >
+                  测试
+                </button>
+                <button
+                  class="kiosk-touch-target rounded-xl bg-emerald-300 px-3 py-2 font-bold text-slate-950 disabled:opacity-40"
+                  type="button"
+                  :disabled="
+                    !maintenanceSessionAuthorized ||
+                    deviceBindingMaintenance.loading ||
+                    deviceBindingMaintenance.tested[role.role]?.identityKey !==
+                      candidate.identity.identityKey
+                  "
+                  @click="
+                    confirmDeviceBinding(
+                      role.role,
+                      candidate.identity.identityKey,
+                    )
+                  "
+                >
+                  确认绑定
+                </button>
+              </div>
+            </div>
+          </div>
+          <p
+            v-for="(diagnostic, diagnosticIndex) in role.discoveryDiagnostics"
+            :key="`${diagnostic.currentPort}:${diagnostic.code}:${diagnosticIndex}`"
+            class="mt-2 rounded-2xl border border-amber-200/20 p-3 text-sm text-amber-100"
+          >
+            {{ diagnostic.friendlyName ?? "串口设备" }} ·
+            {{ diagnostic.currentPort }}：
+            {{ operatorMessageLabel(diagnostic.message) }}
+          </p>
+          <details
+            v-if="role.binding || role.legacyPortHint"
+            class="mt-3 text-sm text-slate-300"
+          >
+            <summary>技术证据</summary>
+            <p v-if="role.binding" class="mt-2 break-all">
+              {{ role.binding.identity.identityKey }}
+            </p>
+            <p v-if="role.legacyPortHint" class="mt-1">
+              迁移提示：{{ role.legacyPortHint }}（不作为绑定）
+            </p>
+          </details>
+        </article>
+        <p
+          v-if="deviceBindingMaintenance.message"
+          class="rounded-2xl bg-sky-500/15 p-3 text-sky-100"
+        >
+          {{ deviceBindingMaintenance.message }}
+        </p>
+      </section>
+
       <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
         <p
           class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
         >
           库存维护
         </p>
-        <form class="mt-4 grid gap-4" @submit.prevent="submitStockMovement">
-          <div class="grid gap-4 md:grid-cols-2">
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">动作类型</span>
-              <select
-                v-model="stockForm.movementType"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+        <form
+          class="mt-4 grid gap-4"
+          @submit.prevent="submitStockMaintenanceTask"
+        >
+          <fieldset :disabled="!maintenanceSessionAuthorized" class="contents">
+            <div class="grid gap-3">
+              <article
+                v-for="slot in stockMaintenance.task?.slots ?? []"
+                :key="slot.slotCode"
+                class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-left md:grid-cols-[1fr_11rem]"
               >
-                <option value="planned_refill">计划补货</option>
-                <option value="stock_count_correction">盘点修正</option>
-              </select>
-            </label>
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">数量</span>
-              <input
-                v-model.number="stockForm.quantity"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-                min="0"
-                step="1"
-                type="number"
-              />
-            </label>
-          </div>
-
-          <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200">货道图版本</span>
-            <input
-              v-model="stockForm.planogramVersion"
-              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-            />
-          </label>
-
-          <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200">货道</span>
-            <select
-              v-model="stockForm.slotId"
-              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-            >
-              <option
-                v-for="slot in stockMaintenance.slots"
-                :key="slot.slotId"
-                :value="slot.slotId"
+                <div>
+                  <p class="font-semibold text-white">
+                    {{ slot.slotCode }} ·
+                    {{ formatMachineSlotCoordinate(slot) }}
+                  </p>
+                  <p class="text-sm text-slate-200">
+                    {{ slot.productName }} · {{ slot.sku }}
+                  </p>
+                  <p class="text-sm text-slate-400">
+                    {{ slot.currentQuantity }}/{{ slot.capacity }} ·
+                    {{ stockSyncLabel(slot.syncStatus) }}
+                  </p>
+                  <p
+                    v-if="slot.reconciliationReason"
+                    class="mt-1 text-sm text-amber-200"
+                  >
+                    仅此货道待对账：{{ slot.reconciliationReason }}
+                  </p>
+                </div>
+                <label class="grid gap-2">
+                  <span class="text-sm font-semibold text-slate-200">
+                    {{ stockTaskIsRefill ? "补货数量" : "实际数量" }}
+                  </span>
+                  <input
+                    v-model.number="stockMaintenance.values[slot.slotCode]"
+                    class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+                    :max="
+                      stockTaskIsRefill
+                        ? (slot.submittedAddition ??
+                          slot.capacity - slot.currentQuantity)
+                        : slot.capacity
+                    "
+                    :disabled="
+                      stockTaskIsRefill && slot.submittedAddition !== null
+                    "
+                    min="0"
+                    step="1"
+                    type="number"
+                  />
+                  <span class="text-xs text-emerald-200">
+                    {{ stockTaskIsRefill ? "补货后" : "提交后" }}
+                    {{ resultingStock(slot) ?? "输入无效" }}/{{ slot.capacity }}
+                  </span>
+                </label>
+              </article>
+            </div>
+            <div class="grid gap-3 md:grid-cols-2">
+              <button
+                class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
+                type="button"
+                :disabled="stockMaintenance.loading"
+                @click="refreshStockMaintenanceView"
               >
-                {{ formatMachineSlotCoordinate(slot) }} ·
-                {{ slot.productName }} · {{ slot.physicalStock }}/{{
-                  slot.capacity
-                }}
-              </option>
-            </select>
-          </label>
-
-          <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200">记录人</span>
-            <input
-              v-model="stockForm.attributedTo"
-              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-            />
-          </label>
-
-          <div class="grid gap-3 md:grid-cols-2">
-            <button
-              class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
-              type="button"
-              :disabled="stockMaintenance.loading"
-              @click="refreshStockMaintenanceView"
-            >
-              刷新库存
-            </button>
-            <button
-              class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
-              type="submit"
-              :disabled="
-                stockMaintenance.loading ||
-                !stockForm.planogramVersion ||
-                !stockForm.slotId
-              "
-            >
-              记录库存动作
-            </button>
-          </div>
-
+                刷新库存
+              </button>
+              <button
+                class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                type="submit"
+                :disabled="
+                  !maintenanceSessionAuthorized ||
+                  stockMaintenance.loading ||
+                  !stockTaskCanSubmit
+                "
+              >
+                {{ stockTaskIsRefill ? "确认补货" : "提交盘点" }}
+              </button>
+            </div>
+          </fieldset>
           <p
             v-if="stockMaintenance.message"
             class="rounded-2xl bg-emerald-500/15 p-4 text-emerald-100"
@@ -1205,7 +1976,7 @@ async function submitStockMovement(): Promise<void> {
               回到目录
             </button>
             <button
-              v-if="showProtectedDesktopExit"
+              v-if="showProtectedDesktopExit && maintenanceSessionAuthorized"
               class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
               type="button"
               :disabled="desktopMaintenance.loading"
@@ -1215,11 +1986,14 @@ async function submitStockMovement(): Promise<void> {
             </button>
             <button
               v-if="showAdvancedDebugConfig"
-              class="kiosk-touch-target rounded-2xl border border-amber-200/30 px-4 py-3 font-bold text-amber-100"
+              class="kiosk-touch-target rounded-2xl border border-amber-200/30 px-4 py-3 font-bold text-amber-100 disabled:opacity-50"
               type="button"
+              :disabled="!maintenanceSessionAuthorized"
               @click="openProtectedBringUpConsole"
             >
-              首次部署控制台
+              {{
+                maintenanceSessionAuthorized ? "首次部署控制台" : "先验证 PIN"
+              }}
             </button>
             <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
@@ -1239,7 +2013,9 @@ async function submitStockMovement(): Promise<void> {
             <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
-              :disabled="hardwareMaintenance.loading"
+              :disabled="
+                !maintenanceSessionAuthorized || hardwareMaintenance.loading
+              "
               @click="runHardwareCheck"
             >
               硬件自检
@@ -1289,26 +2065,6 @@ async function submitStockMovement(): Promise<void> {
               >
                 {{ wholeMachineLockMaintenance.message }}
               </p>
-            </div>
-            <div
-              v-if="saleCriticalBlockers.length > 0"
-              class="grid gap-2 text-left"
-            >
-              <div
-                v-for="blocker in saleCriticalBlockers"
-                :key="`${blocker.component}-${blocker.code}`"
-                class="rounded-xl bg-slate-950/35 p-3 text-sm text-rose-50/90"
-              >
-                <div class="font-semibold text-rose-50">
-                  {{ blocker.operatorLabel }} · {{ blocker.code }}
-                </div>
-                <div class="mt-1">
-                  {{ operatorMessageLabel(blocker.message) }}
-                </div>
-                <div class="mt-1 text-rose-100/80">
-                  {{ blocker.operatorAction }}
-                </div>
-              </div>
             </div>
             <div
               v-if="wholeMachineLockMaintenance.selfCheckEvidence"
@@ -1442,8 +2198,8 @@ async function submitStockMovement(): Promise<void> {
           <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">本地状态</dt>
             <dd class="mt-1 font-bold text-white">
-              {{ runtimeStatusLabel(stockMaintenance.source ?? "unknown") }} ·
-              {{ stockMaintenance.planogramVersion ?? "无货道图" }}
+              {{ stockMaintenance.task?.status ?? "未读取" }} ·
+              {{ stockMaintenance.task?.slots.length ?? 0 }} 个货道
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
@@ -1474,6 +2230,32 @@ async function submitStockMovement(): Promise<void> {
           </ul>
         </section>
 
+        <section
+          class="mt-5 border-t border-white/10 pt-4 text-left"
+          data-test="catalog-operator-diagnostics"
+        >
+          <h3 class="text-sm font-semibold text-slate-200">
+            目录媒体与分类诊断
+          </h3>
+          <p
+            v-if="catalogOperatorDiagnostics.length === 0"
+            class="mt-2 text-sm text-slate-300"
+          >
+            尚未记录目录诊断。
+          </p>
+          <ul v-else class="mt-2 grid gap-2 text-sm text-slate-100">
+            <li
+              v-for="diagnostic in catalogOperatorDiagnostics"
+              :key="`${diagnostic.kind}-${diagnostic.reference}-${diagnostic.message}`"
+            >
+              {{ diagnostic.kind }} · {{ diagnostic.message }}
+              <span class="text-slate-300">{{
+                diagnostic.reference ?? "无引用"
+              }}</span>
+            </li>
+          </ul>
+        </section>
+
         <section class="mt-5 border-t border-white/10 pt-4 text-left">
           <h3 class="text-sm font-semibold text-slate-200">音频提示设置</h3>
           <p class="mt-1 text-sm text-slate-300">
@@ -1487,6 +2269,24 @@ async function submitStockMovement(): Promise<void> {
             >
               <dt class="text-xs font-semibold text-slate-400">机器音频提示</dt>
               <dd class="mt-1 font-bold text-white">
+                {{ row.label }} · {{ row.value }}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="mt-5 border-t border-white/10 pt-4 text-left">
+          <h3 class="text-sm font-semibold text-slate-200">顾客扬声器绑定</h3>
+          <dl class="mt-3 grid gap-3 md:grid-cols-2">
+            <div
+              v-for="row in machineAudioOutputBindingRows"
+              :key="row.label"
+              class="rounded-xl bg-slate-950/35 p-3"
+            >
+              <dt class="text-xs font-semibold text-slate-400">
+                {{ row.label }}
+              </dt>
+              <dd class="mt-1 font-bold break-all text-white">
                 {{ row.label }} · {{ row.value }}
               </dd>
             </div>
@@ -1570,11 +2370,7 @@ async function submitStockMovement(): Promise<void> {
         {{ mqttStore.outboxWarning }}
       </div>
 
-      <form
-        v-if="showAdvancedDebugConfig"
-        class="mt-8 grid gap-5"
-        @submit.prevent="saveAndReboot"
-      >
+      <section v-if="showAdvancedDebugConfig" class="mt-8 grid gap-5">
         <label class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200">机器编号</span>
           <input
@@ -1613,6 +2409,18 @@ async function submitStockMovement(): Promise<void> {
             type="password"
           />
         </div>
+
+        <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
+          维护 PIN 验证器状态：
+          <span class="font-semibold text-emerald-200">
+            {{
+              machineStore.config.maintenancePinConfigured ? "已配置" : "未配置"
+            }}
+          </span>
+          <span class="ml-2 text-slate-400"
+            >仅显示是否已受保护预置，不显示 PIN。</span
+          >
+        </p>
 
         <div class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200"
@@ -1698,10 +2506,11 @@ async function submitStockMovement(): Promise<void> {
         <div v-if="form.hardwareAdapter === 'serial'" class="grid gap-4">
           <label class="grid gap-2 text-left">
             <span class="text-sm font-semibold text-slate-200"
-              >手动串口兜底</span
+              >旧 COM 迁移提示（只读）</span
             >
             <input
               v-model="form.serialPortPath"
+              disabled
               class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
               placeholder="Linux 如 /dev/ttyUSB0；Windows 如 COM3"
             />
@@ -1715,6 +2524,7 @@ async function submitStockMovement(): Promise<void> {
               <span class="text-sm font-semibold text-slate-200">USB VID</span>
               <input
                 v-model="form.lowerControllerUsbIdentity.vendorId"
+                disabled
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
                 maxlength="4"
               />
@@ -1723,6 +2533,7 @@ async function submitStockMovement(): Promise<void> {
               <span class="text-sm font-semibold text-slate-200">USB PID</span>
               <input
                 v-model="form.lowerControllerUsbIdentity.productId"
+                disabled
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
                 maxlength="4"
               />
@@ -1733,6 +2544,7 @@ async function submitStockMovement(): Promise<void> {
               >
               <input
                 v-model="form.lowerControllerUsbIdentity.serialNumber"
+                disabled
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
                 placeholder="自检后自动绑定"
               />
@@ -1770,10 +2582,11 @@ async function submitStockMovement(): Promise<void> {
               class="grid gap-2 text-left"
             >
               <span class="text-sm font-semibold text-slate-200"
-                >扫码串口路径</span
+                >旧扫码 COM 迁移提示（只读）</span
               >
               <input
                 v-model="form.scannerSerialPortPath"
+                disabled
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
                 placeholder="Linux 如 /dev/ttyUSB1；Windows 如 COM4"
               />
@@ -1926,6 +2739,99 @@ async function submitStockMovement(): Promise<void> {
               </p>
             </div>
 
+            <section
+              class="grid gap-4 rounded-2xl border border-cyan-200/20 bg-cyan-500/10 p-4 text-left"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="grid gap-1">
+                  <h3 class="text-base font-bold text-cyan-100">
+                    顾客扬声器绑定
+                  </h3>
+                  <p class="text-sm leading-6 text-cyan-50/85">
+                    选择稳定的 WASAPI
+                    输出端点，测试播放并在听到近场顾客扬声器后确认保存。
+                  </p>
+                </div>
+                <button
+                  class="kiosk-touch-target rounded-2xl border border-cyan-100/40 px-4 py-3 font-bold text-cyan-50 disabled:opacity-50"
+                  type="button"
+                  :disabled="machineAudioOutputMaintenance.loading"
+                  @click="refreshMachineAudioOutputs"
+                >
+                  刷新端点
+                </button>
+              </div>
+
+              <div
+                v-if="machineAudioOutputMaintenance.candidates.length === 0"
+                class="rounded-2xl bg-slate-950/35 p-4 text-sm text-cyan-50"
+              >
+                {{
+                  machineAudioOutputMaintenance.loading
+                    ? "正在枚举音频端点…"
+                    : "尚未发现可用输出端点。"
+                }}
+              </div>
+
+              <div v-else class="grid gap-3">
+                <label
+                  v-for="candidate in machineAudioOutputMaintenance.candidates"
+                  :key="candidate.endpointId"
+                  class="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/35 p-4"
+                >
+                  <input
+                    v-model="machineAudioOutputMaintenance.selectedEndpointId"
+                    :value="candidate.endpointId"
+                    class="mt-1 size-5 accent-cyan-300"
+                    type="radio"
+                  />
+                  <span class="grid gap-1">
+                    <span class="text-sm font-semibold text-white">
+                      {{ candidate.friendlyName }}
+                      <span v-if="candidate.isDefault" class="text-cyan-100/80">
+                        · 默认
+                      </span>
+                    </span>
+                    <span class="text-xs break-all text-cyan-50/80">
+                      {{ candidate.endpointId }}
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              <label class="flex items-center gap-3 text-left">
+                <input
+                  v-model="machineAudioOutputMaintenance.heardConfirmation"
+                  class="size-5 accent-cyan-300"
+                  :disabled="!hasCurrentMachineAudioTestEvidence"
+                  type="checkbox"
+                />
+                <span class="text-sm font-semibold text-cyan-50">
+                  我已经在近场顾客扬声器上听到了测试音频
+                </span>
+              </label>
+
+              <button
+                class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                type="button"
+                :disabled="
+                  machineAudioOutputMaintenance.saving ||
+                  !hasCurrentMachineAudioTestEvidence ||
+                  !machineAudioOutputMaintenance.heardConfirmation
+                "
+                @click="saveMachineAudioSettings"
+              >
+                保存顾客扬声器绑定与音频提示设置
+              </button>
+
+              <p
+                v-if="machineAudioOutputMaintenance.message"
+                class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
+              >
+                {{ machineAudioOutputMaintenance.message }}
+              </p>
+            </section>
+
             <fieldset class="grid gap-3 text-left md:grid-cols-3">
               <label class="flex items-center gap-3">
                 <input
@@ -2044,7 +2950,9 @@ async function submitStockMovement(): Promise<void> {
               <button
                 class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
                 type="button"
-                :disabled="hardwareMaintenance.loading"
+                :disabled="
+                  !maintenanceSessionAuthorized || hardwareMaintenance.loading
+                "
                 @click="runHardwareCheck"
               >
                 硬件自检
@@ -2075,10 +2983,11 @@ async function submitStockMovement(): Promise<void> {
         </div>
 
         <button
-          class="kiosk-touch-target rounded-2xl bg-sky-400 px-6 py-4 text-lg font-bold text-slate-950 shadow-lg shadow-sky-950/40"
-          type="submit"
+          class="kiosk-touch-target rounded-2xl bg-slate-600 px-6 py-4 text-lg font-bold text-slate-200"
+          type="button"
+          disabled
         >
-          保存配置并重新自检
+          直接配置编辑已禁用；请使用首次部署控制台
         </button>
 
         <p
@@ -2087,7 +2996,7 @@ async function submitStockMovement(): Promise<void> {
         >
           {{ machineStore.error }}
         </p>
-      </form>
+      </section>
       <div
         v-if="showAdvancedDebugConfig && form.hardwareAdapter === 'mock'"
         class="mt-6"

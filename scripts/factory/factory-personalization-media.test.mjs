@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  createMaintenancePinVerifier,
   createFactoryPersonalizationUseRegistry,
   FactoryPersonalizationMediaError,
   previewFactoryPersonalizationMedia,
@@ -31,6 +32,13 @@ function productionMedia(overrides = {}) {
       administrator: { user: "Admin", password: "unique-production-admin-1" },
       kiosk: { user: "VEMKiosk", password: "unique-production-kiosk-1" },
     },
+    maintenancePinVerifier: {
+      version: 1,
+      algorithm: "pbkdf2_hmac_sha256",
+      iterations: 120000,
+      salt: "ABEiM0RVZneImaq7zN3u/w==",
+      digest: "jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0=",
+    },
     ...overrides,
   };
 }
@@ -51,11 +59,35 @@ function testbedMedia(overrides = {}) {
       bootstrap: { user: "YKDZ", password: "dedicated-testbed-bootstrap-1" },
       kiosk: { user: "VEMKiosk", password: "dedicated-testbed-kiosk-1" },
     },
+    maintenancePinVerifier: {
+      version: 1,
+      algorithm: "pbkdf2_hmac_sha256",
+      iterations: 120000,
+      salt: "ABEiM0RVZneImaq7zN3u/w==",
+      digest: "jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0=",
+    },
     ...overrides,
   };
 }
 
 describe("Factory Personalization Media v1", () => {
+  it("derives a fresh salted verifier from a Factory PIN without retaining the PIN", () => {
+    const pin = "2468";
+    const first = createMaintenancePinVerifier(pin);
+    const second = createMaintenancePinVerifier(pin);
+
+    for (const verifier of [first, second]) {
+      assert.equal(verifier.version, 1);
+      assert.equal(verifier.algorithm, "pbkdf2_hmac_sha256");
+      assert.equal(verifier.iterations, 120000);
+      assert.equal(Buffer.from(verifier.salt, "base64").length, 16);
+      assert.equal(Buffer.from(verifier.digest, "base64").length, 32);
+      assert.doesNotMatch(JSON.stringify(verifier), new RegExp(pin));
+    }
+    assert.notEqual(first.salt, second.salt);
+    assert.notEqual(first.digest, second.digest);
+  });
+
   it("accepts only profile-appropriate credentials and redacts all secret values", () => {
     const production = validateFactoryPersonalizationMedia(productionMedia());
     const testbed = validateFactoryPersonalizationMedia(testbedMedia());
@@ -73,6 +105,7 @@ describe("Factory Personalization Media v1", () => {
         retention: "installation-lifecycle-only",
       },
       credentials: { administrator: "configured", kiosk: "configured" },
+      maintenancePinVerifier: "configured",
       wireGuardPrivateKey: "not-supplied; generated-locally",
       mediaConsumed: true,
       stagingRetained: false,
@@ -155,6 +188,40 @@ describe("Factory Personalization Media v1", () => {
     const ajv = new Ajv2020({ strict: false });
     const validateMedia = ajv.compile(schema);
     assert.equal(validateMedia(productionMedia()), true, ajv.errorsText());
+    for (const candidate of [
+      productionMedia({
+        maintenancePinVerifier: {
+          ...productionMedia().maintenancePinVerifier,
+          salt: "ABEiM0RVZneImaq7zN3u/w",
+        },
+      }),
+      productionMedia({
+        maintenancePinVerifier: {
+          ...productionMedia().maintenancePinVerifier,
+          digest: "jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0",
+        },
+      }),
+    ]) {
+      assert.equal(validateMedia(candidate), false, ajv.errorsText());
+      assert.throws(
+        () => validateFactoryPersonalizationMedia(candidate),
+        FactoryPersonalizationMediaError,
+      );
+    }
+    assert.throws(
+      () =>
+        validateFactoryPersonalizationMedia(
+          productionMedia({
+            maintenancePinVerifier: {
+              ...productionMedia().maintenancePinVerifier,
+              // This decodes to the same bytes as the canonical /w== form,
+              // but the unused final bits make the representation ambiguous.
+              salt: "ABEiM0RVZneImaq7zN3u/x==",
+            },
+          }),
+        ),
+      FactoryPersonalizationMediaError,
+    );
     assert.equal(
       validateMedia({
         ...productionMedia(),

@@ -237,6 +237,38 @@ test("all factory maintenance PowerShell entrypoints parse", () => {
   }
 });
 
+test("Factory bootstrap capability hashing stays compatible with Windows PowerShell 5.1", () => {
+  const preparation = readFileSync(
+    "scripts/windows/prepare-factory-runtime.ps1",
+    "utf8",
+  );
+  const factoryWriter = preparation.slice(
+    preparation.indexOf("function Write-FactoryRuntimeFiles"),
+  );
+
+  assert.doesNotMatch(
+    factoryWriter,
+    /\[Security\.Cryptography\.SHA256\]::HashData/,
+  );
+  assert.doesNotMatch(factoryWriter, /\[Convert\]::ToHexString/);
+  assert.match(factoryWriter, /\[Security\.Cryptography\.SHA256\]::Create\(\)/);
+  assert.match(factoryWriter, /\.ComputeHash\(/);
+  assert.match(
+    factoryWriter,
+    /\[BitConverter\]::ToString\([^)]*\)\.Replace\("-", ""\)\.ToLowerInvariant\(\)/,
+  );
+
+  // The target applies this entrypoint through inbox Windows PowerShell, while
+  // CI's parser check keeps the source syntactically valid before it reaches a
+  // Windows acceptance host.
+  const testbed = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
+  assert.match(
+    testbed,
+    /& powershell\.exe -NoProfile -ExecutionPolicy Bypass -File \$verifierPath/,
+  );
+  assertPowerShellParses("scripts/windows/prepare-factory-runtime.ps1");
+});
+
 test("factory preparation hardens maintenance login before network package installation", () => {
   const preparation = readFileSync(
     "scripts/windows/prepare-factory-runtime.ps1",
@@ -325,6 +357,9 @@ test("generated clean-base orchestration is profile-neutral and parses", () => {
       remoteOpenSshPackagePath: "C:\\Windows\\Temp\\OpenSSH.msi",
       remoteWireGuardPackagePath: "C:\\Windows\\Temp\\WireGuard.msi",
       remoteMaintenanceCaPublicKeyPath: "C:\\Windows\\Temp\\maintenance-ca.pub",
+      factoryMediaRoot: "C:\\VEM\\factory-media",
+      visionConfigurationSourcePath:
+        "C:\\VEM\\factory-media\\assets\\vision-configuration.json",
       maintenanceCaPublicKeySha256: "c".repeat(64),
       openSshPackageSha256: "d".repeat(64),
       wireGuardPackageSha256: "e".repeat(64),
@@ -349,6 +384,14 @@ test("generated clean-base orchestration is profile-neutral and parses", () => {
     assert.match(productionInvocation, /HardwareMode = 'production'/);
     assert.match(productionInvocation, /ExpectedMaintenanceUser = 'Admin'/);
     assert.match(productionInvocation, /FactoryProfile = 'production'/);
+    assert.match(
+      productionInvocation,
+      /FactoryMediaRoot = 'C:\\VEM\\factory-media'/,
+    );
+    assert.match(
+      productionInvocation,
+      /VisionConfigurationSourcePath = 'C:\\VEM\\factory-media\\assets\\vision-configuration\.json'/,
+    );
     assert.doesNotMatch(
       productionInvocation,
       /YKDZ|legacy-provider|simulated/i,

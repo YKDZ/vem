@@ -48,6 +48,16 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeCatalogItem(
   overrides: Partial<MachineCatalogItem> = {},
 ): MachineCatalogItem {
@@ -542,6 +552,7 @@ describe("checkout store", () => {
       paymentMethod: "payment_code",
       paymentProviderCode: "alipay",
       profileSnapshot: null,
+      idempotencyKey: expect.stringMatching(/^checkout:/),
     });
     expect(store.customerCheckoutView).toMatchObject({
       stage: "payment",
@@ -562,6 +573,53 @@ describe("checkout store", () => {
       },
     });
     expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
+  });
+
+  it("reuses one checkout idempotency key when the customer retries a failed create", async () => {
+    const item = makeCatalogItem();
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "qr_code:alipay",
+        providerCode: "alipay",
+        method: "qr_code",
+        displayName: "支付宝扫码",
+        description: "请扫码支付",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "qr_code:alipay";
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyNetworkSaleReady();
+    store.selectItem(item);
+    createOrderMock
+      .mockRejectedValueOnce(new Error("daemon timeout"))
+      .mockResolvedValueOnce(
+        makeTransactionSnapshot({ paymentMethod: "qr_code" }),
+      );
+
+    await expect(store.createOrder()).rejects.toThrow("daemon timeout");
+    await store.createOrder();
+
+    const [firstRequest, secondRequest] = createOrderMock.mock.calls;
+    expect(firstRequest?.[0]).toEqual(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^checkout:/),
+      }),
+    );
+    expect(secondRequest?.[0]).toEqual(
+      expect.objectContaining({
+        idempotencyKey: firstRequest?.[0].idempotencyKey,
+      }),
+    );
   });
 
   it("shows customer-safe scanner copy when create-order local payment-code recheck fails", async () => {
@@ -1067,6 +1125,466 @@ describe("checkout store", () => {
       stage: "dispensing",
       routeTarget: { path: "/dispensing" },
     });
+  });
+
+  it("does not let an older payment refresh roll back a newer dispensing projection", async () => {
+    const older = deferred<TransactionSnapshot>();
+    const newer = deferred<TransactionSnapshot>();
+    getCurrentTransactionMock
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const store = useCheckoutStore();
+    const payment = makeTransactionSnapshot({
+      updatedAt: "2026-07-15T01:00:00.000Z",
+    });
+    const dispensing = makeTransactionSnapshot({
+      paymentStatus: "succeeded",
+      orderStatus: "dispensing",
+      nextAction: "dispensing",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-CONCURRENT",
+        status: "sent",
+        lastError: null,
+      },
+      updatedAt: "2026-07-15T01:00:02.000Z",
+    });
+    store.applyTransaction(payment);
+
+    const olderRefresh = store.refreshCurrentTransaction();
+    const newerRefresh = store.refreshCurrentTransaction();
+    newer.resolve(dispensing);
+    await newerRefresh;
+    older.resolve(payment);
+    await olderRefresh;
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "dispensing",
+      orderCredential: "ORD-001",
+    });
+    expect(store.transaction?.updatedAt).toBe("2026-07-15T01:00:02.000Z");
+  });
+
+  it("does not reopen recovery when an older request fails after a newer terminal success", async () => {
+    const older = deferred<TransactionSnapshot>();
+    const newer = deferred<TransactionSnapshot>();
+    getCurrentTransactionMock
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const store = useCheckoutStore();
+    store.applyTransaction(
+      makeTransactionSnapshot({
+        updatedAt: "2026-07-15T01:10:00.000Z",
+      }),
+    );
+    const terminal = makeTransactionSnapshot({
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
+      nextAction: "success",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-CONCURRENT-SUCCESS",
+        status: "succeeded",
+        lastError: null,
+      },
+      updatedAt: "2026-07-15T01:10:02.000Z",
+    });
+
+    const olderRefresh = store.refreshCurrentTransaction();
+    const newerRefresh = store.refreshCurrentTransaction();
+    newer.resolve(terminal);
+    await newerRefresh;
+    older.reject(new Error("older daemon IPC request failed"));
+    await olderRefresh;
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "result",
+      result: { kind: "success" },
+    });
+    expect(store.customerCheckoutRecovery.active).toBe(false);
+    expect(store.error).toBeNull();
+  });
+
+  it("keeps refresh loading true until every concurrent daemon request settles", async () => {
+    const older = deferred<TransactionSnapshot>();
+    const newer = deferred<TransactionSnapshot>();
+    getCurrentTransactionMock
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const store = useCheckoutStore();
+    const payment = makeTransactionSnapshot();
+    store.applyTransaction(payment);
+
+    const olderRefresh = store.refreshCurrentTransaction();
+    const newerRefresh = store.refreshCurrentTransaction();
+    expect(store.loading).toBe(true);
+
+    newer.resolve(payment);
+    await newerRefresh;
+    expect(store.loading).toBe(true);
+
+    older.resolve(payment);
+    await olderRefresh;
+    expect(store.loading).toBe(false);
+  });
+
+  it("still accepts valid daemon progress from an older request instead of using blind latest-wins", async () => {
+    const older = deferred<TransactionSnapshot>();
+    const newer = deferred<TransactionSnapshot>();
+    getCurrentTransactionMock
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const store = useCheckoutStore();
+    store.applyTransaction(
+      makeTransactionSnapshot({
+        updatedAt: "2026-07-15T01:20:00.000Z",
+      }),
+    );
+    const newerPayment = makeTransactionSnapshot({
+      paymentStatus: "processing",
+      updatedAt: "2026-07-15T01:20:02.000Z",
+    });
+    const olderTerminal = makeTransactionSnapshot({
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
+      nextAction: "success",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-OLDER-PROGRESS",
+        status: "succeeded",
+        lastError: null,
+      },
+      updatedAt: "2026-07-15T01:20:03.000Z",
+    });
+
+    const olderRefresh = store.refreshCurrentTransaction();
+    const newerRefresh = store.refreshCurrentTransaction();
+    newer.resolve(newerPayment);
+    await newerRefresh;
+    older.resolve(olderTerminal);
+    await olderRefresh;
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "result",
+      result: { kind: "success" },
+    });
+  });
+
+  it("ignores an older empty identity after a newer valid daemon progression", async () => {
+    const older = deferred<TransactionSnapshot>();
+    const newer = deferred<TransactionSnapshot>();
+    getCurrentTransactionMock
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+    const dispensing = makeTransactionSnapshot({
+      paymentStatus: "succeeded",
+      orderStatus: "dispensing",
+      nextAction: "dispensing",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-NEWER-IDENTITY",
+        status: "sent",
+        lastError: null,
+      },
+      updatedAt: "2026-07-15T01:30:02.000Z",
+    });
+    const empty = makeTransactionSnapshot({
+      orderId: null,
+      orderNo: null,
+      paymentId: null,
+      paymentNo: null,
+      paymentMethod: null,
+      paymentProvider: null,
+      paymentUrl: null,
+      paymentStatus: null,
+      orderStatus: null,
+      totalAmountCents: null,
+      nextAction: null,
+      expiresAt: null,
+      updatedAt: "2026-07-15T01:30:00.000Z",
+    });
+
+    const olderRefresh = store.refreshCurrentTransaction();
+    const newerRefresh = store.refreshCurrentTransaction();
+    newer.resolve(dispensing);
+    await newerRefresh;
+    older.resolve(empty);
+    await olderRefresh;
+
+    expect(store.customerCheckoutView.stage).toBe("dispensing");
+    expect(store.customerCheckoutRecovery.active).toBe(false);
+    expect(store.error).toBeNull();
+  });
+
+  it("blocks cancel at the store boundary while the active transaction is recovering", async () => {
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("daemon IPC disconnected"),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+    await store.refreshCurrentTransaction();
+
+    await expect(store.cancelCurrentOrder()).rejects.toThrow(
+      "正在恢复当前交易",
+    );
+
+    expect(cancelOrderMock).not.toHaveBeenCalled();
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("blocks payment-code submission at the store boundary while recovering", async () => {
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("daemon IPC disconnected"),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+    await store.refreshCurrentTransaction();
+
+    await expect(
+      store.submitDevPaymentCode("28763443825664394"),
+    ).resolves.toBeNull();
+
+    expect(submitDevPaymentCodeMock).not.toHaveBeenCalled();
+    expect(store.customerCheckoutView.orderCredential).toBe("ORD-001");
+  });
+
+  it("blocks both mock payment mutations at the store boundary while recovering", async () => {
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("daemon IPC disconnected"),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+    await store.refreshCurrentTransaction();
+
+    await store.markMockSucceeded();
+    await store.markMockFailed();
+
+    expect(markMockPaymentMock).not.toHaveBeenCalled();
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("blocks order creation before catalog or daemon mutation while recovering", async () => {
+    const store = useCheckoutStore();
+    store.selectItem(makeCatalogItem());
+    store.applyTransaction(makeTransactionSnapshot());
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("daemon IPC disconnected"),
+    );
+    await store.refreshCurrentTransaction();
+    getSaleViewMock.mockClear();
+
+    await expect(store.createOrder()).rejects.toThrow("正在恢复当前交易");
+
+    expect(getSaleViewMock).not.toHaveBeenCalled();
+    expect(createOrderMock).not.toHaveBeenCalled();
+    expect(store.customerCheckoutView.orderCredential).toBe("ORD-001");
+  });
+
+  it("blocks reset and customer selections from changing local transaction state while recovering", async () => {
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("daemon IPC disconnected"),
+    );
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "mock:mock",
+        providerCode: "mock",
+        method: "mock",
+        displayName: "模拟支付",
+        description: "本地模拟",
+        icon: "mock",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+      {
+        optionKey: "qr_code:alipay",
+        providerCode: "alipay",
+        method: "qr_code",
+        displayName: "支付宝",
+        description: "扫码支付",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: false,
+      },
+    ];
+    store.selectedPaymentOptionKey = "mock:mock";
+    store.applyTransaction(makeTransactionSnapshot());
+    await store.refreshCurrentTransaction();
+
+    store.selectPaymentOption("qr_code:alipay");
+    store.selectItem(makeCatalogItem({ catalogKey: "product:OTHER" }));
+    store.reset();
+
+    expect(store.selectedPaymentOptionKey).toBe("mock:mock");
+    expect(store.customerCheckoutRecovery.active).toBe(true);
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("does not let a new catalog selection clear a daemon-owned active transaction", () => {
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    store.selectItem(makeCatalogItem({ catalogKey: "product:OTHER" }));
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("keeps the last daemon transaction projection under recovery when IPC refresh fails", async () => {
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("daemon IPC disconnected"),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+    expect(store.customerCheckoutRecovery).toEqual({
+      active: true,
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("does not abandon an active transaction when reconnect temporarily returns no current transaction", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        orderId: null,
+        orderNo: null,
+        paymentId: null,
+        paymentNo: null,
+        paymentMethod: null,
+        paymentProvider: null,
+        paymentUrl: null,
+        paymentStatus: null,
+        orderStatus: null,
+        totalAmountCents: null,
+        nextAction: null,
+        expiresAt: null,
+      }),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+    expect(store.customerCheckoutRecovery.active).toBe(true);
+  });
+
+  it("rejects a different transaction identity while recovering the active one", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({ orderNo: "ORD-UNRELATED" }),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+    expect(store.customerCheckoutRecovery).toEqual({
+      active: true,
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("clears recovery only after the daemon restores the same transaction identity and advances it", async () => {
+    getCurrentTransactionMock
+      .mockRejectedValueOnce(new Error("daemon IPC disconnected"))
+      .mockResolvedValueOnce(
+        makeTransactionSnapshot({
+          paymentStatus: "succeeded",
+          orderStatus: "dispensing",
+          nextAction: "dispensing",
+          vending: {
+            commandId: null,
+            commandNo: "CMD-RECONNECTED",
+            status: "sent",
+            lastError: null,
+          },
+        }),
+      );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.refreshCurrentTransaction();
+    expect(store.customerCheckoutRecovery.active).toBe(true);
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutRecovery).toEqual({
+      active: false,
+      orderCredential: null,
+    });
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "dispensing",
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("keeps a terminal projection until the customer explicitly dismisses it", async () => {
+    const terminal = makeTransactionSnapshot({
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
+      nextAction: "success",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-TERMINAL",
+        status: "succeeded",
+        lastError: null,
+      },
+    });
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        orderId: null,
+        orderNo: null,
+        paymentId: null,
+        paymentNo: null,
+        paymentMethod: null,
+        paymentProvider: null,
+        paymentUrl: null,
+        paymentStatus: null,
+        orderStatus: null,
+        totalAmountCents: null,
+        nextAction: null,
+        expiresAt: null,
+      }),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(terminal);
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "result",
+      orderCredential: "ORD-001",
+      result: { kind: "success" },
+    });
+    store.dismissCurrentTerminalTransaction();
+    expect(store.customerCheckoutView.stage).toBe("none");
   });
 
   it("preserves result_unknown vending status from daemon manual handling transaction", async () => {

@@ -763,10 +763,11 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
     /^待处理\s+\d+\s+·\s+\S+$/,
   );
 
-  await expect(page.getByText("销售就绪阻塞项")).toBeVisible();
-  await expect(page.getByText("整机维护锁", { exact: true })).toBeVisible();
+  await expect(page.getByText("当前阻塞项")).toBeVisible();
   await expect(
-    page.getByText(/整机维护锁 · WHOLE_MACHINE_HARDWARE_FAULT/).first(),
+    page
+      .getByRole("region", { name: "当前阻塞项" })
+      .getByText("整机维护锁", { exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "刷新诊断" })).toBeVisible();
   await expect(page.getByRole("button", { name: "导出日志" })).toBeVisible();

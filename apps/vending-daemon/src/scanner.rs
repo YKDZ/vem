@@ -24,6 +24,158 @@ pub struct ScannerRuntime {
     tx_events: broadcast::Sender<DaemonEvent>,
 }
 
+#[derive(Clone)]
+pub struct ScannerRuntimeController {
+    tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+    tx_events: broadcast::Sender<DaemonEvent>,
+    state: std::sync::Arc<tokio::sync::Mutex<Option<RunningScannerRuntime>>>,
+}
+
+struct RunningScannerRuntime {
+    config: MachinePublicConfig,
+    shutdown: CancellationToken,
+    task: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+impl ScannerRuntimeController {
+    pub fn new(
+        tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+        tx_events: broadcast::Sender<DaemonEvent>,
+    ) -> Self {
+        Self {
+            tx_raw,
+            tx_events,
+            state: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        }
+    }
+
+    pub async fn reconfigure_from_config(
+        &self,
+        config: &MachinePublicConfig,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let previous_config = state.as_ref().map(|running| running.config.clone());
+        if let Some(running) = state.take() {
+            running.shutdown.cancel();
+            match running.task.await {
+                Ok(result) => result?,
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => return Err(format!("join scanner runtime failed: {error}")),
+            }
+        }
+        match self.start_runtime(config).await {
+            Ok(running) => {
+                *state = Some(running);
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(previous_config) = previous_config {
+                    match self.start_runtime(&previous_config).await {
+                        Ok(previous) => *state = Some(previous),
+                        Err(rollback_error) => {
+                            return Err(format!(
+                                "{error}; restore previous scanner runtime failed: {rollback_error}"
+                            ));
+                        }
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Starts the scanner as an independently degraded runtime. Unlike a
+    /// maintenance binding activation, daemon startup must not fail merely
+    /// because the optional scanner is unplugged or temporarily unavailable.
+    pub async fn start_from_config(&self, config: &MachinePublicConfig) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if let Some(running) = state.take() {
+            running.shutdown.cancel();
+            match running.task.await {
+                Ok(result) => result?,
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => return Err(format!("join scanner runtime failed: {error}")),
+            }
+        }
+        let shutdown = CancellationToken::new();
+        let runtime = ScannerRuntime::from_config(
+            config,
+            self.tx_raw.clone(),
+            self.tx_events.clone(),
+            shutdown.clone(),
+        );
+        *state = Some(RunningScannerRuntime {
+            config: config.clone(),
+            shutdown,
+            task: tokio::spawn(runtime.run()),
+        });
+        Ok(())
+    }
+
+    async fn start_runtime(
+        &self,
+        config: &MachinePublicConfig,
+    ) -> Result<RunningScannerRuntime, String> {
+        let shutdown = CancellationToken::new();
+        let mut health_events = self.tx_events.subscribe();
+        let runtime = ScannerRuntime::from_config(
+            config,
+            self.tx_raw.clone(),
+            self.tx_events.clone(),
+            shutdown.clone(),
+        );
+        let task = tokio::spawn(runtime.run());
+        let readiness = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match health_events.recv().await {
+                    Ok(DaemonEvent::ScannerHealthChanged { snapshot, .. }) => {
+                        if snapshot.code == "SCANNER_READY" || snapshot.code == "SCANNER_DISABLED" {
+                            return Ok(());
+                        }
+                        if matches!(
+                            snapshot.code.as_str(),
+                            "SCANNER_PORT_MISSING"
+                                | "SCANNER_USB_NOT_FOUND"
+                                | "SCANNER_OPEN_FAILED"
+                        ) {
+                            return Err(snapshot.message);
+                        }
+                    }
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err("scanner health event channel closed".to_string());
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Err("scanner adapter readiness timed out".to_string()));
+        if let Err(error) = readiness {
+            shutdown.cancel();
+            let _ = task.await;
+            return Err(error);
+        }
+        Ok(RunningScannerRuntime {
+            config: config.clone(),
+            shutdown,
+            task,
+        })
+    }
+
+    pub async fn stop(&self) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let Some(running) = state.take() else {
+            return Ok(());
+        };
+        running.shutdown.cancel();
+        match running.task.await {
+            Ok(result) => result,
+            Err(error) if error.is_cancelled() => Ok(()),
+            Err(error) => Err(format!("join scanner runtime failed: {error}")),
+        }
+    }
+}
+
 impl ScannerRuntime {
     pub fn from_config(
         config: &MachinePublicConfig,
@@ -299,5 +451,51 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[tokio::test]
+    async fn scanner_controller_restores_previous_runtime_when_reconfigure_fails() {
+        let (raw_tx, _raw_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let controller = ScannerRuntimeController::new(raw_tx, event_tx);
+        let disabled = crate::config::MachinePublicConfig {
+            scanner_adapter: ScannerAdapterKind::Disabled,
+            ..default_public_config()
+        };
+        controller
+            .reconfigure_from_config(&disabled)
+            .await
+            .expect("start previous disabled runtime");
+        let _ = event_rx.recv().await.expect("initial disabled event");
+
+        let missing = crate::config::MachinePublicConfig {
+            scanner_adapter: ScannerAdapterKind::SerialText,
+            scanner_serial_port_path: Some("/dev/vem-missing-scanner".to_string()),
+            ..default_public_config()
+        };
+        let error = controller
+            .reconfigure_from_config(&missing)
+            .await
+            .expect_err("missing replacement must fail");
+        assert!(error.contains("open scanner serial failed"));
+
+        let mut restored_disabled = false;
+        while let Ok(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv()).await
+        {
+            let event = event.expect("event");
+            let payload = serde_json::to_value(event).expect("event json");
+            if payload["type"] == "scanner_health_changed"
+                && payload["snapshot"]["code"] == "SCANNER_DISABLED"
+            {
+                restored_disabled = true;
+                break;
+            }
+        }
+        assert!(
+            restored_disabled,
+            "previous scanner runtime must be restored"
+        );
+        controller.stop().await.expect("stop restored runtime");
     }
 }

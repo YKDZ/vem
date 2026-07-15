@@ -1,3 +1,4 @@
+import { pbkdf2Sync, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -13,6 +14,52 @@ const FORBIDDEN_PRIVATE_NETWORK_MATERIAL_PATTERN =
   /(?:private.?key|wireguard|wg|peer|certificate|token|secret)/i;
 const PRODUCTION_FORBIDDEN_PATTERN =
   /(?:ykdz|testbed|test-ca|test-peer|simulator|shared-password)/i;
+const MAINTENANCE_PIN_KDF_ITERATIONS = 120000;
+const MAINTENANCE_PIN_SALT_BYTES = 16;
+const MAINTENANCE_PIN_DIGEST_BYTES = 32;
+
+function isCanonicalPaddedBase64(value, expectedBytes) {
+  if (typeof value !== "string") return false;
+  const pattern =
+    expectedBytes === MAINTENANCE_PIN_SALT_BYTES
+      ? /^(?:[A-Za-z0-9+/]{4}){5}[A-Za-z0-9+/][AQgw]==$/
+      : expectedBytes === MAINTENANCE_PIN_DIGEST_BYTES
+        ? /^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=$/
+        : null;
+  if (!pattern?.test(value)) return false;
+  const decoded = Buffer.from(value, "base64");
+  return (
+    decoded.length === expectedBytes && decoded.toString("base64") === value
+  );
+}
+
+/**
+ * Derive the only Factory-deliverable representation of a maintenance PIN.
+ * Callers retain the PIN only in process memory; this function deliberately
+ * accepts no file path, environment variable, or command-line convention.
+ */
+export function createMaintenancePinVerifier(pin) {
+  if (typeof pin !== "string" || pin.length === 0 || pin.length > 128) {
+    throw new TypeError(
+      "maintenance PIN must be a non-empty value up to 128 characters",
+    );
+  }
+  const salt = randomBytes(MAINTENANCE_PIN_SALT_BYTES);
+  const digest = pbkdf2Sync(
+    pin,
+    salt,
+    MAINTENANCE_PIN_KDF_ITERATIONS,
+    MAINTENANCE_PIN_DIGEST_BYTES,
+    "sha256",
+  );
+  return {
+    version: 1,
+    algorithm: "pbkdf2_hmac_sha256",
+    iterations: MAINTENANCE_PIN_KDF_ITERATIONS,
+    salt: salt.toString("base64"),
+    digest: digest.toString("base64"),
+  };
+}
 
 export class FactoryPersonalizationMediaError extends Error {
   constructor(issues) {
@@ -79,6 +126,51 @@ function assertCredential(value, path, expectedUser, issues) {
   }
 }
 
+function assertMaintenancePinVerifier(value, issues) {
+  if (
+    !assertExactKeys(
+      value,
+      ["version", "algorithm", "iterations", "salt", "digest"],
+      "maintenancePinVerifier",
+      issues,
+    )
+  ) {
+    return;
+  }
+  if (value.version !== 1)
+    issues.push(issue("maintenancePinVerifier.version", "must be 1"));
+  if (value.algorithm !== "pbkdf2_hmac_sha256") {
+    issues.push(
+      issue("maintenancePinVerifier.algorithm", "must be pbkdf2_hmac_sha256"),
+    );
+  }
+  if (
+    !Number.isInteger(value.iterations) ||
+    value.iterations < 120000 ||
+    value.iterations > 1000000
+  ) {
+    issues.push(
+      issue(
+        "maintenancePinVerifier.iterations",
+        "must be between 120000 and 1000000",
+      ),
+    );
+  }
+  for (const [field, length] of [
+    ["salt", MAINTENANCE_PIN_SALT_BYTES],
+    ["digest", MAINTENANCE_PIN_DIGEST_BYTES],
+  ]) {
+    if (!isCanonicalPaddedBase64(value[field], length)) {
+      issues.push(
+        issue(
+          `maintenancePinVerifier.${field}`,
+          `must be a ${length}-byte base64 value`,
+        ),
+      );
+    }
+  }
+}
+
 function assertNoPrivateNetworkMaterial(value, path, issues) {
   if (typeof value === "string") {
     if (FORBIDDEN_PRIVATE_NETWORK_MATERIAL_PATTERN.test(value)) {
@@ -123,6 +215,7 @@ export function validateFactoryPersonalizationMedia(media) {
       "profile",
       "protection",
       "credentials",
+      "maintenancePinVerifier",
     ],
     "media",
     issues,
@@ -145,6 +238,7 @@ export function validateFactoryPersonalizationMedia(media) {
       issue("mediaId", "must be an opaque lowercase installation identifier"),
     );
   }
+  assertMaintenancePinVerifier(candidate.maintenancePinVerifier, issues);
   const hasSupportedProfile = Object.hasOwn(
     PROFILE_CREDENTIAL_KEYS,
     typeof candidate.profile === "string" ? candidate.profile : "",
@@ -265,6 +359,7 @@ export function redactFactoryPersonalizationMedia(
     credentials: Object.fromEntries(
       credentialKeys.map((key) => [key, "configured"]),
     ),
+    maintenancePinVerifier: "configured",
     wireGuardPrivateKey: "not-supplied; generated-locally",
     mediaConsumed: true,
     stagingRetained: false,
@@ -293,6 +388,7 @@ export function previewFactoryPersonalizationMedia(profile) {
     credentials: Object.fromEntries(
       PROFILE_CREDENTIAL_KEYS[profile].map((key) => [key, "not-configured"]),
     ),
+    maintenancePinVerifier: "not-configured",
     wireGuardPrivateKey: "not-supplied; generated-locally",
     mediaConsumed: false,
     stagingRetained: false,

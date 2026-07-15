@@ -41,6 +41,7 @@ import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { admitFactoryAcceptance } from "./factory-acceptance-admission.mjs";
 import { canonicalJson, createFactoryManifest } from "./factory-manifest.mjs";
 import { createSignedAssetEvidence } from "./verify-asset-evidence.mjs";
+import { verifyFactoryVisionDelivery } from "./verify-vision-delivery-assembly.mjs";
 import {
   createVisionReleaseApproval,
   createVisionReleaseDescriptor,
@@ -1679,24 +1680,76 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(ingest, /\[IO\.DriveType\]::CDRom/);
       assert.match(ingest, /Copy-Item -LiteralPath \$sourcePath/);
       assert.doesNotMatch(ingest, /Get-Volume|Get-Partition|Get-Disk/);
+      const visionProvisioningRoot = join(
+        directory,
+        "sources",
+        "$OEM$",
+        "$1",
+        "VEM",
+        "Factory",
+        "VEM",
+      );
+      const visionProvisioning = JSON.parse(
+        await readFile(
+          join(visionProvisioningRoot, "VISION-FACTORY-PROVISIONING.JSON"),
+          "utf8",
+        ),
+      );
+      const deliveryEvidence = verifyFactoryVisionDelivery(
+        visionProvisioningRoot,
+      );
+      const externalDeliveryEvidence = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            "scripts/factory/verify-vision-delivery-assembly.mjs",
+            "--kind",
+            "factory",
+            "--root",
+            visionProvisioningRoot,
+          ],
+          { encoding: "utf8" },
+        ),
+      );
+      assert.equal(
+        externalDeliveryEvidence.artifactDigest,
+        deliveryEvidence.artifactDigest,
+      );
       assert.deepEqual(
-        JSON.parse(
-          await readFile(
-            join(
-              directory,
-              "sources",
-              "$OEM$",
-              "$1",
-              "VEM",
-              "Factory",
-              "VEM",
-              "VISION-FACTORY-PROVISIONING.JSON",
-            ),
-            "utf8",
-          ),
-        ).schemaVersion,
+        Object.keys(deliveryEvidence.files)
+          .filter((path) => path.startsWith("VISION-INSTALLER/"))
+          .sort(),
+        [
+          "VISION-INSTALLER/install-vision-release.ps1",
+          "VISION-INSTALLER/provision-vision-factory-release.ps1",
+          "VISION-INSTALLER/vision-diagnostic-redaction.psm1",
+          "VISION-INSTALLER/vision-release-materialization.psm1",
+        ],
+      );
+      assert.equal(
+        visionProvisioning.schemaVersion,
         "vem-vision-factory-provisioning/v1",
       );
+      const expectedInstallerFiles = [
+        "install-vision-release.ps1",
+        "provision-vision-factory-release.ps1",
+        "vision-release-materialization.psm1",
+        "vision-diagnostic-redaction.psm1",
+      ];
+      for (const name of expectedInstallerFiles) {
+        const relative = `VISION-INSTALLER/${name}`;
+        assert.match(
+          visionProvisioning.files[relative],
+          /^sha256:[a-f0-9]{64}$/,
+        );
+        const staged = await readFile(
+          join(visionProvisioningRoot, "VISION-INSTALLER", name),
+        );
+        assert.equal(
+          `sha256:${createHash("sha256").update(staged).digest("hex")}`,
+          visionProvisioning.files[relative],
+        );
+      }
     } finally {
       await rm(data.root, { recursive: true, force: true });
     }

@@ -485,6 +485,74 @@ describe("PaymentProviderConfigService", () => {
         "http://localhost:3000/api/payments/webhooks/alipay",
       );
     });
+
+    it("keeps an immutable payment snapshot when the current row has the same config id", async () => {
+      const currentRows = [
+        makeCompleteAlipayRow({
+          id: "cfg-rotated-in-place",
+          configEncryptedJson: encryptJson(
+            { privateKeyPem: "current-private-key" },
+            ENCRYPTION_KEY,
+          ),
+        }),
+      ];
+      const oldSnapshot = {
+        version: 1,
+        id: "cfg-rotated-in-place",
+        providerId: "prov-alipay",
+        providerCode: "alipay",
+        machineId: null,
+        merchantNo: "ALI-MERCHANT-OLD",
+        appId: "ALI-APP-SHARED",
+        publicConfigJson: {},
+        sensitiveConfigEncryptedJson: encryptJson(
+          { privateKeyPem: "old-private-key" },
+          ENCRYPTION_KEY,
+        ),
+        boundAt: "2026-07-01T00:00:00.000Z",
+      };
+      let selectCall = 0;
+      const mockDb = {
+        select: vi.fn(() => {
+          selectCall += 1;
+          if (selectCall === 1) {
+            return {
+              from: () => ({
+                innerJoin: () => ({ where: async () => currentRows }),
+              }),
+            };
+          }
+          return {
+            from: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  orderBy: () => ({
+                    limit: async () => [{ snapshot: oldSnapshot }],
+                  }),
+                }),
+              }),
+            }),
+          };
+        }),
+      };
+      const service = new PaymentProviderConfigService(
+        mockDb as never,
+        makeSecrets(),
+        makeAppConfig() as never,
+      );
+
+      const results =
+        await service.listWebhookCandidateConfigsForProvider("alipay");
+
+      expect(results).toHaveLength(2);
+      expect(results.map((result) => result.id)).toEqual([
+        "cfg-rotated-in-place",
+        "cfg-rotated-in-place",
+      ]);
+      expect(results[1]?.sensitiveConfigJson).toMatchObject({
+        privateKeyPem: "old-private-key",
+      });
+    });
   });
 
   describe("listMachinePaymentOptionsForMachine", () => {

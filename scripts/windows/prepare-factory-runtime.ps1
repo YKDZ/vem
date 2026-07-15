@@ -52,12 +52,32 @@ param(
   [Parameter(Mandatory = $false)][string]$MaintenanceWireGuardListenAddress,
 
   [switch]$ResetExistingVemState,
-  [switch]$DryRun
+  [switch]$DryRun,
+  # Executes the production support-script copy loop into a disposable root
+  # and emits only byte-derived assembly evidence. It never prepares the host.
+  [switch]$DeliveryAssemblyEvidenceOnly,
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyOutputRoot,
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyContractNonce,
+  # Emits only the profile/trace-metadata boundary that this entrypoint would
+  # write.  This is intentionally non-mutating and lets CI exercise the
+  # PowerShell-to-daemon contract without pretending to prepare a Windows host.
+  [switch]$ProjectionOnly
 )
 
 $ErrorActionPreference = "Stop"
 $RuntimeRoot = "C:\VEM\bringup"
 $ProgramDataRoot = "C:\ProgramData\VEM"
+$FactoryRuntimeSupportScripts = @(
+  "setup-scheduled-tasks.ps1",
+  "verify-factory-runtime.ps1",
+  "verify-kiosk-lockdown.ps1",
+  "verify-vem-runtime.ps1",
+  "apply-managed-update.ps1",
+  "provision-vision-factory-release.ps1",
+  "install-vision-release.ps1",
+  "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1"
+)
 
 function Assert-RequiredInputs {
   $missing = @()
@@ -121,6 +141,53 @@ function Assert-RequiredInputs {
 
   Normalize-Sha256 -Value $DaemonSha256 | Out-Null
   Normalize-Sha256 -Value $MachineUiSha256 | Out-Null
+}
+
+function New-FactoryRuntimeBoundaryProjection {
+  $daemonFactoryManifest = [ordered]@{
+    layoutVersion = 1
+    # FactoryProfile is the daemon's enum; operational labels stay outside it.
+    environment = $FactoryProfile
+    provisioningEndpoint = $ProvisioningEndpoint
+    hardwareMode = $HardwareMode
+    hardwareModel = $HardwareModel
+    hardwareSlotTopology = [ordered]@{
+      identity = $TopologyIdentity
+      version = $TopologyVersion
+    }
+  }
+  $factoryRuntimeManifest = [ordered]@{
+    schemaVersion = "vem-factory-runtime-manifest/v1"
+    factoryProfile = $FactoryProfile
+    environmentName = $EnvironmentName
+    deploymentBatch = $DeploymentBatch
+  }
+  $localBringupSettings = [ordered]@{
+    schemaVersion = "vem-local-bringup-settings/v1"
+    environmentName = $EnvironmentName
+    deploymentBatch = $DeploymentBatch
+    provisioningEndpoint = $ProvisioningEndpoint
+  }
+  $visionInputs = if ($FactoryProfile -eq "production") {
+    [ordered]@{
+      factoryMediaRoot = $FactoryMediaRoot
+      visionConfigurationSourcePath = $VisionConfigurationSourcePath
+    }
+  } else {
+    $null
+  }
+  return [ordered]@{
+    schemaVersion = "vem-factory-runtime-boundary-projection/v1"
+    factoryProfile = $FactoryProfile
+    inputs = [ordered]@{
+      environmentName = $EnvironmentName
+      deploymentBatch = $DeploymentBatch
+      visionInputs = $visionInputs
+    }
+    factoryRuntimeManifest = $factoryRuntimeManifest
+    localBringupSettings = $localBringupSettings
+    daemonFactoryManifest = $daemonFactoryManifest
+  }
 }
 
 function Get-FactoryMaintenanceProfilePolicy {
@@ -510,13 +577,14 @@ function Assert-FactoryPersonalizationMedia {
     throw "Factory Personalization Media is missing"
   }
   $media = Read-JsonFile -Path $PersonalizationMediaPath
-  Assert-ExactObjectProperties -Value $media -ExpectedNames @("schemaVersion", "kind", "mediaId", "profile", "protection", "credentials") -Label "Factory Personalization Media"
+  Assert-ExactObjectProperties -Value $media -ExpectedNames @("schemaVersion", "kind", "mediaId", "profile", "protection", "credentials", "maintenancePinVerifier") -Label "Factory Personalization Media"
   $schemaVersion = Get-RequiredOwnProperty -Value $media -Name "schemaVersion" -Label "Factory Personalization Media"
   $kind = Get-RequiredOwnProperty -Value $media -Name "kind" -Label "Factory Personalization Media"
   $mediaProfile = Get-RequiredOwnProperty -Value $media -Name "profile" -Label "Factory Personalization Media"
   $mediaId = Get-RequiredOwnProperty -Value $media -Name "mediaId" -Label "Factory Personalization Media"
   $protection = Get-RequiredOwnProperty -Value $media -Name "protection" -Label "Factory Personalization Media"
   $credentialObject = Get-RequiredOwnProperty -Value $media -Name "credentials" -Label "Factory Personalization Media"
+  $maintenancePinVerifier = Get-RequiredOwnProperty -Value $media -Name "maintenancePinVerifier" -Label "Factory Personalization Media"
   if ([string]$schemaVersion -cne "vem-factory-personalization-media/v1" -or [string]$kind -cne "factory-personalization-media") {
     throw "Factory Personalization Media schema is invalid"
   }
@@ -548,6 +616,24 @@ function Assert-FactoryPersonalizationMedia {
     }
   }
   if ([string]$maintenancePassword -ceq [string]$kioskPassword) { throw "Factory Personalization Media credentials must be unique" }
+  Assert-ExactObjectProperties -Value $maintenancePinVerifier -ExpectedNames @("version", "algorithm", "iterations", "salt", "digest") -Label "Factory maintenance PIN verifier"
+  if (
+    (Get-RequiredOwnProperty -Value $maintenancePinVerifier -Name "version" -Label "Factory maintenance PIN verifier") -ne 1 -or
+    [string](Get-RequiredOwnProperty -Value $maintenancePinVerifier -Name "algorithm" -Label "Factory maintenance PIN verifier") -cne "pbkdf2_hmac_sha256" -or
+    [int](Get-RequiredOwnProperty -Value $maintenancePinVerifier -Name "iterations" -Label "Factory maintenance PIN verifier") -lt 120000 -or
+    [int](Get-RequiredOwnProperty -Value $maintenancePinVerifier -Name "iterations" -Label "Factory maintenance PIN verifier") -gt 1000000
+  ) { throw "Factory maintenance PIN verifier is invalid" }
+  foreach ($part in @(@{ name = "salt"; bytes = 16 }, @{ name = "digest"; bytes = 32 })) {
+    $encoded = [string](Get-RequiredOwnProperty -Value $maintenancePinVerifier -Name $part.name -Label "Factory maintenance PIN verifier")
+    $base64Pattern = if ($part.name -ceq "salt") {
+      '^(?:[A-Za-z0-9+/]{4}){5}[A-Za-z0-9+/][AQgw]==$'
+    } else {
+      '^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=$'
+    }
+    if ($encoded -notmatch $base64Pattern) { throw "Factory maintenance PIN verifier is invalid" }
+    try { $decoded = [Convert]::FromBase64String($encoded) } catch { throw "Factory maintenance PIN verifier is invalid" }
+    if ($decoded.Length -ne $part.bytes -or [Convert]::ToBase64String($decoded) -cne $encoded) { throw "Factory maintenance PIN verifier is invalid" }
+  }
   $serialized = $media | ConvertTo-Json -Depth 20 -Compress
   if ($serialized -match "(?i)private.?key|wireguard|wg|peer|certificate|token|secret") {
     throw "Factory Personalization Media must not supply WireGuard key or peer material"
@@ -559,6 +645,7 @@ function Assert-FactoryPersonalizationMedia {
     KioskPassword = [string]$kioskPassword
     AutoLogonPassword = [string]$kioskPassword
     MaintenancePassword = [string]$maintenancePassword
+    MaintenancePinVerifierJson = ($maintenancePinVerifier | ConvertTo-Json -Compress -Depth 4)
     MediaId = [string]$mediaId
     Sources = [ordered]@{ personalizationMedia = "trusted-protected-gate" }
     Redaction = [ordered]@{
@@ -575,6 +662,7 @@ function Assert-FactoryPersonalizationMedia {
         ($maintenanceCredentialName) = "configured"
         kiosk = "configured"
       }
+      maintenancePinVerifier = "configured"
       wireGuardPrivateKey = "not-supplied; generated-locally"
       mediaConsumed = $true
       stagingRetained = $false
@@ -631,6 +719,7 @@ function Assert-CredentialInputs {
       KioskPassword = $null
       AutoLogonPassword = $null
       MaintenancePassword = $null
+      MaintenancePinVerifierJson = $null
       MediaId = $null
       Sources = [ordered]@{ personalizationMedia = "not-mounted-dry-run" }
       Redaction = [ordered]@{
@@ -644,6 +733,7 @@ function Assert-CredentialInputs {
           retention = "installation-lifecycle-only"
         }
         credentials = $dryRunCredentialRedaction
+        maintenancePinVerifier = "not-configured"
         wireGuardPrivateKey = "not-supplied; generated-locally"
         mediaConsumed = $false
         stagingRetained = $false
@@ -817,7 +907,39 @@ function Copy-ScriptIfPresent {
   if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
     throw "required support script not found: $source"
   }
-  Copy-Item -LiteralPath $source -Destination (Join-Path $TargetDirectory $Name) -Force
+  $destination = Join-Path $TargetDirectory $Name
+  Copy-Item -LiteralPath $source -Destination $destination -Force
+  $sourceDigest = "sha256:" + (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+  $destinationDigest = "sha256:" + (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($sourceDigest -cne $destinationDigest) {
+    throw "copied support script digest mismatch: $Name"
+  }
+  return [ordered]@{ name=$Name; sourceDigest=$sourceDigest; destinationDigest=$destinationDigest }
+}
+
+function Invoke-FactoryRuntimeDeliveryAssemblyEvidence {
+  if ([string]::IsNullOrWhiteSpace($DeliveryAssemblyOutputRoot)) {
+    throw "DeliveryAssemblyOutputRoot is required with DeliveryAssemblyEvidenceOnly"
+  }
+  $targetRoot = [IO.Path]::GetFullPath($DeliveryAssemblyOutputRoot)
+  if (Test-Path -LiteralPath $targetRoot) {
+    throw "DeliveryAssemblyOutputRoot must not already exist"
+  }
+  New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
+  $copied = @($FactoryRuntimeSupportScripts | ForEach-Object {
+    Copy-ScriptIfPresent -Name $_ -TargetDirectory $targetRoot
+  })
+  $files = [ordered]@{}
+  foreach ($record in $copied) {
+    $files[[string]$record.name] = [string]$record.destinationDigest
+  }
+  return [ordered]@{
+    schemaVersion = "vem-factory-runtime-delivery-assembly/v1"
+    kind = "factory-runtime-support-scripts"
+    deliveryAssemblyContractNonce = $DeliveryAssemblyContractNonce
+    root = $targetRoot
+    files = $files
+  }
 }
 
 function Assert-SupportScriptPresent {
@@ -845,15 +967,7 @@ function Assert-FactoryRuntimePreflight {
   $maintenanceCa = Assert-MaintenanceCaInput
   $rolePools = Assert-RolePools
   $maintenanceIngress = Get-FactoryMaintenanceIngressPolicy -Profile $FactoryProfile -WireGuardInterfaceAlias $MaintenanceWireGuardInterfaceAlias -WireGuardListenAddress $MaintenanceWireGuardListenAddress
-  $supportScripts = @(
-    "setup-scheduled-tasks.ps1",
-    "verify-factory-runtime.ps1",
-    "verify-kiosk-lockdown.ps1",
-    "verify-vem-runtime.ps1",
-    "apply-managed-update.ps1",
-    "provision-vision-factory-release.ps1",
-    "install-vision-release.ps1"
-  ) | ForEach-Object { Assert-SupportScriptPresent -Name $_ }
+  $supportScripts = @($FactoryRuntimeSupportScripts | ForEach-Object { Assert-SupportScriptPresent -Name $_ })
 
   return [pscustomobject]@{
     DaemonSha256 = $daemonHash
@@ -862,6 +976,7 @@ function Assert-FactoryRuntimePreflight {
     KioskPassword = $credentials.KioskPassword
     AutoLogonPassword = $credentials.AutoLogonPassword
     MaintenancePassword = $credentials.MaintenancePassword
+    MaintenancePinVerifierJson = $credentials.MaintenancePinVerifierJson
     PersonalizationRedaction = $credentials.Redaction
     CredentialSources = $credentials.Sources
     FactoryProfile = $FactoryProfile
@@ -1376,7 +1491,8 @@ function Invoke-FactoryVisionRelease {
   $configurationDigest = (Get-FileHash -LiteralPath $configurationPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $installer = "C:\VEM\bringup\install-vision-release.ps1"
   if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Factory Vision installer was not provisioned" }
-  & $installer -ConfigurationPath $configurationPath -EvidencePath ([string]$Plan.layout.visionInstallEvidencePath) -TaskUser $ExpectedAutoLogonUser
+  $deliveryRoot = "C:\ProgramData\VEM\factory\vision-release"
+  & $installer -BundlePath (Join-Path $deliveryRoot "bundle.bin") -DescriptorPath (Join-Path $deliveryRoot "descriptor.json") -AttestationPath (Join-Path $deliveryRoot "attestation.json") -SbomPath (Join-Path $deliveryRoot "sbom.json") -ProvenancePath (Join-Path $deliveryRoot "provenance.json") -ConformanceEvidencePath (Join-Path $deliveryRoot "conformance.json") -ApprovalPath (Join-Path $deliveryRoot "approval.json") -FactoryManifestPath (Join-Path $deliveryRoot "factory-manifest.json") -ConfigurationPath $configurationPath -EvidencePath ([string]$Plan.layout.visionInstallEvidencePath) -TaskUser $ExpectedAutoLogonUser
 
   $evidence = Read-JsonFile -Path ([string]$Plan.layout.visionInstallEvidencePath)
   if (
@@ -1419,6 +1535,39 @@ function Write-FactoryRuntimeFiles {
   foreach ($directory in @($Plan.directories)) {
     Ensure-Directory -Path $directory
   }
+  $maintenancePinVerifierPath = "C:\ProgramData\VEM\vending-daemon\factory\maintenance-pin-verifier.json"
+  New-Item -ItemType Directory -Path (Split-Path -Parent $maintenancePinVerifierPath) -Force | Out-Null
+  [IO.File]::WriteAllText($maintenancePinVerifierPath, [string]$Preflight.MaintenancePinVerifierJson, [Text.UTF8Encoding]::new($false))
+  icacls.exe $maintenancePinVerifierPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Factory maintenance PIN verifier staging ACL setup failed" }
+  # The bootstrap capability is not a maintenance PIN. It is a random,
+  # single-use proof readable only by the local maintenance account, exchanged
+  # for a daemon-memory session, then removed by the daemon before claim.
+  $bootstrapCapabilityBytes = [byte[]]::new(32)
+  [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bootstrapCapabilityBytes)
+  $bootstrapCapability = [Convert]::ToBase64String($bootstrapCapabilityBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+  # Windows PowerShell 5.1 runs the Factory entrypoint. HashData and
+  # Convert.ToHexString require newer .NET APIs, so use the long-lived APIs
+  # exposed by both Windows PowerShell 5.1 and PowerShell 7.
+  $bootstrapSha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    $bootstrapDigest = $bootstrapSha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($bootstrapCapability))
+  } finally {
+    $bootstrapSha256.Dispose()
+  }
+  $bootstrapVerifier = [ordered]@{
+    version = 1
+    algorithm = "sha256"
+    digest = ([BitConverter]::ToString($bootstrapDigest).Replace("-", "").ToLowerInvariant())
+  } | ConvertTo-Json -Compress
+  $bootstrapCapabilityPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability"
+  $bootstrapVerifierPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability-verifier.json"
+  [IO.File]::WriteAllText($bootstrapCapabilityPath, $bootstrapCapability, [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($bootstrapVerifierPath, $bootstrapVerifier, [Text.UTF8Encoding]::new($false))
+  icacls.exe $bootstrapCapabilityPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" "$ExpectedMaintenanceUser:R" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Factory bootstrap capability ACL setup failed" }
+  icacls.exe $bootstrapVerifierPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Factory bootstrap verifier ACL setup failed" }
   Mark-FactoryPersonalizationConsumed -Preflight $Preflight
 
   $baselineApplication = Apply-FactoryWindowsBaseline -Policy $Plan.factoryWindowsBaselinePolicy
@@ -1435,13 +1584,9 @@ function Write-FactoryRuntimeFiles {
   if ($LASTEXITCODE -ne 0) { throw "Maintenance SSH CA ACL setup failed" }
 
   $scriptsRoot = [string]$Plan.layout.scriptsRoot
-  Copy-ScriptIfPresent -Name "setup-scheduled-tasks.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "verify-factory-runtime.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "verify-kiosk-lockdown.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "verify-vem-runtime.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "apply-managed-update.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "provision-vision-factory-release.ps1" -TargetDirectory $scriptsRoot
-  Copy-ScriptIfPresent -Name "install-vision-release.ps1" -TargetDirectory $scriptsRoot
+  $supportScriptEvidence = @($FactoryRuntimeSupportScripts | ForEach-Object {
+    Copy-ScriptIfPresent -Name $_ -TargetDirectory $scriptsRoot
+  })
 
   $machineUiStartupMode = if (Test-ShellLauncherAvailable) { "shell_launcher" } else { "scheduled_task" }
   $manifest = [ordered]@{
@@ -1616,11 +1761,20 @@ function Write-FactoryRuntimeFiles {
     wireGuardApplication = $wireGuardApplication
     packageInstallation = [ordered]@{ openSsh = $openSshInstallation; wireGuard = $wireGuardInstallation }
     visionInstallation = $visionInstallation
+    supportScripts = $supportScriptEvidence
   }
 }
 
 try {
+  if ($DeliveryAssemblyEvidenceOnly) {
+    Invoke-FactoryRuntimeDeliveryAssemblyEvidence | ConvertTo-Json -Depth 20
+    exit 0
+  }
   Assert-RequiredInputs
+  if ($ProjectionOnly) {
+    New-FactoryRuntimeBoundaryProjection | ConvertTo-Json -Depth 20
+    exit 0
+  }
   $preflight = Assert-FactoryRuntimePreflight
   if (-not $DryRun) {
     Assert-FactoryPersonalizationNotReused -Preflight $preflight

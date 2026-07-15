@@ -284,6 +284,11 @@ jobs:
         timeout-minutes: 3
         run: ./scripts/windows/vision-release-install-harness.behavior.ps1
 
+      - name: Run Vision Candidate entrypoint harness with Windows PowerShell
+        run: >-
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+          ./scripts/windows/test-vision-candidate.windows-harness.ps1
+
       - name: Run signed Vision installer harness
         run: >-
           ./scripts/windows/vision-release-install.windows-harness.ps1

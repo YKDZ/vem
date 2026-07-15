@@ -1482,8 +1482,14 @@ mod tests {
             config_store,
             state,
             hardware: crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware"),
-            events: events_tx,
-            runtime_tx,
+            events: events_tx.clone(),
+            runtime_tx: runtime_tx.clone(),
+            scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
+            serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
+            device_binding_test_evidence: Arc::new(
+                crate::ipc::DeviceBindingTestEvidenceStore::default(),
+            ),
+            sale_binding_gate: Arc::new(crate::ipc::SaleBindingOperationGate::default()),
             disk_pressure_probe: Arc::new(FixedDiskPressureProbe),
             network_adapter: crate::network::adapter_from_env(),
             ui: crate::ipc::UiRuntimeServices {
@@ -1492,6 +1498,8 @@ mod tests {
                 status_cache,
             },
             background_shutdown: CancellationToken::new(),
+            bring_up_execution_lock: Arc::new(tokio::sync::Mutex::new(())),
+            maintenance_authorization: Arc::new(crate::ipc::UnavailableMaintenanceAuthorization),
         }
     }
 

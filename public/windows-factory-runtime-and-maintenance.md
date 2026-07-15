@@ -206,9 +206,15 @@ Production media contains exactly one unique `Admin` credential and one unique
 bootstrap credential and one `VEMKiosk` credential. The production envelope
 rejects `YKDZ`, testbed CA/peer markers, simulators, and shared passwords. No
 profile permits WireGuard private keys, peer state, certificates, tokens, or
-additional secret fields. The Windows host generates its WireGuard private key
-with `wg genkey`; only its public identity may later participate in Machine
-Claim.
+additional raw secret fields. Each envelope also contains one
+`maintenancePinVerifier`: a versioned PBKDF2-HMAC-SHA256 salted verifier, never
+the maintenance PIN. Factory validates it, stages it under a SYSTEM and
+Administrators-only one-shot daemon directory, and the daemon imports it into
+its protected SecretStore before Bring-Up. Import removes staging only after a
+valid protected write; a conflict or malformed verifier blocks production
+provisioning. Claim and reclaim preserve that protected verifier. The Windows
+host generates its WireGuard private key with `wg genkey`; only its public
+identity may later participate in Machine Claim.
 
 The runner reads `VEM_FACTORY_PERSONALIZATION_MEDIA_PATH` only after the
 trusted remote identity and retained-state gates pass. It requires a runner

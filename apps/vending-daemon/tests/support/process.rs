@@ -9,6 +9,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::{io::AsyncReadExt, process::Child, time::sleep};
+use vending_daemon::secret::{
+    ProtectedLocalSecretStore, SecretStore, MACHINE_MAINTENANCE_PIN_ACCOUNT,
+    MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,11 +41,13 @@ pub struct DaemonHarness {
 impl DaemonHarness {
     pub async fn start(
         public_config: serde_json::Value,
-        extra_env: &[(&str, &str)],
+        protected_secrets: &[(&str, &str)],
+        child_env: &[(&str, &str)],
     ) -> Result<Self, String> {
         let temp_dir = TempDir::new().map_err(|error| error.to_string())?;
         let data_dir = temp_dir.path().join("vending-daemon");
-        let mut harness = Self::start_at(data_dir, public_config, extra_env).await?;
+        let mut harness =
+            Self::start_at(data_dir, public_config, protected_secrets, child_env).await?;
         harness._temp_dir = Some(temp_dir);
         Ok(harness)
     }
@@ -49,7 +55,8 @@ impl DaemonHarness {
     pub async fn start_at(
         data_dir: PathBuf,
         public_config: serde_json::Value,
-        extra_env: &[(&str, &str)],
+        protected_secrets: &[(&str, &str)],
+        child_env: &[(&str, &str)],
     ) -> Result<Self, String> {
         tokio::fs::create_dir_all(&data_dir)
             .await
@@ -63,6 +70,7 @@ impl DaemonHarness {
         .await
         .map_err(|error| error.to_string())?;
         write_layered_runtime_test_config(&data_dir, &public_config).await?;
+        seed_protected_test_secrets(&data_dir, protected_secrets).await?;
         let _ = tokio::fs::remove_file(&ready_file).await;
 
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_vending-daemon"));
@@ -74,13 +82,10 @@ impl DaemonHarness {
             .arg("127.0.0.1:0")
             .arg("--print-ready-file")
             .arg(&ready_file)
-            .env("VEM_DAEMON_SECRET_STORE", "env")
             .env("VEM_DISK_PRESSURE_MIN_AVAILABLE_BYTES", "0")
+            .envs(child_env.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (key, value) in extra_env {
-            command.env(key, value);
-        }
         let mut child = command.spawn().map_err(|error| error.to_string())?;
         let client = Client::new();
 
@@ -117,6 +122,36 @@ impl DaemonHarness {
         format!("Bearer {}", self.ready.ipc_token)
     }
 
+    pub async fn create_maintenance_session(&self, pin: &str) -> String {
+        let base = self.ready.healthz_url.trim_end_matches("/healthz");
+        let response = self
+            .client
+            .post(format!("{base}/v1/maintenance/sessions"))
+            .header("Authorization", self.bearer())
+            .json(&json!({
+                "pin": pin,
+                "operatorId": "integration-test"
+            }))
+            .send()
+            .await
+            .expect("create maintenance session request");
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .expect("create maintenance session response");
+        assert_eq!(
+            status,
+            reqwest::StatusCode::CREATED,
+            "session response: {body}"
+        );
+        body["sessionId"]
+            .as_str()
+            .filter(|session_id| !session_id.is_empty())
+            .expect("maintenance session id")
+            .to_string()
+    }
+
     pub fn state_db_path(&self) -> PathBuf {
         self.data_dir.join("state.db")
     }
@@ -138,6 +173,26 @@ impl DaemonHarness {
         let _ = self.child.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await;
     }
+}
+
+/// Explicitly seed the same protected local store used by daemon startup.  The
+/// process environment is deliberately not a secret-store compatibility seam.
+async fn seed_protected_test_secrets(
+    data_dir: &Path,
+    protected_secrets: &[(&str, &str)],
+) -> Result<(), String> {
+    let store = ProtectedLocalSecretStore::new(data_dir.to_path_buf());
+    for (name, value) in protected_secrets {
+        let account = match *name {
+            "VEM_MQTT_SIGNING_SECRET" | "mqtt_signing_secret" => MQTT_SIGNING_SECRET_ACCOUNT,
+            "VEM_MQTT_PASSWORD" | "mqtt_password" => MQTT_PASSWORD_ACCOUNT,
+            "VEM_MACHINE_SECRET" | "machine_secret" => MACHINE_SECRET_ACCOUNT,
+            "machine_maintenance_pin" => MACHINE_MAINTENANCE_PIN_ACCOUNT,
+            other => return Err(format!("unsupported explicit test secret: {other}")),
+        };
+        store.write_secret(account, value).await?;
+    }
+    Ok(())
 }
 
 async fn write_layered_runtime_test_config(
@@ -164,7 +219,7 @@ async fn write_layered_runtime_test_config(
             .unwrap_or("http://127.0.0.1:0/api");
         let manifest = json!({
             "layoutVersion": 1,
-            "environment": "test",
+            "environment": "testbed",
             "provisioningEndpoint": api_base_url,
             "hardwareMode": "production",
             "hardwareModel": "test-fixture",

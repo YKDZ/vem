@@ -61,6 +61,7 @@ describe("AlipayProvider", () => {
     vi.mocked(sdk.exec).mockResolvedValueOnce({
       code: "10000",
       out_trade_no: "PAY202605060001",
+      total_amount: "9.99",
       qr_code: "https://qr.alipay.com/bax-sandbox",
     });
     const provider = new AlipayProvider(factory);
@@ -93,6 +94,7 @@ describe("AlipayProvider", () => {
     vi.mocked(sdk.exec).mockResolvedValueOnce({
       code: "10000",
       out_trade_no: "PAY202605060002",
+      total_amount: "12.34",
       qr_code: "https://qr.alipay.com/bax-sandbox",
     });
     const provider = new AlipayProvider(factory);
@@ -118,6 +120,7 @@ describe("AlipayProvider", () => {
           seller_id: "2088123456789012",
         }),
       }),
+      { validateSign: true },
     );
     expect(sdk.exec).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
@@ -132,6 +135,7 @@ describe("AlipayProvider", () => {
     vi.mocked(sdk.exec).mockResolvedValueOnce({
       code: "10000",
       out_trade_no: "PAY202605060098",
+      total_amount: "1.00",
       qr_code: "https://qr.alipay.com/bax-sandbox",
     });
     const provider = new AlipayProvider(factory);
@@ -148,12 +152,13 @@ describe("AlipayProvider", () => {
     expect(sdk.exec).toHaveBeenCalledTimes(1);
   });
 
-  it("waits for sandbox order-code QR to become queryable before display", async () => {
+  it("does not wait for a sandbox order-code query before displaying a verified QR", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockResolvedValueOnce({
         code: "10000",
         out_trade_no: "PAY202605060120",
+        total_amount: "1.00",
         qr_code: "https://qr.alipay.com/bax-sandbox",
       })
       .mockResolvedValueOnce({
@@ -186,14 +191,8 @@ describe("AlipayProvider", () => {
     });
 
     expect(result.paymentUrl).toBe("https://qr.alipay.com/bax-sandbox");
-    expect(sdk.exec).toHaveBeenNthCalledWith(
-      2,
-      "alipay.trade.query",
-      expect.objectContaining({
-        bizContent: { out_trade_no: "PAY202605060120" },
-      }),
-    );
-    expect(sdk.exec).toHaveBeenCalledTimes(3);
+    expect(result.initialStatus).toBe("pending");
+    expect(sdk.exec).toHaveBeenCalledTimes(1);
   });
 
   it("rejects precreate business failures before displaying a QR", async () => {
@@ -217,12 +216,56 @@ describe("AlipayProvider", () => {
     ).rejects.toThrow("Alipay alipay.trade.precreate failed");
   });
 
-  it("marks order-code QR processing when readiness probe does not observe the trade yet", async () => {
+  it("accepts a signed precreate QR when Alipay omits optional total_amount", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec).mockResolvedValueOnce({
+      code: "10000",
+      out_trade_no: "PAY202605060121",
+      qr_code: "https://qr.alipay.com/bax-sandbox",
+    });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.createPaymentIntent({
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060121",
+        orderNo: "ORD202605060121",
+        amountCents: 100,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      }),
+    ).resolves.toMatchObject({
+      paymentUrl: "https://qr.alipay.com/bax-sandbox",
+      initialStatus: "pending",
+    });
+  });
+
+  it("rejects a precreate response that omits the payment number", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec).mockResolvedValueOnce({
+      code: "10000",
+      total_amount: "1.00",
+      qr_code: "https://qr.alipay.com/bax-sandbox",
+    });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.createPaymentIntent({
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060123",
+        orderNo: "ORD202605060123",
+        amountCents: 100,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      }),
+    ).rejects.toThrow("Alipay response missing out_trade_no");
+  });
+
+  it("presents a matching precreate QR immediately when a pre-scan query cannot find the trade", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockResolvedValueOnce({
         code: "10000",
         out_trade_no: "PAY202605060122",
+        total_amount: "1.00",
         qr_code: "https://qr.alipay.com/bax-sandbox",
       })
       .mockResolvedValue({
@@ -249,20 +292,22 @@ describe("AlipayProvider", () => {
     });
 
     expect(result.paymentUrl).toBe("https://qr.alipay.com/bax-sandbox");
-    expect(result.initialStatus).toBe("processing");
-    expect(sdk.exec).not.toHaveBeenCalledWith(
-      "alipay.trade.cancel",
-      expect.anything(),
-    );
+    expect(result.initialStatus).toBe("pending");
+    expect(sdk.exec).toHaveBeenCalledTimes(1);
   });
 
-  it("retries transient order-code precreate failures with the same payment number", async () => {
+  it("queries after an indeterminate precreate and retries only after TRADE_NOT_EXIST", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockRejectedValueOnce(new Error("HTTP 请求错误, status: 504"))
       .mockResolvedValueOnce({
+        code: "40004",
+        sub_code: "ACQ.TRADE_NOT_EXIST",
+      })
+      .mockResolvedValueOnce({
         code: "10000",
         out_trade_no: "PAY202605060099",
+        total_amount: "1.00",
         qr_code: "https://qr.alipay.com/bax-sandbox",
       });
     const provider = new AlipayProvider(factory);
@@ -289,19 +334,66 @@ describe("AlipayProvider", () => {
           out_trade_no: "PAY202605060099",
         }),
       }),
+      { validateSign: true },
     );
     expect(sdk.exec).toHaveBeenNthCalledWith(
       2,
+      "alipay.trade.query",
+      expect.objectContaining({
+        bizContent: { out_trade_no: "PAY202605060099" },
+      }),
+      { validateSign: true },
+    );
+    expect(sdk.exec).toHaveBeenNthCalledWith(
+      3,
       "alipay.trade.precreate",
       expect.objectContaining({
         bizContent: expect.objectContaining({
           out_trade_no: "PAY202605060099",
         }),
       }),
+      { validateSign: true },
     );
   });
 
-  it("fails transient order-code precreate failures after bounded retries", async () => {
+  it("does not repeat precreate when the indeterminate request may already exist", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec)
+      .mockRejectedValueOnce(new Error("HTTP 请求错误, status: 504"))
+      .mockResolvedValueOnce({
+        code: "10000",
+        out_trade_no: "PAY202605060777",
+        total_amount: "1.00",
+        trade_status: "WAIT_BUYER_PAY",
+      });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.createPaymentIntent({
+        config: makeRuntimeConfig({
+          publicConfigJson: {
+            ...makeRuntimeConfig().publicConfigJson,
+            orderCodePrecreateMaxAttempts: 2,
+            orderCodePrecreateRetryDelayMs: 1,
+          },
+        }),
+        paymentNo: "PAY202605060777",
+        orderNo: "ORD202605060777",
+        amountCents: 100,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      }),
+    ).rejects.toThrow("支付宝支付通道暂不可用，请稍后重试");
+
+    expect(sdk.exec).toHaveBeenCalledTimes(2);
+    expect(sdk.exec).toHaveBeenNthCalledWith(
+      2,
+      "alipay.trade.query",
+      expect.any(Object),
+      { validateSign: true },
+    );
+  });
+
+  it("fails closed when an indeterminate precreate cannot be reconciled", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec).mockRejectedValue(
       new Error("HTTP 请求错误, status: 504"),
@@ -329,11 +421,13 @@ describe("AlipayProvider", () => {
       1,
       "alipay.trade.precreate",
       expect.any(Object),
+      { validateSign: true },
     );
     expect(sdk.exec).toHaveBeenNthCalledWith(
       2,
-      "alipay.trade.precreate",
+      "alipay.trade.query",
       expect.any(Object),
+      { validateSign: true },
     );
     expect(sdk.exec).not.toHaveBeenCalledWith(
       "alipay.trade.cancel",
@@ -353,6 +447,8 @@ describe("AlipayProvider", () => {
       vi.mocked(sdk.exec).mockResolvedValue({
         trade_status: tradeStatus,
         trade_no: "2026050622000000001",
+        out_trade_no: "PAY202605060003",
+        total_amount: "12.34",
       });
       const provider = new AlipayProvider(factory);
 
@@ -360,6 +456,7 @@ describe("AlipayProvider", () => {
         config: makeRuntimeConfig(),
         paymentNo: "PAY202605060003",
         providerTradeNo: null,
+        amountCents: 1234,
       });
 
       expect(sdk.exec).toHaveBeenCalledWith(
@@ -369,13 +466,17 @@ describe("AlipayProvider", () => {
             out_trade_no: "PAY202605060003",
           }),
         }),
+        { validateSign: true },
       );
       expect(result.status).toBe(status);
       expect(result.providerTradeNo).toBe("2026050622000000001");
+      if (tradeStatus === "WAIT_BUYER_PAY") {
+        expect(result.reconciliationState).toBe("wait_buyer_pay");
+      }
     },
   );
 
-  it("keeps order-code TRADE_NOT_EXIST query result indeterminate", async () => {
+  it("treats an order-code TRADE_NOT_EXIST query as pending before the customer scans", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec).mockResolvedValue({
       code: "40004",
@@ -389,10 +490,32 @@ describe("AlipayProvider", () => {
       config: makeRuntimeConfig(),
       paymentNo: "PAY202605060404",
       providerTradeNo: null,
+      amountCents: 1234,
     });
 
-    expect(result.status).toBe("processing");
+    expect(result.status).toBe("pending");
     expect(result.failedReason).toBe("ACQ.TRADE_NOT_EXIST");
+    expect(result.reconciliationState).toBe("provider_trade_not_exist");
+  });
+
+  it("does not report a mismatched successful query as paid", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec).mockResolvedValue({
+      code: "10000",
+      trade_status: "TRADE_SUCCESS",
+      out_trade_no: "PAY202605060999",
+      total_amount: "12.34",
+    });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.queryPayment({
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060003",
+        providerTradeNo: null,
+        amountCents: 1234,
+      }),
+    ).rejects.toThrow("Alipay alipay.trade.query out_trade_no mismatch");
   });
 
   it("maps terminal order-code query business errors to failed", async () => {
@@ -409,6 +532,7 @@ describe("AlipayProvider", () => {
       config: makeRuntimeConfig(),
       paymentNo: "PAY202605060405",
       providerTradeNo: null,
+      amountCents: 1234,
     });
 
     expect(result.status).toBe("failed");
@@ -437,6 +561,7 @@ describe("AlipayProvider", () => {
           out_trade_no: "PCA202605240099",
         }),
       }),
+      { validateSign: true },
     );
     expect(result.status).toBe("reversed");
     expect(result.providerTradeNo).toBe("2026050622000000099");
@@ -466,6 +591,7 @@ describe("AlipayProvider", () => {
           out_trade_no: "PCA202605240100",
         }),
       }),
+      { validateSign: true },
     );
     expect(result.status).toBe("succeeded");
     expect(result.providerTradeNo).toBe("2026050622000000100");
@@ -788,7 +914,7 @@ describe("AlipayProvider", () => {
       headers: {},
       body,
       rawBodyText: new URLSearchParams(body).toString(),
-      candidateConfigs: [makeRuntimeConfig()],
+      candidateConfigs: [makeRuntimeConfig({ id: "cfg-ali-1" })],
     });
 
     expect(sdk.checkNotifySignV2).toHaveBeenCalledWith(body);
@@ -798,7 +924,122 @@ describe("AlipayProvider", () => {
       providerTradeNo: "2026050622000000003",
       paymentStatus: "succeeded",
       signatureValid: true,
+      matchedConfigId: "cfg-ali-1",
     });
+  });
+
+  it("selects the exact payment binding when rotated configs share an appId", async () => {
+    const oldSdk: AlipaySdkLike = {
+      curl: vi.fn(),
+      exec: vi.fn(),
+      checkNotifySignV2: vi.fn().mockReturnValue(true),
+    };
+    const rotatedSdk: AlipaySdkLike = {
+      curl: vi.fn(),
+      exec: vi.fn(),
+      checkNotifySignV2: vi.fn().mockReturnValue(false),
+    };
+    const factory = {
+      create: vi.fn((options: { privateKey: string }) =>
+        options.privateKey.includes("OLD") ? oldSdk : rotatedSdk,
+      ),
+    } as unknown as AlipaySdkClientFactory;
+    const provider = new AlipayProvider(factory);
+    const shared = {
+      appId: "2021000123456789",
+      merchantNo: "2088123456789012",
+    };
+    const body = {
+      notify_id: "notify-shared-app",
+      app_id: shared.appId,
+      seller_id: shared.merchantNo,
+      out_trade_no: "PAY-SHARED-APP",
+      trade_no: "ALI-SHARED-APP",
+      total_amount: "1.00",
+      trade_status: "TRADE_SUCCESS",
+      sign: "signed-with-old-cert",
+    };
+
+    await expect(
+      provider.handleWebhook({
+        headers: {},
+        body,
+        rawBodyText: new URLSearchParams(body).toString(),
+        expectedConfigId: "cfg-old",
+        candidateConfigs: [
+          makeRuntimeConfig({
+            ...shared,
+            id: "cfg-rotated",
+            sensitiveConfigJson: {
+              ...makeRuntimeConfig().sensitiveConfigJson,
+              privateKeyPem: "ROTATED PRIVATE KEY",
+            },
+          }),
+          makeRuntimeConfig({
+            ...shared,
+            id: "cfg-old",
+            sensitiveConfigJson: {
+              ...makeRuntimeConfig().sensitiveConfigJson,
+              privateKeyPem: "OLD PRIVATE KEY",
+            },
+          }),
+        ],
+      }),
+    ).resolves.toMatchObject({ matchedConfigId: "cfg-old" });
+    expect(oldSdk.checkNotifySignV2).toHaveBeenCalledWith(body);
+    expect(rotatedSdk.checkNotifySignV2).not.toHaveBeenCalled();
+  });
+
+  it("rejects a shared-app callback signed by a different config binding", async () => {
+    const boundSdk = {
+      curl: vi.fn(),
+      exec: vi.fn(),
+      checkNotifySignV2: vi.fn().mockReturnValue(false),
+    } as unknown as AlipaySdkLike;
+    const otherSdk = {
+      curl: vi.fn(),
+      exec: vi.fn(),
+      checkNotifySignV2: vi.fn().mockReturnValue(true),
+    } as unknown as AlipaySdkLike;
+    const factory = {
+      create: vi.fn((options: { privateKey: string }) =>
+        options.privateKey.includes("BOUND") ? boundSdk : otherSdk,
+      ),
+    } as unknown as AlipaySdkClientFactory;
+    const provider = new AlipayProvider(factory);
+    const body = {
+      app_id: "2021000123456789",
+      out_trade_no: "PAY-CROSS-BINDING",
+      trade_status: "TRADE_SUCCESS",
+      sign: "signed-by-other-binding",
+    };
+
+    await expect(
+      provider.handleWebhook({
+        headers: {},
+        body,
+        rawBodyText: new URLSearchParams(body).toString(),
+        expectedConfigId: "cfg-bound",
+        candidateConfigs: [
+          makeRuntimeConfig({
+            id: "cfg-other",
+            sensitiveConfigJson: {
+              ...makeRuntimeConfig().sensitiveConfigJson,
+              privateKeyPem: "OTHER PRIVATE KEY",
+            },
+          }),
+          makeRuntimeConfig({
+            id: "cfg-bound",
+            sensitiveConfigJson: {
+              ...makeRuntimeConfig().sensitiveConfigJson,
+              privateKeyPem: "BOUND PRIVATE KEY",
+            },
+          }),
+        ],
+      }),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(boundSdk.checkNotifySignV2).toHaveBeenCalledWith(body);
+    expect(otherSdk.checkNotifySignV2).not.toHaveBeenCalled();
   });
 
   it("rejects async notification when checkNotifySignV2 returns false", async () => {

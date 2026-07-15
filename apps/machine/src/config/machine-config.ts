@@ -18,6 +18,15 @@ export const audioCueSettingsSchema = z.object({
     }),
 });
 
+export const machineAudioOutputBindingSchema = z
+  .object({
+    endpointId: z.string().trim().min(1).max(512),
+    friendlyName: z.string().trim().min(1).max(512).nullable().default(null),
+    confirmedHeardAt: z.iso.datetime(),
+  })
+  .nullable()
+  .default(null);
+
 const machineAudioVolumeDefault = 0.7;
 
 const audioCueSettingsDefaults = {
@@ -65,6 +74,7 @@ export const machineConfigSchema = z
     mqttUsername: z.string().trim().min(1).max(128).nullable().default(null),
     mqttPassword: z.string().trim().min(1).max(256).nullable().default(null),
     mqttPasswordConfigured: z.boolean().default(false),
+    maintenancePinConfigured: z.boolean().default(false),
     apiBaseUrl: z
       .string()
       .trim()
@@ -99,6 +109,7 @@ export const machineConfigSchema = z
       .min(0)
       .max(1)
       .default(machineAudioVolumeDefault),
+    machineAudioOutputBinding: machineAudioOutputBindingSchema.default(null),
     audioCueSettings: audioCueSettingsSchema.default(audioCueSettingsDefaults),
     kioskMode: z.boolean().default(false),
     stockMovementRetentionDays: z.int().min(1).max(366).default(30),
@@ -133,6 +144,9 @@ export const machineConfigSchema = z
 export type HardwareAdapter = z.infer<typeof hardwareAdapterSchema>;
 export type ScannerAdapter = z.infer<typeof scannerAdapterSchema>;
 export type AudioCueSettings = z.infer<typeof audioCueSettingsSchema>;
+export type MachineAudioOutputBinding = z.infer<
+  typeof machineAudioOutputBindingSchema
+>;
 export type MachineConfig = z.infer<typeof machineConfigSchema>;
 
 export const machineConfigDefaults: MachineConfig = machineConfigSchema.parse(
@@ -212,6 +226,17 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
   if (typeof processed.visionWsUrl === "string") {
     processed.visionWsUrl = processed.visionWsUrl.trim();
   }
+  if (isPlainRecord(processed.machineAudioOutputBinding)) {
+    const binding = processed.machineAudioOutputBinding;
+    if (typeof binding.endpointId === "string") {
+      binding.endpointId = binding.endpointId.trim();
+    }
+    if (typeof binding.friendlyName === "string") {
+      const trimmed = binding.friendlyName.trim();
+      binding.friendlyName = trimmed.length > 0 ? trimmed : null;
+    }
+    processed.machineAudioOutputBinding = binding;
+  }
   processed.machineAudioVolume = normalizeMachineAudioVolume(
     processed.machineAudioVolume,
   );
@@ -245,6 +270,14 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
     visionWsUrl: parsed.visionWsUrl.trim(),
     machineAudioVolume: parsed.machineAudioVolume,
+    machineAudioOutputBinding: parsed.machineAudioOutputBinding
+      ? {
+          endpointId: parsed.machineAudioOutputBinding.endpointId.trim(),
+          friendlyName:
+            parsed.machineAudioOutputBinding.friendlyName?.trim() || null,
+          confirmedHeardAt: parsed.machineAudioOutputBinding.confirmedHeardAt,
+        }
+      : null,
   };
 }
 

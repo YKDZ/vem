@@ -95,9 +95,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
   onModuleInit(): void {
     this.mqttService.bindVendingService(this);
     this.timeoutInterval = setInterval(() => {
-      void this.markTimedOutCommands().catch((error: unknown) => {
+      void (async () => {
+        await this.dispatchPendingCommands();
+        await this.markTimedOutCommands();
+      })().catch((error: unknown) => {
         this.logger.warn(
-          `markTimedOutCommands failed: ${error instanceof Error ? error.message : String(error)}`,
+          `vending command recovery failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       });
     }, 60_000);
@@ -108,6 +111,181 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       clearInterval(this.timeoutInterval);
       this.timeoutInterval = undefined;
     }
+  }
+
+  /**
+   * Durable outbox creation. Payment code must call this with its own
+   * transaction so the payment event, paid order and dispense command either
+   * commit together or all roll back together.
+   */
+  async createPendingDispatchCommands(tx: DrizzleTransaction, orderId: string) {
+    const [order] = await tx
+      .select({
+        id: orders.id,
+        orderNo: orders.orderNo,
+        machineId: orders.machineId,
+      })
+      .from(orders)
+      .where(eq(orders.id, orderId));
+    if (!order) throw new NotFoundException("Order not found");
+
+    const existing = await tx
+      .select()
+      .from(vendingCommands)
+      .where(
+        and(
+          eq(vendingCommands.orderId, orderId),
+          eq(vendingCommands.commandKind, "dispatch"),
+        ),
+      )
+      .orderBy(vendingCommands.createdAt);
+    if (existing.length > 0) return existing;
+
+    const items = await tx
+      .select({
+        orderItemId: orderItems.id,
+        slotId: orderItems.slotId,
+        quantity: orderItems.quantity,
+        layerNo: machineSlots.layerNo,
+        cellNo: machineSlots.cellNo,
+        slotCode: machineSlots.slotCode,
+      })
+      .from(orderItems)
+      .innerJoin(machineSlots, eq(machineSlots.id, orderItems.slotId))
+      .where(eq(orderItems.orderId, orderId));
+
+    const created = [];
+    // oxlint-disable no-await-in-loop -- each insert observes the same transaction and unique slot constraint
+    for (const item of items) {
+      const commandNo = createBusinessNo("CMD");
+      const payload = dispenseCommandPayloadSchema.parse({
+        commandNo,
+        orderNo: order.orderNo,
+        slot: {
+          layerNo: item.layerNo,
+          cellNo: item.cellNo,
+          slotCode: item.slotCode,
+        },
+        quantity: item.quantity,
+        timeoutSeconds: 120,
+      });
+      const [command] = await tx
+        .insert(vendingCommands)
+        .values({
+          commandNo,
+          orderId,
+          machineId: order.machineId,
+          slotId: item.slotId,
+          orderItemId: item.orderItemId,
+          commandKind: "dispatch",
+          payloadJson: payload,
+          status: "pending",
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (command) created.push(command);
+    }
+    // oxlint-enable no-await-in-loop
+
+    if (created.length === items.length) return created;
+    return await tx
+      .select()
+      .from(vendingCommands)
+      .where(
+        and(
+          eq(vendingCommands.orderId, orderId),
+          eq(vendingCommands.commandKind, "dispatch"),
+        ),
+      )
+      .orderBy(vendingCommands.createdAt);
+  }
+
+  /** Publish already-durable commands. A process death before or during this
+   * step leaves status=pending, and the periodic dispatcher or a duplicate
+   * payment notification publishes the same commandNo again. */
+  async dispatchPendingCommandsForOrder(orderId: string) {
+    const pending = await this.db
+      .select({
+        id: vendingCommands.id,
+        commandNo: vendingCommands.commandNo,
+        payloadJson: vendingCommands.payloadJson,
+        machineCode: machines.code,
+      })
+      .from(vendingCommands)
+      .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
+      .where(
+        and(
+          eq(vendingCommands.orderId, orderId),
+          eq(vendingCommands.status, "pending"),
+        ),
+      )
+      .orderBy(vendingCommands.createdAt);
+
+    return await Promise.all(
+      pending.map(async (command) => {
+        try {
+          const payload = dispenseCommandPayloadSchema.parse(
+            command.payloadJson,
+          );
+          const envelope = await this.mqttSignatureService.signForMachine({
+            machineCode: command.machineCode,
+            payload,
+            messageId: `command:${command.commandNo}`,
+          });
+          await this.mqttService.publish(
+            `vem/machines/${command.machineCode}/commands/dispense`,
+            envelope,
+          );
+          const [sent] = await this.db
+            .update(vendingCommands)
+            .set({
+              status: "sent",
+              sentAt: new Date(),
+              lastError: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(vendingCommands.id, command.id),
+                eq(vendingCommands.status, "pending"),
+              ),
+            )
+            .returning();
+          return sent;
+        } catch (error) {
+          const [retryable] = await this.db
+            .update(vendingCommands)
+            .set({
+              retryCount: sql`${vendingCommands.retryCount} + 1`,
+              lastError: error instanceof Error ? error.message : String(error),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(vendingCommands.id, command.id),
+                eq(vendingCommands.status, "pending"),
+              ),
+            )
+            .returning();
+          return retryable;
+        }
+      }),
+    );
+  }
+
+  async dispatchPendingCommands(): Promise<{ processed: number }> {
+    const ordersWithPendingCommands = await this.db
+      .selectDistinct({ orderId: vendingCommands.orderId })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.status, "pending"))
+      .limit(50);
+    const results = await Promise.all(
+      ordersWithPendingCommands.map(
+        async ({ orderId }) =>
+          await this.dispatchPendingCommandsForOrder(orderId),
+      ),
+    );
+    return { processed: results.flat().filter(Boolean).length };
   }
 
   async createAndDispatchCommands(orderId: string) {
@@ -137,7 +315,17 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       )
       .orderBy(vendingCommands.createdAt);
     if (existingCommands.length > 0) {
-      return existingCommands;
+      await this.dispatchPendingCommandsForOrder(orderId);
+      return await this.db
+        .select()
+        .from(vendingCommands)
+        .where(
+          and(
+            eq(vendingCommands.orderId, orderId),
+            eq(vendingCommands.commandKind, "dispatch"),
+          ),
+        )
+        .orderBy(vendingCommands.createdAt);
     }
 
     const items = await this.db

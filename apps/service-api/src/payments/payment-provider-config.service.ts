@@ -98,6 +98,18 @@ function recordFromObject(value: object): Record<string, unknown> {
   return record;
 }
 
+function runtimeConfigIdentity(config: RuntimePaymentProviderConfig): string {
+  return JSON.stringify({
+    id: config.id,
+    providerCode: config.providerCode,
+    machineId: config.machineId,
+    merchantNo: config.merchantNo,
+    appId: config.appId,
+    publicConfigJson: config.publicConfigJson,
+    sensitiveConfigJson: config.sensitiveConfigJson,
+  });
+}
+
 @Injectable()
 export class PaymentProviderConfigService {
   constructor(
@@ -374,9 +386,7 @@ export class PaymentProviderConfigService {
       .limit(200);
 
     const configs = [...currentConfigs];
-    const seen = new Set(
-      currentConfigs.map((config) => `${config.id}:${config.providerCode}`),
-    );
+    const seenConfigs = new Set(currentConfigs.map(runtimeConfigIdentity));
     for (const row of snapshotRows) {
       const config = this.toRuntimeConfigFromBindingSnapshot(
         row.snapshot,
@@ -384,9 +394,9 @@ export class PaymentProviderConfigService {
         null,
       );
       if (!config) continue;
-      const key = `${config.id}:${config.providerCode}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const identity = runtimeConfigIdentity(config);
+      if (seenConfigs.has(identity)) continue;
+      seenConfigs.add(identity);
       configs.push(config);
     }
     return configs;

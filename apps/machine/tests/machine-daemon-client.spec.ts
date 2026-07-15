@@ -11,9 +11,11 @@ type ScenarioName =
   | "maintenance"
   | "offline"
   | "payment"
+  | "paymentRecovery"
   | "dispensing"
   | "result"
   | "provisioning"
+  | "stockAttestation"
   | "staleEventStream"
   | "syncBacklog";
 
@@ -162,6 +164,8 @@ function bringUpSnapshot(
       attestStock: false,
       startSales: state === "sell_ready",
     },
+    currentTask: null,
+    progress: [],
     updatedAt: "2026-07-04T00:00:00Z",
   };
 }
@@ -284,6 +288,13 @@ function transactionSnapshot(
 }
 
 let scenario: ScenarioName = "catalog";
+let transactionReadCount = 0;
+let cancelOrderRequestCount = 0;
+let stockAttestationSubmitted = false;
+const protectedBringUpRequests: Array<{
+  maintenanceSession: string | undefined;
+  body: unknown;
+}> = [];
 let server: {
   close(callback: (error?: Error | null) => void): void;
   closeAllConnections(): void;
@@ -332,7 +343,7 @@ function currentFixtures(): Record<string, unknown> {
           },
         ],
       }),
-      bringUp: bringUpSnapshot("sell_ready"),
+      bringUp: bringUpSnapshot("runtime_ready"),
       transaction: emptyTransaction,
     };
   }
@@ -362,7 +373,7 @@ function currentFixtures(): Record<string, unknown> {
     };
   }
 
-  if (scenario === "payment") {
+  if (scenario === "payment" || scenario === "paymentRecovery") {
     return {
       health: healthSnapshot(),
       ready: readySnapshot({ suggestedRoute: "payment" }),
@@ -428,7 +439,90 @@ function currentFixtures(): Record<string, unknown> {
           },
         ],
       }),
-      bringUp: bringUpSnapshot("claim_required"),
+      bringUp: {
+        ...bringUpSnapshot("claim_required"),
+        currentTask: {
+          contractVersion: 1,
+          taskId: "bring_up.claim_machine",
+          taskVersion: 1,
+          kind: "claim_machine",
+          intent: "claim_machine",
+          rotateMaintenanceIdentity: false,
+          projection: {
+            type: "claim_code",
+            rotateMaintenanceIdentity: false,
+          },
+        },
+      },
+      transaction: emptyTransaction,
+    };
+  }
+
+  if (scenario === "stockAttestation") {
+    return {
+      health: healthSnapshot({
+        configConfigured: true,
+        status: "maintenance",
+      }),
+      ready: readySnapshot({
+        ready: false,
+        canSell: false,
+        suggestedRoute: "maintenance",
+        blockingCodes: [
+          stockAttestationSubmitted
+            ? "PHYSICAL_STOCK_ATTESTATION_PENDING"
+            : "PHYSICAL_STOCK_ATTESTATION_MISSING",
+        ],
+        blockingReasons: [
+          {
+            code: stockAttestationSubmitted
+              ? "PHYSICAL_STOCK_ATTESTATION_PENDING"
+              : "PHYSICAL_STOCK_ATTESTATION_MISSING",
+            component: "stock",
+            message: stockAttestationSubmitted
+              ? "physical stock attestation is awaiting Platform acknowledgement"
+              : "physical stock attestation is missing",
+          },
+        ],
+      }),
+      bringUp: {
+        ...bringUpSnapshot("runtime_ready"),
+        state: "stock_attestation_required",
+        readinessLevel: "not_ready",
+        diagnostics: stockAttestationSubmitted
+          ? [
+              {
+                code: "PHYSICAL_STOCK_ATTESTATION_PENDING",
+                component: "stock",
+                message:
+                  "physical stock attestation is awaiting Platform acknowledgement",
+              },
+            ]
+          : [],
+        allowedActions: {
+          configureNetwork: false,
+          claimMachine: false,
+          retryClaim: false,
+          syncProfile: false,
+          resolveTopology: false,
+          runRuntimeAcceptance: true,
+          runHardwareAcceptance: false,
+          attestStock: !stockAttestationSubmitted,
+          startSales: false,
+        },
+        currentTask: {
+          contractVersion: 1,
+          taskId: "bring_up.attest_stock",
+          taskVersion: 1,
+          kind: "attest_stock",
+          intent: "record_stock",
+          rotateMaintenanceIdentity: false,
+          projection: {
+            type: "stock_attestation",
+            entryMode: "final_actual_quantities",
+          },
+        },
+      },
       transaction: emptyTransaction,
     };
   }
@@ -451,7 +545,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(204, {
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET,POST,PUT,OPTIONS",
-      "access-control-allow-headers": "Authorization,Content-Type",
+      "access-control-allow-headers":
+        "Authorization,Content-Type,X-Vem-Maintenance-Session",
     });
     res.end();
     return;
@@ -491,23 +586,73 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  if (url.pathname === "/v1/config") {
-    const provisioned = scenario !== "provisioning";
+  if (url.pathname === "/v1/config/summary") {
+    const provisioned =
+      scenario !== "provisioning" && scenario !== "maintenance";
     const payload = {
-      public: publicConfig,
-      machineSecretConfigured: provisioned,
-      mqttSigningSecretConfigured: provisioned,
-      mqttPasswordConfigured: provisioned,
-      provisioned,
-      provisioningIssues: provisioned ? [] : ["machine_not_claimed"],
+      configuredState: {
+        factoryManifest: true,
+        localBringUpSettings: true,
+        provisioningProfileCache: provisioned,
+        machineSecretConfigured: provisioned,
+        mqttSigningSecretConfigured: provisioned,
+        mqttPasswordConfigured: provisioned,
+        maintenancePinConfigured: provisioned,
+      },
+      provisioningProfileCache: provisioned ? { machineCode: "M001" } : null,
+      effectivePublic: publicConfig,
     };
     expectNoSecretFields(payload);
     respondJson(res, payload);
     return;
   }
 
-  if (url.pathname === "/v1/provisioning/claim") {
-    const respondClaimLocked = () => {
+  if (url.pathname === "/v1/maintenance/sessions" && req.method === "POST") {
+    req.on("end", () => {
+      respondJson(
+        res,
+        {
+          sessionId: "e2e-maintenance-session",
+          expiresAt: "2030-01-01T00:00:00.000Z",
+          scopes: ["maintenance.mutate"],
+        },
+        201,
+      );
+    });
+    req.resume();
+    return;
+  }
+
+  if (url.pathname === "/v1/bring-up/tasks/execute" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk: Buffer) => {
+      body += chunk.toString();
+    });
+    req.on("end", () => {
+      const parsed = JSON.parse(body) as {
+        kind?: string;
+      };
+      protectedBringUpRequests.push({
+        maintenanceSession: req.headers["x-vem-maintenance-session"],
+        body: parsed,
+      });
+      if (parsed.kind === "attest_stock") {
+        stockAttestationSubmitted = true;
+        respondJson(res, {
+          items: [
+            {
+              ...saleViewItem,
+              physicalStock: 5,
+              saleableStock: 5,
+              slotSalesState: "sale_ready",
+            },
+          ],
+          source: "local_stock",
+          planogramVersion: "PLAN-1",
+          lastUpdatedAt: "2026-07-14T00:00:00Z",
+        });
+        return;
+      }
       respondJson(
         res,
         {
@@ -516,13 +661,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         },
         400,
       );
-    };
-    if (req.method === "POST") {
-      req.on("end", respondClaimLocked);
-      req.resume();
-    } else {
-      respondClaimLocked();
-    }
+    });
     return;
   }
 
@@ -610,7 +749,28 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
+  if (url.pathname === "/v1/intents/cancel-order") {
+    cancelOrderRequestCount += 1;
+    respondJson(
+      res,
+      transactionSnapshot("closed", {
+        paymentStatus: "canceled",
+        orderStatus: "canceled",
+      }),
+    );
+    return;
+  }
+
   if (url.pathname === "/v1/transactions/current") {
+    transactionReadCount += 1;
+    if (scenario === "paymentRecovery" && transactionReadCount > 1) {
+      respondJson(
+        res,
+        { code: "daemon_unavailable", message: "daemon IPC disconnected" },
+        503,
+      );
+      return;
+    }
     expectNoSecretFields(fixtures.transaction);
     respondJson(res, fixtures.transaction);
     return;
@@ -773,10 +933,15 @@ test("routes missing config to maintenance", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
 });
 
-test("routes not-ready daemon to offline", async ({ page }) => {
+test("routes not-ready daemon to maintenance without an authoritative task", async ({
+  page,
+}) => {
   scenario = "offline";
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "设备离线" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
+  await expect(
+    page.getByText("network_unavailable", { exact: true }),
+  ).toBeVisible();
 });
 
 test("restores active payment transaction", async ({ page }) => {
@@ -787,6 +952,59 @@ test("restores active payment transaction", async ({ page }) => {
   });
   await expect(page.getByText("应付金额")).toBeVisible();
   await expect(page.getByText("¥59.00")).toBeVisible();
+  await expect(page.getByRole("img", { name: "支付二维码" })).toBeVisible();
+});
+
+test("active payment projection rejects a generic return-home navigation", async ({
+  page,
+}) => {
+  scenario = "payment";
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.evaluate(() => {
+    window.location.hash = "#/catalog";
+  });
+
+  await expect(page).toHaveURL(/#\/payment$/);
+  await expect(page.getByRole("img", { name: "支付二维码" })).toBeVisible();
+});
+
+test("temporary IPC loss overlays and then restores the same payment transaction", async ({
+  page,
+}) => {
+  transactionReadCount = 0;
+  cancelOrderRequestCount = 0;
+  scenario = "paymentRecovery";
+  await page.goto("/");
+
+  await expect(page.locator(".payment-page")).toBeVisible({
+    timeout: 15_000,
+  });
+  const recoveryDialog = page.getByRole("dialog", {
+    name: "正在恢复本次交易",
+  });
+  await expect(recoveryDialog).toContainText("正在恢复本次交易");
+  await expect(page.getByText("ORD-001")).toBeVisible();
+  await expect(recoveryDialog).toBeFocused();
+  await expect(
+    page.locator('[data-test="transaction-surface"]'),
+  ).toHaveAttribute("inert", "");
+  await expect(
+    page.locator('[data-test="transaction-surface"]'),
+  ).toHaveAttribute("aria-hidden", "true");
+  await page.keyboard.press("Tab");
+  await expect(recoveryDialog).toBeFocused();
+  await page.locator("button.payment-cancel-button").click({ force: true });
+  await page.waitForTimeout(100);
+  expect(cancelOrderRequestCount).toBe(0);
+  await expect(page).toHaveURL(/#\/payment$/);
+
+  scenario = "payment";
+  await expect(page.getByRole("status")).toHaveCount(0, { timeout: 8_000 });
+  await expect(page).toHaveURL(/#\/payment$/);
   await expect(page.getByRole("img", { name: "支付二维码" })).toBeVisible();
 });
 
@@ -838,17 +1056,180 @@ test("daemon snapshots never expose secret fields to browser storage", async ({
   expect(storage).not.toContain("621234567890123456");
 });
 
-test("provisioning UI maps real daemon claim error contract without echoing code", async ({
+test("provisioning UI sends a PIN-gated typed claim without echoing the code", async ({
   page,
 }) => {
   scenario = "provisioning";
-  await page.goto("/");
+  protectedBringUpRequests.length = 0;
+  await page.goto("/#/bring-up");
+  await page.getByLabel("维护 PIN").fill("2468");
+  await page.getByRole("button", { name: "验证维护 PIN" }).click();
   await page.getByLabel("领取码").fill("ABCD-2345");
   await freezeMotion(page);
   await page.getByRole("button", { name: "提交领取码", exact: true }).click();
 
-  await expect(page.getByText("领取码已使用")).toBeVisible();
+  await expect(page.getByText("本机服务暂不可用，请稍后重试")).toBeVisible();
   await expect(page.getByText("ABCD-2345")).toHaveCount(0);
+  expect(protectedBringUpRequests).toEqual([
+    {
+      maintenanceSession: "e2e-maintenance-session",
+      body: {
+        contractVersion: 1,
+        taskId: "bring_up.claim_machine",
+        taskVersion: 1,
+        kind: "claim_machine",
+        intent: "claim_machine",
+        mutation: { type: "claim_machine", claimCode: "ABCD-2345" },
+      },
+    },
+  ]);
+});
+
+test("app-owned touch keyboard enters and submits Bring-Up forms without a physical keyboard", async ({
+  page,
+}) => {
+  scenario = "provisioning";
+  protectedBringUpRequests.length = 0;
+  await page.goto("/#/bring-up");
+
+  await page.getByLabel("维护 PIN").tap();
+  const keyboard = page.locator('[data-test="protected-touch-keyboard"]');
+  await expect(keyboard).toBeVisible();
+  await page.locator('[data-key="2"]').tap();
+  await page.locator('[data-key="4"]').tap();
+  await page.locator('[data-key="6"]').tap();
+  await page.locator('[data-key="8"]').tap();
+  await page.locator('[data-test="touch-keyboard-submit"]').tap();
+  await expect(page.getByLabel("领取码")).toBeVisible();
+  await expect(keyboard).toBeHidden();
+
+  await page.getByLabel("领取码").tap();
+  await page.locator('[data-test="touch-keyboard-shift"]').tap();
+  await page.locator('[data-key="a"]').tap();
+  await page.locator('[data-key="b"]').tap();
+  await page.getByRole("button", { name: "123", exact: true }).tap();
+  await page.locator('[data-key="1"]').tap();
+  await page.locator('[data-test="touch-keyboard-backspace"]').tap();
+  await page.locator('[data-key="2"]').tap();
+  await page.locator('[data-test="touch-keyboard-submit"]').tap();
+
+  await expect(page.getByText("本机服务暂不可用，请稍后重试")).toBeVisible();
+  expect(protectedBringUpRequests).toEqual([
+    {
+      maintenanceSession: "e2e-maintenance-session",
+      body: {
+        contractVersion: 1,
+        taskId: "bring_up.claim_machine",
+        taskVersion: 1,
+        kind: "claim_machine",
+        intent: "claim_machine",
+        mutation: { type: "claim_machine", claimCode: "AB2" },
+      },
+    },
+  ]);
+});
+
+test("touch keyboard stays closed before Maintenance authorization and clears on customer routing", async ({
+  page,
+}) => {
+  scenario = "catalog";
+  await page.addInitScript(() => {
+    window.localStorage.setItem("vem.machine.uiDebug.enabled", "1");
+    window.localStorage.setItem("vem.machine.uiDebug.scenario", "blocked");
+  });
+  await page.goto("/#/maintenance");
+  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
+  const keyboard = page.locator('[data-test="protected-touch-keyboard"]');
+  const pin = page.getByLabel("维护 PIN");
+
+  await pin.tap();
+  await expect(keyboard).toBeHidden();
+  await pin.fill("2468");
+  await page.getByRole("button", { name: "验证并解锁" }).click();
+  const quantity = page.getByRole("spinbutton", { name: /^补货数量/ }).first();
+  await expect(quantity).toBeEnabled();
+  await quantity.tap();
+  await expect(keyboard).toBeVisible();
+
+  await page.evaluate(() => {
+    window.location.hash = "#/payment";
+  });
+  await expect(page).toHaveURL(/#\/payment$/);
+  await expect(keyboard).toBeHidden();
+
+  await page.evaluate(() => {
+    const input = document.createElement("input");
+    input.id = "customer-route-probe";
+    document.body.append(input);
+    input.focus();
+  });
+  await expect(keyboard).toBeHidden();
+});
+
+test("record-stock UI PIN-gates and keeps the typed cursor pending for Platform acknowledgement", async ({
+  page,
+}) => {
+  scenario = "stockAttestation";
+  stockAttestationSubmitted = false;
+  protectedBringUpRequests.length = 0;
+  await page.goto("/#/bring-up");
+
+  await expect(page.getByText("实物库存确认")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "确认并提交实物库存" }),
+  ).toBeDisabled();
+  await page.getByLabel("维护 PIN").fill("2468");
+  await page.getByRole("button", { name: "验证维护 PIN" }).click();
+  await page.getByLabel("A1 实际数量").fill("5");
+  await page.getByLabel("已逐格核对实物数量，并确认提交。").check();
+  await page.getByRole("button", { name: "确认并提交实物库存" }).click();
+
+  await expect(page.getByText("当前任务：确认初始库存")).toBeVisible();
+  await expect(
+    page.getByText("PHYSICAL_STOCK_ATTESTATION_PENDING", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "正在等待平台确认" }),
+  ).toBeDisabled();
+  await expect(page.getByLabel("A1 实际数量")).toBeVisible();
+  await expect(page.getByLabel("A1 实际数量")).toBeDisabled();
+  expect(protectedBringUpRequests).toEqual([
+    {
+      maintenanceSession: "e2e-maintenance-session",
+      body: {
+        contractVersion: 1,
+        taskId: "bring_up.attest_stock",
+        taskVersion: 1,
+        kind: "attest_stock",
+        intent: "record_stock",
+        mutation: {
+          type: "record_stock",
+          attestation: {
+            attestationId: expect.stringMatching(/^bring-up-stock-/),
+            planogramVersion: "PLAN-1",
+            operatorId: "front-panel",
+            slots: [
+              {
+                slotId: saleViewItem.slotId,
+                slotCode: "A1",
+                sku: saleViewItem.sku,
+                quantity: 5,
+                enabled: true,
+              },
+            ],
+          },
+        },
+      },
+    },
+  ]);
+  await expect(page).not.toHaveURL(/#\/maintenance$/);
+
+  await page.reload();
+  await expect(
+    page.getByText("PHYSICAL_STOCK_ATTESTATION_PENDING", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByLabel("A1 实际数量")).toBeVisible();
+  await expect(page.getByLabel("A1 实际数量")).toBeDisabled();
 });
 
 test("sync backlog routes to catalog but displays degraded sync status", async ({

@@ -21,6 +21,8 @@ const VOICE_BASE_PATH = "/audio/voice";
 
 type MachineAudioCuePlaybackFactoryOptions = {
   volume: number;
+  outputDeviceId: string | null;
+  requireNativeOutputBinding: boolean;
   onDiagnostic: (diagnostic: MachineAudioPlaybackDiagnostic) => void;
 };
 
@@ -249,6 +251,9 @@ export function createMachineAudioCuePlaybackAdapter(
       volume: normalizeMachineAudioVolume(
         useMachineStore().config.machineAudioVolume,
       ),
+      outputDeviceId:
+        useMachineStore().config.machineAudioOutputBinding?.endpointId ?? null,
+      requireNativeOutputBinding: true,
       onDiagnostic: (diagnostic) => {
         if (
           diagnostic.status !== "completed" ||

@@ -1,13 +1,19 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import {
+  managedMediaDiagnosticKey,
+  resolveManagedMediaReference,
+} from "@/catalog/managed-media";
 import { useTryOnPreview } from "@/composables/useTryOnPreview";
 import { useCatalogStore } from "@/stores/catalog";
+import { useMachineStore } from "@/stores/machine";
 
 const route = useRoute();
 const router = useRouter();
 const catalogStore = useCatalogStore();
+const machineStore = useMachineStore();
 const { previewUrl, errorMessage, isStarting, startPreview, stopPreview } =
   useTryOnPreview();
 
@@ -20,8 +26,44 @@ const selectedVariant = computed(
       (variant) => variant.variantId === variantId.value,
     ) ?? null,
 );
-const silhouetteUrl = computed(
-  () => selectedVariant.value?.tryOnSilhouetteUrl ?? null,
+const silhouetteSlotId = computed(
+  () =>
+    catalogStore.saleableVariantItemFor(catalogKey.value, variantId.value)
+      ?.slotId ??
+    selectedVariant.value?.slotCandidates[0]?.slotId ??
+    item.value?.slotId ??
+    "missing",
+);
+const silhouetteDiagnosticLocation = computed(
+  () => `media:${silhouetteSlotId.value}:tryOnSilhouetteUrl`,
+);
+const silhouetteResolution = computed(() =>
+  resolveManagedMediaReference(
+    selectedVariant.value?.tryOnSilhouetteUrl,
+    machineStore.config.apiBaseUrl,
+  ),
+);
+const silhouetteUrl = computed(() => silhouetteResolution.value.url);
+const silhouetteAvailable = ref(true);
+
+function recordSilhouetteDiagnostic(message: string): void {
+  const reference = selectedVariant.value?.tryOnSilhouetteUrl;
+  catalogStore.recordMediaDiagnostic(
+    reference,
+    message,
+    managedMediaDiagnosticKey(silhouetteDiagnosticLocation.value, reference),
+  );
+}
+
+watch(
+  silhouetteResolution,
+  (resolution) => {
+    silhouetteAvailable.value = true;
+    if (resolution.diagnostic) {
+      recordSilhouetteDiagnostic(resolution.diagnostic);
+    }
+  },
+  { immediate: true },
 );
 
 onMounted(() => {
@@ -44,6 +86,12 @@ async function exitTryOn(): Promise<void> {
     query: { variantId: variantId.value },
   });
 }
+
+function useSilhouettePlaceholder(): void {
+  if (!silhouetteAvailable.value) return;
+  silhouetteAvailable.value = false;
+  recordSilhouetteDiagnostic("managed try-on silhouette failed to load");
+}
 </script>
 
 <template>
@@ -62,13 +110,20 @@ async function exitTryOn(): Promise<void> {
       data-test="try-on-preview-placeholder"
     ></div>
     <img
-      v-if="silhouetteUrl"
+      v-if="silhouetteUrl && silhouetteAvailable"
       class="try-on-silhouette try-on-silhouette-fixed"
       :src="silhouetteUrl"
       alt=""
       aria-hidden="true"
       data-test="try-on-silhouette"
+      @error="useSilhouettePlaceholder"
     />
+    <div
+      v-else
+      class="try-on-silhouette try-on-silhouette-placeholder"
+      aria-hidden="true"
+      data-test="try-on-silhouette-placeholder"
+    ></div>
     <section v-if="errorMessage" class="try-on-error" data-test="try-on-error">
       <p>{{ errorMessage }}</p>
     </section>
@@ -116,6 +171,12 @@ async function exitTryOn(): Promise<void> {
   transform: translate(-50%, -50%);
   object-fit: contain;
   pointer-events: none;
+}
+
+.try-on-silhouette-placeholder {
+  border: 2px dashed rgba(255, 255, 255, 0.4);
+  border-radius: 999px 999px 2rem 2rem;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .try-on-error {

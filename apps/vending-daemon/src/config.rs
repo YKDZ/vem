@@ -5,11 +5,158 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use hmac::{Hmac, Mac};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::fs;
 use vending_core::serial::SerialPortUsbIdentity;
 
 use crate::{secret::SecretStore, state::LocalStateStore};
+
+const MAINTENANCE_PIN_KDF_ALGORITHM: &str = "pbkdf2_hmac_sha256";
+const MAINTENANCE_PIN_KDF_MIN_ITERATIONS: u32 = 120_000;
+const MAINTENANCE_PIN_KDF_MAX_ITERATIONS: u32 = 1_000_000;
+const MAINTENANCE_PIN_KDF_SALT_BYTES: usize = 16;
+const MAINTENANCE_PIN_KDF_DIGEST_BYTES: usize = 32;
+const LEGACY_MAINTENANCE_PIN_MIN_DIGITS: usize = 4;
+const LEGACY_MAINTENANCE_PIN_MAX_DIGITS: usize = 12;
+
+/// A Factory-provisioned verifier. The protected secret store holds this
+/// salted derivation record, never the operator's original maintenance PIN.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MaintenancePinVerifier {
+    version: u8,
+    algorithm: String,
+    iterations: u32,
+    salt: String,
+    digest: String,
+}
+
+/// The Factory bootstrap capability is random high-entropy material rather
+/// than an operator PIN. Only its SHA-256 verifier enters the daemon secret
+/// store; the raw value is readable solely by the designated local
+/// maintenance account and is deleted once exchanged for an in-memory
+/// maintenance session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FactoryBootstrapCapabilityVerifier {
+    version: u8,
+    algorithm: String,
+    digest: String,
+}
+
+impl FactoryBootstrapCapabilityVerifier {
+    fn valid(&self) -> bool {
+        self.version == 1
+            && self.algorithm == "sha256"
+            && self.digest.len() == 64
+            && self.digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && self.digest.bytes().all(|byte| !byte.is_ascii_uppercase())
+    }
+
+    fn verifies(&self, capability: &str) -> bool {
+        if !self.valid()
+            || capability.len() != 43
+            || !capability
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return false;
+        }
+        let digest = Sha256::digest(capability.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        constant_time_bytes_equal(digest.as_bytes(), self.digest.as_bytes())
+    }
+}
+
+impl MaintenancePinVerifier {
+    fn decode(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        if self.version != 1
+            || self.algorithm != MAINTENANCE_PIN_KDF_ALGORITHM
+            || !(MAINTENANCE_PIN_KDF_MIN_ITERATIONS..=MAINTENANCE_PIN_KDF_MAX_ITERATIONS)
+                .contains(&self.iterations)
+        {
+            return None;
+        }
+        let salt = STANDARD.decode(self.salt.as_bytes()).ok()?;
+        let digest = STANDARD.decode(self.digest.as_bytes()).ok()?;
+        if STANDARD.encode(&salt) != self.salt || STANDARD.encode(&digest) != self.digest {
+            return None;
+        }
+        if salt.len() != MAINTENANCE_PIN_KDF_SALT_BYTES
+            || digest.len() != MAINTENANCE_PIN_KDF_DIGEST_BYTES
+        {
+            return None;
+        }
+        Some((salt, digest))
+    }
+
+    fn verify(&self, supplied: &str) -> bool {
+        if supplied.is_empty() || supplied.len() > 128 {
+            return false;
+        }
+        let Some((salt, expected)) = self.decode() else {
+            return false;
+        };
+        let actual = pbkdf2_hmac_sha256(supplied.as_bytes(), &salt, self.iterations);
+        constant_time_bytes_equal(&actual, &expected)
+    }
+}
+
+fn legacy_raw_maintenance_pin(value: &str) -> bool {
+    let length = value.len();
+    (LEGACY_MAINTENANCE_PIN_MIN_DIGITS..=LEGACY_MAINTENANCE_PIN_MAX_DIGITS).contains(&length)
+        && value.as_bytes().iter().all(u8::is_ascii_digit)
+}
+
+fn new_maintenance_pin_verifier(pin: &str) -> Result<MaintenancePinVerifier, String> {
+    let mut salt = [0u8; MAINTENANCE_PIN_KDF_SALT_BYTES];
+    getrandom::getrandom(&mut salt)
+        .map_err(|_| "generate maintenance PIN verifier randomness failed".to_string())?;
+    let digest = pbkdf2_hmac_sha256(pin.as_bytes(), &salt, MAINTENANCE_PIN_KDF_MIN_ITERATIONS);
+    Ok(MaintenancePinVerifier {
+        version: 1,
+        algorithm: MAINTENANCE_PIN_KDF_ALGORITHM.to_string(),
+        iterations: MAINTENANCE_PIN_KDF_MIN_ITERATIONS,
+        salt: STANDARD.encode(salt),
+        digest: STANDARD.encode(digest),
+    })
+}
+
+fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    // PBKDF2 block 1 is sufficient for the fixed 256-bit verifier digest.
+    let mut initial = Vec::with_capacity(salt.len() + 4);
+    initial.extend_from_slice(salt);
+    initial.extend_from_slice(&1u32.to_be_bytes());
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(password).expect("HMAC-SHA-256 accepts any key length");
+    mac.update(&initial);
+    let mut previous = mac.finalize().into_bytes().to_vec();
+    let mut derived = previous.clone();
+    for _ in 1..iterations {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(password).expect("HMAC-SHA-256 accepts any key length");
+        mac.update(&previous);
+        previous = mac.finalize().into_bytes().to_vec();
+        for (left, right) in derived.iter_mut().zip(&previous) {
+            *left ^= *right;
+        }
+    }
+    let mut output = [0u8; MAINTENANCE_PIN_KDF_DIGEST_BYTES];
+    output.copy_from_slice(&derived);
+    output
+}
+
+fn constant_time_bytes_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = (left.len() ^ right.len()) as u8;
+    for index in 0..left.len().min(right.len()) {
+        difference |= left[index] ^ right[index];
+    }
+    difference == 0
+}
 
 fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
@@ -75,6 +222,15 @@ fn default_audio_cue_enabled() -> bool {
     false
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAudioOutputBinding {
+    pub endpoint_id: String,
+    #[serde(default)]
+    pub friendly_name: Option<String>,
+    pub confirmed_heard_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +263,8 @@ pub struct MachinePublicConfig {
     pub vision_request_timeout_ms: u64,
     #[serde(default = "default_machine_audio_volume")]
     pub machine_audio_volume: f64,
+    #[serde(default)]
+    pub machine_audio_output_binding: Option<MachineAudioOutputBinding>,
     #[serde(default, skip_serializing)]
     pub try_on_camera_device_id: Option<String>,
     #[serde(default)]
@@ -142,6 +300,14 @@ pub struct MachineConfigSecretsUpdate {
 pub struct MachineConfigUpdateRequest {
     pub public: MachinePublicConfig,
     pub secrets: Option<MachineConfigSecretsUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAudioSettingsUpdateRequest {
+    pub machine_audio_output_binding: MachineAudioOutputBinding,
+    pub audio_cue_settings: AudioCueSettings,
+    pub machine_audio_volume: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -333,11 +499,27 @@ pub struct HardwareSlotTopologyIdentity {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FactoryProfile {
+    Production,
+    Testbed,
+}
+
+impl FactoryProfile {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Testbed => "testbed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryRuntimeManifest {
     pub layout_version: u32,
-    pub environment: String,
+    pub environment: FactoryProfile,
     pub provisioning_endpoint: String,
     pub hardware_mode: RuntimeHardwareMode,
     pub hardware_model: String,
@@ -348,8 +530,6 @@ pub struct FactoryRuntimeManifest {
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalBringUpSettings {
-    #[serde(default)]
-    pub environment: Option<String>,
     #[serde(default)]
     pub provisioning_endpoint_override: Option<String>,
     #[serde(default)]
@@ -365,6 +545,8 @@ pub struct LocalBringUpSettings {
     )]
     pub lower_controller_usb_identity: Option<Option<SerialPortUsbIdentity>>,
     #[serde(default)]
+    pub lower_controller_binding: Option<crate::device_binding::LocalSerialRoleBinding>,
+    #[serde(default)]
     pub scanner_adapter: Option<ScannerAdapterKind>,
     #[serde(default)]
     pub scanner_serial_port_path: Option<String>,
@@ -374,6 +556,8 @@ pub struct LocalBringUpSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub scanner_usb_identity: Option<Option<SerialPortUsbIdentity>>,
+    #[serde(default)]
+    pub scanner_binding: Option<crate::device_binding::LocalSerialRoleBinding>,
     #[serde(default)]
     pub scanner_baud_rate: Option<u32>,
     #[serde(default)]
@@ -387,6 +571,8 @@ pub struct LocalBringUpSettings {
     #[serde(default)]
     pub machine_audio_volume: Option<f64>,
     #[serde(default)]
+    pub machine_audio_output_binding: Option<MachineAudioOutputBinding>,
+    #[serde(default)]
     pub try_on_camera_device_id: Option<String>,
     #[serde(default)]
     pub audio_cue_settings: Option<AudioCueSettings>,
@@ -394,6 +580,36 @@ pub struct LocalBringUpSettings {
     pub kiosk_mode: Option<bool>,
     #[serde(default)]
     pub stock_movement_retention_days: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDeviceBindingSnapshot {
+    pub binding: Option<crate::device_binding::LocalSerialRoleBinding>,
+    pub revision: String,
+}
+
+fn local_device_binding_for_role(
+    settings: &LocalBringUpSettings,
+    role: crate::device_binding::LocalDeviceRole,
+) -> Option<crate::device_binding::LocalSerialRoleBinding> {
+    match role {
+        crate::device_binding::LocalDeviceRole::LowerController => {
+            settings.lower_controller_binding.clone()
+        }
+        crate::device_binding::LocalDeviceRole::Scanner => settings.scanner_binding.clone(),
+    }
+}
+
+fn local_device_binding_revision(
+    role: crate::device_binding::LocalDeviceRole,
+    binding: Option<&crate::device_binding::LocalSerialRoleBinding>,
+) -> Result<String, String> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "role": role,
+        "binding": binding,
+    }))
+    .map_err(|error| format!("serialize local device binding revision failed: {error}"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -444,6 +660,7 @@ pub struct RuntimeConfigurationState {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub maintenance_pin_configured: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -464,6 +681,7 @@ pub struct MachineRuntimeConfig {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub maintenance_pin_configured: bool,
     pub machine_secret: Option<String>,
     pub mqtt_signing_secret: Option<String>,
     pub mqtt_password: Option<String>,
@@ -513,12 +731,14 @@ impl MachineRuntimeConfig {
             self.machine_secret_configured,
             self.mqtt_signing_secret_configured,
             self.mqtt_password_configured,
+            self.maintenance_pin_configured,
         );
         MachinePublicRuntimeConfig {
             public: self.public.clone(),
             machine_secret_configured: self.machine_secret_configured,
             mqtt_signing_secret_configured: self.mqtt_signing_secret_configured,
             mqtt_password_configured: self.mqtt_password_configured,
+            maintenance_pin_configured: self.maintenance_pin_configured,
             provisioned: provisioning_issues.is_empty(),
             provisioning_issues,
         }
@@ -532,6 +752,7 @@ pub struct MachinePublicRuntimeConfig {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub maintenance_pin_configured: bool,
     pub provisioned: bool,
     pub provisioning_issues: Vec<String>,
 }
@@ -543,6 +764,7 @@ impl MachinePublicRuntimeConfig {
             self.machine_secret_configured,
             self.mqtt_signing_secret_configured,
             self.mqtt_password_configured,
+            self.maintenance_pin_configured,
         );
         self.provisioned = self.provisioning_issues.is_empty();
         self
@@ -565,6 +787,7 @@ fn provisioning_issues(
     machine_secret_configured: bool,
     mqtt_signing_secret_configured: bool,
     mqtt_password_configured: bool,
+    maintenance_pin_configured: bool,
 ) -> Vec<String> {
     let mut issues = Vec::new();
     if public
@@ -606,6 +829,9 @@ fn provisioning_issues(
     if public.mqtt_username.is_some() && !mqtt_password_configured {
         issues.push("mqtt_password_missing".to_string());
     }
+    if !maintenance_pin_configured {
+        issues.push("maintenance_pin_not_configured".to_string());
+    }
     issues
 }
 
@@ -636,6 +862,7 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_ws_url: vending_core::vision::DEFAULT_VISION_WS_URL.to_string(),
         vision_request_timeout_ms: 8_000,
         machine_audio_volume: default_machine_audio_volume(),
+        machine_audio_output_binding: None,
         try_on_camera_device_id: None,
         audio_cue_settings: AudioCueSettings::default(),
         presence_audio_enabled: None,
@@ -691,6 +918,22 @@ fn normalize_required_string(value: String, field: &str) -> Result<String, Strin
     Ok(value)
 }
 
+fn normalize_machine_audio_output_binding(
+    binding: Option<MachineAudioOutputBinding>,
+) -> Result<Option<MachineAudioOutputBinding>, String> {
+    let Some(mut binding) = binding else {
+        return Ok(None);
+    };
+    binding.endpoint_id =
+        normalize_required_string(binding.endpoint_id, "machineAudioOutputBinding.endpointId")?;
+    binding.friendly_name = normalize_optional_string(binding.friendly_name);
+    ConfigStore::validate_iso_datetime(
+        &binding.confirmed_heard_at,
+        "machineAudioOutputBinding.confirmedHeardAt invalid",
+    )?;
+    Ok(Some(binding))
+}
+
 fn normalize_http_endpoint(value: String, field: &str) -> Result<String, String> {
     let value = normalize_required_string(value, field)?
         .trim_end_matches('/')
@@ -708,7 +951,6 @@ fn normalize_factory_manifest(
     if manifest.layout_version != 1 {
         return Err("unsupported factory manifest layout version".to_string());
     }
-    manifest.environment = normalize_required_string(manifest.environment, "environment")?;
     manifest.provisioning_endpoint =
         normalize_http_endpoint(manifest.provisioning_endpoint, "provisioningEndpoint")?;
     manifest.hardware_model = normalize_required_string(manifest.hardware_model, "hardwareModel")?;
@@ -735,12 +977,13 @@ fn normalize_hardware_slot_topology(
 fn normalize_local_bring_up_settings(
     mut settings: LocalBringUpSettings,
 ) -> Result<LocalBringUpSettings, String> {
-    settings.environment = normalize_optional_string(settings.environment);
     settings.network_profile = normalize_optional_string(settings.network_profile);
     settings.provisioning_endpoint_override = settings
         .provisioning_endpoint_override
         .map(|value| normalize_http_endpoint(value, "provisioningEndpointOverride"))
         .transpose()?;
+    settings.machine_audio_output_binding =
+        normalize_machine_audio_output_binding(settings.machine_audio_output_binding)?;
     Ok(settings)
 }
 
@@ -786,6 +1029,9 @@ fn apply_local_bring_up_settings_to_public(
     }
     if let Some(value) = settings.machine_audio_volume {
         public.machine_audio_volume = value;
+    }
+    if settings.machine_audio_output_binding.is_some() {
+        public.machine_audio_output_binding = settings.machine_audio_output_binding.clone();
     }
     if settings.try_on_camera_device_id.is_some() {
         public.try_on_camera_device_id = settings.try_on_camera_device_id.clone();
@@ -1092,6 +1338,8 @@ pub fn normalize_public_config(
 
     let vision_ws_url = config.vision_ws_url.trim().to_string();
     config.try_on_camera_device_id = None;
+    config.machine_audio_output_binding =
+        normalize_machine_audio_output_binding(config.machine_audio_output_binding.take())?;
 
     if let Some(presence_audio_enabled) = config.presence_audio_enabled {
         if config.audio_cue_settings == AudioCueSettings::default() {
@@ -1180,6 +1428,46 @@ fn default_data_base_dir() -> Result<PathBuf, String> {
     }
 }
 
+#[cfg(not(windows))]
+async fn replace_file_atomically(staging_path: &Path, path: &Path) -> Result<(), String> {
+    fs::rename(staging_path, path)
+        .await
+        .map_err(|error| format!("replace local bring-up settings failed: {error}"))
+}
+
+#[cfg(windows)]
+async fn replace_file_atomically(staging_path: &Path, path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let staging = staging_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            staging.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(format!(
+            "replace local bring-up settings failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
 fn daemon_config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("machine-config.json")
 }
@@ -1228,6 +1516,7 @@ pub struct ConfigStore {
     state: LocalStateStore,
     secrets: Arc<dyn SecretStore>,
     maintenance: Arc<crate::maintenance::MaintenanceEnrollment>,
+    local_settings_mutation_lock: tokio::sync::Mutex<()>,
 }
 
 impl ConfigStore {
@@ -1429,6 +1718,7 @@ impl ConfigStore {
             state,
             secrets,
             maintenance,
+            local_settings_mutation_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -1456,6 +1746,212 @@ impl ConfigStore {
         provisioning_profile_cache_summary_path(&self.data_dir)
     }
 
+    /// Factory writes only a salted PIN verifier to this one-shot protected
+    /// staging location. The daemon validates and imports it into the selected
+    /// SecretStore before any Bring-Up or claim work observes configuration.
+    pub fn factory_maintenance_pin_verifier_path(&self) -> PathBuf {
+        self.data_dir
+            .join("factory")
+            .join("maintenance-pin-verifier.json")
+    }
+
+    pub fn factory_bootstrap_capability_path(&self) -> PathBuf {
+        self.data_dir
+            .join("factory")
+            .join("bootstrap-provisioning-capability")
+    }
+
+    pub fn factory_bootstrap_capability_verifier_path(&self) -> PathBuf {
+        self.data_dir
+            .join("factory")
+            .join("bootstrap-provisioning-capability-verifier.json")
+    }
+
+    /// Import the Factory-produced verifier without ever reading or retaining
+    /// its raw companion capability. The latter remains ACL-protected for the
+    /// local maintenance account until it is exchanged exactly once.
+    pub async fn import_factory_bootstrap_capability_verifier(&self) -> Result<bool, String> {
+        let path = self.factory_bootstrap_capability_verifier_path();
+        let serialized = match fs::read_to_string(&path).await {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "read factory bootstrap verifier staging failed: {error}"
+                ))
+            }
+        };
+        let verifier = serde_json::from_str::<FactoryBootstrapCapabilityVerifier>(&serialized)
+            .map_err(|_| "factory bootstrap verifier is invalid".to_string())?;
+        if !verifier.valid() {
+            return Err("factory bootstrap verifier is invalid".to_string());
+        }
+        if let Some(existing) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT)
+            .await?
+        {
+            if existing != serialized {
+                return Err(
+                    "factory bootstrap verifier conflicts with the protected verifier".to_string(),
+                );
+            }
+        } else {
+            self.secrets
+                .write_secret(
+                    crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT,
+                    &serialized,
+                )
+                .await?;
+        }
+        fs::remove_file(path).await.map_err(|error| {
+            format!("remove factory bootstrap verifier staging failed: {error}")
+        })?;
+        Ok(true)
+    }
+
+    /// Consume a Factory-only capability atomically enough for the daemon
+    /// boundary: remove the protected verifier before the caller receives a
+    /// session, and best-effort erase its local-account delivery file.
+    pub async fn consume_factory_bootstrap_capability(
+        &self,
+        capability: &str,
+    ) -> Result<bool, String> {
+        if self
+            .load_provisioning_profile_cache_summary()
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        let Some(serialized) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let Ok(verifier) = serde_json::from_str::<FactoryBootstrapCapabilityVerifier>(&serialized)
+        else {
+            return Ok(false);
+        };
+        if !verifier.verifies(capability) {
+            return Ok(false);
+        }
+        self.secrets
+            .write_secret(
+                crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT,
+                "",
+            )
+            .await?;
+        match fs::remove_file(self.factory_bootstrap_capability_path()).await {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(format!(
+                "remove consumed factory bootstrap capability failed: {error}"
+            )),
+        }
+    }
+
+    pub async fn import_factory_maintenance_pin_verifier(&self) -> Result<bool, String> {
+        let path = self.factory_maintenance_pin_verifier_path();
+        let serialized = match fs::read_to_string(&path).await {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "read factory maintenance PIN verifier staging failed: {error}"
+                ));
+            }
+        };
+        let verifier = serde_json::from_str::<MaintenancePinVerifier>(&serialized)
+            .map_err(|_| "factory maintenance PIN verifier is invalid".to_string())?;
+        if verifier.decode().is_none() {
+            return Err("factory maintenance PIN verifier is invalid".to_string());
+        }
+        if let Some(existing) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await?
+        {
+            if existing != serialized {
+                return Err(
+                    "factory maintenance PIN verifier conflicts with the protected verifier"
+                        .to_string(),
+                );
+            }
+        } else {
+            self.secrets
+                .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, &serialized)
+                .await?;
+        }
+        fs::remove_file(&path).await.map_err(|error| {
+            format!("remove factory maintenance PIN verifier staging failed: {error}")
+        })?;
+        Ok(true)
+    }
+
+    /// Earlier daemon builds stored only a numeric field PIN in the protected
+    /// machine store. This is the sole migration path: it accepts that narrow
+    /// legacy shape, replaces it atomically with a freshly salted verifier,
+    /// and never exposes the source PIN outside this process.
+    pub async fn migrate_legacy_raw_maintenance_pin(&self) -> Result<bool, String> {
+        let Some(raw_pin) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if serde_json::from_str::<MaintenancePinVerifier>(&raw_pin)
+            .ok()
+            .is_some_and(|verifier| verifier.decode().is_some())
+        {
+            return Ok(false);
+        }
+        if !legacy_raw_maintenance_pin(&raw_pin) {
+            return Ok(false);
+        }
+
+        let verifier = new_maintenance_pin_verifier(&raw_pin)?;
+        let serialized = serde_json::to_string(&verifier)
+            .map_err(|_| "serialize maintenance PIN verifier failed".to_string())?;
+        self.secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, &serialized)
+            .await?;
+        Ok(true)
+    }
+
+    async fn maintenance_pin_verifier_configured(&self) -> Result<bool, String> {
+        let Some(serialized) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await?
+        else {
+            return Ok(false);
+        };
+        Ok(serde_json::from_str::<MaintenancePinVerifier>(&serialized)
+            .ok()
+            .is_some_and(|verifier| verifier.decode().is_some()))
+    }
+
+    /// Verifies a supplied field PIN inside the daemon boundary. The protected
+    /// secret is a salted KDF verifier, never the PIN itself, and malformed
+    /// or missing records deliberately look identical to a wrong PIN.
+    pub async fn verify_maintenance_pin(&self, supplied: &str) -> Result<bool, String> {
+        let Some(serialized) = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let Ok(verifier) = serde_json::from_str::<MaintenancePinVerifier>(&serialized) else {
+            return Ok(false);
+        };
+        Ok(verifier.verify(supplied))
+    }
+
     pub async fn ensure_maintenance_public_key(&self) -> Result<String, String> {
         self.maintenance.ensure_public_key().await
     }
@@ -1474,19 +1970,73 @@ impl ConfigStore {
     }
 
     pub async fn provisioning_profile_name(&self) -> Result<String, String> {
-        let factory = self.load_factory_manifest().await?;
-        let local = self.load_local_bring_up_settings().await?;
-        let value = local
-            .and_then(|settings| settings.environment)
-            .or_else(|| factory.map(|manifest| manifest.environment))
-            .unwrap_or_else(|| "production".to_string())
-            .trim()
-            .to_ascii_lowercase();
-        if matches!(value.as_str(), "production" | "testbed") {
-            Ok(value)
-        } else {
-            Err("unsupported machine provisioning profile".to_string())
+        let factory = self.load_factory_manifest().await?.ok_or_else(|| {
+            "factory manifest is required for machine provisioning profile".to_string()
+        })?;
+        Ok(factory.environment.as_str().to_string())
+    }
+
+    pub async fn production_claim_maintenance_identity(
+        &self,
+    ) -> Result<Option<ProvisioningMaintenanceIdentity>, String> {
+        let Some(factory) = self.load_factory_manifest().await? else {
+            return Ok(None);
+        };
+        if factory.environment != FactoryProfile::Production {
+            return Ok(None);
         }
+        let profile = self.load_provisioning_profile_cache_summary().await?;
+        let claim_code_id = self
+            .state
+            .get_metadata::<String>("machine_provisioning_claim_code_id")
+            .await
+            .map_err(|error| error.to_string())?;
+        let profile_version = self
+            .state
+            .get_metadata::<String>("machine_provisioning_profile_version")
+            .await
+            .map_err(|error| error.to_string())?;
+        let claimed_at = self
+            .state
+            .get_metadata::<String>("machine_provisioning_claimed_at")
+            .await
+            .map_err(|error| error.to_string())?;
+        let profile_marks_claim = profile.as_ref().is_some_and(|profile| {
+            profile.provisioning_profile.is_some() || profile.maintenance.is_some()
+        });
+        let metadata_marks_claim =
+            claim_code_id.is_some() || profile_version.is_some() || claimed_at.is_some();
+        if !profile_marks_claim && !metadata_marks_claim {
+            return Ok(None);
+        }
+        let profile = profile.ok_or_else(|| {
+            "persisted production claim profile is missing for configured machine".to_string()
+        })?;
+        if profile.provisioning_profile.as_deref() != Some("production") {
+            return Err("persisted production claim profile marker is invalid".to_string());
+        }
+        let identity = profile.maintenance.ok_or_else(|| {
+            "persisted production claim is missing maintenance identity".to_string()
+        })?;
+        validate_maintenance_identity(&identity)?;
+        let expected_profile_version = profile.profile_version.to_string();
+        if claim_code_id.as_deref() != Some(profile.provisioning_metadata.claim_code_id.as_str())
+            || profile_version.as_deref() != Some(expected_profile_version.as_str())
+            || claimed_at.as_deref() != Some(profile.claimed_at.as_str())
+        {
+            return Err(
+                "persisted production claim credentials are missing or invalid".to_string(),
+            );
+        }
+        let machine_secret = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_SECRET_ACCOUNT)
+            .await?
+            .ok_or_else(|| "persisted production machine secret is missing".to_string())?;
+        if !(32..=256).contains(&machine_secret.trim().len()) {
+            return Err("persisted production machine secret is invalid".to_string());
+        }
+        Ok(Some(identity))
     }
 
     pub async fn apply_maintenance_profile(
@@ -1550,6 +2100,39 @@ impl ConfigStore {
 
     pub async fn maintenance_status(&self) -> crate::maintenance::MaintenanceEnrollmentStatus {
         self.maintenance.status().await
+    }
+
+    pub async fn retry_maintenance_convergence(
+        &self,
+    ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
+        self.maintenance.retry_active_convergence().await
+    }
+
+    /// Records a reclaim authorization issued by protected maintenance.  The
+    /// durable flag is the source of the Bring-Up cursor; a provisioning
+    /// profile cache is only historical profile evidence and is never used as
+    /// an implicit reclaim request.
+    pub async fn request_machine_reclaim(&self) -> Result<(), String> {
+        self.state
+            .put_metadata("bring_up_reclaim_requested", &true)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn machine_reclaim_requested(&self) -> Result<bool, String> {
+        Ok(self
+            .state
+            .get_metadata::<bool>("bring_up_reclaim_requested")
+            .await
+            .map_err(|error| error.to_string())?
+            .unwrap_or(false))
+    }
+
+    pub async fn clear_machine_reclaim_request(&self) -> Result<(), String> {
+        self.state
+            .delete_metadata("bring_up_reclaim_requested")
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub async fn promote_maintenance_reclaim(
@@ -1831,6 +2414,7 @@ impl ConfigStore {
         &self,
         public: &MachinePublicConfig,
     ) -> Result<(), String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
         let mut settings = self
             .load_local_bring_up_settings()
             .await?
@@ -1849,11 +2433,12 @@ impl ConfigStore {
         settings.vision_ws_url = Some(public.vision_ws_url.clone());
         settings.vision_request_timeout_ms = Some(public.vision_request_timeout_ms);
         settings.machine_audio_volume = Some(public.machine_audio_volume);
+        settings.machine_audio_output_binding = public.machine_audio_output_binding.clone();
         settings.try_on_camera_device_id = public.try_on_camera_device_id.clone();
         settings.audio_cue_settings = Some(public.audio_cue_settings.clone());
         settings.kiosk_mode = Some(public.kiosk_mode);
         settings.stock_movement_retention_days = Some(public.stock_movement_retention_days);
-        self.write_local_bring_up_settings(&settings).await
+        self.write_local_bring_up_settings_unlocked(&settings).await
     }
 
     async fn write_public_config_file(&self, public: &MachinePublicConfig) -> Result<(), String> {
@@ -1894,17 +2479,126 @@ impl ConfigStore {
         &self,
         network_profile: impl Into<String>,
     ) -> Result<LocalBringUpSettings, String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
         let mut settings = self
             .load_local_bring_up_settings()
             .await?
             .unwrap_or_default();
         settings.network_profile = normalize_optional_string(Some(network_profile.into()));
         let settings = normalize_local_bring_up_settings(settings)?;
-        self.write_local_bring_up_settings(&settings).await?;
+        self.write_local_bring_up_settings_unlocked(&settings)
+            .await?;
         Ok(settings)
     }
 
+    pub async fn save_local_device_binding(
+        &self,
+        role: crate::device_binding::LocalDeviceRole,
+        binding: crate::device_binding::LocalSerialRoleBinding,
+    ) -> Result<LocalBringUpSettings, String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
+        let mut settings = self
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        match role {
+            crate::device_binding::LocalDeviceRole::LowerController => {
+                settings.lower_controller_binding = Some(binding);
+            }
+            crate::device_binding::LocalDeviceRole::Scanner => {
+                settings.scanner_binding = Some(binding);
+            }
+        }
+        let settings = normalize_local_bring_up_settings(settings)?;
+        self.write_local_bring_up_settings_unlocked(&settings)
+            .await?;
+        Ok(settings)
+    }
+
+    pub async fn local_device_binding_snapshot(
+        &self,
+        role: crate::device_binding::LocalDeviceRole,
+    ) -> Result<LocalDeviceBindingSnapshot, String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
+        let settings = self
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        let binding = local_device_binding_for_role(&settings, role);
+        Ok(LocalDeviceBindingSnapshot {
+            revision: local_device_binding_revision(role, binding.as_ref())?,
+            binding,
+        })
+    }
+
+    pub async fn save_local_device_binding_if_revision(
+        &self,
+        role: crate::device_binding::LocalDeviceRole,
+        binding: crate::device_binding::LocalSerialRoleBinding,
+        expected_revision: &str,
+    ) -> Result<String, String> {
+        self.replace_local_device_binding_if_revision(role, Some(binding), expected_revision)
+            .await
+    }
+
+    pub async fn restore_local_device_binding_if_revision(
+        &self,
+        role: crate::device_binding::LocalDeviceRole,
+        binding: Option<crate::device_binding::LocalSerialRoleBinding>,
+        expected_revision: &str,
+    ) -> Result<String, String> {
+        self.replace_local_device_binding_if_revision(role, binding, expected_revision)
+            .await
+    }
+
+    async fn replace_local_device_binding_if_revision(
+        &self,
+        role: crate::device_binding::LocalDeviceRole,
+        binding: Option<crate::device_binding::LocalSerialRoleBinding>,
+        expected_revision: &str,
+    ) -> Result<String, String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
+        let mut settings = self
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        let current = local_device_binding_for_role(&settings, role);
+        let current_revision = local_device_binding_revision(role, current.as_ref())?;
+        if current_revision != expected_revision {
+            return Err(format!(
+                "{} binding revision changed: expected {expected_revision}, current {current_revision}",
+                role.as_str()
+            ));
+        }
+        match role {
+            crate::device_binding::LocalDeviceRole::LowerController => {
+                settings.lower_controller_binding = binding.clone();
+            }
+            crate::device_binding::LocalDeviceRole::Scanner => {
+                settings.scanner_binding = binding.clone();
+            }
+        }
+        self.write_local_bring_up_settings_unlocked(&settings)
+            .await?;
+        local_device_binding_revision(role, binding.as_ref())
+    }
+
+    pub async fn restore_local_bring_up_settings_snapshot(
+        &self,
+        settings: &LocalBringUpSettings,
+    ) -> Result<(), String> {
+        self.write_local_bring_up_settings(settings).await
+    }
+
     async fn write_local_bring_up_settings(
+        &self,
+        settings: &LocalBringUpSettings,
+    ) -> Result<(), String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
+        self.write_local_bring_up_settings_unlocked(settings).await
+    }
+
+    async fn write_local_bring_up_settings_unlocked(
         &self,
         settings: &LocalBringUpSettings,
     ) -> Result<(), String> {
@@ -1917,9 +2611,15 @@ impl ConfigStore {
         }
         let payload = serde_json::to_string_pretty(&settings)
             .map_err(|error| format!("serialize local bring-up settings failed: {error}"))?;
-        fs::write(path, payload)
+        let staging_path = path.with_extension("json.tmp");
+        fs::write(&staging_path, payload)
             .await
-            .map_err(|error| format!("write local bring-up settings failed: {error}"))
+            .map_err(|error| format!("stage local bring-up settings failed: {error}"))?;
+        if let Err(error) = replace_file_atomically(&staging_path, &path).await {
+            let _ = fs::remove_file(&staging_path).await;
+            return Err(error);
+        }
+        Ok(())
     }
 
     async fn public_runtime_config(
@@ -1943,6 +2643,7 @@ impl ConfigStore {
                 .read_secret(crate::secret::MQTT_PASSWORD_ACCOUNT)
                 .await?
                 .is_some(),
+            maintenance_pin_configured: self.maintenance_pin_verifier_configured().await?,
             provisioned: false,
             provisioning_issues: Vec::new(),
         }
@@ -1989,6 +2690,24 @@ impl ConfigStore {
         self.save_public_config(request.public).await
     }
 
+    pub async fn save_machine_audio_settings_update(
+        &self,
+        request: MachineAudioSettingsUpdateRequest,
+    ) -> Result<RuntimeConfigurationSummary, String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
+        let mut settings = self
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        settings.machine_audio_output_binding = Some(request.machine_audio_output_binding);
+        settings.audio_cue_settings = Some(request.audio_cue_settings);
+        settings.machine_audio_volume = Some(request.machine_audio_volume);
+        self.write_local_bring_up_settings_unlocked(&settings)
+            .await?;
+        drop(_mutation);
+        self.load_runtime_configuration_summary().await
+    }
+
     pub async fn apply_provisioning_profile(
         &self,
         profile: MachineProvisioningProfile,
@@ -2009,6 +2728,10 @@ impl ConfigStore {
             crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
             crate::secret::MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
             crate::secret::MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+            // Factory imports this verifier into the protected local secret
+            // store before first claim. Claim and reclaim rotate platform
+            // credentials but must never remove the field-maintenance path.
+            crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT,
         ] {
             if let Some(value) = self
                 .secrets
@@ -2193,6 +2916,7 @@ impl ConfigStore {
                 machine_secret_configured: secret_store.machine_secret_configured,
                 mqtt_signing_secret_configured: secret_store.mqtt_signing_secret_configured,
                 mqtt_password_configured: secret_store.mqtt_password_configured,
+                maintenance_pin_configured: self.maintenance_pin_verifier_configured().await?,
             },
             secret_store,
             factory_manifest,
@@ -2211,6 +2935,7 @@ impl ConfigStore {
             machine_secret_configured: secrets.machine_secret.as_deref().is_some(),
             mqtt_signing_secret_configured: secrets.mqtt_signing_secret.as_deref().is_some(),
             mqtt_password_configured: secrets.mqtt_password.as_deref().is_some(),
+            maintenance_pin_configured: self.maintenance_pin_verifier_configured().await?,
             machine_secret: None,
             mqtt_signing_secret: None,
             mqtt_password: None,
@@ -2925,6 +3650,98 @@ mod tests {
         assert!(!object.contains_key("scannerUsbIdentity"));
     }
 
+    #[test]
+    fn local_bring_up_settings_reject_environment_override() {
+        let error = serde_json::from_value::<LocalBringUpSettings>(serde_json::json!({
+            "environment": "production"
+        }))
+        .expect_err("local settings must not select the Factory profile");
+        assert!(error.to_string().contains("unknown field `environment`"));
+    }
+
+    #[test]
+    fn daemon_factory_manifest_keeps_batch_like_labels_outside_the_strict_environment() {
+        let manifest: FactoryRuntimeManifest = serde_json::from_value(serde_json::json!({
+            "layoutVersion": 1,
+            "environment": "production",
+            "provisioningEndpoint": "https://factory.example.com/api",
+            "hardwareMode": "production",
+            "hardwareModel": "VEM-PROD-24",
+            "hardwareSlotTopology": {
+                "identity": "vem-prod-24",
+                "version": "2026-07-14"
+            }
+        }))
+        .expect("strict production factory manifest");
+        assert_eq!(manifest.environment, FactoryProfile::Production);
+
+        let label_error = serde_json::from_value::<FactoryRuntimeManifest>(serde_json::json!({
+            "layoutVersion": 1,
+            "environment": "vps-fresh-production-20260714",
+            "provisioningEndpoint": "https://factory.example.com/api",
+            "hardwareMode": "production",
+            "hardwareModel": "VEM-PROD-24",
+            "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-14" }
+        }))
+        .expect_err("deployment labels cannot become a daemon environment");
+        assert!(label_error.to_string().contains("unknown variant"));
+
+        let metadata_error = serde_json::from_value::<FactoryRuntimeManifest>(serde_json::json!({
+            "layoutVersion": 1,
+            "environment": "testbed",
+            "environmentName": "vps-fresh-testbed-20260714",
+            "deploymentBatch": "delivery-batch-20260714",
+            "provisioningEndpoint": "https://factory.example.com/api",
+            "hardwareMode": "simulated",
+            "hardwareModel": "VEM-TESTBED-24",
+            "hardwareSlotTopology": { "identity": "vem-testbed-24", "version": "2026-07-14" }
+        }))
+        .expect_err("trace metadata belongs outside the daemon manifest");
+        assert!(metadata_error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn prepare_projection_from_powershell_deserializes_daemon_factory_manifest() {
+        let raw = match std::env::var("VEM_FACTORY_RUNTIME_PROJECTION") {
+            Ok(raw) => raw,
+            // The Node contract test supplies a real PowerShell projection.  Keeping
+            // this opt-in makes the normal Rust suite hermetic.
+            Err(_) => return,
+        };
+        let projection: serde_json::Value =
+            serde_json::from_str(&raw).expect("PowerShell boundary projection JSON");
+        let expected_profile = projection["factoryProfile"]
+            .as_str()
+            .expect("projection FactoryProfile");
+        let daemon_manifest = projection["daemonFactoryManifest"].clone();
+        let daemon_object = daemon_manifest
+            .as_object()
+            .expect("projection daemon factory manifest object");
+        assert!(!daemon_object.contains_key("environmentName"));
+        assert!(!daemon_object.contains_key("deploymentBatch"));
+
+        let manifest: FactoryRuntimeManifest =
+            serde_json::from_value(daemon_manifest).expect("typed daemon factory manifest");
+        assert_eq!(manifest.environment.as_str(), expected_profile);
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_requires_a_typed_factory_manifest() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+        assert_eq!(
+            store
+                .provisioning_profile_name()
+                .await
+                .expect_err("missing manifest"),
+            "factory manifest is required for machine provisioning profile"
+        );
+    }
+
     #[tokio::test]
     async fn layered_runtime_summary_reads_owned_layers_and_excludes_machine_config_bridge() {
         let temp = TempDir::new().expect("temp");
@@ -2963,7 +3780,6 @@ mod tests {
         tokio::fs::write(
             local_bring_up_settings_path(&data_dir),
             serde_json::json!({
-                "environment": "production",
                 "provisioningEndpointOverride": "https://bringup.example.com/api",
                 "networkProfile": "field-wifi"
             })
@@ -3620,6 +4436,232 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provisioning_profile_preserves_the_salted_maintenance_pin_verifier_across_claim_and_reclaim(
+    ) {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        // PBKDF2-HMAC-SHA-256(2468, 00112233445566778899aabbccddeeff, 120000).
+        // Factory delivery carries this verifier, never the PIN itself.
+        let verifier = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
+        secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, verifier)
+            .await
+            .expect("seed protected verifier");
+        let store = ConfigStore::new(data_dir, state, secrets.clone());
+
+        store
+            .apply_provisioning_profile(valid_provisioning_profile_for_test())
+            .await
+            .expect("claim profile");
+        assert!(store.verify_maintenance_pin("2468").await.expect("verify"));
+        assert!(!store
+            .verify_maintenance_pin("9999")
+            .await
+            .expect("reject wrong pin"));
+
+        let mut reclaim_profile = valid_provisioning_profile_for_test();
+        reclaim_profile.credentials.mqtt_connection.password = None;
+        store
+            .apply_provisioning_profile(reclaim_profile)
+            .await
+            .expect("reclaim profile");
+
+        let stored = secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await
+            .expect("read verifier")
+            .expect("verifier retained");
+        assert_eq!(stored, verifier);
+        assert!(!stored.contains("2468"));
+    }
+
+    #[tokio::test]
+    async fn factory_maintenance_pin_verifier_is_imported_once_into_the_secret_store() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let store = ConfigStore::new(data_dir.clone(), state, secrets.clone());
+        let verifier = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
+        let staging_path = store.factory_maintenance_pin_verifier_path();
+        tokio::fs::create_dir_all(staging_path.parent().expect("parent"))
+            .await
+            .expect("staging dir");
+        tokio::fs::write(&staging_path, verifier)
+            .await
+            .expect("stage verifier");
+
+        assert!(store
+            .import_factory_maintenance_pin_verifier()
+            .await
+            .expect("import verifier"));
+        assert!(!staging_path.exists());
+        assert_eq!(
+            secrets
+                .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+                .await
+                .expect("read verifier"),
+            Some(verifier.to_string())
+        );
+        assert!(store.verify_maintenance_pin("2468").await.expect("verify"));
+        assert!(!store
+            .import_factory_maintenance_pin_verifier()
+            .await
+            .expect("one shot"));
+    }
+
+    #[tokio::test]
+    async fn factory_bootstrap_capability_is_imported_and_consumed_once_without_storing_raw_value()
+    {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let store = ConfigStore::new(data_dir, state, secrets.clone());
+        let capability = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde";
+        assert_eq!(capability.len(), 43);
+        let digest = Sha256::digest(capability.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let verifier = serde_json::json!({
+            "version": 1,
+            "algorithm": "sha256",
+            "digest": digest,
+        })
+        .to_string();
+        let verifier_path = store.factory_bootstrap_capability_verifier_path();
+        let capability_path = store.factory_bootstrap_capability_path();
+        tokio::fs::create_dir_all(verifier_path.parent().expect("parent"))
+            .await
+            .expect("factory dir");
+        tokio::fs::write(&verifier_path, &verifier)
+            .await
+            .expect("stage verifier");
+        tokio::fs::write(&capability_path, capability)
+            .await
+            .expect("stage capability");
+
+        assert!(store
+            .import_factory_bootstrap_capability_verifier()
+            .await
+            .expect("import verifier"));
+        assert!(!verifier_path.exists());
+        let stored = secrets
+            .read_secret(crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT)
+            .await
+            .expect("read verifier")
+            .expect("verifier present");
+        assert_eq!(stored, verifier);
+        assert!(!stored.contains(capability));
+        assert!(!store
+            .consume_factory_bootstrap_capability("wrong-capability")
+            .await
+            .expect("wrong capability"));
+        assert!(store
+            .consume_factory_bootstrap_capability(capability)
+            .await
+            .expect("consume capability"));
+        assert!(!capability_path.exists());
+        assert!(secrets
+            .read_secret(crate::secret::MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT)
+            .await
+            .expect("read consumed verifier")
+            .is_none());
+        assert!(!store
+            .consume_factory_bootstrap_capability(capability)
+            .await
+            .expect("cannot replay capability"));
+    }
+
+    #[tokio::test]
+    async fn raw_or_malformed_maintenance_pin_is_a_provisioning_blocker() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, "2468")
+            .await
+            .expect("seed legacy raw PIN");
+        let store = ConfigStore::new(data_dir, state, secrets);
+
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
+
+        assert!(summary.secret_store.maintenance_pin_configured);
+        assert!(!summary.configured_state.maintenance_pin_configured);
+    }
+
+    #[tokio::test]
+    async fn migrates_a_legacy_raw_maintenance_pin_once_to_a_random_salted_verifier() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT, "2468")
+            .await
+            .expect("seed legacy PIN");
+        let store = ConfigStore::new(data_dir, state, secrets.clone());
+
+        assert!(store
+            .migrate_legacy_raw_maintenance_pin()
+            .await
+            .expect("migrate legacy PIN"));
+        let stored = secrets
+            .read_secret(crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT)
+            .await
+            .expect("read verifier")
+            .expect("verifier stored");
+        assert!(!stored.contains("2468"));
+        assert!(store.verify_maintenance_pin("2468").await.expect("verify"));
+        assert!(!store
+            .migrate_legacy_raw_maintenance_pin()
+            .await
+            .expect("migration is one shot"));
+    }
+
+    #[tokio::test]
+    async fn rejects_noncanonical_padded_base64_in_a_maintenance_pin_verifier() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(
+                crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT,
+                r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/x==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#,
+            )
+            .await
+            .expect("seed ambiguous verifier");
+        let store = ConfigStore::new(data_dir, state, secrets);
+
+        assert!(!store.verify_maintenance_pin("2468").await.expect("verify"));
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
+        assert!(!summary.configured_state.maintenance_pin_configured);
+    }
+
+    #[tokio::test]
     async fn apply_provisioning_profile_does_not_persist_public_profile_when_secret_clear_fails() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("vending-daemon");
@@ -4060,6 +5102,169 @@ mod tests {
         assert_eq!(saved["machineAudioVolume"], 0.35);
     }
 
+    #[tokio::test]
+    async fn save_machine_audio_settings_update_persists_binding_cues_and_volume() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let request = MachineAudioSettingsUpdateRequest {
+            machine_audio_output_binding: MachineAudioOutputBinding {
+                endpoint_id: "{0.0.0.00000000}.{field-speaker-1}".to_string(),
+                friendly_name: Some("现场喇叭".to_string()),
+                confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+            },
+            audio_cue_settings: AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: false,
+                    transaction: true,
+                },
+            },
+            machine_audio_volume: 0.42,
+        };
+
+        let summary = store
+            .save_machine_audio_settings_update(request.clone())
+            .await
+            .expect("save machine audio settings");
+
+        assert_eq!(
+            summary.effective_public.machine_audio_output_binding,
+            Some(request.machine_audio_output_binding.clone())
+        );
+        assert_eq!(
+            summary.effective_public.audio_cue_settings,
+            request.audio_cue_settings
+        );
+        assert_eq!(summary.effective_public.machine_audio_volume, 0.42);
+
+        let local = summary
+            .local_bring_up_settings
+            .expect("local bring-up settings present");
+        assert_eq!(
+            local.machine_audio_output_binding,
+            Some(request.machine_audio_output_binding.clone())
+        );
+        assert_eq!(local.audio_cue_settings, Some(request.audio_cue_settings));
+        assert_eq!(local.machine_audio_volume, Some(0.42));
+
+        let saved = tokio::fs::read_to_string(local_bring_up_settings_path(&data_dir))
+            .await
+            .expect("read local settings");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(
+            saved["machineAudioOutputBinding"]["endpointId"],
+            "{0.0.0.00000000}.{field-speaker-1}"
+        );
+        assert_eq!(
+            saved["machineAudioOutputBinding"]["friendlyName"],
+            "现场喇叭"
+        );
+        assert_eq!(
+            saved["machineAudioOutputBinding"]["confirmedHeardAt"],
+            "2026-07-15T10:00:00.000Z"
+        );
+        assert_eq!(saved["audioCueSettings"]["enabled"], true);
+        assert_eq!(saved["audioCueSettings"]["categories"]["presence"], false);
+        assert_eq!(saved["audioCueSettings"]["categories"]["transaction"], true);
+        assert_eq!(saved["machineAudioVolume"], 0.42);
+    }
+
+    #[tokio::test]
+    async fn save_machine_audio_settings_update_preserves_concurrent_network_and_device_changes() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = Arc::new(ConfigStore::new(
+            data_dir,
+            state,
+            Arc::new(InMemorySecretStore::default()),
+        ));
+        let audio_request = MachineAudioSettingsUpdateRequest {
+            machine_audio_output_binding: MachineAudioOutputBinding {
+                endpoint_id: "{0.0.0.00000000}.{field-speaker-2}".to_string(),
+                friendly_name: Some("现场喇叭".to_string()),
+                confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+            },
+            audio_cue_settings: AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: true,
+                    transaction: false,
+                },
+            },
+            machine_audio_volume: 0.42,
+        };
+
+        // Queue a network update before the audio save. The audio path must not
+        // read the old file before it owns the same mutation lock.
+        let held_lock = store.local_settings_mutation_lock.lock().await;
+        let network_store = Arc::clone(&store);
+        let network = tokio::spawn(async move {
+            network_store
+                .save_local_bring_up_network_profile("field-network-updated")
+                .await
+        });
+        tokio::task::yield_now().await;
+        let device_store = Arc::clone(&store);
+        let device = tokio::spawn(async move {
+            device_store
+                .save_local_device_binding(
+                    crate::device_binding::LocalDeviceRole::Scanner,
+                    local_binding_fixture("container:scanner"),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        let audio_store = Arc::clone(&store);
+        let audio = tokio::spawn(async move {
+            audio_store
+                .save_machine_audio_settings_update(audio_request)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(held_lock);
+
+        network.await.expect("network task").expect("network save");
+        device.await.expect("device task").expect("device save");
+        audio.await.expect("audio task").expect("audio save");
+
+        let settings = store
+            .load_local_bring_up_settings()
+            .await
+            .expect("settings")
+            .expect("persisted settings");
+        assert_eq!(
+            settings.network_profile.as_deref(),
+            Some("field-network-updated")
+        );
+        assert_eq!(
+            settings
+                .scanner_binding
+                .expect("scanner binding preserved")
+                .identity
+                .identity_key,
+            "container:scanner"
+        );
+        assert_eq!(
+            settings
+                .machine_audio_output_binding
+                .expect("audio binding preserved")
+                .endpoint_id,
+            "{0.0.0.00000000}.{field-speaker-2}"
+        );
+        assert_eq!(settings.machine_audio_volume, Some(0.42));
+    }
+
     #[test]
     fn config_update_accepts_snake_case_secret_aliases() {
         let request: MachineConfigUpdateRequest = serde_json::from_value(serde_json::json!({
@@ -4197,7 +5402,7 @@ mod tests {
     #[tokio::test]
     async fn restart_recovers_maintenance_status_from_cached_profile_and_persistent_key() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let data_dir = temp.path().to_path_buf();
+        let data_dir = temp.path().join("runtime").join("vending-daemon");
         let state = LocalStateStore::open(&data_dir.join("state.db"))
             .await
             .expect("state");
@@ -4562,5 +5767,113 @@ mod tests {
                 .machine_secret
                 .is_none());
         }
+    }
+
+    fn local_binding_fixture(identity_key: &str) -> crate::device_binding::LocalSerialRoleBinding {
+        crate::device_binding::LocalSerialRoleBinding {
+            identity: crate::device_binding::StableSerialDeviceIdentity {
+                identity_key: identity_key.to_string(),
+                instance_id: Some("USB\\VID_1234&PID_5678\\FIXTURE".to_string()),
+                container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                serial_number: Some("FIXTURE".to_string()),
+            },
+            confirmed_at: "2026-07-15T00:00:00Z".to_string(),
+            confirmed_by: "operator-1".to_string(),
+            test_evidence_code: "ROLE_TEST_READY".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_device_binding_snapshot_fails_closed_on_transient_read_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+        fs::create_dir_all(
+            store
+                .local_bring_up_settings_path()
+                .parent()
+                .expect("settings parent"),
+        )
+        .await
+        .expect("settings dir");
+        fs::write(store.local_bring_up_settings_path(), b"{invalid-json")
+            .await
+            .expect("corrupt settings");
+
+        let error = store
+            .local_device_binding_snapshot(crate::device_binding::LocalDeviceRole::Scanner)
+            .await
+            .expect_err("corrupt settings must not become an empty snapshot");
+
+        assert!(error.contains("parse local bring-up settings failed"));
+    }
+
+    #[tokio::test]
+    async fn role_revision_rollback_preserves_concurrent_network_and_other_role_changes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+        store
+            .save_local_bring_up_network_profile("field-network-before")
+            .await
+            .expect("initial network");
+        let scanner_before = store
+            .local_device_binding_snapshot(crate::device_binding::LocalDeviceRole::Scanner)
+            .await
+            .expect("scanner snapshot");
+        let saved_revision = store
+            .save_local_device_binding_if_revision(
+                crate::device_binding::LocalDeviceRole::Scanner,
+                local_binding_fixture("container:scanner"),
+                &scanner_before.revision,
+            )
+            .await
+            .expect("persist candidate scanner binding");
+        store
+            .save_local_bring_up_network_profile("field-network-updated")
+            .await
+            .expect("concurrent network update");
+        store
+            .save_local_device_binding(
+                crate::device_binding::LocalDeviceRole::LowerController,
+                local_binding_fixture("container:lower-controller"),
+            )
+            .await
+            .expect("concurrent lower-controller update");
+
+        store
+            .restore_local_device_binding_if_revision(
+                crate::device_binding::LocalDeviceRole::Scanner,
+                scanner_before.binding,
+                &saved_revision,
+            )
+            .await
+            .expect("role-scoped rollback");
+
+        let settings = store
+            .load_local_bring_up_settings()
+            .await
+            .expect("settings")
+            .expect("persisted settings");
+        assert!(settings.scanner_binding.is_none());
+        assert_eq!(
+            settings.network_profile.as_deref(),
+            Some("field-network-updated")
+        );
+        assert_eq!(
+            settings
+                .lower_controller_binding
+                .expect("other role preserved")
+                .identity
+                .identity_key,
+            "container:lower-controller"
+        );
     }
 }

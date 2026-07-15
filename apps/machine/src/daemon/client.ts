@@ -1,4 +1,14 @@
 import {
+  isManagedMediaReference,
+  stockMaintenanceBatchResponseSchema,
+  stockMaintenanceTaskSchema,
+  type StockMaintenanceBatchRequest,
+  type StockMaintenanceBatchResponse,
+  type StockMaintenanceTask,
+} from "@vem/shared";
+
+import { managedMediaDiagnosticKey } from "@/catalog/managed-media";
+import {
   getDaemonConnectionInfo,
   type DaemonConnectionInfo,
 } from "@/native/daemon-connection";
@@ -6,9 +16,12 @@ import {
 import {
   catalogSnapshotSchema,
   bringUpSnapshotSchema,
-  configSummarySchema,
+  configSummaryFromRuntimeConfigurationSummary,
   daemonEventSchema,
   hardwareSelfCheckSchema,
+  deviceBindingActivationSchema,
+  deviceBindingSnapshotSchema,
+  deviceBindingTestResultSchema,
   environmentControlResultSchema,
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
@@ -18,8 +31,8 @@ import {
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
-  provisioningClaimResponseSchema,
   maintenanceEnrollmentStatusSchema,
+  maintenanceSessionSchema,
   scannerStatusSchema,
   syncStatusSchema,
   transactionSnapshotSchema,
@@ -31,12 +44,15 @@ import {
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
+  type DeviceBindingActivation,
+  type DeviceBindingSnapshot,
+  type DeviceBindingTestResult,
   type EnvironmentControlResult,
   type MachineSaleReadiness,
   type NaturalContextSnapshot,
-  type NetworkSettingsResponse,
-  type ProvisioningClaimResponse,
   type MaintenanceEnrollmentStatus,
+  type MaintenanceSession,
+  type NetworkSettingsResponse,
   type ReadySnapshot,
   type RemoteOpsStatus,
   type SaleViewSnapshot,
@@ -47,6 +63,49 @@ import {
   type VisionStatus,
   type WifiScanResponse,
 } from "./schemas";
+
+function normalizeSaleViewManagedMedia(payload: unknown): {
+  payload: unknown;
+  mediaDiagnostics: SaleViewSnapshot["mediaDiagnostics"];
+} {
+  if (!isRecord(payload) || !isUnknownArray(payload.items)) {
+    return { payload, mediaDiagnostics: [] };
+  }
+
+  const mediaDiagnostics: Array<
+    NonNullable<SaleViewSnapshot["mediaDiagnostics"]>[number]
+  > = [];
+  const items = payload.items.map((item, index) => {
+    if (!isRecord(item)) {
+      return item;
+    }
+    const normalized = { ...item };
+    const itemIdentity =
+      typeof normalized.slotId === "string"
+        ? normalized.slotId
+        : `index-${index}`;
+    for (const field of ["coverImageUrl", "tryOnSilhouetteUrl"] as const) {
+      const reference = normalized[field];
+      if (typeof reference === "string" && isManagedMediaReference(reference)) {
+        continue;
+      }
+      mediaDiagnostics.push({
+        reference: typeof reference === "string" ? reference : null,
+        diagnosticKey: managedMediaDiagnosticKey(
+          `media:${itemIdentity}:${field}`,
+          reference,
+        ),
+        message:
+          reference === null || reference === undefined
+            ? `daemon sale view contained no ${field} managed media reference`
+            : `daemon sale view contained an invalid ${field} managed media reference`,
+      });
+      normalized[field] = null;
+    }
+    return normalized;
+  });
+  return { payload: { ...payload, items }, mediaDiagnostics };
+}
 
 export class DaemonUnavailableError extends Error {
   public readonly cause?: unknown;
@@ -81,20 +140,89 @@ type RequestOptions = {
   retry401?: boolean;
 };
 
-export type NetworkSettingsRequest = {
-  ssid: string;
-  password: string;
-  hidden: boolean;
-};
-
 type Subscription = {
   close(): void;
 };
 
+export type MaintenanceSessionRouteScope = "maintenance" | "bring-up";
+
 const MAX_SEEN_EVENT_IDS = 1000;
+// Network setup failures carry five independently typed diagnostics.  Leave
+// ample room for all operator guidance while bounding untrusted daemon output
+// in the kiosk renderer.  Never parse a truncated JSON prefix.
+const MAX_DAEMON_RESPONSE_BYTES = 64 * 1024;
+
+type BoundedResponseText =
+  | { exceeded: false; text: string }
+  | { exceeded: true };
+
+async function readDaemonResponseText(
+  response: Response,
+): Promise<BoundedResponseText> {
+  const declaredLength = response.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    Number.isFinite(Number(declaredLength)) &&
+    Number(declaredLength) > MAX_DAEMON_RESPONSE_BYTES
+  ) {
+    return { exceeded: true };
+  }
+
+  if (!response.body) return { exceeded: false, text: "" };
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      // oxlint-disable-next-line no-await-in-loop -- a response stream must be read sequentially and remains size-bounded.
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_DAEMON_RESPONSE_BYTES) {
+        // oxlint-disable-next-line no-await-in-loop -- cancel the same sequential reader before returning the bounded failure.
+        await reader.cancel().catch(() => undefined);
+        return { exceeded: true };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { exceeded: false, text: new TextDecoder().decode(body) };
+}
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
 
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
+  private maintenanceSession: MaintenanceSession | null = null;
+  // A session is daemon-owned state, but this route scope makes the browser
+  // handoff explicit: Maintenance may issue it and only Bring-Up may receive
+  // it. A normal route departure drops the browser-side bearer immediately.
+  private maintenanceSessionRouteScope: MaintenanceSessionRouteScope | null =
+    null;
+  private maintenanceSessionExpiryTimer: ReturnType<
+    typeof globalThis.setTimeout
+  > | null = null;
+  private readonly maintenanceSessionInvalidationListeners = new Set<
+    () => void
+  >();
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventIdQueue: string[] = [];
 
@@ -103,11 +231,15 @@ export class DaemonApiClient {
     options: RequestOptions = {},
   ): Promise<unknown> {
     const connection = await this.initialize();
+    const maintenanceSession = this.currentMaintenanceSession;
     const response = await fetch(`${connection.baseUrl}${path}`, {
       method: options.method ?? "GET",
       headers: {
         Authorization: `Bearer ${connection.token}`,
         "Content-Type": "application/json",
+        ...(maintenanceSession
+          ? { "x-vem-maintenance-session": maintenanceSession.sessionId }
+          : {}),
       },
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -116,12 +248,40 @@ export class DaemonApiClient {
     });
 
     if (response.status === 401 && options.retry401 !== false) {
+      // A 401 means the daemon connection has changed (normally a restart).
+      // Maintenance capabilities are daemon-memory state and cannot survive it.
+      this.clearMaintenanceSession();
       await this.initialize(true);
       return this.request(path, { ...options, retry401: false });
     }
 
+    const body = await readDaemonResponseText(response).catch(
+      (error: unknown) => {
+        throw new DaemonUnavailableError(
+          "could not read daemon response",
+          error,
+          {
+            statusCode: response.status,
+          },
+        );
+      },
+    );
+    const statusMessage = `${path} returned HTTP ${response.status}`;
+
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
+      if (response.status === 403 && maintenanceSession) {
+        // The daemon owns session state. A restart or scope denial must not
+        // leave a stale browser-side capability displayed as authorized.
+        this.clearMaintenanceSession();
+      }
+      if (body.exceeded) {
+        throw new DaemonUnavailableError(
+          `${statusMessage}; response body exceeds the safe read limit`,
+          undefined,
+          { statusCode: response.status },
+        );
+      }
+      const { text } = body;
       let responseCode: string | undefined;
       let responseMessage: string | undefined;
       try {
@@ -146,7 +306,6 @@ export class DaemonApiClient {
         responseCode = undefined;
         responseMessage = undefined;
       }
-      const statusMessage = `${path} returned HTTP ${response.status}`;
       throw new DaemonUnavailableError(
         responseMessage
           ? `${responseMessage} (${statusMessage})`
@@ -156,12 +315,21 @@ export class DaemonApiClient {
           statusCode: response.status,
           responseCode,
           responseMessage,
-          responseBody: text.slice(0, 2_000),
+          // This is either the complete bounded response or absent above;
+          // callers must never see a sliced JSON document.
+          responseBody: text,
         },
       );
     }
 
-    const text = await response.text();
+    if (body.exceeded) {
+      throw new DaemonUnavailableError(
+        `${path} response exceeds the safe read limit`,
+        undefined,
+        { statusCode: response.status },
+      );
+    }
+    const { text } = body;
     const parsed: unknown = text ? JSON.parse(text) : null;
     return parsed;
   }
@@ -177,6 +345,31 @@ export class DaemonApiClient {
     return this.connection;
   }
 
+  get currentMaintenanceSession(): MaintenanceSession | null {
+    if (
+      this.maintenanceSession &&
+      Date.parse(this.maintenanceSession.expiresAt) <= Date.now()
+    ) {
+      this.clearMaintenanceSession();
+    }
+    return this.maintenanceSession;
+  }
+
+  hasMaintenanceSessionForRoute(route: MaintenanceSessionRouteScope): boolean {
+    return (
+      this.currentMaintenanceSession !== null &&
+      this.maintenanceSessionRouteScope === route
+    );
+  }
+
+  getMaintenanceSessionForRoute(
+    route: MaintenanceSessionRouteScope,
+  ): MaintenanceSession | null {
+    return this.hasMaintenanceSessionForRoute(route)
+      ? this.currentMaintenanceSession
+      : null;
+  }
+
   async getHealth(): Promise<HealthSnapshot> {
     return healthSnapshotSchema.parse(await this.request("/healthz"));
   }
@@ -189,17 +382,39 @@ export class DaemonApiClient {
     return bringUpSnapshotSchema.parse(await this.request("/v1/bring-up"));
   }
 
-  async applyNetworkSettings(
-    body: NetworkSettingsRequest,
-  ): Promise<NetworkSettingsResponse> {
+  async executeBringUpTask(
+    task: NonNullable<BringUpSnapshot["currentTask"]>,
+    mutation: unknown,
+  ): Promise<unknown> {
+    const maintenanceSession = this.currentMaintenanceSession;
+    const protectedMutation =
+      task.kind === "reclaim_machine" &&
+      isRecord(mutation) &&
+      mutation.type === "claim_machine" &&
+      maintenanceSession
+        ? {
+            ...mutation,
+            maintenanceAuthorization: {
+              sessionId: maintenanceSession.sessionId,
+            },
+          }
+        : mutation;
     try {
-      return networkSettingsResponseSchema.parse(
-        await this.request("/v1/network/settings", {
-          method: "POST",
-          body,
-        }),
-      );
+      return await this.request("/v1/bring-up/tasks/execute", {
+        method: "POST",
+        body: {
+          contractVersion: task.contractVersion,
+          taskId: task.taskId,
+          taskVersion: task.taskVersion,
+          kind: task.kind,
+          intent: task.intent,
+          mutation: protectedMutation,
+        },
+      });
     } catch (error: unknown) {
+      // The cursor uses 400/422 for a completed network attempt whose
+      // diagnostics are meaningful to the operator. Keep those typed facts
+      // instead of replacing them with a generic transport failure.
       const structured = parseNetworkSettingsRejection(error);
       if (structured) return structured;
       throw error;
@@ -213,38 +428,111 @@ export class DaemonApiClient {
   }
 
   async getConfig(): Promise<ConfigSummary> {
-    return configSummarySchema.parse(await this.request("/v1/config"));
+    return configSummaryFromRuntimeConfigurationSummary(
+      await this.request("/v1/config/summary"),
+    );
   }
 
-  async saveConfig(body: unknown): Promise<ConfigSummary> {
-    return configSummarySchema.parse(
-      await this.request("/v1/config", {
+  async saveMachineAudioSettings(body: unknown): Promise<ConfigSummary> {
+    return configSummaryFromRuntimeConfigurationSummary(
+      await this.request("/v1/config/audio-settings", {
         method: "PUT",
         body,
       }),
     );
   }
 
-  async claimMachine(
-    claimCode: string,
-    options: { rotateMaintenanceIdentity?: boolean } = {},
-  ): Promise<ProvisioningClaimResponse> {
-    return provisioningClaimResponseSchema.parse(
-      await this.request("/v1/provisioning/claim", {
-        method: "POST",
-        body: {
-          claimCode,
-          ...(options.rotateMaintenanceIdentity
-            ? { rotateMaintenanceIdentity: true }
-            : {}),
-        },
-      }),
+  async saveConfig(_body: unknown): Promise<never> {
+    throw new DaemonUnavailableError(
+      "直接配置编辑已禁用；请通过守护进程 Bring-Up 流程完成部署。",
     );
   }
 
   async getMaintenanceStatus(): Promise<MaintenanceEnrollmentStatus> {
     return maintenanceEnrollmentStatusSchema.parse(
       await this.request("/v1/maintenance/status"),
+    );
+  }
+
+  async beginMaintenanceSession(
+    pin: string,
+    scopes: string[] = [],
+    operatorId = "front-panel",
+  ): Promise<MaintenanceSession> {
+    const session = maintenanceSessionSchema.parse(
+      await this.request("/v1/maintenance/sessions", {
+        method: "POST",
+        body: { pin, scopes, operatorId },
+      }),
+    );
+    this.maintenanceSession = session;
+    this.maintenanceSessionRouteScope = "maintenance";
+    this.scheduleMaintenanceSessionExpiry();
+    return session;
+  }
+
+  handoffMaintenanceSessionToBringUp(): boolean {
+    if (!this.hasMaintenanceSessionForRoute("maintenance")) {
+      return false;
+    }
+    this.maintenanceSessionRouteScope = "bring-up";
+    return true;
+  }
+
+  handoffMaintenanceSessionToMaintenance(): boolean {
+    if (!this.hasMaintenanceSessionForRoute("bring-up")) {
+      return false;
+    }
+    this.maintenanceSessionRouteScope = "maintenance";
+    return true;
+  }
+
+  releaseMaintenanceSessionRoute(route: MaintenanceSessionRouteScope): void {
+    if (this.maintenanceSessionRouteScope === route) {
+      this.clearMaintenanceSession();
+    }
+  }
+
+  onMaintenanceSessionInvalidated(listener: () => void): () => void {
+    this.maintenanceSessionInvalidationListeners.add(listener);
+    return () => {
+      this.maintenanceSessionInvalidationListeners.delete(listener);
+    };
+  }
+
+  clearMaintenanceSession(): void {
+    if (this.maintenanceSessionExpiryTimer !== null) {
+      globalThis.clearTimeout(this.maintenanceSessionExpiryTimer);
+      this.maintenanceSessionExpiryTimer = null;
+    }
+    const hadSession = this.maintenanceSession !== null;
+    this.maintenanceSession = null;
+    this.maintenanceSessionRouteScope = null;
+    if (!hadSession) return;
+    for (const listener of this.maintenanceSessionInvalidationListeners) {
+      listener();
+    }
+  }
+
+  private scheduleMaintenanceSessionExpiry(): void {
+    if (this.maintenanceSessionExpiryTimer !== null) {
+      globalThis.clearTimeout(this.maintenanceSessionExpiryTimer);
+      this.maintenanceSessionExpiryTimer = null;
+    }
+    const session = this.maintenanceSession;
+    if (!session) return;
+    const remainingMs = Date.parse(session.expiresAt) - Date.now();
+    if (remainingMs <= 0) {
+      this.clearMaintenanceSession();
+      return;
+    }
+    this.maintenanceSessionExpiryTimer = globalThis.setTimeout(
+      () => {
+        this.maintenanceSessionExpiryTimer = null;
+        if (this.currentMaintenanceSession === null) return;
+        this.scheduleMaintenanceSessionExpiry();
+      },
+      Math.min(remainingMs, MAX_TIMEOUT_MS),
     );
   }
 
@@ -259,14 +547,35 @@ export class DaemonApiClient {
   }
 
   async getSaleView(): Promise<SaleViewSnapshot> {
-    return machineSaleViewSnapshotSchema.parse(
+    const normalized = normalizeSaleViewManagedMedia(
       await this.request("/v1/sale-view"),
     );
+    return {
+      ...machineSaleViewSnapshotSchema.parse(normalized.payload),
+      mediaDiagnostics: normalized.mediaDiagnostics,
+    };
   }
 
   async recordStockMovement(body: unknown): Promise<SaleViewSnapshot> {
     return machineSaleViewSnapshotSchema.parse(
       await this.request("/v1/stock/movements", {
+        method: "POST",
+        body,
+      }),
+    );
+  }
+
+  async getStockMaintenanceTask(): Promise<StockMaintenanceTask> {
+    return stockMaintenanceTaskSchema.parse(
+      await this.request("/v1/stock/maintenance-task"),
+    );
+  }
+
+  async submitStockMaintenanceBatch(
+    body: StockMaintenanceBatchRequest,
+  ): Promise<StockMaintenanceBatchResponse> {
+    return stockMaintenanceBatchResponseSchema.parse(
+      await this.request("/v1/stock/maintenance-task", {
         method: "POST",
         body,
       }),
@@ -357,6 +666,37 @@ export class DaemonApiClient {
     );
   }
 
+  async getDeviceBindings(): Promise<DeviceBindingSnapshot> {
+    return deviceBindingSnapshotSchema.parse(
+      await this.request("/v1/hardware-bindings"),
+    );
+  }
+
+  async testDeviceBinding(
+    role: "lower_controller" | "scanner",
+    identityKey: string,
+  ): Promise<DeviceBindingTestResult> {
+    return deviceBindingTestResultSchema.parse(
+      await this.request(`/v1/hardware-bindings/${role}/test`, {
+        method: "POST",
+        body: { identityKey },
+      }),
+    );
+  }
+
+  async confirmDeviceBinding(
+    role: "lower_controller" | "scanner",
+    identityKey: string,
+    testEvidenceToken: string,
+  ): Promise<DeviceBindingActivation> {
+    return deviceBindingActivationSchema.parse(
+      await this.request(`/v1/hardware-bindings/${role}/confirm`, {
+        method: "POST",
+        body: { identityKey, testEvidenceToken },
+      }),
+    );
+  }
+
   async controlEnvironment(body: unknown): Promise<EnvironmentControlResult> {
     return environmentControlResultSchema.parse(
       await this.request("/v1/environment/control", {
@@ -387,6 +727,9 @@ export class DaemonApiClient {
       headers: { Authorization: `Bearer ${connection.token}` },
     });
     if (!response.ok) {
+      if (response.status === 401) {
+        this.clearMaintenanceSession();
+      }
       throw new DaemonUnavailableError(
         `/v1/logs/export returned HTTP ${response.status}`,
       );
@@ -436,8 +779,11 @@ export class DaemonApiClient {
       };
       socket.onclose = () => {
         if (closed) return;
+        // WebSocket disconnect is the only direct restart signal the kiosk
+        // receives. Treat it as an invalidated daemon-owned session.
+        this.clearMaintenanceSession();
         handlers.onStale();
-        window.setTimeout(() => {
+        globalThis.setTimeout(() => {
           void connect().catch((error: unknown) => {
             handlers.onError(
               error instanceof Error
@@ -476,7 +822,7 @@ export class DaemonApiClient {
 
 export const daemonClient = new DaemonApiClient();
 
-function parseNetworkSettingsRejection(
+export function parseNetworkSettingsRejection(
   error: unknown,
 ): NetworkSettingsResponse | null {
   if (!(error instanceof DaemonUnavailableError)) return null;

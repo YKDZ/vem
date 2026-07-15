@@ -20,7 +20,177 @@ function withFixture(files, callback) {
   }
 }
 
+function deliveryAssemblyFixture({ producerSource, executionSource }) {
+  const member = "scripts/windows/vision-release-materialization.psm1";
+  const producer = "scripts/factory/producer.mjs";
+  const verifier = "scripts/factory/verifier.mjs";
+  const executionTest = "scripts/factory/execution.mjs";
+  return {
+    files: {
+      [member]: "Export-ModuleMember\n",
+      [producer]: producerSource,
+      [verifier]: [
+        'import { createHash } from "node:crypto";',
+        'import { readFileSync } from "node:fs";',
+        'import { join } from "node:path";',
+        'const contract = JSON.parse(readFileSync(process.argv.at(-1), "utf8"));',
+        'const bytes = readFileSync(join(contract.outputRoot, "stage", "member.bin"));',
+        'const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;',
+        'process.stdout.write(JSON.stringify({ nonce: contract.nonce, root: contract.root, files: { [contract.members[0]]: { stagedPath: "stage/member.bin", digest } } }) + "\\n");',
+      ].join("\n"),
+      [executionTest]: executionSource,
+    },
+    inventory: [
+      {
+        path: producer,
+        owner: "field-operations",
+        category: "public runbook operation",
+        workflows: ["factory preparation"],
+        deliveryAssemblyAction: "javascript-stage",
+        deliveryAssembly: [member],
+        deliveryAssemblyEvidence: {
+          artifact: "stage/manifest.json",
+          producer,
+          verifier,
+          executionTest,
+          members: [member],
+        },
+      },
+      {
+        path: verifier,
+        owner: "field-operations",
+        category: "verifier-test guard",
+        workflows: ["factory preparation"],
+      },
+      {
+        path: executionTest,
+        owner: "field-operations",
+        category: "verifier-test guard",
+        workflows: ["factory preparation"],
+      },
+      {
+        path: member,
+        owner: "field-operations",
+        category: "public runbook operation",
+        workflows: ["factory preparation"],
+      },
+    ],
+  };
+}
+
+const WORKING_DELIVERY_PRODUCER = [
+  'import { mkdirSync, readFileSync, writeFileSync } from "node:fs";',
+  'import { join } from "node:path";',
+  'const contract = JSON.parse(readFileSync(process.argv.at(-1), "utf8"));',
+  'mkdirSync(join(contract.outputRoot, "stage"), { recursive: true });',
+  'writeFileSync(join(contract.outputRoot, "stage", "member.bin"), readFileSync(join(contract.repositoryRoot, contract.members[0])));',
+  'writeFileSync(join(contract.outputRoot, "stage", "manifest.json"), JSON.stringify({ nonce: contract.nonce }));',
+].join("\n");
+
+const WORKING_DELIVERY_EXECUTION = [
+  'import { spawnSync } from "node:child_process";',
+  'import { readFileSync, writeFileSync } from "node:fs";',
+  'import { createHash } from "node:crypto";',
+  'import { join } from "node:path";',
+  "const contractPath = process.argv.at(-1);",
+  'const contract = JSON.parse(readFileSync(contractPath, "utf8"));',
+  "for (const path of [contract.producer, contract.verifier]) {",
+  '  const result = spawnSync(process.execPath, [join(contract.repositoryRoot, path), contractPath], { encoding: "utf8" });',
+  "  if (result.status !== 0) { process.stderr.write(result.stderr || result.stdout); process.exit(result.status ?? 1); }",
+  "  if (path === contract.verifier) {",
+  "    const artifact = readFileSync(join(contract.outputRoot, contract.artifact));",
+  '    const artifactDigest = `sha256:${createHash("sha256").update(artifact).digest("hex")}`;',
+  '    writeFileSync(join(contract.root, "execution-proof.json"), JSON.stringify({ schemaVersion: "vem-delivery-assembly-execution-proof/v1", nonce: contract.nonce, root: contract.root, producer: contract.producer, verifier: contract.verifier, artifact: { name: contract.artifact, stagedPath: contract.artifact, digest: artifactDigest }, verification: JSON.parse(result.stdout) }));',
+  "  }",
+  "}",
+].join("\n");
+
 describe("repository script inventory guard", () => {
+  it("executes a nonce-bound producer and independently verified staged bytes", () => {
+    const fixture = deliveryAssemblyFixture({
+      producerSource: WORKING_DELIVERY_PRODUCER,
+      executionSource: WORKING_DELIVERY_EXECUTION,
+    });
+    withFixture(fixture.files, (root) => {
+      const result = checkRepositoryScriptInventory({
+        root,
+        inventory: fixture.inventory,
+        publicRunbooks: [],
+      });
+
+      assert.equal(
+        result.checks.find(
+          (check) => check.name === "delivery-assembly-execution-contracts",
+        )?.passed,
+        true,
+        result.failures.join("\n"),
+      );
+      assert.doesNotMatch(
+        result.failures.join("\n"),
+        /delivery assembly execution contract failed/,
+      );
+    });
+  });
+
+  for (const [name, producerSource, executionSource] of [
+    [
+      "an execution test that exits successfully without running anything",
+      WORKING_DELIVERY_PRODUCER,
+      "process.exit(0);",
+    ],
+    [
+      "a dead producer with a complete declaration",
+      "process.exit(0);",
+      WORKING_DELIVERY_EXECUTION,
+    ],
+    [
+      "a commented or template-only producer implementation",
+      [
+        "// writeFileSync(join(contract.root, 'stage', 'member.bin'), bytes);",
+        "const template = `Copy-Item member.bin stage/member.bin`;",
+        "const hereString = String.raw`@' Copy-Item member.bin stage/member.bin '@`;",
+        "void template; void hereString;",
+        "process.exit(0);",
+      ].join("\n"),
+      WORKING_DELIVERY_EXECUTION,
+    ],
+    [
+      "an unused or shadowed producer implementation",
+      [
+        "function stageMember() { return 'would copy a member'; }",
+        "const stageMember = () => 'shadowed';",
+        "void stageMember;",
+        "process.exit(0);",
+      ].join("\n"),
+      WORKING_DELIVERY_EXECUTION,
+    ],
+  ]) {
+    it(`rejects ${name}`, () => {
+      const fixture = deliveryAssemblyFixture({
+        producerSource,
+        executionSource,
+      });
+      withFixture(fixture.files, (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: fixture.inventory,
+          publicRunbooks: [],
+        });
+
+        assert.equal(
+          result.checks.find(
+            (check) => check.name === "delivery-assembly-execution-contracts",
+          )?.passed,
+          false,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /deliveryAssembly execution contract failed/,
+        );
+      });
+    });
+  }
+
   it("fails when a retained script is not classified", () => {
     withFixture(
       {
@@ -45,6 +215,368 @@ describe("repository script inventory guard", () => {
         assert.match(
           result.failures.join("\n"),
           /unclassified script: scripts\/windows\/unclassified-shortcut\.ps1/,
+        );
+      },
+    );
+  });
+
+  it("rejects a closure that has no structured verifier evidence, regardless of source text", () => {
+    withFixture(
+      {
+        "scripts/windows/test-vision-candidate.ps1":
+          'Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1")',
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+        "scripts/windows/vision-diagnostic-redaction.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/windows/test-vision-candidate.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["runtime acceptance"],
+              deliveryClosure: [
+                "scripts/windows/vision-release-materialization.psm1",
+                "scripts/windows/vision-diagnostic-redaction.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["runtime acceptance"],
+            },
+            {
+              path: "scripts/windows/vision-diagnostic-redaction.psm1",
+              owner: "field-operations",
+              category: "test support operation",
+              workflows: ["runtime acceptance"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /test-vision-candidate\.ps1 delivery closure must declare a classified verifier and exact members/,
+        );
+      },
+    );
+  });
+
+  it("does not let a commented PowerShell import satisfy structured closure evidence", () => {
+    withFixture(
+      {
+        "scripts/windows/test-vision-candidate.ps1":
+          '# Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1")',
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/windows/test-vision-candidate.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["runtime acceptance"],
+              deliveryClosure: [
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["runtime acceptance"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /test-vision-candidate\.ps1 delivery closure must declare a classified verifier and exact members/,
+        );
+      },
+    );
+  });
+
+  it("rejects a JavaScript source-shaped producer without machine-readable evidence", () => {
+    withFixture(
+      {
+        "scripts/factory/finalize.mjs":
+          'for (const script of ["install-vision-release.ps1", "vision-release-materialization.psm1"]) { stage(`VISION-INSTALLER/${script}`); }',
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+        "scripts/windows/vision-diagnostic-redaction.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/factory/finalize.mjs",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "javascript-stage",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+                "scripts/windows/vision-diagnostic-redaction.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-diagnostic-redaction.psm1",
+              owner: "field-operations",
+              category: "test support operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /finalize\.mjs delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact/,
+        );
+      },
+    );
+  });
+
+  it("does not let a dead JavaScript file list satisfy assembly evidence", () => {
+    withFixture(
+      {
+        "scripts/factory/experimental-vision-candidate.mjs": [
+          'const installers = ["install-vision-release.ps1", "vision-release-materialization.psm1"];',
+          "// stage every installer into VISION-INSTALLER",
+        ].join("\n"),
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/factory/experimental-vision-candidate.mjs",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "javascript-stage",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /experimental-vision-candidate\.mjs delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact/,
+        );
+      },
+    );
+  });
+
+  it("does not let a commented upload loop satisfy assembly evidence", () => {
+    withFixture(
+      {
+        "scripts/testbed/win10-vem-e2e.mjs": [
+          'const FACTORY_SUPPORT_SCRIPT_NAMES = ["install-vision-release.ps1", "vision-release-materialization.psm1"];',
+          "// for (const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES) upload(scriptName)",
+        ].join("\n"),
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/testbed/win10-vem-e2e.mjs",
+              owner: "field-operations",
+              category: "canonical entrypoint",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "javascript-upload",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /win10-vem-e2e\.mjs delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact/,
+        );
+      },
+    );
+  });
+
+  it("does not let a PowerShell literal satisfy assembly evidence", () => {
+    withFixture(
+      {
+        "scripts/windows/vision-release-install.windows-harness.ps1": [
+          '$installer = "install-vision-release.ps1"',
+          '# Copy-Item -LiteralPath "vision-release-materialization.psm1"',
+        ].join("\n"),
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/windows/vision-release-install.windows-harness.ps1",
+              owner: "field-operations",
+              category: "verifier-test guard",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "powershell-copy",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /vision-release-install\.windows-harness\.ps1 delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact/,
+        );
+      },
+    );
+  });
+
+  it("fails when structured assembly evidence omits a classified materializer", () => {
+    withFixture(
+      {
+        "scripts/factory/finalize.mjs":
+          "dead source text is intentionally irrelevant",
+        "scripts/factory/finalize.test.mjs": "test evidence",
+        "scripts/windows/install-vision-release.ps1": "Write-Host install",
+        "scripts/windows/vision-release-materialization.psm1":
+          "Export-ModuleMember",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/factory/finalize.mjs",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+              deliveryAssemblyAction: "javascript-stage",
+              deliveryAssembly: [
+                "scripts/windows/install-vision-release.ps1",
+                "scripts/windows/vision-release-materialization.psm1",
+              ],
+              deliveryAssemblyEvidence: {
+                artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+                producer: "scripts/factory/finalize.mjs",
+                verifier: "scripts/factory/finalize.test.mjs",
+                executionTest: "scripts/factory/finalize.test.mjs",
+                members: ["scripts/windows/install-vision-release.ps1"],
+              },
+            },
+            {
+              path: "scripts/factory/finalize.test.mjs",
+              owner: "field-operations",
+              category: "verifier-test guard",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/install-vision-release.ps1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+            {
+              path: "scripts/windows/vision-release-materialization.psm1",
+              owner: "field-operations",
+              category: "public runbook operation",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /finalize\.mjs delivery assembly evidence omits classified member: scripts\/windows\/vision-release-materialization\.psm1/,
         );
       },
     );

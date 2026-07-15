@@ -3,6 +3,9 @@ import {
   type DaemonIpcUnknownEventNotification,
   type DaemonIpcTransactionSnapshot,
   daemonIpcEventNotificationSchema,
+  daemonIpcDeviceBindingActivationSchema,
+  daemonIpcDeviceBindingSnapshotSchema,
+  daemonIpcDeviceBindingTestResultSchema,
   daemonIpcScannerStatusSchema,
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
@@ -30,6 +33,15 @@ const audioCueSettingsSchema = z.object({
       transaction: false,
     }),
 });
+
+const machineAudioOutputBindingSchema = z
+  .object({
+    endpointId: z.string().trim().min(1),
+    friendlyName: z.string().trim().min(1).nullable().default(null),
+    confirmedHeardAt: z.iso.datetime(),
+  })
+  .nullable()
+  .default(null);
 
 const configSummaryPublicSchema = z.preprocess(
   (value) => {
@@ -72,6 +84,7 @@ const configSummaryPublicSchema = z.preprocess(
     visionWsUrl: z.string(),
     visionRequestTimeoutMs: z.number().int(),
     machineAudioVolume: z.number().min(0).max(1).default(0.7),
+    machineAudioOutputBinding: machineAudioOutputBindingSchema.default(null),
     audioCueSettings: audioCueSettingsSchema.default({
       enabled: false,
       categories: {
@@ -153,8 +166,67 @@ export const configSummarySchema = z.object({
   machineSecretConfigured: z.boolean(),
   mqttSigningSecretConfigured: z.boolean(),
   mqttPasswordConfigured: z.boolean(),
+  maintenancePinConfigured: z.boolean().default(false),
   provisioned: z.boolean().default(false),
   provisioningIssues: z.array(z.string()).default([]),
+});
+
+const runtimeConfigurationStateSchema = z.object({
+  factoryManifest: z.boolean(),
+  localBringUpSettings: z.boolean(),
+  provisioningProfileCache: z.boolean(),
+  machineSecretConfigured: z.boolean(),
+  mqttSigningSecretConfigured: z.boolean(),
+  mqttPasswordConfigured: z.boolean(),
+  maintenancePinConfigured: z.boolean(),
+});
+
+const runtimeConfigurationSummarySchema = z.object({
+  configuredState: runtimeConfigurationStateSchema,
+  provisioningProfileCache: z.unknown().nullable(),
+  effectivePublic: configSummaryPublicSchema,
+});
+
+/**
+ * `/v1/config/summary` is the read-only configuration projection.  The
+ * legacy `/v1/config` mutation endpoint is deliberately unavailable, so the
+ * browser must derive its existing UI summary from this safe runtime view.
+ */
+export function configSummaryFromRuntimeConfigurationSummary(
+  value: unknown,
+): z.infer<typeof configSummarySchema> {
+  const summary = runtimeConfigurationSummarySchema.parse(value);
+  const { configuredState } = summary;
+  const provisioned =
+    summary.provisioningProfileCache !== null &&
+    summary.effectivePublic.machineCode !== null &&
+    configuredState.maintenancePinConfigured;
+  const provisioningIssues: string[] = [];
+  if (
+    summary.provisioningProfileCache === null ||
+    summary.effectivePublic.machineCode === null
+  ) {
+    provisioningIssues.push("provisioning_profile_cache_missing");
+  }
+  if (!configuredState.maintenancePinConfigured) {
+    provisioningIssues.push("maintenance_pin_not_configured");
+  }
+
+  return configSummarySchema.parse({
+    public: summary.effectivePublic,
+    machineSecretConfigured: configuredState.machineSecretConfigured,
+    mqttSigningSecretConfigured: configuredState.mqttSigningSecretConfigured,
+    mqttPasswordConfigured: configuredState.mqttPasswordConfigured,
+    maintenancePinConfigured: configuredState.maintenancePinConfigured,
+    provisioned,
+    provisioningIssues,
+  });
+}
+
+export const maintenanceSessionSchema = z.object({
+  sessionId: z.string().min(1),
+  expiresAt: z.iso.datetime(),
+  scopes: z.array(z.string().min(1)).min(1),
 });
 
 const bringUpReasonSchema = z.object({
@@ -163,11 +235,87 @@ const bringUpReasonSchema = z.object({
   message: z.string(),
 });
 
+const bringUpTaskSchema = z.object({
+  contractVersion: z.literal(1),
+  taskId: z.string().min(1),
+  taskVersion: z.number().int().positive(),
+  kind: z.enum([
+    "configure_network",
+    "claim_machine",
+    "reclaim_machine",
+    "converge_maintenance_tunnel",
+    "sync_profile",
+    "resolve_topology",
+    "run_hardware_acceptance",
+    "attest_stock",
+    "start_sales",
+  ]),
+  intent: z.enum([
+    "configure_network",
+    "refresh_network",
+    "claim_machine",
+    "reclaim_machine",
+    "retry_maintenance_tunnel",
+    "refresh_profile",
+    "open_maintenance",
+    "record_stock",
+    "start_sales",
+  ]),
+  rotateMaintenanceIdentity: z.boolean(),
+  projection: z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("network_settings"),
+      supportsHiddenNetwork: z.boolean(),
+      supportsExistingNetworkProbe: z.boolean(),
+    }),
+    z.object({
+      type: z.literal("claim_code"),
+      rotateMaintenanceIdentity: z.boolean(),
+    }),
+    z.object({
+      type: z.literal("maintenance_tunnel"),
+      state: z.enum([
+        "convergence_required",
+        "tunnel_apply_pending",
+        "handshake_pending",
+      ]),
+    }),
+    z.object({ type: z.literal("profile_sync") }),
+    z.object({
+      type: z.literal("topology_resolution"),
+      component: z.literal("topology"),
+    }),
+    z.object({
+      type: z.literal("hardware_acceptance"),
+      component: z.literal("hardware"),
+    }),
+    z.object({
+      type: z.literal("stock_attestation"),
+      entryMode: z.literal("final_actual_quantities"),
+    }),
+  ]),
+});
+
+const bringUpProgressStepSchema = z.object({
+  kind: z.enum([
+    "network",
+    "provisioning",
+    "topology",
+    "hardware",
+    "stock",
+    "sale_readiness",
+  ]),
+  status: z.enum(["completed", "current", "upcoming", "revalidate"]),
+  evidence: z.enum(["durable", "volatile"]),
+});
+
 export const bringUpSnapshotSchema = z.object({
   state: z.enum([
     "network_required",
     "platform_reachable",
     "claim_required",
+    "reclaim_required",
+    "maintenance_convergence_required",
     "profile_applied",
     "topology_mismatch",
     "hardware_acceptance_required",
@@ -189,6 +337,7 @@ export const bringUpSnapshotSchema = z.object({
     configureNetwork: z.boolean(),
     claimMachine: z.boolean(),
     retryClaim: z.boolean(),
+    convergeMaintenanceTunnel: z.boolean().default(false),
     syncProfile: z.boolean(),
     resolveTopology: z.boolean(),
     runRuntimeAcceptance: z.boolean(),
@@ -196,6 +345,8 @@ export const bringUpSnapshotSchema = z.object({
     attestStock: z.boolean(),
     startSales: z.boolean(),
   }),
+  currentTask: bringUpTaskSchema.nullable(),
+  progress: z.array(bringUpProgressStepSchema),
   updatedAt: z.string(),
 });
 
@@ -204,6 +355,21 @@ const networkDiagnosticSchema = z.object({
   level: z.string(),
   code: z.string(),
   message: z.string(),
+  evidence: z
+    .object({
+      source: z.enum([
+        "local_adapter",
+        "local_address",
+        "local_default_route",
+        "platform_api",
+        "mqtt_broker",
+      ]),
+      status: z.enum(["ready", "failed", "pending", "not_configured"]),
+      reasonCode: z.string(),
+      reason: z.string(),
+      recoveryAction: z.string(),
+    })
+    .optional(),
 });
 
 export const networkSettingsResponseSchema = z.object({
@@ -250,8 +416,14 @@ export const maintenanceEnrollmentStatusSchema = z.object({
     "tunnel_applied",
     "handshake_pending",
     "handshake_verified",
+    "handshake_evidence_persist_pending",
+    "maintenance_recovery_pending",
+    "lifecycle_unavailable",
+    "tunnel_apply_pending",
+    "tunnel_degraded",
     "reclaim_request_pending",
     "reclaim_handshake_pending",
+    "reclaim_handshake_evidence_persist_pending",
     "reclaim_handshake_verified",
     "reclaim_timed_out_recovered",
     "failed",
@@ -261,8 +433,11 @@ export const maintenanceEnrollmentStatusSchema = z.object({
   tunnelAddress: z.string().nullable(),
   endpoint: z.string().nullable(),
   handshakeVerified: z.boolean(),
+  tunnelConnected: z.boolean().default(false),
+  firstHandshakeVerifiedAt: z.string().nullable().default(null),
   lastHandshakeAt: z.string().nullable(),
   lastError: z.string().nullable(),
+  alertCode: z.string().nullable().default(null),
   activePublicKey: z.string().nullable().default(null),
   pendingPublicKey: z.string().nullable().default(null),
   reclaimExpiresAt: z.string().nullable().default(null),
@@ -303,6 +478,11 @@ export const syncStatusSchema = z.object({
 });
 
 export const scannerStatusSchema = daemonIpcScannerStatusSchema;
+export const deviceBindingSnapshotSchema = daemonIpcDeviceBindingSnapshotSchema;
+export const deviceBindingTestResultSchema =
+  daemonIpcDeviceBindingTestResultSchema;
+export const deviceBindingActivationSchema =
+  daemonIpcDeviceBindingActivationSchema;
 
 export const visionStatusSchema = z.object({
   enabled: z.boolean(),
@@ -547,6 +727,7 @@ export const daemonEventSchema = daemonIpcEventNotificationSchema;
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 export type ReadySnapshot = z.infer<typeof readySnapshotSchema>;
 export type ConfigSummary = z.infer<typeof configSummarySchema>;
+export type MaintenanceSession = z.infer<typeof maintenanceSessionSchema>;
 export type BringUpSnapshot = z.infer<typeof bringUpSnapshotSchema>;
 export type NetworkSettingsResponse = z.infer<
   typeof networkSettingsResponseSchema
@@ -562,6 +743,13 @@ export type MaintenanceEnrollmentStatus = z.infer<
 export type TransactionSnapshot = DaemonIpcTransactionSnapshot;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type ScannerStatus = z.infer<typeof scannerStatusSchema>;
+export type DeviceBindingSnapshot = z.infer<typeof deviceBindingSnapshotSchema>;
+export type DeviceBindingTestResult = z.infer<
+  typeof deviceBindingTestResultSchema
+>;
+export type DeviceBindingActivation = z.infer<
+  typeof deviceBindingActivationSchema
+>;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
 export type NaturalContextSnapshot = z.infer<
@@ -573,7 +761,15 @@ export type EnvironmentControlResult = z.infer<
 >;
 export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
-export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema>;
+export type SaleViewMediaDiagnostic = {
+  reference: string | null;
+  diagnosticKey: string;
+  message: string;
+};
+
+export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema> & {
+  mediaDiagnostics?: readonly SaleViewMediaDiagnostic[];
+};
 export type DaemonEvent = DaemonIpcKnownEventNotification;
 export type UnknownDaemonEvent = DaemonIpcUnknownEventNotification;
 

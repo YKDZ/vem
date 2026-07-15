@@ -12,13 +12,14 @@ param(
   [string]$EvidencePath = "C:\ProgramData\VEM\evidence\vision-release-install.json",
   [string]$VisionRoot = "C:\VEM\vision",
   [string]$StateRoot = "C:\ProgramData\VEM\vision",
-  [string]$TaskUser = "VEMKiosk",
-  [switch]$Library
+  [string]$TaskUser = "VEMKiosk"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
+Import-Module (Join-Path $PSScriptRoot "vision-release-materialization.psm1") -Force -ErrorAction Stop
+Import-Module (Join-Path $PSScriptRoot "vision-diagnostic-redaction.psm1") -Force -ErrorAction Stop
 
 $releaseRoot = Join-Path $VisionRoot "releases"
 $visionRoot = $VisionRoot # Kept for task/runbook compatibility.
@@ -33,7 +34,6 @@ $FactoryTrustRoot = "C:\ProgramData\VEM\factory-trust"
 $FactoryTrustPolicyPath = "$FactoryTrustRoot\vision-release-trust-policy.json"
 $FactoryEvidenceVerifierPath = "$FactoryTrustRoot\vision-release-verifier.exe"
 $FactoryTrustAnchorPath = "$FactoryTrustRoot\vision-release-trust-anchor.json"
-$FactoryVisionDeliveryRoot = "C:\ProgramData\VEM\factory\vision-release"
 $maxArchiveEntries = 4096
 $maxExpandedBytes = 4GB
 $maxExpansionRatio = 200
@@ -275,23 +275,6 @@ function Assert-ReleaseContracts {
   if ($asset[0].digest -cne $Descriptor.bundle.digest -or $asset[0].version -cne $Descriptor.releaseVersion -or $selection.descriptorDigest -cne $Descriptor.identity -or $selection.attestationDigest -cne $Documents.attestation.digest -or $selection.approvalDigest -cne $Documents.approval.digest -or $selection.conformanceEvidenceDigest -cne $Documents.conformance.digest -or $Attestation.bundleDigest -cne $Descriptor.bundle.digest -or $Attestation.descriptorDigest -cne $Descriptor.identity -or $Attestation.sbomDigest -cne $Descriptor.sbom.digest -or $Attestation.provenanceDigest -cne $Descriptor.provenance.digest -or $Approval.bundleDigest -cne $Descriptor.bundle.digest -or $Approval.descriptorDigest -cne $Descriptor.identity -or $Approval.attestationDigest -cne $Documents.attestation.digest -or $Approval.conformanceEvidenceDigest -cne $Documents.conformance.digest -or $Approval.releaseVersion -cne $Descriptor.releaseVersion) { Throw-InstallError "release evidence does not bind the selected approved bundle" }
 }
 
-function Get-VerifiedBundleStream {
-  param([object]$Descriptor)
-  $item = Get-Item -LiteralPath $BundlePath -Force -ErrorAction Stop
-  if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { Throw-InstallError "Vision bundle must be a regular non-reparse file" }
-  if ($item.Length -ne [Int64]$Descriptor.bundle.bytes) { Throw-InstallError "Vision bundle byte count does not match descriptor" }
-  $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-  $hash = [Security.Cryptography.SHA256]::Create()
-  try {
-    $buffer = [byte[]]::new(1048576); $readTotal = [Int64]0
-    while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) { $hash.TransformBlock($buffer, 0, $count, $null, 0) | Out-Null; $readTotal += $count }
-    $hash.TransformFinalBlock([byte[]]::new(0), 0, 0) | Out-Null
-    if ($readTotal -ne $item.Length -or ("sha256:" + (ConvertTo-LowerHex $hash.Hash)) -cne [string]$Descriptor.bundle.digest) { Throw-InstallError "Vision bundle exact bytes do not match approved descriptor" }
-    $stream.Position = 0
-    return $stream
-  } catch { $stream.Dispose(); throw } finally { $hash.Dispose() }
-}
-
 function Get-SafeArchivePath([string]$Name) {
   if ([string]::IsNullOrWhiteSpace($Name) -or $Name -match '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)|(^|[\\/])[^\\/]*:|[\x00-\x1f]') { Throw-InstallError "Vision archive contains an unsafe path" }
   $segments = $Name -split '[\\/]'
@@ -367,39 +350,27 @@ function Quarantine-UntrustedReleaseDirectory([string]$InstallDirectory, [string
   Set-SystemInstallerAcl $destination $false
 }
 
-function Expand-ZipSafely {
-  param([IO.Stream]$BundleStream, [string]$Destination, [object]$Descriptor)
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $archive = [IO.Compression.ZipArchive]::new($BundleStream, [IO.Compression.ZipArchiveMode]::Read, $true)
-  try {
-    if ($archive.Entries.Count -lt 1 -or $archive.Entries.Count -gt $maxArchiveEntries) { Throw-InstallError "Vision archive entry count is unsafe" }
-    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $expanded = [Int64]0; $compressed = [Int64]0
-    foreach ($entry in $archive.Entries) {
-      $relative = Get-SafeArchivePath $entry.FullName
-      if ($entry.FullName.EndsWith("/")) { continue }
-      if (-not $seen.Add($relative)) { Throw-InstallError "Vision archive has case-colliding paths" }
-      if ($entry.Length -lt 0 -or $entry.CompressedLength -lt 0) { Throw-InstallError "Vision archive lengths are invalid" }
-      $expanded += $entry.Length; $compressed += $entry.CompressedLength
-      if ($expanded -gt $maxExpandedBytes -or ($compressed -gt 0 -and $expanded -gt ($compressed * $maxExpansionRatio))) { Throw-InstallError "Vision archive expansion budget is unsafe" }
-    }
-    $drive = [IO.DriveInfo]::new((Split-Path -Qualifier $Destination))
-    if ($drive.AvailableFreeSpace -lt ($expanded + 256MB)) { Throw-InstallError "insufficient disk space for Vision archive" }
-    foreach ($entry in $archive.Entries) {
-      if ($entry.FullName.EndsWith("/")) { continue }
-      $target = Join-Path $Destination (Get-SafeArchivePath $entry.FullName)
-      $parent = Split-Path -Parent $target; New-Item -ItemType Directory -Path $parent -Force | Out-Null
-      $input = $entry.Open(); $output = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-      try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
-      if ((Get-Item -LiteralPath $target -Force).Length -ne $entry.Length) { Throw-InstallError "Vision archive entry was extracted incompletely" }
-    }
-  } finally { $archive.Dispose() }
-}
-
-function Write-AtomicJson([string]$Path, [object]$Value) {
-  $parent = Split-Path -Parent $Path; New-Item -ItemType Directory -Path $parent -Force | Out-Null
+function Write-AtomicJson([string]$Path, [object]$Value, [string]$ContainmentRoot = "") {
+  $parent = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($ContainmentRoot)) {
+    $Path = Get-CanonicalContainedPath $ContainmentRoot $Path "atomic JSON target"
+  }
+  Assert-NonReparsePath $parent "atomic JSON parent"
+  New-Item -ItemType Directory -Path $parent -Force | Out-Null
+  Assert-NonReparsePath $parent "atomic JSON parent"
+  if (-not [string]::IsNullOrWhiteSpace($ContainmentRoot)) {
+    $Path = Get-CanonicalContainedPath $ContainmentRoot $Path "atomic JSON target"
+  }
   $temporary = Join-Path $parent ("." + [guid]::NewGuid().ToString("N") + ".tmp")
   $backup = Join-Path $parent ("." + [guid]::NewGuid().ToString("N") + ".bak")
-  try { [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 64 -Compress), [Text.UTF8Encoding]::new($false)); if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $backup) } else { [IO.File]::Move($temporary, $Path) } } finally { Remove-Item -LiteralPath $temporary,$backup -Force -ErrorAction SilentlyContinue }
+  try {
+    [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 64 -Compress), [Text.UTF8Encoding]::new($false))
+    Assert-NonReparsePath $parent "atomic JSON parent"
+    if (-not [string]::IsNullOrWhiteSpace($ContainmentRoot)) {
+      $Path = Get-CanonicalContainedPath $ContainmentRoot $Path "atomic JSON target"
+    }
+    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $backup) } else { [IO.File]::Move($temporary, $Path) }
+  } finally { Remove-Item -LiteralPath $temporary,$backup -Force -ErrorAction SilentlyContinue }
 }
 
 function Set-SystemInstallerAcl([string]$Path, [bool]$KioskReadable) {
@@ -411,8 +382,11 @@ function Set-SystemInstallerAcl([string]$Path, [bool]$KioskReadable) {
   }
   $acl = Get-Acl -LiteralPath $Path
   $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
-  foreach ($identity in @("SYSTEM", "BUILTIN\\Administrators")) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, "FullControl", $inheritanceFlags, "None", "Allow")) }
+  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+  $system = [Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+  $administrators = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+  $acl.SetOwner($system)
+  foreach ($identity in @($system, $administrators)) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, "FullControl", $inheritanceFlags, "None", "Allow")) }
   if ($KioskReadable) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new("VEMKiosk", "ReadAndExecute", $inheritanceFlags, "None", "Allow")) }
   Set-Acl -LiteralPath $Path -AclObject $acl
 }
@@ -886,11 +860,9 @@ function Test-VisionProtocol([object]$Selection, [object]$Descriptor) {
 }
 
 function Sanitize([string]$Message) {
-  $clean = ([regex]::Replace($Message, '(?i)(token|password|secret|key|path)\s*[=:]?\s*[^\r\n]*|(?:[A-Z]:\\|\\\\[^\\]+\\[^\\]+|/(?:[^\s\r\n]+/)*[^\s\r\n]+)[^\r\n]*', '')).Trim()
-  return $clean.Substring(0, [Math]::Min(240, $clean.Length))
+  $null = $Message
+  return Get-VisionRedactedDiagnostic "release installation"
 }
-
-if ($Library) { return }
 
 function Rollback-PreviousRelease([object]$Previous, [object]$Candidate) {
   Stop-RecordedVision $Candidate
@@ -905,7 +877,8 @@ function Rollback-PreviousRelease([object]$Previous, [object]$Candidate) {
     $priorDocuments[$name] = [pscustomobject]@{ value=$metadata.documents.$name.value; digest=$metadata.documents.$name.digest; path=$null }
   }
   Assert-ReleaseContracts $metadata.descriptor $metadata.attestation $metadata.approval $priorDocuments.manifest.value $priorDocuments
-  Write-AtomicJson $selectionPath $Previous
+  [void](Get-CanonicalContainedPath $StateRoot $selectionPath "Vision current selection before rollback write")
+  Write-AtomicJson $selectionPath $Previous $StateRoot
   Set-SystemInstallerAcl $selectionPath $true
   Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"
   Test-VisionProtocol $Previous $metadata.descriptor
@@ -925,17 +898,6 @@ $previous = $null; $next = $null; $activationStarted = $false; $lockHeld = $fals
 try {
   if (-not $mutex.WaitOne([TimeSpan]::FromMinutes(5))) { Throw-InstallError "another Vision installation is active" }
   $lockHeld = $true
-  if (-not (Test-Path -LiteralPath $selectionPath -PathType Leaf)) {
-    Assert-NonReparsePath $FactoryVisionDeliveryRoot "Factory Vision delivery unit"
-    $BundlePath = "$FactoryVisionDeliveryRoot\bundle.bin"
-    $DescriptorPath = "$FactoryVisionDeliveryRoot\descriptor.json"
-    $AttestationPath = "$FactoryVisionDeliveryRoot\attestation.json"
-    $SbomPath = "$FactoryVisionDeliveryRoot\sbom.json"
-    $ProvenancePath = "$FactoryVisionDeliveryRoot\provenance.json"
-    $ConformanceEvidencePath = "$FactoryVisionDeliveryRoot\conformance.json"
-    $ApprovalPath = "$FactoryVisionDeliveryRoot\approval.json"
-    $FactoryManifestPath = "$FactoryVisionDeliveryRoot\factory-manifest.json"
-  }
   foreach ($required in @($BundlePath,$DescriptorPath,$AttestationPath,$SbomPath,$ProvenancePath,$ConformanceEvidencePath,$ApprovalPath,$FactoryManifestPath,$ConfigurationPath)) { if ([string]::IsNullOrWhiteSpace($required)) { Throw-InstallError "all release inputs are required" } }
   foreach ($input in @($DescriptorPath,$AttestationPath,$SbomPath,$ProvenancePath,$ConformanceEvidencePath,$ApprovalPath,$FactoryManifestPath,$ConfigurationPath)) { [void](Get-ExactFileBytes $input "release input") }
   $documents = @{}
@@ -943,7 +905,7 @@ try {
   New-Item -ItemType Directory -Path $configurationRoot -Force | Out-Null
   [void](Get-CanonicalContainedPath $configurationRoot $ConfigurationPath "Vision configuration")
   $policy=Get-FactoryTrustPolicy; Invoke-ReleaseEvidenceVerifier $policy $documents; Assert-ReleaseContracts $documents.descriptor.value $documents.attestation.value $documents.approval.value $documents.manifest.value $documents
-  $descriptor=$documents.descriptor.value; $bundle=Get-VerifiedBundleStream $descriptor; $evidence.bundleDigest=$descriptor.bundle.digest; $evidence.descriptorDigest=$descriptor.identity; $evidence.approvalDigest=$documents.approval.digest
+  $descriptor=$documents.descriptor.value; $evidence.bundleDigest=$descriptor.bundle.digest; $evidence.descriptorDigest=$descriptor.identity; $evidence.approvalDigest=$documents.approval.digest
   $key=(($descriptor.releaseVersion -replace '\+','_') + "-" + $descriptor.bundle.digest.Substring(7,16)); $install=Join-Path $releaseRoot $key; $metadata=Join-Path $metadataRoot "$key.json"
   New-Item -ItemType Directory -Path $releaseRoot,$metadataRoot,$configurationRoot -Force | Out-Null
   Assert-NonReparsePath $VisionRoot "Vision root"
@@ -953,27 +915,28 @@ try {
   Set-VisionStateAcl
   $releaseAlreadyPresent = Test-Path -LiteralPath $install
   if ($releaseAlreadyPresent -and -not (Test-Path -LiteralPath $metadata -PathType Leaf)) {
-    $bundle.Dispose()
     Quarantine-UntrustedReleaseDirectory $install $key
     Throw-InstallError "existing Vision release directory has no trusted metadata and was quarantined"
   }
   if (-not $releaseAlreadyPresent) {
     $staging=Join-Path $StateRoot ("staging\\" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $staging -Force | Out-Null
     try {
       if ($descriptor.bundle.extractor.handler -cne "zip-safe-v1") { Throw-InstallError "declared extractor handler is not installed" }
-      Expand-ZipSafely $bundle $staging $descriptor
+      # Merge preservation: VEM materializes the supplier's exact candidate bytes;
+      # it never rebuilds or selects an implicit Vision bundle.
+      Invoke-VisionReleaseMaterialization -CandidatePath $BundlePath -ExpectedDigest $descriptor.bundle.digest -Descriptor $descriptor -Destination $staging -ExtractionPolicy @{ MaxArchiveEntries=$maxArchiveEntries; MaxExpandedBytes=$maxExpandedBytes; MaxExpansionRatio=$maxExpansionRatio } | Out-Null
+      Assert-NonReparsePath $staging "Vision materialization destination"
       $entry=Join-TrustedRelativePath $staging $descriptor.entrypoint.command "staged Vision entrypoint"
       if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) { Throw-InstallError "declared Vision entrypoint was not extracted" }
+      [void](Get-CanonicalContainedPath $releaseRoot $install "Vision release installation destination")
       Move-Item -LiteralPath $staging -Destination $install
+      [void](Get-CanonicalContainedPath $releaseRoot $install "Vision release installation destination")
       Set-SystemInstallerAcl $install $true
     } finally {
-      $bundle.Dispose()
       Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
-  } else {
-    $bundle.Dispose()
   }
+  [void](Get-CanonicalContainedPath $releaseRoot $install "Vision release installation destination")
   $entrypoint=Join-TrustedRelativePath $install $descriptor.entrypoint.command "Vision entrypoint"
   $storedDocuments=[ordered]@{}
   foreach($name in @("descriptor","attestation","sbom","provenance","conformance","approval","manifest")){
@@ -981,17 +944,23 @@ try {
   }
   $record=[ordered]@{ schemaVersion="vem-vision-release-record/v2"; bundleDigest=$descriptor.bundle.digest; descriptorDigest=$descriptor.identity; approvalDigest=$documents.approval.digest; installDirectory=$install; entrypoint=$descriptor.entrypoint.command; entrypointDigest=("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()); files=@(Get-ExtractedFileManifest $install); descriptor=$descriptor; attestation=$documents.attestation.value; approval=$documents.approval.value; documents=$storedDocuments }
   if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) {
-    Write-AtomicJson $metadata $record
+    [void](Get-CanonicalContainedPath $metadataRoot $metadata "Vision release metadata before write")
+    Write-AtomicJson $metadata $record $metadataRoot
     Set-SystemInstallerAcl $metadata $false
   }
   Assert-SystemOwnedPath $metadata "Vision release metadata"
   $existing=(Read-StrictJson $metadata "Vision release record").value
-  $candidate=[ordered]@{ schemaVersion="vem-vision-selection/v1"; revision=[guid]::NewGuid().ToString("N"); bundleDigest=$record.bundleDigest; descriptorDigest=$record.descriptorDigest; approvalDigest=$record.approvalDigest; installDirectory=$install; entrypoint=$descriptor.entrypoint.command; arguments=@($descriptor.entrypoint.arguments); configurationArgument=$descriptor.configuration.argument; configurationPath=$ConfigurationPath; metadataPath=$metadata }
+  $configurationPathForSelection = Get-CanonicalContainedPath $configurationRoot $ConfigurationPath "Vision configuration before selection"
+  [void](Get-ExactFileBytes $configurationPathForSelection "Vision configuration before selection")
+  [void](Get-CanonicalContainedPath $metadataRoot $metadata "Vision release metadata before selection")
+  [void](Get-CanonicalContainedPath $releaseRoot $install "Vision release installation before selection")
+  [void](Get-CanonicalContainedPath $StateRoot $selectionPath "Vision current selection before write")
+  $candidate=[ordered]@{ schemaVersion="vem-vision-selection/v1"; revision=[guid]::NewGuid().ToString("N"); bundleDigest=$record.bundleDigest; descriptorDigest=$record.descriptorDigest; approvalDigest=$record.approvalDigest; installDirectory=$install; entrypoint=$descriptor.entrypoint.command; arguments=@($descriptor.entrypoint.arguments); configurationArgument=$descriptor.configuration.argument; configurationPath=$configurationPathForSelection; metadataPath=$metadata }
   Assert-InstalledRelease $existing $candidate
   $existingDocuments = @{}
   foreach($name in @("descriptor","attestation","sbom","provenance","conformance","approval","manifest")) { $existingDocuments[$name]=[pscustomobject]@{ value=$existing.documents.$name.value; digest=$existing.documents.$name.digest; path=$null } }
   Assert-ReleaseContracts $existing.descriptor $existing.attestation $existing.approval $existingDocuments.manifest.value $existingDocuments
-  Write-VisionLauncher; Ensure-VisionTask; $previous=if(Test-Path $selectionPath){(Read-StrictJson $selectionPath "Vision selection").value}else{$null}; if($previous){$evidence.previousDigest=$previous.bundleDigest}; $next=$candidate; $activationStarted=$true; if($previous){Stop-RecordedVision $previous}; Write-AtomicJson $selectionPath $next; Set-SystemInstallerAcl $selectionPath $true; Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"; Test-VisionProtocol $next $descriptor; $evidence.healthOk=$true; $evidence.webSocketOk=$true; $evidence.installedDigest=$record.bundleDigest
+  Write-VisionLauncher; Ensure-VisionTask; $previous=if(Test-Path $selectionPath){(Read-StrictJson $selectionPath "Vision selection").value}else{$null}; if($previous){$evidence.previousDigest=$previous.bundleDigest}; $next=$candidate; $activationStarted=$true; if($previous){Stop-RecordedVision $previous}; [void](Get-CanonicalContainedPath $configurationRoot $configurationPathForSelection "Vision configuration before selection"); [void](Get-CanonicalContainedPath $StateRoot $selectionPath "Vision current selection before write"); Write-AtomicJson $selectionPath $next $StateRoot; Set-SystemInstallerAcl $selectionPath $true; Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"; Test-VisionProtocol $next $descriptor; $evidence.healthOk=$true; $evidence.webSocketOk=$true; $evidence.installedDigest=$record.bundleDigest
 } catch {
   $evidence.failure=Sanitize $_.Exception.Message
   if($activationStarted){$evidence.rollbackAttempted=$true; try { Rollback-PreviousRelease $previous $next; $evidence.rollbackOk=$true } catch {$evidence.rollbackOk=$false; $rollbackFailure=Sanitize $_.Exception.Message; if(-not [string]::IsNullOrWhiteSpace($rollbackFailure)){$evidence.failure=Sanitize ("$($evidence.failure); rollback: $rollbackFailure")} } }

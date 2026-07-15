@@ -773,42 +773,18 @@ export type MachineAuthTokenResponse = z.infer<
   typeof machineAuthTokenResponseSchema
 >;
 
-const managedMediaAssetContentPathPattern =
+export const managedMediaReferencePathPattern =
   /^\/api\/media-assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/content$/i;
 
-const managedMediaAssetAbsoluteUrlHostnames = new Set([
-  "118.25.104.160",
-  "localhost",
-  "127.0.0.1",
-  "service.test",
-]);
-
-function isManagedMediaAssetAbsoluteUrl(url: URL): boolean {
-  return (
-    (url.protocol === "http:" || url.protocol === "https:") &&
-    url.username === "" &&
-    url.password === "" &&
-    managedMediaAssetAbsoluteUrlHostnames.has(url.hostname) &&
-    managedMediaAssetContentPathPattern.test(url.pathname) &&
-    url.search === "" &&
-    url.hash === ""
-  );
+export function isManagedMediaReference(value: string): boolean {
+  return managedMediaReferencePathPattern.test(value);
 }
 
-const managedMediaAssetContentUrlSchema = z.string().refine(
-  (value) => {
-    if (managedMediaAssetContentPathPattern.test(value)) return true;
-    if (!/^https?:\/\//i.test(value)) return false;
-    try {
-      return isManagedMediaAssetAbsoluteUrl(new URL(value));
-    } catch {
-      return false;
-    }
-  },
-  {
+export const managedMediaReferenceSchema = z
+  .string()
+  .refine(isManagedMediaReference, {
     message: "media URL must point to a managed media asset content endpoint",
-  },
-);
+  });
 
 const machineCatalogItemBaseSchema = z.object({
   machineCode: z.string().min(1).max(64),
@@ -821,8 +797,8 @@ const machineCatalogItemBaseSchema = z.object({
   productId: z.uuid(),
   productName: z.string().min(1).max(128),
   productDescription: z.string().nullable(),
-  coverImageUrl: managedMediaAssetContentUrlSchema.nullable(),
-  tryOnSilhouetteUrl: managedMediaAssetContentUrlSchema.nullable().optional(),
+  coverImageUrl: managedMediaReferenceSchema.nullable(),
+  tryOnSilhouetteUrl: managedMediaReferenceSchema.nullable().optional(),
   categoryId: z.uuid().nullable(),
   categoryName: z.string().nullable(),
   sku: z.string().min(1).max(64),

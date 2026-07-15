@@ -1,690 +1,611 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import type {
   BringUpSnapshot,
   NetworkSettingsResponse,
+  SaleViewSnapshot,
   WifiNetwork,
 } from "@/daemon/schemas";
 
-import listSloganImage from "@/assets/home/list-slogan.png";
-import logoImage from "@/assets/home/logo.png";
-import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
-import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import { DaemonUnavailableError, daemonClient } from "@/daemon/client";
+import {
+  networkSettingsResponseSchema,
+  provisioningClaimResponseSchema,
+} from "@/daemon/schemas";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useMachineStore } from "@/stores/machine";
 
 const machineStore = useMachineStore();
-const route = useRoute();
 const router = useRouter();
-const { handleMaintenanceTap } = useMaintenanceEntry();
 
-const PROVISIONING_CONFIG_RETRY_DELAY_MS = 500;
-const PROVISIONING_CONFIG_MAX_ATTEMPTS = 20;
-
-const claimForm = reactive({
-  claimCode: "",
-});
-const networkForm = reactive({
-  ssid: "",
-  password: "",
-  hidden: false,
+const claimForm = reactive({ claimCode: "" });
+const networkForm = reactive({ ssid: "", password: "", hidden: false });
+const stockAttestation = reactive({
+  attestationId: "",
+  planogramVersion: "",
+  confirmed: false,
+  loading: false,
+  slots: [] as Array<{
+    slotId: string;
+    slotCode: string;
+    sku: string;
+    quantity: number;
+    capacity: number;
+  }>,
 });
 const bringUp = ref<BringUpSnapshot | null>(null);
-const loading = ref(false);
-const submittingClaim = ref(false);
-const submittingNetwork = ref(false);
-const exportingEvidence = ref(false);
-const statusMessage = ref<string | null>(null);
-const statusKind = ref<"idle" | "pending" | "success" | "failure">("idle");
 const networkResult = ref<NetworkSettingsResponse | null>(null);
 const wifiNetworks = ref<WifiNetwork[]>([]);
-const scanningWifi = ref(false);
-const wifiScanMessage = ref<string | null>(null);
-const manualNetworkEntry = ref(false);
-const protectedMaintenanceEnabled = ref(false);
-const reclaimMode = ref(false);
-type BringUpReason = BringUpSnapshot["blockingReasons"][number];
-type DisplayReason = {
-  title: string;
-  detail: string;
-  meta: string;
-};
+const statusMessage = ref<string | null>(null);
+const loading = ref(false);
+const submitting = ref(false);
+const maintenanceAuthentication = reactive({
+  pin: "",
+  loading: false,
+  message: null as string | null,
+});
+const maintenanceSessionAuthorized = ref(
+  daemonClient.hasMaintenanceSessionForRoute("bring-up"),
+);
+let removeMaintenanceSessionInvalidationListener: (() => void) | null = null;
+let attestationRefreshTimer: ReturnType<typeof globalThis.setTimeout> | null =
+  null;
+type BringUpProgressStep = NonNullable<BringUpSnapshot["progress"]>[number];
 
-const stateLabel = computed(() =>
-  bringUp.value ? bringUpStateLabel(bringUp.value.state) : "正在读取",
+const currentTask = computed(() => bringUp.value?.currentTask ?? null);
+const currentTaskLabel = computed(() =>
+  currentTask.value ? taskLabel(currentTask.value.kind) : "正在确认本机状态",
 );
-const readinessLabel = computed(() =>
-  bringUp.value ? readinessLevelLabel(bringUp.value.readinessLevel) : "未确认",
+const progress = computed(() => bringUp.value?.progress ?? []);
+const attestationRecovery = computed(() =>
+  bringUp.value?.diagnostics.find((reason) =>
+    reason.code.startsWith("PHYSICAL_STOCK_ATTESTATION_"),
+  ),
 );
-const hardwareModeLabel = computed(() =>
-  bringUp.value ? hardwareModeLabelFor(bringUp.value.hardwareMode) : "未确认",
-);
-const primaryReasons = computed(() => bringUp.value?.blockingReasons ?? []);
-const diagnostics = computed(() => bringUp.value?.diagnostics ?? []);
-const actionRows = computed(() =>
-  bringUp.value ? bringUpActions(bringUp.value) : [],
-);
-const protectedActionRows = computed(() => [
-  {
-    key: "reclaim",
-    label: "重新领取机器",
-    description: "用于更换主机或本机重装后的机器重新领取。",
-  },
-  {
-    key: "local-reset",
-    label: "本机重置",
-    description: "清理本机身份与本地运行状态后重新进入首次部署。",
-  },
-  {
-    key: "acceptance-rerun",
-    label: "重新运行验收",
-    description: "生产运行后复核本机运行验收或现场验收状态。",
-  },
-]);
-const claimAllowed = computed(
+const attestationAwaitingPlatform = computed(
   () =>
-    reclaimMode.value ||
-    bringUp.value?.allowedActions.claimMachine === true ||
-    bringUp.value?.allowedActions.retryClaim === true,
+    attestationRecovery.value?.code === "PHYSICAL_STOCK_ATTESTATION_PENDING",
 );
-const networkAllowed = computed(
-  () => bringUp.value?.allowedActions.configureNetwork === true,
+const currentTaskNeedsMaintenanceSession = computed(() =>
+  [
+    "configure_network",
+    "claim_machine",
+    "reclaim_machine",
+    "converge_maintenance_tunnel",
+    "attest_stock",
+    "resolve_topology",
+    "run_hardware_acceptance",
+  ].includes(currentTask.value?.kind ?? ""),
+);
+const maintenanceSessionRequiredForReclaim = computed(
+  () => currentTask.value?.kind === "reclaim_machine",
 );
 
-function bringUpStateLabel(state: BringUpSnapshot["state"]): string {
-  const labels: Record<BringUpSnapshot["state"], string> = {
-    network_required: "需要配置网络",
-    platform_reachable: "平台已连通",
-    claim_required: "等待机器领取",
-    profile_applied: "运行档案已写入",
-    topology_mismatch: "货道拓扑不匹配",
-    hardware_acceptance_required: "需要硬件验收",
-    stock_attestation_required: "需要库存确认",
-    runtime_ready: "运行边界已就绪",
-    simulated_hardware_ready: "模拟硬件已就绪",
-    sell_ready: "可进入生产售卖",
-  };
-  return labels[state];
-}
-
-function readinessLevelLabel(level: BringUpSnapshot["readinessLevel"]): string {
-  const labels: Record<BringUpSnapshot["readinessLevel"], string> = {
-    not_ready: "未就绪",
-    runtime_ready: "本机运行就绪",
-    simulated_hardware_ready: "模拟硬件就绪",
-    sell_ready: "可售卖",
-  };
-  return labels[level];
-}
-
-function hardwareModeLabelFor(mode: BringUpSnapshot["hardwareMode"]): string {
-  return mode === "production" ? "生产硬件模式" : "模拟硬件模式";
-}
-
-function bringUpActions(snapshot: BringUpSnapshot) {
-  return [
-    {
-      key: "configureNetwork",
-      label: "配置现场网络",
-      enabled: snapshot.allowedActions.configureNetwork,
-    },
-    {
-      key: "claimMachine",
-      label: snapshot.allowedActions.retryClaim
-        ? "重新提交领取码"
-        : "提交领取码",
-      enabled:
-        snapshot.allowedActions.claimMachine ||
-        snapshot.allowedActions.retryClaim,
-    },
-    {
-      key: "syncProfile",
-      label: "同步运行档案",
-      enabled: snapshot.allowedActions.syncProfile,
-    },
-    {
-      key: "resolveTopology",
-      label: "处理货道拓扑",
-      enabled: snapshot.allowedActions.resolveTopology,
-    },
-    {
-      key: "runRuntimeAcceptance",
-      label: "本机运行验收",
-      enabled: snapshot.allowedActions.runRuntimeAcceptance,
-    },
-    {
-      key: "runHardwareAcceptance",
-      label: "运行硬件验收",
-      enabled: snapshot.allowedActions.runHardwareAcceptance,
-    },
-    {
-      key: "attestStock",
-      label: "确认初始库存",
-      enabled: snapshot.allowedActions.attestStock,
-    },
-    {
-      key: "startSales",
-      label: "进入售卖",
-      enabled: snapshot.allowedActions.startSales,
-    },
-  ];
-}
-
-function componentLabel(component: string): string {
-  const labels: Record<string, string> = {
-    acceptance: "验收",
-    config: "运行档案",
-    hardware: "生产硬件",
-    "lower-controller": "下位机",
-    platform: "平台连接",
-    provisioning: "机器领取",
-    stock: "库存",
-    topology: "货道拓扑",
-  };
-  return labels[component] ?? "本机状态";
-}
-
-function reasonCodeLabel(code: string): string {
-  const labels: Record<string, string> = {
-    ACTIVE_PLANOGRAM_MISSING: "运营货道档案缺失",
-    CLAIM_REQUIRED: "等待领取",
-    CONFIG_SUMMARY_UNAVAILABLE: "运行档案不可读",
-    HARDWARE_ACCEPTANCE_REQUIRED: "需要硬件验收",
-    HARDWARE_SLOT_TOPOLOGY_CHECK_FAILED: "货道拓扑检查失败",
-    HARDWARE_SLOT_TOPOLOGY_LOCAL_MISSING: "本机货道拓扑缺失",
-    HARDWARE_SLOT_TOPOLOGY_MISMATCH: "货道拓扑不一致",
-    HARDWARE_SLOT_TOPOLOGY_NOT_CONFIGURED: "货道拓扑未配置",
-    HARDWARE_SLOT_TOPOLOGY_PLATFORM_MISSING: "平台货道拓扑缺失",
-    LOWER_CONTROLLER_SLOT_COUNT: "货道数量不一致",
-    NETWORK_REQUIRED: "需要配置网络",
-    PLATFORM_REACHABLE: "平台已连通",
-    PUBLIC_CONFIG_PROFILE_APPLIED: "运行档案已写入",
-    PUBLIC_CONFIG_UNCLAIMED: "尚未领取机器",
-    RUNTIME_ACCEPTANCE_PENDING: "本机运行验收待完成",
-    STOCK_ATTESTATION_REQUIRED: "需要库存确认",
-    TOPOLOGY_MISMATCH: "货道拓扑不一致",
-  };
-  return labels[code] ?? "未识别状态";
-}
-
-function reasonDisplay(reason: BringUpReason): DisplayReason {
-  const copies: Record<string, Omit<DisplayReason, "meta">> = {
-    ACTIVE_PLANOGRAM_MISSING: {
-      title: "尚未应用运营货道档案",
-      detail: "请先同步或确认平台下发的运营货道档案。",
-    },
-    CLAIM_REQUIRED: {
-      title: "机器尚未领取",
-      detail: "请输入管理员生成的领取码完成机器领取。",
-    },
-    CONFIG_SUMMARY_UNAVAILABLE: {
-      title: "运行档案暂不可读",
-      detail: "请稍后重试；如果持续失败，请导出现场证据。",
-    },
-    HARDWARE_ACCEPTANCE_REQUIRED: {
-      title: "需要完成生产硬件验收",
-      detail: "请确认下位机、扫码器和出货链路满足现场验收要求。",
-    },
-    HARDWARE_SLOT_TOPOLOGY_CHECK_FAILED: {
-      title: "货道拓扑检查失败",
-      detail: "请复核本机货道返回与平台档案后重试。",
-    },
-    HARDWARE_SLOT_TOPOLOGY_LOCAL_MISSING: {
-      title: "本机货道拓扑缺失",
-      detail: "请先完成下位机货道识别或检查硬件连接。",
-    },
-    HARDWARE_SLOT_TOPOLOGY_MISMATCH: {
-      title: "平台货道拓扑与本机下位机返回不一致",
-      detail: "请按现场实物核对平台档案和下位机货道返回。",
-    },
-    HARDWARE_SLOT_TOPOLOGY_NOT_CONFIGURED: {
-      title: "货道拓扑尚未配置",
-      detail: "请先配置平台货道档案并同步到本机。",
-    },
-    HARDWARE_SLOT_TOPOLOGY_PLATFORM_MISSING: {
-      title: "平台货道拓扑缺失",
-      detail: "请在平台补齐机器货道档案后再继续。",
-    },
-    LOWER_CONTROLLER_SLOT_COUNT: {
-      title: "下位机返回货道数量与平台档案不一致",
-      detail: "请核对下位机连接、货道数量和平台档案。",
-    },
-    NETWORK_REQUIRED: {
-      title: "需要配置现场网络",
-      detail: "请写入现场网络设置，并确认平台地址可连通。",
-    },
-    PLATFORM_REACHABLE: {
-      title: "平台连接已连通",
-      detail: "本机可继续执行后续首次部署步骤。",
-    },
-    PUBLIC_CONFIG_PROFILE_APPLIED: {
-      title: "运行档案已写入",
-      detail: "本机已具备平台机器身份与基础运行配置。",
-    },
-    PUBLIC_CONFIG_UNCLAIMED: {
-      title: "本机尚未领取平台机器",
-      detail: "请提交领取码写入机器运行档案。",
-    },
-    RUNTIME_ACCEPTANCE_PENDING: {
-      title: "本机运行验收尚未完成",
-      detail: "请完成本机运行验收并导出现场证据。",
-    },
-    STOCK_ATTESTATION_REQUIRED: {
-      title: "需要确认初始库存",
-      detail: "请按现场实物确认初始库存后再进入售卖。",
-    },
-    TOPOLOGY_MISMATCH: {
-      title: "货道拓扑不一致",
-      detail: "请核对本机货道与平台档案。",
-    },
-  };
-  const copy = copies[reason.code] ?? {
-    title: "存在未识别状态项",
-    detail: "请导出现场证据并交由维护人员处理。",
-  };
-  return {
-    ...copy,
-    meta: `${componentLabel(reason.component)} · ${reasonCodeLabel(reason.code)}`,
-  };
-}
-
-function networkStatusLabel(status: NetworkSettingsResponse["status"]): string {
-  const labels: Record<NetworkSettingsResponse["status"], string> = {
-    connected: "已连通",
-    failed: "连接失败",
-    unsupported: "暂不支持",
-  };
-  return labels[status];
-}
-
-function wifiSecurityLabel(security: WifiNetwork["security"]): string {
-  const labels: Record<WifiNetwork["security"], string> = {
-    open: "开放网络",
-    wpa_personal: "WPA 密码",
-    wpa2_personal: "WPA2 密码",
-    wpa3_personal: "WPA3 密码",
-    enterprise: "企业认证",
-    unknown: "未知认证",
-  };
-  return labels[security];
-}
-
-function selectWifiNetwork(network: WifiNetwork): void {
-  if (network.security === "enterprise" || network.security === "unknown") {
-    wifiScanMessage.value = "该网络需要企业或未知认证，请联系现场网络管理员。";
-    return;
-  }
-  networkForm.ssid = network.ssid;
-  networkForm.hidden = false;
-  manualNetworkEntry.value = false;
-  wifiScanMessage.value = network.connected
-    ? "已选择当前连接的网络。"
-    : `已选择 ${network.ssid}，请输入网络密码。`;
-}
-
-async function scanWifiNetworks(): Promise<void> {
-  if (scanningWifi.value || !networkAllowed.value) return;
-  scanningWifi.value = true;
-  wifiScanMessage.value = "正在扫描附近无线网络";
-  try {
-    const response = await daemonClient.scanWifiNetworks();
-    wifiNetworks.value = response.networks;
-    wifiScanMessage.value = response.operatorGuidance;
-  } catch {
-    wifiNetworks.value = [];
-    wifiScanMessage.value = "无法读取附近无线网络，可刷新或手动输入。";
-  } finally {
-    scanningWifi.value = false;
-  }
-}
-
-function provisioningFailureMessage(error: unknown): string {
-  const responseCode =
-    typeof error === "object" && error !== null && "responseCode" in error
-      ? String((error as { responseCode?: unknown }).responseCode ?? "")
-      : "";
-  const message = error instanceof Error ? error.message.toLowerCase() : "";
-  const code = `${responseCode} ${message}`.toLowerCase();
-
-  if (code.includes("invalid_or_expired")) {
-    return "领取码无效或已过期，请联系管理员确认后重试";
-  }
-  if (code.includes("invalid")) return "领取码无效，请核对后重试";
-  if (code.includes("expired")) return "领取码已过期，请联系管理员重新生成";
-  if (code.includes("used") || code.includes("consumed")) {
-    return "领取码已使用，请联系管理员确认机器状态";
-  }
-  if (code.includes("revoked")) return "领取码已撤销，请联系管理员重新生成";
-  if (code.includes("locked")) return "领取码已锁定，请联系管理员处理";
-  if (error instanceof DaemonUnavailableError && !error.responseCode) {
-    return "本机服务暂不可用，请稍后重试";
-  }
-  if (
-    responseCode === "machine_claim_backend_unavailable" ||
-    code.includes("network") ||
-    code.includes("unavailable")
-  ) {
-    return "网络不可用，请检查连接后重试";
-  }
-  return "领取失败，请联系维护人员重试";
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-async function waitForProvisionedConfig(): Promise<void> {
-  for (
-    let attempt = 0;
-    attempt < PROVISIONING_CONFIG_MAX_ATTEMPTS;
-    attempt += 1
-  ) {
-    try {
-      // oxlint-disable-next-line eslint/no-await-in-loop -- provisioning readiness is a sequential retry loop.
-      await machineStore.loadConfig();
-      if (machineStore.configSummary?.provisioned === true) {
-        return;
-      }
-    } catch (error) {
-      if (error instanceof DaemonUnavailableError) {
-        // oxlint-disable-next-line eslint/no-await-in-loop -- wait for daemon initialization before the next poll.
-        await daemonClient.initialize(true).catch(() => undefined);
-      } else {
-        throw error;
-      }
-    }
-    // oxlint-disable-next-line eslint/no-await-in-loop -- keep retry cadence stable.
-    await delay(PROVISIONING_CONFIG_RETRY_DELAY_MS);
-  }
-
-  throw new DaemonUnavailableError(
-    "daemon provisioning config did not become ready",
+function canExecuteCurrentTask(): boolean {
+  return (
+    !currentTaskNeedsMaintenanceSession.value ||
+    maintenanceSessionAuthorized.value
   );
 }
+
+async function beginProtectedMaintenance(): Promise<void> {
+  if (
+    maintenanceAuthentication.loading ||
+    !maintenanceAuthentication.pin.trim()
+  ) {
+    return;
+  }
+  maintenanceAuthentication.loading = true;
+  maintenanceAuthentication.message = null;
+  try {
+    await daemonClient.beginMaintenanceSession(
+      maintenanceAuthentication.pin,
+      maintenanceSessionRequiredForReclaim.value ? ["maintenance.reclaim"] : [],
+    );
+    if (!daemonClient.handoffMaintenanceSessionToBringUp()) {
+      throw new Error("维护会话无法交接到首次部署控制台");
+    }
+    maintenanceSessionAuthorized.value =
+      daemonClient.hasMaintenanceSessionForRoute("bring-up");
+    maintenanceAuthentication.pin = "";
+    maintenanceAuthentication.message =
+      "维护会话已验证，可以继续当前部署任务。";
+  } catch {
+    maintenanceSessionAuthorized.value = false;
+    maintenanceAuthentication.message = "PIN 验证失败，请重新输入。";
+  } finally {
+    maintenanceAuthentication.pin = "";
+    maintenanceAuthentication.loading = false;
+  }
+}
+
+function rejectedNetworkResult(error: unknown): NetworkSettingsResponse | null {
+  if (!(error instanceof DaemonUnavailableError) || !error.responseBody) {
+    return null;
+  }
+  try {
+    const result = networkSettingsResponseSchema.safeParse(
+      JSON.parse(error.responseBody),
+    );
+    if (
+      !result.success ||
+      (result.data.status !== "failed" && result.data.status !== "unsupported")
+    ) {
+      return null;
+    }
+    return result.data;
+  } catch {
+    return null;
+  }
+}
+
+function showRejectedNetworkResult(error: unknown): boolean {
+  const result = rejectedNetworkResult(error);
+  if (!result) return false;
+  networkResult.value = result;
+  statusMessage.value = result.operatorGuidance;
+  return true;
+}
+
+function taskLabel(
+  kind: NonNullable<BringUpSnapshot["currentTask"]>["kind"],
+): string {
+  const labels: Record<
+    NonNullable<BringUpSnapshot["currentTask"]>["kind"],
+    string
+  > = {
+    configure_network: "配置现场网络",
+    claim_machine: "领取机器",
+    reclaim_machine: "重新领取机器",
+    converge_maintenance_tunnel: "恢复维护隧道",
+    sync_profile: "同步运行档案",
+    resolve_topology: "处理货道拓扑",
+    run_hardware_acceptance: "完成本机验收",
+    attest_stock: "确认初始库存",
+    start_sales: "进入售卖",
+  };
+  return labels[kind];
+}
+
+function progressLabel(step: BringUpProgressStep): string {
+  const kindLabels: Record<BringUpProgressStep["kind"], string> = {
+    network: "现场网络",
+    provisioning: "机器领取",
+    topology: "货道拓扑",
+    hardware: "硬件验收",
+    stock: "初始库存",
+    sale_readiness: "售卖就绪",
+  };
+  const statusLabels: Record<BringUpProgressStep["status"], string> = {
+    completed: "已完成",
+    current: "进行中",
+    upcoming: "后续",
+    revalidate: "重新验证",
+  };
+  return `${kindLabels[step.kind]} · ${statusLabels[step.status]}`;
+}
+
+function newPhysicalAttestationId(): string {
+  const randomId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`;
+  return `bring-up-stock-${randomId}`;
+}
+
+function resetPhysicalStockAttestation(): void {
+  stockAttestation.attestationId = "";
+  stockAttestation.planogramVersion = "";
+  stockAttestation.confirmed = false;
+  stockAttestation.slots = [];
+}
+
+function populatePhysicalStockAttestation(snapshot: SaleViewSnapshot): void {
+  const planogramVersion = snapshot.planogramVersion;
+  if (!planogramVersion || snapshot.items.length === 0) {
+    resetPhysicalStockAttestation();
+    statusMessage.value = "未读取到可盘点的有效货道，请先完成货道配置。";
+    return;
+  }
+  const retainEnteredQuantities =
+    stockAttestation.planogramVersion === planogramVersion &&
+    stockAttestation.slots.length === snapshot.items.length;
+  const enteredQuantities = new Map(
+    stockAttestation.slots.map((slot) => [slot.slotId, slot.quantity]),
+  );
+  stockAttestation.attestationId = retainEnteredQuantities
+    ? stockAttestation.attestationId
+    : newPhysicalAttestationId();
+  stockAttestation.planogramVersion = planogramVersion;
+  stockAttestation.confirmed = retainEnteredQuantities
+    ? stockAttestation.confirmed
+    : false;
+  stockAttestation.slots = snapshot.items.map((item) => ({
+    slotId: item.slotId,
+    slotCode: item.slotCode,
+    sku: item.sku,
+    quantity: retainEnteredQuantities
+      ? (enteredQuantities.get(item.slotId) ?? item.physicalStock)
+      : item.physicalStock,
+    capacity: item.capacity,
+  }));
+}
+
+async function loadPhysicalStockAttestation(): Promise<void> {
+  if (currentTask.value?.kind !== "attest_stock") {
+    resetPhysicalStockAttestation();
+    return;
+  }
+  stockAttestation.loading = true;
+  try {
+    populatePhysicalStockAttestation(await daemonClient.getSaleView());
+    if (
+      attestationRecovery.value?.code === "PHYSICAL_STOCK_ATTESTATION_REJECTED"
+    ) {
+      // A terminal Platform rejection needs a new generation after the
+      // operator corrects the observation.  Keep quantities visible, but do
+      // not replay the rejected idempotency key.
+      stockAttestation.attestationId = newPhysicalAttestationId();
+      stockAttestation.confirmed = false;
+    }
+  } catch {
+    resetPhysicalStockAttestation();
+    statusMessage.value = "无法读取当前货道库存，请检查本机服务后重试。";
+  } finally {
+    stockAttestation.loading = false;
+  }
+}
+
+const physicalStockAttestationReady = computed(
+  () =>
+    stockAttestation.attestationId.length > 0 &&
+    stockAttestation.planogramVersion.length > 0 &&
+    stockAttestation.slots.length > 0 &&
+    stockAttestation.confirmed &&
+    stockAttestation.slots.every(
+      (slot) =>
+        Number.isInteger(slot.quantity) &&
+        slot.quantity >= 0 &&
+        slot.quantity <= slot.capacity,
+    ),
+);
 
 async function refreshBringUp(): Promise<void> {
   loading.value = true;
   try {
     bringUp.value = await daemonClient.getBringUp();
+    await loadPhysicalStockAttestation();
   } catch (error) {
-    statusKind.value = "failure";
     statusMessage.value =
-      error instanceof Error ? error.message : "无法读取本机 bring-up 状态";
+      error instanceof Error ? error.message : "无法读取本机启动状态";
   } finally {
     loading.value = false;
+    refreshAttestationCursorAfterDelay();
   }
 }
 
-async function submitClaim(): Promise<void> {
-  const claimCode = claimForm.claimCode.trim().toUpperCase();
-  if (!claimCode || submittingClaim.value || !claimAllowed.value) return;
-
-  submittingClaim.value = true;
-  statusKind.value = "pending";
-  statusMessage.value = "正在提交机器领取码";
-  try {
-    const result = reclaimMode.value
-      ? await daemonClient.claimMachine(claimCode, {
-          rotateMaintenanceIdentity: true,
-        })
-      : await daemonClient.claimMachine(claimCode);
-    machineStore.configSummary = result.config;
-    machineStore.configLoaded = true;
-    claimForm.claimCode = "";
-    reclaimMode.value = false;
-    statusMessage.value = "正在等待本机服务应用新配置";
-    await waitForProvisionedConfig();
-    await refreshBringUp();
-    await router.replace("/boot");
-    statusKind.value = "success";
-    statusMessage.value = "领取成功，正在进入启动流程";
-  } catch (error) {
-    statusKind.value = "failure";
-    statusMessage.value = provisioningFailureMessage(error);
-  } finally {
-    submittingClaim.value = false;
+function stopAttestationCursorRefresh(): void {
+  if (attestationRefreshTimer !== null) {
+    globalThis.clearTimeout(attestationRefreshTimer);
+    attestationRefreshTimer = null;
   }
 }
 
-async function startReclaim(): Promise<void> {
-  if (!protectedMaintenanceEnabled.value || submittingClaim.value) return;
-  const maintenance = await daemonClient.getMaintenanceStatus();
-  if (!maintenance.activeIdentityRetained) {
-    statusKind.value = "failure";
-    statusMessage.value = "本机没有可保留的维护身份，不能执行重新领取";
+function refreshAttestationCursorAfterDelay(): void {
+  stopAttestationCursorRefresh();
+  if (
+    !attestationAwaitingPlatform.value ||
+    currentTask.value?.kind !== "attest_stock"
+  ) {
     return;
   }
-  reclaimMode.value = true;
-  statusKind.value = "idle";
-  statusMessage.value = "请输入管理员生成的重新领取码";
+  attestationRefreshTimer = globalThis.setTimeout(async () => {
+    attestationRefreshTimer = null;
+    await refreshBringUp();
+  }, 1_500);
+}
+
+function describeAttestationSnapshotAfterSubmit(
+  resultWasUnknown: boolean,
+): void {
+  if (attestationAwaitingPlatform.value) {
+    statusMessage.value = resultWasUnknown
+      ? "提交结果已由本机服务确认为等待平台确认，将自动刷新部署游标。"
+      : "实物库存已提交，正在等待平台确认；将自动刷新部署游标。";
+    return;
+  }
+  if (currentTask.value?.kind !== "attest_stock") {
+    statusMessage.value = "平台已确认实物库存，正在继续首次部署。";
+    return;
+  }
+  if (
+    attestationRecovery.value?.code === "PHYSICAL_STOCK_ATTESTATION_REJECTED"
+  ) {
+    statusMessage.value = "平台未接受本次库存，请修正数量后重新提交。";
+    return;
+  }
+  statusMessage.value = resultWasUnknown
+    ? "本机服务未记录本次库存，可保留当前数量并重试。"
+    : "本次库存尚未形成待确认记录，可保留当前数量并重试。";
+}
+
+async function submitPhysicalStockAttestation(): Promise<void> {
+  const task = currentTask.value;
+  if (
+    !task ||
+    task.kind !== "attest_stock" ||
+    !canExecuteCurrentTask() ||
+    !physicalStockAttestationReady.value ||
+    submitting.value
+  ) {
+    return;
+  }
+  submitting.value = true;
+  try {
+    await daemonClient.executeBringUpTask(task, {
+      type: "record_stock",
+      attestation: {
+        attestationId: stockAttestation.attestationId,
+        planogramVersion: stockAttestation.planogramVersion,
+        operatorId: "front-panel",
+        slots: stockAttestation.slots.map((slot) => ({
+          slotId: slot.slotId,
+          slotCode: slot.slotCode,
+          sku: slot.sku,
+          quantity: Number(slot.quantity),
+          enabled: true,
+        })),
+      },
+    });
+    await refreshBringUp();
+    describeAttestationSnapshotAfterSubmit(false);
+  } catch {
+    // The daemon may have committed the durable outbox just before the HTTP
+    // response was lost. Refresh the daemon-owned cursor rather than creating
+    // a second local completion or a new attestation id.
+    statusMessage.value = "提交结果暂未确认，正在重新读取平台确认状态。";
+    await refreshBringUp();
+    describeAttestationSnapshotAfterSubmit(true);
+  } finally {
+    submitting.value = false;
+  }
+}
+
+async function continueProtectedMaintenance(): Promise<void> {
+  if (!daemonClient.handoffMaintenanceSessionToMaintenance()) {
+    maintenanceSessionAuthorized.value = false;
+    maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
+    return;
+  }
+  await router.replace({
+    path: "/maintenance",
+    query: { source: "protected-bring-up" },
+  });
+}
+
+async function loadWifiNetworks(): Promise<void> {
+  try {
+    wifiNetworks.value = (await daemonClient.scanWifiNetworks()).networks;
+  } catch {
+    wifiNetworks.value = [];
+  }
 }
 
 async function submitNetworkSettings(): Promise<void> {
   if (
+    currentTask.value?.kind !== "configure_network" ||
     !networkForm.ssid.trim() ||
-    submittingNetwork.value ||
-    !networkAllowed.value
+    !canExecuteCurrentTask() ||
+    submitting.value
   ) {
     return;
   }
-  submittingNetwork.value = true;
-  statusKind.value = "pending";
-  statusMessage.value = "正在写入现场网络设置";
+  submitting.value = true;
   const password = networkForm.password;
   try {
-    networkResult.value = await daemonClient.applyNetworkSettings({
-      ssid: networkForm.ssid.trim(),
-      password,
-      hidden: networkForm.hidden,
-    });
-    statusKind.value =
-      networkResult.value.status === "connected" ? "success" : "failure";
+    networkResult.value = networkSettingsResponseSchema.parse(
+      await daemonClient.executeBringUpTask(currentTask.value, {
+        type: "configure_network",
+        ssid: networkForm.ssid.trim(),
+        password,
+        hidden: networkForm.hidden,
+      }),
+    );
     statusMessage.value = networkResult.value.operatorGuidance;
     await refreshBringUp();
   } catch (error) {
-    statusKind.value = "failure";
-    statusMessage.value = "网络设置提交失败，请检查现场网络后重试";
+    if (!showRejectedNetworkResult(error)) {
+      statusMessage.value = "网络设置提交失败，请检查现场网络后重试";
+    }
   } finally {
     networkForm.password = "";
-    submittingNetwork.value = false;
+    submitting.value = false;
   }
 }
 
-async function exportEvidence(): Promise<void> {
-  if (exportingEvidence.value) return;
-  exportingEvidence.value = true;
-  statusKind.value = "pending";
-  statusMessage.value = "正在导出现场证据";
+async function probeExistingNetwork(): Promise<void> {
+  const task = currentTask.value;
+  if (
+    !task ||
+    task.kind !== "configure_network" ||
+    task.projection.type !== "network_settings" ||
+    !task.projection.supportsExistingNetworkProbe ||
+    submitting.value
+  ) {
+    return;
+  }
+  submitting.value = true;
   try {
-    await daemonClient.downloadLogExport();
-    statusKind.value = "success";
-    statusMessage.value = "现场证据已导出";
+    networkResult.value = networkSettingsResponseSchema.parse(
+      await daemonClient.executeBringUpTask(task, { type: "probe_network" }),
+    );
+    statusMessage.value = networkResult.value.operatorGuidance;
+    await refreshBringUp();
   } catch (error) {
-    statusKind.value = "failure";
-    statusMessage.value =
-      error instanceof Error ? error.message : "现场证据导出失败";
+    if (!showRejectedNetworkResult(error)) {
+      statusMessage.value = "现有网络尚未验证可访问平台，请检查网络后重试";
+    }
   } finally {
-    exportingEvidence.value = false;
+    submitting.value = false;
+  }
+}
+
+async function submitClaim(): Promise<void> {
+  const task = currentTask.value;
+  if (
+    !task ||
+    !["claim_machine", "reclaim_machine"].includes(task.intent) ||
+    !claimForm.claimCode.trim() ||
+    !canExecuteCurrentTask() ||
+    submitting.value
+  ) {
+    return;
+  }
+  submitting.value = true;
+  const claimCode = claimForm.claimCode.trim().toUpperCase();
+  try {
+    const result = provisioningClaimResponseSchema.parse(
+      await daemonClient.executeBringUpTask(task, {
+        type: "claim_machine",
+        claimCode,
+      }),
+    );
+    machineStore.configSummary = result.config;
+    machineStore.configLoaded = true;
+    claimForm.claimCode = "";
+    await refreshBringUp();
+    await router.replace("/boot");
+  } catch (error) {
+    statusMessage.value =
+      error instanceof DaemonUnavailableError
+        ? "本机服务暂不可用，请稍后重试"
+        : "领取失败，请核对领取码后重试";
+  } finally {
+    claimForm.claimCode = "";
+    submitting.value = false;
+  }
+}
+
+async function submitCurrentTask(): Promise<void> {
+  if (!currentTask.value || submitting.value || !canExecuteCurrentTask())
+    return;
+  if (currentTask.value.intent === "open_maintenance") {
+    await continueProtectedMaintenance();
+    return;
+  }
+  if (currentTask.value.intent === "refresh_profile") {
+    await daemonClient.executeBringUpTask(currentTask.value, {
+      type: "refresh_profile",
+    });
+    await refreshBringUp();
+    return;
+  }
+  if (currentTask.value.intent === "retry_maintenance_tunnel") {
+    submitting.value = true;
+    try {
+      await daemonClient.executeBringUpTask(currentTask.value, {
+        type: "retry_maintenance_tunnel",
+      });
+      statusMessage.value = "维护隧道已重新应用，正在确认首次握手。";
+    } catch {
+      statusMessage.value = "机器领取已保留；维护隧道仍未就绪，请稍后重试。";
+    } finally {
+      submitting.value = false;
+    }
+    await refreshBringUp();
   }
 }
 
 onMounted(async () => {
-  try {
-    const connection = await daemonClient.initialize();
-    protectedMaintenanceEnabled.value =
-      route.query.source === "protected-maintenance" &&
-      connection.runtimeFlags?.advancedMaintenanceConfig === true;
-  } catch {
-    protectedMaintenanceEnabled.value = false;
-  }
+  removeMaintenanceSessionInvalidationListener =
+    daemonClient.onMaintenanceSessionInvalidated(() => {
+      maintenanceSessionAuthorized.value = false;
+      maintenanceAuthentication.message =
+        "守护进程连接已更新，维护会话已失效，请重新验证 PIN。";
+    });
   await refreshBringUp();
-  if (networkAllowed.value) void scanWifiNetworks();
+  if (currentTask.value?.kind === "configure_network") {
+    await loadWifiNetworks();
+  }
+});
+
+onUnmounted(() => {
+  stopAttestationCursorRefresh();
+  removeMaintenanceSessionInvalidationListener?.();
+  removeMaintenanceSessionInvalidationListener = null;
+  daemonClient.releaseMaintenanceSessionRoute("bring-up");
 });
 </script>
 
 <template>
   <KioskLayout>
-    <section class="bring-up-page">
-      <header class="bring-up-header">
-        <div class="bring-up-brand" @click="handleMaintenanceTap">
-          <img :src="logoImage" alt="唐诗村" />
-          <img :src="mascotTopImage" alt="" aria-hidden="true" />
-        </div>
-        <div class="bring-up-title-block">
-          <p>首次部署</p>
-          <h2>首次部署控制台</h2>
-        </div>
+    <section class="bring-up-page" aria-label="首次部署控制台">
+      <header>
+        <p>受保护维护</p>
+        <h1>首次部署控制台</h1>
+        <span>{{
+          loading ? "正在执行启动检查" : "本机状态已由 daemon 确认"
+        }}</span>
       </header>
 
-      <main class="bring-up-main" aria-label="首次部署控制台">
-        <section class="bring-up-hero">
-          <div>
-            <p class="bring-up-eyebrow">本机状态</p>
-            <h1>{{ stateLabel }}</h1>
-            <p>
-              按本机服务返回的首次部署状态推进网络、领取、拓扑核对、验收和证据导出。
-            </p>
-          </div>
-          <dl class="bring-up-summary">
-            <div>
-              <dt>就绪级别</dt>
-              <dd>{{ readinessLabel }}</dd>
-            </div>
-            <div>
-              <dt>硬件模式</dt>
-              <dd>{{ hardwareModeLabel }}</dd>
-            </div>
-            <div>
-              <dt>更新时间</dt>
-              <dd>{{ bringUp?.updatedAt ?? "等待本机服务返回" }}</dd>
-            </div>
-          </dl>
-        </section>
+      <main>
+        <section class="current-task" aria-live="polite">
+          <p>当前任务：{{ currentTaskLabel }}</p>
 
-        <section class="bring-up-grid">
-          <section class="bring-up-panel">
-            <div class="panel-heading">
-              <p class="bring-up-eyebrow">阻塞原因</p>
-              <h3>下一步处理</h3>
-            </div>
-            <ul v-if="primaryReasons.length" class="reason-list">
-              <li v-for="reason in primaryReasons" :key="reason.code">
-                <strong>{{ reasonDisplay(reason).title }}</strong>
-                <span>{{ reasonDisplay(reason).meta }}</span>
-                <small>{{ reasonDisplay(reason).detail }}</small>
-              </li>
-            </ul>
-            <p v-else class="empty-copy">本机服务未返回阻塞原因。</p>
-          </section>
-
-          <section class="bring-up-panel">
-            <div class="panel-heading">
-              <p class="bring-up-eyebrow">诊断</p>
-              <h3>现场核对</h3>
-            </div>
-            <ul v-if="diagnostics.length" class="reason-list diagnostic-list">
-              <li
-                v-for="item in diagnostics"
-                :key="`${item.component}-${item.code}`"
-              >
-                <strong>{{ reasonDisplay(item).title }}</strong>
-                <span>{{ reasonDisplay(item).meta }}</span>
-                <small>{{ reasonDisplay(item).detail }}</small>
-              </li>
-            </ul>
-            <p v-else class="empty-copy">暂无额外诊断。</p>
-          </section>
-        </section>
-
-        <section class="bring-up-panel action-panel">
-          <div class="panel-heading">
-            <p class="bring-up-eyebrow">允许动作</p>
-            <h3>本机服务允许的步骤</h3>
-          </div>
-          <div class="action-list">
-            <button
-              v-for="action in actionRows"
-              :key="action.key"
-              class="kiosk-touch-target action-chip"
-              :class="{ enabled: action.enabled }"
-              :disabled="!action.enabled"
-              type="button"
-            >
-              {{ action.label }}
-            </button>
-          </div>
-        </section>
-
-        <section class="bring-up-grid">
           <form
-            class="bring-up-panel bring-up-form"
+            v-if="
+              currentTaskNeedsMaintenanceSession &&
+              !maintenanceSessionAuthorized
+            "
+            class="maintenance-session-gate"
+            @submit.prevent="beginProtectedMaintenance"
+          >
+            <label>
+              <span>维护 PIN</span>
+              <input
+                v-model="maintenanceAuthentication.pin"
+                autocomplete="one-time-code"
+                class="kiosk-touch-target"
+                inputmode="numeric"
+                type="password"
+              />
+            </label>
+            <button
+              class="kiosk-touch-target primary-action"
+              type="submit"
+              :disabled="
+                maintenanceAuthentication.loading ||
+                !maintenanceAuthentication.pin.trim()
+              "
+            >
+              {{
+                maintenanceAuthentication.loading
+                  ? "正在验证 PIN"
+                  : "验证维护 PIN"
+              }}
+            </button>
+            <p v-if="maintenanceAuthentication.message">
+              {{ maintenanceAuthentication.message }}
+            </p>
+          </form>
+
+          <form
+            v-if="currentTask?.kind === 'configure_network'"
             @submit.prevent="submitNetworkSettings"
           >
-            <div class="panel-heading">
-              <p class="bring-up-eyebrow">现场网络</p>
-              <h3>选择并连接无线网络</h3>
-            </div>
-            <div v-if="!manualNetworkEntry" class="wifi-picker">
-              <div class="wifi-picker-actions">
-                <button
-                  class="kiosk-touch-target secondary-action"
-                  :disabled="scanningWifi || !networkAllowed"
-                  type="button"
-                  @click="scanWifiNetworks"
-                >
-                  {{ scanningWifi ? "正在扫描" : "刷新网络" }}
-                </button>
-                <button
-                  class="kiosk-touch-target secondary-action"
-                  type="button"
-                  @click="manualNetworkEntry = true"
-                >
-                  手动输入隐藏网络
-                </button>
-              </div>
-              <ul v-if="wifiNetworks.length" class="wifi-network-list">
-                <li v-for="network in wifiNetworks" :key="network.ssid">
-                  <button
-                    class="kiosk-touch-target wifi-network-option"
-                    :class="{ selected: networkForm.ssid === network.ssid }"
-                    :disabled="
-                      network.security === 'open' ||
-                      network.security === 'enterprise' ||
-                      network.security === 'unknown'
-                    "
-                    type="button"
-                    @click="selectWifiNetwork(network)"
-                  >
-                    <strong>{{ network.ssid }}</strong>
-                    <span>{{ wifiSecurityLabel(network.security) }}</span>
-                    <span>信号 {{ network.signalQuality }}%</span>
-                    <small v-if="network.connected">当前网络</small>
-                    <small
-                      v-else-if="
-                        network.security === 'open' ||
-                        network.security === 'enterprise' ||
-                        network.security === 'unknown'
-                      "
-                    >
-                      当前不支持
-                    </small>
-                  </button>
-                </li>
-              </ul>
-              <p v-if="wifiScanMessage" class="inline-result">
-                {{ wifiScanMessage }}
-              </p>
-            </div>
-            <label v-if="manualNetworkEntry">
+            <label>
               <span>无线网络名称</span>
-              <input v-model="networkForm.ssid" class="kiosk-touch-target" />
+              <select v-model="networkForm.ssid" class="kiosk-touch-target">
+                <option value="">请选择现场网络</option>
+                <option
+                  v-for="network in wifiNetworks"
+                  :key="network.ssid"
+                  :value="network.ssid"
+                >
+                  {{ network.ssid }}
+                </option>
+              </select>
             </label>
-            <label v-if="networkForm.ssid">
+            <label>
               <span>无线网络密码</span>
               <input
                 v-model="networkForm.password"
@@ -692,496 +613,267 @@ onMounted(async () => {
                 type="password"
               />
             </label>
-            <label v-if="manualNetworkEntry" class="checkbox-row">
-              <input v-model="networkForm.hidden" type="checkbox" />
-              <span>隐藏网络</span>
-            </label>
             <button
               class="kiosk-touch-target primary-action"
-              :disabled="
-                submittingNetwork || !networkAllowed || !networkForm.ssid.trim()
-              "
               type="submit"
+              :disabled="!canExecuteCurrentTask() || submitting"
             >
-              {{ submittingNetwork ? "正在提交网络" : "提交网络设置" }}
+              {{ submitting ? "正在提交网络" : "提交网络设置" }}
             </button>
-            <p v-if="networkResult" class="inline-result">
-              {{ networkStatusLabel(networkResult.status) }} ·
-              {{ networkResult.operatorGuidance }}
-            </p>
+            <button
+              v-if="
+                currentTask.projection.type === 'network_settings' &&
+                currentTask.projection.supportsExistingNetworkProbe
+              "
+              class="kiosk-touch-target secondary-action"
+              type="button"
+              :disabled="submitting"
+              @click="probeExistingNetwork"
+            >
+              验证现有网络
+            </button>
           </form>
 
           <form
-            class="bring-up-panel bring-up-form"
+            v-else-if="
+              currentTask?.intent === 'claim_machine' ||
+              currentTask?.intent === 'reclaim_machine'
+            "
             @submit.prevent="submitClaim"
           >
-            <div class="panel-heading">
-              <p class="bring-up-eyebrow">机器领取</p>
-              <h3>{{ reclaimMode ? "提交重新领取码" : "提交领取码" }}</h3>
-            </div>
             <label>
               <span>领取码</span>
               <input
                 v-model="claimForm.claimCode"
                 autocomplete="one-time-code"
-                class="kiosk-touch-target claim-code-input"
-                inputmode="text"
-                placeholder="ABCD-2345"
+                class="kiosk-touch-target"
               />
             </label>
             <button
               class="kiosk-touch-target primary-action"
-              :disabled="
-                submittingClaim || !claimAllowed || !claimForm.claimCode.trim()
-              "
               type="submit"
+              :disabled="!canExecuteCurrentTask() || submitting"
+            >
+              {{ submitting ? "正在领取" : "提交领取码" }}
+            </button>
+          </form>
+
+          <form
+            v-else-if="currentTask?.kind === 'attest_stock'"
+            class="physical-stock-attestation"
+            @submit.prevent="submitPhysicalStockAttestation"
+          >
+            <div>
+              <h2>实物库存确认</h2>
+              <p>逐格填写现场实际数量；提交后将作为首次部署库存凭证。</p>
+            </div>
+            <p v-if="stockAttestation.loading">正在读取有效货道…</p>
+            <p
+              v-if="attestationRecovery"
+              class="physical-stock-attestation__recovery"
+            >
+              {{ attestationRecovery.code }}：{{ attestationRecovery.message }}
+            </p>
+            <div
+              v-if="!stockAttestation.loading"
+              class="physical-stock-attestation__slots"
+            >
+              <label v-for="slot in stockAttestation.slots" :key="slot.slotId">
+                <span
+                  >{{ slot.slotCode }} 实际数量（{{ slot.sku }}，容量
+                  {{ slot.capacity }}）</span
+                >
+                <input
+                  v-model.number="slot.quantity"
+                  :aria-label="`${slot.slotCode} 实际数量`"
+                  class="kiosk-touch-target"
+                  inputmode="numeric"
+                  :max="slot.capacity"
+                  :disabled="attestationAwaitingPlatform"
+                  min="0"
+                  required
+                  step="1"
+                  type="number"
+                />
+              </label>
+            </div>
+            <label class="physical-stock-attestation__confirmation">
+              <input
+                v-model="stockAttestation.confirmed"
+                type="checkbox"
+                :disabled="attestationAwaitingPlatform"
+              />
+              <span>已逐格核对实物数量，并确认提交。</span>
+            </label>
+            <button
+              class="kiosk-touch-target primary-action"
+              type="submit"
+              :disabled="
+                !canExecuteCurrentTask() ||
+                !physicalStockAttestationReady ||
+                submitting ||
+                attestationAwaitingPlatform ||
+                stockAttestation.loading
+              "
             >
               {{
-                submittingClaim
-                  ? "正在领取"
-                  : reclaimMode
-                    ? "提交重新领取码"
-                    : "提交领取码"
+                submitting
+                  ? "正在提交实物库存"
+                  : attestationAwaitingPlatform
+                    ? "正在等待平台确认"
+                    : "确认并提交实物库存"
               }}
             </button>
           </form>
-        </section>
 
-        <section class="bring-up-grid">
-          <section class="bring-up-panel">
-            <div class="panel-heading">
-              <p class="bring-up-eyebrow">生产验收</p>
-              <h3>拓扑、验收、库存</h3>
-            </div>
-            <p class="empty-copy">
-              货道拓扑不匹配、本机运行验收、硬件验收和库存确认均以本机服务允许动作为准。
-            </p>
-            <button
-              class="kiosk-touch-target secondary-action"
-              :disabled="exportingEvidence"
-              type="button"
-              @click="exportEvidence"
+          <button
+            v-else-if="currentTask"
+            class="kiosk-touch-target primary-action"
+            type="button"
+            :disabled="!canExecuteCurrentTask() || submitting"
+            @click="submitCurrentTask"
+          >
+            {{
+              currentTask.intent === "refresh_profile"
+                ? "重新读取运行档案"
+                : currentTask.intent === "retry_maintenance_tunnel"
+                  ? "重试维护隧道"
+                : "前往维护控制台继续"
+            }}
+          </button>
+
+          <p v-if="networkResult">{{ networkResult.operatorGuidance }}</p>
+          <ul
+            v-if="networkResult?.diagnostics.length"
+            class="network-diagnostics"
+            aria-label="网络就绪诊断"
+          >
+            <li
+              v-for="diagnostic in networkResult.diagnostics"
+              :key="diagnostic.code"
             >
-              {{ exportingEvidence ? "正在导出" : "导出现场证据" }}
-            </button>
-          </section>
-
-          <section class="bring-up-panel protected-panel">
-            <div class="panel-heading">
-              <p class="bring-up-eyebrow">受保护维护</p>
-              <h3>回收与重置入口</h3>
-            </div>
-            <p class="empty-copy">
-              生产运行后的重新领取、本机重置和验收重跑需要受保护维护凭据。
-            </p>
-            <div class="protected-actions">
-              <button
-                v-for="action in protectedActionRows"
-                :key="action.key"
-                class="kiosk-touch-target secondary-action"
-                :disabled="
-                  action.key !== 'reclaim' || !protectedMaintenanceEnabled
-                "
-                type="button"
-                :title="action.description"
-                @click="action.key === 'reclaim' && startReclaim()"
-              >
-                {{ action.label }}
-              </button>
-            </div>
-          </section>
+              <template v-if="diagnostic.evidence">
+                {{ diagnostic.evidence.source }} ·
+                {{ diagnostic.evidence.status }} ·
+                {{ diagnostic.evidence.reasonCode }}：{{
+                  diagnostic.evidence.reason
+                }}
+                （处理：{{ diagnostic.evidence.recoveryAction }}）
+              </template>
+              <template v-else>
+                {{ diagnostic.component }} · {{ diagnostic.code }}：{{
+                  diagnostic.message
+                }}
+              </template>
+            </li>
+          </ul>
+          <p v-if="statusMessage">{{ statusMessage }}</p>
         </section>
 
-        <p
-          v-if="statusMessage || loading"
-          :class="`bring-up-status ${statusKind}`"
-          aria-live="polite"
-        >
-          {{ loading ? "正在读取首次部署状态" : statusMessage }}
-        </p>
+        <section class="progress" aria-label="首次部署进度">
+          <p v-for="step in progress" :key="step.kind" :class="step.status">
+            {{ progressLabel(step) }}
+          </p>
+        </section>
       </main>
-
-      <img
-        :src="listSloganImage"
-        alt=""
-        aria-hidden="true"
-        class="bring-up-slogan"
-      />
     </section>
   </KioskLayout>
 </template>
 
 <style scoped>
-:global(.kiosk-shell:has(.bring-up-page)) {
-  padding: 0;
-}
-
-:global(.kiosk-shell:has(.bring-up-page) > header) {
-  display: none;
-}
-
-:global(.kiosk-shell:has(.bring-up-page) > .kiosk-scroll) {
-  width: 100%;
-  height: 100%;
-  margin-top: 0;
-  padding-bottom: 0;
-}
-
 .bring-up-page {
-  position: relative;
-  min-height: 100%;
-  overflow-x: hidden;
-  background:
-    radial-gradient(
-      circle at 18% 6%,
-      rgba(255, 255, 255, 0.92),
-      rgba(255, 255, 255, 0) 28%
-    ),
-    linear-gradient(180deg, #faf8f1 0%, #f4efe2 54%, #efe8d8 100%);
-  padding: var(--machine-page-header-top) var(--machine-page-inline) 2rem;
-  color: #3f3b34;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 3rem;
+  color: white;
 }
-
-.bring-up-header {
+header p {
+  color: #bae6fd;
+  letter-spacing: 0.15em;
+}
+h1 {
+  font-size: 2.5rem;
+  margin: 0.5rem 0;
+}
+main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
-  align-items: center;
+  gap: 1.5rem;
+  margin-top: 2rem;
 }
-
-.bring-up-brand {
+.network-diagnostics {
+  margin: 1rem 0 0;
+  padding-left: 1.25rem;
+  color: #dbeafe;
+}
+.current-task,
+.progress {
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 1.25rem;
+  padding: 1.5rem;
+  background: rgb(15 23 42 / 0.7);
+}
+.current-task > p:first-child {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+label {
+  display: grid;
+  gap: 0.5rem;
+}
+input,
+select {
+  color: #0f172a;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+}
+button {
+  margin-top: 1rem;
+  padding: 0.8rem 1.2rem;
+  border-radius: 0.75rem;
+  background: #0284c7;
+  color: white;
+}
+.progress {
   display: flex;
-  align-items: center;
-  gap: 1.1rem;
-  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.65rem;
 }
-
-.bring-up-brand img:first-child {
-  width: var(--machine-brand-logo-width);
-  height: auto;
-}
-
-.bring-up-brand img:last-child {
-  width: clamp(2.5rem, 8vw, 4rem);
-  height: auto;
-  opacity: 0.82;
-}
-
-.bring-up-title-block {
-  text-align: right;
-}
-
-.bring-up-title-block p,
-.bring-up-eyebrow {
+.progress p {
   margin: 0;
-  color: #6d7f5f;
-  font-size: 0.74rem;
-  font-weight: 700;
+  padding: 0.4rem 0.7rem;
+  border-radius: 99px;
+  background: rgb(255 255 255 / 0.08);
 }
-
-.bring-up-title-block h2 {
-  margin: 0.18rem 0 0;
-  color: #263326;
-  font-size: 1.45rem;
-  font-weight: 800;
+.progress .completed {
+  color: #bbf7d0;
 }
-
-.bring-up-main {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  gap: 0.8rem;
-  margin-top: 1.35rem;
+.progress .current {
+  background: #0369a1;
 }
-
-.bring-up-hero,
-.bring-up-panel {
-  border: 1px solid rgba(126, 112, 82, 0.28);
-  border-radius: 0.65rem;
-  background: rgba(255, 253, 247, 0.86);
-  box-shadow: 0 1rem 2.4rem rgba(98, 80, 50, 0.08);
+.progress .revalidate {
+  color: #fde68a;
 }
-
-.bring-up-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(17rem, 0.9fr);
-  gap: 1rem;
-  align-items: stretch;
-  padding: 1rem 1.15rem;
-}
-
-.bring-up-hero h1 {
-  margin: 0.34rem 0 0;
-  color: #263326;
-  font-size: clamp(1.8rem, 4vw, 3rem);
-  line-height: 1.08;
-  font-weight: 850;
-}
-
-.bring-up-hero p:last-child,
-.empty-copy,
-.inline-result {
-  margin: 0.5rem 0 0;
-  color: #6f675c;
-  font-size: 0.92rem;
-  line-height: 1.45;
-}
-
-.bring-up-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.5rem;
-  margin: 0;
-}
-
-.bring-up-summary div {
-  min-width: 0;
-  border: 1px solid rgba(126, 112, 82, 0.2);
-  border-radius: 0.48rem;
-  background: rgba(255, 253, 247, 0.66);
-  padding: 0.66rem 0.75rem;
-}
-
-.bring-up-summary dt {
-  color: #6f675c;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.bring-up-summary dd {
-  margin: 0.24rem 0 0;
-  overflow-wrap: anywhere;
-  color: #263326;
-  font-size: 0.96rem;
-  font-weight: 800;
-}
-
-.bring-up-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.8rem;
-}
-
-.bring-up-panel {
-  min-width: 0;
-  padding: 0.95rem 1rem;
-}
-
-.panel-heading h3 {
-  margin: 0.24rem 0 0;
-  color: #263326;
-  font-size: 1.18rem;
-  font-weight: 820;
-}
-
-.reason-list {
-  display: grid;
-  gap: 0.5rem;
-  margin: 0.75rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.reason-list li {
-  display: grid;
-  gap: 0.2rem;
-  border: 1px solid rgba(126, 112, 82, 0.18);
-  border-radius: 0.48rem;
-  background: rgba(250, 248, 241, 0.72);
-  padding: 0.66rem 0.75rem;
-}
-
-.reason-list strong {
-  color: #3f3b34;
-  font-size: 0.92rem;
-}
-
-.reason-list span {
-  color: #6f675c;
-  font-size: 0.78rem;
-  overflow-wrap: anywhere;
-}
-
-.reason-list small {
-  color: #6f675c;
-  font-size: 0.82rem;
-  line-height: 1.38;
-}
-
-.diagnostic-list li {
-  background: rgba(242, 247, 236, 0.72);
-}
-
-.action-panel {
+.physical-stock-attestation__slots {
   display: grid;
   gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
 }
-
-.action-list,
-.protected-actions {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.5rem;
-}
-
-.action-chip,
-.primary-action,
-.secondary-action {
-  min-height: 3rem;
-  border: 1px solid rgba(93, 112, 80, 0.32);
-  border-radius: 0.42rem;
-  background: rgba(255, 253, 247, 0.78);
-  color: #4d463c;
-  font-weight: 800;
-}
-
-.action-chip.enabled,
-.primary-action {
-  background: #6f835f;
-  color: #fffdf7;
-}
-
-.action-chip:disabled,
-.primary-action:disabled,
-.secondary-action:disabled {
-  background: rgba(111, 131, 95, 0.16);
-  color: rgba(63, 59, 52, 0.48);
-}
-
-.bring-up-form {
-  display: grid;
-  gap: 0.62rem;
-}
-
-.bring-up-form label {
-  display: grid;
-  gap: 0.34rem;
-  min-width: 0;
-  color: #4d463c;
-  font-weight: 700;
-}
-
-.bring-up-form input:not([type="checkbox"]) {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  min-height: 3.1rem;
-  border: 1px solid rgba(126, 112, 82, 0.3);
-  border-radius: 0.42rem;
-  background: rgba(255, 255, 255, 0.78);
-  padding: 0 0.9rem;
-  color: #2f2a23;
-  font-size: 1rem;
-  font-weight: 700;
-  outline: none;
-}
-
-.claim-code-input {
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.wifi-picker {
-  display: grid;
-  gap: 0.72rem;
-}
-
-.wifi-picker-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.62rem;
-}
-
-.wifi-network-list {
-  display: grid;
-  max-height: 19rem;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  list-style: none;
-  gap: 0.52rem;
-}
-
-.wifi-network-option {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  width: 100%;
-  padding: 0.72rem 0.82rem;
-  border: 2px solid rgba(126, 112, 82, 0.2);
-  border-radius: 0.52rem;
-  background: rgba(255, 255, 255, 0.78);
-  color: #2f2a23;
-  text-align: left;
-  gap: 0.2rem 0.62rem;
-}
-
-.wifi-network-option.selected {
-  border-color: #bb7448;
-  background: #fff4e8;
-}
-
-.wifi-network-option strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.wifi-network-option span,
-.wifi-network-option small {
-  color: #756b5b;
-}
-
-.checkbox-row {
-  grid-template-columns: auto minmax(0, 1fr);
+.physical-stock-attestation__confirmation {
+  display: flex;
   align-items: center;
+  gap: 0.6rem;
 }
 
-.bring-up-status {
-  margin: 0;
-  border: 1px solid rgba(99, 119, 85, 0.2);
-  border-radius: 0.42rem;
-  background: rgba(242, 247, 236, 0.88);
-  padding: 0.82rem 1rem;
-  color: #4f6845;
-  font-weight: 700;
+.physical-stock-attestation__recovery {
+  color: #fde68a;
 }
-
-.bring-up-status.pending {
-  border-color: rgba(181, 126, 34, 0.24);
-  background: rgba(255, 246, 220, 0.82);
-  color: #70501d;
-}
-
-.bring-up-status.failure {
-  border-color: rgba(174, 74, 70, 0.28);
-  background: rgba(255, 239, 235, 0.9);
-  color: #7b3430;
-}
-
-.bring-up-slogan {
-  position: absolute;
-  right: 2.2rem;
-  bottom: 1.4rem;
-  width: min(21rem, 54%);
-  opacity: 0.26;
-}
-
-@media (max-width: 760px) {
-  .bring-up-page {
-    padding: 1.35rem 1.25rem 1.75rem;
-  }
-
-  .bring-up-header,
-  .bring-up-hero,
-  .bring-up-grid,
-  .bring-up-summary,
-  .action-list,
-  .protected-actions {
-    grid-template-columns: 1fr;
-  }
-
-  .bring-up-title-block {
-    text-align: left;
-  }
+.physical-stock-attestation__confirmation input {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 </style>

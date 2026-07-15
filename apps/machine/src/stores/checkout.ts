@@ -28,6 +28,13 @@ const DISMISSED_TERMINAL_ORDER_STORAGE_KEY =
 const DISMISSED_TERMINAL_ORDER_LIMIT = 50;
 const PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE =
   "扫码器暂不可用，请选择其他支付方式";
+const TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE =
+  "正在恢复当前交易，请稍候，暂不可修改交易";
+
+function createCheckoutAttemptIdempotencyKey(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  return `checkout:${randomUuid ?? `${Date.now()}:${Math.random().toString(36).slice(2)}`}`;
+}
 
 function browserLocalStorage(): Storage | null {
   if (typeof window === "undefined") return null;
@@ -236,6 +243,44 @@ function orderResponseFromSnapshot(
   };
 }
 
+function checkoutProjectionRank(view: CustomerCheckoutView): number {
+  switch (view.stage) {
+    case "none":
+      return 0;
+    case "payment":
+      return 1;
+    case "dispensing":
+      return 2;
+    case "result":
+      return 3;
+  }
+}
+
+function transactionUpdatedAtMs(snapshot: TransactionSnapshot): number {
+  const value = Date.parse(snapshot.updatedAt);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function canAdvanceTransactionProjection(input: {
+  current: TransactionSnapshot;
+  currentView: CustomerCheckoutView;
+  incoming: TransactionSnapshot;
+  incomingView: CustomerCheckoutView;
+  requestNo: number;
+  lastAcceptedRequestNo: number;
+}): boolean {
+  const currentRank = checkoutProjectionRank(input.currentView);
+  const incomingRank = checkoutProjectionRank(input.incomingView);
+  if (incomingRank !== currentRank) return incomingRank > currentRank;
+
+  const currentUpdatedAt = transactionUpdatedAtMs(input.current);
+  const incomingUpdatedAt = transactionUpdatedAtMs(input.incoming);
+  if (incomingUpdatedAt !== currentUpdatedAt) {
+    return incomingUpdatedAt > currentUpdatedAt;
+  }
+  return input.requestNo >= input.lastAcceptedRequestNo;
+}
+
 export const useCheckoutStore = defineStore("checkout", {
   state: () => ({
     selectedItem: null as CheckoutSelectedItem | null,
@@ -249,8 +294,13 @@ export const useCheckoutStore = defineStore("checkout", {
     paymentCodeMessage: null as string | null,
     paymentCodeLastMasked: null as string | null,
     paymentOptionsLoaded: false,
+    checkoutAttemptIdempotencyKey: null as string | null,
     dismissedTerminalOrderNos: readDismissedTerminalOrderNos(),
     lastTransactionRestored: false,
+    transactionRecoveryOrderNo: null as string | null,
+    transactionRefreshRequestNo: 0,
+    transactionRefreshLastAcceptedRequestNo: 0,
+    transactionRefreshInFlight: 0,
   }),
   getters: {
     quantity: (): number => 1,
@@ -263,6 +313,15 @@ export const useCheckoutStore = defineStore("checkout", {
         loading: state.loading,
         readiness: customerCheckoutReadinessContext(),
       }),
+    customerCheckoutRecovery: (
+      state,
+    ): {
+      active: boolean;
+      orderCredential: string | null;
+    } => ({
+      active: state.transactionRecoveryOrderNo !== null,
+      orderCredential: state.transactionRecoveryOrderNo,
+    }),
     canCreateOrder: (state): boolean => {
       const selectedItem = latestSaleViewItem(state.selectedItem);
       return Boolean(
@@ -296,12 +355,20 @@ export const useCheckoutStore = defineStore("checkout", {
       this.nowMs = nowMs;
     },
     selectItem(item: CheckoutSelectedItem): void {
+      if (this.customerCheckoutView.stage !== "none") return;
       this.selectedItem = item;
       this.transaction = null;
+      this.transactionRecoveryOrderNo = null;
       this.error = null;
+      this.checkoutAttemptIdempotencyKey =
+        createCheckoutAttemptIdempotencyKey();
       this.nowMs = Date.now();
     },
     reset(): void {
+      if (this.customerCheckoutRecovery.active) {
+        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        return;
+      }
       this.selectedItem = null;
       this.transaction = null;
       this.error = null;
@@ -309,6 +376,8 @@ export const useCheckoutStore = defineStore("checkout", {
       this.paymentCodeSubmitting = false;
       this.paymentCodeMessage = null;
       this.paymentCodeLastMasked = null;
+      this.checkoutAttemptIdempotencyKey = null;
+      this.transactionRecoveryOrderNo = null;
       this.nowMs = Date.now();
     },
     shouldIgnoreTransaction(snapshot: TransactionSnapshot | null): boolean {
@@ -349,6 +418,7 @@ export const useCheckoutStore = defineStore("checkout", {
       }
 
       this.transaction = snapshot;
+      this.transactionRecoveryOrderNo = null;
 
       const attempt = snapshot.paymentCodeAttempt;
       this.paymentCodeMessage =
@@ -389,6 +459,10 @@ export const useCheckoutStore = defineStore("checkout", {
       }
     },
     selectPaymentOption(optionKey: MachinePaymentOptionKey): void {
+      if (this.customerCheckoutRecovery.active) {
+        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        return;
+      }
       if (
         this.paymentOptions.some(
           (option) => option.optionKey === optionKey && !option.disabled,
@@ -398,6 +472,10 @@ export const useCheckoutStore = defineStore("checkout", {
       }
     },
     async createOrder(): Promise<CreateMachineOrderResponse | null> {
+      if (this.customerCheckoutRecovery.active) {
+        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        throw new Error(TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE);
+      }
       if (!this.selectedItem) throw new Error("No selected item");
       const catalogStore = useCatalogStore();
       await catalogStore.refresh().catch(() => {
@@ -417,6 +495,10 @@ export const useCheckoutStore = defineStore("checkout", {
       if (!isMachineSaleReady()) throw new Error("当前机器暂不可创建订单");
       const planogramVersion = activePlanogramVersion();
       if (!planogramVersion) throw new Error("当前货道图暂不可创建订单");
+      const idempotencyKey =
+        this.checkoutAttemptIdempotencyKey ??
+        createCheckoutAttemptIdempotencyKey();
+      this.checkoutAttemptIdempotencyKey = idempotencyKey;
 
       this.loading = true;
       this.error = null;
@@ -430,6 +512,7 @@ export const useCheckoutStore = defineStore("checkout", {
           paymentMethod: selected.method,
           paymentProviderCode: selected.providerCode,
           profileSnapshot: null,
+          idempotencyKey,
         });
         this.applyTransaction(snapshot);
         return orderResponseFromSnapshot(snapshot, selectedItem.priceCents);
@@ -446,21 +529,81 @@ export const useCheckoutStore = defineStore("checkout", {
       }
     },
     async refreshCurrentTransaction(): Promise<TransactionSnapshot | null> {
+      const requestNo = this.transactionRefreshRequestNo + 1;
+      this.transactionRefreshRequestNo = requestNo;
+      this.transactionRefreshInFlight += 1;
       this.loading = true;
       this.error = null;
       try {
         const snapshot = await daemonClient.getCurrentTransaction();
-        if (this.shouldIgnoreTransaction(snapshot)) {
-          this.applyTransaction(snapshot);
+        const currentView = this.customerCheckoutView;
+        if (
+          currentView.stage !== "none" &&
+          snapshot.orderNo !== currentView.orderCredential
+        ) {
+          if (requestNo < this.transactionRefreshLastAcceptedRequestNo) {
+            return this.transaction;
+          }
+          if (
+            currentView.stage === "payment" ||
+            currentView.stage === "dispensing"
+          ) {
+            this.transactionRecoveryOrderNo = currentView.orderCredential;
+          }
+          this.error = "正在恢复当前交易，请稍候";
           return null;
         }
+        if (this.shouldIgnoreTransaction(snapshot)) {
+          this.applyTransaction(snapshot);
+          this.transactionRefreshLastAcceptedRequestNo = Math.max(
+            this.transactionRefreshLastAcceptedRequestNo,
+            requestNo,
+          );
+          return null;
+        }
+        const incomingView = projectCustomerCheckoutView({
+          transaction: snapshot,
+          nowMs: this.nowMs,
+          dismissedTerminalOrderNos: this.dismissedTerminalOrderNos,
+          restored: true,
+          loading: this.loading,
+          readiness: customerCheckoutReadinessContext(),
+        });
+        if (
+          this.transaction &&
+          !canAdvanceTransactionProjection({
+            current: this.transaction,
+            currentView,
+            incoming: snapshot,
+            incomingView,
+            requestNo,
+            lastAcceptedRequestNo: this.transactionRefreshLastAcceptedRequestNo,
+          })
+        ) {
+          return this.transaction;
+        }
         this.applyTransaction(snapshot);
+        this.transactionRefreshLastAcceptedRequestNo = Math.max(
+          this.transactionRefreshLastAcceptedRequestNo,
+          requestNo,
+        );
         return snapshot;
       } catch (error) {
+        if (requestNo < this.transactionRefreshLastAcceptedRequestNo) {
+          return null;
+        }
         this.error = errorString(error);
+        const view = this.customerCheckoutView;
+        if (view.stage === "payment" || view.stage === "dispensing") {
+          this.transactionRecoveryOrderNo = view.orderCredential;
+        }
         return null;
       } finally {
-        this.loading = false;
+        this.transactionRefreshInFlight = Math.max(
+          0,
+          this.transactionRefreshInFlight - 1,
+        );
+        this.loading = this.transactionRefreshInFlight > 0;
       }
     },
     async refreshCustomerCheckoutReadiness(): Promise<string | null> {
@@ -480,6 +623,10 @@ export const useCheckoutStore = defineStore("checkout", {
     async cancelCurrentOrder(options?: {
       preserveSelectedItem?: boolean;
     }): Promise<TransactionSnapshot | null> {
+      if (this.customerCheckoutRecovery.active) {
+        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        throw new Error(TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE);
+      }
       const orderNo =
         this.customerCheckoutView.orderCredential ?? this.transaction?.orderNo;
       if (!orderNo) {
@@ -514,6 +661,10 @@ export const useCheckoutStore = defineStore("checkout", {
     async submitDevPaymentCode(
       authCode: string,
     ): Promise<TransactionSnapshot | null> {
+      if (this.customerCheckoutRecovery.active) {
+        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        return null;
+      }
       const orderNo = this.customerCheckoutView.orderCredential;
       if (!orderNo) return null;
       if (this.paymentCodeSubmitting) return null;
@@ -541,11 +692,19 @@ export const useCheckoutStore = defineStore("checkout", {
       }
     },
     async markMockSucceeded(): Promise<void> {
+      if (this.customerCheckoutRecovery.active) {
+        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        return;
+      }
       const orderNo = this.customerCheckoutView.orderCredential;
       if (!orderNo) return;
       this.applyTransaction(await daemonClient.markMockPayment(orderNo, true));
     },
     async markMockFailed(): Promise<void> {
+      if (this.customerCheckoutRecovery.active) {
+        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        return;
+      }
       const orderNo = this.customerCheckoutView.orderCredential;
       if (!orderNo) return;
       this.applyTransaction(await daemonClient.markMockPayment(orderNo, false));

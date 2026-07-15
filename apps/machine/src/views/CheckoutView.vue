@@ -9,17 +9,20 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import alipayCodeImage from "@/assets/payment/alipay-code.png";
 import alipayScanImage from "@/assets/payment/alipay-scan.png";
 import { topCategoryForItem } from "@/catalog/view-model";
+import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
+import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
+const machineStore = useMachineStore();
 
 const item = computed(() => {
   const selectedItem = checkoutStore.selectedItem;
@@ -40,7 +43,6 @@ const fallbackImage = computed(() => {
   if (category?.key === "tshirts") return iconTshirtImage;
   return iconSocksImage;
 });
-const hasProductImage = computed(() => Boolean(item.value?.coverImageUrl));
 const canSubmit = computed(
   () =>
     Boolean(item.value) &&
@@ -147,10 +149,20 @@ async function submitOrder(): Promise<void> {
           <h2>商品信息</h2>
           <div class="product-summary">
             <div class="product-image">
-              <img
-                :src="item.coverImageUrl ?? fallbackImage"
+              <ManagedMediaImage
+                :reference="item.coverImageUrl"
+                :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
+                :api-base-url="machineStore.config.apiBaseUrl"
+                :fallback="fallbackImage"
                 :alt="item.productName"
-                :class="{ 'product-image-fallback': !hasProductImage }"
+                :class="{ 'product-image-fallback': !item.coverImageUrl }"
+                @diagnostic="
+                  catalogStore.recordMediaDiagnostic(
+                    item.coverImageUrl,
+                    $event.message,
+                    $event.diagnosticKey,
+                  )
+                "
               />
             </div>
             <div class="product-copy">

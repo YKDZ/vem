@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod bring_up;
 pub mod config;
+pub mod device_binding;
 pub mod events;
 pub mod hardware;
 pub mod health;

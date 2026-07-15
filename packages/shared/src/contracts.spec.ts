@@ -2363,7 +2363,7 @@ describe("shared API contract", () => {
       productName: "矿泉水",
       productDescription: null,
       coverImageUrl:
-        "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
       categoryId: null,
       categoryName: null,
       sku: "WATER-001",
@@ -2382,6 +2382,18 @@ describe("shared API contract", () => {
         slots: [slot],
       }).slots[0]?.coverImageUrl,
     ).toBe(slot.coverImageUrl);
+    expect(() =>
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [
+          {
+            ...slot,
+            coverImageUrl:
+              "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+          },
+        ],
+      }),
+    ).toThrow();
     expect(() =>
       publishMachinePlanogramVersionSchema.parse({
         planogramVersion: "PLAN-2026-06-04",
@@ -2802,6 +2814,26 @@ describe("shared API contract", () => {
       });
       expect(result.paymentProviderCode).toBe("wechat_pay");
       expect(result.paymentMethod).toBe("qr_code");
+    });
+
+    it("preserves the stable checkout idempotency key", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "qr_code",
+        paymentProviderCode: "alipay",
+        idempotencyKey: "checkout:attempt-001",
+      });
+
+      expect(result.idempotencyKey).toBe("checkout:attempt-001");
     });
 
     it("accepts mock without paymentProviderCode", () => {

@@ -63,7 +63,7 @@ function includesAny(value: string, keywords: readonly string[]): boolean {
   return keywords.some((keyword) => value.includes(normalizeText(keyword)));
 }
 
-export function topCategoryForItem(
+function matchingTopCategory(
   item: Pick<MachineCatalogItem, "categoryName" | "productName">,
 ): CatalogTopCategory | null {
   const categoryName = normalizeText(item.categoryName);
@@ -75,6 +75,18 @@ export function topCategoryForItem(
         includesAny(productName, category.productKeywords),
     ) ?? null
   );
+}
+
+export function usesFallbackTopCategory(
+  item: Pick<MachineCatalogItem, "categoryName" | "productName">,
+): boolean {
+  return matchingTopCategory(item) === null;
+}
+
+export function topCategoryForItem(
+  item: Pick<MachineCatalogItem, "categoryName" | "productName">,
+): CatalogTopCategory | null {
+  return matchingTopCategory(item);
 }
 
 export function groupItemsByTopCategory(

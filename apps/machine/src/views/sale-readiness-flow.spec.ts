@@ -596,6 +596,20 @@ function bringUpSnapshot(
       attestStock: false,
       startSales: state === "sell_ready",
     },
+    currentTask:
+      state === "claim_required"
+        ? {
+            contractVersion: 1,
+            kind: "claim_machine",
+            intent: "claim_machine",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "claim_code",
+              rotateMaintenanceIdentity: false,
+            },
+          }
+        : null,
+    progress: [],
     updatedAt: "2026-07-04T00:00:00Z",
   };
 }
@@ -777,6 +791,29 @@ describe("sale readiness UI flow", () => {
     expect(host.textContent).toContain("daemon 不可用，进入维护页");
     expect(host.textContent).not.toContain("ZodError");
     expect(host.textContent).not.toContain("Invalid enum value");
+  });
+
+  it("does not let delayed boot reads navigate after the boot component is gone", async () => {
+    const pendingHealth: {
+      resolve: ((value: ReturnType<typeof healthSnapshot>) => void) | null;
+    } = { resolve: null };
+    getHealthMock.mockReturnValue(
+      new Promise<ReturnType<typeof healthSnapshot>>((resolve) => {
+        pendingHealth.resolve = resolve;
+      }),
+    );
+
+    await mountView(BootView);
+    await vi.waitFor(() => {
+      expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
+    });
+    mountedApp?.unmount();
+    mountedApp = null;
+    pendingHealth.resolve?.(healthSnapshot());
+    await nextTick();
+    await nextTick();
+
+    expect(routerReplaceMock).not.toHaveBeenCalled();
   });
 
   it("loads sale readiness during boot so a ready catalog can enter purchase", async () => {
@@ -966,6 +1003,120 @@ describe("sale readiness UI flow", () => {
     expect(routerPushMock).not.toHaveBeenCalled();
   });
 
+  it("keeps three sold-out category cards fixed and uses the single notice surface", async () => {
+    const soldOut = (categoryName: string, productId: string) => ({
+      ...makeCatalogItem(),
+      productId,
+      categoryName,
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out" as const,
+    });
+    useCatalogStore().applySnapshot({
+      items: [
+        soldOut("袜子", "550e8400-e29b-41d4-a716-446655440041"),
+        soldOut("内裤", "550e8400-e29b-41d4-a716-446655440042"),
+        soldOut("T恤", "550e8400-e29b-41d4-a716-446655440043"),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    useConnectivityStore().applyHealth(healthSnapshot());
+    useConnectivityStore().applyReady(readySnapshot());
+    useConnectivityStore().applySaleReadiness(saleReadiness(true));
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+
+    const host = await mountView(CatalogView);
+
+    expect(host.querySelectorAll(".home-category-card")).toHaveLength(3);
+    expect(
+      Array.from(
+        host.querySelectorAll<HTMLButtonElement>(".home-category-card"),
+      ).every((card) => card.disabled),
+    ).toBe(true);
+    expect(host.textContent).toContain("暂无可售商品");
+    expect(host.querySelectorAll(".catalog-notification")).toHaveLength(1);
+    expect(host.querySelector(".home-empty-message")).toBeNull();
+  });
+
+  it("keeps the catalog saleable when one managed product image fails", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      coverImageUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+
+    const host = await mountView(CatalogView);
+    requireButtonByText(host, "T恤").click();
+    await nextTick();
+
+    const productImage = requireElement<HTMLImageElement>(
+      host,
+      ".product-image-panel img",
+    );
+    productImage.dispatchEvent(new Event("error"));
+    await nextTick();
+
+    expect(productImage.getAttribute("src")).toContain("icon-tshirt");
+    expect(host.textContent).toContain("基础短袖");
+    expect(useCatalogStore().mediaDiagnostics).toEqual([
+      expect.objectContaining({
+        reference: item.coverImageUrl,
+        message: "managed media failed to load",
+      }),
+    ]);
+  });
+
+  it("keeps one media diagnostic through invalid-client normalization and the catalog placeholder", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      coverImageUrl: null,
+    };
+    const locationKey = `media:${item.slotId}:coverImageUrl`;
+    const invalidReference = "https://forged.example/product.png";
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+      mediaDiagnostics: [
+        {
+          reference: invalidReference,
+          diagnosticKey: `${locationKey}:invalid:${invalidReference}`,
+          message:
+            "daemon sale view contained an invalid coverImageUrl managed media reference",
+        },
+      ],
+    });
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+
+    const host = await mountView(CatalogView);
+    requireButtonByText(host, "T恤").click();
+    await nextTick();
+
+    expect(useCatalogStore().mediaDiagnostics).toEqual([
+      expect.objectContaining({
+        diagnosticKey: `${locationKey}:invalid:${invalidReference}`,
+        reference: invalidReference,
+      }),
+    ]);
+    expect(host.querySelector(".product-image-fallback")).toBeTruthy();
+  });
+
   it("opens catalog product detail without selecting a checkout item", async () => {
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({
@@ -999,7 +1150,7 @@ describe("sale readiness UI flow", () => {
     expect(useCheckoutStore().customerCheckoutView.stage).toBe("none");
   });
 
-  it("leaves the catalog when readiness refresh requires maintenance", async () => {
+  it("keeps the fixed catalog home through repeated readiness changes", async () => {
     vi.useFakeTimers();
     const item = makeCatalogItem();
     const blockedHealth = {
@@ -1042,8 +1193,41 @@ describe("sale readiness UI flow", () => {
     await mountView(CatalogView);
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+      expect(getReadyMock).toHaveBeenCalled();
     });
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(document.querySelectorAll(".home-category-card")).toHaveLength(3);
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        eventId: "presence-before-refresh",
+        detectedAt: "2026-07-14T00:00:00.000Z",
+        profile: {
+          personPresent: true,
+          heightCm: 170,
+          shoulderWidthCm: 42,
+          ageRange: "adult",
+          gender: "unknown",
+          bodyType: "regular",
+          upperColor: "black",
+          confidence: 0.9,
+        },
+        quality: { overall: "good", warnings: [] },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+    expect(document.querySelector(".presence-present")).toBeTruthy();
+
+    getReadyMock.mockResolvedValue(readySnapshot());
+    await vi.advanceTimersByTimeAsync(5_000);
+    getReadyMock.mockResolvedValue(blockedReady);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(document.querySelectorAll(".home-category-card")).toHaveLength(3);
+    expect(document.querySelector(".presence-present")).toBeTruthy();
   });
 
   it("keeps vision recognition details silent in the catalog", async () => {
@@ -1360,8 +1544,55 @@ describe("sale readiness UI flow", () => {
     const silhouette = host.querySelector<HTMLImageElement>(
       '[data-test="try-on-silhouette"]',
     );
-    expect(silhouette?.getAttribute("src")).toBe(tryOnSilhouetteUrl);
+    expect(silhouette?.getAttribute("src")).toBe(
+      `http://localhost:3000${tryOnSilhouetteUrl}`,
+    );
     expect(silhouette?.className).toContain("try-on-silhouette-fixed");
+  });
+
+  it("uses a local placeholder and operator diagnostic when the try-on silhouette cannot decode", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyVisionTryOnConfig();
+    mockTryOnSession();
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = item.variantId;
+
+    const host = await mountView(VirtualTryOnView);
+    const silhouette = requireElement<HTMLImageElement>(
+      host,
+      '[data-test="try-on-silhouette"]',
+    );
+    silhouette.dispatchEvent(new Event("error"));
+    await nextTick();
+
+    expect(host.querySelector('[data-test="try-on-silhouette"]')).toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-silhouette-placeholder"]'),
+    ).toBeTruthy();
+    expect(useCatalogStore().operatorDiagnostics).toEqual([
+      expect.objectContaining({
+        kind: "media",
+        reference: item.tryOnSilhouetteUrl,
+        diagnosticKey: `media:${item.slotId}:tryOnSilhouetteUrl:managed:${item.tryOnSilhouetteUrl}`,
+        message: "managed try-on silhouette failed to load",
+      }),
+    ]);
+    expect(useCatalogStore().mediaDiagnostics).toEqual([
+      expect.objectContaining({
+        reference: item.tryOnSilhouetteUrl,
+        diagnosticKey: `media:${item.slotId}:tryOnSilhouetteUrl:managed:${item.tryOnSilhouetteUrl}`,
+      }),
+    ]);
   });
 
   it("keeps try-on preview local without capture, upload, storage, or diagnostic logging", async () => {
@@ -1638,6 +1869,7 @@ describe("sale readiness UI flow", () => {
       paymentMethod: "mock",
       paymentProviderCode: "mock",
       profileSnapshot: null,
+      idempotencyKey: expect.stringMatching(/^checkout:/),
     });
     expect(JSON.stringify(createOrderMock.mock.calls)).not.toMatch(
       /frame|image|raw|canvas|dataUrl|blob|base64|diagnostic|vision/i,
@@ -1729,6 +1961,7 @@ describe("sale readiness UI flow", () => {
       paymentMethod: "mock",
       paymentProviderCode: "mock",
       profileSnapshot: null,
+      idempotencyKey: expect.stringMatching(/^checkout:/),
     });
     expect(JSON.stringify(createOrderMock.mock.calls)).not.toMatch(
       /frame|image|raw|canvas|dataUrl|blob|base64|diagnostic|vision/i,

@@ -4,6 +4,9 @@ use reqwest::StatusCode;
 use support::{process::DaemonHarness, sensitive, sqlite};
 use tokio_tungstenite::connect_async;
 
+const TEST_MAINTENANCE_PIN: &str = "2468";
+const TEST_MAINTENANCE_PIN_VERIFIER: &str = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
+
 fn configured_daemon() -> serde_json::Value {
     serde_json::json!({
         "machineCode": "MACHINE-IPC",
@@ -23,11 +26,80 @@ fn configured_daemon() -> serde_json::Value {
     })
 }
 
+async fn execute_network_task(
+    daemon: &DaemonHarness,
+    base: &str,
+    maintenance_session: &str,
+    ssid: &str,
+    password: &str,
+    hidden: bool,
+) -> reqwest::Response {
+    let task = daemon.get_json("/v1/bring-up").await;
+    reqwest::Client::new()
+        .post(format!("{base}/v1/bring-up/tasks/execute"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", maintenance_session)
+        .json(&serde_json::json!({
+            "contractVersion": task["currentTask"]["contractVersion"],
+            "taskId": task["currentTask"]["taskId"],
+            "taskVersion": task["currentTask"]["taskVersion"],
+            "kind": task["currentTask"]["kind"],
+            "intent": task["currentTask"]["intent"],
+            "mutation": {
+                "type": "configure_network",
+                "ssid": ssid,
+                "password": password,
+                "hidden": hidden
+            }
+        }))
+        .send()
+        .await
+        .expect("network settings response")
+}
+
+async fn start_network_daemon(
+    public_config: serde_json::Value,
+    extra_env: &[(&str, &str)],
+) -> DaemonHarness {
+    DaemonHarness::start(
+        public_config,
+        &[("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER)],
+        extra_env,
+    )
+    .await
+    .expect("start")
+}
+
+async fn execute_existing_network_probe_task(
+    daemon: &DaemonHarness,
+    base: &str,
+) -> reqwest::Response {
+    let task = daemon.get_json("/v1/bring-up").await;
+    reqwest::Client::new()
+        .post(format!("{base}/v1/bring-up/tasks/execute"))
+        .header("Authorization", daemon.bearer())
+        .json(&serde_json::json!({
+            "contractVersion": task["currentTask"]["contractVersion"],
+            "taskId": task["currentTask"]["taskId"],
+            "taskVersion": task["currentTask"]["taskVersion"],
+            "kind": task["currentTask"]["kind"],
+            "intent": task["currentTask"]["intent"],
+            "mutation": { "type": "probe_network" }
+        }))
+        .send()
+        .await
+        .expect("existing network probe response")
+}
+
 #[tokio::test]
 async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
-    let mut daemon = DaemonHarness::start(configured_daemon(), &[])
-        .await
-        .expect("start");
+    let mut daemon = DaemonHarness::start(
+        configured_daemon(),
+        &[("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER)],
+        &[],
+    )
+    .await
+    .expect("start");
     let base = daemon
         .ready
         .healthz_url
@@ -42,12 +114,22 @@ async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
         .expect("no token response");
     assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
 
+    let legacy_config = client
+        .get(format!("{base}/v1/config"))
+        .bearer_auth(&daemon.ready.ipc_token)
+        .send()
+        .await
+        .expect("legacy config response");
+    assert_eq!(
+        legacy_config.status(),
+        StatusCode::FORBIDDEN,
+        "Factory/Testbed bootstrap must not be bypassed through ordinary IPC config"
+    );
+
     for path in [
-        "/v1/config",
         "/v1/config/summary",
         "/v1/transactions/current",
         "/v1/sync/status",
-        "/v1/scanner/status",
         "/v1/vision/status",
         "/v1/remote-ops/status",
     ] {
@@ -78,7 +160,27 @@ async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
         .and_then(|value| value.as_array())
         .is_some());
 
-    let scanner = daemon.get_json("/v1/scanner/status").await;
+    let scanner_without_session = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .send()
+        .await
+        .expect("scanner status without maintenance session");
+    assert_eq!(scanner_without_session.status(), StatusCode::FORBIDDEN);
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
+    let scanner = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", maintenance_session)
+        .send()
+        .await
+        .expect("scanner status with maintenance session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("scanner status JSON");
     let scanner_contract: daemon_ipc_contracts::ScannerRuntimeStatus =
         serde_json::from_value(scanner.clone()).expect("scanner status matches contract crate");
     assert!(scanner.get("port").is_some());
@@ -109,7 +211,7 @@ async fn bring_up_snapshot_exposes_safe_network_required_state() {
     let mut config = configured_daemon();
     config["machineCode"] = serde_json::Value::Null;
     config["apiBaseUrl"] = serde_json::Value::String(String::new());
-    let mut daemon = DaemonHarness::start(config, &[]).await.expect("start");
+    let mut daemon = DaemonHarness::start(config, &[], &[]).await.expect("start");
 
     let snapshot = daemon.get_json("/v1/bring-up").await;
 
@@ -139,13 +241,12 @@ async fn bring_up_snapshot_exposes_safe_network_required_state() {
 }
 
 #[tokio::test]
-async fn protected_network_settings_connects_password_wifi_without_persisting_secret() {
-    let wifi_password = ["correct", "horse", "battery", "staple"].join(" ");
+async fn preclaim_endpoint_configuration_requires_daemon_probe_before_claim_cursor() {
     let mut config = configured_daemon();
     config["machineCode"] = serde_json::Value::Null;
-    config["apiBaseUrl"] = serde_json::Value::String(String::new());
     let mut daemon = DaemonHarness::start(
         config,
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
@@ -153,52 +254,128 @@ async fn protected_network_settings_connects_password_wifi_without_persisting_se
     )
     .await
     .expect("start");
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+
+    let before = daemon.get_json("/v1/bring-up").await;
+    assert_eq!(before["state"], "network_required");
+    assert_eq!(before["currentTask"]["kind"], "configure_network");
+    assert_eq!(before["currentTask"]["intent"], "refresh_network");
+
+    let response = execute_existing_network_probe_task(&daemon, base).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let probe: serde_json::Value = response.json().await.expect("probe json");
+    assert_eq!(probe["status"], "connected");
+    assert!(probe["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .any(|item| item["evidence"]["source"] == "platform_api"
+            && item["evidence"]["status"] == "ready"
+            && item["code"] == "PRECLAIM_PLATFORM_API_REACHABLE"));
+
+    let after = daemon.get_json("/v1/bring-up").await;
+    assert_eq!(after["state"], "claim_required");
+    assert_eq!(after["currentTask"]["kind"], "claim_machine");
+    daemon.terminate().await;
+}
+
+#[tokio::test]
+async fn preclaim_platform_success_cannot_claim_through_a_failed_physical_local_path() {
+    let mut config = configured_daemon();
+    config["machineCode"] = serde_json::Value::Null;
+    let mut daemon = DaemonHarness::start(
+        config,
+        &[],
+        &[
+            ("VEM_NETWORK_ADAPTER", "fake"),
+            ("VEM_FAKE_NETWORK_OUTCOME", "platform_success_local_failure"),
+        ],
+    )
+    .await
+    .expect("start");
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+
+    let response = execute_existing_network_probe_task(&daemon, base).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let probe: serde_json::Value = response.json().await.expect("probe json");
+    assert_eq!(probe["status"], "failed");
+    assert!(probe["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .any(|item| item["evidence"]["source"] == "local_adapter"
+            && item["evidence"]["status"] == "failed"));
+    assert!(probe["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .any(|item| item["evidence"]["source"] == "platform_api"
+            && item["evidence"]["status"] == "ready"));
+
+    let after = daemon.get_json("/v1/bring-up").await;
+    assert_eq!(after["state"], "network_required");
+    assert_eq!(after["allowedActions"]["claimMachine"], false);
+    daemon.terminate().await;
+}
+
+#[tokio::test]
+async fn protected_network_settings_connects_password_wifi_without_persisting_secret() {
+    let wifi_password = ["correct", "horse", "battery", "staple"].join(" ");
+    let mut config = configured_daemon();
+    config["machineCode"] = serde_json::Value::Null;
+    config["apiBaseUrl"] = serde_json::Value::String(String::new());
+    let mut daemon = start_network_daemon(
+        config,
+        &[
+            ("VEM_NETWORK_ADAPTER", "fake"),
+            ("VEM_FAKE_NETWORK_OUTCOME", "success"),
+        ],
+    )
+    .await;
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Lab",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(
+        &daemon,
+        base,
+        &maintenance_session,
+        "VEM-Lab",
+        &wifi_password,
+        false,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let result: serde_json::Value = response.json().await.expect("network json");
 
     assert_eq!(result["status"], "connected");
     assert_eq!(result["ssid"], "VEM-Lab");
     assert_eq!(result["hidden"], false);
+    for source in ["local_adapter", "local_address", "local_default_route"] {
+        assert!(
+            result["diagnostics"]
+                .as_array()
+                .expect("diagnostics")
+                .iter()
+                .any(|item| item["evidence"]["source"] == source
+                    && item["evidence"]["status"] == "ready"),
+            "{source} must be independently ready after Wi-Fi setup"
+        );
+    }
     assert!(result["diagnostics"]
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["component"] == "local_network"
-            && item["code"] == "LOCAL_NETWORK_CONNECTED"));
+        .any(|item| item["evidence"]["source"] == "platform_api"
+            && item["evidence"]["status"] == "pending"));
     assert!(result["diagnostics"]
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["component"] == "dhcp_ip" && item["code"] == "DHCP_IP_READY"));
-    assert!(result["diagnostics"]
-        .as_array()
-        .expect("diagnostics")
-        .iter()
-        .any(|item| item["component"] == "dns" && item["code"] == "DNS_READY"));
-    assert!(result["diagnostics"]
-        .as_array()
-        .expect("diagnostics")
-        .iter()
-        .any(|item| item["component"] == "provisioning_endpoint"
-            && item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
-    assert!(result["diagnostics"]
-        .as_array()
-        .expect("diagnostics")
-        .iter()
-        .any(|item| item["component"] == "mqtt" && item["code"] == "MQTT_REACHABLE"));
+        .any(|item| item["evidence"]["source"] == "mqtt_broker"
+            && item["evidence"]["status"] == "not_configured"));
     assert!(!result.to_string().contains(&wifi_password));
 
     let bring_up = daemon.get_json("/v1/bring-up").await;
@@ -207,7 +384,7 @@ async fn protected_network_settings_connects_password_wifi_without_persisting_se
         .expect("bring-up diagnostics")
         .iter()
         .any(|item| item["component"] == "provisioning_endpoint"
-            && item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+            && item["code"] == "PLATFORM_API_PENDING"));
 
     let logs = sensitive::read_text_files_under(&daemon.data_dir).await;
     assert!(
@@ -224,15 +401,18 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
     let mut config = configured_daemon();
     config["machineCode"] = serde_json::Value::Null;
     config["apiBaseUrl"] = serde_json::Value::String(String::new());
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = start_network_daemon(
         config,
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
         ],
     )
-    .await
-    .expect("start");
+    .await;
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
 
     let before = daemon.get_json("/v1/bring-up").await;
     assert_eq!(before["state"], "network_required");
@@ -241,17 +421,15 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
     assert_eq!(before["allowedActions"]["claimMachine"], false);
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Field-WPA2",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(
+        &daemon,
+        base,
+        &maintenance_session,
+        "VEM-Field-WPA2",
+        &wifi_password,
+        false,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let summary = daemon.get_json("/v1/config/summary").await;
@@ -290,7 +468,7 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
         .expect("bring-up diagnostics")
         .iter()
         .any(|item| item["component"] == "provisioning_endpoint"
-            && item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+            && item["code"] == "PLATFORM_API_PENDING"));
     assert_eq!(after["allowedActions"]["startSales"], false);
 
     let root = daemon.data_dir.parent().expect("runtime root");
@@ -304,9 +482,38 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
             .await
             .expect("profile cache exists check")
     );
-    assert!(!tokio::fs::try_exists(root.join("secrets"))
+    assert!(
+        !tokio::fs::try_exists(daemon.data_dir.join("secrets"))
+            .await
+            .expect("legacy plaintext secrets exists check"),
+        "network bootstrap must not recreate the legacy plaintext secret store"
+    );
+    let protected_secret_dir = root.join("secrets");
+    let mut protected_secret_entries = std::fs::read_dir(&protected_secret_dir)
+        .expect("read protected secret store")
+        .map(|entry| {
+            entry
+                .expect("protected secret entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    protected_secret_entries.sort();
+    assert_eq!(
+        protected_secret_entries,
+        ["machine_maintenance_pin.dpapi"],
+        "network bootstrap must not persist submitted credentials as machine secrets"
+    );
+    let protected_pin = tokio::fs::read(protected_secret_dir.join("machine_maintenance_pin.dpapi"))
         .await
-        .expect("secrets exists check"));
+        .expect("read protected maintenance verifier");
+    assert!(
+        !protected_pin
+            .windows(wifi_password.len())
+            .any(|window| window == wifi_password.as_bytes()),
+        "protected secret store leaked submitted Wi-Fi password"
+    );
 
     let pool = sqlite::open_readonly(&daemon.state_db_path()).await;
     assert_eq!(
@@ -347,15 +554,18 @@ async fn network_bootstrap_moves_unclaimed_runtime_from_offline_to_claim_ready()
     config["machineCode"] = serde_json::Value::Null;
     config["apiBaseUrl"] =
         serde_json::Value::String("https://provisioning.example.test/api".to_string());
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = start_network_daemon(
         config,
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
         ],
     )
-    .await
-    .expect("start");
+    .await;
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
 
     let before = daemon.get_json("/v1/bring-up").await;
     assert_eq!(before["state"], "network_required");
@@ -364,18 +574,36 @@ async fn network_bootstrap_moves_unclaimed_runtime_from_offline_to_claim_ready()
     assert_eq!(before["allowedActions"]["claimMachine"], false);
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Field-WPA2",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(
+        &daemon,
+        base,
+        &maintenance_session,
+        "VEM-Field-WPA2",
+        &wifi_password,
+        false,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
+
+    let probe_response = execute_existing_network_probe_task(&daemon, base).await;
+    assert_eq!(probe_response.status(), StatusCode::OK);
+    let probe: serde_json::Value = probe_response.json().await.expect("probe json");
+    for source in [
+        "local_adapter",
+        "local_address",
+        "local_default_route",
+        "platform_api",
+    ] {
+        assert!(
+            probe["diagnostics"]
+                .as_array()
+                .expect("probe diagnostics")
+                .iter()
+                .any(|item| item["evidence"]["source"] == source
+                    && item["evidence"]["status"] == "ready"),
+            "{source} must be ready before the claim cursor advances"
+        );
+    }
 
     let after = daemon.get_json("/v1/bring-up").await;
     assert_eq!(after["state"], "claim_required");
@@ -394,7 +622,7 @@ async fn network_bootstrap_moves_unclaimed_runtime_from_offline_to_claim_ready()
         .expect("diagnostics")
         .iter()
         .any(|item| item["component"] == "provisioning_endpoint"
-            && item["code"] == "PROVISIONING_ENDPOINT_REACHABLE"));
+            && item["code"] == "PRECLAIM_PLATFORM_API_REACHABLE"));
     assert!(!after.to_string().contains(&wifi_password));
 
     daemon.terminate().await;
@@ -407,28 +635,29 @@ async fn network_bootstrap_connected_pending_persists_without_claim_ready() {
     config["machineCode"] = serde_json::Value::Null;
     config["apiBaseUrl"] =
         serde_json::Value::String("https://provisioning.example.test/api".to_string());
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = start_network_daemon(
         config,
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "pending_success"),
         ],
     )
-    .await
-    .expect("start");
+    .await;
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Field-WPA2",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(
+        &daemon,
+        base,
+        &maintenance_session,
+        "VEM-Field-WPA2",
+        &wifi_password,
+        false,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let result: serde_json::Value = response.json().await.expect("network json");
     assert_eq!(result["status"], "connected");
@@ -464,28 +693,29 @@ async fn network_bootstrap_connected_pending_persists_without_claim_ready() {
 #[tokio::test]
 async fn protected_network_settings_does_not_report_reachability_until_diagnostics_pass() {
     let wifi_password = ["diagnostics", "network", "pass"].join("-");
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = start_network_daemon(
         configured_daemon(),
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "associated_only"),
         ],
     )
-    .await
-    .expect("start");
+    .await;
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Lab",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(
+        &daemon,
+        base,
+        &maintenance_session,
+        "VEM-Lab",
+        &wifi_password,
+        false,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let result: serde_json::Value = response.json().await.expect("network json");
 
@@ -509,7 +739,10 @@ async fn protected_network_settings_does_not_report_reachability_until_diagnosti
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["component"] == "dhcp_ip" && item["code"] == "DHCP_IP_PENDING"));
+        .any(|item| item["component"] == "local_address"
+            && item["evidence"]["source"] == "local_address"
+            && item["evidence"]["status"] == "pending"
+            && item["code"] == "DHCP_IP_PENDING"));
     assert!(!result.to_string().contains(&wifi_password));
 
     let bring_up = daemon.get_json("/v1/bring-up").await;
@@ -526,28 +759,29 @@ async fn protected_network_settings_does_not_report_reachability_until_diagnosti
 #[tokio::test]
 async fn protected_network_settings_reports_invalid_password_without_echoing_secret() {
     let wifi_password = ["wrong", "network", "credential"].join("-");
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = start_network_daemon(
         configured_daemon(),
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "invalid_password"),
         ],
     )
-    .await
-    .expect("start");
+    .await;
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "VEM-Lab",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(
+        &daemon,
+        base,
+        &maintenance_session,
+        "VEM-Lab",
+        &wifi_password,
+        false,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let result: serde_json::Value = response.json().await.expect("network json");
 
@@ -580,28 +814,29 @@ async fn protected_network_settings_reports_invalid_password_without_echoing_sec
 #[tokio::test]
 async fn protected_network_settings_accepts_hidden_ssid_manual_entry() {
     let wifi_password = ["hidden", "network", "credential"].join("-");
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = start_network_daemon(
         configured_daemon(),
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
         ],
     )
-    .await
-    .expect("start");
+    .await;
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "Hidden-VEM-Lab",
-            "password": wifi_password,
-            "hidden": true
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(
+        &daemon,
+        base,
+        &maintenance_session,
+        "Hidden-VEM-Lab",
+        &wifi_password,
+        true,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let result: serde_json::Value = response.json().await.expect("network json");
 
@@ -612,8 +847,9 @@ async fn protected_network_settings_accepts_hidden_ssid_manual_entry() {
         .as_array()
         .expect("diagnostics")
         .iter()
-        .any(|item| item["component"] == "local_network"
-            && item["code"] == "LOCAL_NETWORK_CONNECTED"));
+        .any(|item| item["evidence"]["source"] == "local_adapter"
+            && item["evidence"]["status"] == "ready"
+            && item["code"] == "LOCAL_ADAPTER_READY"));
 
     daemon.terminate().await;
 }
@@ -621,28 +857,29 @@ async fn protected_network_settings_accepts_hidden_ssid_manual_entry() {
 #[tokio::test]
 async fn protected_network_settings_rejects_captive_portal_with_operator_guidance() {
     let wifi_password = ["guest", "network", "credential"].join("-");
-    let mut daemon = DaemonHarness::start(
+    let mut daemon = start_network_daemon(
         configured_daemon(),
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "captive_portal"),
         ],
     )
-    .await
-    .expect("start");
+    .await;
+
+    let maintenance_session = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
 
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    let response = reqwest::Client::new()
-        .post(format!("{base}/v1/network/settings"))
-        .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({
-            "ssid": "Venue-Guest",
-            "password": wifi_password,
-            "hidden": false
-        }))
-        .send()
-        .await
-        .expect("network settings response");
+    let response = execute_network_task(
+        &daemon,
+        base,
+        &maintenance_session,
+        "Venue-Guest",
+        &wifi_password,
+        false,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let result: serde_json::Value = response.json().await.expect("network json");
 

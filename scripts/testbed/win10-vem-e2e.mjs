@@ -208,6 +208,9 @@ const FACTORY_SUPPORT_SCRIPT_NAMES = [
   "apply-managed-update.ps1",
   "provision-vision-factory-release.ps1",
   "install-vision-release.ps1",
+  "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1",
+  "test-wireguard-localsystem-acceptance.ps1",
 ];
 
 const PLATFORM_TARGETS = {
@@ -1036,7 +1039,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "Machine Provisioning must complete before runtime-ready can pass.",
     );
   }
-  if (facts.provisioning?.usedDaemonIpcClaimPath !== true) {
+  if (facts.provisioning?.usedDaemonIpcTaskExecute !== true) {
     addDiagnostic(
       diagnostics,
       "machine_provisioning_bypassed_daemon_ipc",
@@ -1384,17 +1387,17 @@ export function buildReadyFileEvidence(readyFile) {
 
 export function buildProvisioningFacts({ configSnapshot, actions = [] } = {}) {
   const actionList = Array.isArray(actions) ? actions : [];
-  const usedDaemonIpcClaimPath = actionList.some((action) => {
+  const usedDaemonIpcTaskExecute = actionList.some((action) => {
     const evidence = action?.evidence ?? {};
     return (
-      evidence.usedDaemonIpcClaimPath === true &&
-      String(evidence.endpoint ?? "").endsWith("/v1/provisioning/claim") &&
+      evidence.usedDaemonIpcTaskExecute === true &&
+      String(evidence.endpoint ?? "").endsWith("/v1/bring-up/tasks/execute") &&
       ["provisioned", "failed"].includes(String(evidence.claimStatus ?? ""))
     );
   });
   return {
     provisioned: configSnapshot?.provisioned === true,
-    usedDaemonIpcClaimPath,
+    usedDaemonIpcTaskExecute,
     machineCode: configSnapshot?.public?.machineCode ?? null,
     machineSecretConfigured: configSnapshot?.machineSecretConfigured === true,
     mqttSigningSecretConfigured:
@@ -2366,6 +2369,25 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
   const runId = normalizeEphemeralRunId(options.runId);
   const cleanBaseSource = requireCleanBaseSource(options.cleanBaseSource);
   const cleanBaseSnapshot = String(options.cleanBaseSnapshot ?? "").trim();
+  const factoryProfile = String(options.factoryProfile ?? "").trim();
+  const visionInputs =
+    factoryProfile === "production"
+      ? {
+          factoryMediaRoot: String(options.factoryMediaRoot ?? "").trim(),
+          visionConfigurationSourcePath: String(
+            options.visionConfigurationSourcePath ?? "",
+          ).trim(),
+        }
+      : null;
+  if (
+    visionInputs &&
+    (!visionInputs.factoryMediaRoot ||
+      !visionInputs.visionConfigurationSourcePath)
+  ) {
+    throw new Error(
+      "production clean-base factory acceptance requires --factory-media-root and --vision-configuration-source-path",
+    );
+  }
   const artifacts = resolveAcceptanceArtifactHashes(
     options,
     "clean-base factory acceptance",
@@ -2383,6 +2405,7 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
       source: cleanBaseSource,
       snapshot: cleanBaseSnapshot || null,
       mustNotReuseDirtyHost: true,
+      ...(visionInputs ? { visionInputs } : {}),
       factoryWindowsBaselinePolicy: structuredClone(
         FACTORY_WINDOWS_BASELINE_POLICY,
       ),
@@ -3857,6 +3880,11 @@ export function buildRemotePowerShellScript(options = {}) {
   const expectedMachineUiArtifactSha256 = options.machineUiArtifactSha256 ?? "";
   const cleanBaseSource = cleanBasePlan?.cleanBase.source ?? "";
   const cleanBaseFactoryProfile = String(options.factoryProfile ?? "");
+  const cleanBaseEnvironmentName = `vps-fresh-${cleanBaseFactoryProfile}-clean-base`;
+  const cleanBaseFactoryMediaRoot = String(options.factoryMediaRoot ?? "");
+  const cleanBaseVisionConfigurationSourcePath = String(
+    options.visionConfigurationSourcePath ?? "",
+  );
   const cleanBaseMaintenanceUser =
     cleanBaseFactoryProfile === "production" ? "Admin" : "YKDZ";
   const cleanBaseHardwareMode =
@@ -4198,36 +4226,28 @@ function Assert-FirstClaimConfig($Config) {
   }
 }
 
-function New-PreClaimPublicConfig($Public) {
-  return [ordered]@{
-    machineCode = $null
-    machineId = $null
-    machineName = $null
-    machineStatus = $null
-    machineLocationLabel = $null
-    apiBaseUrl = ${psString(platform.apiBaseUrl)}
-    mqttUrl = ${psString(platform.mqttUrl)}
-    mqttUsername = $null
-    mqttClientId = $null
-    hardwareAdapter = $Public.hardwareAdapter
-    serialPortPath = $Public.serialPortPath
-    lowerControllerUsbIdentity = $Public.lowerControllerUsbIdentity
-    scannerAdapter = $Public.scannerAdapter
-    scannerSerialPortPath = $Public.scannerSerialPortPath
-    scannerUsbIdentity = $Public.scannerUsbIdentity
-    scannerBaudRate = $Public.scannerBaudRate
-    scannerFrameSuffix = $Public.scannerFrameSuffix
-    visionEnabled = $Public.visionEnabled
-    visionWsUrl = $Public.visionWsUrl
-    visionRequestTimeoutMs = $Public.visionRequestTimeoutMs
-    machineAudioVolume = $Public.machineAudioVolume
-    audioCueSettings = $Public.audioCueSettings
-    kioskMode = $Public.kioskMode
-    stockMovementRetentionDays = $Public.stockMovementRetentionDays
-    runtimeEndpoints = $null
-    hardwareProfile = $null
-    paymentCapability = $null
-    provisioningMetadata = $null
+function Get-ConfigSnapshotFromRuntimeSummary($Summary) {
+  if ($null -eq $Summary -or $null -eq $Summary.effectivePublic -or $null -eq $Summary.configuredState) {
+    throw "daemon runtime configuration summary is incomplete"
+  }
+  $state = $Summary.configuredState
+  $public = $Summary.effectivePublic
+  $issues = [System.Collections.Generic.List[string]]::new()
+  if (-not [bool]$state.provisioningProfileCache) { $issues.Add("provisioning_profile_cache_missing") }
+  if ([string]::IsNullOrWhiteSpace([string]$public.machineCode)) { $issues.Add("machine_code_missing") }
+  if (-not [bool]$state.machineSecretConfigured) { $issues.Add("machine_secret_missing") }
+  if (-not [bool]$state.mqttSigningSecretConfigured) { $issues.Add("mqtt_signing_secret_missing") }
+  if ($null -ne $public.mqttUsername -and -not [bool]$state.mqttPasswordConfigured) { $issues.Add("mqtt_password_missing") }
+  if (-not [bool]$state.maintenancePinConfigured) { $issues.Add("maintenance_pin_not_configured") }
+  return [pscustomobject]@{
+    public = $public
+    machineSecretConfigured = [bool]$state.machineSecretConfigured
+    mqttSigningSecretConfigured = [bool]$state.mqttSigningSecretConfigured
+    mqttPasswordConfigured = [bool]$state.mqttPasswordConfigured
+    maintenancePinConfigured = [bool]$state.maintenancePinConfigured
+    provisioned = $issues.Count -eq 0
+    provisioningIssues = @($issues)
+    factoryManifestConfigured = [bool]$state.factoryManifest
   }
 }
 
@@ -4358,23 +4378,74 @@ function Wait-DaemonIpc(
   throw "daemon IPC did not become available after $MaxAttempts attempts: $lastError$serviceStartDiagnostic"
 }
 
-function Restart-DaemonIpcAfterProvisioning([string]$ReadyFilePath) {
-  try {
-    Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
-  } catch {
-    throw "Restart-Service VemVendingDaemon failed: $($_.Exception.Message)"
-  }
-
-  $currentIpc = Wait-DaemonIpc $ReadyFilePath
-  return [ordered]@{
-    ready = $currentIpc.ready
-    baseUrl = $currentIpc.baseUrl
-    headers = $currentIpc.headers
-    attempts = $currentIpc.attempts
-    observedHealth = [bool]$currentIpc.observedHealth
-    recovered = $true
-    recoveryEvidence = "scm_restart_completed_then_ipc_healthy"
-  }
+function Wait-DaemonIpcAfterProvisioning(
+  [string]$ReadyFilePath,
+  [long]$PreviousReadyGeneration,
+  [string]$ExpectedMachineCode,
+  $RecoveryEvidence,
+  [int]$TimeoutMilliseconds = 60000,
+  [int]$RetryDelayMilliseconds = 500
+) {
+  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+  $attempts = 0
+  $lastError = $null
+  $lastObservedGeneration = $PreviousReadyGeneration
+  $lastObservedMachineCode = $null
+  $RecoveryEvidence["previousReadyGeneration"] = $PreviousReadyGeneration
+  do {
+    $attempts += 1
+    $service = Get-Service -Name "VemVendingDaemon" -ErrorAction Stop
+    if ([string]$service.Status -ne "Running") {
+      throw "VemVendingDaemon left Running during post-claim reconfigure: $($service.Status)"
+    }
+    try {
+      $readyItem = Get-Item -LiteralPath $ReadyFilePath -ErrorAction Stop
+      $lastObservedGeneration = [long]$readyItem.LastWriteTimeUtc.Ticks
+      $RecoveryEvidence["observedReadyGeneration"] = $lastObservedGeneration
+      if ($lastObservedGeneration -le $PreviousReadyGeneration) {
+        throw "daemon ready generation has not advanced"
+      }
+      $RecoveryEvidence["runtimeReconfigureObserved"] = $true
+      $ready = Read-JsonFile $ReadyFilePath
+      if ([string]::IsNullOrWhiteSpace([string]$ready.ipcToken)) {
+        throw "ipcToken missing from daemon ready file"
+      }
+      $baseUrl = Get-IpcBaseUrl $ready
+      $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+      Invoke-IpcJson "GET" "$baseUrl/healthz" @{} -TimeoutSec 2 | Out-Null
+      $RecoveryEvidence["observedHealthAfterReconfigure"] = $true
+      $summary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers -TimeoutSec 2
+      $config = Get-ConfigSnapshotFromRuntimeSummary $summary
+      $lastObservedMachineCode = [string]$config.public.machineCode
+      $RecoveryEvidence["observedMachineCodeAfterReconfigure"] = $lastObservedMachineCode
+      $RecoveryEvidence["observedProvisionedAfterReconfigure"] = [bool]$config.provisioned
+      if (-not [bool]$config.provisioned) {
+        throw "daemon runtime config is not provisioned"
+      }
+      if ($lastObservedMachineCode -ne $ExpectedMachineCode) {
+        throw "daemon runtime machineCode is $lastObservedMachineCode"
+      }
+      $RecoveryEvidence["recoveredAfterReconfigure"] = $true
+      $RecoveryEvidence["recoveryAttempts"] = $attempts
+      $RecoveryEvidence["recoveryEvidence"] = "daemon_ready_generation_advanced_then_runtime_healthy"
+      return [ordered]@{
+        ready = $ready
+        baseUrl = $baseUrl
+        headers = $headers
+        attempts = $attempts
+        readyGeneration = $lastObservedGeneration
+        observedHealth = $true
+        recovered = $true
+        recoveryEvidence = "daemon_ready_generation_advanced_then_runtime_healthy"
+      }
+    } catch {
+      $lastError = $_.Exception.Message
+    }
+    if ([DateTime]::UtcNow -lt $deadline) {
+      Start-Sleep -Milliseconds $RetryDelayMilliseconds
+    }
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "daemon-owned post-claim reconfigure did not converge within $TimeoutMilliseconds ms; expected machineCode $ExpectedMachineCode; previous ready generation $PreviousReadyGeneration; last observed generation $lastObservedGeneration; last observed machineCode $lastObservedMachineCode; last error: $lastError"
 }
 
 function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
@@ -4410,7 +4481,8 @@ function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
     }
     $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
     try {
-      $evidence.config = Convert-ConfigSnapshotEvidence (Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers)
+      $summary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
+      $evidence.config = Convert-ConfigSnapshotEvidence (Get-ConfigSnapshotFromRuntimeSummary $summary)
     } catch {
       $failed = Get-FailedIpcEvidence $_
       $evidence.config.error = $failed.error
@@ -4423,17 +4495,17 @@ function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
 }
 
 function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
-  $usedClaimPath = $false
+  $usedTaskExecute = $false
   $claimEvidence = $null
   foreach ($action in @($ProvisioningActions)) {
     $actionEvidence = $action.evidence
     if (
       $null -ne $actionEvidence -and
-      [bool]$actionEvidence.usedDaemonIpcClaimPath -and
-      ([string]$actionEvidence.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -and
+      [bool]$actionEvidence.usedDaemonIpcTaskExecute -and
+      ([string]$actionEvidence.endpoint).EndsWith("/v1/bring-up/tasks/execute", [StringComparison]::OrdinalIgnoreCase) -and
       @("provisioned", "failed") -contains [string]$actionEvidence.claimStatus
     ) {
-      $usedClaimPath = $true
+      $usedTaskExecute = $true
       $claimEvidence = $actionEvidence
     }
   }
@@ -4441,7 +4513,7 @@ function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
 
   return [ordered]@{
     provisioned = [bool]$DaemonIpc.config.provisioned
-    usedDaemonIpcClaimPath = $usedClaimPath
+    usedDaemonIpcTaskExecute = $usedTaskExecute
     machineCode = $DaemonIpc.config.machineCode
     machineSecretConfigured = [bool]$DaemonIpc.config.machineSecretConfigured
     mqttSigningSecretConfigured = [bool]$DaemonIpc.config.mqttSigningSecretConfigured
@@ -4479,7 +4551,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
   $status = "succeeded"
   $message = $null
   $evidence = [ordered]@{
-    usedDaemonIpcClaimPath = $false
+    usedDaemonIpcTaskExecute = $false
     readyFile = ${psString(bringUpPlan.arguments.DaemonReadyFile)}
     endpoint = $null
     runId = ${psString(runId)}
@@ -4488,7 +4560,17 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     platformTarget = ${psString(platformTarget)}
     apiBaseUrl = ${psString(platform.apiBaseUrl)}
     mqttUrl = ${psString(platform.mqttUrl)}
-    preClaimConfigApplied = $false
+    preClaimFactoryConfigVerified = $false
+    networkProbe = [ordered]@{
+      endpoint = $null
+      status = "not_attempted"
+      httpStatus = $null
+    }
+    bootstrapMaintenanceSession = [ordered]@{
+      endpoint = $null
+      status = "not_attempted"
+      httpStatus = $null
+    }
     claimStatus = "not_attempted"
     claimFailureCode = $null
     claimHttpStatus = $null
@@ -4500,9 +4582,13 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     }
     claimResult = [ordered]@{
       restartRequested = $null
-      restartAttempted = $false
-      observedHealthAfterRestart = $null
-      recoveredAfterRestart = $null
+      runtimeReconfigureObserved = $false
+      previousReadyGeneration = $null
+      observedReadyGeneration = $null
+      observedHealthAfterReconfigure = $null
+      observedMachineCodeAfterReconfigure = $null
+      observedProvisionedAfterReconfigure = $null
+      recoveredAfterReconfigure = $null
       recoveryAttempts = $null
       recoveryEvidence = $null
       recoveryFailure = $null
@@ -4529,23 +4615,119 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $baseUrl = $daemonIpc.baseUrl
     $headers = $daemonIpc.headers
 
-    $configBefore = Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers
+    # Factory writes a random single-use capability readable only by the
+    # maintenance account. Exchange it for the daemon's ordinary in-memory
+    # session before any protected Bring-Up task; never use mutable config IPC.
+    $bootstrapCapabilityPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability"
+    if (-not (Test-Path -LiteralPath $bootstrapCapabilityPath -PathType Leaf)) {
+      throw "Factory bootstrap maintenance capability is missing"
+    }
+    $bootstrapCapability = [IO.File]::ReadAllText($bootstrapCapabilityPath, [Text.UTF8Encoding]::new($false)).Trim()
+    if ([string]::IsNullOrWhiteSpace($bootstrapCapability)) {
+      throw "Factory bootstrap maintenance capability is empty"
+    }
+    $bootstrapHeaders = @{}
+    foreach ($entry in $headers.GetEnumerator()) { $bootstrapHeaders[[string]$entry.Key] = [string]$entry.Value }
+    $bootstrapHeaders["x-vem-factory-bootstrap-capability"] = $bootstrapCapability
+    $evidence.bootstrapMaintenanceSession.endpoint = "$baseUrl/v1/factory/bootstrap/maintenance-session"
+    try {
+      $bootstrapSession = Invoke-IpcJson "POST" "$baseUrl/v1/factory/bootstrap/maintenance-session" $bootstrapHeaders
+      if ([string]::IsNullOrWhiteSpace([string]$bootstrapSession.sessionId)) {
+        throw "Factory bootstrap session response has no session id"
+      }
+      $headers["x-vem-maintenance-session"] = [string]$bootstrapSession.sessionId
+      $evidence.bootstrapMaintenanceSession.status = "issued"
+      $evidence.bootstrapMaintenanceSession.httpStatus = 201
+    } catch {
+      $bootstrapError = Get-HttpErrorInfo $_
+      $evidence.bootstrapMaintenanceSession.status = "failed"
+      $evidence.bootstrapMaintenanceSession.httpStatus = $bootstrapError.statusCode
+      throw "Factory bootstrap maintenance session failed"
+    } finally {
+      $bootstrapCapability = $null
+      $bootstrapHeaders.Remove("x-vem-factory-bootstrap-capability")
+    }
+
+    $configBefore = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers)
     $public = $configBefore.public
     Assert-FirstClaimConfig $configBefore
-
-    $public = New-PreClaimPublicConfig $public
-    $configPayload = [ordered]@{
-      public = $public
-      secrets = $null
+    if (-not [bool]$configBefore.factoryManifestConfigured) {
+      throw "Factory bootstrap configuration is missing before Testbed claim"
     }
-    $configBeforeClaim = Invoke-IpcJson "PUT" "$baseUrl/v1/config" $headers $configPayload
-    $evidence.preClaimConfigApplied = $true
+    if ([string]$public.apiBaseUrl -ne ${psString(platform.apiBaseUrl)}) {
+      throw "Factory bootstrap provisioning endpoint does not match the isolated Testbed platform"
+    }
+    $evidence.preClaimFactoryConfigVerified = $true
 
-    $claimPayload = [ordered]@{ claimCode = ${psString(claimCode)} }
-    $evidence.endpoint = "$baseUrl/v1/provisioning/claim"
-    $evidence.usedDaemonIpcClaimPath = $true
+    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
+    $currentTask = $bringUp.currentTask
+    if ($null -eq $currentTask) {
+      throw "daemon did not project a current Factory network task"
+    }
+    if ([string]$currentTask.kind -ne "configure_network" -or [string]$currentTask.intent -ne "refresh_network") {
+      throw "daemon projected unexpected Factory network task: $($currentTask.kind)/$($currentTask.intent)"
+    }
+    if (
+      [int]$currentTask.contractVersion -ne 1 -or
+      [string]::IsNullOrWhiteSpace([string]$currentTask.taskId) -or
+      [uint64]$currentTask.taskVersion -lt 1
+    ) {
+      throw "daemon projected an invalid Factory network task cursor"
+    }
+    $probePayload = [ordered]@{
+      contractVersion = [int]$currentTask.contractVersion
+      taskId = [string]$currentTask.taskId
+      taskVersion = [uint64]$currentTask.taskVersion
+      kind = [string]$currentTask.kind
+      intent = [string]$currentTask.intent
+      mutation = [ordered]@{ type = "probe_network" }
+    }
+    $evidence.networkProbe.endpoint = "$baseUrl/v1/bring-up/tasks/execute"
     try {
-      $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim" $headers $claimPayload
+      $probeResult = Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $probePayload
+      if ([string]$probeResult.status -ne "connected") {
+        throw "daemon did not verify existing local network and Platform endpoint"
+      }
+      $evidence.networkProbe.status = "connected"
+      $evidence.networkProbe.httpStatus = 200
+    } catch {
+      $probeError = Get-HttpErrorInfo $_
+      $evidence.networkProbe.status = "failed"
+      $evidence.networkProbe.httpStatus = $probeError.statusCode
+      throw "daemon IPC existing-network probe failed"
+    }
+
+    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
+    $currentTask = $bringUp.currentTask
+    if ($null -eq $currentTask) {
+      throw "daemon did not project a Factory claim task after network probe"
+    }
+    if ([string]$currentTask.kind -ne "claim_machine" -or [string]$currentTask.intent -ne "claim_machine") {
+      throw "daemon projected unexpected Factory claim task after network probe: $($currentTask.kind)/$($currentTask.intent)"
+    }
+    if (
+      [int]$currentTask.contractVersion -ne 1 -or
+      [string]::IsNullOrWhiteSpace([string]$currentTask.taskId) -or
+      [uint64]$currentTask.taskVersion -lt 1
+    ) {
+      throw "daemon projected an invalid Factory claim task cursor after network probe"
+    }
+    $claimPayload = [ordered]@{
+      contractVersion = [int]$currentTask.contractVersion
+      taskId = [string]$currentTask.taskId
+      taskVersion = [uint64]$currentTask.taskVersion
+      kind = [string]$currentTask.kind
+      intent = [string]$currentTask.intent
+      mutation = [ordered]@{
+        type = "claim_machine"
+        claimCode = ${psString(claimCode)}
+      }
+    }
+    $evidence.endpoint = "$baseUrl/v1/bring-up/tasks/execute"
+    $evidence.usedDaemonIpcTaskExecute = $true
+    $preClaimReadyGeneration = [long](Get-Item -LiteralPath ${psString(bringUpPlan.arguments.DaemonReadyFile)} -ErrorAction Stop).LastWriteTimeUtc.Ticks
+    try {
+      $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $claimPayload
       $evidence.claimStatus = "provisioned"
       $evidence.claimHttpStatus = 200
       $evidence.machineCode = $claimResult.machineCode
@@ -4569,27 +4751,23 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       throw "daemon IPC claim failed: $($evidence.claimFailureCode)"
     }
 
-    if ([bool]$evidence.claimResult.restartRequested) {
-      $evidence.claimResult.restartAttempted = $true
-      try {
-        $recoveredIpc = Restart-DaemonIpcAfterProvisioning ${psString(bringUpPlan.arguments.DaemonReadyFile)}
-        $ready = $recoveredIpc.ready
-        $baseUrl = $recoveredIpc.baseUrl
-        $headers = $recoveredIpc.headers
-        $evidence.claimResult.observedHealthAfterRestart = [bool]$recoveredIpc.observedHealth
-        $evidence.claimResult.recoveredAfterRestart = [bool]$recoveredIpc.recovered
-        $evidence.claimResult.recoveryAttempts = [int]$recoveredIpc.attempts
-        $evidence.claimResult.recoveryEvidence = [string]$recoveredIpc.recoveryEvidence
-      } catch {
-        $evidence.claimResult.recoveredAfterRestart = $false
-        $evidence.claimResult.recoveryFailure = $_.Exception.Message
-        throw
-      }
+    if (-not [bool]$evidence.claimResult.restartRequested) {
+      throw "daemon Claim did not request the required runtime reconfigure"
+    }
+    try {
+      $recoveredIpc = Wait-DaemonIpcAfterProvisioning ${psString(bringUpPlan.arguments.DaemonReadyFile)} $preClaimReadyGeneration $evidence.machineCode $evidence.claimResult
+      $ready = $recoveredIpc.ready
+      $baseUrl = $recoveredIpc.baseUrl
+      $headers = $recoveredIpc.headers
+    } catch {
+      $evidence.claimResult.recoveredAfterReconfigure = $false
+      $evidence.claimResult.recoveryFailure = $_.Exception.Message
+      throw
     }
 
     $evidence.healthzAfterClaim = Get-SafeHealthzEvidence $baseUrl
     $evidence.readyzAfterClaim = Get-SafeReadyzEvidence $baseUrl
-    $configAfter = Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers
+    $configAfter = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers)
     $configEvidence = Convert-ConfigSnapshotEvidence $configAfter
     $evidence.provisioned = $configEvidence.provisioned
     $evidence.credentialFlags.machineSecretConfigured = $configEvidence.machineSecretConfigured
@@ -5909,7 +6087,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
       DaemonSha256 = [string]$staged.daemonSha256
       MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
       MachineUiSha256 = [string]$staged.machineUiSha256
-      EnvironmentName = ${psString(`factory-${cleanBaseFactoryProfile}`)}
+      EnvironmentName = ${psString(cleanBaseEnvironmentName)}
       DeploymentBatch = ${psString(`clean-base-${cleanBaseFactoryProfile}-v1`)}
       ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
       MqttUrl = ${psString(platform.mqttUrl)}
@@ -5926,6 +6104,8 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
       ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
       TargetLayoutVersion = "win10-runtime-layout/v1"
       FactoryProfile = ${psString(cleanBaseFactoryProfile)}
+      FactoryMediaRoot = ${psString(cleanBaseFactoryMediaRoot)}
+      VisionConfigurationSourcePath = ${psString(cleanBaseVisionConfigurationSourcePath)}
       PersonalizationMediaPath = ${psString(options.remotePersonalizationMediaPath ?? "")}
       ResetExistingVemState = $false
       OpenSshPackagePath = ${psString(options.remoteOpenSshPackagePath ?? "")}
@@ -6200,7 +6380,7 @@ function Classify-RuntimeAcceptanceReport($Facts) {
   if (-not [bool]$Facts.provisioning.provisioned) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_incomplete" "Machine Provisioning must complete before runtime-ready can pass."
   }
-  if (-not [bool]$Facts.provisioning.usedDaemonIpcClaimPath) {
+  if (-not [bool]$Facts.provisioning.usedDaemonIpcTaskExecute) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_bypassed_daemon_ipc" "Machine Provisioning must use the daemon IPC claim path."
   }
   if (-not [bool]$Facts.daemonRuntime.readyz.ready) {
@@ -6317,7 +6497,7 @@ function Get-RuntimeAcceptanceReport($ProvisioningActions = @()) {
     }
     provisioning = [ordered]@{
       provisioned = [bool]$factsSubset.provisioning.provisioned
-      usedDaemonIpcClaimPath = [bool]$factsSubset.provisioning.usedDaemonIpcClaimPath
+      usedDaemonIpcTaskExecute = [bool]$factsSubset.provisioning.usedDaemonIpcTaskExecute
       machineCode = if ([string]::IsNullOrWhiteSpace($daemonIpc.config.machineCode)) { $null } else { [string]$daemonIpc.config.machineCode }
     }
     daemonRuntime = [ordered]@{
@@ -6384,7 +6564,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if (
     -not [bool]$Facts.provisioning.provisioned -or
     -not [bool]$Facts.provisioning.usedMachineClaimCodePath -or
-    -not [bool]$Facts.provisioning.usedDaemonIpcClaimPath -or
+    -not [bool]$Facts.provisioning.usedDaemonIpcTaskExecute -or
     -not [bool]$Facts.provisioning.profileApplied -or
     [string]$Facts.provisioning.profile.status -ne "applied" -or
     -not [bool]$Facts.provisioning.profile.machineSecretConfigured -or
@@ -6395,7 +6575,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if (
     [string]$Facts.provisioning.claim.runId -ne [string]$Facts.platformSetup.preparedRunId -or
     [string]$Facts.provisioning.claim.status -ne "provisioned" -or
-    -not ([string]$Facts.provisioning.claim.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -or
+    -not ([string]$Facts.provisioning.claim.endpoint).EndsWith("/v1/bring-up/tasks/execute", [StringComparison]::OrdinalIgnoreCase) -or
     [int]$Facts.provisioning.claim.httpStatus -ne 200
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "fresh_machine_claim_evidence_required" "Simulated hardware sale-flow evidence must include a successful daemon IPC claim from the same run."
@@ -6708,6 +6888,53 @@ function Invoke-HardwareMappingFaultProbe(
   }
 }
 
+function Wait-PlatformAcceptedStockAttestation(
+  [string]$BaseUrl,
+  $Headers,
+  [string]$AttestationId,
+  [string]$PlanogramVersion
+) {
+  $deadline = [DateTime]::UtcNow.AddSeconds(120)
+  do {
+    $readiness = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-readiness" $Headers
+    $saleView = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-view" $Headers
+    $physicalStockAttestation = $readiness.components.physicalStockAttestation
+    $saleableSlots = @($saleView.items | Where-Object {
+      [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
+    })
+
+    if ([string]$physicalStockAttestation.status -eq "pending") {
+      if ($saleableSlots.Count -gt 0) {
+        throw "PHYSICAL_STOCK_ATTESTATION_PENDING must not expose saleable stock"
+      }
+    } elseif ([string]$physicalStockAttestation.status -eq "ready") {
+      if (
+        [string]$physicalStockAttestation.attestationId -ne $AttestationId -or
+        [string]$physicalStockAttestation.planogramVersion -ne $PlanogramVersion
+      ) {
+        throw "Platform accepted stock evidence does not match the submitted attestation"
+      }
+      if ($saleableSlots.Count -eq 0) {
+        throw "Platform accepted stock attestation did not produce a sale-ready slot"
+      }
+      return [ordered]@{
+        readiness = $readiness
+        saleView = $saleView
+        evidence = $physicalStockAttestation
+      }
+    } elseif (
+      [string]$physicalStockAttestation.code -eq "PHYSICAL_STOCK_ATTESTATION_REJECTED" -or
+      [string]$physicalStockAttestation.code -eq "PHYSICAL_STOCK_ATTESTATION_UPLOAD_FAILED"
+    ) {
+      throw "Platform rejected simulated stock attestation: $($physicalStockAttestation.message)"
+    }
+
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  throw "timed out waiting for Platform-accepted simulated stock attestation"
+}
+
 function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   $reportPath = ${psString(SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE)}
   $contextPath = ${psString(SIMULATED_HARDWARE_SALE_CONTEXT_FILE)}
@@ -6836,11 +7063,21 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
         }
       })
     }
-    $attestation = Invoke-IpcJson "POST" "$baseUrl/v1/stock/attestation" $headers $attestationPayload
-    $saleView = Invoke-IpcJson "GET" "$baseUrl/v1/sale-view" $headers
+    $attestationSubmission = Invoke-IpcJson "POST" "$baseUrl/v1/stock/attestation" $headers $attestationPayload
+    $stockAcceptance = Wait-PlatformAcceptedStockAttestation $baseUrl $headers ([string]$attestationPayload.attestationId) ([string]$attestationPayload.planogramVersion)
+    $saleView = $stockAcceptance.saleView
     $selectedItem = @($saleView.items | Where-Object {
       [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
     } | Select-Object -First 1)
+    $attestation = [ordered]@{
+      attestationId = [string]$stockAcceptance.evidence.attestationId
+      accepted = $true
+      status = "accepted"
+      uploadStatus = "accepted"
+      acceptedAt = [string]$stockAcceptance.evidence.attestedAt
+      platformMovementId = ("{0}:{1}" -f [string]$stockAcceptance.evidence.attestationId, [string]$selectedItem.slotId)
+      submission = $attestationSubmission
+    }
     if ($selectedItem.Count -eq 0) {
       throw "sale view does not contain a sale-ready simulated slot after stock attestation"
     }
@@ -7090,8 +7327,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     }
     provisioning = [ordered]@{
       provisioned = [bool]$provisioningFacts.provisioned
-      usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
-      usedDaemonIpcClaimPath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
+      usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcTaskExecute
+      usedDaemonIpcTaskExecute = [bool]$provisioningFacts.usedDaemonIpcTaskExecute
       profileApplied = [bool]$provisioningFacts.machineSecretConfigured -and [bool]$provisioningFacts.mqttSigningSecretConfigured
       machineCode = $provisioningFacts.machineCode
       claim = $provisioningFacts.claim
@@ -8103,7 +8340,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-media-root PATH] [--vision-configuration-source-path PATH] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -8111,7 +8348,7 @@ Defaults target the documented Machine Runtime Testbed:
 
 Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on the remote host and requires VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD in the remote PowerShell environment.
 
-Provision mode reads the daemon ready file, applies only pre-claim platform endpoints, and claims the prepared testbed identity through daemon IPC /v1/provisioning/claim.
+Provision mode starts and reads the daemon IPC, applies only pre-claim platform endpoints, obtains its current claim task cursor, and claims the prepared testbed identity through daemon IPC /v1/bring-up/tasks/execute.
 
 Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
 
@@ -8122,7 +8359,7 @@ Dirty-host factory acceptance mode stages specified local artifacts and factory 
 SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
-Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
+Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. A production run also requires --factory-media-root and --vision-configuration-source-path, which must already be accessible on the clean Windows base for the child Factory preparation entrypoint. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
 
 Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
 
@@ -8250,6 +8487,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--factory-profile") {
       options.factoryProfile = next;
+      index += 1;
+    } else if (arg === "--factory-media-root") {
+      options.factoryMediaRoot = next;
+      index += 1;
+    } else if (arg === "--vision-configuration-source-path") {
+      options.visionConfigurationSourcePath = next;
       index += 1;
     } else if (arg === "--factory-iso") {
       options.factoryIso = next;

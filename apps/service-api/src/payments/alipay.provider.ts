@@ -53,12 +53,13 @@ type AlipayConfig = {
   qrExpiresMinutes: number;
   requestTimeoutMs: number;
   timeoutCompensationSeconds: number;
-  orderCodeReadinessCheckEnabled: boolean;
-  orderCodeReadinessTimeoutMs: number;
-  orderCodeReadinessPollIntervalMs: number;
   orderCodePrecreateMaxAttempts: number;
   orderCodePrecreateRetryDelayMs: number;
 };
+
+// Must finish before the 30s payment-intent lease heartbeat. This keeps a
+// single owner from extending a lease forever on a hung provider request.
+const MAX_ALIPAY_REQUEST_TIMEOUT_MS = 20_000;
 
 function readRequiredString(
   source: Record<string, unknown>,
@@ -81,21 +82,6 @@ function readPositiveInteger(
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? value
     : fallback;
-}
-
-function readBoolean(
-  source: Record<string, unknown>,
-  key: string,
-  fallback: boolean,
-): boolean {
-  const value = source[key];
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (["true", "1", "yes", "on"].includes(normalized)) return true;
-    if (["false", "0", "no", "off"].includes(normalized)) return false;
-  }
-  return fallback;
 }
 
 function normalizeEndpoint(gatewayUrl: string): string {
@@ -121,8 +107,6 @@ function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
       ? source["gatewayUrl"]
       : "https://openapi.alipay.com/gateway.do";
   const keyType = source["keyType"] === "PKCS1" ? "PKCS1" : "PKCS8";
-  const mode = typeof source["mode"] === "string" ? source["mode"] : null;
-
   return {
     appId: readRequiredString(source, "appId", "Alipay"),
     sellerId: readRequiredString(source, "sellerId", "Alipay"),
@@ -143,26 +127,14 @@ function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
     endpoint: normalizeEndpoint(gatewayUrl),
     keyType,
     qrExpiresMinutes: readPositiveInteger(source, "qrExpiresMinutes", 15),
-    requestTimeoutMs: readPositiveInteger(source, "requestTimeoutMs", 20_000),
+    requestTimeoutMs: Math.min(
+      readPositiveInteger(source, "requestTimeoutMs", 20_000),
+      MAX_ALIPAY_REQUEST_TIMEOUT_MS,
+    ),
     timeoutCompensationSeconds: readPositiveInteger(
       source,
       "timeoutCompensationSeconds",
       120,
-    ),
-    orderCodeReadinessCheckEnabled: readBoolean(
-      source,
-      "orderCodeReadinessCheckEnabled",
-      mode === "sandbox",
-    ),
-    orderCodeReadinessTimeoutMs: readPositiveInteger(
-      source,
-      "orderCodeReadinessTimeoutMs",
-      15_000,
-    ),
-    orderCodeReadinessPollIntervalMs: readPositiveInteger(
-      source,
-      "orderCodeReadinessPollIntervalMs",
-      1_500,
     ),
     orderCodePrecreateMaxAttempts: readPositiveInteger(
       source,
@@ -259,15 +231,19 @@ function mapAlipayTradeStatus(
   const subCode =
     typeof data["sub_code"] === "string" ? data["sub_code"] : null;
   if (code && code !== "10000") {
-    const indeterminate =
-      code === "20000" ||
-      subCode === "ACQ.SYSTEM_ERROR" ||
-      subCode === "ACQ.TRADE_NOT_EXIST";
+    const indeterminate = code === "20000" || subCode === "ACQ.SYSTEM_ERROR";
     return {
-      status: indeterminate ? "processing" : "failed",
+      status:
+        subCode === "ACQ.TRADE_NOT_EXIST"
+          ? "pending"
+          : indeterminate
+            ? "processing"
+            : "failed",
       providerTradeNo:
         typeof data["trade_no"] === "string" ? data["trade_no"] : null,
       failedReason: subCode ?? code,
+      reconciliationState:
+        subCode === "ACQ.TRADE_NOT_EXIST" ? "provider_trade_not_exist" : null,
       rawPayload: data,
     };
   }
@@ -292,6 +268,8 @@ function mapAlipayTradeStatus(
     paidAt:
       parseAlipayDate(data["send_pay_date"] ?? data["gmt_payment"]) ??
       undefined,
+    reconciliationState:
+      tradeStatus === "WAIT_BUYER_PAY" ? "wait_buyer_pay" : null,
     rawPayload: data,
   };
 }
@@ -313,15 +291,46 @@ function assertSuccessfulPrecreate(
     );
   }
 
-  const outTradeNo =
-    typeof data["out_trade_no"] === "string" ? data["out_trade_no"] : null;
-  if (outTradeNo && outTradeNo !== paymentNo) {
+  const outTradeNo = readString(data, "out_trade_no");
+  if (outTradeNo !== paymentNo) {
     throw new BadGatewayException(
       `Alipay alipay.trade.precreate out_trade_no mismatch: ${outTradeNo}`,
     );
   }
 
   return readString(data, "qr_code");
+}
+
+function assertVerifiedSuccessfulAlipayQuery(
+  data: Record<string, unknown>,
+  input: ProviderPaymentQueryInput,
+): ProviderPaymentQueryResult {
+  const result = mapAlipayTradeStatus(data);
+  if (result.status !== "succeeded") return result;
+
+  const outTradeNo = readString(data, "out_trade_no");
+  if (outTradeNo !== input.paymentNo) {
+    throw new BadGatewayException(
+      `Alipay alipay.trade.query out_trade_no mismatch: ${outTradeNo}`,
+    );
+  }
+
+  const totalAmount = data["total_amount"];
+  if (
+    typeof totalAmount === "string" &&
+    totalAmount.length > 0 &&
+    totalAmount !== amountCentsToYuan(input.amountCents)
+  ) {
+    throw new BadGatewayException(
+      `Alipay alipay.trade.query total_amount mismatch: ${totalAmount}`,
+    );
+  }
+
+  return result;
+}
+
+function isTradeNotExistResponse(data: Record<string, unknown>): boolean {
+  return data["code"] === "40004" && data["sub_code"] === "ACQ.TRADE_NOT_EXIST";
 }
 
 function mapAlipayPaymentCodeResponse(
@@ -543,14 +552,21 @@ function assertAlipayBody(value: unknown): Record<string, string> {
 function selectAlipayConfig(
   configs: PaymentProviderRuntimeConfig[],
   body: Record<string, string>,
-): AlipayConfig {
-  const parsed = configs.map(parseAlipayConfig);
+  expectedConfigId?: string | null,
+  expectedConfig?: PaymentProviderRuntimeConfig | null,
+): PaymentProviderRuntimeConfig {
   const appId = body["app_id"] ?? null;
   const selected =
-    (appId ? parsed.find((config) => config.appId === appId) : null) ??
-    parsed[0];
+    expectedConfig ??
+    (expectedConfigId
+      ? configs.find((config) => config.id === expectedConfigId)
+      : ((appId ? configs.find((config) => config.appId === appId) : null) ??
+        configs[0]));
   if (!selected) {
     throw new UnauthorizedException("Alipay config not found for webhook");
+  }
+  if (appId && selected.appId && selected.appId !== appId) {
+    throw new UnauthorizedException("Alipay app id does not match binding");
   }
   return selected;
 }
@@ -634,15 +650,10 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     );
 
     const paymentUrl = assertSuccessfulPrecreate(data, input.paymentNo);
-    const ready = await this.probeOrderCodeReadinessAfterPrecreate(
-      sdk,
-      config,
-      input.paymentNo,
-    );
     return {
       providerTradeNo: null,
       paymentUrl,
-      initialStatus: ready ? "pending" : "processing",
+      initialStatus: "pending",
     };
   }
 
@@ -658,7 +669,9 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         // oxlint-disable-next-line no-await-in-loop -- retry must preserve out_trade_no idempotency.
-        return await sdk.exec("alipay.trade.precreate", request);
+        return await sdk.exec("alipay.trade.precreate", request, {
+          validateSign: true,
+        });
       } catch (error) {
         if (!isIndeterminateAlipayError(error)) {
           throw error;
@@ -667,6 +680,26 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
         this.logger.warn(
           `alipay.trade.precreate attempt ${attempt}/${maxAttempts} unavailable for ${paymentNo}: ${alipayErrorMessage(error)}`,
         );
+
+        // The request may have reached Alipay even though the gateway timed
+        // out. Never repeat a precreate until a signed query proves that the
+        // provider has no trade for this exact payment number.
+        let query: Record<string, unknown>;
+        try {
+          // oxlint-disable-next-line no-await-in-loop -- query decides whether retrying the same payment number is safe.
+          query = await sdk.exec(
+            "alipay.trade.query",
+            { bizContent: { out_trade_no: paymentNo } },
+            { validateSign: true },
+          );
+        } catch (queryError) {
+          lastError = queryError;
+          break;
+        }
+        if (!isTradeNotExistResponse(query)) {
+          break;
+        }
+
         if (attempt >= maxAttempts) break;
         // oxlint-disable-next-line no-await-in-loop -- bounded retry delay for transient Alipay sandbox 5xx.
         await sleep(config.orderCodePrecreateRetryDelayMs * attempt);
@@ -678,62 +711,6 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     });
   }
 
-  private async probeOrderCodeReadinessAfterPrecreate(
-    sdk: AlipaySdkLike,
-    config: AlipayConfig,
-    paymentNo: string,
-  ): Promise<boolean> {
-    if (!config.orderCodeReadinessCheckEnabled) return true;
-
-    const deadline = Date.now() + config.orderCodeReadinessTimeoutMs;
-    let lastResult: ProviderPaymentQueryResult | null = null;
-    let lastError: unknown = null;
-
-    while (Date.now() <= deadline) {
-      try {
-        // oxlint-disable-next-line no-await-in-loop -- readiness polling must query sequentially until Alipay exposes the new order.
-        const data = await sdk.exec("alipay.trade.query", {
-          bizContent: { out_trade_no: paymentNo },
-        });
-        const result = mapAlipayTradeStatus(data);
-        lastResult = result;
-        lastError = null;
-        if (result.status === "pending" || result.status === "succeeded") {
-          return true;
-        }
-        if (
-          result.status === "failed" ||
-          result.status === "canceled" ||
-          result.status === "expired"
-        ) {
-          throw new BadGatewayException(
-            `Alipay order-code precreate validation failed: ${result.failedReason ?? result.status}`,
-          );
-        }
-      } catch (error) {
-        if (!isIndeterminateAlipayError(error)) {
-          throw error;
-        }
-        lastError = error;
-      }
-
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) break;
-      // oxlint-disable-next-line no-await-in-loop -- bounded backoff between sequential Alipay readiness probes.
-      await sleep(
-        Math.min(config.orderCodeReadinessPollIntervalMs, remainingMs),
-      );
-    }
-
-    const reason = lastError
-      ? alipayErrorMessage(lastError)
-      : (lastResult?.failedReason ?? lastResult?.status ?? "not_ready");
-    this.logger.warn(
-      `alipay.trade.precreate readiness probe did not observe ${paymentNo}: ${reason}`,
-    );
-    return false;
-  }
-
   async queryPayment(
     input: ProviderPaymentQueryInput,
   ): Promise<ProviderPaymentQueryResult> {
@@ -741,10 +718,16 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const sdk = createAlipaySdk(this.sdkFactory, config);
     const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
     if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
-    const data = await sdk.exec("alipay.trade.query", {
-      bizContent: body,
-    });
-    return mapAlipayTradeStatus(data);
+    const data = await sdk.exec(
+      "alipay.trade.query",
+      {
+        bizContent: body,
+      },
+      { validateSign: true },
+    );
+    // The SDK query is authenticated with the exact persisted app/seller binding.
+    // A terminal success must additionally echo this payment number and amount.
+    return assertVerifiedSuccessfulAlipayQuery(data, input);
   }
 
   async chargePaymentCode(
@@ -810,9 +793,13 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
     if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
     try {
-      const data = await sdk.exec("alipay.trade.query", {
-        bizContent: body,
-      });
+      const data = await sdk.exec(
+        "alipay.trade.query",
+        {
+          bizContent: body,
+        },
+        { validateSign: true },
+      );
       return mapAlipayPaymentCodeQueryResponse(data);
     } catch (err) {
       if (isIndeterminateAlipayError(err)) {
@@ -970,11 +957,21 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const body = assertAlipayBody(input.body);
     const configs =
       input.candidateConfigs.length > 0 ? input.candidateConfigs : [];
-    const config = selectAlipayConfig(configs, body);
+    const matchedRuntimeConfig = selectAlipayConfig(
+      configs,
+      body,
+      input.expectedConfigId,
+      input.expectedConfig,
+    );
+    const config = parseAlipayConfig(matchedRuntimeConfig);
     const sdk = createAlipaySdk(this.sdkFactory, config);
     if (!sdk.checkNotifySignV2(body)) {
       throw new UnauthorizedException("Alipay signature invalid");
     }
-    return mapAlipayWebhook(body);
+    const result = mapAlipayWebhook(body);
+    return {
+      ...result,
+      matchedConfigId: matchedRuntimeConfig.id ?? null,
+    };
   }
 }

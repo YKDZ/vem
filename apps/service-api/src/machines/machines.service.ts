@@ -47,6 +47,7 @@ import {
   createMachineSchema,
   createMachineSlotSchema,
   environmentControlResultPayloadSchema,
+  isManagedMediaReference,
   machineHeartbeatStatusPayloadSchema,
   machineClaimRequestSchema,
   mqttSignedEnvelopeSchema,
@@ -1160,16 +1161,16 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .select({
         variantId: productVariants.id,
         productId: products.id,
-        displayImagePublicUrl: sql<string | null>`(
-          select ${mediaAssets.publicUrl}
+        displayImageMediaAssetId: sql<string | null>`(
+          select ${mediaAssets.id}
           from ${mediaAssets}
           where ${mediaAssets.id} = ${products.displayImageMediaAssetId}
             and ${mediaAssets.purpose} = 'product_display_image'
             and ${mediaAssets.deletedAt} is null
           limit 1
         )`,
-        tryOnSilhouettePublicUrl: sql<string | null>`(
-          select ${mediaAssets.publicUrl}
+        tryOnSilhouetteMediaAssetId: sql<string | null>`(
+          select ${mediaAssets.id}
           from ${mediaAssets}
           where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
             and ${mediaAssets.purpose} = 'try_on_silhouette'
@@ -1189,13 +1190,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const coverImageUrls = new Map(
       rows.map((row) => [
         row.productId,
-        this.machineRenderableMediaAssetUrl(row.displayImagePublicUrl),
+        this.machineManagedMediaReference(row.displayImageMediaAssetId),
       ]),
     );
     const tryOnSilhouetteUrls = new Map(
       rows.map((row) => [
         row.variantId,
-        this.machineRenderableMediaAssetUrl(row.tryOnSilhouettePublicUrl),
+        this.machineManagedMediaReference(row.tryOnSilhouetteMediaAssetId),
       ]),
     );
 
@@ -1212,31 +1213,35 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const snapshot = planogramSlotSnapshot(row);
     return {
       ...snapshot,
-      coverImageUrl: this.machineRenderableMediaAssetUrl(
+      coverImageUrl: this.canonicalManagedMediaReference(
         snapshot.coverImageUrl,
       ),
-      tryOnSilhouetteUrl: this.machineRenderableMediaAssetUrl(
+      tryOnSilhouetteUrl: this.canonicalManagedMediaReference(
         snapshot.tryOnSilhouetteUrl ?? null,
       ),
     };
   }
 
-  private machineRenderableMediaAssetUrl(
-    publicUrl: string | null,
+  private canonicalManagedMediaReference(
+    reference: string | null,
   ): string | null {
-    if (!publicUrl) return null;
-    if (/^https?:\/\//i.test(publicUrl)) return publicUrl;
-    if (!publicUrl.startsWith("/api/media-assets/")) return publicUrl;
+    if (!reference) return null;
+    if (isManagedMediaReference(reference)) return reference;
+    this.logger.warn(
+      `catalog managed media reference rejected: ${reference.slice(0, 256)}`,
+    );
+    return null;
+  }
 
-    const baseUrl =
-      this.config.mediaAssetPublicBaseUrl ?? this.config.paymentWebhookBaseUrl;
-    if (!baseUrl) return publicUrl;
-
-    try {
-      return new URL(publicUrl, baseUrl).toString();
-    } catch {
-      return publicUrl;
+  private machineManagedMediaReference(assetId: string | null): string | null {
+    if (!assetId) return null;
+    if (z.uuid().safeParse(assetId).success) {
+      return `/api/media-assets/${assetId}/content`;
     }
+    this.logger.warn(
+      `catalog managed media asset identity rejected: ${assetId.slice(0, 256)}`,
+    );
+    return null;
   }
 
   async getMachinePlanogramVersions(machineId: string) {
@@ -1573,9 +1578,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         productId: products.id,
         productName: products.name,
         productDescription: products.description,
-        coverImageUrl: mediaAssets.publicUrl,
-        tryOnSilhouetteUrl: sql<string | null>`(
-          select ${mediaAssets.publicUrl}
+        coverImageMediaAssetId: mediaAssets.id,
+        tryOnSilhouetteMediaAssetId: sql<string | null>`(
+          select ${mediaAssets.id}
           from ${mediaAssets}
           where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
             and ${mediaAssets.purpose} = 'try_on_silhouette'
@@ -1626,6 +1631,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         mediaAssets,
         and(
           eq(mediaAssets.id, products.displayImageMediaAssetId),
+          eq(mediaAssets.purpose, "product_display_image"),
           isNull(mediaAssets.deletedAt),
         ),
       )
@@ -1640,9 +1646,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .orderBy(products.sortOrder, machineSlots.layerNo, machineSlots.cellNo);
     return rows.map((row) => ({
       ...row,
-      coverImageUrl: this.machineRenderableMediaAssetUrl(row.coverImageUrl),
-      tryOnSilhouetteUrl: this.machineRenderableMediaAssetUrl(
-        row.tryOnSilhouetteUrl,
+      coverImageUrl: this.machineManagedMediaReference(
+        row.coverImageMediaAssetId,
+      ),
+      tryOnSilhouetteUrl: this.machineManagedMediaReference(
+        row.tryOnSilhouetteMediaAssetId,
       ),
     }));
   }

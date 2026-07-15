@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +41,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["admin api contract migration"],
   },
   {
+    path: "scripts/check-machine-e2e-ci.test.mjs",
+    owner: "machine-runtime-console",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance"],
+  },
+  {
     path: "scripts/check-factory-runtime-prep.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -52,6 +69,26 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["factory preparation"],
+    deliveryAssemblyAction: "javascript-stage",
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryAssemblyEvidence: {
+      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+      producer: "scripts/factory/build-factory-media.mjs",
+      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
+      executionTest:
+        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/factory/build-factory-media.test.mjs",
@@ -136,6 +173,56 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["runtime acceptance", "managed update"],
+    deliveryAssemblyAction: "javascript-stage",
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryAssemblyEvidence: {
+      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
+      producer: "scripts/factory/experimental-vision-candidate.mjs",
+      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
+      executionTest:
+        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
+    preapprovalDeliveryAssembly: {
+      artifact: "VEM-VISION-PREAPPROVAL/preapproval-manifest.json",
+      producer: "scripts/factory/experimental-vision-candidate.mjs",
+      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
+      executionTest:
+        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
+      members: [
+        "scripts/windows/test-vision-candidate.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
+  },
+  {
+    path: "scripts/factory/experimental-vision-candidate.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/factory/verify-vision-delivery-assembly.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/factory/run-vision-delivery-assembly-contract.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
   },
   {
     path: "scripts/factory/factory-personalization-media.mjs",
@@ -202,6 +289,18 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/check-windows-bringup-bundle.mjs",
+    owner: "machine-runtime",
+    category: "verifier-test guard",
+    workflows: ["smoke", "testbed workflows"],
+  },
+  {
+    path: "scripts/check-windows-bringup-bundle.test.mjs",
+    owner: "machine-runtime",
+    category: "verifier-test guard",
+    workflows: ["smoke", "testbed workflows"],
   },
   {
     path: "scripts/check-windows-oobe-registry.test.mjs",
@@ -417,6 +516,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/windows/accept-protected-touch-keyboard.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/windows/protected-touch-keyboard-acceptance.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/windows/apply-managed-update.ps1",
     owner: "field-operations",
     category: "public runbook operation",
@@ -433,18 +544,84 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["factory preparation", "managed update"],
+    deliveryClosure: [
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryClosureEvidence: {
+      verifier: "scripts/windows/vision-release-install.test.mjs",
+      members: [
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
+  },
+  {
+    path: "scripts/windows/vision-release-materialization.psm1",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["factory preparation", "managed update", "runtime acceptance"],
   },
   {
     path: "scripts/windows/test-vision-candidate.ps1",
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["runtime acceptance", "managed update"],
+    deliveryClosure: [
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryClosureEvidence: {
+      verifier: "scripts/windows/vision-release-install.test.mjs",
+      members: [
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
+  },
+  {
+    path: "scripts/windows/test-vision-candidate.fixtures.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/windows/test-vision-candidate.windows-harness.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "managed update"],
+  },
+  {
+    path: "scripts/windows/vision-diagnostic-redaction.psm1",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["factory preparation", "runtime acceptance", "managed update"],
   },
   {
     path: "scripts/windows/provision-vision-factory-release.ps1",
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["factory preparation"],
+    deliveryAssemblyAction: "powershell-copy",
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryAssemblyEvidence: {
+      artifact: "stdout:vem-factory-vision-provisioning-evidence/v1",
+      producer: "scripts/windows/provision-vision-factory-release.ps1",
+      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
+      executionTest:
+        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/windows/vision-release-install.test.mjs",
@@ -482,6 +659,26 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "canonical entrypoint",
     workflows: ["factory preparation"],
+    deliveryAssemblyAction: "powershell-copy",
+    deliveryAssembly: [
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
+      "scripts/windows/vision-diagnostic-redaction.psm1",
+    ],
+    deliveryAssemblyEvidence: {
+      artifact: "stdout:vem-factory-runtime-delivery-assembly/v1",
+      producer: "scripts/windows/prepare-factory-runtime.ps1",
+      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
+      executionTest:
+        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
+      members: [
+        "scripts/windows/install-vision-release.ps1",
+        "scripts/windows/provision-vision-factory-release.ps1",
+        "scripts/windows/vision-release-materialization.psm1",
+        "scripts/windows/vision-diagnostic-redaction.psm1",
+      ],
+    },
   },
   {
     path: "scripts/windows/factory-maintenance-fixtures/clean-state-evidence.json",
@@ -500,6 +697,12 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/windows/test-wireguard-localsystem-acceptance.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
     path: "scripts/windows/start-lower-controller-sim.ps1",
@@ -535,6 +738,18 @@ const DEFAULT_INVENTORY = [
 ];
 
 const DEFAULT_PUBLIC_RUNBOOKS = [
+  {
+    path: "public/windows-bringup-bundle.md",
+    scripts: [
+      "scripts/windows/vending-daemon-smoke.ps1",
+      "scripts/windows/setup-scheduled-tasks.ps1",
+    ],
+    requiredText: [
+      "Protected maintenance session for smoke",
+      "VEM_MAINTENANCE_PIN",
+      "same Factory/Testbed bootstrap",
+    ],
+  },
   {
     path: "public/customer-accessible-kiosk-lockdown.md",
     scripts: [
@@ -762,6 +977,366 @@ function validateInventoryEntry(entry) {
   return failures;
 }
 
+function validateDeliveryClosure(entry, entriesByPath) {
+  if (entry.deliveryClosure === undefined) return [];
+  if (
+    !Array.isArray(entry.deliveryClosure) ||
+    entry.deliveryClosure.length === 0
+  ) {
+    return [
+      `${entry.path} deliveryClosure must name one or more closure members`,
+    ];
+  }
+  const evidence = entry.deliveryClosureEvidence;
+  if (
+    !evidence ||
+    typeof evidence.verifier !== "string" ||
+    !entriesByPath.has(evidence.verifier) ||
+    entriesByPath.get(evidence.verifier).category !== "verifier-test guard" ||
+    !Array.isArray(evidence.members)
+  ) {
+    return [
+      `${entry.path} delivery closure must declare a classified verifier and exact members`,
+    ];
+  }
+  const failures = [];
+  const declaredMembers = new Set(evidence.members);
+  for (const closurePath of entry.deliveryClosure) {
+    if (typeof closurePath !== "string" || !entriesByPath.has(closurePath)) {
+      failures.push(
+        `${entry.path} delivery closure is not classified: ${String(closurePath)}`,
+      );
+      continue;
+    }
+    if (!declaredMembers.has(closurePath)) {
+      failures.push(
+        `${entry.path} delivery closure evidence omits classified member: ${closurePath}`,
+      );
+    }
+  }
+  for (const member of declaredMembers) {
+    if (!entry.deliveryClosure.includes(member)) {
+      failures.push(
+        `${entry.path} delivery closure evidence names an undeclared member: ${member}`,
+      );
+    }
+  }
+  return failures;
+}
+
+const DELIVERY_ASSEMBLY_ACTIONS = new Set([
+  "javascript-stage",
+  "javascript-upload",
+  "powershell-copy",
+]);
+
+function validateDeliveryAssembly(entry, entriesByPath) {
+  if (entry.deliveryAssembly === undefined) return [];
+  if (
+    !Array.isArray(entry.deliveryAssembly) ||
+    entry.deliveryAssembly.length === 0
+  ) {
+    return [
+      `${entry.path} deliveryAssembly must name one or more assembled members`,
+    ];
+  }
+  if (!DELIVERY_ASSEMBLY_ACTIONS.has(entry.deliveryAssemblyAction)) {
+    return [
+      `${entry.path} deliveryAssembly must declare a supported deliveryAssemblyAction`,
+    ];
+  }
+  const evidence = entry.deliveryAssemblyEvidence;
+  if (
+    !evidence ||
+    typeof evidence.artifact !== "string" ||
+    evidence.artifact.length === 0 ||
+    evidence.producer !== entry.path ||
+    typeof evidence.verifier !== "string" ||
+    !entriesByPath.has(evidence.verifier) ||
+    entriesByPath.get(evidence.verifier).category !== "verifier-test guard" ||
+    typeof evidence.executionTest !== "string" ||
+    !entriesByPath.has(evidence.executionTest) ||
+    entriesByPath.get(evidence.executionTest).category !==
+      "verifier-test guard" ||
+    !Array.isArray(evidence.members)
+  ) {
+    return [
+      `${entry.path} delivery assembly must bind its executable producer, classified verifier, execution test, and evidence artifact`,
+    ];
+  }
+  const failures = [];
+  const declaredMembers = new Set(evidence.members);
+  for (const assemblyPath of entry.deliveryAssembly) {
+    if (typeof assemblyPath !== "string" || !entriesByPath.has(assemblyPath)) {
+      failures.push(
+        `${entry.path} delivery assembly member is not classified: ${String(assemblyPath)}`,
+      );
+      continue;
+    }
+    if (!declaredMembers.has(assemblyPath)) {
+      failures.push(
+        `${entry.path} delivery assembly evidence omits classified member: ${assemblyPath}`,
+      );
+    }
+  }
+  for (const member of declaredMembers) {
+    if (!entry.deliveryAssembly.includes(member)) {
+      failures.push(
+        `${entry.path} delivery assembly evidence names an undeclared member: ${member}`,
+      );
+    }
+  }
+  return failures;
+}
+
+function validatePreapprovalDeliveryAssembly(entry, entriesByPath) {
+  if (entry.preapprovalDeliveryAssembly === undefined) return [];
+  const evidence = entry.preapprovalDeliveryAssembly;
+  if (
+    !evidence ||
+    typeof evidence.artifact !== "string" ||
+    evidence.artifact.length === 0 ||
+    evidence.producer !== entry.path ||
+    typeof evidence.verifier !== "string" ||
+    !entriesByPath.has(evidence.verifier) ||
+    entriesByPath.get(evidence.verifier).category !== "verifier-test guard" ||
+    typeof evidence.executionTest !== "string" ||
+    !entriesByPath.has(evidence.executionTest) ||
+    entriesByPath.get(evidence.executionTest).category !==
+      "verifier-test guard" ||
+    !Array.isArray(evidence.members) ||
+    evidence.members.length === 0
+  ) {
+    return [
+      `${entry.path} preapproval delivery assembly must declare a classified verifier and VEM preapproval evidence artifact`,
+    ];
+  }
+  const failures = [];
+  for (const member of evidence.members) {
+    if (typeof member !== "string" || !entriesByPath.has(member)) {
+      failures.push(
+        `${entry.path} preapproval delivery assembly member is not classified: ${String(member)}`,
+      );
+    }
+  }
+  return failures;
+}
+
+const DELIVERY_ASSEMBLY_CONTRACT_ENV =
+  "VEM_DELIVERY_ASSEMBLY_CONTRACT_EXECUTION";
+const DELIVERY_ASSEMBLY_CONTRACT_SCHEMA =
+  "vem-delivery-assembly-execution-contract/v1";
+const DELIVERY_ASSEMBLY_PROOF_SCHEMA =
+  "vem-delivery-assembly-execution-proof/v1";
+
+function sha256Digest(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function isSafeContractRelativePath(path) {
+  return (
+    typeof path === "string" &&
+    path.length > 0 &&
+    !path.startsWith("/") &&
+    !path.includes("\\") &&
+    path
+      .split("/")
+      .every((part) => part.length > 0 && part !== "." && part !== "..")
+  );
+}
+
+function readContractJson(path, label) {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    throw new Error(`${label} is missing`);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`${label} must be a regular file`);
+  }
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function readContractOutput(root, relativePath, label) {
+  if (!isSafeContractRelativePath(relativePath)) {
+    throw new Error(`${label} has an unsafe staged path`);
+  }
+  const path = join(root, relativePath);
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    throw new Error(`${label} is missing from the checker-created output root`);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`${label} must be a regular staged file`);
+  }
+  return readFileSync(path);
+}
+
+function contractEvidenceEntries(entry) {
+  const evidence = [];
+  if (entry.deliveryAssembly !== undefined) {
+    evidence.push({
+      kind: "deliveryAssembly",
+      assembly: entry.deliveryAssembly,
+      value: entry.deliveryAssemblyEvidence,
+    });
+  }
+  if (entry.preapprovalDeliveryAssembly !== undefined) {
+    evidence.push({
+      kind: "preapprovalDeliveryAssembly",
+      assembly: entry.preapprovalDeliveryAssembly?.members,
+      value: entry.preapprovalDeliveryAssembly,
+    });
+  }
+  return evidence;
+}
+
+function verifyDeliveryAssemblyExecution({
+  root,
+  entry,
+  kind,
+  assembly,
+  evidence,
+}) {
+  const executionTestPath = join(root, evidence.executionTest);
+  if (!pathExists(root, evidence.executionTest)) {
+    return `${entry.path} ${kind} execution contract failed: execution test is missing`;
+  }
+  const contractRoot = mkdtempSync(
+    join(tmpdir(), "vem-delivery-assembly-contract-"),
+  );
+  try {
+    const nonce = randomBytes(32).toString("hex");
+    const outputRoot = join(contractRoot, "output");
+    const contractPath = join(contractRoot, "contract.json");
+    const contract = {
+      schemaVersion: DELIVERY_ASSEMBLY_CONTRACT_SCHEMA,
+      nonce,
+      root: contractRoot,
+      outputRoot,
+      repositoryRoot: root,
+      kind,
+      producer: entry.path,
+      verifier: evidence.verifier,
+      artifact: evidence.artifact,
+      members: assembly,
+    };
+    writeFileSync(contractPath, `${JSON.stringify(contract)}\n`, {
+      mode: 0o600,
+    });
+    const execution = spawnSync(
+      process.execPath,
+      [executionTestPath, "--delivery-assembly-contract", contractPath],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 60_000,
+        killSignal: "SIGKILL",
+        maxBuffer: 1024 * 1024,
+        env: {
+          ...process.env,
+          [DELIVERY_ASSEMBLY_CONTRACT_ENV]: "1",
+        },
+      },
+    );
+    if (execution.error?.code === "ETIMEDOUT") {
+      return `${entry.path} ${kind} execution contract failed: execution test timed out`;
+    }
+    if (execution.error) {
+      return `${entry.path} ${kind} execution contract failed: execution test could not start (${execution.error.message})`;
+    }
+    if (execution.status !== 0) {
+      return `${entry.path} ${kind} execution contract failed: execution test exited ${String(execution.status)}${execution.stderr ? `: ${execution.stderr.trim()}` : ""}`;
+    }
+
+    const proof = readContractJson(
+      join(contractRoot, "execution-proof.json"),
+      `${entry.path} ${kind} execution proof`,
+    );
+    if (
+      proof?.schemaVersion !== DELIVERY_ASSEMBLY_PROOF_SCHEMA ||
+      proof.nonce !== nonce ||
+      proof.root !== contractRoot ||
+      proof.producer !== entry.path ||
+      proof.verifier !== evidence.verifier
+    ) {
+      return `${entry.path} ${kind} execution contract failed: execution proof is not bound to this checker nonce, root, producer, and verifier`;
+    }
+    const verification = proof.verification;
+    if (
+      verification?.nonce !== nonce ||
+      verification.root !== contractRoot ||
+      !verification.files ||
+      typeof verification.files !== "object"
+    ) {
+      return `${entry.path} ${kind} execution contract failed: verifier output is not bound to this checker nonce and root`;
+    }
+    const expectedMembers = [...assembly].sort();
+    const verifiedMembers = Object.keys(verification.files).sort();
+    if (
+      expectedMembers.length !== verifiedMembers.length ||
+      expectedMembers.some((member, index) => member !== verifiedMembers[index])
+    ) {
+      return `${entry.path} ${kind} execution contract failed: verifier did not report exactly the declared staged members`;
+    }
+    for (const member of expectedMembers) {
+      const record = verification.files[member];
+      if (
+        !record ||
+        typeof record.stagedPath !== "string" ||
+        typeof record.digest !== "string"
+      ) {
+        return `${entry.path} ${kind} execution contract failed: verifier has incomplete staged-byte evidence for ${member}`;
+      }
+      const sourceBytes = readFileSync(join(root, member));
+      const stagedBytes = readContractOutput(
+        outputRoot,
+        record.stagedPath,
+        `${entry.path} ${kind} member ${member}`,
+      );
+      const expectedDigest = sha256Digest(sourceBytes);
+      if (
+        record.digest !== expectedDigest ||
+        sha256Digest(stagedBytes) !== expectedDigest ||
+        !stagedBytes.equals(sourceBytes)
+      ) {
+        return `${entry.path} ${kind} execution contract failed: verifier digest or staged bytes do not bind source member ${member}`;
+      }
+    }
+    const artifact = proof.artifact;
+    if (
+      !artifact ||
+      artifact.name !== evidence.artifact ||
+      typeof artifact.stagedPath !== "string" ||
+      typeof artifact.digest !== "string"
+    ) {
+      return `${entry.path} ${kind} execution contract failed: proof has no staged evidence artifact`;
+    }
+    const artifactBytes = readContractOutput(
+      outputRoot,
+      artifact.stagedPath,
+      `${entry.path} ${kind} evidence artifact`,
+    );
+    if (sha256Digest(artifactBytes) !== artifact.digest) {
+      return `${entry.path} ${kind} execution contract failed: artifact digest does not bind checker-root bytes`;
+    }
+    return undefined;
+  } catch (error) {
+    return `${entry.path} ${kind} execution contract failed: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    rmSync(contractRoot, { recursive: true, force: true });
+  }
+}
+
 function scriptMaintainsFactoryDeliveryEvidence(source) {
   return (
     source.includes("factory-runtime-manifest.json") &&
@@ -943,11 +1518,22 @@ function validateRunbookContracts(runbook, text) {
 }
 
 export function checkRepositoryScriptInventory(options = {}) {
+  if (process.env[DELIVERY_ASSEMBLY_CONTRACT_ENV] === "1") {
+    return {
+      ok: false,
+      checks: [],
+      failures: [
+        "delivery assembly execution contract recursion is forbidden inside its isolated driver",
+      ],
+      inventory: options.inventory ?? DEFAULT_INVENTORY,
+    };
+  }
   const root = options.root ?? process.cwd();
   const inventory = options.inventory ?? DEFAULT_INVENTORY;
   const publicRunbooks = options.publicRunbooks ?? DEFAULT_PUBLIC_RUNBOOKS;
   const failures = [];
   const checks = [];
+  const deliveryAssemblyExecutionFailures = [];
 
   const scripts = directoryExists(root, "scripts")
     ? listFiles(root, "scripts")
@@ -973,6 +1559,31 @@ export function checkRepositoryScriptInventory(options = {}) {
     failures.push(
       ...validateStaleIntegrationText(entry.path, readText(root, entry.path)),
     );
+    failures.push(...validateDeliveryClosure(entry, entriesByPath));
+    const assemblyFailures = validateDeliveryAssembly(entry, entriesByPath);
+    const preapprovalAssemblyFailures = validatePreapprovalDeliveryAssembly(
+      entry,
+      entriesByPath,
+    );
+    failures.push(...assemblyFailures, ...preapprovalAssemblyFailures);
+    if (
+      assemblyFailures.length === 0 &&
+      preapprovalAssemblyFailures.length === 0
+    ) {
+      for (const execution of contractEvidenceEntries(entry)) {
+        const failure = verifyDeliveryAssemblyExecution({
+          root,
+          entry,
+          kind: execution.kind,
+          assembly: execution.assembly,
+          evidence: execution.value,
+        });
+        if (failure) {
+          failures.push(failure);
+          deliveryAssemblyExecutionFailures.push(failure);
+        }
+      }
+    }
     for (const failure of validateLegacyEvidence(root, entry)) {
       failures.push(failure);
     }
@@ -1061,6 +1672,12 @@ export function checkRepositoryScriptInventory(options = {}) {
     ),
     detail:
       "factory image preparation scripts keep manifest, verifier, and evidence output in the delivery path",
+  });
+  checks.push({
+    name: "delivery-assembly-execution-contracts",
+    passed: deliveryAssemblyExecutionFailures.length === 0,
+    detail:
+      "each declared delivery producer and verifier execute in a checker-created nonce-bound isolated root",
   });
 
   return { ok: failures.length === 0, checks, failures, inventory };

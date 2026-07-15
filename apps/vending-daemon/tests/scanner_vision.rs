@@ -22,6 +22,9 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 static SCANNER_VISION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+const TEST_MAINTENANCE_PIN: &str = "2468";
+const TEST_MAINTENANCE_PIN_VERIFIER: &str = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
+
 fn scanner_config(scanner_path: String) -> serde_json::Value {
     serde_json::json!({
         "machineCode": "MACHINE-SCAN",
@@ -75,13 +78,38 @@ async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
     pty.spawn_scanner_writer(b"621234567890123456\r\n621234567890123456\r\n");
     let mut daemon = DaemonHarness::start(
         scanner_config(scanner_path),
-        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+        &[
+            ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
+            ("machine_secret", sensitive::TEST_MACHINE_SECRET),
+        ],
+        &[],
     )
     .await
     .expect("start daemon");
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let scanner = daemon.get_json("/v1/scanner/status").await;
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+    let client = Client::new();
+    let without_session = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .send()
+        .await
+        .expect("scanner status without maintenance session");
+    assert_eq!(without_session.status(), reqwest::StatusCode::FORBIDDEN);
+    let session_id = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
+    let scanner = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
+        .send()
+        .await
+        .expect("scanner status with maintenance session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("scanner status JSON");
     assert_eq!(scanner["adapter"], "serial_text");
     assert_eq!(scanner["online"], true);
     assert_eq!(scanner["code"], "SCANNER_READY");
@@ -110,13 +138,31 @@ async fn scanner_open_failure_reports_offline() {
     let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let mut daemon = DaemonHarness::start(
         scanner_config("/dev/vem-missing-scanner".to_string()),
-        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+        &[
+            ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
+            ("machine_secret", sensitive::TEST_MACHINE_SECRET),
+        ],
+        &[],
     )
     .await
     .expect("start daemon");
 
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+    let client = Client::new();
+    let session_id = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
     for _ in 0..40 {
-        let scanner = daemon.get_json("/v1/scanner/status").await;
+        let scanner = client
+            .get(format!("{base}/v1/scanner/status"))
+            .header("Authorization", daemon.bearer())
+            .header("x-vem-maintenance-session", &session_id)
+            .send()
+            .await
+            .expect("scanner status with maintenance session")
+            .json::<serde_json::Value>()
+            .await
+            .expect("scanner status JSON");
         if scanner["code"] == "SCANNER_OPEN_FAILED" {
             assert_eq!(scanner["online"], false);
             assert_eq!(scanner["adapter"], "serial_text");
@@ -128,13 +174,22 @@ async fn scanner_open_failure_reports_offline() {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
 
-    let scanner = daemon.get_json("/v1/scanner/status").await;
+    let scanner = client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
+        .send()
+        .await
+        .expect("scanner status with maintenance session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("scanner status JSON");
     daemon.terminate().await;
     panic!("scanner did not report open failure: {scanner}");
 }
 
 #[tokio::test]
-async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
+async fn serial_text_scanner_rejects_invalid_frame_then_submits_the_next_payment_code() {
     let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     let status_calls = Arc::new(AtomicUsize::new(0));
@@ -230,6 +285,7 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
         .await;
 
     mock_payment_code_options(&server).await;
+    mock_stock_movement_acceptance(&server).await;
     let mqtt = MqttBrokerHarness::start().await;
     let lower_controller = PtyHarness::open();
     let lower_controller_path = lower_controller.slave_path.to_string_lossy().to_string();
@@ -242,19 +298,18 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
     let mut daemon = DaemonHarness::start(
         config,
         &[
-            ("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET),
-            (
-                "VEM_MQTT_SIGNING_SECRET",
-                sensitive::TEST_MQTT_SIGNING_SECRET,
-            ),
+            ("machine_secret", sensitive::TEST_MACHINE_SECRET),
+            ("mqtt_signing_secret", sensitive::TEST_MQTT_SIGNING_SECRET),
+            ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
         ],
+        &[],
     )
     .await
     .expect("start daemon");
 
     create_payment_code_order(&daemon).await;
     wait_for_scanner_code(&daemon, "SCANNER_READY").await;
-    pty.write(b"621234567890123456\r\n").await;
+    pty.write(b"\xff12\r\n621234567890123456\r\n").await;
 
     let tx = wait_for_transaction(&daemon, |tx| {
         tx["nextAction"] == "dispensing" && tx["paymentCodeAttempt"]["source"] == "serial_text"
@@ -265,6 +320,24 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
     assert_eq!(tx["paymentCodeAttempt"]["source"], "serial_text");
     assert_eq!(tx["paymentCodeAttempt"]["maskedAuthCode"], "6212****3456");
     assert!(!tx.to_string().contains("621234567890123456"));
+    assert_eq!(submit_calls.load(Ordering::SeqCst), 1);
+
+    let platform_requests = server
+        .received_requests()
+        .await
+        .expect("recorded Platform requests");
+    let stock_ack_position = platform_requests
+        .iter()
+        .position(|request| request.url.path() == "/machine-stock-movements")
+        .expect("physical stock upload before sale");
+    let create_order_position = platform_requests
+        .iter()
+        .position(|request| request.url.path() == "/machine-orders")
+        .expect("create order after stock acceptance");
+    assert!(
+        stock_ack_position < create_order_position,
+        "scanner sale must wait for Platform stock acceptance before creating an order"
+    );
 
     daemon.terminate().await;
 }
@@ -380,6 +453,7 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
     let first_raw_code = "621234567890123456";
     let second_raw_code = "621234567890129999";
     mock_payment_code_options(&server).await;
+    mock_stock_movement_acceptance(&server).await;
     let mqtt = MqttBrokerHarness::start().await;
     let lower_controller = PtyHarness::open();
     let lower_controller_path = lower_controller.slave_path.to_string_lossy().to_string();
@@ -392,12 +466,11 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
     let mut daemon = DaemonHarness::start(
         config,
         &[
-            ("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET),
-            (
-                "VEM_MQTT_SIGNING_SECRET",
-                sensitive::TEST_MQTT_SIGNING_SECRET,
-            ),
+            ("machine_secret", sensitive::TEST_MACHINE_SECRET),
+            ("mqtt_signing_secret", sensitive::TEST_MQTT_SIGNING_SECRET),
+            ("machine_maintenance_pin", TEST_MAINTENANCE_PIN_VERIFIER),
         ],
+        &[],
     )
     .await
     .expect("start daemon");
@@ -456,7 +529,7 @@ async fn vision_disabled_reports_disabled_status() {
     config["scannerAdapter"] = serde_json::json!("disabled");
     config["scannerSerialPortPath"] = serde_json::Value::Null;
     config["visionEnabled"] = serde_json::json!(false);
-    let mut daemon = DaemonHarness::start(config, &[]).await.expect("start");
+    let mut daemon = DaemonHarness::start(config, &[], &[]).await.expect("start");
     let vision = wait_for_vision_message(&daemon, "disabled").await;
     assert_eq!(vision["enabled"], false);
     assert_eq!(vision["online"], false);
@@ -476,7 +549,7 @@ async fn vision_mock_process_updates_ready_status() {
     config["visionEnabled"] = serde_json::json!(true);
     config["visionWsUrl"] = serde_json::json!(format!("ws://127.0.0.1:{port}/ws"));
 
-    let mut daemon = DaemonHarness::start(config, &[])
+    let mut daemon = DaemonHarness::start(config, &[], &[])
         .await
         .expect("start daemon");
     let vision_status = wait_for_vision_ready(&daemon).await;
@@ -571,12 +644,33 @@ async fn mock_payment_code_options(server: &MockServer) {
         .await;
 }
 
+async fn mock_stock_movement_acceptance(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/machine-stock-movements"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(|request: &Request| {
+            let payload: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("stock movement upload JSON");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "movementId": payload["movementId"],
+                "status": "accepted",
+                "acceptedAt": "2026-07-14T00:00:00.000Z"
+            }))
+        })
+        .mount(server)
+        .await;
+}
+
 async fn prepare_local_sale_view(daemon: &DaemonHarness) {
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
     let client = Client::new();
+    let session_id = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
     let planogram = client
         .post(format!("{base}/v1/stock/planogram"))
         .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", &session_id)
         .json(&json!({
             "planogramVersion": "PLAN-SCAN",
             "source": "local_seed",
@@ -616,19 +710,30 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
     );
 
     let attestation = client
-        .post(format!("{base}/v1/stock/attestation"))
+        .post(format!("{base}/v1/bring-up/tasks/execute"))
         .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
         .json(&json!({
-            "attestationId": "ATT-SCAN-READY",
-            "planogramVersion": "PLAN-SCAN",
-            "operatorId": "test",
-            "slots": [{
-                "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                "slotCode": "A1",
-                "sku": "WATER-001",
-                "quantity": 3,
-                "enabled": true
-            }]
+            "contractVersion": 1,
+            "taskId": "bring_up.attest_stock",
+            "taskVersion": 1,
+            "kind": "attest_stock",
+            "intent": "record_stock",
+            "mutation": {
+                "type": "record_stock",
+                "attestation": {
+                    "attestationId": "ATT-SCAN-READY",
+                    "planogramVersion": "PLAN-SCAN",
+                    "operatorId": "test",
+                    "slots": [{
+                        "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                        "slotCode": "A1",
+                        "sku": "WATER-001",
+                        "quantity": 3,
+                        "enabled": true
+                    }]
+                }
+            }
         }))
         .send()
         .await
@@ -639,6 +744,34 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
         attestation_status,
         reqwest::StatusCode::CREATED,
         "attestation body: {attestation_body}"
+    );
+    let sale_view = wait_for_platform_accepted_stock(daemon).await;
+    assert_eq!(sale_view["items"][0]["slotSalesState"], "sale_ready");
+    assert!(sale_view["items"][0]["saleableStock"].as_i64().unwrap_or(0) > 0);
+}
+
+async fn wait_for_platform_accepted_stock(daemon: &DaemonHarness) -> serde_json::Value {
+    for _ in 0..60 {
+        // Bring-Up reads the daemon-owned attestation status and atomically
+        // finalizes the staged stock only after the Platform receipt exists.
+        let bring_up = daemon.get_json("/v1/bring-up").await;
+        let sale_view = daemon.get_json("/v1/sale-view").await;
+        let sale_ready = sale_view["items"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["slotSalesState"] == "sale_ready"
+                    && item["saleableStock"].as_i64().unwrap_or(0) > 0
+            })
+        });
+        if sale_ready {
+            assert_ne!(bring_up["currentTask"]["kind"], "attest_stock");
+            return sale_view;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let bring_up = daemon.get_json("/v1/bring-up").await;
+    let sale_view = daemon.get_json("/v1/sale-view").await;
+    panic!(
+        "Platform did not accept physical stock before scanner sale: bring_up={bring_up}, sale_view={sale_view}"
     );
 }
 
@@ -708,12 +841,35 @@ async fn wait_for_transaction(
 }
 
 async fn wait_for_scanner_code(daemon: &DaemonHarness, code: &str) -> serde_json::Value {
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+    let client = Client::new();
+    let session_id = daemon
+        .create_maintenance_session(TEST_MAINTENANCE_PIN)
+        .await;
     for _ in 0..40 {
-        let scanner = daemon.get_json("/v1/scanner/status").await;
+        let scanner = client
+            .get(format!("{base}/v1/scanner/status"))
+            .header("Authorization", daemon.bearer())
+            .header("x-vem-maintenance-session", &session_id)
+            .send()
+            .await
+            .expect("scanner status with maintenance session")
+            .json::<serde_json::Value>()
+            .await
+            .expect("scanner status JSON");
         if scanner["code"] == code {
             return scanner;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    daemon.get_json("/v1/scanner/status").await
+    client
+        .get(format!("{base}/v1/scanner/status"))
+        .header("Authorization", daemon.bearer())
+        .header("x-vem-maintenance-session", session_id)
+        .send()
+        .await
+        .expect("scanner status with maintenance session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("scanner status JSON")
 }

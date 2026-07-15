@@ -8,6 +8,7 @@
 # Manifest example:
 # {
 #   "updateId": "2026-06-27-local",
+#   "sourceCommit": "replace-with-full-40-hex-git-commit",
 #   "components": [
 #     {
 #       "component": "daemon",
@@ -494,8 +495,13 @@ function ConvertTo-ComponentSpec {
 }
 
 function Get-RequestedComponents {
+  param([object]$ParsedManifest)
+
   if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
-    $manifest = Read-JsonFile -Path $ManifestPath
+    $manifest = $ParsedManifest
+    if ($null -eq $manifest) {
+      throw "parsed manifest is required for manifest updates"
+    }
     if ($null -eq $manifest.components) {
       throw "manifest must contain components array"
     }
@@ -525,6 +531,43 @@ function Get-RequestedComponents {
         targetPath = $TargetPath
       })
   )
+}
+
+function New-ManifestSourceBinding {
+  param(
+    [string]$Path,
+    [object]$Manifest,
+    [object[]]$Components
+  )
+
+  $sourceCommit = ([string]$Manifest.sourceCommit).Trim().ToLowerInvariant()
+  if ($sourceCommit -notmatch "^[0-9a-f]{40}$") {
+    throw "manifest sourceCommit must be a full Git commit"
+  }
+  $boundComponents = @()
+  foreach ($spec in @($Components)) {
+    $boundSidecars = @()
+    foreach ($sidecar in @($spec.sidecars)) {
+      $boundSidecars += [pscustomobject][ordered]@{
+        targetPath = $sidecar.targetPath
+        sha256 = $sidecar.sha256
+      }
+    }
+    $boundComponents += [pscustomobject][ordered]@{
+      component = $spec.component
+      targetPath = $spec.targetPath
+      sha256 = $spec.sha256
+      sidecars = $boundSidecars
+    }
+  }
+
+  return [pscustomobject][ordered]@{
+    schemaVersion = "managed-update-source-binding/v1"
+    manifestSha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    sourceCommit = $sourceCommit
+    updateId = [string]$Manifest.updateId
+    components = $boundComponents
+  }
 }
 
 function Write-Evidence {
@@ -662,6 +705,7 @@ function Install-Component {
 Assert-Administrator
 
 $manifestUpdateId = "direct-input"
+$manifestForEvidence = $null
 if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
   $manifestForEvidence = Read-JsonFile -Path $ManifestPath
   if ([string]::IsNullOrWhiteSpace([string]$manifestForEvidence.updateId)) {
@@ -670,13 +714,18 @@ if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
   $manifestUpdateId = [string]$manifestForEvidence.updateId
 }
 
-$components = Get-RequestedComponents
+$components = Get-RequestedComponents -ParsedManifest $manifestForEvidence
+$sourceBinding = $null
+if ($null -ne $manifestForEvidence) {
+  $sourceBinding = New-ManifestSourceBinding -Path $ManifestPath -Manifest $manifestForEvidence -Components $components
+}
 $evidence = [ordered]@{
   ok = $false
   updateId = $manifestUpdateId
   manifestPath = $ManifestPath
   startedAt = (Get-Date).ToUniversalTime().ToString("o")
   host = $env:COMPUTERNAME
+  sourceBinding = $sourceBinding
   components = @()
   evidencePath = $null
 }

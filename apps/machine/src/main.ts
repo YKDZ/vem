@@ -4,8 +4,8 @@ import { createApp } from "vue";
 import App from "./App.vue";
 import { installCustomerAudioCueConsumer } from "./audio-cues/customer-audio-consumer";
 import { installKioskBrowserGuards } from "./kiosk-browser-guards";
-import { installTouchKeyboardPolicy } from "./native/touch-keyboard";
 import { router } from "./router";
+import { installTransactionRouteAuthority } from "./router/transaction-route-authority";
 import "./style.css";
 
 async function installDevTools(): Promise<void> {
@@ -21,13 +21,11 @@ async function bootstrap(): Promise<void> {
   installKioskBrowserGuards();
   await installDevTools();
   const app = createApp(App);
+  const pinia = createPinia();
 
-  app.use(createPinia());
+  app.use(pinia);
+  installTransactionRouteAuthority(router, pinia);
   app.use(router);
-  installTouchKeyboardPolicy({
-    isAllowed: () => router.currentRoute.value.meta.touchKeyboard === "allowed",
-    afterEach: (handler) => router.afterEach(handler),
-  });
   installCustomerAudioCueConsumer();
 
   await router.isReady();

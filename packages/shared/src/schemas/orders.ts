@@ -466,6 +466,7 @@ export const createMachineOrderSchema = z
     paymentMethod: paymentMethodSchema,
     paymentProviderCode: machinePaymentProviderCodeSchema.optional(),
     profileSnapshot: machineOrderProfileSnapshotSchema.optional(),
+    idempotencyKey: z.string().trim().min(8).max(128).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.paymentMethod === "mock") {

@@ -2,10 +2,15 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
-import type { DaemonEvent, UnknownDaemonEvent } from "@/daemon/schemas";
+import type {
+  DaemonEvent,
+  TransactionSnapshot,
+  UnknownDaemonEvent,
+} from "@/daemon/schemas";
 
+import { runBoundedBootCheck } from "@/daemon/boot-check";
 import { daemonClient } from "@/daemon/client";
-import { routeForStartup } from "@/daemon/startup";
+import { routeForBootFailure, routeForStartup } from "@/daemon/startup";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -30,6 +35,12 @@ const naturalContextStore = useNaturalContextStore();
 const steps = ref<string[]>([]);
 
 let eventSubscription: { close(): void } | null = null;
+let bootGeneration = 0;
+let recoveredTransaction: TransactionSnapshot | null = null;
+
+function ownsBoot(signal: AbortSignal, generation: number): boolean {
+  return !signal.aborted && generation === bootGeneration;
+}
 
 function pushStep(message: string): void {
   steps.value = [...steps.value, message];
@@ -95,98 +106,137 @@ function recordUnknownDaemonEvent(event: UnknownDaemonEvent): void {
   connectivityStore.recordUnknownEvent(event);
 }
 
-onMounted(async () => {
-  try {
-    pushStep("连接本机 daemon IPC");
-    await daemonClient.initialize();
-
-    pushStep("读取 daemon 健康与交易快照");
-    const [health, ready, bringUp, saleReadiness, transaction] =
-      await Promise.all([
-        daemonClient.getHealth(),
-        daemonClient.getReady(),
-        daemonClient.getBringUp(),
-        daemonClient.getSaleReadiness(),
-        daemonClient.getCurrentTransaction(),
-      ]);
-    machineStore.applyHealth(health);
-    connectivityStore.applyHealth(health);
-    connectivityStore.applyReady(ready);
-    connectivityStore.applySaleReadiness(saleReadiness);
-    const startupTransaction = checkoutStore.shouldIgnoreTransaction(
-      transaction,
-    )
-      ? null
-      : transaction;
-    if (startupTransaction) {
-      checkoutStore.applyTransaction(startupTransaction, { restored: true });
-    }
-
-    pushStep("同步配置");
+async function runBootCheck(): Promise<void> {
+  bootGeneration += 1;
+  const generation = bootGeneration;
+  recoveredTransaction = null;
+  await runBoundedBootCheck(async (signal) => {
     try {
-      await machineStore.loadConfig();
+      pushStep("连接本机 daemon IPC");
+      await daemonClient.initialize();
+      if (!ownsBoot(signal, generation)) return;
+
+      pushStep("读取 daemon 健康与交易快照");
+      // Start every bounded read concurrently, but recover the transaction
+      // first. A later readiness response must never replace an already known
+      // customer journey when the boot bound expires.
+      const healthRequest = daemonClient.getHealth();
+      const readyRequest = daemonClient.getReady();
+      const bringUpRequest = daemonClient.getBringUp();
+      const saleReadinessRequest = daemonClient.getSaleReadiness();
+      const transaction = await daemonClient.getCurrentTransaction();
+      if (!ownsBoot(signal, generation)) return;
+
+      const startupTransaction = checkoutStore.shouldIgnoreTransaction(
+        transaction,
+      )
+        ? null
+        : transaction;
+      recoveredTransaction = startupTransaction;
+      if (startupTransaction) {
+        checkoutStore.applyTransaction(startupTransaction, { restored: true });
+      }
+
+      const [health, ready, bringUp, saleReadiness] = await Promise.all([
+        healthRequest,
+        readyRequest,
+        bringUpRequest,
+        saleReadinessRequest,
+      ]);
+      if (!ownsBoot(signal, generation)) return;
+      machineStore.applyHealth(health);
+      connectivityStore.applyHealth(health);
+      connectivityStore.applyReady(ready);
+      connectivityStore.applySaleReadiness(saleReadiness);
+
+      pushStep("同步配置");
+      try {
+        await machineStore.loadConfig();
+        if (!ownsBoot(signal, generation)) return;
+      } catch (error) {
+        if (!ownsBoot(signal, generation)) return;
+        connectivityStore.markStale(error);
+        pushStep("daemon 配置读取失败，进入领取页确认配置");
+      }
+
+      pushStep("同步目录和展示状态");
+      await Promise.allSettled([
+        mqttStore.refresh(),
+        catalogStore.load(),
+        scannerStore.refresh(),
+        visionStore.refresh(),
+        remoteOpsStore.refresh(),
+        naturalContextStore.refresh(),
+      ]);
+      if (!ownsBoot(signal, generation)) return;
+
+      if (!eventSubscription) {
+        pushStep("订阅 daemon 事件流");
+        eventSubscription = daemonClient.subscribeEvents({
+          onEvent: dispatchDaemonEvent,
+          onUnknownEvent: recordUnknownDaemonEvent,
+          onError: (error) => {
+            connectivityStore.markStale(error);
+          },
+          onStale: () => {
+            void Promise.allSettled([
+              connectivityStore.refresh(),
+              catalogStore.refresh(),
+              mqttStore.refresh(),
+              checkoutStore.refreshCurrentTransaction(),
+            ]);
+          },
+        });
+      }
+
+      pushStep("根据 daemon 状态选择页面");
+      await router.replace(
+        routeForStartup({
+          daemonAvailable: true,
+          health,
+          config: machineStore.configSummary,
+          bringUp,
+          ready,
+          restoredTransaction: startupTransaction,
+        }),
+      );
     } catch (error) {
+      if (!ownsBoot(signal, generation)) return;
       connectivityStore.markStale(error);
-      pushStep("daemon 配置读取失败，进入领取页确认配置");
+      pushStep("daemon 不可用，进入维护页");
+      await router.replace(routeForBootFailure(recoveredTransaction));
     }
+  }, 10_000);
+}
 
-    pushStep("同步目录和展示状态");
-    await Promise.allSettled([
-      mqttStore.refresh(),
-      catalogStore.load(),
-      scannerStore.refresh(),
-      visionStore.refresh(),
-      remoteOpsStore.refresh(),
-      naturalContextStore.refresh(),
-    ]);
-
-    if (!eventSubscription) {
-      pushStep("订阅 daemon 事件流");
-      eventSubscription = daemonClient.subscribeEvents({
-        onEvent: dispatchDaemonEvent,
-        onUnknownEvent: recordUnknownDaemonEvent,
-        onError: (error) => {
-          connectivityStore.markStale(error);
-        },
-        onStale: () => {
-          void Promise.allSettled([
-            connectivityStore.refresh(),
-            catalogStore.refresh(),
-            mqttStore.refresh(),
-            checkoutStore.refreshCurrentTransaction(),
-          ]);
-        },
-      });
-    }
-
-    pushStep("根据 daemon 状态选择页面");
-    await router.replace(
-      routeForStartup({
-        daemonAvailable: true,
-        health,
-        config: machineStore.configSummary,
-        bringUp,
-        ready,
-        restoredTransaction: startupTransaction,
-      }),
-    );
+onMounted(async () => {
+  const generation = bootGeneration + 1;
+  try {
+    await runBootCheck();
   } catch (error) {
+    if (generation !== bootGeneration) return;
     connectivityStore.markStale(error);
-    pushStep("daemon 不可用，进入维护页");
-    await router.replace(
-      routeForStartup({
-        daemonAvailable: false,
-        health: null,
-        config: null,
-        bringUp: null,
-        ready: null,
-        restoredTransaction: null,
-      }),
-    );
+    if (recoveredTransaction) {
+      pushStep("启动检查超时，继续恢复顾客交易");
+      await router.replace(
+        routeForStartup({
+          daemonAvailable: true,
+          health: null,
+          config: null,
+          bringUp: null,
+          ready: null,
+          restoredTransaction: recoveredTransaction,
+        }),
+      );
+    } else {
+      pushStep("启动检查超时，进入维护页");
+      await router.replace("/maintenance");
+    }
   }
 });
 
 onUnmounted(() => {
+  bootGeneration += 1;
   eventSubscription?.close();
   eventSubscription = null;
 });

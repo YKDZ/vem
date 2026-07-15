@@ -142,6 +142,8 @@ const EFFECTIVE_IMPLEMENTATION_FILES = [
   "apply-managed-update.ps1",
   "provision-vision-factory-release.ps1",
   "install-vision-release.ps1",
+  "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1",
 ];
 const VISION_DOCUMENT_ROLES = [
   "descriptor",
@@ -473,6 +475,47 @@ function visionFactoryProvisioningManifest(files) {
         .map(([path, bytes]) => [path, hashBytes(bytes)]),
     ),
   };
+}
+
+export const FACTORY_VISION_DELIVERY_ASSEMBLY_MEMBERS = Object.freeze([
+  "install-vision-release.ps1",
+  "provision-vision-factory-release.ps1",
+  "vision-release-materialization.psm1",
+  "vision-diagnostic-redaction.psm1",
+]);
+
+// This is the same installer staging boundary used by Factory media assembly.
+// The narrow contract runner below calls it with no Factory assets so the
+// inventory guard can execute the real copier without building an ISO.
+export async function stageFactoryVisionInstaller({ stageDirectory }) {
+  const installerRoot = join(stageDirectory, "VEM", "VISION-INSTALLER");
+  await mkdir(installerRoot, { recursive: true });
+  const files = {};
+  for (const name of FACTORY_VISION_DELIVERY_ASSEMBLY_MEMBERS) {
+    const bytes = await readFile(
+      new URL(`../windows/${name}`, import.meta.url),
+    );
+    await writeFile(join(installerRoot, name), bytes);
+    files[`VISION-INSTALLER/${name}`] = bytes;
+  }
+  return files;
+}
+
+export async function stageFactoryVisionDeliveryAssemblyContract({
+  outputRoot,
+}) {
+  await Promise.all([
+    mkdir(join(outputRoot, "VEM", "VISION-RELEASE"), { recursive: true }),
+    mkdir(join(outputRoot, "VEM", "VISION-TRUST"), { recursive: true }),
+  ]);
+  const files = await stageFactoryVisionInstaller({
+    stageDirectory: outputRoot,
+  });
+  await writeFile(
+    join(outputRoot, "VEM", "VISION-FACTORY-PROVISIONING.JSON"),
+    Buffer.from(canonicalJson(visionFactoryProvisioningManifest(files))),
+  );
+  return files;
 }
 
 function bootImageBytes() {
@@ -3950,15 +3993,16 @@ async function stageBuildInputs({
     );
   }
   const trustRoot = join(stageDirectory, "VEM", "VISION-TRUST");
-  const installerRoot = join(stageDirectory, "VEM", "VISION-INSTALLER");
   await mkdir(trustRoot, { recursive: true });
-  await mkdir(installerRoot, { recursive: true });
-  const installerBytes = await readFile(
-    new URL("../windows/install-vision-release.ps1", import.meta.url),
-  );
-  const provisionerBytes = await readFile(
-    new URL("../windows/provision-vision-factory-release.ps1", import.meta.url),
-  );
+  const installerFiles = await stageFactoryVisionInstaller({ stageDirectory });
+  const installerBytes =
+    installerFiles["VISION-INSTALLER/install-vision-release.ps1"];
+  const provisionerBytes =
+    installerFiles["VISION-INSTALLER/provision-vision-factory-release.ps1"];
+  const materializationBytes =
+    installerFiles["VISION-INSTALLER/vision-release-materialization.psm1"];
+  const redactionBytes =
+    installerFiles["VISION-INSTALLER/vision-diagnostic-redaction.psm1"];
   await writeFile(
     join(trustRoot, "vision-release-trust-anchor.json"),
     visionTrustMaterial.anchorBytes,
@@ -3970,14 +4014,6 @@ async function stageBuildInputs({
   await writeFile(
     join(trustRoot, "vision-release-verifier.exe"),
     visionTrustMaterial.verifierBytes,
-  );
-  await writeFile(
-    join(installerRoot, "install-vision-release.ps1"),
-    installerBytes,
-  );
-  await writeFile(
-    join(installerRoot, "provision-vision-factory-release.ps1"),
-    provisionerBytes,
   );
   const provisioningManifest = visionFactoryProvisioningManifest({
     "VISION-RELEASE/factory-manifest.json": Buffer.from(
@@ -4007,6 +4043,9 @@ async function stageBuildInputs({
       visionTrustMaterial.verifierBytes,
     "VISION-INSTALLER/install-vision-release.ps1": installerBytes,
     "VISION-INSTALLER/provision-vision-factory-release.ps1": provisionerBytes,
+    "VISION-INSTALLER/vision-release-materialization.psm1":
+      materializationBytes,
+    "VISION-INSTALLER/vision-diagnostic-redaction.psm1": redactionBytes,
   });
   await writeFile(
     join(stageDirectory, "VEM", "VISION-FACTORY-PROVISIONING.JSON"),
@@ -4114,6 +4153,8 @@ export async function createWindowsFactoryFirstBootMedia({
     "apply-managed-update.ps1",
     "provision-vision-factory-release.ps1",
     "install-vision-release.ps1",
+    "vision-release-materialization.psm1",
+    "vision-diagnostic-redaction.psm1",
   ]) {
     await writeFile(
       join(scriptsRoot, script),
@@ -4169,6 +4210,8 @@ export async function createWindowsFactoryFirstBootMedia({
     for (const script of [
       "install-vision-release.ps1",
       "provision-vision-factory-release.ps1",
+      "vision-release-materialization.psm1",
+      "vision-diagnostic-redaction.psm1",
     ]) {
       await writeFile(
         join(installerRoot, script),
@@ -4212,6 +4255,13 @@ export async function createWindowsFactoryFirstBootMedia({
               await readFile(
                 join(installerRoot, "provision-vision-factory-release.ps1"),
               ),
+            "VISION-INSTALLER/vision-release-materialization.psm1":
+              await readFile(
+                join(installerRoot, "vision-release-materialization.psm1"),
+              ),
+            "VISION-INSTALLER/vision-diagnostic-redaction.psm1": await readFile(
+              join(installerRoot, "vision-diagnostic-redaction.psm1"),
+            ),
           }),
         ),
       ),
@@ -4618,5 +4668,35 @@ export async function buildFactoryMedia({
     };
   } finally {
     await rm(buildArtifactsDirectory, { recursive: true, force: true });
+  }
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const contractIndex = process.argv.indexOf("--delivery-assembly-contract");
+  if (contractIndex >= 0) {
+    try {
+      const contractPath = process.argv[contractIndex + 1];
+      const contract = JSON.parse(await readFile(contractPath, "utf8"));
+      if (
+        contract?.schemaVersion !==
+          "vem-delivery-assembly-execution-contract/v1" ||
+        contract.producer !== "scripts/factory/build-factory-media.mjs" ||
+        contract.kind !== "deliveryAssembly" ||
+        typeof contract.outputRoot !== "string"
+      ) {
+        throw new Error("invalid Factory delivery assembly execution contract");
+      }
+      await stageFactoryVisionDeliveryAssemblyContract({
+        outputRoot: contract.outputRoot,
+      });
+      process.stdout.write(
+        `${JSON.stringify({ nonce: contract.nonce, outputRoot: contract.outputRoot })}\n`,
+      );
+    } catch (error) {
+      process.stderr.write(
+        `${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exitCode = 1;
+    }
   }
 }

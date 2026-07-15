@@ -106,7 +106,7 @@ impl StockMovementUploadRuntime {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
@@ -115,7 +115,8 @@ mod tests {
 
     use crate::backend::BackendClient;
     use crate::state::store::{
-        MachinePlanogramInput, MachinePlanogramSlotInput, StockMovementInput,
+        MachinePlanogramInput, MachinePlanogramSlotInput, PhysicalStockAttestationInput,
+        PhysicalStockAttestationSlotInput, StockMovementInput,
     };
     use crate::state::LocalStateStore;
 
@@ -177,6 +178,172 @@ mod tests {
             )
             .await
             .expect("movement");
+    }
+
+    async fn seed_pending_physical_attestation_upload(
+        store: &LocalStateStore,
+        attestation_id: &str,
+    ) {
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-ATTEST-UPLOAD".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                    slot_code: "B1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440012".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440013".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440014".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    try_on_silhouette_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        store
+            .record_physical_stock_attestation_with_upload(
+                PhysicalStockAttestationInput {
+                    attestation_id: attestation_id.to_string(),
+                    planogram_version: "PLAN-ATTEST-UPLOAD".to_string(),
+                    operator_id: "operator-1".to_string(),
+                    slots: vec![PhysicalStockAttestationSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                        slot_code: "B1".to_string(),
+                        sku: "WATER-001".to_string(),
+                        quantity: 3,
+                        enabled: true,
+                    }],
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("stage attestation");
+    }
+
+    #[tokio::test]
+    async fn accepted_attestation_upload_commits_only_after_platform_receipt() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_pending_physical_attestation_upload(&store, "ATT-FLUSH-ACCEPT").await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-stock-movements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "movementId": "ATT-FLUSH-ACCEPT:550e8400-e29b-41d4-a716-446655440011",
+                "status": "accepted",
+                "acceptedAt": "2026-07-14T00:00:00.000Z",
+                "receipt": {"rawMovementId":"raw-attestation"}
+            })))
+            .mount(&server)
+            .await;
+        let runtime = StockMovementUploadRuntime::new(
+            store.clone(),
+            test_backend_client(&server).await,
+            CancellationToken::new(),
+        );
+
+        runtime.flush_due_once().await.expect("flush accepted");
+
+        let status = store
+            .physical_stock_attestation_status()
+            .await
+            .expect("attestation status");
+        assert_eq!(status.status, "ready");
+        assert_eq!(
+            store.sale_view(None).await.expect("sale view").items[0].physical_stock,
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_attestation_upload_keeps_record_stock_recovery_without_local_stock() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_pending_physical_attestation_upload(&store, "ATT-FLUSH-REJECT").await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-stock-movements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "movementId": "ATT-FLUSH-REJECT:550e8400-e29b-41d4-a716-446655440011",
+                "status": "rejected",
+                "acceptedAt": null,
+                "rejection": {"reason":"mapping_mismatch"}
+            })))
+            .mount(&server)
+            .await;
+        let runtime = StockMovementUploadRuntime::new(
+            store.clone(),
+            test_backend_client(&server).await,
+            CancellationToken::new(),
+        );
+
+        runtime.flush_due_once().await.expect("flush rejected");
+
+        let status = store
+            .physical_stock_attestation_status()
+            .await
+            .expect("attestation status");
+        assert_eq!(status.status, "failed");
+        let sale_view = store.sale_view(None).await.expect("sale view");
+        assert_eq!(sale_view.items[0].physical_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "needs_count");
+    }
+
+    #[tokio::test]
+    async fn timed_out_attestation_upload_survives_restart_as_failed_record_stock_recovery() {
+        let temp = TempDir::new().expect("temp");
+        let database = temp.path().join("state.db");
+        let store = LocalStateStore::open(&database).await.expect("open");
+        seed_pending_physical_attestation_upload(&store, "ATT-FLUSH-TIMEOUT").await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-stock-movements"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(9))
+                    .set_body_json(serde_json::json!({"status":"accepted"})),
+            )
+            .mount(&server)
+            .await;
+        let runtime = StockMovementUploadRuntime::new(
+            store.clone(),
+            test_backend_client(&server).await,
+            CancellationToken::new(),
+        );
+
+        let result = runtime
+            .flush_due_once()
+            .await
+            .expect("timeout is retryable");
+        assert_eq!(result.failed, 1);
+        drop(store);
+        let restarted = LocalStateStore::open(&database).await.expect("restart");
+        let status = restarted
+            .physical_stock_attestation_status()
+            .await
+            .expect("recovered status");
+        assert_eq!(status.status, "failed");
+        assert_eq!(status.code, "PHYSICAL_STOCK_ATTESTATION_UPLOAD_FAILED");
     }
 
     #[tokio::test]
@@ -266,7 +433,7 @@ mod tests {
             .expect("sale view");
         assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
         assert_eq!(sale_view.items[0].physical_stock, 3);
-        assert_eq!(sale_view.items[0].saleable_stock, 3);
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
         let sync = store
             .stock_movement_sync_record("MOVE-BLOCKED")
             .await

@@ -400,7 +400,7 @@ describe("PaymentView", () => {
     expect(host.textContent).not.toContain("Invalid option");
   });
 
-  it("routes to catalog when the projected payment transaction is no longer active", async () => {
+  it("keeps the last payment projection when IPC temporarily reports no current transaction", async () => {
     getCurrentTransactionMock.mockResolvedValue({
       orderId: null,
       orderNo: null,
@@ -428,6 +428,11 @@ describe("PaymentView", () => {
     await mountView();
     await flushPromises();
 
-    expect(routerReplaceMock).toHaveBeenCalledWith({ name: "catalog" });
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(checkoutStore.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-CANCEL-001",
+    });
+    expect(checkoutStore.customerCheckoutRecovery.active).toBe(true);
   });
 });

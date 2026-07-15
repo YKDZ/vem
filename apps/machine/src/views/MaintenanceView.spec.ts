@@ -3,7 +3,10 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-import type { ConfigSummary } from "@/daemon/schemas";
+import {
+  deviceBindingSnapshotSchema,
+  type ConfigSummary,
+} from "@/daemon/schemas";
 
 const {
   routeMock,
@@ -13,16 +16,26 @@ const {
   getReadyMock,
   getSyncStatusMock,
   getScannerStatusMock,
+  getDeviceBindingsMock,
+  testDeviceBindingMock,
+  confirmDeviceBindingMock,
   getVisionStatusMock,
   getNaturalContextMock,
   getRemoteOpsStatusMock,
-  getSaleViewMock,
-  recordStockMovementMock,
+  getStockMaintenanceTaskMock,
+  submitStockMaintenanceBatchMock,
   clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
   getConfigMock,
   saveConfigMock,
+  saveMachineAudioSettingsMock,
   downloadLogExportMock,
+  beginMaintenanceSessionMock,
+  clearMaintenanceSessionMock,
+  handoffMaintenanceSessionToBringUpMock,
+  getMaintenanceSessionForRouteMock,
+  releaseMaintenanceSessionRouteMock,
+  onMaintenanceSessionInvalidatedMock,
   callTauriCommandMock,
   openVisionTryOnSessionMock,
   machineAudioPlaybackFactoryOverride,
@@ -34,16 +47,26 @@ const {
   getReadyMock: vi.fn(),
   getSyncStatusMock: vi.fn(),
   getScannerStatusMock: vi.fn(),
+  getDeviceBindingsMock: vi.fn(),
+  testDeviceBindingMock: vi.fn(),
+  confirmDeviceBindingMock: vi.fn(),
   getVisionStatusMock: vi.fn(),
   getNaturalContextMock: vi.fn(),
   getRemoteOpsStatusMock: vi.fn(),
-  getSaleViewMock: vi.fn(),
-  recordStockMovementMock: vi.fn(),
+  getStockMaintenanceTaskMock: vi.fn(),
+  submitStockMaintenanceBatchMock: vi.fn(),
   clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
   getConfigMock: vi.fn(),
   saveConfigMock: vi.fn(),
+  saveMachineAudioSettingsMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
+  beginMaintenanceSessionMock: vi.fn(),
+  clearMaintenanceSessionMock: vi.fn(),
+  handoffMaintenanceSessionToBringUpMock: vi.fn(),
+  getMaintenanceSessionForRouteMock: vi.fn(),
+  releaseMaintenanceSessionRouteMock: vi.fn(),
+  onMaintenanceSessionInvalidatedMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
   machineAudioPlaybackFactoryOverride: {
@@ -64,25 +87,40 @@ vi.mock("@/components/MockHardwareControls.vue", () => ({
   default: { template: "<div>MockHardwareControls</div>" },
 }));
 
-vi.mock("@/daemon/client", () => ({
-  daemonClient: {
-    initialize: initializeMock,
-    getHealth: getHealthMock,
-    getReady: getReadyMock,
-    getSyncStatus: getSyncStatusMock,
-    getScannerStatus: getScannerStatusMock,
-    getVisionStatus: getVisionStatusMock,
-    getNaturalContext: getNaturalContextMock,
-    getRemoteOpsStatus: getRemoteOpsStatusMock,
-    getSaleView: getSaleViewMock,
-    recordStockMovement: recordStockMovementMock,
-    clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
-    runHardwareSelfCheck: runHardwareSelfCheckMock,
-    getConfig: getConfigMock,
-    saveConfig: saveConfigMock,
-    downloadLogExport: downloadLogExportMock,
-  },
-}));
+vi.mock("@/daemon/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/daemon/client")>();
+  return {
+    ...actual,
+    daemonClient: {
+      initialize: initializeMock,
+      getHealth: getHealthMock,
+      getReady: getReadyMock,
+      getSyncStatus: getSyncStatusMock,
+      getScannerStatus: getScannerStatusMock,
+      getDeviceBindings: getDeviceBindingsMock,
+      testDeviceBinding: testDeviceBindingMock,
+      confirmDeviceBinding: confirmDeviceBindingMock,
+      getVisionStatus: getVisionStatusMock,
+      getNaturalContext: getNaturalContextMock,
+      getRemoteOpsStatus: getRemoteOpsStatusMock,
+      getStockMaintenanceTask: getStockMaintenanceTaskMock,
+      submitStockMaintenanceBatch: submitStockMaintenanceBatchMock,
+      clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
+      runHardwareSelfCheck: runHardwareSelfCheckMock,
+      getConfig: getConfigMock,
+      saveConfig: saveConfigMock,
+      saveMachineAudioSettings: saveMachineAudioSettingsMock,
+      downloadLogExport: downloadLogExportMock,
+      beginMaintenanceSession: beginMaintenanceSessionMock,
+      clearMaintenanceSession: clearMaintenanceSessionMock,
+      handoffMaintenanceSessionToBringUp:
+        handoffMaintenanceSessionToBringUpMock,
+      getMaintenanceSessionForRoute: getMaintenanceSessionForRouteMock,
+      releaseMaintenanceSessionRoute: releaseMaintenanceSessionRouteMock,
+      onMaintenanceSessionInvalidated: onMaintenanceSessionInvalidatedMock,
+    },
+  };
+});
 
 vi.mock("@/native/tauri", () => ({
   isTauriRuntime: () => true,
@@ -115,7 +153,6 @@ vi.mock("@/audio-playback/machine-audio-playback", async (importOriginal) => {
 });
 
 import { useAudioCueStore } from "@/stores/audio-cues";
-import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 
@@ -123,37 +160,36 @@ import MaintenanceView from "./MaintenanceView.vue";
 
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
+let maintenanceSessionInvalidationListener: (() => void) | null = null;
 
-function saleViewFixture() {
+function stockMaintenanceTaskFixture(
+  mode:
+    | "initial_count"
+    | "recovery_count"
+    | "routine_refill" = "routine_refill",
+) {
   return {
-    items: [
+    taskId: "stock-task-01",
+    mode,
+    status: "ready" as const,
+    slots: [
       {
-        machineCode: "M001",
-        slotId: "550e8400-e29b-41d4-a716-446655440001",
         slotCode: "A1",
         layerNo: 1,
         cellNo: 1,
-        inventoryId: "550e8400-e29b-41d4-a716-446655440002",
-        variantId: "550e8400-e29b-41d4-a716-446655440003",
-        productId: "550e8400-e29b-41d4-a716-446655440004",
         productName: "Mineral Water",
-        productDescription: null,
-        coverImageUrl: null,
-        categoryId: null,
-        categoryName: null,
         sku: "WATER-001",
-        size: null,
-        color: null,
-        priceCents: 100,
         capacity: 8,
-        parLevel: 6,
-        physicalStock: 2,
-        saleableStock: 2,
-        slotSalesState: "sale_ready",
-        productSortOrder: 1,
-        targetGender: null,
+        currentQuantity: 2,
+        submittedQuantity: null,
+        submittedAddition: null,
+        previewQuantity: null,
+        syncStatus: "not_submitted" as const,
+        salesState: "sale_ready",
+        reconciliationReason: null,
       },
     ],
+    discoveryDiagnostics: [],
     source: "local_stock",
     planogramVersion: "PLAN-1",
     lastUpdatedAt: "2026-06-05T00:00:00.000Z",
@@ -249,6 +285,7 @@ function provisionedConfigSummary(): ConfigSummary {
       visionWsUrl: "ws://secret-vision.example/ws",
       visionRequestTimeoutMs: 8000,
       machineAudioVolume: 0.7,
+      machineAudioOutputBinding: null,
       audioCueSettings: {
         enabled: false,
         categories: {
@@ -262,6 +299,7 @@ function provisionedConfigSummary(): ConfigSummary {
     machineSecretConfigured: true,
     mqttSigningSecretConfigured: true,
     mqttPasswordConfigured: true,
+    maintenancePinConfigured: true,
     provisioned: true,
     provisioningIssues: [],
   };
@@ -270,7 +308,9 @@ function provisionedConfigSummary(): ConfigSummary {
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
+  globalThis.localStorage.clear();
   vi.clearAllMocks();
+  maintenanceSessionInvalidationListener = null;
   routeMock.query = { source: "operator" };
   initializeMock.mockResolvedValue({
     baseUrl: "http://127.0.0.1:7891",
@@ -304,6 +344,101 @@ beforeEach(() => {
     code: "SCANNER_READY",
     message: "scanner ready",
     updatedAt: "2026-06-05T00:00:00.000Z",
+  });
+  getDeviceBindingsMock.mockResolvedValue(
+    deviceBindingSnapshotSchema.parse({
+      roles: [
+        {
+          role: "lower_controller",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_SELECTION_REQUIRED",
+          message: "select lower controller",
+          ambiguous: true,
+          ambiguityKind: "candidate_selection",
+          ambiguityPorts: ["COM5", "COM3"],
+          legacyPortHint: "COM5",
+          candidates: [
+            {
+              identity: {
+                identityKey: "container:11111111-2222-3333-4444-555555555555",
+                instanceId: "USB\\CONTROLLER-1",
+                containerId: "11111111-2222-3333-4444-555555555555",
+                hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+                serialNumber: null,
+              },
+              currentPort: "COM5",
+              friendlyName: "下位机串口",
+              readiness: "candidate",
+              readinessCode: "ROLE_TEST_REQUIRED",
+              readinessMessage: "test required",
+            },
+            {
+              identity: {
+                identityKey: "container:22222222-3333-4444-5555-666666666666",
+                instanceId: "USB\\VID_1234&PID_5678\\SCANNER-1",
+                containerId: "22222222-3333-4444-5555-666666666666",
+                hardwareIds: ["USB\\VID_1234&PID_5678"],
+                serialNumber: "SCANNER-1",
+              },
+              currentPort: "COM3",
+              friendlyName: "扫码器串口",
+              readiness: "candidate",
+              readinessCode: "ROLE_TEST_REQUIRED",
+              readinessMessage: "test required",
+            },
+          ],
+          discoveryDiagnostics: [],
+        },
+        {
+          role: "scanner",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_REQUIRED",
+          message: "select scanner",
+          ambiguous: false,
+          ambiguityKind: null,
+          ambiguityPorts: [],
+          legacyPortHint: "COM3",
+          candidates: [],
+          discoveryDiagnostics: [],
+        },
+      ],
+    }),
+  );
+  testDeviceBindingMock.mockResolvedValue({
+    role: "lower_controller",
+    identityKey: "container:11111111-2222-3333-4444-555555555555",
+    currentPort: "COM5",
+    success: true,
+    code: "LOWER_CONTROLLER_HANDSHAKE_READY",
+    message: "ready",
+    testedAt: "2026-07-15T00:00:00Z",
+    testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+    testEvidenceExpiresAt: "2026-07-15T00:01:00Z",
+    observationRevision: `sha256:${"a".repeat(64)}`,
+    configRevision: `sha256:${"b".repeat(64)}`,
+  });
+  confirmDeviceBindingMock.mockResolvedValue({
+    binding: {
+      identity: {
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
+        instanceId: "USB\\CONTROLLER-1",
+        containerId: "11111111-2222-3333-4444-555555555555",
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: null,
+      },
+      confirmedAt: "2026-07-15T00:00:00Z",
+      confirmedBy: "operator-1",
+      testEvidenceCode: "LOWER_CONTROLLER_HANDSHAKE_READY",
+    },
+    currentPort: "COM5",
+    ready: true,
+    code: "DEVICE_BINDING_ACTIVATED",
+    message: "activated",
+    unrelatedRuntimeRestarted: false,
   });
   getVisionStatusMock.mockResolvedValue({
     enabled: true,
@@ -361,8 +496,11 @@ beforeEach(() => {
     lastError: null,
     processing: null,
   });
-  getSaleViewMock.mockResolvedValue(saleViewFixture());
-  recordStockMovementMock.mockResolvedValue(saleViewFixture());
+  getStockMaintenanceTaskMock.mockResolvedValue(stockMaintenanceTaskFixture());
+  submitStockMaintenanceBatchMock.mockResolvedValue({
+    task: { ...stockMaintenanceTaskFixture(), status: "pending" },
+    duplicate: false,
+  });
   clearWholeMachineMaintenanceLockMock.mockResolvedValue({ cleared: true });
   runHardwareSelfCheckMock.mockResolvedValue({
     online: true,
@@ -375,8 +513,42 @@ beforeEach(() => {
   });
   getConfigMock.mockResolvedValue(provisionedConfigSummary());
   saveConfigMock.mockResolvedValue({});
+  saveMachineAudioSettingsMock.mockResolvedValue(provisionedConfigSummary());
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
-  callTauriCommandMock.mockResolvedValue(undefined);
+  beginMaintenanceSessionMock.mockResolvedValue({
+    sessionId: "maintenance-session-1",
+    expiresAt: "2030-07-14T12:00:00.000Z",
+    scopes: ["maintenance.mutate"],
+  });
+  handoffMaintenanceSessionToBringUpMock.mockReturnValue(true);
+  getMaintenanceSessionForRouteMock.mockReturnValue(null);
+  onMaintenanceSessionInvalidatedMock.mockImplementation(
+    (listener: () => void) => {
+      maintenanceSessionInvalidationListener = listener;
+      return () => {
+        if (maintenanceSessionInvalidationListener === listener) {
+          maintenanceSessionInvalidationListener = null;
+        }
+      };
+    },
+  );
+  callTauriCommandMock.mockImplementation((command: string) => {
+    if (command === "list_machine_audio_outputs") {
+      return Promise.resolve([
+        {
+          endpointId: "{0.0.0.00000000}.speaker-1",
+          friendlyName: "Near-field speaker",
+          isDefault: true,
+        },
+        {
+          endpointId: "{0.0.0.00000000}.hdmi-1",
+          friendlyName: "HDMI monitor",
+          isDefault: false,
+        },
+      ]);
+    }
+    return Promise.resolve(undefined);
+  });
   openVisionTryOnSessionMock.mockResolvedValue({
     sessionId: "maintenance-session-1",
     previewUrl: "http://127.0.0.1:7892/try-on/maintenance.mjpeg",
@@ -402,20 +574,108 @@ async function mountView(): Promise<HTMLElement> {
   mountedApp.use(pinia);
   mountedApp.mount(host);
   await vi.waitFor(() => {
-    expect(getSaleViewMock).toHaveBeenCalled();
+    expect(getStockMaintenanceTaskMock).toHaveBeenCalled();
   });
   await nextTick();
   return host;
 }
 
-function submitButton(host: HTMLElement): HTMLButtonElement {
-  const button = Array.from(host.querySelectorAll("button")).find((item) =>
-    item.textContent?.includes("记录库存动作"),
-  );
-  if (!(button instanceof HTMLButtonElement)) {
-    throw new Error("submit button not found");
+async function unlockMaintenance(host: HTMLElement): Promise<void> {
+  const input = host.querySelector('input[aria-label="维护 PIN"]');
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error("maintenance PIN input not found");
   }
-  return button;
+  input.value = "2468";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input
+    .closest("form")
+    ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await vi.waitFor(() => {
+    expect(host.textContent).toContain("已授权");
+  });
+}
+
+it("keeps automatic maintenance diagnostics readable while mutations remain PIN-gated", async () => {
+  routeMock.query = {};
+  getReadyMock.mockResolvedValue(maintenanceReadyFixture());
+  const host = await mountView();
+
+  expect(host.textContent).toContain("只读");
+  expect(host.textContent).toContain("当前阻塞项");
+  const recovery = Array.from(host.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes("先验证 PIN"),
+  );
+  expect(recovery).toBeInstanceOf(HTMLButtonElement);
+  expect(recovery).toHaveProperty("disabled", true);
+});
+
+it("verifies the PIN through daemon IPC before enabling protected maintenance actions", async () => {
+  const host = await mountView();
+  await unlockMaintenance(host);
+  await vi.waitFor(() => {
+    expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
+      "2468",
+      ["maintenance.reclaim"],
+      "operator-console",
+    );
+  });
+  expect(clearMaintenanceSessionMock).not.toHaveBeenCalled();
+});
+
+it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {
+  const host = await mountView();
+  await unlockMaintenance(host);
+
+  maintenanceSessionInvalidationListener?.();
+  await nextTick();
+
+  expect(host.textContent).toContain("只读");
+  expect(host.textContent).toContain("守护进程连接已更新");
+  expect(clearMaintenanceSessionMock).toHaveBeenCalled();
+});
+
+it("makes MACHINE_AUTH_MISSING recovery usable in production after PIN verification", async () => {
+  routeMock.query = {};
+  getReadyMock.mockResolvedValue({
+    ...maintenanceReadyFixture(),
+    blockingCodes: ["MACHINE_AUTH_MISSING"],
+    blockingReasons: [
+      {
+        code: "MACHINE_AUTH_MISSING",
+        component: "machine_authentication",
+        message: "machine identity is not configured",
+      },
+    ],
+  });
+  const host = await mountView();
+
+  const lockedRecovery = buttonByText(host, "先验证 PIN");
+  expect(lockedRecovery.disabled).toBe(true);
+  await unlockMaintenance(host);
+
+  const unlockedRecovery = buttonByText(host, "打开首次部署控制台");
+  expect(unlockedRecovery.disabled).toBe(false);
+  unlockedRecovery.click();
+  await vi.waitFor(() => {
+    expect(routerReplaceMock).toHaveBeenCalledWith({
+      path: "/bring-up",
+      query: { source: "protected-maintenance" },
+    });
+  });
+});
+
+function stockInputByLabel(
+  host: HTMLElement,
+  labelText: string,
+): HTMLInputElement {
+  const label = Array.from(host.querySelectorAll("label")).find((item) =>
+    item.textContent?.includes(labelText),
+  );
+  const input = label?.querySelector("input");
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`${labelText} stock input not found`);
+  }
+  return input;
 }
 
 function buttonByText(host: HTMLElement, text: string): HTMLButtonElement {
@@ -454,24 +714,99 @@ function inputByTest(host: HTMLElement, testId: string): HTMLInputElement {
   return input;
 }
 
-function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
-  const select = Array.from(host.querySelectorAll("select")).find((item) =>
-    Array.from(item.options).some(
-      (option) => option.value === "stock_count_correction",
-    ),
-  );
-  if (!(select instanceof HTMLSelectElement)) {
-    throw new Error("movement type select not found");
-  }
-  return select;
-}
-
 describe("MaintenanceView hardware config", () => {
+  it("hides unsafe binding actions for duplicate observations and offers an actionable refresh", async () => {
+    const duplicateCandidate = {
+      identity: {
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
+        instanceId: "USB\\VID_1A86&PID_55D3\\CONTROLLER-1",
+        containerId: "11111111-2222-3333-4444-555555555555",
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: null,
+      },
+      currentPort: "COM5",
+      friendlyName: "下位机串口",
+      readiness: "blocked" as const,
+      readinessCode: "DEVICE_BINDING_AMBIGUOUS",
+      readinessMessage: "duplicate observation",
+    };
+    getDeviceBindingsMock.mockResolvedValueOnce({
+      roles: [
+        {
+          role: "lower_controller",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_AMBIGUOUS",
+          message: "same identity observed more than once",
+          ambiguous: true,
+          ambiguityKind: "duplicate_observation",
+          ambiguityPorts: ["COM5", "COM5"],
+          legacyPortHint: "COM5",
+          candidates: [duplicateCandidate, { ...duplicateCandidate }],
+          discoveryDiagnostics: [],
+        },
+      ],
+    });
+    const host = await mountView();
+    const role = await vi.waitFor(() => {
+      const element = host.querySelector(
+        "[data-test='device-binding-lower_controller']",
+      );
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    });
+
+    expect(role.textContent).toContain("拔除重复设备后刷新");
+    expect(
+      Array.from(role.querySelectorAll("button")).some((button) =>
+        ["测试", "确认绑定"].includes(button.textContent?.trim() ?? ""),
+      ),
+    ).toBe(false);
+    buttonByText(role, "刷新设备").click();
+    await vi.waitFor(() => {
+      expect(getDeviceBindingsMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("tests then confirms each stable device identity through protected maintenance", async () => {
+    const host = await mountView();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector("[data-test='device-binding-lower_controller']"),
+      ).not.toBeNull();
+    });
+    expect(host.textContent).toContain("下位机串口 · COM5");
+    expect(host.textContent).toContain("迁移提示：COM5（不作为绑定）");
+
+    await unlockMaintenance(host);
+    buttonByText(host, "测试").click();
+    await vi.waitFor(() => {
+      expect(testDeviceBindingMock).toHaveBeenCalledWith(
+        "lower_controller",
+        "container:11111111-2222-3333-4444-555555555555",
+      );
+    });
+
+    const confirm = buttonByText(host, "确认绑定");
+    await vi.waitFor(() => {
+      expect(confirm.disabled).toBe(false);
+    });
+    confirm.click();
+    await vi.waitFor(() => {
+      expect(confirmDeviceBindingMock).toHaveBeenCalledWith(
+        "lower_controller",
+        "container:11111111-2222-3333-4444-555555555555",
+        "11111111-2222-4333-8444-555555555555",
+      );
+    });
+  });
+
   it("shows production maintenance without editable deployment or debug configuration fields", async () => {
     const host = await mountView();
 
-    expect(host.textContent).toContain("计划补货");
-    expect(host.textContent).toContain("盘点修正");
+    expect(host.textContent).toContain("确认补货");
+    expect(host.textContent).toContain("补货后");
     expect(host.textContent).toContain("维护控制台");
     expect(host.textContent).toContain("后端");
     expect(host.textContent).toContain("MQTT");
@@ -494,7 +829,9 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).not.toContain("扫码器适配器");
     expect(host.textContent).not.toContain("visionWsUrl");
     expect(host.textContent).not.toContain("MockHardwareControls");
-    expect(host.querySelector("input[type='password']")).toBeNull();
+    expect(
+      host.querySelector("input[type='password']:not([aria-label='维护 PIN'])"),
+    ).toBeNull();
     expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
@@ -580,7 +917,7 @@ describe("MaintenanceView hardware config", () => {
     ).toBeNull();
   });
 
-  it("does not save a machine-owned try-on camera device id", async () => {
+  it("blocks the retired direct configuration save entrypoint", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -591,13 +928,15 @@ describe("MaintenanceView hardware config", () => {
       },
     });
     const host = await mountView();
-    buttonByText(host, "保存配置并重新自检").click();
-    await vi.waitFor(() => {
-      expect(saveConfigMock).toHaveBeenCalled();
-    });
-    const publicConfig = saveConfigMock.mock.calls[0]?.[0].public;
-    expect(publicConfig).not.toHaveProperty("tryOnCameraDeviceId");
-    expect(publicConfig).not.toHaveProperty("tryOnCameraLabel");
+    await unlockMaintenance(host);
+    const button = buttonByText(
+      host,
+      "直接配置编辑已禁用；请使用首次部署控制台",
+    );
+    expect(button.disabled).toBe(true);
+    button.click();
+    await nextTick();
+    expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
   it("releases the vision try-on preview diagnostic session on unmount", async () => {
@@ -703,7 +1042,7 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
 
     expect(getConfigMock).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("计划补货");
+    expect(host.textContent).toContain("确认补货");
     expect(host.textContent).toContain("后端");
     expect(host.textContent).not.toContain("SECRET-MACHINE-CODE");
     expect(host.textContent).not.toContain("https://api.secret.example/v1");
@@ -711,6 +1050,7 @@ describe("MaintenanceView hardware config", () => {
 
   it("runs production diagnostics and log export from standard maintenance", async () => {
     const host = await mountView();
+    await unlockMaintenance(host);
 
     buttonByText(host, "硬件自检").click();
     buttonByText(host, "视觉状态").click();
@@ -858,7 +1198,7 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).not.toContain("Presence audio cues");
   });
 
-  it("edits Machine Audio volume as a percent and saves normalized config", async () => {
+  it("keeps direct audio configuration saves unavailable", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -879,21 +1219,208 @@ describe("MaintenanceView hardware config", () => {
       configLoaded: true,
     });
     const host = await mountView();
+    await unlockMaintenance(host);
     const input = inputByTest(host, "machine-audio-volume-percent");
 
     expect(input.value).toBe("35");
 
-    input.value = "42";
-    input.dispatchEvent(new Event("input"));
+    const button = buttonByText(
+      host,
+      "直接配置编辑已禁用；请使用首次部署控制台",
+    );
+    expect(button.disabled).toBe(true);
+    expect(saveConfigMock).not.toHaveBeenCalled();
+  });
+
+  it("tests Machine Audio playback against the selected stable output endpoint instead of the OS default", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const capturedOptions: Array<Record<string, unknown>> = [];
+    machineAudioPlaybackFactoryOverride.current = (options) => {
+      capturedOptions.push(options as Record<string, unknown>);
+      return {
+        playLocal: vi.fn(async () => true),
+        stop: vi.fn(),
+        currentDriver: () => "native",
+        latestDiagnostic: () => null,
+      };
+    };
+    const host = await mountView();
+    const candidate = host.querySelector(
+      'input[type="radio"][value="{0.0.0.00000000}.hdmi-1"]',
+    );
+    if (!(candidate instanceof HTMLInputElement)) {
+      throw new Error("audio output candidate radio not found");
+    }
+    candidate.click();
     await nextTick();
-    buttonByText(host, "保存配置并重新自检").click();
+
+    buttonByText(host, "播放测试音频").click();
+    await nextTick();
+
+    expect(capturedOptions.length).toBeGreaterThan(0);
+    expect(capturedOptions[capturedOptions.length - 1]?.outputDeviceId).toBe(
+      "{0.0.0.00000000}.hdmi-1",
+    );
+    expect(
+      capturedOptions[capturedOptions.length - 1]?.requireNativeOutputBinding,
+    ).toBe(true);
+  });
+
+  it("persists the heard output binding together with audio cue settings through protected maintenance", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    saveMachineAudioSettingsMock.mockResolvedValue({
+      ...provisionedConfigSummary(),
+      public: {
+        ...provisionedConfigSummary().public,
+        machineAudioVolume: 0.42,
+        machineAudioOutputBinding: {
+          endpointId: "{0.0.0.00000000}.speaker-1",
+          friendlyName: "Near-field speaker",
+          confirmedHeardAt: "2026-07-15T06:10:00.000Z",
+        },
+        audioCueSettings: {
+          enabled: true,
+          categories: {
+            presence: true,
+            transaction: false,
+          },
+        },
+      },
+    });
+    const host = await mountView();
+    await unlockMaintenance(host);
+    vi.useFakeTimers();
+
+    const selected = host.querySelector(
+      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
+    );
+    if (!(selected instanceof HTMLInputElement)) {
+      throw new Error("near-field speaker radio not found");
+    }
+    selected.click();
+    await nextTick();
+
+    const heardLabel = Array.from(host.querySelectorAll("label")).find((item) =>
+      item.textContent?.includes("我已经在近场顾客扬声器上听到了测试音频"),
+    );
+    const heardCheckbox = heardLabel?.querySelector('input[type="checkbox"]');
+    if (!(heardCheckbox instanceof HTMLInputElement)) {
+      throw new Error("heard confirmation checkbox not found");
+    }
+    const volume = inputByTest(host, "machine-audio-volume-percent");
+    volume.value = "42";
+    volume.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
+    const saveButton = buttonByText(host, "保存顾客扬声器绑定与音频提示设置");
+    expect(saveButton.disabled).toBe(true);
+
+    buttonByText(host, "播放测试音频").click();
+    await vi.runAllTimersAsync();
+    await nextTick();
+
+    expect(heardCheckbox.disabled).toBe(false);
+    heardCheckbox.click();
+    await nextTick();
+
+    saveButton.click();
 
     await vi.waitFor(() => {
-      expect(saveConfigMock).toHaveBeenCalled();
+      expect(saveMachineAudioSettingsMock).toHaveBeenCalledTimes(1);
     });
-    expect(saveConfigMock.mock.calls[0]?.[0].public).toMatchObject({
+    expect(saveMachineAudioSettingsMock.mock.calls[0]?.[0]).toMatchObject({
+      machineAudioOutputBinding: {
+        endpointId: "{0.0.0.00000000}.speaker-1",
+        friendlyName: "Near-field speaker",
+      },
+      audioCueSettings: {
+        enabled: false,
+        categories: {
+          presence: false,
+          transaction: false,
+        },
+      },
       machineAudioVolume: 0.42,
     });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain(
+        "顾客音频输出绑定与音频提示设置已保存",
+      );
+    });
+  });
+
+  it("clears heard confirmation when the tested endpoint or form volume changes", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: { advancedMaintenanceConfig: true },
+    });
+    const host = await mountView();
+    await unlockMaintenance(host);
+    vi.useFakeTimers();
+    const selected = host.querySelector(
+      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
+    );
+    if (!(selected instanceof HTMLInputElement)) {
+      throw new Error("near-field speaker radio not found");
+    }
+    selected.click();
+    await nextTick();
+
+    buttonByText(host, "播放测试音频").click();
+    await vi.runAllTimersAsync();
+    await nextTick();
+
+    const heardLabel = Array.from(host.querySelectorAll("label")).find((item) =>
+      item.textContent?.includes("我已经在近场顾客扬声器上听到了测试音频"),
+    );
+    const heardCheckbox = heardLabel?.querySelector('input[type="checkbox"]');
+    if (!(heardCheckbox instanceof HTMLInputElement)) {
+      throw new Error("heard confirmation checkbox not found");
+    }
+    heardCheckbox.click();
+    await nextTick();
+    expect(heardCheckbox.checked).toBe(true);
+
+    const volume = inputByTest(host, "machine-audio-volume-percent");
+    volume.value = "0";
+    volume.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    expect(heardCheckbox.checked).toBe(false);
+    expect(heardCheckbox.disabled).toBe(true);
+    expect(
+      buttonByText(host, "保存顾客扬声器绑定与音频提示设置").disabled,
+    ).toBe(true);
+
+    const alternative = host.querySelector(
+      'input[type="radio"][value="{0.0.0.00000000}.hdmi-1"]',
+    );
+    if (!(alternative instanceof HTMLInputElement)) {
+      throw new Error("HDMI output candidate radio not found");
+    }
+    alternative.click();
+    await nextTick();
+    expect(heardCheckbox.checked).toBe(false);
+    expect(heardCheckbox.disabled).toBe(true);
+    expect(saveMachineAudioSettingsMock).not.toHaveBeenCalled();
   });
 
   it("plays protected maintenance Machine Audio test playback with mock diagnostics and global volume", async () => {
@@ -1158,6 +1685,7 @@ describe("MaintenanceView hardware config", () => {
     });
 
     const host = await mountView();
+    await unlockMaintenance(host);
 
     buttonByText(host, "刷新诊断").click();
     buttonByText(host, "硬件自检").click();
@@ -1261,9 +1789,11 @@ describe("MaintenanceView hardware config", () => {
       },
     });
     const host = await mountView();
+    await unlockMaintenance(host);
 
     buttonByText(host, "首次部署控制台").click();
 
+    expect(handoffMaintenanceSessionToBringUpMock).toHaveBeenCalledOnce();
     expect(routerReplaceMock).toHaveBeenCalledWith({
       path: "/bring-up",
       query: { source: "protected-maintenance" },
@@ -1281,11 +1811,19 @@ describe("MaintenanceView hardware config", () => {
       },
     });
     const host = await mountView();
+    await unlockMaintenance(host);
 
     buttonByText(host, "回到 Windows 桌面").click();
 
     await vi.waitFor(() => {
-      expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop");
+      expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
+        "2468",
+        ["maintenance.reclaim", "maintenance.desktop_exit"],
+        "operator-console",
+      );
+      expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop", {
+        sessionId: "maintenance-session-1",
+      });
     });
   });
 
@@ -1380,6 +1918,7 @@ describe("MaintenanceView hardware config", () => {
       ),
     );
     const host = await mountView();
+    await unlockMaintenance(host);
     const clearButton = buttonByText(host, "确认解除整机锁");
 
     expect(host.textContent).toContain("整机维护锁");
@@ -1415,64 +1954,240 @@ describe("MaintenanceView hardware config", () => {
   });
 });
 
-describe("MaintenanceView stock maintenance", () => {
-  it("does not expose trusted stock movement sources", async () => {
-    const host = await mountView();
-
-    expect(host.textContent).not.toContain("field_service");
-    expect(host.textContent).not.toContain("approved_count");
-  });
-
-  it("records no-login planned refill as local maintenance with attribution", async () => {
-    const host = await mountView();
-    const updatedSaleView = {
-      ...saleViewFixture(),
-      items: [
-        {
-          ...saleViewFixture().items[0],
-          physicalStock: 5,
-          saleableStock: 5,
-          slotSalesState: "sale_ready",
-        },
-      ],
-      lastUpdatedAt: "2026-06-05T00:05:00.000Z",
-    };
-    recordStockMovementMock.mockResolvedValueOnce(updatedSaleView);
-
-    submitButton(host).click();
-
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          planogramVersion: "PLAN-1",
-          slotId: "550e8400-e29b-41d4-a716-446655440001",
-          movementType: "planned_refill",
-          source: "local_maintenance",
-          attributedTo: "front-panel",
-        }),
-      );
-      expect(useCatalogStore().items[0]?.physicalStock).toBe(5);
-      expect(useCatalogStore().items[0]?.slotSalesState).toBe("sale_ready");
+describe("MaintenanceView protected route continuation", () => {
+  it("restores an explicit Bring-Up-to-Maintenance session without another PIN prompt", async () => {
+    getMaintenanceSessionForRouteMock.mockReturnValue({
+      sessionId: "continued-bring-up-session",
+      expiresAt: "2030-07-14T12:00:00.000Z",
+      scopes: ["maintenance.mutate"],
     });
+
+    const host = await mountView();
+
+    expect(getMaintenanceSessionForRouteMock).toHaveBeenCalledWith(
+      "maintenance",
+    );
+    expect(host.textContent).toContain("已授权");
+    expect(host.textContent).toContain("已继续首次部署的维护会话。");
+    expect(host.textContent).not.toContain("验证并解锁");
+  });
+});
+
+describe("MaintenanceView planogram-driven stock task", () => {
+  it("shows recognizable slot facts without planogram, UUID, or operator inputs", async () => {
+    const host = await mountView();
+
+    expect(host.textContent).toContain("A1");
+    expect(host.textContent).toContain("Mineral Water");
+    expect(host.textContent).toContain("2/8");
+    expect(host.textContent).toContain("未提交");
+    expect(host.textContent).not.toContain("货道图版本");
+    expect(host.textContent).not.toContain("记录人");
+    expect(host.textContent).not.toContain(
+      "550e8400-e29b-41d4-a716-446655440001",
+    );
   });
 
-  it("records no-login stock count as local maintenance with attribution", async () => {
+  it("previews resulting refill counts and submits only additions under the daemon task", async () => {
     const host = await mountView();
-    const select = movementTypeSelect(host);
-    select.value = "stock_count_correction";
-    select.dispatchEvent(new Event("change"));
+    await unlockMaintenance(host);
+    const addition = stockInputByLabel(host, "补货数量");
+    addition.value = "2";
+    addition.dispatchEvent(new Event("input"));
     await nextTick();
 
-    submitButton(host).click();
+    expect(host.textContent).toContain("补货后 4/8");
+    const button = Array.from(host.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "确认补货",
+    );
+    button?.click();
 
     await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          movementType: "stock_count_correction",
-          source: "local_maintenance",
-          attributedTo: "front-panel",
-        }),
-      );
+      expect(submitStockMaintenanceBatchMock).toHaveBeenCalledWith({
+        taskId: "stock-task-01",
+        mode: "routine_refill",
+        slots: [{ slotCode: "A1", addition: 2 }],
+      });
+    });
+    const body = submitStockMaintenanceBatchMock.mock.calls[0]?.[0];
+    expect(body).not.toHaveProperty("operatorId");
+    expect(body).not.toHaveProperty("planogramVersion");
+  });
+
+  it("recovers an immutable pending refill addition and its original preview", async () => {
+    const ready = stockMaintenanceTaskFixture();
+    const pending = {
+      ...ready,
+      status: "pending" as const,
+      slots: [
+        {
+          ...ready.slots[0],
+          currentQuantity: 4,
+          submittedAddition: 2,
+          previewQuantity: 4,
+          syncStatus: "pending" as const,
+        },
+      ],
+    };
+    getStockMaintenanceTaskMock.mockResolvedValueOnce(pending);
+    const host = await mountView();
+    await unlockMaintenance(host);
+
+    const addition = stockInputByLabel(host, "补货数量");
+    expect(addition.value).toBe("2");
+    expect(addition.disabled).toBe(true);
+    expect(host.textContent).toContain("补货后 4/8");
+    const submit = buttonByText(host, "确认补货");
+    expect(submit.disabled).toBe(false);
+    submit.click();
+    await vi.waitFor(() => {
+      expect(submitStockMaintenanceBatchMock).toHaveBeenCalledWith({
+        taskId: "stock-task-01",
+        mode: "routine_refill",
+        slots: [{ slotCode: "A1", addition: 2 }],
+      });
     });
   });
+
+  it("reprojects values when a completed historical retry returns a new ready refill task", async () => {
+    const next = stockMaintenanceTaskFixture();
+    next.taskId = "stock-task-02";
+    next.slots[0].currentQuantity = 4;
+    submitStockMaintenanceBatchMock.mockResolvedValueOnce({
+      task: next,
+      duplicate: true,
+    });
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const addition = stockInputByLabel(host, "补货数量");
+    addition.value = "2";
+    addition.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "确认补货").click();
+
+    await vi.waitFor(() => {
+      expect(stockInputByLabel(host, "补货数量").value).toBe("0");
+    });
+    expect(host.textContent).toContain("补货后 4/8");
+    expect(buttonByText(host, "确认补货").disabled).toBe(true);
+  });
+
+  it("reprojects a completed count response into a fresh refill form", async () => {
+    getStockMaintenanceTaskMock.mockResolvedValueOnce(
+      stockMaintenanceTaskFixture("initial_count"),
+    );
+    const refill = stockMaintenanceTaskFixture();
+    refill.taskId = "stock-task-02";
+    refill.slots[0].currentQuantity = 6;
+    submitStockMaintenanceBatchMock.mockResolvedValueOnce({
+      task: refill,
+      duplicate: false,
+    });
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const count = stockInputByLabel(host, "实际数量");
+    count.value = "6";
+    count.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "提交盘点").click();
+
+    await vi.waitFor(() => {
+      expect(stockInputByLabel(host, "补货数量").value).toBe("0");
+    });
+    expect(host.textContent).toContain("补货后 6/8");
+    expect(buttonByText(host, "确认补货").disabled).toBe(true);
+    const addition = stockInputByLabel(host, "补货数量");
+    addition.value = "1";
+    addition.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "确认补货").click();
+    await vi.waitFor(() => {
+      expect(submitStockMaintenanceBatchMock).toHaveBeenLastCalledWith({
+        taskId: "stock-task-02",
+        mode: "routine_refill",
+        slots: [{ slotCode: "A1", addition: 1 }],
+      });
+    });
+  });
+
+  it("rejects a fractional refill without silently rewriting its value", async () => {
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const addition = stockInputByLabel(host, "补货数量");
+    addition.value = "1.5";
+    addition.dispatchEvent(new Event("input"));
+    await nextTick();
+
+    const button = Array.from(host.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "确认补货",
+    );
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    expect(button!.disabled).toBe(true);
+    expect(host.textContent).not.toContain("补货后 3.5/8");
+    button?.click();
+    expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "-1", "7", "NaN"])(
+    "rejects invalid refill input %j",
+    async (rawValue) => {
+      const host = await mountView();
+      await unlockMaintenance(host);
+      const addition = stockInputByLabel(host, "补货数量");
+      addition.value = rawValue;
+      addition.dispatchEvent(new Event("input"));
+      await nextTick();
+
+      const button = buttonByText(host, "确认补货");
+      expect(button.disabled).toBe(true);
+      expect(host.textContent).toContain("输入无效");
+      button.click();
+      expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("submits one complete final-quantity batch for initial stock", async () => {
+    getStockMaintenanceTaskMock.mockResolvedValueOnce(
+      stockMaintenanceTaskFixture("initial_count"),
+    );
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const quantity = stockInputByLabel(host, "实际数量");
+    quantity.value = "6";
+    quantity.dispatchEvent(new Event("input"));
+    await nextTick();
+    const button = Array.from(host.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "提交盘点",
+    );
+    button?.click();
+
+    await vi.waitFor(() => {
+      expect(submitStockMaintenanceBatchMock).toHaveBeenCalledWith({
+        taskId: "stock-task-01",
+        mode: "initial_count",
+        slots: [{ slotCode: "A1", quantity: 6 }],
+      });
+    });
+  });
+
+  it.each(["", "-1", "1.5", "9", "NaN"])(
+    "rejects invalid final count input %j",
+    async (rawValue) => {
+      getStockMaintenanceTaskMock.mockResolvedValueOnce(
+        stockMaintenanceTaskFixture("initial_count"),
+      );
+      const host = await mountView();
+      await unlockMaintenance(host);
+      const quantity = stockInputByLabel(host, "实际数量");
+      quantity.value = rawValue;
+      quantity.dispatchEvent(new Event("input"));
+      await nextTick();
+
+      const button = buttonByText(host, "提交盘点");
+      expect(button.disabled).toBe(true);
+      expect(host.textContent).toContain("输入无效");
+      button.click();
+      expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
+    },
+  );
 });

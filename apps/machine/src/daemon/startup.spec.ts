@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { routeForStartup } from "./startup";
+import { routeForBootFailure, routeForStartup } from "./startup";
 
 describe("routeForStartup", () => {
   const healthBase = {
@@ -44,6 +44,7 @@ describe("routeForStartup", () => {
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
       machineAudioVolume: 0.7,
+      machineAudioOutputBinding: null,
       audioCueSettings: {
         enabled: false,
         categories: {
@@ -57,6 +58,7 @@ describe("routeForStartup", () => {
     machineSecretConfigured: true,
     mqttSigningSecretConfigured: true,
     mqttPasswordConfigured: false,
+    maintenancePinConfigured: false,
     provisioned: true,
     provisioningIssues: [],
   };
@@ -71,6 +73,33 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
+  it("keeps a recovered payment transaction when a later ordinary Boot read fails", () => {
+    expect(
+      routeForBootFailure({
+        orderId: "o",
+        orderNo: "ord",
+        productSummary: null,
+        paymentId: null,
+        paymentNo: null,
+        paymentMethod: "qr_code",
+        paymentProvider: "alipay",
+        paymentUrl: "https://pay.example/ord",
+        paymentStatus: "pending",
+        orderStatus: "pending_payment",
+        totalAmountCents: 100,
+        vending: null,
+        nextAction: "wait_payment",
+        maskedAuthCode: null,
+        paymentCodeAttempt: null,
+        expiresAt: null,
+        errorCode: null,
+        errorMessage: null,
+        operatorHint: null,
+        updatedAt: "2026-07-14T00:00:00Z",
+      }),
+    ).toBe("/payment");
+  });
+
   it("routes maintenance when config missing", () => {
     expect(
       routeForStartup({
@@ -83,7 +112,7 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
-  it("routes bring-up console when daemon is available but config summary is unavailable", () => {
+  it("fails closed when daemon is available but its bring-up projection is unavailable", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
@@ -101,7 +130,7 @@ describe("routeForStartup", () => {
         },
         restoredTransaction: null,
       }),
-    ).toBe("/bring-up");
+    ).toBe("/maintenance");
   });
 
   it("routes incomplete daemon bring-up to the bring-up console", () => {
@@ -127,6 +156,7 @@ describe("routeForStartup", () => {
             configureNetwork: false,
             claimMachine: true,
             retryClaim: false,
+            convergeMaintenanceTunnel: false,
             syncProfile: false,
             resolveTopology: false,
             runRuntimeAcceptance: false,
@@ -134,9 +164,80 @@ describe("routeForStartup", () => {
             attestStock: false,
             startSales: false,
           },
+          currentTask: {
+            contractVersion: 1,
+            taskId: "bring_up.claim_machine",
+            taskVersion: 1,
+            kind: "claim_machine",
+            intent: "claim_machine",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "claim_code",
+              rotateMaintenanceIdentity: false,
+            },
+          },
+          progress: [
+            { kind: "provisioning", status: "current", evidence: "durable" },
+          ],
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: null,
+        restoredTransaction: null,
+      }),
+    ).toBe("/bring-up");
+  });
+
+  it("keeps a daemon-projected current task on the bring-up route even when legacy state is runtime-ready", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: healthBase,
+        config: configBase,
+        bringUp: {
+          state: "runtime_ready",
+          blockingReasons: [],
+          diagnostics: [],
+          readinessLevel: "runtime_ready",
+          hardwareMode: "production",
+          allowedActions: {
+            configureNetwork: false,
+            claimMachine: false,
+            retryClaim: false,
+            convergeMaintenanceTunnel: false,
+            syncProfile: false,
+            resolveTopology: false,
+            runRuntimeAcceptance: true,
+            runHardwareAcceptance: false,
+            attestStock: false,
+            startSales: false,
+          },
+          currentTask: {
+            contractVersion: 1,
+            taskId: "bring_up.hardware_acceptance",
+            taskVersion: 1,
+            kind: "run_hardware_acceptance",
+            intent: "open_maintenance",
+            rotateMaintenanceIdentity: false,
+            projection: {
+              type: "hardware_acceptance",
+              component: "hardware",
+            },
+          },
+          progress: [
+            { kind: "hardware", status: "current", evidence: "volatile" },
+          ],
+          updatedAt: "2026-07-14T00:00:00Z",
+        },
+        ready: {
+          ready: true,
+          canSell: true,
+          mode: "daemon",
+          blockingCodes: [],
+          blockingReasons: [],
+          degradedReasons: [],
+          suggestedRoute: "catalog",
+          updatedAt: "2026-07-14T00:00:00Z",
+        },
         restoredTransaction: null,
       }),
     ).toBe("/bring-up");
@@ -158,6 +259,7 @@ describe("routeForStartup", () => {
             configureNetwork: false,
             claimMachine: false,
             retryClaim: false,
+            convergeMaintenanceTunnel: false,
             syncProfile: false,
             resolveTopology: false,
             runRuntimeAcceptance: true,
@@ -165,6 +267,8 @@ describe("routeForStartup", () => {
             attestStock: false,
             startSales: true,
           },
+          currentTask: null,
+          progress: [],
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: {
@@ -180,6 +284,28 @@ describe("routeForStartup", () => {
         restoredTransaction: null,
       }),
     ).toBe("/catalog");
+  });
+
+  it("fails closed when an old daemon omits the required bring-up projection", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: healthBase,
+        config: configBase,
+        bringUp: null,
+        ready: {
+          ready: true,
+          canSell: true,
+          mode: "daemon",
+          blockingCodes: [],
+          blockingReasons: [],
+          degradedReasons: [],
+          suggestedRoute: "catalog",
+          updatedAt: "2026-07-14T00:00:00Z",
+        },
+        restoredTransaction: null,
+      }),
+    ).toBe("/maintenance");
   });
 
   it("routes payment", () => {
@@ -198,6 +324,7 @@ describe("routeForStartup", () => {
             configureNetwork: false,
             claimMachine: false,
             retryClaim: false,
+            convergeMaintenanceTunnel: false,
             syncProfile: false,
             resolveTopology: false,
             runRuntimeAcceptance: true,
@@ -205,6 +332,8 @@ describe("routeForStartup", () => {
             attestStock: false,
             startSales: true,
           },
+          currentTask: null,
+          progress: [],
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: null,
@@ -257,6 +386,7 @@ describe("routeForStartup", () => {
             configureNetwork: false,
             claimMachine: true,
             retryClaim: false,
+            convergeMaintenanceTunnel: false,
             syncProfile: false,
             resolveTopology: false,
             runRuntimeAcceptance: false,
@@ -264,6 +394,8 @@ describe("routeForStartup", () => {
             attestStock: false,
             startSales: false,
           },
+          currentTask: null,
+          progress: [],
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: {
@@ -335,6 +467,7 @@ describe("routeForStartup", () => {
               configureNetwork: false,
               claimMachine: false,
               retryClaim: false,
+              convergeMaintenanceTunnel: false,
               syncProfile: false,
               resolveTopology: true,
               runRuntimeAcceptance: false,
@@ -342,6 +475,8 @@ describe("routeForStartup", () => {
               attestStock: false,
               startSales: false,
             },
+            currentTask: null,
+            progress: [],
             updatedAt: "2026-07-04T00:00:00Z",
           },
           ready: null,
@@ -500,7 +635,7 @@ describe("routeForStartup", () => {
     ).toMatchObject({ name: "result", params: { kind: "manual_handling" } });
   });
 
-  it("routes offline based on ready snapshot", () => {
+  it("does not use an offline fallback without daemon bring-up", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
@@ -518,7 +653,7 @@ describe("routeForStartup", () => {
         },
         restoredTransaction: null,
       }),
-    ).toBe("/offline");
+    ).toBe("/maintenance");
   });
 
   it("routes maintenance when ready snapshot suggests maintenance", () => {
@@ -548,7 +683,7 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
-  it("routes catalog by default when sell available", () => {
+  it("does not use a catalog fallback when bring-up is absent", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
@@ -566,6 +701,6 @@ describe("routeForStartup", () => {
         },
         restoredTransaction: null,
       }),
-    ).toBe("/catalog");
+    ).toBe("/maintenance");
   });
 });

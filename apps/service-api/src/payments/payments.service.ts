@@ -6,6 +6,7 @@ import {
   NotFoundException,
   OnApplicationShutdown,
   OnModuleInit,
+  UnauthorizedException,
 } from "@nestjs/common";
 import {
   and,
@@ -14,7 +15,10 @@ import {
   eq,
   gt,
   inArray,
+  isNull,
   inventoryReservations,
+  lt,
+  or,
   orderStatusEvents,
   orders,
   paymentEvents,
@@ -49,6 +53,7 @@ import {
   alipayPublicConfigSchema,
   wechatPayPublicConfigSchema,
 } from "@vem/shared";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { PaymentProviderRuntimeConfig } from "./payment-provider.interface";
@@ -100,6 +105,33 @@ type ReconciliationAttemptQuery = z.infer<
   z.infer<typeof pageQuerySchema>;
 type RefundListQuery = z.infer<typeof refundQuerySchema> &
   z.infer<typeof pageQuerySchema>;
+
+type PaymentTerminalLeaseGuard = {
+  ownerToken: string;
+  fence: number;
+};
+
+type PaymentTerminalTransitionInput = {
+  paymentId: string;
+  orderId: string;
+  newStatus: "succeeded" | "failed";
+  providerEventId: string;
+  providerTradeNo?: string | null;
+  rawPayloadJson?: Record<string, unknown>;
+  providerId?: string;
+  occurredAt?: Date | null;
+  failedReason?: string | null;
+  eventType?: string;
+  signatureValid?: boolean;
+  succeededOrderEventReason?: string;
+  failedOrderEventReason?: string;
+  allowIncidentLockedResolution?: boolean;
+  leaseGuard?: PaymentTerminalLeaseGuard;
+};
+
+type PaymentTerminalTransitionResult = {
+  outcome: "applied" | "duplicate" | "stale";
+};
 
 const PROVIDER_MUTABLE_PAYMENT_STATUSES: PaymentStatus[] = [
   "created",
@@ -214,6 +246,7 @@ function buildReconciliationPayloadFields(rawPayload: unknown): {
 }
 
 const MACHINE_STATUS_POLL_MIN_INTERVAL_MS = 5_000;
+const MACHINE_STATUS_RECONCILIATION_LEASE_MS = 30_000;
 
 @Injectable()
 export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
@@ -438,6 +471,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         }
       }
 
+      await this.vendingService.createPendingDispatchCommands(tx, row.orderId);
+
       return {
         paymentNo: row.paymentNo,
         paymentId: row.paymentId,
@@ -448,7 +483,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (!transition.alreadyHandled) {
-      await this.vendingService.createAndDispatchCommands(transition.orderId);
+      await this.vendingService.dispatchPendingCommandsForOrder(
+        transition.orderId,
+      );
       await this.auditService.record({
         adminUserId,
         action: "payments.mock.succeed",
@@ -586,6 +623,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         paymentId: payments.id,
         paymentNo: payments.paymentNo,
+        amountCents: payments.amountCents,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
         providerTradeNo: payments.providerTradeNo,
@@ -641,6 +679,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             const queryResult = await provider.queryPayment({
               paymentNo: payment.paymentNo,
               providerTradeNo: payment.providerTradeNo,
+              amountCents: payment.amountCents,
               config,
             });
 
@@ -668,7 +707,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               );
               if (applied) {
                 await this.vendingService
-                  .createAndDispatchCommands(payment.orderId)
+                  .dispatchPendingCommandsForOrder(payment.orderId)
                   .catch((_err: unknown) => {
                     // ignore dispatch errors
                   });
@@ -761,13 +800,78 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
         // Expire locally and release inventory
         return await this.db.transaction(async (tx) => {
+          await tx.execute(sql`
+            select p.id
+            from payments p
+            inner join orders o on o.id = p.order_id
+            where p.id = ${payment.paymentId} and o.id = ${payment.orderId}
+            for update of p, o
+          `);
+
+          const [current] = await tx
+            .select({
+              paymentId: payments.id,
+              paymentStatus: payments.status,
+              paymentExpiresAt: payments.expiresAt,
+              paymentIsDrill: payments.isDrill,
+              orderId: orders.id,
+              orderStatus: orders.status,
+              paymentState: orders.paymentState,
+              fulfillmentState: orders.fulfillmentState,
+              orderIsDrill: orders.isDrill,
+            })
+            .from(payments)
+            .innerJoin(orders, eq(orders.id, payments.orderId))
+            .where(
+              and(
+                eq(payments.id, payment.paymentId),
+                eq(orders.id, payment.orderId),
+              ),
+            );
+          if (
+            !current ||
+            current.paymentIsDrill ||
+            current.orderIsDrill ||
+            !canApplyProviderTerminalStatus(current.paymentStatus) ||
+            isPaymentIncidentLocked(current) ||
+            !current.paymentExpiresAt ||
+            current.paymentExpiresAt.getTime() >= now.getTime()
+          ) {
+            return false;
+          }
+
+          const providerEventId = `expired:${payment.paymentNo}`;
+          const [existingEvent] = await tx
+            .select({ id: paymentEvents.id })
+            .from(paymentEvents)
+            .where(
+              and(
+                eq(paymentEvents.providerId, payment.providerId),
+                eq(paymentEvents.providerEventId, providerEventId),
+              ),
+            )
+            .limit(1);
+          if (existingEvent) return false;
+
+          const updatedPayments = await tx
+            .update(payments)
+            .set({ status: "expired", updatedAt: new Date() })
+            .where(
+              and(
+                eq(payments.id, payment.paymentId),
+                inArray(payments.status, PROVIDER_MUTABLE_PAYMENT_STATUSES),
+              ),
+            )
+            .returning({ id: payments.id });
+          if (updatedPayments.length === 0) return false;
+
           const inserted = await tx
             .insert(paymentEvents)
             .values({
               paymentId: payment.paymentId,
               providerId: payment.providerId,
               eventType: "payment.expired",
-              providerEventId: `expired:${payment.paymentNo}`,
+              providerEventId,
               rawPayloadJson: buildStoredEventPayload({
                 paymentNo: payment.paymentNo,
                 event: "expired",
@@ -778,15 +882,12 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             .onConflictDoNothing()
             .returning({ id: paymentEvents.id });
           if (inserted.length === 0) {
-            return false;
+            throw new Error(
+              `payment expiry event conflict after terminal lock: ${payment.paymentNo}`,
+            );
           }
 
-          await tx
-            .update(payments)
-            .set({ status: "expired", updatedAt: new Date() })
-            .where(eq(payments.id, payment.paymentId));
-
-          if (payment.orderStatus !== "payment_expired") {
+          if (current.orderStatus !== "payment_expired") {
             await tx
               .update(orders)
               .set({
@@ -798,7 +899,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               .where(eq(orders.id, payment.orderId));
             await tx.insert(orderStatusEvents).values({
               orderId: payment.orderId,
-              fromStatus: payment.orderStatus,
+              fromStatus: current.orderStatus,
               toStatus: "payment_expired",
               reason: "payment_expired",
             });
@@ -1478,6 +1579,33 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     const candidateConfigs = await this.paymentProviderConfigService
       .listWebhookCandidateConfigsForProvider(providerCode)
       .catch(() => []);
+    const expectedBinding = await this.findWebhookExpectedConfigBinding(
+      providerCode,
+      body,
+    );
+    const expectedConfig = expectedBinding
+      ? await this.paymentProviderConfigService
+          .resolveForExistingPayment({
+            providerCode,
+            providerConfigId: expectedBinding.providerConfigId,
+            machineId: "",
+            providerConfigSnapshotJson:
+              expectedBinding.providerConfigSnapshotJson,
+          })
+          .catch(() => undefined)
+      : undefined;
+    if (expectedBinding && !expectedConfig) {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        eventKind: "unknown",
+        signatureValid: false,
+        handled: false,
+        failureReason: "payment_config_binding_unavailable",
+      });
+      throw new UnauthorizedException(
+        "Payment config binding is unavailable for signature verification",
+      );
+    }
 
     let webhook: Awaited<
       ReturnType<NonNullable<typeof provider.handleWebhook>>
@@ -1488,6 +1616,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         body,
         rawBodyText: computedRawBodyText,
         candidateConfigs,
+        expectedConfigId: expectedBinding?.providerConfigId,
+        expectedConfig,
       });
     } catch (err) {
       const isUnauthorized =
@@ -1535,6 +1665,47 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       failureReason: "invalid_body",
     });
     return { handled: false, reason: "unknown_event_kind" };
+  }
+
+  private async findWebhookExpectedConfigBinding(
+    providerCode: string,
+    body: unknown,
+  ): Promise<
+    | {
+        providerConfigId: string | null;
+        providerConfigSnapshotJson: unknown;
+      }
+    | undefined
+  > {
+    if (
+      providerCode !== "alipay" ||
+      typeof body !== "object" ||
+      body === null
+    ) {
+      return undefined;
+    }
+    const rawPaymentNo = Reflect.get(body, "out_trade_no");
+    const paymentNo = Array.isArray(rawPaymentNo)
+      ? rawPaymentNo[0]
+      : rawPaymentNo;
+    if (typeof paymentNo !== "string" || paymentNo.length === 0) {
+      return undefined;
+    }
+    const [binding] = await this.db
+      .select({
+        providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
+      })
+      .from(payments)
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(
+        and(
+          eq(payments.paymentNo, paymentNo),
+          eq(paymentProviders.code, providerCode),
+        ),
+      )
+      .limit(1);
+    return binding;
   }
 
   private async handlePaymentWebhook(
@@ -1586,51 +1757,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return { handled: false, reason: "payment_not_found" };
     }
 
-    const boundConfig = await this.paymentProviderConfigService
-      .resolveForExistingPayment({
-        providerCode,
-        providerConfigId: payment.providerConfigId ?? null,
-        machineId: payment.machineId,
-        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
-      })
-      .catch(() => null);
-    const validationConfigs =
-      boundConfig?.providerCode === providerCode
-        ? [boundConfig, ...candidateConfigs]
-        : candidateConfigs;
-    const businessValidation = this.validateProviderWebhookBusinessFields(
-      providerCode,
-      webhook.rawPayload,
-      {
-        paymentNo: payment.paymentNo,
-        amountCents: payment.amountCents,
-        machineId: payment.machineId,
-      },
-      validationConfigs,
-      webhook.normalizedPayload,
-      webhook.matchedConfigId ?? boundConfig?.id ?? null,
-      webhook.paymentStatus,
-    );
-
-    const eventType = businessValidation.ok
-      ? webhook.eventType
-      : `${webhook.eventType}.business_invalid`;
-
-    const inserted = await this.db
-      .insert(paymentEvents)
-      .values({
-        paymentId: payment.id,
-        providerId: payment.providerId,
-        eventType,
-        providerEventId: webhook.providerEventId,
-        rawPayloadJson: buildStoredEventPayload(webhook.rawPayload),
-        signatureValid: webhook.signatureValid,
-        handledAt: new Date(),
-      })
-      .onConflictDoNothing()
-      .returning({ id: paymentEvents.id });
-
-    if (inserted.length === 0) {
+    // The provider verifies the callback against one concrete merchant
+    // configuration. It must be the immutable configuration binding captured
+    // when this payment was created; accepting another currently-valid
+    // merchant would make app/seller matching meaningless after a rotation.
+    if (
+      payment.providerConfigId === null ||
+      (payment.providerConfigId !== undefined &&
+        webhook.matchedConfigId !== payment.providerConfigId)
+    ) {
       await this.webhookAttemptRecorder.finish({
         attemptId,
         providerId: payment.providerId,
@@ -1642,17 +1777,77 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         paymentNo: payment.paymentNo,
         orderNo: payment.orderNo,
         signatureValid: webhook.signatureValid,
-        businessValid: true,
-        handled: true,
-        duplicate: true,
-        failureReason: "duplicate_event",
+        businessValid: false,
+        handled: false,
+        failureReason: "payment_config_binding_mismatch",
       });
-      return { handled: true, duplicate: true };
+      return { handled: false, reason: "payment_config_binding_mismatch" };
     }
+
+    const boundConfig = await this.paymentProviderConfigService
+      .resolveForExistingPayment({
+        providerCode,
+        providerConfigId: payment.providerConfigId ?? null,
+        machineId: payment.machineId,
+        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
+      })
+      .catch(() => null);
+    const validationConfigs =
+      payment.providerConfigId === undefined
+        ? candidateConfigs
+        : boundConfig?.id === payment.providerConfigId &&
+            boundConfig.providerCode === providerCode
+          ? [boundConfig]
+          : [];
+    const businessValidation = this.validateProviderWebhookBusinessFields(
+      providerCode,
+      webhook.rawPayload,
+      {
+        paymentNo: payment.paymentNo,
+        amountCents: payment.amountCents,
+        machineId: payment.machineId,
+      },
+      validationConfigs,
+      webhook.normalizedPayload,
+      webhook.matchedConfigId,
+      webhook.paymentStatus,
+    );
 
     if (!businessValidation.ok) {
       const reason = (businessValidation as { ok: false; reason: string })
         .reason;
+      const inserted = await this.db
+        .insert(paymentEvents)
+        .values({
+          paymentId: payment.id,
+          providerId: payment.providerId,
+          eventType: `${webhook.eventType}.business_invalid`,
+          providerEventId: webhook.providerEventId,
+          rawPayloadJson: buildStoredEventPayload(webhook.rawPayload),
+          signatureValid: webhook.signatureValid,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .returning({ id: paymentEvents.id });
+      if (inserted.length === 0) {
+        await this.webhookAttemptRecorder.finish({
+          attemptId,
+          providerId: payment.providerId,
+          paymentId: payment.id,
+          matchedConfigId: webhook.matchedConfigId,
+          eventKind: "payment",
+          eventType: webhook.eventType,
+          providerEventId: webhook.providerEventId,
+          paymentNo: payment.paymentNo,
+          orderNo: payment.orderNo,
+          signatureValid: webhook.signatureValid,
+          businessValid: false,
+          handled: true,
+          duplicate: true,
+          failureReason: "duplicate_event",
+        });
+        return { handled: true, duplicate: true };
+      }
       await this.webhookAttemptRecorder.finish({
         attemptId,
         providerId: payment.providerId,
@@ -1671,125 +1866,106 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return { handled: false, reason };
     }
 
-    if (webhook.paymentStatus === "succeeded") {
-      const transition = await this.db.transaction(async (tx) => {
-        const [r] = await tx
-          .select({
-            paymentId: payments.id,
-            paymentStatus: payments.status,
-            providerId: payments.providerId,
-            orderId: orders.id,
-            orderStatus: orders.status,
-            paymentState: orders.paymentState,
-            fulfillmentState: orders.fulfillmentState,
-          })
-          .from(payments)
-          .innerJoin(orders, eq(orders.id, payments.orderId))
-          .where(eq(payments.id, payment.id));
-        if (!r) return null;
+    let duplicate = false;
+    let stale = false;
 
-        if (r.paymentStatus === "succeeded") {
-          return { orderId: r.orderId, shouldDispatch: false };
-        }
-        if (!canApplyProviderTerminalStatus(r.paymentStatus)) {
-          return { orderId: r.orderId, shouldDispatch: false };
-        }
-        if (isPaymentIncidentLocked(r)) {
-          return { orderId: r.orderId, shouldDispatch: false };
-        }
-
-        await tx
-          .update(payments)
-          .set({
-            status: "succeeded",
-            paidAt: new Date(),
-            failedReason: null,
-            updatedAt: new Date(),
-            ...(webhook.providerTradeNo
-              ? { providerTradeNo: webhook.providerTradeNo }
-              : {}),
-          })
-          .where(eq(payments.id, r.paymentId));
-
-        const paidAt = new Date();
-        const projectedStatus = projectOrderStatus({
-          paymentState: "paid",
-          fulfillmentState: r.fulfillmentState,
-        });
-        await tx
-          .update(orders)
-          .set({
-            status: projectedStatus,
-            paymentState: "paid",
-            paidAt,
-            updatedAt: new Date(),
-          })
-          .where(eq(orders.id, r.orderId));
-        if (r.orderStatus !== projectedStatus) {
-          await tx.insert(orderStatusEvents).values({
-            orderId: r.orderId,
-            fromStatus: r.orderStatus,
-            toStatus: projectedStatus,
-            reason: "webhook_payment_succeeded",
-          });
-        }
-
-        return { orderId: r.orderId, shouldDispatch: true };
+    if (
+      webhook.paymentStatus === "succeeded" ||
+      webhook.paymentStatus === "failed"
+    ) {
+      const transition = await this.transitionProviderPaymentTerminal({
+        paymentId: payment.id,
+        orderId: payment.orderId,
+        newStatus: webhook.paymentStatus,
+        providerEventId: webhook.providerEventId,
+        providerTradeNo: webhook.providerTradeNo,
+        rawPayloadJson: webhook.rawPayload,
+        providerId: payment.providerId,
+        failedReason:
+          webhook.paymentStatus === "failed" ? "webhook_failed" : null,
+        eventType: webhook.eventType,
+        signatureValid: webhook.signatureValid,
+        succeededOrderEventReason: "webhook_payment_succeeded",
+        failedOrderEventReason: "webhook_payment_failed",
       });
+      duplicate = transition.outcome === "duplicate";
+      stale = transition.outcome === "stale";
 
-      if (transition?.shouldDispatch) {
-        await this.vendingService.createAndDispatchCommands(transition.orderId);
+      if (
+        webhook.paymentStatus === "succeeded" &&
+        transition.outcome === "applied"
+      ) {
+        await this.vendingService.dispatchPendingCommandsForOrder(
+          payment.orderId,
+        );
       }
     }
 
-    if (webhook.paymentStatus === "failed") {
-      await this.db.transaction(async (tx) => {
-        const [r] = await tx
-          .select({
-            paymentId: payments.id,
-            paymentStatus: payments.status,
-            orderId: orders.id,
-            orderStatus: orders.status,
+    if (
+      webhook.paymentStatus !== "succeeded" &&
+      webhook.paymentStatus !== "failed"
+    ) {
+      const inserted = await this.db.transaction(async (tx) =>
+        tx
+          .insert(paymentEvents)
+          .values({
+            paymentId: payment.id,
+            providerId: payment.providerId,
+            eventType: webhook.eventType,
+            providerEventId: webhook.providerEventId,
+            rawPayloadJson: buildStoredEventPayload(webhook.rawPayload),
+            signatureValid: webhook.signatureValid,
+            handledAt: new Date(),
           })
-          .from(payments)
-          .innerJoin(orders, eq(orders.id, payments.orderId))
-          .where(eq(payments.id, payment.id));
-        if (!r) return;
-        if (!canApplyProviderTerminalStatus(r.paymentStatus)) return;
+          .onConflictDoNothing()
+          .returning({ id: paymentEvents.id }),
+      );
+      duplicate = inserted.length === 0;
+    }
 
-        await tx
-          .update(payments)
-          .set({
-            status: "failed",
-            failedReason: "webhook_failed",
-            updatedAt: new Date(),
-          })
-          .where(eq(payments.id, r.paymentId));
-
-        if (r.orderStatus !== "canceled") {
-          await tx
-            .update(orders)
-            .set({
-              status: "canceled",
-              paymentState: "payment_failed",
-              fulfillmentState: "canceled",
-              canceledAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(orders.id, r.orderId));
-          await tx.insert(orderStatusEvents).values({
-            orderId: r.orderId,
-            fromStatus: r.orderStatus,
-            toStatus: "canceled",
-            reason: "webhook_payment_failed",
-          });
-        }
-
-        await this.releaseActiveReservationsForOrder(tx, {
-          orderId: r.orderId,
-          reason: "payment_failed",
-        });
+    if (stale) {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        providerId: payment.providerId,
+        paymentId: payment.id,
+        matchedConfigId: webhook.matchedConfigId,
+        eventKind: "payment",
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        paymentNo: payment.paymentNo,
+        orderNo: payment.orderNo,
+        signatureValid: webhook.signatureValid,
+        businessValid: true,
+        handled: true,
+        duplicate: false,
+        failureReason: "stale_terminal_status",
       });
+      return {
+        handled: true,
+        duplicate: false,
+        stale: true,
+        reason: "stale_terminal_status",
+      };
+    }
+
+    if (duplicate) {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        providerId: payment.providerId,
+        paymentId: payment.id,
+        matchedConfigId: webhook.matchedConfigId,
+        eventKind: "payment",
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        paymentNo: payment.paymentNo,
+        orderNo: payment.orderNo,
+        signatureValid: webhook.signatureValid,
+        businessValid: true,
+        handled: true,
+        duplicate: true,
+        failureReason: "duplicate_event",
+      });
+      return { handled: true, duplicate: true };
     }
 
     await this.webhookAttemptRecorder.finish({
@@ -1832,6 +2008,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           : null,
       rawPayload: webhook.rawPayload,
       signatureValid: webhook.signatureValid,
+      matchedConfigId: webhook.matchedConfigId,
     });
 
     await this.webhookAttemptRecorder.finish({
@@ -1987,6 +2164,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: payments.id,
         paymentNo: payments.paymentNo,
+        amountCents: payments.amountCents,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
         providerTradeNo: payments.providerTradeNo,
@@ -2004,6 +2182,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           inArray(payments.status, ["pending", "processing"]),
           eq(payments.isDrill, false),
           eq(orders.isDrill, false),
+          or(
+            isNull(payments.intentCreationLeaseExpiresAt),
+            lt(payments.intentCreationLeaseExpiresAt, now),
+          ),
           sql`${payments.createdAt} >= ${cutoff}`,
           sql`${payments.expiresAt} IS NULL OR ${payments.expiresAt} > ${now}`,
           sql`not exists (
@@ -2088,6 +2270,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             result = await provider.queryPayment({
               paymentNo: payment.paymentNo,
               providerTradeNo: payment.providerTradeNo,
+              amountCents: payment.amountCents,
               config,
             });
           } catch (err) {
@@ -2118,7 +2301,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             await this.db
               .update(paymentReconciliationAttempts)
               .set({
-                status: providerStatus,
+                status: result.reconciliationState ?? providerStatus,
                 providerPaymentStatus: providerStatus,
                 providerTradeNo: result.providerTradeNo ?? null,
                 ...rawPayloadFields,
@@ -2163,7 +2346,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             reconciled += 1;
             if (providerStatus === "succeeded") {
               await this.vendingService
-                .createAndDispatchCommands(payment.orderId)
+                .dispatchPendingCommandsForOrder(payment.orderId)
                 .catch((_err: unknown) => {
                   // ignore dispatch errors during reconciliation
                 });
@@ -2238,6 +2421,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: payments.id,
         paymentNo: payments.paymentNo,
+        amountCents: payments.amountCents,
         status: payments.status,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
@@ -2246,6 +2430,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
         providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
+        intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
+        intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
         isDrill: payments.isDrill,
         orderIsDrill: orders.isDrill,
       })
@@ -2260,6 +2446,19 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: "not_found",
         reconciled: false,
         reason: "payment_not_found",
+      };
+    }
+
+    const now = new Date();
+    if (
+      payment.intentCreationLeaseOwnerToken &&
+      payment.intentCreationLeaseExpiresAt &&
+      payment.intentCreationLeaseExpiresAt.getTime() > now.getTime()
+    ) {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "payment_intent_creation_active",
       };
     }
 
@@ -2287,7 +2486,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       };
     }
 
-    const now = new Date();
     const [latestAttempt] = await this.db
       .select({ startedAt: paymentReconciliationAttempts.startedAt })
       .from(paymentReconciliationAttempts)
@@ -2309,6 +2507,37 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: payment.status,
         reconciled: false,
         reason: "throttled",
+      };
+    }
+
+    const reconciliationOwnerToken = randomUUID();
+    const reconciliationLeaseExpiresAt = new Date(
+      now.getTime() + MACHINE_STATUS_RECONCILIATION_LEASE_MS,
+    );
+    const [reconciliationLease] = await this.db
+      .update(payments)
+      .set({
+        intentCreationLeaseOwnerToken: reconciliationOwnerToken,
+        intentCreationLeaseExpiresAt: reconciliationLeaseExpiresAt,
+        intentCreationLeaseFence: sql`${payments.intentCreationLeaseFence} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(payments.id, payment.id),
+          inArray(payments.status, ["pending", "processing", "unknown"]),
+          or(
+            isNull(payments.intentCreationLeaseExpiresAt),
+            lt(payments.intentCreationLeaseExpiresAt, now),
+          ),
+        ),
+      )
+      .returning({ fence: payments.intentCreationLeaseFence });
+    if (!reconciliationLease) {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "payment_reconciliation_active",
       };
     }
 
@@ -2350,6 +2579,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       result = await provider.queryPayment({
         paymentNo: payment.paymentNo,
         providerTradeNo: payment.providerTradeNo,
+        amountCents: payment.amountCents,
         config,
       });
     } catch (err) {
@@ -2366,6 +2596,23 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      await this.db
+        .update(payments)
+        .set({
+          intentCreationLeaseOwnerToken: null,
+          intentCreationLeaseExpiresAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(payments.id, payment.id),
+            eq(
+              payments.intentCreationLeaseOwnerToken,
+              reconciliationOwnerToken,
+            ),
+            eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
+          ),
+        );
       this.logger.warn(
         `reconcilePendingPaymentOnRead query failed for ${payment.paymentNo}: ${errMsg}`,
       );
@@ -2381,19 +2628,33 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       const rawPayloadFields = buildReconciliationPayloadFields(
         result.rawPayload,
       );
-      await this.db
+      const persisted = await this.db
         .update(payments)
         .set({
           status: providerStatus,
           providerTradeNo:
             result.providerTradeNo ?? payment.providerTradeNo ?? null,
+          failedReason: result.reconciliationState ?? null,
+          intentCreationLeaseOwnerToken: null,
+          intentCreationLeaseExpiresAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(payments.id, payment.id));
+        .where(
+          and(
+            eq(payments.id, payment.id),
+            eq(
+              payments.intentCreationLeaseOwnerToken,
+              reconciliationOwnerToken,
+            ),
+            eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
+            gt(payments.intentCreationLeaseExpiresAt, new Date()),
+          ),
+        )
+        .returning({ id: payments.id });
       await this.db
         .update(paymentReconciliationAttempts)
         .set({
-          status: providerStatus,
+          status: result.reconciliationState ?? providerStatus,
           providerPaymentStatus: providerStatus,
           providerTradeNo: result.providerTradeNo ?? null,
           ...rawPayloadFields,
@@ -2403,10 +2664,17 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      if (persisted.length === 0) {
+        return {
+          status: payment.status,
+          reconciled: false,
+          reason: "payment_reconciliation_lease_lost",
+        };
+      }
       return {
         status: providerStatus,
         reconciled: false,
-        reason: `provider_${providerStatus}`,
+        reason: result.reconciliationState ?? `provider_${providerStatus}`,
       };
     }
 
@@ -2423,6 +2691,12 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       payment.providerId,
       result.paidAt ?? now,
       result.failedReason ?? null,
+      undefined,
+      false,
+      {
+        ownerToken: reconciliationOwnerToken,
+        fence: reconciliationLease.fence,
+      },
     );
 
     await this.db
@@ -2440,12 +2714,25 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     if (applied && finalStatus === "succeeded") {
       await this.vendingService
-        .createAndDispatchCommands(payment.orderId)
+        .dispatchPendingCommandsForOrder(payment.orderId)
         // oxlint-disable-next-line no-empty-function -- polling path should not fail the caller
         .catch(() => {});
     }
 
-    return { status: finalStatus, reconciled: applied };
+    if (!applied) {
+      const [successor] = await this.db
+        .select({ status: payments.status })
+        .from(payments)
+        .where(eq(payments.id, payment.id))
+        .limit(1);
+      return {
+        status: successor?.status ?? payment.status,
+        reconciled: false,
+        reason: "payment_reconciliation_lease_lost",
+      };
+    }
+
+    return { status: finalStatus, reconciled: true };
   }
 
   async applyProviderPaymentResult(input: {
@@ -2489,7 +2776,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       (await this.canDispatchPaymentSuccess(row.orderId))
     ) {
       await this.vendingService
-        .createAndDispatchCommands(row.orderId)
+        .dispatchPendingCommandsForOrder(row.orderId)
         .catch((_err: unknown) => {
           // keep payment success durable even if dispatch has a transient failure
         });
@@ -2525,9 +2812,59 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     failedReason?: string | null,
     eventTypeOverride?: string,
     allowIncidentLockedResolution = false,
+    leaseGuard?: PaymentTerminalLeaseGuard,
   ): Promise<boolean> {
+    const transition = await this.transitionProviderPaymentTerminal({
+      paymentId,
+      orderId,
+      newStatus,
+      providerEventId,
+      providerTradeNo,
+      rawPayloadJson,
+      providerId,
+      occurredAt,
+      failedReason,
+      eventType: eventTypeOverride,
+      allowIncidentLockedResolution,
+      leaseGuard,
+    });
+    return transition.outcome === "applied";
+  }
+
+  private async transitionProviderPaymentTerminal(
+    input: PaymentTerminalTransitionInput,
+  ): Promise<PaymentTerminalTransitionResult> {
+    const {
+      paymentId,
+      orderId,
+      newStatus,
+      providerEventId,
+      providerTradeNo,
+      rawPayloadJson,
+      providerId,
+      occurredAt,
+      failedReason,
+      eventType,
+      signatureValid = true,
+      succeededOrderEventReason = "reconcile_succeeded",
+      failedOrderEventReason = "reconcile_payment_failed",
+      allowIncidentLockedResolution = false,
+      leaseGuard,
+    } = input;
     return await this.db.transaction(async (tx) => {
-      if (!providerId) return false;
+      if (!providerId) return { outcome: "stale" };
+
+      // Serialize every provider terminal transition for this payment and its
+      // order. The winner keeps these rows locked until the payment, order,
+      // event, reservation and durable command changes commit together.
+      await tx.execute(sql`
+        select p.id
+        from payments p
+        inner join orders o on o.id = p.order_id
+        where p.id = ${paymentId} and o.id = ${orderId}
+        for update of p, o
+      `);
+
       const [existing] = await tx
         .select({ id: paymentEvents.id })
         .from(paymentEvents)
@@ -2538,7 +2875,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           ),
         )
         .limit(1);
-      if (existing) return false;
+      if (existing) return { outcome: "duplicate" };
 
       const [r] = await tx
         .select({
@@ -2551,15 +2888,29 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           fulfillmentState: orders.fulfillmentState,
           isDrill: payments.isDrill,
           orderIsDrill: orders.isDrill,
+          intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
+          intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
+          intentCreationLeaseFence: payments.intentCreationLeaseFence,
         })
         .from(payments)
         .innerJoin(orders, eq(orders.id, payments.orderId))
         .where(eq(payments.id, paymentId));
-      if (!r) return false;
-      if (r.isDrill || r.orderIsDrill) return false;
-      if (!canApplyProviderTerminalStatus(r.paymentStatus)) return false;
+      if (!r) return { outcome: "stale" };
+      if (r.isDrill || r.orderIsDrill) return { outcome: "stale" };
+      if (!canApplyProviderTerminalStatus(r.paymentStatus)) {
+        return { outcome: "stale" };
+      }
       if (isPaymentIncidentLocked(r) && !allowIncidentLockedResolution) {
-        return false;
+        return { outcome: "stale" };
+      }
+      if (
+        leaseGuard &&
+        (r.intentCreationLeaseOwnerToken !== leaseGuard.ownerToken ||
+          r.intentCreationLeaseFence !== leaseGuard.fence ||
+          !r.intentCreationLeaseExpiresAt ||
+          r.intentCreationLeaseExpiresAt.getTime() <= Date.now())
+      ) {
+        return { outcome: "stale" };
       }
 
       const inserted = await tx
@@ -2567,15 +2918,26 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .values({
           paymentId,
           providerId: r.providerId,
-          eventType: eventTypeOverride ?? `reconcile.payment.${newStatus}`,
+          eventType: eventType ?? `reconcile.payment.${newStatus}`,
           providerEventId,
           rawPayloadJson: buildStoredEventPayload(rawPayloadJson ?? {}),
-          signatureValid: true,
+          signatureValid,
           handledAt: new Date(),
         })
         .onConflictDoNothing()
         .returning({ id: paymentEvents.id });
-      if (inserted.length === 0) return false;
+      if (inserted.length === 0) return { outcome: "duplicate" };
+
+      const mutablePaymentWhere = and(
+        eq(payments.id, paymentId),
+        inArray(payments.status, PROVIDER_MUTABLE_PAYMENT_STATUSES),
+        leaseGuard
+          ? eq(payments.intentCreationLeaseOwnerToken, leaseGuard.ownerToken)
+          : undefined,
+        leaseGuard
+          ? eq(payments.intentCreationLeaseFence, leaseGuard.fence)
+          : undefined,
+      );
 
       if (newStatus === "succeeded") {
         const handledAt = occurredAt ?? new Date();
@@ -2586,9 +2948,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             paidAt: handledAt,
             failedReason: null,
             ...(providerTradeNo ? { providerTradeNo } : {}),
+            ...(leaseGuard
+              ? {
+                  intentCreationLeaseOwnerToken: null,
+                  intentCreationLeaseExpiresAt: null,
+                }
+              : {}),
             updatedAt: new Date(),
           })
-          .where(eq(payments.id, paymentId));
+          .where(mutablePaymentWhere);
 
         const projectedStatus = projectOrderStatus({
           paymentState: "paid",
@@ -2608,18 +2976,25 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             orderId,
             fromStatus: r.orderStatus,
             toStatus: projectedStatus,
-            reason: "reconcile_succeeded",
+            reason: succeededOrderEventReason,
           });
         }
+        await this.vendingService.createPendingDispatchCommands(tx, orderId);
       } else {
         await tx
           .update(payments)
           .set({
             status: "failed",
             failedReason: failedReason ?? "provider_reported_failed",
+            ...(leaseGuard
+              ? {
+                  intentCreationLeaseOwnerToken: null,
+                  intentCreationLeaseExpiresAt: null,
+                }
+              : {}),
             updatedAt: new Date(),
           })
-          .where(eq(payments.id, paymentId));
+          .where(mutablePaymentWhere);
 
         if (r.orderStatus !== "canceled") {
           await tx
@@ -2636,7 +3011,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             orderId,
             fromStatus: r.orderStatus,
             toStatus: "canceled",
-            reason: "reconcile_payment_failed",
+            reason: failedOrderEventReason,
           });
         }
 
@@ -2646,7 +3021,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         });
       }
 
-      return true;
+      return { outcome: "applied" };
     });
   }
 
@@ -3668,6 +4043,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: payments.id,
         paymentNo: payments.paymentNo,
+        amountCents: payments.amountCents,
         status: payments.status,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
@@ -3770,6 +4146,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       result = await provider.queryPayment({
         paymentNo: payment.paymentNo,
         providerTradeNo: payment.providerTradeNo,
+        amountCents: payment.amountCents,
         config,
       });
     } catch (err) {
@@ -3876,7 +4253,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       (await this.canDispatchPaymentSuccess(payment.orderId))
     ) {
       await this.vendingService
-        .createAndDispatchCommands(payment.orderId)
+        .dispatchPendingCommandsForOrder(payment.orderId)
         // oxlint-disable-next-line no-empty-function -- fire-and-forget; vending failures are handled by reconciliation
         .catch(() => {});
     }

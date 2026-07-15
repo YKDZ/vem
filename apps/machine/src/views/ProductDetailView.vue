@@ -9,11 +9,13 @@ import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
+import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import { emitCustomerEvent } from "@/composables/useCustomerEvents";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
+import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
 type VariantOption = {
@@ -26,6 +28,7 @@ const route = useRoute();
 const router = useRouter();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
+const machineStore = useMachineStore();
 
 const selectedVariantId = ref<string | null>(null);
 
@@ -70,7 +73,7 @@ const canBuy = computed(
     selectedVariant.value?.slotSalesState === "sale_ready" &&
     (selectedVariant.value?.saleableStock ?? 0) > 0,
 );
-const productImageUrl = computed(
+const productImageReference = computed(
   () => selectedConcreteItem.value?.coverImageUrl ?? item.value?.coverImageUrl,
 );
 const categoryLabel = computed(() => item.value?.categoryName ?? "商品");
@@ -301,10 +304,20 @@ async function enterTryOn(): Promise<void> {
       <main class="detail-main">
         <section class="detail-image-card">
           <div class="detail-image-inner">
-            <img
-              :src="productImageUrl ?? fallbackImage"
+            <ManagedMediaImage
+              :reference="productImageReference"
+              :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
+              :api-base-url="machineStore.config.apiBaseUrl"
+              :fallback="fallbackImage"
               :alt="item.productName"
-              :class="{ 'detail-image-fallback': !productImageUrl }"
+              :class="{ 'detail-image-fallback': !productImageReference }"
+              @diagnostic="
+                catalogStore.recordMediaDiagnostic(
+                  productImageReference,
+                  $event.message,
+                  $event.diagnosticKey,
+                )
+              "
             />
             <span class="detail-bamboo" aria-hidden="true"></span>
             <span class="detail-image-count">1/5</span>

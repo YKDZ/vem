@@ -6,6 +6,8 @@ import { z } from "zod";
 import {
   daemonIpcCheckoutFlowActionSchema,
   daemonIpcEventNotificationSchema,
+  daemonIpcDeviceBindingSnapshotSchema,
+  daemonIpcDeviceBindingTestResultSchema,
   daemonIpcDispenseProgressObservationStageSchema,
   daemonIpcScannerStatusSchema,
   daemonIpcPickupReminderSchema,
@@ -31,6 +33,178 @@ import {
 describe("Daemon IPC Contract Area", () => {
   const awaitingPaymentTransaction =
     validCurrentDaemonIpcTransactionSnapshots.awaitingPayment;
+
+  it("keeps stable serial identity separate from the observed COM address", () => {
+    const snapshot = daemonIpcDeviceBindingSnapshotSchema.parse({
+      roles: [
+        {
+          role: "lower_controller",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_SELECTION_REQUIRED",
+          message: "operator selection required",
+          ambiguous: true,
+          ambiguityKind: "candidate_selection",
+          ambiguityPorts: ["COM5", "COM9"],
+          legacyPortHint: "COM5",
+          candidates: [
+            {
+              identity: {
+                identityKey: "container:11111111-2222-3333-4444-555555555555",
+                instanceId: "USB\\CONTROLLER-1",
+                containerId: "11111111-2222-3333-4444-555555555555",
+                hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+                serialNumber: null,
+              },
+              currentPort: "COM9",
+              friendlyName: "lower controller",
+              readiness: "candidate",
+              readinessCode: "ROLE_TEST_REQUIRED",
+              readinessMessage: "test required",
+            },
+            {
+              identity: {
+                identityKey: "container:22222222-3333-4444-5555-666666666666",
+                instanceId: "USB\\SCANNER-1",
+                containerId: "22222222-3333-4444-5555-666666666666",
+                hardwareIds: ["USB\\VID_1234&PID_5678"],
+                serialNumber: "SCANNER-1",
+              },
+              currentPort: "COM3",
+              friendlyName: "scanner",
+              readiness: "candidate",
+              readinessCode: "ROLE_TEST_REQUIRED",
+              readinessMessage: "test required",
+            },
+          ],
+          discoveryDiagnostics: [],
+        },
+        {
+          role: "scanner",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_REQUIRED",
+          message: "binding required",
+          ambiguous: false,
+          ambiguityKind: null,
+          ambiguityPorts: [],
+          legacyPortHint: "COM3",
+          candidates: [],
+          discoveryDiagnostics: [],
+        },
+      ],
+    });
+
+    expect(snapshot.roles[0]?.candidates[0]).toMatchObject({
+      currentPort: "COM9",
+      identity: {
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
+      },
+    });
+    expect(() =>
+      daemonIpcDeviceBindingSnapshotSchema.parse({
+        ...snapshot,
+        roles: [
+          {
+            ...snapshot.roles[0],
+            candidates: [
+              {
+                ...snapshot.roles[0]?.candidates[0],
+                identity: { identityKey: "COM9" },
+              },
+            ],
+          },
+          snapshot.roles[1],
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("keeps candidate selection distinct from duplicate observations", () => {
+    const candidate = {
+      identity: {
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
+        instanceId: "USB\\CONTROLLER-1",
+        containerId: "11111111-2222-3333-4444-555555555555",
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: null,
+      },
+      currentPort: "COM5",
+      friendlyName: "lower controller",
+      readiness: "candidate" as const,
+      readinessCode: "ROLE_TEST_REQUIRED",
+      readinessMessage: "test required",
+    };
+    const base = {
+      role: "lower_controller" as const,
+      binding: null,
+      currentPort: null,
+      ready: false,
+      message: "operator action required",
+      legacyPortHint: "COM5",
+      discoveryDiagnostics: [],
+    };
+
+    expect(() =>
+      daemonIpcDeviceBindingSnapshotSchema.parse({
+        roles: [
+          {
+            ...base,
+            code: "DEVICE_BINDING_AMBIGUOUS",
+            ambiguous: true,
+            ambiguityKind: "candidate_selection",
+            ambiguityPorts: ["COM5", "COM9"],
+            candidates: [
+              candidate,
+              {
+                ...candidate,
+                identity: {
+                  ...candidate.identity,
+                  identityKey: "container:22222222-3333-4444-5555-666666666666",
+                },
+                currentPort: "COM9",
+              },
+            ],
+          },
+          {
+            ...base,
+            role: "scanner",
+            code: "DEVICE_BINDING_REQUIRED",
+            ambiguous: false,
+            ambiguityKind: null,
+            ambiguityPorts: [],
+            candidates: [],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("requires one-time protected test evidence before a binding confirmation", () => {
+    const tested = daemonIpcDeviceBindingTestResultSchema.parse({
+      role: "scanner",
+      identityKey: "container:22222222-3333-4444-5555-666666666666",
+      currentPort: "COM3",
+      success: true,
+      code: "SCANNER_PORT_OPEN_READY",
+      message: "ready",
+      testedAt: "2026-07-15T00:00:00Z",
+      testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+      testEvidenceExpiresAt: "2026-07-15T00:01:00Z",
+      observationRevision: `sha256:${"a".repeat(64)}`,
+      configRevision: `sha256:${"b".repeat(64)}`,
+    });
+
+    expect(tested.testEvidenceToken).not.toBe(tested.identityKey);
+    expect(() =>
+      daemonIpcDeviceBindingTestResultSchema.parse({
+        ...tested,
+        testEvidenceToken: undefined,
+      }),
+    ).toThrow();
+  });
 
   it("publishes the strict Checkout Flow Action vocabulary", () => {
     expect(daemonIpcCheckoutFlowActionSchema.options).toEqual([

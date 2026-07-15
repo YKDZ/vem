@@ -1,22 +1,41 @@
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)][string]$FactoryMediaRoot
+  [Parameter(Mandatory = $true)][string]$FactoryMediaRoot,
+  # Test-only producer mode: use a disposable root while retaining the exact
+  # manifest verification and copy loop used by Factory provisioning.
+  [switch]$DeliveryAssemblyEvidenceOnly,
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyOutputRoot,
+  [Parameter(Mandatory = $false)][string]$DeliveryAssemblyContractNonce
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 if ($PSVersionTable.PSEdition -eq "Desktop") { $env:PSModulePath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules;$env:PSModulePath" }
 
-$factoryRoot = "C:\ProgramData\VEM\factory"
-$trustRoot = "C:\ProgramData\VEM\factory-trust"
-$bringupRoot = "C:\VEM\bringup"
+$script:AllowDeliveryAssemblyTestPaths = [bool]$DeliveryAssemblyEvidenceOnly
+if ($DeliveryAssemblyEvidenceOnly) {
+  if ([string]::IsNullOrWhiteSpace($DeliveryAssemblyOutputRoot)) {
+    throw "DeliveryAssemblyOutputRoot is required with DeliveryAssemblyEvidenceOnly"
+  }
+  $deliveryOutputRoot = [IO.Path]::GetFullPath($DeliveryAssemblyOutputRoot)
+  if (Test-Path -LiteralPath $deliveryOutputRoot) {
+    throw "DeliveryAssemblyOutputRoot must not already exist"
+  }
+  $factoryRoot = Join-Path $deliveryOutputRoot "factory"
+  $trustRoot = Join-Path $deliveryOutputRoot "factory-trust"
+  $bringupRoot = Join-Path $deliveryOutputRoot "bringup"
+} else {
+  $factoryRoot = "C:\ProgramData\VEM\factory"
+  $trustRoot = "C:\ProgramData\VEM\factory-trust"
+  $bringupRoot = "C:\VEM\bringup"
+}
 
 function Assert-SafeWindowsPath([string]$Path, [string]$Label) {
   if (
     [string]::IsNullOrWhiteSpace($Path) -or
     $Path -match '[\x00-\x1f]' -or
     $Path -match '^(\\\\|//)' -or
-    $Path -notmatch '^[A-Za-z]:\\'
+    (-not $script:AllowDeliveryAssemblyTestPaths -and $Path -notmatch '^[A-Za-z]:\\')
   ) {
     throw "$Label must be an absolute local Windows path"
   }
@@ -61,8 +80,11 @@ function Set-SystemOnlyAcl([string]$Path) {
   }
   $acl = Get-Acl -LiteralPath $Path
   $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
-  foreach ($identity in @("SYSTEM", "BUILTIN\Administrators")) {
+  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+  $system = [Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+  $administrators = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+  $acl.SetOwner($system)
+  foreach ($identity in @($system, $administrators)) {
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
       $identity, "FullControl", $inheritanceFlags, "None", "Allow"
     ))
@@ -87,6 +109,8 @@ $destinations = @{
   "VISION-RELEASE/" = (Join-Path $factoryRoot "vision-release")
   "VISION-TRUST/" = $trustRoot
   "VISION-INSTALLER/install-vision-release.ps1" = (Join-Path $bringupRoot "install-vision-release.ps1")
+  "VISION-INSTALLER/vision-release-materialization.psm1" = (Join-Path $bringupRoot "vision-release-materialization.psm1")
+  "VISION-INSTALLER/vision-diagnostic-redaction.psm1" = (Join-Path $bringupRoot "vision-diagnostic-redaction.psm1")
   "VISION-INSTALLER/provision-vision-factory-release.ps1" = (Join-Path $bringupRoot "provision-vision-factory-release.ps1")
 }
 $installedFiles = @()
@@ -117,9 +141,31 @@ foreach ($property in @($manifest.files.PSObject.Properties)) {
   Assert-NonReparsePath $parent "Factory Vision destination"
   Copy-Item -LiteralPath $source -Destination $destination -Force
   if ((Get-Sha256Digest $destination) -cne $expected) { throw "Factory Vision destination hash mismatch" }
-  $installedFiles += $destination
+  $installedFiles += [ordered]@{ relative=$relative; path=$destination; digest=$expected }
 }
-foreach ($path in @($factoryRoot, $trustRoot, $bringupRoot, (Join-Path $factoryRoot "vision-release")) + $installedFiles | Select-Object -Unique) {
+$protectedRoots = @($factoryRoot, $trustRoot, $bringupRoot, (Join-Path $factoryRoot "vision-release"))
+foreach ($path in $protectedRoots) {
+  Assert-NonReparsePath $path "Factory Vision installed root"
+  if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+    New-Item -ItemType Directory -Path $path -Force | Out-Null
+  }
+}
+foreach ($path in $protectedRoots + @($installedFiles | ForEach-Object { [string]$_.path }) | Select-Object -Unique) {
   Assert-NonReparsePath $path "Factory Vision installed path"
   Set-SystemOnlyAcl $path
 }
+
+$evidenceFiles = [ordered]@{}
+foreach ($installed in $installedFiles | Sort-Object relative) {
+  $evidenceFiles[[string]$installed.relative] = [ordered]@{
+    destination = [string]$installed.path
+    digest = [string]$installed.digest
+  }
+}
+[ordered]@{
+  schemaVersion = "vem-factory-vision-provisioning-evidence/v1"
+  kind = "factory-vision-provisioning-evidence"
+  deliveryAssemblyContractNonce = $DeliveryAssemblyContractNonce
+  sourceManifestDigest = Get-Sha256Digest $manifestPath
+  files = $evidenceFiles
+} | ConvertTo-Json -Depth 20
