@@ -86,6 +86,35 @@ function centralEntryOnAnotherDisk() {
   return archive;
 }
 
+function concatenatedDeflateZip() {
+  const first = Buffer.from("first neutral runtime payload");
+  const compressed = Buffer.concat([
+    deflateRawSync(first),
+    deflateRawSync(Buffer.from("second neutral runtime payload")),
+  ]);
+  return storedZip(
+    "concatenated-deflate.bin",
+    compressed,
+    first.length,
+    0,
+    8,
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+    crc32(first),
+  );
+}
+
+function deflatedZipWithWrongChecksum(name, content) {
+  const archive = Buffer.from(deflatedZip(name, content));
+  const endOffset = archive.length - 22;
+  const centralStart = archive.readUInt32LE(endOffset + 16);
+  const wrongChecksum = (crc32(content) ^ 0xffffffff) >>> 0;
+  archive.writeUInt32LE(wrongChecksum, 14);
+  archive.writeUInt32LE(wrongChecksum, centralStart + 16);
+  return archive;
+}
+
 function crc32(content) {
   let crc = 0xffffffff;
   for (const byte of content) {
@@ -406,6 +435,31 @@ describe("Factory runtime payment secret boundary", () => {
           "multi-disk-entry.zip",
         ),
       /invalid archive|unsupported archive/i,
+    );
+  });
+
+  it("rejects concatenated raw deflate streams inside one compressed range", () => {
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          concatenatedDeflateZip(),
+          "concatenated-deflate.zip",
+        ),
+      /invalid archive|unsupported archive/i,
+    );
+  });
+
+  it("rejects an archive whose actual content CRC32 differs from both headers", () => {
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          deflatedZipWithWrongChecksum(
+            "wrong-checksum.bin",
+            Buffer.from("neutral runtime payload"),
+          ),
+          "wrong-checksum.zip",
+        ),
+      /invalid archive/i,
     );
   });
 
