@@ -3,14 +3,17 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse, relative, resolve, sep } from "node:path";
 import { describe, it } from "node:test";
 
 const fixture = "scripts/windows/vision-release-install.fixtures.ps1";
@@ -68,7 +71,115 @@ function parsePowerShell(path) {
   ]);
 }
 
+function getNonReparseFileIdentity(path) {
+  const absolute = resolve(path);
+  const root = parse(absolute).root;
+  let cursor = root;
+  for (const part of relative(root, absolute).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    assert.equal(
+      lstatSync(cursor).isSymbolicLink(),
+      false,
+      `delivery destination must not traverse a reparse point: ${cursor}`,
+    );
+  }
+
+  const stats = lstatSync(absolute, { bigint: true });
+  assert.equal(stats.isFile(), true, `${absolute} must be a regular file`);
+  const canonical = realpathSync.native(absolute);
+  return {
+    canonical:
+      process.platform === "win32"
+        ? canonical.replaceAll("/", "\\").toLowerCase()
+        : canonical,
+    device: stats.dev,
+    inode: stats.ino,
+  };
+}
+
+function assertSameNonReparseFile(actual, expected) {
+  const actualIdentity = getNonReparseFileIdentity(actual);
+  const expectedIdentity = getNonReparseFileIdentity(expected);
+  assert.equal(
+    actualIdentity.canonical,
+    expectedIdentity.canonical,
+    "delivery evidence and expected destination must resolve to the same canonical file",
+  );
+  assert.equal(
+    actualIdentity.device,
+    expectedIdentity.device,
+    "delivery evidence and expected destination must identify the same file device",
+  );
+  assert.equal(
+    actualIdentity.inode,
+    expectedIdentity.inode,
+    "delivery evidence and expected destination must identify the same file",
+  );
+}
+
 describe("Vision release installer fixtures", () => {
+  boundedIt(
+    "compares delivery evidence by canonical non-reparse file identity",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vision-path-identity-"));
+      try {
+        const expected = join(root, "expected.bin");
+        const different = join(root, "different.bin");
+        writeFileSync(expected, "expected");
+        writeFileSync(different, "different");
+
+        assert.doesNotThrow(() => assertSameNonReparseFile(expected, expected));
+        assert.throws(
+          () => assertSameNonReparseFile(different, expected),
+          /same canonical file/,
+        );
+
+        const targetDirectory = join(root, "target");
+        const reparseDirectory = join(root, "reparse");
+        mkdirSync(targetDirectory);
+        const target = join(targetDirectory, "artifact.bin");
+        writeFileSync(target, "artifact");
+        symlinkSync(
+          targetDirectory,
+          reparseDirectory,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        assert.throws(
+          () =>
+            assertSameNonReparseFile(
+              join(reparseDirectory, "artifact.bin"),
+              target,
+            ),
+          /reparse point/,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  boundedIt(
+    "treats Windows 8.3 and long paths to one file as the same delivery destination",
+    { skip: process.platform !== "win32" },
+    (context) => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vision-short-path-"));
+      try {
+        const shortPath = join(root, "artifact.bin");
+        writeFileSync(shortPath, "artifact");
+        const longPath = realpathSync.native(shortPath);
+        if (shortPath.toLowerCase() === longPath.toLowerCase()) {
+          context.skip("the Windows host does not expose an 8.3 alias");
+          return;
+        }
+        assert.doesNotThrow(() =>
+          assertSameNonReparseFile(shortPath, longPath),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   for (const testCase of [
     "archive",
     "bytes",
@@ -120,15 +231,31 @@ describe("Vision release installer fixtures", () => {
     "runs the Candidate entrypoint harness with Windows PowerShell 5.1",
     { skip: process.platform !== "win32" },
     () => {
-      const result = spawnBounded("powershell.exe", [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        candidateWindowsHarness,
-      ]);
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-      assert.match(result.stdout, /candidate entrypoint harness passed/);
+      const pollutedModulePath = mkdtempSync(
+        join(tmpdir(), "vem-pwsh-only-module-path-"),
+      );
+      try {
+        const result = spawnBounded(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            candidateWindowsHarness,
+          ],
+          {
+            env: {
+              ...process.env,
+              PSModulePath: pollutedModulePath,
+            },
+          },
+        );
+        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+        assert.match(result.stdout, /candidate entrypoint harness passed/);
+      } finally {
+        rmSync(pollutedModulePath, { recursive: true, force: true });
+      }
     },
   );
 
@@ -145,6 +272,18 @@ describe("Vision release installer fixtures", () => {
         source,
         /\$CandidatePath\s*=\s*\(Join-Path \$PSScriptRoot/,
       );
+    },
+  );
+
+  boundedIt(
+    "hashes Candidate harness files without Windows PowerShell module autoload",
+    () => {
+      const source = readFileSync(candidateWindowsHarness, "utf8");
+      assert.doesNotMatch(source, /Get-FileHash/);
+      assert.match(source, /\[Security\.Cryptography\.SHA256\]::Create\(\)/);
+      assert.match(source, /\[IO\.File\]::Open\(/);
+      assert.match(source, /\.ComputeHash\(\$stream\)/);
+      assert.match(source, /\$stream\.Dispose\(\)/);
     },
   );
 
@@ -250,7 +389,7 @@ describe("Vision release installer fixtures", () => {
             provisionEvidence.files[relative].digest,
             files[relative],
           );
-          assert.equal(
+          assertSameNonReparseFile(
             provisionEvidence.files[relative].destination,
             destination,
           );

@@ -10,7 +10,19 @@ if ([string]::IsNullOrWhiteSpace($CandidatePath)) {
 }
 
 function Get-HarnessSha256([string]$Path) {
-  return "sha256:" + (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+  $stream = [IO.File]::Open(
+    $Path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read
+  )
+  $hash = [Security.Cryptography.SHA256]::Create()
+  try {
+    return "sha256:" + ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $hash.Dispose()
+    $stream.Dispose()
+  }
 }
 
 function Get-HarnessSha256Bytes([byte[]]$Bytes) {
