@@ -18,6 +18,7 @@ function storedZip(
   localExtra = Buffer.alloc(0),
   centralExtra = localExtra,
   archiveComment = Buffer.alloc(0),
+  checksum = method === 0 ? crc32(content) : 0,
 ) {
   const fileName = Buffer.from(name);
   const header = Buffer.alloc(30);
@@ -25,6 +26,7 @@ function storedZip(
   header.writeUInt16LE(20, 4);
   header.writeUInt16LE(flags, 6);
   header.writeUInt16LE(method, 8);
+  header.writeUInt32LE(checksum, 14);
   header.writeUInt32LE(content.length, 18);
   header.writeUInt32LE(declaredUncompressedSize, 22);
   header.writeUInt16LE(fileName.length, 26);
@@ -35,6 +37,7 @@ function storedZip(
   central.writeUInt16LE(20, 6);
   central.writeUInt16LE(flags, 8);
   central.writeUInt16LE(method, 10);
+  central.writeUInt32LE(checksum, 16);
   central.writeUInt32LE(content.length, 20);
   central.writeUInt32LE(declaredUncompressedSize, 24);
   central.writeUInt16LE(fileName.length, 28);
@@ -59,6 +62,28 @@ function storedZip(
     end,
     archiveComment,
   ]);
+}
+
+function deflatedZip(name, content, declaredSize = content.length) {
+  return storedZip(
+    name,
+    deflateRawSync(content),
+    declaredSize,
+    0,
+    8,
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+    crc32(content),
+  );
+}
+
+function centralEntryOnAnotherDisk() {
+  const archive = Buffer.from(storedZip("runtime.txt", Buffer.from("safe")));
+  const endOffset = archive.length - 22;
+  const centralStart = archive.readUInt32LE(endOffset + 16);
+  archive.writeUInt16LE(1, centralStart + 34);
+  return archive;
 }
 
 function crc32(content) {
@@ -330,13 +355,7 @@ describe("Factory runtime payment secret boundary", () => {
     const deflated = Buffer.from("valid deflate runtime payload");
     assert.doesNotThrow(() =>
       assertNoPlatformPrivateKeyMaterial(
-        storedZip(
-          "runtime.txt",
-          deflateRawSync(deflated),
-          deflated.length,
-          0,
-          8,
-        ),
+        deflatedZip("runtime.txt", deflated),
         "valid-deflate.zip",
       ),
     );
@@ -350,6 +369,44 @@ describe("Factory runtime payment secret boundary", () => {
         /invalid archive|unsupported archive/i,
       );
     }
+  });
+
+  it("rejects dishonest deflate lengths and actual decoded budget overflow", () => {
+    const neutralTail = Buffer.from(
+      "neutral runtime payload with a hidden tail",
+    );
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          deflatedZip("dishonest-small.bin", neutralTail, 1),
+          "dishonest-small.zip",
+        ),
+      /invalid archive|scan budget/i,
+    );
+
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          deflatedZip(
+            "actual-overflow.bin",
+            Buffer.alloc(16 * 1024 * 1024 + 1, 0x61),
+            1,
+          ),
+          "actual-overflow.zip",
+        ),
+      /invalid archive|scan budget/i,
+    );
+  });
+
+  it("rejects a central entry assigned to another disk", () => {
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          centralEntryOnAnotherDisk(),
+          "multi-disk-entry.zip",
+        ),
+      /invalid archive|unsupported archive/i,
+    );
   });
 
   it("rejects a readable deflate ZIP container with a nonzero local-header offset", () => {
