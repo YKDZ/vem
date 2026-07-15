@@ -116,6 +116,39 @@ describe("Factory Personalization Media v1", () => {
     );
   });
 
+  it("accepts verifier bytes whose base64 happens to contain a reserved substring", () => {
+    const media = testbedMedia({
+      maintenancePinVerifier: {
+        ...testbedMedia().maintenancePinVerifier,
+        salt: "M+HWgrYgxT9A+ItRbLNGQQ==",
+      },
+    });
+
+    assert.doesNotThrow(() => validateFactoryPersonalizationMedia(media));
+    assert.throws(
+      () =>
+        validateFactoryPersonalizationMedia({
+          ...media,
+          maintenancePinVerifier: {
+            ...media.maintenancePinVerifier,
+            privateKey: "not-permitted",
+          },
+        }),
+      FactoryPersonalizationMediaError,
+    );
+    assert.throws(
+      () =>
+        validateFactoryPersonalizationMedia({
+          ...media,
+          maintenancePinVerifier: {
+            ...media.maintenancePinVerifier,
+            digest: "IEkZGlw0I1RRTl1UYWVkxto8r8vBXw5Rw2EaaNvDlwg=",
+          },
+        }),
+      FactoryPersonalizationMediaError,
+    );
+  });
+
   it("rejects unknown fields, case variants of forbidden material, and arbitrary profiles", () => {
     for (const candidate of [
       productionMedia({ unexpected: true }),
