@@ -3653,6 +3653,20 @@ try {
     const temp = mkdtempSync(join(tmpdir(), "vem-vm-acceptance-artifacts-"));
     try {
       const outputPath = join(temp, "vm-runtime-acceptance-plan.json");
+      const maintenanceRelaySession = {
+        sessionId: "550e8400-e29b-41d4-a716-446655440000",
+        relayPeer: {
+          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          tunnelAddress: "10.91.0.1",
+        },
+        sourceTunnelAddress: "10.91.2.10",
+        endpointTunnelAddress: "10.91.16.10",
+      };
+      const maintenanceEndpointPolicy = {
+        transport: "testbed-runner-direct",
+        runnerSourceAllowlist: ["192.0.2.10/32"],
+        lifecycleReference: "vm-lifecycle://run-181.runtime-acceptance",
+      };
 
       const result = spawnSync(
         process.execPath,
@@ -3678,6 +3692,10 @@ try {
             port: 22,
             reachability: "discovered",
           }),
+          "--maintenance-relay-session-json",
+          JSON.stringify(maintenanceRelaySession),
+          "--maintenance-endpoint-policy-json",
+          JSON.stringify(maintenanceEndpointPolicy),
           "--expected-testbed-user",
           "YKDZ",
           "--ssh-known-hosts-path",
@@ -3753,6 +3771,21 @@ try {
         "ephemeral setup must carry explicit mock-payment acknowledgement",
       );
       assert.equal(plan.steps[3].mode, "simulated-hardware-sale-flow");
+      assert.deepEqual(
+        JSON.parse(
+          commandArg(plan.steps[3].command, "--maintenance-relay-session-json"),
+        ),
+        maintenanceRelaySession,
+      );
+      assert.deepEqual(
+        JSON.parse(
+          commandArg(
+            plan.steps[3].command,
+            "--maintenance-endpoint-policy-json",
+          ),
+        ),
+        maintenanceEndpointPolicy,
+      );
       assert.equal(
         plan.steps[3].ephemeralPlatformEvidence,
         plan.artifacts.ephemeralPlatformEvidence,

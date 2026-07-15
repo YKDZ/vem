@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -2969,6 +2969,20 @@ describe("VM Host Adapter contract", () => {
     const scannerCodePath = join(root, "protected-scanner-code.txt");
     const runnerSigningKeyFile = join(root, "runner-ed25519.pem");
     const out = join(root, "conformance.json");
+    const maintenanceRelaySession = {
+      sessionId: "550e8400-e29b-41d4-a716-446655440000",
+      relayPeer: {
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
+      sourceTunnelAddress: "10.91.2.10",
+      endpointTunnelAddress: "10.91.16.10",
+    };
+    const maintenanceEndpointPolicy = {
+      transport: "testbed-runner-direct",
+      runnerSourceAllowlist: ["192.0.2.10/32"],
+      lifecycleReference: "vm-lifecycle://run-12-contract.runtime-testbed",
+    };
     writeFileSync(scannerCodePath, PROTECTED_SCANNER_INPUT, { mode: 0o600 });
     const runnerKey = generateKeyPairSync("ed25519");
     const expectedRunnerPublicKey = `ed25519-public-key:base64:${runnerKey.publicKey
@@ -3001,6 +3015,10 @@ describe("VM Host Adapter contract", () => {
         `factory-cas://sha256/${HASH}`,
         "--lifecycle-reference",
         "vm-lifecycle://run-12-contract.runtime-testbed",
+        "--maintenance-relay-session-json",
+        JSON.stringify(maintenanceRelaySession),
+        "--maintenance-endpoint-policy-json",
+        JSON.stringify(maintenanceEndpointPolicy),
         "--sale-correlation-id",
         "sale-correlation://sale-001",
         "--order-id",
@@ -3024,6 +3042,30 @@ describe("VM Host Adapter contract", () => {
     const report = JSON.parse(readFileSync(out, "utf8"));
     assert.equal(existsSync(runnerSigningKeyFile), false);
     assert.equal(report.runnerEvidence.publicKey, expectedRunnerPublicKey);
+    for (const name of [
+      "start",
+      "inject",
+      "collect",
+      "firstStop",
+      "repeatedStop",
+    ]) {
+      assert.deepEqual(
+        report.requests[name].maintenanceRelaySession,
+        maintenanceRelaySession,
+      );
+      assert.deepEqual(
+        report.requests[name].maintenanceEndpointPolicy,
+        maintenanceEndpointPolicy,
+      );
+      assert.equal(
+        report.reports[name].guest.maintenanceEndpoint.transport,
+        "testbed-runner-direct",
+      );
+    }
+    assert.deepEqual(
+      report.failureMatrix[0].source.fault.request.maintenanceEndpointPolicy,
+      maintenanceEndpointPolicy,
+    );
     assert.equal(
       report.reports.repeatedStop.serialSession.simulatorCleanup
         .idempotencyVerified,
@@ -3052,6 +3094,24 @@ describe("VM Host Adapter contract", () => {
         (entry) => entry.failureMode === "scanner-timeout",
       ).source.fault.request.serialSession.saleBindings[0].vendingCommandId,
       null,
+    );
+    const malformedContext = spawnSync(
+      process.execPath,
+      [
+        SERIAL_CONFORMANCE,
+        "--adapter",
+        FAKE_ADAPTER,
+        "--out",
+        join(root, "malformed-context.json"),
+        "--maintenance-relay-session-json",
+        "[]",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(malformedContext.status, 1);
+    assert.match(
+      malformedContext.stderr,
+      /--maintenance-relay-session-json must be a JSON object/,
     );
     for (const failureMode of ["swapped-roles", "missing-device"]) {
       const mappingFailure = report.failureMatrix.find(
@@ -3137,6 +3197,10 @@ describe("VM Host Adapter contract", () => {
       operationReference: forgedStartReference,
       lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
       target: { identity: "vm-target://attacker" },
+      maintenanceEndpointPolicy: {
+        ...collectRequest.maintenanceEndpointPolicy,
+        lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
+      },
       serialSession: {
         ...collectRequest.serialSession,
         ...forgedBinding,
@@ -3157,6 +3221,7 @@ describe("VM Host Adapter contract", () => {
       operationReference: collectRequest.operationReference,
       lifecycleReference: collectRequest.lifecycleReference,
       targetIdentity: collectRequest.target.identity,
+      maintenanceEndpointPolicy: collectRequest.maintenanceEndpointPolicy,
       serialSession: collectRequest.serialSession,
     });
     collectReport.observed.targetBinding.targetIdentity =

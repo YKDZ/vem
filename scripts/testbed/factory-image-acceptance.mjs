@@ -560,6 +560,10 @@ function commonVerifierArgs(
   endpoint,
   { ephemeralPlatform = true, sshKnownHostsPath = null } = {},
 ) {
+  const maintenanceEndpointPolicy = {
+    ...input.endpoint.bootstrap,
+    lifecycleReference: lifecycleReference(input),
+  };
   const args = [
     "--run-id",
     input.runId,
@@ -573,6 +577,10 @@ function commonVerifierArgs(
     input.ssh.certificatePath,
     "--factory-guest-endpoint-json",
     endpointArgument(endpoint, input.endpoint),
+    "--maintenance-relay-session-json",
+    JSON.stringify(input.endpoint.maintenanceRelaySession),
+    "--maintenance-endpoint-policy-json",
+    JSON.stringify(maintenanceEndpointPolicy),
   ];
   if (sshKnownHostsPath) {
     args.push("--ssh-known-hosts-path", sshKnownHostsPath);

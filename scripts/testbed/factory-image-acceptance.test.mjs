@@ -229,6 +229,30 @@ describe("Factory Image Acceptance lifecycle", () => {
         invocation[invocation.indexOf("--ssh-known-hosts-path") + 1],
         sshKnownHostsPath,
       );
+      assert.deepEqual(
+        JSON.parse(
+          invocation[
+            invocation.indexOf("--maintenance-relay-session-json") + 1
+          ],
+        ),
+        input.endpoint.maintenanceRelaySession,
+      );
+      assert.deepEqual(
+        JSON.parse(
+          invocation[
+            invocation.indexOf("--maintenance-endpoint-policy-json") + 1
+          ],
+        ),
+        {
+          ...input.endpoint.bootstrap,
+          lifecycleReference: `vm-lifecycle://${input.runId.toLowerCase()}.${createHash(
+            "sha256",
+          )
+            .update(`${input.runId}\n${input.targetIdentity}`)
+            .digest("hex")
+            .slice(0, 32)}`,
+        },
+      );
     }
     assert.equal(
       preclaimInvocation.includes("--ephemeral-platform-evidence"),

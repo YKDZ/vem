@@ -2670,6 +2670,27 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     "--out",
     serialConformanceReport,
   ];
+  if (
+    options.maintenanceRelaySession !== undefined ||
+    options.maintenanceEndpointPolicy !== undefined
+  ) {
+    if (
+      !options.maintenanceRelaySession ||
+      !options.maintenanceEndpointPolicy
+    ) {
+      throw new Error(
+        "VM runtime serial conformance requires paired maintenance relay session and endpoint policy",
+      );
+    }
+    saleFlowCommand.splice(
+      saleFlowCommand.indexOf("--out"),
+      0,
+      "--maintenance-relay-session-json",
+      JSON.stringify(options.maintenanceRelaySession),
+      "--maintenance-endpoint-policy-json",
+      JSON.stringify(options.maintenanceEndpointPolicy),
+    );
+  }
 
   const cleanBaseStep = cleanBaseFactoryAcceptance
     ? [
@@ -8704,6 +8725,12 @@ function parseArgs(argv) {
     } else if (arg === "--factory-guest-endpoint-json") {
       options.factoryGuestEndpointJson = next;
       index += 1;
+    } else if (arg === "--maintenance-relay-session-json") {
+      options.maintenanceRelaySession = parseJsonObjectArgument(arg, next);
+      index += 1;
+    } else if (arg === "--maintenance-endpoint-policy-json") {
+      options.maintenanceEndpointPolicy = parseJsonObjectArgument(arg, next);
+      index += 1;
     } else if (arg === "--factory-assembly-mode") {
       options.factoryAssemblyMode = next;
       index += 1;
@@ -8806,7 +8833,26 @@ function parseArgs(argv) {
   return options;
 }
 
+function parseJsonObjectArgument(option, value) {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new Error("not an object");
+    return parsed;
+  } catch {
+    throw new Error(`${option} must be a JSON object`);
+  }
+}
+
 function applyFactoryGuestEndpoint(options) {
+  if (
+    (options.maintenanceRelaySession === undefined) !==
+    (options.maintenanceEndpointPolicy === undefined)
+  ) {
+    throw new Error(
+      "--maintenance-relay-session-json and --maintenance-endpoint-policy-json must be supplied together",
+    );
+  }
   if (!options.factoryGuestEndpointJson) return options;
   let endpoint;
   try {
