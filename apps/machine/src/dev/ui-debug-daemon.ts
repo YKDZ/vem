@@ -4,6 +4,7 @@ import {
   type BrowserInstalledKioskSaleContractFacts,
   daemonIpcMachinePaymentProviderSchema,
   type InstalledKioskSaleDisturbance,
+  type InstalledKioskSaleCustomerPaymentSurface,
   paymentMethodSchema,
   type StockMaintenanceBatchResponse,
   type StockMaintenanceTask,
@@ -53,6 +54,7 @@ let installed = false;
 let currentTransaction: TransactionSnapshot | null = null;
 let currentTransactionFailuresRemaining = 0;
 let disturbanceInjectionSequence = 0;
+let timelineObservationSequence = 0;
 let removeRouteObserver: (() => void) | null = null;
 let captureCurrentRoute: (() => void) | null = null;
 
@@ -117,6 +119,7 @@ function resetSaleEvidence(): void {
   saleEvidence = emptySaleEvidence();
   currentTransactionFailuresRemaining = 0;
   disturbanceInjectionSequence = 0;
+  timelineObservationSequence = 0;
 }
 
 function currentScenario() {
@@ -351,6 +354,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
         reservationId,
         paymentUrl,
         status: "processing",
+        statusDeliveries: [],
       },
       transaction: {
         transactionId,
@@ -383,6 +387,11 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
     record?.vendingCommand?.commandId ??
     `UI-DEBUG-CMD-${snapshot.orderNo}`;
   if (record) {
+    record.payment.statusDeliveries.push({
+      deliveryId: `payment-status-${record.payment.paymentId}-${succeed ? "succeeded" : "failed"}`,
+      status: succeed ? "succeeded" : "failed",
+      deliveredAt: nowIso(),
+    });
     record.payment.status = succeed ? "succeeded" : "failed";
     record.order.status = succeed ? "dispensing" : "failed";
     record.transaction.status = succeed ? "dispensing" : "failed";
@@ -392,6 +401,7 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
         orderId: record.order.orderId,
         transactionId: record.transaction.transactionId,
         status: "sent",
+        creationCount: 1,
       };
     }
   }
@@ -432,6 +442,7 @@ function completeSimulatedDispense(): TransactionSnapshot {
       orderId: record.order.orderId,
       transactionId: record.transaction.transactionId,
       status: "succeeded",
+      creationCount: record.vendingCommand?.creationCount ?? 1,
     };
     record.stockMovement = {
       movementId,
@@ -440,6 +451,7 @@ function completeSimulatedDispense(): TransactionSnapshot {
       commandId,
       quantity: -1,
       status: "accepted",
+      creationCount: record.stockMovement?.creationCount ?? 1,
     };
     record.fulfillment = {
       status: "succeeded",
@@ -489,16 +501,44 @@ function installedKioskSaleRoute(path: string) {
   return "other" as const;
 }
 
+function nextTimelineObservationId(): string {
+  timelineObservationSequence += 1;
+  return `browser-observation-${timelineObservationSequence}`;
+}
+
 function recordInstalledKioskSaleRoute(path: string): void {
   const record = activeSaleRecord();
   if (!record) return;
+  const route = installedKioskSaleRoute(path);
+  if (route === "payment") return;
   saleEvidence.timeline.push({
+    observationId: nextTimelineObservationId(),
     observedAt: nowIso(),
-    route: installedKioskSaleRoute(path),
+    route,
+    identitySource: "router_transaction_state",
     orderId: record.order.orderId,
     paymentId: record.payment.paymentId,
     transactionId: record.transaction.transactionId,
     paymentUrl: record.payment.paymentUrl,
+  });
+}
+
+function recordCustomerPaymentSurface(
+  surface: InstalledKioskSaleCustomerPaymentSurface,
+): void {
+  const record = activeSaleRecord();
+  if (!record) {
+    throw new Error("Installed Kiosk Sale transaction evidence is unavailable");
+  }
+  saleEvidence.timeline.push({
+    observationId: nextTimelineObservationId(),
+    observedAt: surface.observedAt,
+    route: "payment",
+    identitySource: "customer_payment_surface",
+    orderId: surface.orderId,
+    paymentId: surface.paymentId,
+    transactionId: record.transaction.transactionId,
+    paymentUrl: surface.paymentUrl,
   });
 }
 
@@ -516,12 +556,25 @@ export function installInstalledKioskSaleRouteObserver(router: Router): void {
 async function injectInstalledKioskSaleDisturbance(
   disturbance: InstalledKioskSaleDisturbance,
 ): Promise<void> {
+  let barrierObservation: UiDebugSaleEvidence["timeline"][number] | undefined;
+  for (const entry of saleEvidence.timeline) {
+    if (
+      entry.route === "payment" &&
+      entry.identitySource === "customer_payment_surface"
+    ) {
+      barrierObservation = entry;
+    }
+  }
+  if (!barrierObservation) {
+    throw new Error("Customer payment QR barrier has not been observed");
+  }
   disturbanceInjectionSequence += 1;
   const injection = {
     injectionId: `browser-injection-${disturbanceInjectionSequence}`,
     kind: disturbance,
     injectedAt: nowIso(),
     barrier: "payment_qr_presented" as const,
+    barrierObservationId: barrierObservation.observationId,
     count: 1,
     outcome: "failed" as "completed" | "failed",
   };
@@ -543,10 +596,9 @@ async function injectInstalledKioskSaleDisturbance(
         });
         break;
       case "duplicate_payment_status":
-        // Replay the same authoritative Payment snapshot twice. The UI must
-        // retain its existing order and later create one fulfillment chain.
-        await useCheckoutStore().refreshCurrentTransaction();
-        await useCheckoutStore().refreshCurrentTransaction();
+        await useCheckoutStore().markMockSucceeded();
+        await useCheckoutStore().markMockSucceeded();
+        await routeToTransactionProjection();
         break;
       case "ipc_interruption":
         currentTransactionFailuresRemaining = 1;
@@ -566,6 +618,7 @@ function installInstalledKioskSaleDebugControl(): void {
   if (typeof window === "undefined") return;
   Reflect.set(window, "__VEM_INSTALLED_KIOSK_SALE_DEBUG__", {
     inject: injectInstalledKioskSaleDisturbance,
+    observePaymentSurface: recordCustomerPaymentSurface,
     readEvidence: (): UiDebugSaleEvidence => structuredClone(saleEvidence),
     completePayment: async (): Promise<void> => {
       await useCheckoutStore().markMockSucceeded();

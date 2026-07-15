@@ -48,6 +48,8 @@ watch(
       class="mx-auto size-[320px] max-h-[45vh] max-w-full"
       :src="dataUrl"
       alt="支付二维码"
+      data-installed-kiosk-sale-qr
+      :data-qr-payload="props.value"
     />
     <div
       v-else

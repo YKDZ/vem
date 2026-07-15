@@ -35,6 +35,13 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
           reservationId: "reservation-1",
           paymentUrl: identity.paymentUrl,
           status: "succeeded",
+          statusDeliveries: [
+            {
+              deliveryId: "payment-status-payment-1-succeeded",
+              status: "succeeded",
+              deliveredAt: "2026-07-15T00:00:01.750Z",
+            },
+          ],
         },
         transaction: {
           transactionId: identity.transactionId,
@@ -48,6 +55,7 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
           orderId: identity.orderId,
           transactionId: identity.transactionId,
           status: "succeeded",
+          creationCount: 1,
         },
         stockMovement: {
           movementId: "movement-1",
@@ -56,6 +64,7 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
           commandId: "command-1",
           quantity: -1,
           status: "accepted",
+          creationCount: 1,
         },
         fulfillment: {
           status: "succeeded",
@@ -68,18 +77,24 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
     ],
     timeline: [
       {
+        observationId: "observation-payment-1",
         observedAt: "2026-07-15T00:00:01.000Z",
         route: "payment",
+        identitySource: "customer_payment_surface",
         ...identity,
       },
       {
+        observationId: "observation-fulfillment-1",
         observedAt: "2026-07-15T00:00:02.000Z",
         route: "fulfillment",
+        identitySource: "router_transaction_state",
         ...identity,
       },
       {
+        observationId: "observation-result-1",
         observedAt: "2026-07-15T00:00:03.000Z",
         route: "result",
+        identitySource: "router_transaction_state",
         ...identity,
       },
     ],
@@ -89,6 +104,7 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
         kind: "catalog_refresh",
         injectedAt: "2026-07-15T00:00:01.500Z",
         barrier: "payment_qr_presented",
+        barrierObservationId: "observation-payment-1",
         count: 1,
         outcome: "completed",
       },
@@ -201,6 +217,35 @@ describe("browser Installed Kiosk Sale UI contract", () => {
     ).toContain("final_fulfillment_not_successful");
   });
 
+  it("accepts the same succeeded payment status twice with one fulfillment side effect chain", () => {
+    const facts = completeFacts();
+    facts.disturbanceInjections[0].kind = "duplicate_payment_status";
+    facts.transactions[0].payment.statusDeliveries.push({
+      ...facts.transactions[0].payment.statusDeliveries[0],
+      deliveredAt: "2026-07-15T00:00:01.800Z",
+    });
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics,
+    ).toEqual([]);
+  });
+
+  it("rejects duplicate fulfillment command or stock movement creation", () => {
+    const facts = completeFacts();
+    const record = facts.transactions[0];
+    if (!record.vendingCommand || !record.stockMovement) {
+      throw new Error("complete fulfillment evidence missing");
+    }
+    record.vendingCommand.creationCount = 2;
+    record.stockMovement.creationCount = 2;
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("fulfillment_side_effect_count_mismatch");
+  });
+
   it("rejects a stale QR on any active route observation", () => {
     const facts = completeFacts();
     facts.timeline[1].paymentUrl = "https://pay.example.test/stale-order";
@@ -210,6 +255,51 @@ describe("browser Installed Kiosk Sale UI contract", () => {
         (diagnostic) => diagnostic.code,
       ),
     ).toContain("timeline_payment_qr_mismatch");
+  });
+
+  it("rejects a timeline whose observation timestamps move backwards", () => {
+    const facts = completeFacts();
+    facts.timeline[1].observedAt = "2026-07-15T00:00:00.500Z";
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("timeline_observed_at_not_nondecreasing");
+  });
+
+  it.each([
+    ["before payment", "2026-07-15T00:00:00.500Z"],
+    ["after result", "2026-07-15T00:00:03.500Z"],
+  ])("rejects an injection %s", (_label, injectedAt) => {
+    const facts = completeFacts();
+    facts.disturbanceInjections[0].injectedAt = injectedAt;
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("disturbance_outside_payment_result_interval");
+  });
+
+  it("rejects an appended route event timestamped inside the active interval", () => {
+    const facts = completeFacts();
+    facts.timeline.push({
+      ...facts.timeline[0],
+      observedAt: "2026-07-15T00:00:02.500Z",
+      route: "home",
+    });
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        "timeline_observed_at_not_nondecreasing",
+        "active_transaction_route_replaced",
+      ]),
+    );
   });
 
   it.each(["home", "maintenance"] as const)(

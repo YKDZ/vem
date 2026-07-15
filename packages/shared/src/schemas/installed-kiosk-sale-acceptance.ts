@@ -31,10 +31,26 @@ const linkedTransactionIdentitySchema = z.object({
   paymentUrl: z.url(),
 });
 
+export const installedKioskSaleCustomerPaymentSurfaceSchema = z.object({
+  observedAt: z.iso.datetime(),
+  orderId: z.string().min(1),
+  paymentId: z.string().min(1),
+  paymentUrl: z.url(),
+});
+
+export type InstalledKioskSaleCustomerPaymentSurface = z.infer<
+  typeof installedKioskSaleCustomerPaymentSurfaceSchema
+>;
+
 export const installedKioskSaleTimelineEntrySchema =
   linkedTransactionIdentitySchema.extend({
+    observationId: z.string().min(1),
     observedAt: z.iso.datetime(),
     route: installedKioskSaleRouteSchema,
+    identitySource: z.enum([
+      "customer_payment_surface",
+      "router_transaction_state",
+    ]),
   });
 
 export const installedKioskSaleLinkedTransactionSchema = z.object({
@@ -57,6 +73,13 @@ export const installedKioskSaleLinkedTransactionSchema = z.object({
     reservationId: z.string().min(1),
     paymentUrl: z.url(),
     status: z.enum(["processing", "succeeded", "failed"]),
+    statusDeliveries: z.array(
+      z.object({
+        deliveryId: z.string().min(1),
+        status: z.enum(["succeeded", "failed"]),
+        deliveredAt: z.iso.datetime(),
+      }),
+    ),
   }),
   transaction: z.object({
     transactionId: z.string().min(1),
@@ -71,6 +94,7 @@ export const installedKioskSaleLinkedTransactionSchema = z.object({
       orderId: z.string().min(1),
       transactionId: z.string().min(1),
       status: z.enum(["sent", "succeeded", "failed"]),
+      creationCount: z.number().int().nonnegative(),
     })
     .nullable(),
   stockMovement: z
@@ -81,6 +105,7 @@ export const installedKioskSaleLinkedTransactionSchema = z.object({
       commandId: z.string().min(1),
       quantity: z.number().int(),
       status: z.enum(["pending", "accepted", "rejected"]),
+      creationCount: z.number().int().nonnegative(),
     })
     .nullable(),
   fulfillment: z
@@ -103,6 +128,7 @@ export const installedKioskSaleDisturbanceInjectionSchema = z.object({
   kind: installedKioskSaleDisturbanceSchema,
   injectedAt: z.iso.datetime(),
   barrier: z.literal("payment_qr_presented"),
+  barrierObservationId: z.string().min(1),
   count: z.number().int().nonnegative(),
   outcome: z.enum(["completed", "failed"]),
 });
@@ -193,9 +219,11 @@ function finalFulfillmentMatches(
     payment.status === "succeeded" &&
     transaction.status === "succeeded" &&
     command.status === "succeeded" &&
+    command.creationCount === 1 &&
     command.orderId === order.orderId &&
     command.transactionId === transaction.transactionId &&
     movement.status === "accepted" &&
+    movement.creationCount === 1 &&
     movement.quantity === -1 &&
     movement.orderId === order.orderId &&
     movement.transactionId === transaction.transactionId &&
@@ -208,11 +236,62 @@ function finalFulfillmentMatches(
   );
 }
 
+function inspectSideEffectCounts(
+  facts: BrowserInstalledKioskSaleContractFacts,
+  record: InstalledKioskSaleLinkedTransaction,
+  diagnostics: BrowserInstalledKioskSaleContractReport["diagnostics"],
+): void {
+  const injection = facts.disturbanceInjections[0];
+  const successfulDeliveries = record.payment.statusDeliveries.filter(
+    (delivery) => delivery.status === "succeeded",
+  );
+  const expectedDeliveryCount =
+    injection?.kind === "duplicate_payment_status" ? 2 : 1;
+  const duplicatesMatch =
+    expectedDeliveryCount !== 2 ||
+    new Set(successfulDeliveries.map((delivery) => delivery.deliveryId))
+      .size === 1;
+  if (
+    successfulDeliveries.length !== expectedDeliveryCount ||
+    !duplicatesMatch
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "payment_status_delivery_count_mismatch",
+      "The UI contract must observe one success delivery, or the same success exactly twice for the duplicate-status disturbance.",
+    );
+  }
+  if (
+    record.vendingCommand?.creationCount !== 1 ||
+    record.stockMovement?.creationCount !== 1
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "fulfillment_side_effect_count_mismatch",
+      "A linked transaction must create exactly one vending command and one stock movement.",
+    );
+  }
+}
+
 function inspectTimeline(
   facts: BrowserInstalledKioskSaleContractFacts,
   record: InstalledKioskSaleLinkedTransaction,
   diagnostics: BrowserInstalledKioskSaleContractReport["diagnostics"],
 ): void {
+  const timestamps = facts.timeline.map((entry) =>
+    Date.parse(entry.observedAt),
+  );
+  if (
+    timestamps.some(
+      (timestamp, index) => index > 0 && timestamp < timestamps[index - 1],
+    )
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "timeline_observed_at_not_nondecreasing",
+      "UI contract observations must be recorded in nondecreasing timestamp order.",
+    );
+  }
   const paymentIndex = facts.timeline.findIndex(
     (entry) => entry.route === "payment",
   );
@@ -228,7 +307,14 @@ function inspectTimeline(
     return;
   }
 
-  const activeTimeline = facts.timeline.slice(paymentIndex, terminalIndex + 1);
+  const paymentTimestamp = Date.parse(facts.timeline[paymentIndex].observedAt);
+  const terminalTimestamp = Date.parse(
+    facts.timeline[terminalIndex].observedAt,
+  );
+  const activeTimeline = facts.timeline.filter((entry) => {
+    const timestamp = Date.parse(entry.observedAt);
+    return timestamp >= paymentTimestamp && timestamp <= terminalTimestamp;
+  });
   if (!activeTimeline.some((entry) => entry.route === "fulfillment")) {
     addDiagnostic(
       diagnostics,
@@ -242,6 +328,17 @@ function inspectTimeline(
         diagnostics,
         "active_transaction_route_replaced",
         "Home, Maintenance, and unrelated routes cannot replace an active transaction.",
+      );
+      break;
+    }
+    if (
+      entry.route === "payment" &&
+      entry.identitySource !== "customer_payment_surface"
+    ) {
+      addDiagnostic(
+        diagnostics,
+        "payment_identity_not_customer_surface_observed",
+        "Payment observations must derive from the QR and identities rendered to the customer.",
       );
       break;
     }
@@ -270,6 +367,7 @@ function inspectTimeline(
 
 function inspectDisturbance(
   facts: BrowserInstalledKioskSaleContractFacts,
+  record: InstalledKioskSaleLinkedTransaction | undefined,
   diagnostics: BrowserInstalledKioskSaleContractReport["diagnostics"],
 ): void {
   const injections = facts.disturbanceInjections;
@@ -303,6 +401,45 @@ function inspectDisturbance(
         diagnostics,
         "disturbance_outcome_not_completed",
         "The deterministic disturbance must complete at the declared barrier.",
+      );
+    }
+    const barrierObservation = facts.timeline.find(
+      (entry) => entry.observationId === injection.barrierObservationId,
+    );
+    if (
+      !record ||
+      !barrierObservation ||
+      barrierObservation.route !== "payment" ||
+      barrierObservation.identitySource !== "customer_payment_surface" ||
+      barrierObservation.orderId !== record.order.orderId ||
+      barrierObservation.paymentId !== record.payment.paymentId ||
+      barrierObservation.paymentUrl !== record.payment.paymentUrl
+    ) {
+      addDiagnostic(
+        diagnostics,
+        "disturbance_barrier_payment_qr_mismatch",
+        "The disturbance barrier must reference the observed customer payment QR for the linked transaction.",
+      );
+    }
+    const paymentEntry = facts.timeline.find(
+      (entry) => entry.route === "payment",
+    );
+    const resultEntry = facts.timeline.find(
+      (entry) => entry.route === "result",
+    );
+    if (
+      !paymentEntry ||
+      !resultEntry ||
+      Date.parse(injection.injectedAt) < Date.parse(paymentEntry.observedAt) ||
+      Date.parse(injection.injectedAt) > Date.parse(resultEntry.observedAt) ||
+      (barrierObservation &&
+        Date.parse(injection.injectedAt) <
+          Date.parse(barrierObservation.observedAt))
+    ) {
+      addDiagnostic(
+        diagnostics,
+        "disturbance_outside_payment_result_interval",
+        "The disturbance must be injected after its observed payment QR barrier and no later than the result.",
       );
     }
   }
@@ -342,9 +479,10 @@ export function classifyBrowserInstalledKioskSaleContract(
         "The linked UI mock transaction must finish one successful fulfillment and accepted stock movement.",
       );
     }
+    inspectSideEffectCounts(facts, record, diagnostics);
     inspectTimeline(facts, record, diagnostics);
   }
-  inspectDisturbance(facts, diagnostics);
+  inspectDisturbance(facts, record, diagnostics);
 
   return browserInstalledKioskSaleContractReportSchema.parse({
     schemaVersion: "installed-kiosk-sale-ui-contract/v1",

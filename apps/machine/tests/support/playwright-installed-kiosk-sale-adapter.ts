@@ -1,4 +1,7 @@
-import type { InstalledKioskSaleDisturbance } from "@vem/shared";
+import type {
+  InstalledKioskSaleCustomerPaymentSurface,
+  InstalledKioskSaleDisturbance,
+} from "@vem/shared";
 
 import { expect, type Page } from "@playwright/test";
 
@@ -37,11 +40,41 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     );
   }
 
-  async assertPaymentQrPresented(): Promise<void> {
+  async assertPaymentQrPresented(): Promise<InstalledKioskSaleCustomerPaymentSurface> {
     await expect(this.page).toHaveURL(/#\/payment$/);
     await expect(
       this.page.getByRole("heading", { name: "订单支付" }),
     ).toBeVisible();
+    await expect(
+      this.page.locator("[data-installed-kiosk-sale-qr]"),
+    ).toBeVisible();
+    const surface = await this.page
+      .locator("[data-installed-kiosk-sale-payment-surface]")
+      .evaluate((element) => {
+        const qr = element.querySelector("[data-installed-kiosk-sale-qr]");
+        return {
+          observedAt: new Date().toISOString(),
+          orderId: element.getAttribute("data-order-id"),
+          paymentId: element.getAttribute("data-payment-id"),
+          paymentUrl: qr?.getAttribute("data-qr-payload") ?? null,
+        };
+      });
+    if (
+      !surface.orderId ||
+      !surface.paymentId ||
+      !surface.paymentUrl ||
+      !URL.canParse(surface.paymentUrl)
+    ) {
+      throw new Error("Rendered customer payment identity is incomplete");
+    }
+    const observedSurface = {
+      observedAt: surface.observedAt,
+      orderId: surface.orderId,
+      paymentId: surface.paymentId,
+      paymentUrl: surface.paymentUrl,
+    };
+    await this.control("observePaymentSurface", observedSurface);
+    return observedSurface;
   }
 
   async injectDisturbance(
@@ -92,14 +125,19 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     disturbance: InstalledKioskSaleDisturbance,
   ): Promise<void>;
   private async control(
-    action: "completePayment" | "completeDispense" | "inject",
-    disturbance?: InstalledKioskSaleDisturbance,
+    action: "observePaymentSurface",
+    surface: InstalledKioskSaleCustomerPaymentSurface,
+  ): Promise<void>;
+  private async control(
+    action:
+      | "completePayment"
+      | "completeDispense"
+      | "inject"
+      | "observePaymentSurface",
+    argument?: unknown,
   ): Promise<void> {
     await this.page.evaluate(
-      async ({
-        action: requestedAction,
-        disturbance: requestedDisturbance,
-      }) => {
+      async ({ action: requestedAction, argument: requestedArgument }) => {
         const control: unknown = Reflect.get(
           window,
           "__VEM_INSTALLED_KIOSK_SALE_DEBUG__",
@@ -113,11 +151,11 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
             `Installed Kiosk Sale ${requestedAction} is unavailable`,
           );
         }
-        const args = requestedDisturbance ? [requestedDisturbance] : [];
+        const args = requestedArgument === undefined ? [] : [requestedArgument];
         const result: unknown = Reflect.apply(method, control, args);
         await Promise.resolve(result);
       },
-      { action, disturbance },
+      { action, argument },
     );
   }
 }
