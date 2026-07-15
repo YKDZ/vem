@@ -60,13 +60,13 @@ const handledPaymentStatusDeliveryIds = new Set<string>();
 const vendingCommandLog: Array<{
   commandId: string;
   orderId: string;
-  transactionId: string;
+  orderNo: string;
 }> = [];
 const stockMovementLog: Array<{
   movementId: string;
   commandId: string;
   orderId: string;
-  transactionId: string;
+  orderNo: string;
 }> = [];
 let removeRouteObserver: (() => void) | null = null;
 let captureCurrentRoute: (() => void) | null = null;
@@ -324,7 +324,6 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
   const paymentId = "550e8400-e29b-41d4-a716-446655449902";
   const orderNo = `UI-DEBUG-${Date.now()}`;
   const reservationId = `UI-DEBUG-RES-${orderNo}`;
-  const transactionId = orderNo;
   const transaction: TransactionSnapshot = {
     orderId,
     orderNo,
@@ -377,7 +376,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
         statusDeliveries: [],
       },
       transaction: {
-        transactionId,
+        orderNo,
         orderId,
         paymentId,
         reservationId,
@@ -415,7 +414,7 @@ function handleUiDebugPaymentStatus(succeed: boolean): TransactionSnapshot {
       payload: {
         orderId: record.order.orderId,
         paymentId: record.payment.paymentId,
-        transactionId: record.transaction.transactionId,
+        orderNo: record.transaction.orderNo,
         paymentStatus: succeed ? "succeeded" : "failed",
       },
     });
@@ -425,7 +424,7 @@ function handleUiDebugPaymentStatus(succeed: boolean): TransactionSnapshot {
         vendingCommandLog.push({
           commandId,
           orderId: record.order.orderId,
-          transactionId: record.transaction.transactionId,
+          orderNo: record.transaction.orderNo,
         });
       }
     }
@@ -436,7 +435,7 @@ function handleUiDebugPaymentStatus(succeed: boolean): TransactionSnapshot {
       record.vendingCommand = {
         commandId,
         orderId: record.order.orderId,
-        transactionId: record.transaction.transactionId,
+        orderNo: record.transaction.orderNo,
         status: "sent",
         creationCount: vendingCommandLog.filter(
           (command) => command.commandId === commandId,
@@ -489,20 +488,20 @@ function completeSimulatedDispense(): TransactionSnapshot {
         movementId,
         commandId,
         orderId: record.order.orderId,
-        transactionId: record.transaction.transactionId,
+        orderNo: record.transaction.orderNo,
       });
     }
     record.vendingCommand = {
       commandId,
       orderId: record.order.orderId,
-      transactionId: record.transaction.transactionId,
+      orderNo: record.transaction.orderNo,
       status: "succeeded",
       creationCount: commandCreationCount,
     };
     record.stockMovement = {
       movementId,
       orderId: record.order.orderId,
-      transactionId: record.transaction.transactionId,
+      orderNo: record.transaction.orderNo,
       commandId,
       quantity: -1,
       status: "accepted",
@@ -513,7 +512,7 @@ function completeSimulatedDispense(): TransactionSnapshot {
     record.fulfillment = {
       status: "succeeded",
       orderId: record.order.orderId,
-      transactionId: record.transaction.transactionId,
+      orderNo: record.transaction.orderNo,
       commandId,
       stockMovementId: movementId,
     };
@@ -578,7 +577,7 @@ function recordInstalledKioskSaleRoute(path: string): void {
     commandId: currentTransaction?.vending?.commandId ?? null,
     orderId: record.order.orderId,
     paymentId: record.payment.paymentId,
-    transactionId: record.transaction.transactionId,
+    orderNo: record.transaction.orderNo,
     paymentUrl: record.payment.paymentUrl,
   });
 }
@@ -600,7 +599,7 @@ function recordCustomerPaymentSurface(
     identitySource: "customer_payment_surface",
     orderId: surface.orderId,
     paymentId: surface.paymentId,
-    transactionId: surface.transactionId,
+    orderNo: surface.orderNo,
     paymentUrl: surface.paymentUrl,
     renderedQrSource: surface.renderedQrSource,
     decodedQrPayload: surface.decodedQrPayload,
@@ -625,7 +624,7 @@ function recordCustomerTransactionSurface(
         : "customer_result_surface",
     orderId: surface.orderId,
     paymentId: surface.paymentId,
-    transactionId: surface.transactionId,
+    orderNo: surface.orderNo,
     paymentUrl: surface.paymentUrl,
     renderedQrSource: null,
     decodedQrPayload: null,

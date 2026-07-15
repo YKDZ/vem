@@ -215,14 +215,14 @@ function linkedSale() {
           payload: {
             orderId: "order-factory-1",
             paymentId: "payment-factory-1",
-            transactionId: "transaction-factory-1",
+            orderNo: "order-no-factory-1",
             paymentStatus: "succeeded",
           },
         },
       ],
     },
     transaction: {
-      transactionId: "transaction-factory-1",
+      orderNo: "order-no-factory-1",
       orderId: "order-factory-1",
       paymentId: "payment-factory-1",
       reservationId: "reservation-factory-1",
@@ -231,14 +231,14 @@ function linkedSale() {
     vendingCommand: {
       commandId: "command-factory-1",
       orderId: "order-factory-1",
-      transactionId: "transaction-factory-1",
+      orderNo: "order-no-factory-1",
       status: "succeeded",
       creationCount: 1,
     },
     stockMovement: {
       movementId: "movement-factory-1",
       orderId: "order-factory-1",
-      transactionId: "transaction-factory-1",
+      orderNo: "order-no-factory-1",
       commandId: "command-factory-1",
       quantity: -1,
       status: "accepted",
@@ -247,7 +247,7 @@ function linkedSale() {
     fulfillment: {
       status: "succeeded",
       orderId: "order-factory-1",
-      transactionId: "transaction-factory-1",
+      orderNo: "order-no-factory-1",
       commandId: "command-factory-1",
       stockMovementId: "movement-factory-1",
     },
@@ -353,10 +353,10 @@ function saleScenario(input, _runtimeDigest) {
         },
         {
           type: "route-action",
-          label: "catalog competition during payment",
-          attemptRoute: "#/catalog",
+          label: "history competition during payment",
+          stimulus: "history-back",
           routeBefore: "#/payment",
-          routeReportedByHook: "#/payment",
+          triggerAcknowledged: true,
         },
         {
           type: "checkpoint",
@@ -381,20 +381,25 @@ function saleScenario(input, _runtimeDigest) {
       rendered: {
         orderId: "order-factory-1",
         paymentId: "payment-factory-1",
-        transactionId: "transaction-factory-1",
+        orderNo: "order-no-factory-1",
         commandId: "command-factory-1",
       },
       platform: {
         orderId: "order-factory-1",
         paymentId: "payment-factory-1",
-        transactionId: "transaction-factory-1",
+        orderNo: "order-no-factory-1",
         commandId: "command-factory-1",
         stockMovementId: "movement-factory-1",
         stockDelta: -1,
         status: "accepted",
+        reservation: {
+          exposed: true,
+          source: "current_transaction.reservations",
+          rawRecordCount: 1,
+        },
         observations: {
           orderIds: {
-            occurrences: ["order-factory-1", "order-factory-1"],
+            occurrences: ["order-factory-1"],
             unique: ["order-factory-1"],
             count: 1,
           },
@@ -403,13 +408,18 @@ function saleScenario(input, _runtimeDigest) {
             unique: ["payment-factory-1"],
             count: 1,
           },
-          transactionIds: {
-            occurrences: ["transaction-factory-1"],
-            unique: ["transaction-factory-1"],
+          reservationIds: {
+            occurrences: ["reservation-factory-1"],
+            unique: ["reservation-factory-1"],
+            count: 1,
+          },
+          orderNos: {
+            occurrences: ["order-no-factory-1"],
+            unique: ["order-no-factory-1"],
             count: 1,
           },
           commandIds: {
-            occurrences: ["command-factory-1", "command-factory-1"],
+            occurrences: ["command-factory-1"],
             unique: ["command-factory-1"],
             count: 1,
           },
@@ -430,6 +440,8 @@ function saleScenario(input, _runtimeDigest) {
       exactOnce: {
         orderCount: 1,
         paymentCount: 1,
+        orderNoCount: 1,
+        reservationCount: 1,
         commandCount: 1,
         movementCount: 1,
         stockDelta: -1,
@@ -612,6 +624,7 @@ describe("Factory Image Acceptance lifecycle", () => {
       invocation[invocation.indexOf("--profile") + 1],
       "factory-route-competition",
     );
+    assert.equal(invocation.includes("--already-claimed"), true);
     assert.equal(
       invocation[invocation.indexOf("--ssh-known-hosts-path") + 1],
       sshKnownHostsPath,
@@ -665,7 +678,12 @@ describe("Factory Image Acceptance lifecycle", () => {
         linkedSale: {
           orderId: "order-factory-1",
           paymentId: "payment-factory-1",
-          transactionId: "transaction-factory-1",
+          orderNo: "order-no-factory-1",
+          reservation: {
+            exposed: true,
+            source: "current_transaction.reservations",
+            rawRecordCount: 1,
+          },
           commandId: "command-factory-1",
           stockMovementId: "movement-factory-1",
         },
@@ -698,6 +716,42 @@ describe("Factory Image Acceptance lifecycle", () => {
           runtimeAcceptanceSummary(),
         ),
       /rendered payment, serial command, and stock movement/,
+    );
+
+    const duplicateOrder = saleScenario(input, digest);
+    duplicateOrder.correlation.platform.observations.orderIds = {
+      occurrences: ["order-factory-1", "order-factory-1"],
+      unique: ["order-factory-1"],
+      count: 2,
+    };
+    duplicateOrder.correlation.exactOnce.orderCount = 2;
+    writeFileSync(output, `${JSON.stringify(duplicateOrder)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /exact-once contract/,
+    );
+
+    const duplicateReservation = saleScenario(input);
+    duplicateReservation.correlation.platform.observations.reservationIds = {
+      occurrences: ["reservation-factory-1", "reservation-factory-1"],
+      unique: ["reservation-factory-1"],
+      count: 2,
+    };
+    duplicateReservation.correlation.exactOnce.reservationCount = 2;
+    writeFileSync(output, `${JSON.stringify(duplicateReservation)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /exact-once contract/,
     );
   });
 

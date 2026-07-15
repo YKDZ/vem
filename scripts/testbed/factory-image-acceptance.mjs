@@ -645,6 +645,7 @@ export function buildFactoryInstalledKioskSaleInvocation(
     accepted.factory.isoIdentity,
     "--profile",
     "factory-route-competition",
+    "--already-claimed",
     "--out",
     verifierOutput(accepted, "customer-ui-sale-scenario.json"),
   ];
@@ -763,11 +764,40 @@ function assertPhysicalInputActivations(report) {
 function hasOneObservedIdentity(observation, expected) {
   return (
     Array.isArray(observation?.occurrences) &&
-    observation.occurrences.length >= 1 &&
+    observation.occurrences.length === 1 &&
     Array.isArray(observation?.unique) &&
     observation.unique.length === 1 &&
     observation.unique[0] === expected &&
     observation.count === 1
+  );
+}
+
+function hasReservationExactOnce(reservation, observation, count) {
+  if (
+    !reservation ||
+    typeof reservation.exposed !== "boolean" ||
+    typeof reservation.source !== "string" ||
+    !Number.isSafeInteger(reservation.rawRecordCount)
+  ) {
+    return false;
+  }
+  if (!reservation.exposed) {
+    return (
+      reservation.source === "not_exposed" &&
+      reservation.rawRecordCount === 0 &&
+      count === 0 &&
+      Array.isArray(observation?.occurrences) &&
+      observation.occurrences.length === 0 &&
+      Array.isArray(observation?.unique) &&
+      observation.unique.length === 0 &&
+      observation.count === 0
+    );
+  }
+  return (
+    reservation.source !== "not_exposed" &&
+    reservation.rawRecordCount === 1 &&
+    count === 1 &&
+    hasOneObservedIdentity(observation, observation?.unique?.[0])
   );
 }
 
@@ -784,6 +814,7 @@ export function verifyInstalledKioskSaleScenarioResult(
   const correlation = report?.correlation;
   const exactOnce = correlation?.exactOnce;
   const observations = correlation?.platform?.observations;
+  const reservation = correlation?.platform?.reservation;
   const continuousEvidence = scenario?.evidence?.filter(
     (entry) => entry?.type === "checkpoint" && entry?.label === "continuous",
   );
@@ -825,11 +856,19 @@ export function verifyInstalledKioskSaleScenarioResult(
     barrierIndex < 0 ||
     !scenario.evidence?.some(
       (entry) =>
-        entry?.type === "route-action" && entry.attemptRoute === "#/catalog",
+        entry?.type === "route-action" &&
+        entry.stimulus === "history-back" &&
+        entry.triggerAcknowledged === true,
     ) ||
     forbiddenAfterBarrier ||
     exactOnce?.orderCount !== 1 ||
     exactOnce.paymentCount !== 1 ||
+    exactOnce.orderNoCount !== 1 ||
+    !hasReservationExactOnce(
+      reservation,
+      observations?.reservationIds,
+      exactOnce?.reservationCount,
+    ) ||
     exactOnce.commandCount !== 1 ||
     exactOnce.movementCount !== 1 ||
     exactOnce.stockDelta !== -1 ||
@@ -844,8 +883,8 @@ export function verifyInstalledKioskSaleScenarioResult(
       correlation?.rendered?.paymentId,
     ) ||
     !hasOneObservedIdentity(
-      observations?.transactionIds,
-      correlation?.rendered?.transactionId,
+      observations?.orderNos,
+      correlation?.rendered?.orderNo,
     ) ||
     !hasOneObservedIdentity(
       observations?.commandIds,
@@ -864,8 +903,7 @@ export function verifyInstalledKioskSaleScenarioResult(
   if (
     correlation.rendered?.orderId !== correlation.platform?.orderId ||
     correlation.rendered?.paymentId !== correlation.platform?.paymentId ||
-    correlation.rendered?.transactionId !==
-      correlation.platform?.transactionId ||
+    correlation.rendered?.orderNo !== correlation.platform?.orderNo ||
     correlation.rendered?.commandId !== correlation.platform?.commandId ||
     correlation.platform?.stockDelta !== -1 ||
     correlation.platform?.status !== "accepted" ||
@@ -891,7 +929,8 @@ export function verifyInstalledKioskSaleScenarioResult(
     linkedSale: {
       orderId: correlation.rendered.orderId,
       paymentId: correlation.rendered.paymentId,
-      transactionId: correlation.rendered.transactionId,
+      orderNo: correlation.rendered.orderNo,
+      reservation: correlation.platform.reservation,
       commandId: correlation.rendered.commandId,
       stockMovementId: correlation.platform.stockMovementId,
     },

@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { buildInstalledKioskSaleScenarioSteps } from "./installed-kiosk-sale-acceptance.mjs";
 import {
   CdpClient,
   activateVisibleSelector,
@@ -70,6 +71,93 @@ function runScenarioForTest(options) {
     webSocketFactory,
     remoteCommandRunner,
   });
+}
+
+async function runInstalledRouteCompetitionScenario({
+  emitForbiddenCatalog = false,
+} = {}) {
+  return withFakeHttpTargets(
+    [target("machine-target", "#/catalog")],
+    async (endpoint) => {
+      let route = "#/catalog";
+      let activations = 0;
+      const { factory, sockets } = createFakeWebSocketFactory(
+        (message, socket) => {
+          if (message.method === "Runtime.evaluate") {
+            const expression = message.params.expression;
+            if (expression.includes("getBoundingClientRect")) {
+              return cdpValue(
+                {
+                  selector: "[data-test]",
+                  actionable: true,
+                  inViewport: true,
+                  pointerEvents: "auto",
+                  hitTarget: true,
+                  bounds: { x: 0, y: 0, width: 10, height: 10 },
+                  center: { x: 5, y: 5 },
+                },
+                message.id,
+              );
+            }
+            if (expression.includes("history.back()")) {
+              assert.doesNotMatch(expression, /location\.hash\s*=/);
+              if (emitForbiddenCatalog) {
+                socket.emitMessage({
+                  method: "Page.navigatedWithinDocument",
+                  params: { url: "http://tauri.localhost/#/catalog" },
+                });
+              }
+              return cdpValue(
+                { stimulus: "history-back", routeBefore: route },
+                message.id,
+              );
+            }
+            return cdpValue(identity(route), message.id);
+          }
+          if (
+            message.method === "Input.dispatchTouchEvent" &&
+            message.params.type === "touchStart"
+          ) {
+            activations += 1;
+            const nextRoute = [
+              "#/catalog",
+              "#/products/test-item",
+              "#/checkout",
+              "#/checkout",
+              "#/payment",
+            ][activations - 1];
+            if (nextRoute !== route) {
+              route = nextRoute;
+              socket.emitMessage({
+                method: "Page.navigatedWithinDocument",
+                params: { url: `http://tauri.localhost/${route}` },
+              });
+            }
+          }
+          if (message.method === "Page.captureScreenshot") {
+            return {
+              id: message.id,
+              result: { data: Buffer.from("png").toString("base64") },
+            };
+          }
+          return { id: message.id, result: {} };
+        },
+      );
+      const result = await runScenarioForTest({
+        endpoint,
+        tunnelOptions: { remote: "test@win10.test" },
+        expectedRuntimeAttestation: ATTESTATION,
+        expectedInitialRoute: "#/catalog",
+        sequenceName: "installed-route-competition",
+        steps: buildInstalledKioskSaleScenarioSteps("vm-route-competition"),
+        webSocketFactory: factory,
+        continuousCapture: true,
+        continuousCaptureIntervalMs: 1,
+        routePollMs: 1,
+      });
+      return { result, sockets };
+    },
+  );
 }
 
 describe("machine-ui-cdp-driver", () => {
@@ -349,6 +437,8 @@ describe("machine-ui-cdp-driver", () => {
     const sidecar = await openMachineUiCdpSidecar({
       remote: "user@example.test",
       localPort: 49222,
+      sshKnownHostsPath: "/tmp/vem-known-hosts",
+      sshHostKeyAlias: "vem-factory-run-180",
       processAdapter: {
         spawn(command, args, options) {
           child.command = command;
@@ -366,12 +456,16 @@ describe("machine-ui-cdp-driver", () => {
 
     assert.equal(ready, true);
     assert.equal(child.stderr.resumed, true);
-    assert.deepEqual(child.args.slice(0, 6), [
+    assert.deepEqual(child.args, [
       "-N",
       "-o",
       "ExitOnForwardFailure=yes",
       "-L",
       "127.0.0.1:49222:127.0.0.1:9222",
+      "-o",
+      "UserKnownHostsFile=/tmp/vem-known-hosts",
+      "-o",
+      "HostKeyAlias=vem-factory-run-180",
       "user@example.test",
     ]);
     const closing = sidecar.close();
@@ -608,6 +702,37 @@ describe("machine-ui-cdp-driver", () => {
         ],
       }),
       /unsupported field action/,
+    );
+  });
+
+  it("executes the exact installed route-competition scenario with RegExp matchers", async () => {
+    const { result, sockets } = await runInstalledRouteCompetitionScenario();
+
+    assert.deepEqual(result.execution, {
+      planned: { customerActivations: 5, observations: 0, routeActions: 1 },
+      executed: { customerActivations: 5, observations: 0, routeActions: 1 },
+    });
+    assert.ok(
+      result.evidence.some(
+        (entry) =>
+          entry.type === "route-action" &&
+          entry.stimulus === "history-back" &&
+          entry.triggerAcknowledged === true,
+      ),
+    );
+    assert.ok(
+      sockets[0].sent.some(
+        (message) =>
+          message.method === "Runtime.evaluate" &&
+          message.params.expression.includes("history.back()"),
+      ),
+    );
+  });
+
+  it("keeps the continuous route oracle fail-closed for catalog after the payment barrier", async () => {
+    await assert.rejects(
+      runInstalledRouteCompetitionScenario({ emitForbiddenCatalog: true }),
+      /forbidden customer route observed: #\/catalog/,
     );
   });
 

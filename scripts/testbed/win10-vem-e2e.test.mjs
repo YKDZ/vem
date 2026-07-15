@@ -536,7 +536,7 @@ describe("simulated hardware serial acceptance evidence", () => {
     conformance.customerUiSale = {
       orderId: "ORDER-180",
       paymentId: "PAYMENT-180",
-      transactionId: "ORDER-NO-180",
+      orderNo: "ORDER-NO-180",
       scenarioSha256: "a".repeat(64),
     };
     delete conformance.failureMatrix;
@@ -570,13 +570,15 @@ describe("simulated hardware serial acceptance evidence", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-installed-kiosk-cli-"));
     const runtimeReport = join(root, "runtime-acceptance.json");
     const output = join(root, "profile", "installed-kiosk-sale.json");
+    const scannerInput = join(root, "caller-scanner-code.txt");
+    writeFileSync(scannerInput, "CALLER-SCANNER-CODE\n", { mode: 0o600 });
     const input = completedSerialSaleEvidence();
     const serial = input.serialConformance;
     serial.profile = "installed-kiosk-sale";
     serial.customerUiSale = {
       orderId: "ORDER-180",
       paymentId: "PAYMENT-180",
-      transactionId: "TRANSACTION-180",
+      orderNo: "ORDER-NO-180",
       scenarioSha256: "a".repeat(64),
     };
     delete serial.failureMatrix;
@@ -613,6 +615,9 @@ describe("simulated hardware serial acceptance evidence", () => {
           target_identity: "vm-target://runtime-testbed",
           approved_runtime_base: `factory-cas://sha256/${"a".repeat(64)}`,
           profile: "vm-route-competition",
+          scanner_code_file: scannerInput,
+          ssh_known_hosts_path: join(root, "known-hosts"),
+          ssh_host_key_alias: "vem-installed-kiosk-run-180",
           out: output,
         },
         {
@@ -633,6 +638,14 @@ describe("simulated hardware serial acceptance evidence", () => {
               );
               return { status: 0 };
             }
+            const scannerCodePath =
+              command[command.indexOf("--scanner-code-file") + 1];
+            assert.notEqual(scannerCodePath, scannerInput);
+            assert.equal(
+              readFileSync(scannerCodePath, "utf8"),
+              "CALLER-SCANNER-CODE\n",
+            );
+            rmSync(scannerCodePath, { force: true });
             const completion = JSON.parse(
               command[command.indexOf("--sale-complete-command-json") + 1],
             );
@@ -644,12 +657,17 @@ describe("simulated hardware serial acceptance evidence", () => {
                   sale: {
                     orderId: "ORDER-180",
                     paymentId: "PAYMENT-180",
-                    transactionId: "TRANSACTION-180",
+                    orderNo: "ORDER-NO-180",
                     paymentStatus: "succeeded",
                     vendingCommandId: "VEND-180",
                     dispenseResult: "dispensed",
                   },
                   platformState: {
+                    reservation: {
+                      exposed: false,
+                      source: "not_exposed",
+                      rawRecordCount: 0,
+                    },
                     postSaleDispenseMovement: {
                       movementId: "MOVEMENT-180",
                       orderId: "ORDER-180",
@@ -658,10 +676,11 @@ describe("simulated hardware serial acceptance evidence", () => {
                       status: "accepted",
                     },
                     observedIdentities: {
-                      orderIds: ["ORDER-180", "ORDER-180"],
+                      orderIds: ["ORDER-180"],
                       paymentIds: ["PAYMENT-180"],
-                      transactionIds: ["TRANSACTION-180"],
-                      commandIds: ["VEND-180", "VEND-180"],
+                      reservationIds: [],
+                      orderNos: ["ORDER-NO-180"],
+                      commandIds: ["VEND-180"],
                       movementIds: ["MOVEMENT-180"],
                     },
                   },
@@ -682,6 +701,16 @@ describe("simulated hardware serial acceptance evidence", () => {
                   principal: "VEM\\VEMKiosk",
                   sessionId: 1,
                   route: "#/catalog",
+                  routeEvidence: {
+                    source: "remote_cdp",
+                    targetId: "restored-normal-target",
+                    targetUrl:
+                      "http://127.0.0.1:9222/devtools/page/restored-normal-target",
+                    route: "#/catalog",
+                    processId: 4243,
+                    principal: "VEM\\VEMKiosk",
+                    sessionId: 1,
+                  },
                 },
               };
             }
@@ -712,8 +741,16 @@ describe("simulated hardware serial acceptance evidence", () => {
               options.steps.some(
                 (step) =>
                   step.type === "route-action" &&
-                  step.attemptRoute === "#/catalog",
+                  step.stimulus === "history-back",
               ),
+            );
+            assert.equal(
+              options.tunnelOptions.sshKnownHostsPath,
+              join(root, "known-hosts"),
+            );
+            assert.equal(
+              options.tunnelOptions.sshHostKeyAlias,
+              "vem-installed-kiosk-run-180",
             );
             return {
               schemaVersion: "machine-ui-cdp-sale-scenario/v3",
@@ -723,9 +760,9 @@ describe("simulated hardware serial acceptance evidence", () => {
                 { type: "route-barrier", forbiddenRoutes: ["/catalog"] },
                 {
                   type: "route-action",
-                  attemptRoute: "#/catalog",
+                  stimulus: "history-back",
                   routeBefore: "#/payment",
-                  routeReportedByHook: "#/payment",
+                  triggerAcknowledged: true,
                 },
               ],
             };
@@ -737,7 +774,7 @@ describe("simulated hardware serial acceptance evidence", () => {
                 route: "#/payment",
                 orderId: "ORDER-180",
                 paymentId: "PAYMENT-180",
-                transactionId: "TRANSACTION-180",
+                orderNo: "ORDER-NO-180",
               };
             }
             return {
@@ -745,7 +782,7 @@ describe("simulated hardware serial acceptance evidence", () => {
               route: "#/result",
               orderId: "ORDER-180",
               paymentId: "PAYMENT-180",
-              transactionId: "TRANSACTION-180",
+              orderNo: "ORDER-NO-180",
               commandId: "VEND-180",
             };
           },
@@ -758,6 +795,9 @@ describe("simulated hardware serial acceptance evidence", () => {
       );
       assert.equal(report.runtimeBinding.debug.targetId, "debug-target");
       assert.equal(report.correlation.exactOnce.commandCount, 1);
+      assert.equal(report.correlation.exactOnce.orderNoCount, 1);
+      assert.equal(report.correlation.exactOnce.reservationCount, 0);
+      assert.equal(readFileSync(scannerInput, "utf8"), "CALLER-SCANNER-CODE\n");
       assert.deepEqual(calls, [
         "simulated hardware fixture",
         "launch",
@@ -3809,6 +3849,57 @@ try {
     );
   });
 
+  it("PowerShell-parses the generated simulated-sale fixture script", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-sale-flow-parse-"));
+    try {
+      const evidencePath = join(temp, "ephemeral-platform.json");
+      const scriptPath = join(temp, "simulated-sale-fixture.ps1");
+      const parserPath = join(temp, "parse-generated-script.ps1");
+      writeFileSync(
+        evidencePath,
+        JSON.stringify(ephemeralPlatformEvidence()),
+        "utf8",
+      );
+      writeFileSync(
+        scriptPath,
+        buildRemotePowerShellScript({
+          mode: "simulated-hardware-sale-flow",
+          salePhase: "fixture",
+          platformTarget: "ephemeral-run-180",
+          machineCode: "VEM-TESTBED-WINVM-01",
+          runId: "RUN-180",
+          ephemeralPlatformEvidence: evidencePath,
+        }),
+        "utf8",
+      );
+      writeFileSync(
+        parserPath,
+        `param([string]$Path)
+$tokens = $null
+$errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) {
+  $errors | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Message)" }
+  exit 1
+}
+`,
+        "utf8",
+      );
+      const parsed = spawnSync(
+        "pwsh",
+        ["-NoProfile", "-NonInteractive", "-File", parserPath, scriptPath],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        parsed.status,
+        0,
+        `generated fixture PowerShell failed to parse:\n${parsed.stdout}\n${parsed.stderr}`,
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it("factory preparation uses production serial adapters for simulated hardware", () => {
     const script = readFileSync(
       join(process.cwd(), "scripts/windows/prepare-factory-runtime.ps1"),
@@ -4024,6 +4115,7 @@ try {
     assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
     assert.match(cleanup, /CDP listener remained after debug UI cleanup/);
     assert.match(cleanup, /VEMInstalledKioskSaleRestore/);
+    assert.match(cleanup, /VEMInstalledKioskSaleRestoreObserve/);
     assert.match(cleanup, /-LogonType InteractiveToken/);
     assert.match(
       cleanup,
@@ -4033,6 +4125,13 @@ try {
       cleanup,
       /daemon stopped during installed kiosk sale acceptance/,
     );
+    assert.match(cleanup, /http:\/\/127\.0\.0\.1:9222\/json/);
+    assert.match(cleanup, /source = 'remote_cdp'/);
+    assert.match(
+      cleanup,
+      /restored normal machine\.exe CDP route differs from saved route/,
+    );
+    assert.doesNotMatch(cleanup, /route = \$expectedRoute/);
     assert.ok(
       cleanup.indexOf("Unregister-ScheduledTask -TaskName $debugTask") <
         cleanup.indexOf("Get-Service -Name 'VemVendingDaemon'"),
@@ -5172,6 +5271,8 @@ try {
       commandArg(saleStep.command, "--sale-complete-command-json"),
       undefined,
     );
+    assert.equal(saleStep.command.includes("--already-claimed"), true);
+    assert.equal(normalSaleStep.command.includes("--already-claimed"), false);
 
     assert.throws(
       () =>

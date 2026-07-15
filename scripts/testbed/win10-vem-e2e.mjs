@@ -2525,10 +2525,13 @@ export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
   }
   return String.raw`
 $ErrorActionPreference = 'Stop'
-$debugTask = '${INSTALLED_KIOSK_SALE_DEBUG_TASK}'
-$normalTask = '${EXPECTED_MACHINE_UI_TASK_NAME}'
-$normalLauncher = '${INSTALLED_KIOSK_SALE_NORMAL_LAUNCHER}'
-$restoreTask = 'VEMInstalledKioskSaleRestore'
+  $debugTask = '${INSTALLED_KIOSK_SALE_DEBUG_TASK}'
+  $normalTask = '${EXPECTED_MACHINE_UI_TASK_NAME}'
+  $normalLauncher = '${INSTALLED_KIOSK_SALE_NORMAL_LAUNCHER}'
+  $restoreTask = 'VEMInstalledKioskSaleRestore'
+  $observationTask = 'VEMInstalledKioskSaleRestoreObserve'
+  $observationLauncher = Join-Path $env:TEMP 'vem-installed-kiosk-sale-restore-observe.vbs'
+  $machinePath = '${INSTALLED_KIOSK_SALE_MACHINE_PATH}'
 $principal = '${principal.replaceAll("'", "''")}'
 $sessionId = ${sessionId}
 $expectedRoute = '${expectedRoute.replaceAll("'", "''")}'
@@ -2538,33 +2541,70 @@ $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -S
 foreach ($listener in $listeners) { Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue }
 Get-Process -Name machine -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 300
-if (@(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue).Count -ne 0) { throw 'CDP listener remained after debug UI cleanup' }
-if (-not (Test-Path -LiteralPath $normalLauncher -PathType Leaf)) { throw 'normal kiosk launcher is unavailable for restoration' }
-Stop-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
-Unregister-ScheduledTask -TaskName $restoreTask -Confirm:$false -ErrorAction SilentlyContinue
-$action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $normalLauncher) -WorkingDirectory 'C:\VEM\bringup'
-$principalSpec = New-ScheduledTaskPrincipal -UserId $principal -LogonType InteractiveToken -RunLevel Limited
-Register-ScheduledTask -TaskName $restoreTask -InputObject (New-ScheduledTask -Action $action -Principal $principalSpec) -Force | Out-Null
-Start-ScheduledTask -TaskName $restoreTask
-$deadline = [DateTime]::UtcNow.AddSeconds(30)
-do {
-  $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq 'C:\VEM\bringup\machine.exe') })
-  if ($normal.Count -eq 1) { break }
-  Start-Sleep -Milliseconds 250
-} while ([DateTime]::UtcNow -lt $deadline)
-if ($normal.Count -ne 1) { throw 'normal kiosk restoration did not produce exactly one machine.exe' }
-$normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
-$owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
-$observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
-if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'restored normal machine.exe principal or session differs from saved VEMKiosk owner' }
-if ($normal[0].CommandLine -match '--remote-debugging-port(?:=|\s+)9222') { throw 'restored normal machine.exe retained CDP route' }
-if ($expectedRoute -notmatch '^#/(catalog|sale|checkout|products)') { throw 'restored normal machine.exe route is not a customer route' }
-Unregister-ScheduledTask -TaskName $restoreTask -Confirm:$false -ErrorAction SilentlyContinue
+  if (@(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue).Count -ne 0) { throw 'CDP listener remained after debug UI cleanup' }
+  if (-not (Test-Path -LiteralPath $normalLauncher -PathType Leaf)) { throw 'normal kiosk launcher is unavailable for restoration' }
+  Stop-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $observationTask -Confirm:$false -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $restoreTask -Confirm:$false -ErrorAction SilentlyContinue
+  @(
+    'Set oShell = CreateObject("WScript.Shell")',
+    'Set env = oShell.Environment("PROCESS")',
+    'env("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") = "--remote-debugging-port=9222"',
+    'oShell.CurrentDirectory = "C:\VEM\bringup"',
+    'oShell.Run """C:\VEM\bringup\machine.exe""", 1, False'
+  ) | Set-Content -LiteralPath $observationLauncher -Encoding ASCII
+  $principalSpec = New-ScheduledTaskPrincipal -UserId $principal -LogonType InteractiveToken -RunLevel Limited
+  $observationAction = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $observationLauncher) -WorkingDirectory 'C:\VEM\bringup'
+  Register-ScheduledTask -TaskName $observationTask -InputObject (New-ScheduledTask -Action $observationAction -Principal $principalSpec) -Force | Out-Null
+  Start-ScheduledTask -TaskName $observationTask
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  $observationTarget = $null
+  do {
+    $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) })
+    $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
+    if ($normal.Count -eq 1 -and $listeners.Count -eq 1) {
+      $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
+      if ($targets.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$targets[0].id)) {
+        $observationTarget = $targets[0]
+        break
+      }
+    }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $deadline)
+  if ($normal.Count -ne 1 -or $null -eq $observationTarget) { throw 'normal kiosk restoration did not produce observable CDP route evidence' }
+  $normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
+  $owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
+  $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
+  if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'restored normal machine.exe principal or session differs from saved VEMKiosk owner' }
+  $observedRoute = ([uri][string]$observationTarget.url).Fragment
+  if ([string]::IsNullOrWhiteSpace($observedRoute) -or $observedRoute -notmatch '^#/(catalog|sale|checkout|products)') { throw 'restored normal machine.exe CDP route is not a customer route' }
+  if ($observedRoute -ne $expectedRoute) { throw "restored normal machine.exe CDP route differs from saved route: $observedRoute" }
+  $routeEvidence = [ordered]@{ source = 'remote_cdp'; targetId = [string]$observationTarget.id; targetUrl = [string]$observationTarget.url; route = $observedRoute; processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId }
+  foreach ($listener in $listeners) { Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue }
+  Stop-Process -Id ([int]$normalProcess.Id) -Force -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $observationTask -Confirm:$false -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $observationLauncher -Force -ErrorAction SilentlyContinue
+  $action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $normalLauncher) -WorkingDirectory 'C:\VEM\bringup'
+  Register-ScheduledTask -TaskName $restoreTask -InputObject (New-ScheduledTask -Action $action -Principal $principalSpec) -Force | Out-Null
+  Start-ScheduledTask -TaskName $restoreTask
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  do {
+    $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) })
+    if ($normal.Count -eq 1) { break }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $deadline)
+  if ($normal.Count -ne 1) { throw 'final normal kiosk restoration did not produce exactly one machine.exe' }
+  $normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
+  $owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
+  $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
+  if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'final normal machine.exe principal or session differs from saved VEMKiosk owner' }
+  if ($normal[0].CommandLine -match '--remote-debugging-port(?:=|\s+)9222') { throw 'final normal machine.exe retained CDP route' }
+  Unregister-ScheduledTask -TaskName $restoreTask -Confirm:$false -ErrorAction SilentlyContinue
 $cdpListenerCount = @((Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)).Count
 if ($cdpListenerCount -ne 0) { throw 'normal kiosk restoration retained CDP listener' }
 $daemon = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
 if ([string]$daemon.Status -ne 'Running') { throw 'daemon stopped during installed kiosk sale acceptance' }
-[ordered]@{ ok = $true; restored = 'interactive_token_one_shot'; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId; route = $expectedRoute }; daemonRunning = $true; cdpListenerCount = $cdpListenerCount } | ConvertTo-Json -Compress
+  [ordered]@{ ok = $true; restored = 'interactive_token_one_shot'; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId; route = $observedRoute; routeEvidence = $routeEvidence }; daemonRunning = $true; cdpListenerCount = $cdpListenerCount } | ConvertTo-Json -Compress -Depth 8
 `.trim();
 }
 
@@ -2604,6 +2644,8 @@ export async function captureInstalledKioskSaleHook({
     sshPort: options.sshPort,
     identityFile: options.identity,
     certificateFile: options.certificate,
+    sshKnownHostsPath: options.sshKnownHostsPath,
+    sshHostKeyAlias: options.sshHostKeyAlias,
     remoteCdpPort: 9222,
   });
   let client;
@@ -2622,9 +2664,9 @@ export async function captureInstalledKioskSaleHook({
     await waitForRoute(client, route, { timeoutMs: 30_000 });
     const hook = await evaluateExpression(
       client,
-      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? { orderId: el.dataset.orderId, paymentId: el.dataset.paymentId, transactionId: el.dataset.transactionId, commandId: el.dataset.commandId || null, route: location.hash } : null; })()`,
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? { orderId: el.dataset.orderId, paymentId: el.dataset.paymentId, orderNo: el.dataset.orderNo, commandId: el.dataset.commandId || null, route: location.hash } : null; })()`,
     );
-    if (!hook || !hook.orderId || !hook.paymentId || !hook.transactionId)
+    if (!hook || !hook.orderId || !hook.paymentId || !hook.orderNo)
       throw new Error(
         `required rendered customer UI hook is missing: ${selector}`,
       );
@@ -2643,6 +2685,8 @@ async function runInstalledKioskCatalogScenario({ options, attestation }) {
     sshPort: options.sshPort,
     identityFile: options.identity,
     certificateFile: options.certificate,
+    sshKnownHostsPath: options.sshKnownHostsPath,
+    sshHostKeyAlias: options.sshHostKeyAlias,
     remoteCdpPort: 9222,
   });
   let client;
@@ -2777,7 +2821,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     { ...options, runId, machineCode, platformTarget },
     ["--out", runtimeAcceptanceReport],
   );
-  const buildInstalledKioskSaleCommand = (profile, out) => {
+  const buildInstalledKioskSaleCommand = (profile, out, alreadyClaimed) => {
     const command = [
       process.execPath,
       "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
@@ -2803,6 +2847,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
       "--profile",
       profile,
+      ...(alreadyClaimed ? ["--already-claimed"] : []),
       "--out",
       out,
     ];
@@ -2838,6 +2883,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const installedKioskSaleCompetitionCommand = buildInstalledKioskSaleCommand(
     "vm-route-competition",
     customerUiSaleCompetitionReport,
+    true,
   );
 
   const cleanBaseStep = cleanBaseFactoryAcceptance
@@ -3600,11 +3646,40 @@ function serialAcceptanceDiagnostic(code, message) {
 function hasOneObservedIdentity(observation, expected) {
   return (
     Array.isArray(observation?.occurrences) &&
-    observation.occurrences.length >= 1 &&
+    observation.occurrences.length === 1 &&
     Array.isArray(observation?.unique) &&
     observation.unique.length === 1 &&
     observation.unique[0] === expected &&
     observation.count === 1
+  );
+}
+
+function hasReservationExactOnce(reservation, observation, count) {
+  if (
+    !reservation ||
+    typeof reservation.exposed !== "boolean" ||
+    typeof reservation.source !== "string" ||
+    !Number.isSafeInteger(reservation.rawRecordCount)
+  ) {
+    return false;
+  }
+  if (!reservation.exposed) {
+    return (
+      reservation.source === "not_exposed" &&
+      reservation.rawRecordCount === 0 &&
+      count === 0 &&
+      Array.isArray(observation?.occurrences) &&
+      observation.occurrences.length === 0 &&
+      Array.isArray(observation?.unique) &&
+      observation.unique.length === 0 &&
+      observation.count === 0
+    );
+  }
+  return (
+    reservation.source !== "not_exposed" &&
+    reservation.rawRecordCount === 1 &&
+    count === 1 &&
+    hasOneObservedIdentity(observation, observation?.unique?.[0])
   );
 }
 
@@ -3935,29 +4010,33 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
   const platform = report?.correlation?.platform;
   const exactOnce = report?.correlation?.exactOnce;
   const observations = platform?.observations;
+  const reservation = platform?.reservation;
   if (
     !rendered?.orderId ||
     !rendered?.paymentId ||
-    !rendered?.transactionId ||
+    !rendered?.orderNo ||
     !rendered?.commandId ||
     rendered.orderId !== platform?.orderId ||
     rendered.paymentId !== platform?.paymentId ||
-    rendered.transactionId !== platform?.transactionId ||
+    rendered.orderNo !== platform?.orderNo ||
     rendered.commandId !== platform?.commandId ||
     platform?.stockDelta !== -1 ||
     platform?.status !== "accepted" ||
     exactOnce?.orderCount !== 1 ||
     exactOnce.paymentCount !== 1 ||
+    exactOnce.orderNoCount !== 1 ||
+    !hasReservationExactOnce(
+      reservation,
+      observations?.reservationIds,
+      exactOnce?.reservationCount,
+    ) ||
     exactOnce.commandCount !== 1 ||
     exactOnce.movementCount !== 1 ||
     exactOnce.serialSaleBindingCount?.injected !== 1 ||
     exactOnce.serialSaleBindingCount?.collected !== 1 ||
     !hasOneObservedIdentity(observations?.orderIds, rendered?.orderId) ||
     !hasOneObservedIdentity(observations?.paymentIds, rendered?.paymentId) ||
-    !hasOneObservedIdentity(
-      observations?.transactionIds,
-      rendered?.transactionId,
-    ) ||
+    !hasOneObservedIdentity(observations?.orderNos, rendered?.orderNo) ||
     !hasOneObservedIdentity(observations?.commandIds, rendered?.commandId) ||
     !hasOneObservedIdentity(
       observations?.movementIds,
@@ -3967,7 +4046,7 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
     diagnostics.push(
       serialAcceptanceDiagnostic(
         "installed_kiosk_ui_binding_missing",
-        "Rendered payment, platform completion, and serial reports must bind one order, payment, transaction, command, movement, and stock delta.",
+        "Rendered payment, platform completion, and serial reports must bind one order, payment, order number, reservation when exposed, command, movement, and stock delta.",
       ),
     );
   }
@@ -5181,6 +5260,82 @@ function Get-PersistedProvisioningActions {
   } catch {
     return @()
   }
+}
+
+function Confirm-ExistingTestbedProvisioningClaim($Actions) {
+  $status = "succeeded"
+  $message = $null
+  $evidence = [ordered]@{
+    reused = $true
+    usedDaemonIpcTaskExecute = $false
+    endpoint = $null
+    runId = ${psString(runId)}
+    expectedMachineCode = ${psString(machineCode)}
+    platformTarget = ${psString(platformTarget)}
+    apiBaseUrl = ${psString(platform.apiBaseUrl)}
+    mqttUrl = ${psString(platform.mqttUrl)}
+    claimStatus = "not_attempted"
+    provisioned = $false
+    credentialFlags = [ordered]@{
+      machineSecretConfigured = $false
+      mqttSigningSecretConfigured = $false
+    }
+  }
+
+  try {
+    $persisted = @(
+      Get-PersistedProvisioningActions |
+        Where-Object {
+          [string]$_.name -eq "daemon IPC provisioning claim" -and
+          [string]$_.status -eq "succeeded"
+        } |
+        Select-Object -Last 1
+    )
+    if ($persisted.Count -ne 1) {
+      throw "already-claimed sale fixture requires persisted successful daemon IPC claim evidence"
+    }
+    $persistedEvidence = $persisted[0].evidence
+    if (
+      $null -eq $persistedEvidence -or
+      [bool]$persistedEvidence.usedDaemonIpcTaskExecute -ne $true -or
+      [string]$persistedEvidence.claimStatus -ne "provisioned" -or
+      [string]$persistedEvidence.runId -ne ${psString(runId)} -or
+      [string]$persistedEvidence.expectedMachineCode -ne ${psString(machineCode)} -or
+      [string]$persistedEvidence.platformTarget -ne ${psString(platformTarget)} -or
+      [string]$persistedEvidence.apiBaseUrl -ne ${psString(platform.apiBaseUrl)} -or
+      [string]$persistedEvidence.mqttUrl -ne ${psString(platform.mqttUrl)}
+    ) {
+      throw "persisted daemon IPC claim evidence does not bind this sale fixture to the same run, identity, and platform"
+    }
+    $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    $config = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$($daemonIpc.baseUrl)/v1/config/summary" $daemonIpc.headers)
+    if (
+      [bool]$config.provisioned -ne $true -or
+      [string]$config.public.machineCode -ne ${psString(machineCode)} -or
+      [string]$config.public.apiBaseUrl -ne ${psString(platform.apiBaseUrl)} -or
+      [string]$config.public.mqttUrl -ne ${psString(platform.mqttUrl)} -or
+      [bool]$config.machineSecretConfigured -ne $true -or
+      [bool]$config.mqttSigningSecretConfigured -ne $true
+    ) {
+      throw "already-claimed sale fixture current daemon state does not preserve the expected identity, platform, and credentials"
+    }
+    $evidence.usedDaemonIpcTaskExecute = $true
+    $evidence.endpoint = [string]$persistedEvidence.endpoint
+    $evidence.claimStatus = "provisioned"
+    $evidence.provisioned = $true
+    $evidence.credentialFlags.machineSecretConfigured = $true
+    $evidence.credentialFlags.mqttSigningSecretConfigured = $true
+  } catch {
+    $status = "failed"
+    $message = [string]$_
+  }
+
+  $Actions.Add([pscustomobject]@{
+    name = "reuse persisted daemon IPC provisioning claim"
+    status = $status
+    message = $message
+    evidence = $evidence
+  }) | Out-Null
 }
 
 function Invoke-TestbedProvisioningClaim($Actions) {
@@ -7486,7 +7641,7 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
         throw "simulated sale completion requires fixture-only context"
       }
       $renderedSaleBinding = ${psString(options.saleBindingJson ?? "")} | ConvertFrom-Json
-      foreach ($field in @("orderId", "paymentId", "transactionId")) {
+      foreach ($field in @("orderId", "paymentId", "orderNo")) {
         if ([string]::IsNullOrWhiteSpace([string]$renderedSaleBinding.$field)) {
           throw "simulated sale completion requires rendered $field"
         }
@@ -7592,6 +7747,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
         selectedItem = $selectedItem
         provisioningActions = @($ProvisioningActions)
       })
+    }
+    }
     if ($salePhase -eq "complete") {
       $deadline = [DateTime]::UtcNow.AddSeconds(120)
       do {
@@ -7707,6 +7864,11 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $null
   }
+  $orderNo = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderNo)) {
+    [string]$currentTransaction.orderNo
+  } else {
+    $null
+  }
   $paymentNo = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentNo)) {
     [string]$currentTransaction.paymentNo
   } else {
@@ -7717,10 +7879,30 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $null
   }
+  $observedReservationIds = @()
+  $reservationSource = "not_exposed"
+  if ($null -ne $currentTransaction -and $null -ne $currentTransaction.PSObject.Properties["reservations"]) {
+    $reservationSource = "current_transaction.reservations"
+    foreach ($reservation in @($currentTransaction.reservations)) {
+      if ($null -ne $reservation -and -not [string]::IsNullOrWhiteSpace([string]$reservation.reservationId)) {
+        $observedReservationIds += [string]$reservation.reservationId
+      }
+    }
+  } elseif ($null -ne $currentTransaction -and $null -ne $currentTransaction.PSObject.Properties["reservationId"]) {
+    $reservationSource = "current_transaction.reservationId"
+    if (-not [string]::IsNullOrWhiteSpace([string]$currentTransaction.reservationId)) {
+      $observedReservationIds += [string]$currentTransaction.reservationId
+    }
+  }
+  $reservationEvidence = [ordered]@{
+    source = $reservationSource
+    exposed = $reservationSource -ne "not_exposed"
+    rawRecordCount = @($observedReservationIds).Count
+  }
   if ($salePhase -eq "complete" -and (
     $orderId -ne [string]$renderedSaleBinding.orderId -or
     $paymentId -ne [string]$renderedSaleBinding.paymentId -or
-    [string]$currentTransaction.transactionId -ne [string]$renderedSaleBinding.transactionId
+    $orderNo -ne [string]$renderedSaleBinding.orderNo
   )) {
     throw "completed simulated sale does not match the rendered payment binding"
   }
@@ -7754,12 +7936,10 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   }
   $observedOrderIds = @($orderId)
   $observedPaymentIds = @($paymentId)
-  $observedTransactionIds = @([string]$currentTransaction.transactionId)
+  $observedOrderNos = @($orderNo)
   $observedCommandIds = @($vendingCommandId)
   $observedMovementIds = @()
   if ($null -ne $postSaleDispenseMovement) {
-    $observedOrderIds += [string]$postSaleDispenseMovement.orderId
-    $observedCommandIds += [string]$postSaleDispenseMovement.vendingCommandId
     $observedMovementIds += [string]$postSaleDispenseMovement.movementId
   }
 
@@ -7848,7 +8028,6 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       paymentProviderCode = "mock"
       paymentId = $paymentId
       paymentNo = $paymentNo
-      transactionId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace([string]$currentTransaction.transactionId)) { [string]$currentTransaction.transactionId } else { $null }
       paymentStatus = $paymentStatus
       paymentSucceeded = $paymentStatus -eq "succeeded"
       vendingCommandId = $vendingCommandId
@@ -7872,10 +8051,12 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
         deltaQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.deltaQuantity } else { $null }
         status = if ($null -ne $postSaleDispenseMovement -and [string]$postSaleDispenseMovement.status -eq "accepted") { "accepted" } else { "missing" }
       }
+      reservation = $reservationEvidence
       observedIdentities = [ordered]@{
         orderIds = @($observedOrderIds)
         paymentIds = @($observedPaymentIds)
-        transactionIds = @($observedTransactionIds)
+        reservationIds = @($observedReservationIds)
+        orderNos = @($observedOrderNos)
         commandIds = @($observedCommandIds)
         movementIds = @($observedMovementIds)
       }
@@ -8126,7 +8307,11 @@ if ($mode -eq "clean-base-factory-acceptance") {
 
 if ($mode -eq "simulated-hardware-sale-flow") {
   if (${psString(options.salePhase ?? "single")} -ne "complete") {
-    Invoke-TestbedProvisioningClaim $provisioningActions
+    if (${options.alreadyClaimed ? "$true" : "$false"}) {
+      Confirm-ExistingTestbedProvisioningClaim $provisioningActions
+    } else {
+      Invoke-TestbedProvisioningClaim $provisioningActions
+    }
   }
   $simulatedHardwareSaleFlowResult = Invoke-SimulatedHardwareSaleFlow $provisioningActions
 }
@@ -8817,18 +9002,20 @@ function parseArgs(argv) {
     } else if (arg === "--sale-binding-json") {
       try {
         const binding = JSON.parse(next);
-        for (const field of ["orderId", "paymentId", "transactionId"]) {
+        for (const field of ["orderId", "paymentId", "orderNo"]) {
           if (typeof binding?.[field] !== "string" || !binding[field].trim()) {
             throw new Error();
           }
         }
       } catch {
         throw new Error(
-          "--sale-binding-json must contain rendered orderId, paymentId, and transactionId",
+          "--sale-binding-json must contain rendered orderId, paymentId, and orderNo",
         );
       }
       options.saleBindingJson = next;
       index += 1;
+    } else if (arg === "--already-claimed") {
+      options.alreadyClaimed = true;
     } else if (arg === "--ephemeral-database-url") {
       options.ephemeralDatabaseUrl = next;
       index += 1;

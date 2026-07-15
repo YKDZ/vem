@@ -444,7 +444,7 @@ export function validateSerialConformanceReport(
     assertConformance(
       conformance.customerUiSale?.orderId === collectedSale.orderId &&
         conformance.customerUiSale?.paymentId === collectedSale.paymentId &&
-        conformance.customerUiSale?.transactionId &&
+        conformance.customerUiSale?.orderNo &&
         conformance.customerUiSale?.scenarioSha256 &&
         inject.request.serialSession.saleBindings?.length === 1 &&
         collect.request.serialSession.saleBindings?.length === 1 &&
@@ -771,12 +771,7 @@ function readCustomerUiSaleBinding() {
   } catch {
     throw new Error("--customer-ui-sale-binding-file must contain JSON");
   }
-  for (const field of [
-    "orderId",
-    "paymentId",
-    "transactionId",
-    "scenarioSha256",
-  ]) {
+  for (const field of ["orderId", "paymentId", "orderNo", "scenarioSha256"]) {
     if (typeof binding?.[field] !== "string" || binding[field].trim() === "")
       throw new Error(`customer UI sale binding requires ${field}`);
   }
@@ -1167,7 +1162,7 @@ async function main() {
             customerUiSale: {
               orderId: customerUiSale.orderId,
               paymentId: customerUiSale.paymentId,
-              transactionId: customerUiSale.transactionId,
+              orderNo: customerUiSale.orderNo,
               scenarioSha256: customerUiSale.scenarioSha256,
             },
           }

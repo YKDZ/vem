@@ -71,6 +71,10 @@ function parseArgs(argv) {
       options.dryRun = true;
       continue;
     }
+    if (arg === "--already-claimed") {
+      options.already_claimed = true;
+      continue;
+    }
     if (!stringOptions.has(arg.slice(2))) {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -189,7 +193,7 @@ function executionOptions(options) {
   };
 }
 
-function scenarioSteps(profile) {
+export function buildInstalledKioskSaleScenarioSteps(profile) {
   const steps = [
     {
       type: "customer-activation",
@@ -232,8 +236,8 @@ function scenarioSteps(profile) {
   if (profile !== "vm-normal") {
     steps.push({
       type: "route-action",
-      name: "catalog competition during payment",
-      attemptRoute: "#/catalog",
+      name: "history competition during payment",
+      stimulus: "history-back",
       routeBefore: /^#\/payment/,
       routeAfter: /^#\/payment/,
     });
@@ -260,10 +264,14 @@ function createRunnerTrust(root) {
 }
 
 function prepareScannerCode(options, root) {
-  if (options.scanner_code_file)
-    return { path: options.scanner_code_file, owned: false };
   const path = join(root, "scanner-code.txt");
-  writeFileSync(path, `TEST-${randomBytes(8).toString("hex")}\n`, {
+  const scannerCode = options.scanner_code_file
+    ? readFileSync(options.scanner_code_file, "utf8")
+    : `TEST-${randomBytes(8).toString("hex")}\n`;
+  if (scannerCode.length === 0) {
+    throw new Error("--scanner-code-file must not be empty");
+  }
+  writeFileSync(path, scannerCode, {
     mode: 0o600,
   });
   return { path, owned: true };
@@ -297,7 +305,20 @@ function observedIdentity(values, name) {
   if (occurrences.length === 0 || unique.length !== 1) {
     throw new Error(`${name} must contain exactly one observed identity`);
   }
-  return { occurrences, unique, count: unique.length };
+  return { occurrences, unique, count: occurrences.length };
+}
+
+function optionalObservedIdentity(values, name, exposed) {
+  if (exposed) return observedIdentity(values, name);
+  const occurrences = values.filter(
+    (value) => typeof value === "string" && value.trim() !== "",
+  );
+  if (occurrences.length !== 0) {
+    throw new Error(
+      `${name} must be absent when platform evidence is unavailable`,
+    );
+  }
+  return { occurrences: [], unique: [], count: 0 };
 }
 
 function serialSaleBinding(conformance) {
@@ -333,17 +354,19 @@ function deriveCorrelation({
   const sale = platform?.sale;
   const movement = platform?.platformState?.postSaleDispenseMovement;
   const platformIdentities = platform?.platformState?.observedIdentities;
+  const reservation = platform?.platformState?.reservation;
+  const reservationExposed = reservation?.exposed === true;
   const bindings = serialSaleBinding(serial);
   const rendered = {
     orderId: payment.orderId,
     paymentId: payment.paymentId,
-    transactionId: payment.transactionId,
+    orderNo: payment.orderNo,
     commandId: fulfillment.commandId,
   };
   const identitiesMatch =
     fulfillment.orderId === rendered.orderId &&
     fulfillment.paymentId === rendered.paymentId &&
-    fulfillment.transactionId === rendered.transactionId &&
+    fulfillment.orderNo === rendered.orderNo &&
     bindings.injected.orderId === rendered.orderId &&
     bindings.injected.paymentId === rendered.paymentId &&
     bindings.collected.orderId === rendered.orderId &&
@@ -351,7 +374,7 @@ function deriveCorrelation({
     bindings.collected.vendingCommandId === rendered.commandId &&
     sale?.orderId === rendered.orderId &&
     sale?.paymentId === rendered.paymentId &&
-    sale?.transactionId === rendered.transactionId &&
+    sale?.orderNo === rendered.orderNo &&
     sale?.vendingCommandId === rendered.commandId &&
     movement?.orderId === rendered.orderId &&
     movement?.vendingCommandId === rendered.commandId;
@@ -364,9 +387,9 @@ function deriveCorrelation({
       platformIdentities?.paymentIds ?? [],
       "platform payment evidence",
     ),
-    transactionIds: observedIdentity(
-      platformIdentities?.transactionIds ?? [],
-      "platform transaction evidence",
+    orderNos: observedIdentity(
+      platformIdentities?.orderNos ?? [],
+      "platform order-number evidence",
     ),
     commandIds: observedIdentity(
       platformIdentities?.commandIds ?? [],
@@ -376,10 +399,26 @@ function deriveCorrelation({
       platformIdentities?.movementIds ?? [],
       "platform movement evidence",
     ),
+    reservationIds: optionalObservedIdentity(
+      platformIdentities?.reservationIds ?? [],
+      "platform reservation evidence",
+      reservationExposed,
+    ),
   };
+  const reservationEvidenceMatches = reservationExposed
+    ? typeof reservation?.source === "string" &&
+      reservation.source !== "not_exposed" &&
+      Number.isSafeInteger(reservation.rawRecordCount) &&
+      reservation.rawRecordCount === observations.reservationIds.count &&
+      observations.reservationIds.count === 1
+    : reservation?.source === "not_exposed" &&
+      reservation?.rawRecordCount === 0 &&
+      observations.reservationIds.count === 0;
   const exactOnce = {
     orderCount: observations.orderIds.count,
     paymentCount: observations.paymentIds.count,
+    orderNoCount: observations.orderNos.count,
+    reservationCount: observations.reservationIds.count,
     commandCount: observations.commandIds.count,
     movementCount: observations.movementIds.count,
     stockDelta: movement?.deltaQuantity,
@@ -387,6 +426,11 @@ function deriveCorrelation({
   };
   if (
     !identitiesMatch ||
+    !reservationEvidenceMatches ||
+    observations.orderIds.count !== 1 ||
+    observations.paymentIds.count !== 1 ||
+    observations.commandIds.count !== 1 ||
+    observations.movementIds.count !== 1 ||
     movement?.status !== "accepted" ||
     movement?.deltaQuantity !== -1 ||
     sale?.paymentStatus !== "succeeded" ||
@@ -402,12 +446,17 @@ function deriveCorrelation({
     platform: {
       orderId: sale.orderId,
       paymentId: sale.paymentId,
-      transactionId: sale.transactionId,
+      orderNo: sale.orderNo,
       commandId: sale.vendingCommandId,
       stockMovementId: movement.movementId,
       stockDelta: movement.deltaQuantity,
       status: movement.status,
       observations,
+      reservation: {
+        exposed: reservationExposed,
+        source: reservation?.source ?? "not_exposed",
+        rawRecordCount: reservation?.rawRecordCount ?? 0,
+      },
     },
     serial: {
       sessionId: serial.session?.serialSessionId,
@@ -440,6 +489,7 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
       options.ephemeral_platform_evidence,
       "--sale-phase",
       "fixture",
+      ...(options.already_claimed ? ["--already-claimed"] : []),
       "--out",
       fixtureReport,
     ],
@@ -507,6 +557,8 @@ export async function runInstalledKioskSaleAcceptanceCli(
         sshPort: remote.sshPort,
         identityFile: remote.identity,
         certificateFile: remote.certificate,
+        sshKnownHostsPath: remote.sshKnownHostsPath,
+        sshHostKeyAlias: remote.sshHostKeyAlias,
         sshArgs: ["-o", "ProxyCommand=none"],
         remoteCdpPort: 9222,
       },
@@ -515,7 +567,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
       sequenceName: `installed-kiosk-${options.profile}`,
       screenshotCheckpoints: true,
       continuousCapture: true,
-      steps: scenarioSteps(options.profile),
+      steps: buildInstalledKioskSaleScenarioSteps(options.profile),
     });
     writeJson(plan.artifacts.scenarioReport, scenario);
     const payment = await capture({
@@ -527,7 +579,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
     const binding = {
       orderId: payment.orderId,
       paymentId: payment.paymentId,
-      transactionId: payment.transactionId,
+      orderNo: payment.orderNo,
       scenarioSha256: createHash("sha256")
         .update(JSON.stringify(scenario))
         .digest("hex"),
@@ -646,7 +698,13 @@ export async function runInstalledKioskSaleAcceptanceCli(
           cleanup?.cdpListenerCount !== 0 ||
           cleanup?.normal?.principal !== launch.prelaunch.principal ||
           cleanup?.normal?.sessionId !== launch.prelaunch.sessionId ||
-          cleanup?.normal?.route !== runtime.route
+          cleanup?.normal?.route !== runtime.route ||
+          cleanup?.normal?.routeEvidence?.source !== "remote_cdp" ||
+          cleanup?.normal?.routeEvidence?.route !== runtime.route ||
+          typeof cleanup?.normal?.routeEvidence?.targetId !== "string" ||
+          cleanup.normal.routeEvidence.targetId.length === 0 ||
+          typeof cleanup?.normal?.routeEvidence?.targetUrl !== "string" ||
+          cleanup.normal.routeEvidence.targetUrl.length === 0
         ) {
           throw new Error(
             "installed kiosk cleanup did not restore normal VEMKiosk ownership",

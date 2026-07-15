@@ -30,6 +30,8 @@ const PRODUCTION_TUNNEL_OPTION_KEYS = new Set([
   "sshPort",
   "identityFile",
   "certificateFile",
+  "sshKnownHostsPath",
+  "sshHostKeyAlias",
   "sshArgs",
   "remoteCdpPort",
 ]);
@@ -263,6 +265,8 @@ export async function inspectWindowsMachineUiRuntime({
   sshPort,
   identityFile,
   certificateFile,
+  sshKnownHostsPath,
+  sshHostKeyAlias,
   sshArgs = [],
   remoteCdpPort = DEFAULT_REMOTE_CDP_PORT,
   expectedMachinePath,
@@ -469,6 +473,8 @@ export async function openMachineUiCdpSidecar({
   sshPort,
   identityFile,
   certificateFile,
+  sshKnownHostsPath,
+  sshHostKeyAlias,
   sshArgs = [],
   localHost = "127.0.0.1",
   localPort,
@@ -509,6 +515,10 @@ export async function openMachineUiCdpSidecar({
     ...(sshPort ? ["-p", String(sshPort)] : []),
     ...(identityFile ? ["-i", identityFile] : []),
     ...(certificateFile ? ["-o", `CertificateFile=${certificateFile}`] : []),
+    ...(sshKnownHostsPath
+      ? ["-o", `UserKnownHostsFile=${sshKnownHostsPath}`]
+      : []),
+    ...(sshHostKeyAlias ? ["-o", `HostKeyAlias=${sshHostKeyAlias}`] : []),
     ...sshArgs,
     remote,
   ];
@@ -1385,17 +1395,27 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           label: `${step.name}:before`,
           identity: before,
         });
-        const routeAttempt = await evaluateExpression(
+        const routeStimulus = await evaluateExpression(
           client,
-          `(() => { location.hash = ${JSON.stringify(step.attemptRoute)}; return location.hash; })()`,
+          `(() => {
+            const routeBefore = location.hash;
+            history.back();
+            return { stimulus: "history-back", routeBefore };
+          })()`,
           { timeoutMs: step.timeoutMs ?? timeoutMs },
         );
+        if (
+          routeStimulus?.stimulus !== step.stimulus ||
+          normalizeMachineRoute(routeStimulus.routeBefore) !== before.route
+        ) {
+          throw new Error(`${step.name} did not acknowledge ${step.stimulus}`);
+        }
         record({
           type: "route-action",
           label: step.name,
-          attemptRoute: step.attemptRoute,
+          stimulus: step.stimulus,
           routeBefore: before.route,
-          routeReportedByHook: normalizeMachineRoute(routeAttempt),
+          triggerAcknowledged: true,
         });
         executedExecution.routeActions += 1;
         assertHealthy();
@@ -1525,12 +1545,8 @@ function validateScenarioSequence({ sequenceName, steps }) {
           `${name} customer activation selector exceeds maximum length`,
         );
       }
-      const routeBefore = normalizeMachineRoute(
-        requiredStepString(step, "routeBefore", index),
-      );
-      const routeAfter = normalizeMachineRoute(
-        requiredStepString(step, "routeAfter", index),
-      );
+      const routeBefore = requiredStepRouteMatcher(step, "routeBefore", index);
+      const routeAfter = requiredStepRouteMatcher(step, "routeAfter", index);
       const inputKind =
         step.inputKind == null ? undefined : requiredStepInputKind(step, index);
       validatedSteps.push(
@@ -1565,15 +1581,9 @@ function validateScenarioSequence({ sequenceName, steps }) {
       validatedSteps.push(
         Object.freeze({
           ...common,
-          attemptRoute: normalizeMachineRoute(
-            requiredStepString(step, "attemptRoute", index),
-          ),
-          routeBefore: normalizeMachineRoute(
-            requiredStepString(step, "routeBefore", index),
-          ),
-          routeAfter: normalizeMachineRoute(
-            requiredStepString(step, "routeAfter", index),
-          ),
+          stimulus: requiredStepRouteActionStimulus(step, index),
+          routeBefore: requiredStepRouteMatcher(step, "routeBefore", index),
+          routeAfter: requiredStepRouteMatcher(step, "routeAfter", index),
         }),
       );
     } else {
@@ -1609,7 +1619,7 @@ function assertClosedStep(step, index, type) {
           ? new Set([
               "type",
               "name",
-              "attemptRoute",
+              "stimulus",
               "routeBefore",
               "routeAfter",
               "timeoutMs",
@@ -1638,6 +1648,31 @@ function requiredStepString(step, field, index) {
     throw new Error(`scenario step ${index + 1} requires ${field}`);
   }
   return descriptor.value.trim();
+}
+
+function requiredStepRouteMatcher(step, field, index) {
+  const descriptor = Object.getOwnPropertyDescriptor(step, field);
+  if (!descriptor || !Object.hasOwn(descriptor, "value")) {
+    throw new Error(`scenario step ${index + 1} requires ${field}`);
+  }
+  if (typeof descriptor.value === "string") {
+    if (descriptor.value.trim() === "") {
+      throw new Error(`scenario step ${index + 1} requires ${field}`);
+    }
+    return normalizeMachineRoute(descriptor.value);
+  }
+  if (descriptor.value instanceof RegExp) {
+    return new RegExp(descriptor.value.source, descriptor.value.flags);
+  }
+  throw new Error(`scenario step ${index + 1} requires ${field}`);
+}
+
+function requiredStepRouteActionStimulus(step, index) {
+  const stimulus = requiredStepString(step, "stimulus", index);
+  if (stimulus !== "history-back") {
+    throw new Error(`scenario step ${index + 1} stimulus is invalid`);
+  }
+  return stimulus;
 }
 
 function requiredStepTimeout(step, index) {
@@ -1863,6 +1898,12 @@ function boundEvidenceEntry(entry) {
     };
   }
   if (entry.type === "route-action") {
+    if (entry.stimulus !== "history-back") {
+      throw new Error("route action stimulus is invalid");
+    }
+    if (entry.triggerAcknowledged !== true) {
+      throw new Error("route action must acknowledge its stimulus");
+    }
     return {
       type: "route-action",
       label: boundedRequiredString(
@@ -1870,9 +1911,9 @@ function boundEvidenceEntry(entry) {
         "route action label",
         MAX_LABEL_LENGTH,
       ),
-      attemptRoute: normalizeMachineRoute(entry.attemptRoute),
+      stimulus: "history-back",
       routeBefore: normalizeMachineRoute(entry.routeBefore),
-      routeReportedByHook: normalizeMachineRoute(entry.routeReportedByHook),
+      triggerAcknowledged: true,
     };
   }
   if (entry.type === "runtime-attestation") {
@@ -2451,6 +2492,8 @@ function buildSidecarTunnelOptions(tunnelTransport, inspectedRuntime) {
     "sshPort",
     "identityFile",
     "certificateFile",
+    "sshKnownHostsPath",
+    "sshHostKeyAlias",
     "sshArgs",
   ]) {
     if (Object.hasOwn(tunnelTransport, key)) {

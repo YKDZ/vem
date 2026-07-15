@@ -142,7 +142,7 @@ onUnmounted(() => {
       data-installed-kiosk-sale-fulfillment-surface
       :data-order-id="checkoutStore.transaction?.orderId ?? ''"
       :data-payment-id="checkoutStore.transaction?.paymentId ?? ''"
-      :data-transaction-id="checkoutStore.transaction?.orderNo ?? ''"
+      :data-order-no="checkoutStore.transaction?.orderNo ?? ''"
       :data-payment-url="checkoutStore.transaction?.paymentUrl ?? ''"
       :data-command-id="checkoutStore.transaction?.vending?.commandId ?? ''"
       data-test="dispensing-page"
