@@ -433,7 +433,7 @@ mod tests {
             .expect("sale view");
         assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
         assert_eq!(sale_view.items[0].physical_stock, 3);
-        assert_eq!(sale_view.items[0].saleable_stock, 3);
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
         let sync = store
             .stock_movement_sync_record("MOVE-BLOCKED")
             .await

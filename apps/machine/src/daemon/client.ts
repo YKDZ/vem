@@ -1,4 +1,11 @@
-import { isManagedMediaReference } from "@vem/shared";
+import {
+  isManagedMediaReference,
+  stockMaintenanceBatchResponseSchema,
+  stockMaintenanceTaskSchema,
+  type StockMaintenanceBatchRequest,
+  type StockMaintenanceBatchResponse,
+  type StockMaintenanceTask,
+} from "@vem/shared";
 
 import { managedMediaDiagnosticKey } from "@/catalog/managed-media";
 import {
@@ -543,6 +550,23 @@ export class DaemonApiClient {
   async recordStockMovement(body: unknown): Promise<SaleViewSnapshot> {
     return machineSaleViewSnapshotSchema.parse(
       await this.request("/v1/stock/movements", {
+        method: "POST",
+        body,
+      }),
+    );
+  }
+
+  async getStockMaintenanceTask(): Promise<StockMaintenanceTask> {
+    return stockMaintenanceTaskSchema.parse(
+      await this.request("/v1/stock/maintenance-task"),
+    );
+  }
+
+  async submitStockMaintenanceBatch(
+    body: StockMaintenanceBatchRequest,
+  ): Promise<StockMaintenanceBatchResponse> {
+    return stockMaintenanceBatchResponseSchema.parse(
+      await this.request("/v1/stock/maintenance-task", {
         method: "POST",
         body,
       }),

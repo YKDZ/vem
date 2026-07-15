@@ -1,6 +1,8 @@
 import {
   daemonIpcMachinePaymentProviderSchema,
   paymentMethodSchema,
+  type StockMaintenanceBatchResponse,
+  type StockMaintenanceTask,
 } from "@vem/shared";
 
 import type {
@@ -391,6 +393,37 @@ export function installUiDebugDaemon(): void {
   client.refreshCatalog = async () => catalogFromSaleView(currentSaleView());
   client.getSaleView = async () => currentSaleView();
   client.recordStockMovement = async () => currentSaleView();
+  const currentStockMaintenanceTask = (): StockMaintenanceTask => {
+    const saleView = currentSaleView();
+    return {
+      taskId: "ui-debug-stock-task",
+      mode: "routine_refill",
+      status: "ready",
+      slots: saleView.items.map((item) => ({
+        slotCode: item.slotCode,
+        layerNo: item.layerNo,
+        cellNo: item.cellNo,
+        productName: item.productName,
+        sku: item.sku,
+        capacity: item.capacity,
+        currentQuantity: item.physicalStock,
+        submittedQuantity: null,
+        syncStatus: "not_submitted",
+        salesState: item.slotSalesState,
+        reconciliationReason: null,
+      })),
+    };
+  };
+  client.getStockMaintenanceTask = async (): Promise<StockMaintenanceTask> =>
+    currentStockMaintenanceTask();
+  client.submitStockMaintenanceBatch =
+    async (): Promise<StockMaintenanceBatchResponse> => ({
+      task: {
+        ...currentStockMaintenanceTask(),
+        status: "pending",
+      },
+      duplicate: false,
+    });
   client.clearWholeMachineMaintenanceLock = async () => ({ ok: true });
   client.getSaleReadiness = async () => currentScenario().saleReadiness;
   client.getPaymentOptions = async () => currentScenario().paymentOptions;

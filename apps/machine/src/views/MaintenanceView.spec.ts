@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
+<<<<<<< HEAD
 import { DaemonUnavailableError } from "@/daemon/client";
 import {
   deviceBindingSnapshotSchema,
@@ -23,8 +24,8 @@ const {
   getVisionStatusMock,
   getNaturalContextMock,
   getRemoteOpsStatusMock,
-  getSaleViewMock,
-  recordStockMovementMock,
+  getStockMaintenanceTaskMock,
+  submitStockMaintenanceBatchMock,
   clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
   getConfigMock,
@@ -53,8 +54,8 @@ const {
   getVisionStatusMock: vi.fn(),
   getNaturalContextMock: vi.fn(),
   getRemoteOpsStatusMock: vi.fn(),
-  getSaleViewMock: vi.fn(),
-  recordStockMovementMock: vi.fn(),
+  getStockMaintenanceTaskMock: vi.fn(),
+  submitStockMaintenanceBatchMock: vi.fn(),
   clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
   getConfigMock: vi.fn(),
@@ -102,8 +103,8 @@ vi.mock("@/daemon/client", async (importOriginal) => {
       getVisionStatus: getVisionStatusMock,
       getNaturalContext: getNaturalContextMock,
       getRemoteOpsStatus: getRemoteOpsStatusMock,
-      getSaleView: getSaleViewMock,
-      recordStockMovement: recordStockMovementMock,
+      getStockMaintenanceTask: getStockMaintenanceTaskMock,
+      submitStockMaintenanceBatch: submitStockMaintenanceBatchMock,
       clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
       runHardwareSelfCheck: runHardwareSelfCheckMock,
       getConfig: getConfigMock,
@@ -151,7 +152,6 @@ vi.mock("@/audio-playback/machine-audio-playback", async (importOriginal) => {
 });
 
 import { useAudioCueStore } from "@/stores/audio-cues";
-import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 
@@ -161,36 +161,32 @@ let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 let maintenanceSessionInvalidationListener: (() => void) | null = null;
 
-function saleViewFixture() {
+function stockMaintenanceTaskFixture(
+  mode:
+    | "initial_count"
+    | "recovery_count"
+    | "routine_refill" = "routine_refill",
+) {
   return {
-    items: [
+    taskId: "stock-task-01",
+    mode,
+    status: "ready" as const,
+    slots: [
       {
-        machineCode: "M001",
-        slotId: "550e8400-e29b-41d4-a716-446655440001",
         slotCode: "A1",
         layerNo: 1,
         cellNo: 1,
-        inventoryId: "550e8400-e29b-41d4-a716-446655440002",
-        variantId: "550e8400-e29b-41d4-a716-446655440003",
-        productId: "550e8400-e29b-41d4-a716-446655440004",
         productName: "Mineral Water",
-        productDescription: null,
-        coverImageUrl: null,
-        categoryId: null,
-        categoryName: null,
         sku: "WATER-001",
-        size: null,
-        color: null,
-        priceCents: 100,
         capacity: 8,
-        parLevel: 6,
-        physicalStock: 2,
-        saleableStock: 2,
-        slotSalesState: "sale_ready",
-        productSortOrder: 1,
-        targetGender: null,
+        currentQuantity: 2,
+        submittedQuantity: null,
+        syncStatus: "not_submitted" as const,
+        salesState: "sale_ready",
+        reconciliationReason: null,
       },
     ],
+<<<<<<< HEAD
     discoveryDiagnostics: [],
     source: "local_stock",
     planogramVersion: "PLAN-1",
@@ -497,8 +493,11 @@ beforeEach(() => {
     lastError: null,
     processing: null,
   });
-  getSaleViewMock.mockResolvedValue(saleViewFixture());
-  recordStockMovementMock.mockResolvedValue(saleViewFixture());
+  getStockMaintenanceTaskMock.mockResolvedValue(stockMaintenanceTaskFixture());
+  submitStockMaintenanceBatchMock.mockResolvedValue({
+    task: { ...stockMaintenanceTaskFixture(), status: "pending" },
+    duplicate: false,
+  });
   clearWholeMachineMaintenanceLockMock.mockResolvedValue({ cleared: true });
   runHardwareSelfCheckMock.mockResolvedValue({
     online: true,
@@ -555,7 +554,7 @@ async function mountView(): Promise<HTMLElement> {
   mountedApp.use(pinia);
   mountedApp.mount(host);
   await vi.waitFor(() => {
-    expect(getSaleViewMock).toHaveBeenCalled();
+    expect(getStockMaintenanceTaskMock).toHaveBeenCalled();
   });
   await nextTick();
   return host;
@@ -645,18 +644,6 @@ it("makes MACHINE_AUTH_MISSING recovery usable in production after PIN verificat
   });
 });
 
-function submitButton(host: HTMLElement): HTMLButtonElement {
-  const button = Array.from(host.querySelectorAll("button")).find((item) =>
-    ["记录库存动作", "查询并恢复待确认库存动作"].some((text) =>
-      item.textContent?.includes(text),
-    ),
-  );
-  if (!(button instanceof HTMLButtonElement)) {
-    throw new Error("submit button not found");
-  }
-  return button;
-}
-
 function stockInputByLabel(
   host: HTMLElement,
   labelText: string,
@@ -705,18 +692,6 @@ function inputByTest(host: HTMLElement, testId: string): HTMLInputElement {
     throw new Error(`${testId} input not found`);
   }
   return input;
-}
-
-function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
-  const select = Array.from(host.querySelectorAll("select")).find((item) =>
-    Array.from(item.options).some(
-      (option) => option.value === "stock_count_correction",
-    ),
-  );
-  if (!(select instanceof HTMLSelectElement)) {
-    throw new Error("movement type select not found");
-  }
-  return select;
 }
 
 describe("MaintenanceView hardware config", () => {
@@ -810,8 +785,8 @@ describe("MaintenanceView hardware config", () => {
   it("shows production maintenance without editable deployment or debug configuration fields", async () => {
     const host = await mountView();
 
-    expect(host.textContent).toContain("计划补货");
-    expect(host.textContent).toContain("盘点修正");
+    expect(host.textContent).toContain("确认补货");
+    expect(host.textContent).toContain("补货后");
     expect(host.textContent).toContain("维护控制台");
     expect(host.textContent).toContain("后端");
     expect(host.textContent).toContain("MQTT");
@@ -1047,7 +1022,7 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
 
     expect(getConfigMock).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("计划补货");
+    expect(host.textContent).toContain("确认补货");
     expect(host.textContent).toContain("后端");
     expect(host.textContent).not.toContain("SECRET-MACHINE-CODE");
     expect(host.textContent).not.toContain("https://api.secret.example/v1");
@@ -1787,297 +1762,68 @@ describe("MaintenanceView protected route continuation", () => {
   });
 });
 
-describe("MaintenanceView stock maintenance", () => {
-  it("keeps inventory mutation controls disabled until the daemon session is authorized", async () => {
+describe("MaintenanceView planogram-driven stock task", () => {
+  it("shows recognizable slot facts without planogram, UUID, or operator inputs", async () => {
     const host = await mountView();
 
-    expect(submitButton(host).disabled).toBe(true);
-    const movementType = movementTypeSelect(host);
-    expect(movementType.disabled).toBe(true);
-    submitButton(host).click();
-    expect(recordStockMovementMock).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("A1");
+    expect(host.textContent).toContain("Mineral Water");
+    expect(host.textContent).toContain("2/8");
+    expect(host.textContent).toContain("未提交");
+    expect(host.textContent).not.toContain("货道图版本");
+    expect(host.textContent).not.toContain("记录人");
+    expect(host.textContent).not.toContain(
+      "550e8400-e29b-41d4-a716-446655440001",
+    );
   });
 
-  it("does not expose trusted stock movement sources", async () => {
-    const host = await mountView();
-
-    expect(host.textContent).not.toContain("field_service");
-    expect(host.textContent).not.toContain("approved_count");
-  });
-
-  it("records no-login planned refill as local maintenance with attribution", async () => {
+  it("previews resulting refill counts and submits only additions under the daemon task", async () => {
     const host = await mountView();
     await unlockMaintenance(host);
-    const updatedSaleView = {
-      ...saleViewFixture(),
-      items: [
-        {
-          ...saleViewFixture().items[0],
-          physicalStock: 5,
-          saleableStock: 5,
-          slotSalesState: "sale_ready",
-        },
-      ],
-      lastUpdatedAt: "2026-06-05T00:05:00.000Z",
-    };
-    recordStockMovementMock.mockResolvedValueOnce(updatedSaleView);
-
-    submitButton(host).click();
-
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          planogramVersion: "PLAN-1",
-          slotId: "550e8400-e29b-41d4-a716-446655440001",
-          movementType: "planned_refill",
-          source: "local_maintenance",
-          attributedTo: "front-panel",
-        }),
-      );
-      expect(useCatalogStore().items[0]?.physicalStock).toBe(5);
-      expect(useCatalogStore().items[0]?.slotSalesState).toBe("sale_ready");
-    });
-  });
-
-  it("records no-login stock count as local maintenance with attribution", async () => {
-    const host = await mountView();
-    await unlockMaintenance(host);
-    const select = movementTypeSelect(host);
-    select.value = "stock_count_correction";
-    select.dispatchEvent(new Event("change"));
+    const addition = stockInputByLabel(host, "补货数量");
+    addition.value = "2";
+    addition.dispatchEvent(new Event("input"));
     await nextTick();
 
-    submitButton(host).click();
+    expect(host.textContent).toContain("补货后 4/8");
+    const button = Array.from(host.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "确认补货",
+    );
+    button?.click();
 
     await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          movementType: "stock_count_correction",
-          source: "local_maintenance",
-          attributedTo: "front-panel",
-        }),
-      );
+      expect(submitStockMaintenanceBatchMock).toHaveBeenCalledWith({
+        taskId: "stock-task-01",
+        mode: "routine_refill",
+        slots: [{ slotCode: "A1", addition: 2 }],
+      });
     });
+    const body = submitStockMaintenanceBatchMock.mock.calls[0]?.[0];
+    expect(body).not.toHaveProperty("operatorId");
+    expect(body).not.toHaveProperty("planogramVersion");
   });
 
-  it("reuses the persisted refill idempotency key after a lost response", async () => {
+  it("submits one complete final-quantity batch for initial stock", async () => {
+    getStockMaintenanceTaskMock.mockResolvedValueOnce(
+      stockMaintenanceTaskFixture("initial_count"),
+    );
     const host = await mountView();
     await unlockMaintenance(host);
-    recordStockMovementMock
-      .mockRejectedValueOnce(new DaemonUnavailableError("response lost"))
-      .mockResolvedValueOnce(saleViewFixture());
-
-    submitButton(host).click();
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledTimes(1);
-    });
-    await vi.waitFor(() => {
-      expect(submitButton(host).disabled).toBe(false);
-    });
-    submitButton(host).click();
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledTimes(2);
-    });
-
-    const [first, second] = recordStockMovementMock.mock.calls.map(
-      ([body]) => body as { movementId: string },
-    );
-    expect(first.movementId).toMatch(/^LOCAL-/);
-    expect(second.movementId).toBe(first.movementId);
-  });
-
-  it("clears a definitely rejected refill fingerprint so the operator can edit and resubmit", async () => {
-    const host = await mountView();
-    await unlockMaintenance(host);
-    recordStockMovementMock.mockRejectedValueOnce(
-      new DaemonUnavailableError("movement exceeds capacity", undefined, {
-        statusCode: 400,
-        responseCode: "stock_movement_record_failed",
-        responseMessage: "movement exceeds capacity",
-      }),
-    );
-
-    submitButton(host).click();
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledTimes(1);
-    });
-
-    const first = recordStockMovementMock.mock.calls[0]?.[0] as {
-      movementId: string;
-    };
-    const quantity = stockInputByLabel(host, "数量");
-    await vi.waitFor(() => {
-      expect(quantity.disabled).toBe(false);
-      expect(
-        globalThis.localStorage.getItem(
-          "vem.machine.pending-stock-movement.v1",
-        ),
-      ).toBeNull();
-    });
-    quantity.value = "2";
+    const quantity = stockInputByLabel(host, "实际数量");
+    quantity.value = "6";
     quantity.dispatchEvent(new Event("input"));
     await nextTick();
-    recordStockMovementMock.mockResolvedValueOnce(saleViewFixture());
-    submitButton(host).click();
-
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledTimes(2);
-    });
-    const second = recordStockMovementMock.mock.calls[1]?.[0] as {
-      movementId: string;
-      quantity: number;
-    };
-    expect(second.movementId).not.toBe(first.movementId);
-    expect(second.quantity).toBe(2);
-  });
-
-  it("clears a session-rejected refill fingerprint before the operator reauthorizes editing", async () => {
-    const host = await mountView();
-    await unlockMaintenance(host);
-    recordStockMovementMock.mockRejectedValueOnce(
-      new DaemonUnavailableError(
-        "maintenance session denied (/v1/stock/movements returned HTTP 403)",
-        undefined,
-        {
-          statusCode: 403,
-          responseCode: "maintenance_session_invalid",
-        },
-      ),
+    const button = Array.from(host.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "提交盘点",
     );
-
-    submitButton(host).click();
-    await vi.waitFor(() => {
-      expect(
-        globalThis.localStorage.getItem(
-          "vem.machine.pending-stock-movement.v1",
-        ),
-      ).toBeNull();
-      expect(host.textContent).toContain("维护会话已失效");
-    });
-
-    await unlockMaintenance(host);
-    expect(stockInputByLabel(host, "数量").disabled).toBe(false);
-    expect(host.textContent).not.toContain("查询并恢复待确认库存动作");
-  });
-
-  it("keeps the same locked refill fingerprint after a typed 5xx outcome", async () => {
-    const host = await mountView();
-    await unlockMaintenance(host);
-    recordStockMovementMock
-      .mockRejectedValueOnce(
-        new DaemonUnavailableError("daemon failed after request", undefined, {
-          statusCode: 503,
-          responseCode: "stock_movement_record_failed",
-        }),
-      )
-      .mockResolvedValueOnce(saleViewFixture());
-
-    submitButton(host).click();
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledTimes(1);
-    });
-    const first = recordStockMovementMock.mock.calls[0]?.[0] as {
-      movementId: string;
-    };
-    const quantity = stockInputByLabel(host, "数量");
-    expect(quantity.disabled).toBe(true);
-    expect(
-      globalThis.localStorage.getItem("vem.machine.pending-stock-movement.v1"),
-    ).toContain(first.movementId);
+    button?.click();
 
     await vi.waitFor(() => {
-      expect(submitButton(host).disabled).toBe(false);
-    });
-    submitButton(host).click();
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledTimes(2);
-    });
-    const second = recordStockMovementMock.mock.calls[1]?.[0] as {
-      movementId: string;
-    };
-    expect(second.movementId).toBe(first.movementId);
-  });
-
-  it("keeps a possibly committed 409 conflict locked to the original fingerprint", async () => {
-    const host = await mountView();
-    await unlockMaintenance(host);
-    recordStockMovementMock.mockRejectedValueOnce(
-      new DaemonUnavailableError("movement may already exist", undefined, {
-        statusCode: 409,
-        responseCode: "stock_movement_already_recorded",
-      }),
-    );
-
-    submitButton(host).click();
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledTimes(1);
-    });
-    const submitted = recordStockMovementMock.mock.calls[0]?.[0] as {
-      movementId: string;
-    };
-    expect(stockInputByLabel(host, "数量").disabled).toBe(true);
-    expect(
-      globalThis.localStorage.getItem("vem.machine.pending-stock-movement.v1"),
-    ).toContain(submitted.movementId);
-    expect(host.textContent).toContain("查询并恢复待确认库存动作");
-  });
-
-  it("restores and locks an unknown refill fingerprint until the daemon resolves its original key", async () => {
-    globalThis.localStorage.setItem(
-      "vem.machine.pending-stock-movement.v1",
-      JSON.stringify({
-        movementId: "LOCAL-PERSISTED-REFILL",
-        planogramVersion: "PLAN-1",
-        slotId: "550e8400-e29b-41d4-a716-446655440001",
-        movementType: "planned_refill",
-        quantity: 4,
-        attributedTo: "operator-restart",
-      }),
-    );
-    recordStockMovementMock
-      .mockRejectedValueOnce(new Error("result still unknown"))
-      .mockResolvedValueOnce(saleViewFixture());
-
-    const host = await mountView();
-    await unlockMaintenance(host);
-    const quantity = stockInputByLabel(host, "数量");
-    const planogram = stockInputByLabel(host, "货道图版本");
-    const attributedTo = stockInputByLabel(host, "记录人");
-
-    expect(movementTypeSelect(host).value).toBe("planned_refill");
-    expect(quantity.value).toBe("4");
-    expect(planogram.value).toBe("PLAN-1");
-    expect(attributedTo.value).toBe("operator-restart");
-    expect(movementTypeSelect(host).disabled).toBe(true);
-    expect(quantity.disabled).toBe(true);
-    expect(planogram.disabled).toBe(true);
-    expect(attributedTo.disabled).toBe(true);
-    expect(host.textContent).toContain("查询并恢复待确认库存动作");
-
-    submitButton(host).click();
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain("result still unknown");
-    });
-    expect(quantity.disabled).toBe(true);
-    submitButton(host).click();
-
-    await vi.waitFor(() => {
-      expect(recordStockMovementMock).toHaveBeenCalledTimes(2);
-    });
-    for (const [body] of recordStockMovementMock.mock.calls) {
-      expect(body).toEqual(
-        expect.objectContaining({
-          movementId: "LOCAL-PERSISTED-REFILL",
-          planogramVersion: "PLAN-1",
-          slotId: "550e8400-e29b-41d4-a716-446655440001",
-          movementType: "planned_refill",
-          quantity: 4,
-          attributedTo: "operator-restart",
-        }),
-      );
-    }
-    await vi.waitFor(() => {
-      expect(quantity.disabled).toBe(false);
+      expect(submitStockMaintenanceBatchMock).toHaveBeenCalledWith({
+        taskId: "stock-task-01",
+        mode: "initial_count",
+        slots: [{ slotCode: "A1", quantity: 6 }],
+      });
     });
   });
 });

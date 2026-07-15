@@ -32,6 +32,8 @@ const STOCK_MOVEMENT_RETENTION_DAYS: i64 = 30;
 const PHYSICAL_STOCK_ATTESTATION_KEY: &str = "physical_stock_attestation";
 const PENDING_PHYSICAL_STOCK_ATTESTATION_KEY: &str = "pending_physical_stock_attestation";
 const FAILED_PHYSICAL_STOCK_ATTESTATION_KEY: &str = "failed_physical_stock_attestation";
+const STOCK_MAINTENANCE_REFILL_TASK_KEY: &str = "stock_maintenance_refill_task";
+const STOCK_MAINTENANCE_COUNT_TASK_KEY: &str = "stock_maintenance_count_task";
 pub(crate) const WHOLE_MACHINE_MAINTENANCE_LOCK_KEY: &str = "whole_machine_maintenance_lock";
 pub(crate) const WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY: &str =
     "whole_machine_lock_recovery_evidence";
@@ -420,6 +422,65 @@ pub struct SaleViewItem {
     pub physical_stock: i64,
     pub saleable_stock: i64,
     pub slot_sales_state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMaintenanceTask {
+    pub task_id: String,
+    pub mode: String,
+    pub status: String,
+    pub slots: Vec<StockMaintenanceTaskSlot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMaintenanceTaskSlot {
+    pub slot_code: String,
+    pub layer_no: i64,
+    pub cell_no: i64,
+    pub product_name: String,
+    pub sku: String,
+    pub capacity: i64,
+    pub current_quantity: i64,
+    pub submitted_quantity: Option<i64>,
+    pub sync_status: String,
+    pub sales_state: String,
+    pub reconciliation_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StockMaintenanceBatchInput {
+    pub task_id: String,
+    pub mode: String,
+    pub slots: Vec<StockMaintenanceBatchSlotInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StockMaintenanceBatchSlotInput {
+    pub slot_code: String,
+    #[serde(default)]
+    pub quantity: Option<i64>,
+    #[serde(default)]
+    pub addition: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMaintenanceBatchResponse {
+    pub task: StockMaintenanceTask,
+    pub duplicate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StockMaintenanceTaskIdentity {
+    planogram_version: String,
+    task_id: String,
+    #[serde(default)]
+    predecessor_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2097,6 +2158,467 @@ impl LocalStateStore {
         self.sale_view(None).await
     }
 
+    pub async fn stock_maintenance_task(&self) -> Result<StockMaintenanceTask, StoreError> {
+        let active: Option<(String,)> = sqlx::query_as(
+            "SELECT planogram_version FROM machine_planogram_versions WHERE active = 1 LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((planogram_version,)) = active else {
+            return Err(StoreError::InvalidStockInput(
+                "active acknowledged planogram is required for stock maintenance".to_string(),
+            ));
+        };
+        self.finalize_pending_physical_stock_attestation_if_accepted()
+            .await?;
+        let pending_attestation = self
+            .get_metadata::<PendingPhysicalStockAttestation>(PENDING_PHYSICAL_STOCK_ATTESTATION_KEY)
+            .await?;
+        let established_attestation = self
+            .get_metadata::<StoredPhysicalStockAttestation>(PHYSICAL_STOCK_ATTESTATION_KEY)
+            .await?;
+        let (mode, task_id) = if established_attestation
+            .as_ref()
+            .is_some_and(|stored| stored.planogram_version == planogram_version)
+        {
+            (
+                "routine_refill".to_string(),
+                self.current_refill_task_id(&planogram_version).await?,
+            )
+        } else {
+            let rebuilt = self
+                .get_metadata::<bool>(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY)
+                .await?
+                .unwrap_or(false);
+            (
+                if rebuilt {
+                    "recovery_count".to_string()
+                } else {
+                    "initial_count".to_string()
+                },
+                self.current_count_task_id(&planogram_version, pending_attestation.as_ref())
+                    .await?,
+            )
+        };
+
+        let rows = sqlx::query(
+            "SELECT s.slot_id,s.slot_code,s.layer_no,s.cell_no,s.product_name,s.sku,s.capacity,
+                    COALESCE(c.physical_stock,0) AS current_quantity,
+                    COALESCE(c.slot_sales_state,'needs_count') AS sales_state
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version=s.planogram_version AND v.active=1
+             LEFT JOIN current_stock_projection c
+               ON c.planogram_version=s.planogram_version AND c.slot_id=s.slot_id
+             WHERE s.planogram_version=?1
+             ORDER BY s.layer_no,s.cell_no",
+        )
+        .bind(&planogram_version)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut slots = Vec::with_capacity(rows.len());
+        for row in rows {
+            let slot_id: String = row.try_get("slot_id")?;
+            let submitted_quantity = pending_attestation.as_ref().and_then(|pending| {
+                pending
+                    .input
+                    .slots
+                    .iter()
+                    .find(|slot| slot.slot_id == slot_id)
+                    .map(|slot| slot.quantity)
+            });
+            let movement_id = pending_attestation
+                .as_ref()
+                .and_then(|pending| {
+                    pending
+                        .slot_generations
+                        .iter()
+                        .find(|generation| generation.slot_id == slot_id)
+                        .map(|generation| generation.movement_id.clone())
+                })
+                .unwrap_or_else(|| format!("{task_id}:{slot_id}"));
+            let sync: Option<(String, Option<String>)> = sqlx::query_as(
+                "SELECT status,rejection_json FROM stock_movement_sync WHERE movement_id=?1",
+            )
+            .bind(&movement_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            let (sync_status, reconciliation_reason) = match sync {
+                Some((status, rejection)) => {
+                    let reason = rejection.as_deref().and_then(stock_reconciliation_reason);
+                    (status, reason)
+                }
+                None => ("not_submitted".to_string(), None),
+            };
+            slots.push(StockMaintenanceTaskSlot {
+                slot_code: row.try_get("slot_code")?,
+                layer_no: row.try_get("layer_no")?,
+                cell_no: row.try_get("cell_no")?,
+                product_name: row.try_get("product_name")?,
+                sku: row.try_get("sku")?,
+                capacity: row.try_get("capacity")?,
+                current_quantity: row.try_get("current_quantity")?,
+                submitted_quantity,
+                sync_status,
+                sales_state: row.try_get("sales_state")?,
+                reconciliation_reason,
+            });
+        }
+        let status = if slots
+            .iter()
+            .any(|slot| matches!(slot.sync_status.as_str(), "rejected" | "reconciliation"))
+        {
+            "reconciliation"
+        } else if slots
+            .iter()
+            .any(|slot| matches!(slot.sync_status.as_str(), "pending" | "failed"))
+        {
+            "pending"
+        } else if !slots.is_empty() && slots.iter().all(|slot| slot.sync_status == "accepted") {
+            "complete"
+        } else {
+            "ready"
+        };
+        Ok(StockMaintenanceTask {
+            task_id,
+            mode,
+            status: status.to_string(),
+            slots,
+        })
+    }
+
+    async fn current_refill_task_id(&self, planogram_version: &str) -> Result<String, StoreError> {
+        let existing = self
+            .get_metadata::<StockMaintenanceTaskIdentity>(STOCK_MAINTENANCE_REFILL_TASK_KEY)
+            .await?;
+        if let Some(existing) =
+            existing.filter(|value| value.planogram_version == planogram_version)
+        {
+            let counts: (i64, i64) = sqlx::query_as(
+                "SELECT COUNT(1), SUM(CASE WHEN s.status != 'accepted' THEN 1 ELSE 0 END)
+                 FROM stock_movements m
+                 JOIN stock_movement_sync s ON s.movement_id=m.movement_id
+                 WHERE m.movement_id LIKE ?1",
+            )
+            .bind(format!("{}:%", existing.task_id))
+            .fetch_one(&self.pool)
+            .await?;
+            if counts.0 == 0 || counts.1 > 0 {
+                return Ok(existing.task_id);
+            }
+        }
+        let identity = StockMaintenanceTaskIdentity {
+            planogram_version: planogram_version.to_string(),
+            task_id: format!("stock-refill:{}", Uuid::new_v4()),
+            predecessor_task_id: None,
+        };
+        self.put_metadata(STOCK_MAINTENANCE_REFILL_TASK_KEY, &identity)
+            .await?;
+        Ok(identity.task_id)
+    }
+
+    async fn current_count_task_id(
+        &self,
+        planogram_version: &str,
+        pending: Option<&PendingPhysicalStockAttestation>,
+    ) -> Result<String, StoreError> {
+        let Some(pending) =
+            pending.filter(|value| value.input.planogram_version == planogram_version)
+        else {
+            let existing = self
+                .get_metadata::<StockMaintenanceTaskIdentity>(STOCK_MAINTENANCE_COUNT_TASK_KEY)
+                .await?;
+            if let Some(existing) = existing.filter(|value| {
+                value.planogram_version == planogram_version && value.predecessor_task_id.is_none()
+            }) {
+                return Ok(existing.task_id);
+            }
+            let identity = StockMaintenanceTaskIdentity {
+                planogram_version: planogram_version.to_string(),
+                task_id: format!("stock-count:{}", Uuid::new_v4()),
+                predecessor_task_id: None,
+            };
+            self.put_metadata(STOCK_MAINTENANCE_COUNT_TASK_KEY, &identity)
+                .await?;
+            return Ok(identity.task_id);
+        };
+        let terminal: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM stock_movement_sync
+             WHERE movement_id IN (SELECT value FROM json_each(?1))
+               AND status IN ('rejected','reconciliation')",
+        )
+        .bind(serde_json::to_string(&pending.movement_ids)?)
+        .fetch_one(&self.pool)
+        .await?;
+        if terminal.0 == 0 {
+            return Ok(pending.input.attestation_id.clone());
+        }
+        let existing = self
+            .get_metadata::<StockMaintenanceTaskIdentity>(STOCK_MAINTENANCE_COUNT_TASK_KEY)
+            .await?;
+        if let Some(existing) = existing.filter(|value| {
+            value.planogram_version == planogram_version
+                && value.predecessor_task_id.as_deref()
+                    == Some(pending.input.attestation_id.as_str())
+        }) {
+            return Ok(existing.task_id);
+        }
+        let identity = StockMaintenanceTaskIdentity {
+            planogram_version: planogram_version.to_string(),
+            task_id: format!("stock-count:{}", Uuid::new_v4()),
+            predecessor_task_id: Some(pending.input.attestation_id.clone()),
+        };
+        self.put_metadata(STOCK_MAINTENANCE_COUNT_TASK_KEY, &identity)
+            .await?;
+        Ok(identity.task_id)
+    }
+
+    pub async fn submit_stock_maintenance_batch(
+        &self,
+        input: StockMaintenanceBatchInput,
+        operator_id: &str,
+        machine_code: &str,
+        api_base_url: &str,
+    ) -> Result<StockMaintenanceBatchResponse, StoreError> {
+        if operator_id.trim().is_empty() || input.slots.is_empty() {
+            return Err(StoreError::InvalidStockInput(
+                "maintenance session operator and stock task slots are required".to_string(),
+            ));
+        }
+        let task = self.stock_maintenance_task().await?;
+        if task.task_id != input.task_id || task.mode != input.mode {
+            if self
+                .historical_stock_maintenance_batch_matches(&input)
+                .await?
+            {
+                return Ok(StockMaintenanceBatchResponse {
+                    task,
+                    duplicate: true,
+                });
+            }
+            self.freeze_stale_stock_task_slots(&input.slots).await?;
+            return Err(StoreError::InvalidStockInput(
+                "stock maintenance task is stale; affected slots require reconciliation"
+                    .to_string(),
+            ));
+        }
+        let active: (String,) = sqlx::query_as(
+            "SELECT planogram_version FROM machine_planogram_versions WHERE active=1 LIMIT 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let planogram_version = active.0;
+        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT slot_id,slot_code,sku,capacity FROM machine_planogram_slots
+             WHERE planogram_version=?1 ORDER BY layer_no,cell_no",
+        )
+        .bind(&planogram_version)
+        .fetch_all(&self.pool)
+        .await?;
+        let by_code: HashMap<&str, &(String, String, String, i64)> =
+            rows.iter().map(|row| (row.1.as_str(), row)).collect();
+        let mut seen = HashSet::new();
+        for slot in &input.slots {
+            if !seen.insert(slot.slot_code.as_str())
+                || !by_code.contains_key(slot.slot_code.as_str())
+            {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock task slot {} is duplicate or not in the active planogram",
+                    slot.slot_code
+                )));
+            }
+        }
+
+        if input.mode == "initial_count" || input.mode == "recovery_count" {
+            if input.slots.len() != rows.len()
+                || input
+                    .slots
+                    .iter()
+                    .any(|slot| slot.quantity.is_none() || slot.addition.is_some())
+            {
+                return Err(StoreError::InvalidStockInput(
+                    "count task must submit one final quantity for every active slot".to_string(),
+                ));
+            }
+            let requested_attestation = PhysicalStockAttestationInput {
+                attestation_id: input.task_id,
+                planogram_version,
+                operator_id: operator_id.to_string(),
+                slots: input
+                    .slots
+                    .iter()
+                    .map(|slot| {
+                        let row = by_code[slot.slot_code.as_str()];
+                        PhysicalStockAttestationSlotInput {
+                            slot_id: row.0.clone(),
+                            slot_code: row.1.clone(),
+                            sku: row.2.clone(),
+                            quantity: slot.quantity.unwrap_or_default(),
+                            enabled: true,
+                        }
+                    })
+                    .collect(),
+            };
+            let pending = self
+                .get_metadata::<PendingPhysicalStockAttestation>(
+                    PENDING_PHYSICAL_STOCK_ATTESTATION_KEY,
+                )
+                .await?;
+            let duplicate = pending.as_ref().is_some_and(|pending| {
+                pending.input.attestation_id == requested_attestation.attestation_id
+                    && pending.input.planogram_version == requested_attestation.planogram_version
+                    && pending.input.slots == requested_attestation.slots
+            });
+            // A maintenance session may expire between the original response and
+            // a retry. Keep the original operator attribution while replaying the
+            // daemon-owned task payload idempotently.
+            let attestation = pending
+                .filter(|_| duplicate)
+                .map(|pending| pending.input)
+                .unwrap_or(requested_attestation);
+            self.record_physical_stock_attestation_with_upload(
+                attestation,
+                Some(machine_code),
+                Some(api_base_url),
+            )
+            .await?;
+            return Ok(StockMaintenanceBatchResponse {
+                task: self.stock_maintenance_task().await?,
+                duplicate,
+            });
+        }
+        if input.mode != "routine_refill"
+            || input
+                .slots
+                .iter()
+                .any(|slot| slot.addition.is_none_or(|value| value <= 0) || slot.quantity.is_some())
+        {
+            return Err(StoreError::InvalidStockInput(
+                "refill task must submit positive additions".to_string(),
+            ));
+        }
+        let mut duplicate = true;
+        for slot in &input.slots {
+            let row = by_code[slot.slot_code.as_str()];
+            let movement_id = format!("{}:{}", input.task_id, row.0);
+            let existing: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT attributed_to FROM stock_movements WHERE movement_id=?1")
+                    .bind(&movement_id)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            duplicate &= existing.is_some();
+            self.record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id,
+                    planogram_version: planogram_version.clone(),
+                    slot_id: row.0.clone(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: slot.addition.unwrap_or_default(),
+                    source: "local_maintenance".to_string(),
+                    attributed_to: existing
+                        .and_then(|(attributed_to,)| attributed_to)
+                        .or_else(|| Some(operator_id.to_string())),
+                },
+                Some(machine_code),
+                Some(api_base_url),
+            )
+            .await?;
+        }
+        Ok(StockMaintenanceBatchResponse {
+            task: self.stock_maintenance_task().await?,
+            duplicate,
+        })
+    }
+
+    async fn historical_stock_maintenance_batch_matches(
+        &self,
+        input: &StockMaintenanceBatchInput,
+    ) -> Result<bool, StoreError> {
+        if matches!(input.mode.as_str(), "initial_count" | "recovery_count") {
+            let stored = self
+                .get_metadata::<StoredPhysicalStockAttestation>(PHYSICAL_STOCK_ATTESTATION_KEY)
+                .await?;
+            let Some(stored) = stored.filter(|stored| stored.attestation_id == input.task_id)
+            else {
+                return Ok(false);
+            };
+            if stored.slots.len() != input.slots.len() {
+                return Ok(false);
+            }
+            return Ok(input.slots.iter().all(|slot| {
+                slot.addition.is_none()
+                    && stored.slots.iter().any(|stored_slot| {
+                        stored_slot.slot_code == slot.slot_code
+                            && Some(stored_slot.quantity) == slot.quantity
+                    })
+            }));
+        }
+        if input.mode != "routine_refill" {
+            return Ok(false);
+        }
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT quantity,slot_mapping_snapshot_json
+             FROM stock_movements WHERE movement_id LIKE ?1",
+        )
+        .bind(format!("{}:%", input.task_id))
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.len() != input.slots.len() {
+            return Ok(false);
+        }
+        Ok(input.slots.iter().all(|slot| {
+            slot.quantity.is_none()
+                && rows.iter().any(|(quantity, snapshot)| {
+                    Some(*quantity) == slot.addition
+                        && serde_json::from_str::<serde_json::Value>(snapshot).is_ok_and(|value| {
+                            value.get("slotCode").and_then(serde_json::Value::as_str)
+                                == Some(slot.slot_code.as_str())
+                        })
+                })
+        }))
+    }
+
+    async fn freeze_stale_stock_task_slots(
+        &self,
+        slots: &[StockMaintenanceBatchSlotInput],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        for slot in slots {
+            let active: Option<(String, String)> = sqlx::query_as(
+                "SELECT s.planogram_version,s.slot_id FROM machine_planogram_slots s
+                 JOIN machine_planogram_versions v ON v.planogram_version=s.planogram_version AND v.active=1
+                 WHERE s.slot_code=?1",
+            )
+            .bind(&slot.slot_code)
+            .fetch_optional(tx.as_mut())
+            .await?;
+            let Some((planogram_version, slot_id)) = active else {
+                continue;
+            };
+            upsert_sale_safety_blocker_marker_in_tx(
+                &mut tx,
+                &planogram_version,
+                &slot_id,
+                "needs_platform_review",
+                "stale_stock_maintenance_task",
+                "stock_maintenance_task",
+            )
+            .await?;
+            sqlx::query(
+                "UPDATE current_stock_projection SET saleable_stock=0,slot_sales_state='needs_platform_review',updated_at=?3
+                 WHERE planogram_version=?1 AND slot_id=?2",
+            )
+            .bind(&planogram_version)
+            .bind(&slot_id)
+            .bind(now_iso())
+            .execute(tx.as_mut())
+            .await?;
+            upsert_sale_view_projection_in_tx(&mut tx, &planogram_version, &slot_id).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn record_stock_movement(
         &self,
         input: StockMovementInput,
@@ -3142,7 +3664,6 @@ impl LocalStateStore {
             let sku: String = row.try_get("sku")?;
             let capacity: i64 = row.try_get("capacity")?;
             let physical_stock: Option<i64> = row.try_get("physical_stock")?;
-            let slot_sales_state: Option<String> = row.try_get("slot_sales_state")?;
             let replayed_stock: Option<(i64,)> = sqlx::query_as(
                 "SELECT after_quantity
                  FROM stock_movements
@@ -3165,9 +3686,6 @@ impl LocalStateStore {
                 || physical_stock.is_some_and(|quantity| quantity > capacity)
                 || replayed_stock.is_none()
                 || physical_stock != replayed_stock.map(|(quantity,)| quantity)
-                || slot_sales_state
-                    .as_deref()
-                    .is_some_and(is_reconciliation_sale_safety_blocker)
             {
                 inconsistent_slots.push(slot_code);
             }
@@ -4104,6 +4622,16 @@ fn is_reconciliation_sale_safety_blocker(value: &str) -> bool {
     )
 }
 
+fn stock_reconciliation_reason(value: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(value).ok()?;
+    value
+        .pointer("/reconciliation/reason")
+        .or_else(|| value.pointer("/rejection/reason"))
+        .or_else(|| value.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+}
+
 async fn upsert_sale_safety_blocker_marker_in_tx(
     tx: &mut Transaction<'_, sqlx::Sqlite>,
     planogram_version: &str,
@@ -4268,7 +4796,7 @@ async fn apply_sale_safety_blocker_in_tx(
 
     sqlx::query(
         "UPDATE current_stock_projection
-         SET slot_sales_state = ?3, updated_at = ?4
+         SET saleable_stock = 0, slot_sales_state = ?3, updated_at = ?4
          WHERE planogram_version = ?1 AND slot_id = ?2",
     )
     .bind(&planogram_version)
@@ -5382,6 +5910,464 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[tokio::test]
+    async fn stock_maintenance_task_hides_internal_ids_and_submits_one_idempotent_count_batch() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+
+        let task = store.stock_maintenance_task().await.expect("task");
+        assert_eq!(task.mode, "initial_count");
+        assert_eq!(task.slots[0].slot_code, "A1");
+        assert_eq!(task.slots[0].product_name, "water");
+        assert_eq!(task.slots[0].current_quantity, 0);
+        assert_eq!(task.slots[0].sync_status, "not_submitted");
+
+        let input = StockMaintenanceBatchInput {
+            task_id: task.task_id.clone(),
+            mode: "initial_count".to_string(),
+            slots: vec![
+                StockMaintenanceBatchSlotInput {
+                    slot_code: "A1".to_string(),
+                    quantity: Some(3),
+                    addition: None,
+                },
+                StockMaintenanceBatchSlotInput {
+                    slot_code: "A2".to_string(),
+                    quantity: Some(4),
+                    addition: None,
+                },
+            ],
+        };
+        let first = store
+            .submit_stock_maintenance_batch(
+                input.clone(),
+                "maintenance-session-operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("first submission");
+        assert!(!first.duplicate);
+        assert_eq!(first.task.status, "pending");
+
+        let replay = store
+            .submit_stock_maintenance_batch(
+                input.clone(),
+                "renewed-maintenance-session-operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("idempotent replay");
+        assert!(replay.duplicate);
+        for slot_id in [
+            "550e8400-e29b-41d4-a716-446655440001",
+            "550e8400-e29b-41d4-a716-446655440011",
+        ] {
+            let movement_id = format!("{}:{slot_id}", task.task_id);
+            let event = store
+                .outbox_record(&format!("stock-movement:{movement_id}"))
+                .await
+                .expect("outbox")
+                .expect("event");
+            store
+                .record_stock_movement_upload_response(
+                    &event,
+                    &crate::backend::StockMovementUploadResponse {
+                        movement_id,
+                        status: "accepted".to_string(),
+                        accepted_at: Some("2026-07-15T00:00:00.000Z".to_string()),
+                        receipt: Some(json!({"rawMovementId":format!("raw-{slot_id}")})),
+                        rejection: None,
+                        reconciliation: None,
+                    },
+                )
+                .await
+                .expect("accept movement");
+        }
+        let lost_response_retry = store
+            .submit_stock_maintenance_batch(
+                input,
+                "another-renewed-session-operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("retry completed batch");
+        assert!(lost_response_retry.duplicate);
+        assert_eq!(lost_response_retry.task.mode, "routine_refill");
+        let movements: Vec<(Option<String>,)> =
+            sqlx::query_as("SELECT attributed_to FROM stock_movements ORDER BY movement_id")
+                .fetch_all(store.pool())
+                .await
+                .expect("movement audit");
+        assert_eq!(movements.len(), 2);
+        assert!(movements
+            .iter()
+            .all(|(operator,)| operator.as_deref() == Some("maintenance-session-operator")));
+    }
+
+    #[tokio::test]
+    async fn refill_task_is_idempotent_and_platform_conflict_freezes_only_its_slot() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation(two_slot_attestation("ATT-READY", 2))
+            .await
+            .expect("initial stock");
+        let task = store.stock_maintenance_task().await.expect("refill task");
+        assert_eq!(task.mode, "routine_refill");
+        let input = StockMaintenanceBatchInput {
+            task_id: task.task_id.clone(),
+            mode: task.mode.clone(),
+            slots: vec![
+                StockMaintenanceBatchSlotInput {
+                    slot_code: "A1".to_string(),
+                    quantity: None,
+                    addition: Some(2),
+                },
+                StockMaintenanceBatchSlotInput {
+                    slot_code: "A2".to_string(),
+                    quantity: None,
+                    addition: Some(1),
+                },
+            ],
+        };
+        let submitted = store
+            .submit_stock_maintenance_batch(
+                input.clone(),
+                "operator-from-session",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("submit refill");
+        assert!(!submitted.duplicate);
+        let replay = store
+            .submit_stock_maintenance_batch(
+                input,
+                "operator-from-renewed-session",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("replay refill");
+        assert!(replay.duplicate);
+        let sale_view = store.sale_view(None).await.expect("refilled sale view");
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[1].physical_stock, 3);
+
+        let conflicted_id = format!(
+            "{}:{}",
+            task.task_id, "550e8400-e29b-41d4-a716-446655440001"
+        );
+        let accepted_id = format!(
+            "{}:{}",
+            task.task_id, "550e8400-e29b-41d4-a716-446655440011"
+        );
+        for (movement_id, response) in [
+            (
+                conflicted_id.clone(),
+                crate::backend::StockMovementUploadResponse {
+                    movement_id: conflicted_id.clone(),
+                    status: "reconciliation".to_string(),
+                    accepted_at: None,
+                    receipt: None,
+                    rejection: None,
+                    reconciliation: Some(crate::backend::StockMovementReconciliation {
+                        reason: "mapping_mismatch".to_string(),
+                        platform_review: Some(json!({"required":true,"status":"open"})),
+                        sale_safety_blocker: Some(crate::backend::StockMovementSaleSafetyBlocker {
+                            slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                            slot_sales_state: "needs_platform_review".to_string(),
+                            reason: "mapping_mismatch".to_string(),
+                        }),
+                    }),
+                },
+            ),
+            (
+                accepted_id.clone(),
+                crate::backend::StockMovementUploadResponse {
+                    movement_id: accepted_id.clone(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:00:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-a2"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            ),
+        ] {
+            let event = store
+                .outbox_record(&format!("stock-movement:{movement_id}"))
+                .await
+                .expect("outbox lookup")
+                .expect("outbox event");
+            store
+                .record_stock_movement_upload_response(&event, &response)
+                .await
+                .expect("record response");
+        }
+        let task = store.stock_maintenance_task().await.expect("task status");
+        assert_eq!(task.status, "reconciliation");
+        assert_eq!(task.slots[0].sync_status, "reconciliation");
+        assert_eq!(
+            task.slots[0].reconciliation_reason.as_deref(),
+            Some("mapping_mismatch")
+        );
+        let sale_view = store.sale_view(None).await.expect("safe sale view");
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
+        assert_eq!(sale_view.items[1].saleable_stock, 3);
+        assert_eq!(sale_view.items[1].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn completed_refill_retry_survives_maintenance_session_renewal() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation(two_slot_attestation("ATT-READY", 2))
+            .await
+            .expect("initial stock");
+        let task = store.stock_maintenance_task().await.expect("refill task");
+        let input = StockMaintenanceBatchInput {
+            task_id: task.task_id.clone(),
+            mode: task.mode,
+            slots: vec![StockMaintenanceBatchSlotInput {
+                slot_code: "A1".to_string(),
+                quantity: None,
+                addition: Some(2),
+            }],
+        };
+        store
+            .submit_stock_maintenance_batch(
+                input.clone(),
+                "original-session-operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("submit refill");
+
+        let movement_id = format!(
+            "{}:{}",
+            task.task_id, "550e8400-e29b-41d4-a716-446655440001"
+        );
+        let event = store
+            .outbox_record(&format!("stock-movement:{movement_id}"))
+            .await
+            .expect("outbox lookup")
+            .expect("outbox event");
+        store
+            .record_stock_movement_upload_response(
+                &event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id,
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:00:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-refill-a1"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            )
+            .await
+            .expect("accept movement");
+
+        let retry = store
+            .submit_stock_maintenance_batch(
+                input,
+                "renewed-session-operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("retry completed refill");
+        assert!(retry.duplicate);
+        assert_ne!(retry.task.task_id, task.task_id);
+        let movements: Vec<(Option<String>,)> = sqlx::query_as(
+            "SELECT attributed_to FROM stock_movements WHERE source='local_maintenance'",
+        )
+        .fetch_all(store.pool())
+        .await
+        .expect("movement audit");
+        assert_eq!(
+            movements,
+            vec![(Some("original-session-operator".to_string()),)]
+        );
+    }
+
+    #[tokio::test]
+    async fn count_task_recovers_partial_platform_reconciliation_with_a_new_batch_generation() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        let first = store.stock_maintenance_task().await.expect("first task");
+        let first_input = StockMaintenanceBatchInput {
+            task_id: first.task_id.clone(),
+            mode: first.mode.clone(),
+            slots: vec![
+                StockMaintenanceBatchSlotInput {
+                    slot_code: "A1".to_string(),
+                    quantity: Some(3),
+                    addition: None,
+                },
+                StockMaintenanceBatchSlotInput {
+                    slot_code: "A2".to_string(),
+                    quantity: Some(4),
+                    addition: None,
+                },
+            ],
+        };
+        store
+            .submit_stock_maintenance_batch(
+                first_input,
+                "operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("stage first batch");
+        let accepted_id = format!(
+            "{}:{}",
+            first.task_id, "550e8400-e29b-41d4-a716-446655440001"
+        );
+        let reconciled_id = format!(
+            "{}:{}",
+            first.task_id, "550e8400-e29b-41d4-a716-446655440011"
+        );
+        for (movement_id, response) in [
+            (
+                accepted_id.clone(),
+                crate::backend::StockMovementUploadResponse {
+                    movement_id: accepted_id.clone(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:00:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-a1"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            ),
+            (
+                reconciled_id.clone(),
+                crate::backend::StockMovementUploadResponse {
+                    movement_id: reconciled_id.clone(),
+                    status: "reconciliation".to_string(),
+                    accepted_at: None,
+                    receipt: None,
+                    rejection: None,
+                    reconciliation: Some(crate::backend::StockMovementReconciliation {
+                        reason: "abnormal_variance".to_string(),
+                        platform_review: Some(json!({"required":true,"status":"open"})),
+                        sale_safety_blocker: None,
+                    }),
+                },
+            ),
+        ] {
+            let event = store
+                .outbox_record(&format!("stock-movement:{movement_id}"))
+                .await
+                .expect("outbox")
+                .expect("event");
+            store
+                .record_stock_movement_upload_response(&event, &response)
+                .await
+                .expect("receipt");
+        }
+
+        let retry = store.stock_maintenance_task().await.expect("retry task");
+        assert_eq!(retry.status, "reconciliation");
+        assert_ne!(retry.task_id, first.task_id);
+        assert_eq!(retry.slots[0].submitted_quantity, Some(3));
+        assert_eq!(retry.slots[1].submitted_quantity, Some(4));
+        store
+            .submit_stock_maintenance_batch(
+                StockMaintenanceBatchInput {
+                    task_id: retry.task_id.clone(),
+                    mode: retry.mode,
+                    slots: vec![
+                        StockMaintenanceBatchSlotInput {
+                            slot_code: "A1".to_string(),
+                            quantity: Some(3),
+                            addition: None,
+                        },
+                        StockMaintenanceBatchSlotInput {
+                            slot_code: "A2".to_string(),
+                            quantity: Some(6),
+                            addition: None,
+                        },
+                    ],
+                },
+                "operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("retry rejected slot");
+        assert!(store
+            .outbox_record(&format!(
+                "stock-movement:{}:{}",
+                retry.task_id, "550e8400-e29b-41d4-a716-446655440001"
+            ))
+            .await
+            .expect("accepted duplicate lookup")
+            .is_none());
+        assert!(store
+            .outbox_record(&format!(
+                "stock-movement:{}:{}",
+                retry.task_id, "550e8400-e29b-41d4-a716-446655440011"
+            ))
+            .await
+            .expect("retry lookup")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn stale_stock_task_freezes_only_named_current_slots() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation(two_slot_attestation("ATT-READY", 2))
+            .await
+            .expect("initial stock");
+        let stale = StockMaintenanceBatchInput {
+            task_id: "stale-task".to_string(),
+            mode: "routine_refill".to_string(),
+            slots: vec![StockMaintenanceBatchSlotInput {
+                slot_code: "A1".to_string(),
+                quantity: None,
+                addition: Some(1),
+            }],
+        };
+        assert!(store
+            .submit_stock_maintenance_batch(
+                stale,
+                "operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .is_err());
+        let sale_view = store.sale_view(None).await.expect("sale view");
+        assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[1].slot_sales_state, "sale_ready");
+        assert_eq!(sale_view.items[1].saleable_stock, 2);
     }
 
     #[tokio::test]

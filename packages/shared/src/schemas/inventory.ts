@@ -91,6 +91,76 @@ export const adminInventoryMovementPageResponseSchema = createPageResultSchema(
   adminInventoryMovementResponseSchema,
 );
 
+export const stockMaintenanceTaskModeSchema = z.enum([
+  "initial_count",
+  "recovery_count",
+  "routine_refill",
+]);
+
+export const stockMaintenanceSlotSyncStatusSchema = z.enum([
+  "not_submitted",
+  "pending",
+  "failed",
+  "accepted",
+  "rejected",
+  "reconciliation",
+]);
+
+export const stockMaintenanceTaskSlotSchema = z.strictObject({
+  slotCode: z.string().min(1).max(32),
+  layerNo: z.int().positive(),
+  cellNo: z.int().positive(),
+  productName: z.string().min(1).max(128),
+  sku: z.string().min(1).max(64),
+  capacity: z.int().nonnegative(),
+  currentQuantity: z.int().nonnegative(),
+  submittedQuantity: z.int().nonnegative().nullable(),
+  syncStatus: stockMaintenanceSlotSyncStatusSchema,
+  salesState: z.string().min(1),
+  reconciliationReason: z.string().min(1).nullable(),
+});
+
+export const stockMaintenanceTaskSchema = z.strictObject({
+  taskId: z.string().min(1).max(128),
+  mode: stockMaintenanceTaskModeSchema,
+  status: z.enum(["ready", "pending", "reconciliation", "complete"]),
+  slots: z.array(stockMaintenanceTaskSlotSchema),
+});
+
+const stockMaintenanceBatchBaseSchema = z.strictObject({
+  taskId: z.string().min(1).max(128),
+});
+
+export const stockMaintenanceBatchRequestSchema = z.discriminatedUnion("mode", [
+  stockMaintenanceBatchBaseSchema.extend({
+    mode: z.enum(["initial_count", "recovery_count"]),
+    slots: z
+      .array(
+        z.strictObject({
+          slotCode: z.string().min(1).max(32),
+          quantity: z.int().nonnegative(),
+        }),
+      )
+      .min(1),
+  }),
+  stockMaintenanceBatchBaseSchema.extend({
+    mode: z.literal("routine_refill"),
+    slots: z
+      .array(
+        z.strictObject({
+          slotCode: z.string().min(1).max(32),
+          addition: z.int().positive(),
+        }),
+      )
+      .min(1),
+  }),
+]);
+
+export const stockMaintenanceBatchResponseSchema = z.strictObject({
+  task: stockMaintenanceTaskSchema,
+  duplicate: z.boolean(),
+});
+
 export const stockReconciliationCaseTableSchema = z.enum([
   "machine_raw_stock_movements",
   "machine_raw_stock_movement_conflicts",
@@ -259,4 +329,11 @@ export type AdminStockReconciliationCaseDetailResponse = z.infer<
 >;
 export type AdminStockReconciliationCasePageResponse = z.infer<
   typeof adminStockReconciliationCasePageResponseSchema
+>;
+export type StockMaintenanceTask = z.infer<typeof stockMaintenanceTaskSchema>;
+export type StockMaintenanceBatchRequest = z.infer<
+  typeof stockMaintenanceBatchRequestSchema
+>;
+export type StockMaintenanceBatchResponse = z.infer<
+  typeof stockMaintenanceBatchResponseSchema
 >;

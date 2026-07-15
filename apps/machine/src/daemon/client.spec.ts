@@ -743,6 +743,74 @@ describe("DaemonApiClient", () => {
     );
   });
 
+  it("submits the planogram-driven stock task with only the daemon task and recognizable slots", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    const task = {
+      taskId: "stock-task-01",
+      mode: "routine_refill" as const,
+      status: "ready" as const,
+      slots: [
+        {
+          slotCode: "A1",
+          layerNo: 1,
+          cellNo: 1,
+          productName: "Water",
+          sku: "WATER-1",
+          capacity: 8,
+          currentQuantity: 2,
+          submittedQuantity: null,
+          syncStatus: "not_submitted" as const,
+          salesState: "sale_ready",
+          reconciliationReason: null,
+        },
+      ],
+    };
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "maintenance-session-1",
+            expiresAt: "2030-07-15T00:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ task, duplicate: false }), {
+          status: 201,
+        }),
+      );
+    await daemonClient.beginMaintenanceSession("2468");
+
+    await daemonClient.submitStockMaintenanceBatch({
+      taskId: task.taskId,
+      mode: "routine_refill",
+      slots: [{ slotCode: "A1", addition: 2 }],
+    });
+
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(
+      "http://127.0.0.1:7891/v1/stock/maintenance-task",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer token-1",
+          "x-vem-maintenance-session": "maintenance-session-1",
+        }),
+        body: JSON.stringify({
+          taskId: "stock-task-01",
+          mode: "routine_refill",
+          slots: [{ slotCode: "A1", addition: 2 }],
+        }),
+      }),
+    );
+  });
+
   it("types a rejected maintenance stock movement as a definite 4xx daemon response", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

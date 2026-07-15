@@ -40,7 +40,7 @@ use crate::{
     state::{
         store::{
             MachinePlanogramInput, MachinePlanogramSlotInput, PhysicalStockAttestationInput,
-            SlotSalesStateInput, StockMovementInput, OUTBOX_MAX_EVENTS,
+            SlotSalesStateInput, StockMaintenanceBatchInput, StockMovementInput, OUTBOX_MAX_EVENTS,
         },
         LocalStateStore, StoreError,
     },
@@ -883,6 +883,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/sale-readiness", get(sale_readiness))
         .route("/v1/stock/planogram", post(apply_planogram))
         .route("/v1/stock/planogram/sync", post(sync_planogram))
+        .route(
+            "/v1/stock/maintenance-task",
+            get(stock_maintenance_task).post(submit_stock_maintenance_batch),
+        )
         .route(
             "/v1/stock/attestation",
             post(record_physical_stock_attestation),
@@ -4379,6 +4383,86 @@ async fn apply_planogram(
     }
 }
 
+async fn stock_maintenance_task(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    match ctx.state.stock_maintenance_task().await {
+        Ok(task) => (StatusCode::OK, Json(task)).into_response(),
+        Err(error) => store_error_response("stock_maintenance_task_unavailable", error),
+    }
+}
+
+async fn submit_stock_maintenance_batch(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<StockMaintenanceBatchInput>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, "stock.task.submit").await
+    {
+        return response;
+    }
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    let operator_id = ctx
+        .maintenance_authorization
+        .operator_id(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await;
+    let Some(operator_id) = operator_id else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage {
+                code: "protected_maintenance_operator_missing",
+                message: "maintenance session has no attributable operator".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let config = match ctx.config_store.load_effective_public_config().await {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let Some(machine_code) = config.machine_code.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_code_missing",
+                message: "machine code required for stock task upload".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    match ctx
+        .state
+        .submit_stock_maintenance_batch(input, &operator_id, machine_code, &config.api_base_url)
+        .await
+    {
+        Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
+        Err(error) => store_error_response("stock_maintenance_batch_failed", error),
+    }
+}
+
 async fn record_physical_stock_attestation(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -6797,6 +6881,85 @@ mod tests {
         .await;
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn stock_maintenance_task_read_is_safe_but_submission_remains_session_protected() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:9",
+        )
+        .await;
+        let slot_id = "550e8400-e29b-41d4-a716-446655440001";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440002";
+        ctx.state
+            .apply_planogram(
+                serde_json::from_value(one_slot_planogram(
+                    "PLAN-STOCK-TASK",
+                    slot_id,
+                    inventory_id,
+                ))
+                .expect("planogram input"),
+            )
+            .await
+            .expect("apply planogram");
+        let app = build_router(ctx);
+
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/stock/maintenance-task")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("denied response");
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/stock/maintenance-task")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("task response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let task: serde_json::Value = serde_json::from_slice(&body).expect("task json");
+        assert_eq!(task["slots"][0]["slotCode"], "A1");
+        assert!(task.get("planogramVersion").is_none());
+        assert!(task["slots"][0].get("slotId").is_none());
+
+        let submission = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/stock/maintenance-task")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({
+                            "taskId": task["taskId"],
+                            "mode": "initial_count",
+                            "slots": [{"slotCode":"A1","quantity":3}]
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("submission response");
+        assert_eq!(submission.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -12446,6 +12609,11 @@ mod tests {
             } else {
                 Err("protected maintenance session is not authorized for mutation".to_string())
             }
+        }
+
+        async fn operator_id(&self, context: &MaintenanceAuthorizationContext) -> Option<String> {
+            (self.allow && context.session_id == "protected-session-1")
+                .then(|| "test-maintenance-operator".to_string())
         }
     }
 

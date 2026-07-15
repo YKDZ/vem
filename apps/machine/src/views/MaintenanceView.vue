@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { formatMachineSlotCoordinate } from "@vem/shared";
+import {
+  formatMachineSlotCoordinate,
+  type StockMaintenanceTask,
+} from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -28,7 +31,6 @@ import {
 } from "@/config/machine-config";
 import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
-import { isDefiniteStockMovementRejection } from "@/daemon/stock-movement-retry";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
 import {
@@ -658,97 +660,35 @@ const catalogNavigation = reactive({
 const stockMaintenance = reactive({
   loading: false,
   message: null as string | null,
-  planogramVersion: null as string | null,
-  source: null as string | null,
-  slots: [] as Array<{
-    slotId: string;
-    slotCode: string;
-    layerNo: number;
-    cellNo: number;
-    productName: string;
-    physicalStock: number;
-    capacity: number;
-  }>,
+  task: null as StockMaintenanceTask | null,
+  values: {} as Record<string, number>,
 });
 
-const stockForm = reactive({
-  movementType: "planned_refill" as "planned_refill" | "stock_count_correction",
-  planogramVersion: "",
-  slotId: "",
-  quantity: 1,
-  attributedTo: "front-panel",
-});
-
-type PendingStockMovement = {
-  movementId: string;
-  planogramVersion: string;
-  slotId: string;
-  movementType: "planned_refill" | "stock_count_correction";
-  quantity: number;
-  attributedTo: string;
-};
-
-const PENDING_STOCK_MOVEMENT_STORAGE_KEY =
-  "vem.machine.pending-stock-movement.v1";
-
-function loadPendingStockMovement(): PendingStockMovement | null {
-  try {
-    const raw = globalThis.localStorage?.getItem(
-      PENDING_STOCK_MOVEMENT_STORAGE_KEY,
+const stockTaskIsRefill = computed(
+  () => stockMaintenance.task?.mode === "routine_refill",
+);
+const stockTaskCanSubmit = computed(() => {
+  const task = stockMaintenance.task;
+  if (!task) return false;
+  if (task.mode === "routine_refill") {
+    const additions = task.slots.map((slot) => ({
+      slot,
+      addition: stockMaintenance.values[slot.slotCode] ?? 0,
+    }));
+    return (
+      additions.some(({ addition }) => addition > 0) &&
+      additions.every(({ slot, addition }) => {
+        return (
+          addition >= 0 && slot.currentQuantity + addition <= slot.capacity
+        );
+      })
     );
-    if (!raw) return null;
-    const value = JSON.parse(raw) as Partial<PendingStockMovement>;
-    if (
-      typeof value.movementId !== "string" ||
-      typeof value.planogramVersion !== "string" ||
-      typeof value.slotId !== "string" ||
-      (value.movementType !== "planned_refill" &&
-        value.movementType !== "stock_count_correction") ||
-      typeof value.quantity !== "number" ||
-      typeof value.attributedTo !== "string"
-    ) {
-      return null;
-    }
-    return value as PendingStockMovement;
-  } catch {
-    return null;
   }
-}
-
-function savePendingStockMovement(pending: PendingStockMovement | null): void {
-  try {
-    if (pending) {
-      globalThis.localStorage?.setItem(
-        PENDING_STOCK_MOVEMENT_STORAGE_KEY,
-        JSON.stringify(pending),
-      );
-    } else {
-      globalThis.localStorage?.removeItem(PENDING_STOCK_MOVEMENT_STORAGE_KEY);
-    }
-  } catch {
-    // The daemon still owns the durable idempotency record. Storage is only
-    // the browser-side response-loss retry aid.
-  }
-}
-
-const pendingStockMovement = ref<PendingStockMovement | null>(
-  loadPendingStockMovement(),
-);
-const stockMovementAwaitingResolution = computed(
-  () => pendingStockMovement.value !== null,
-);
-
-function restorePendingStockMovementForm(): void {
-  const pending = pendingStockMovement.value;
-  if (!pending) return;
-  stockForm.planogramVersion = pending.planogramVersion;
-  stockForm.slotId = pending.slotId;
-  stockForm.movementType = pending.movementType;
-  stockForm.quantity = pending.quantity;
-  stockForm.attributedTo = pending.attributedTo;
-  stockMaintenance.message =
-    "已恢复结果未知的库存动作；表单已锁定，请用原动作编号向本机服务查询并恢复。";
-}
+  return task.slots.every((slot) => {
+    const quantity = stockMaintenance.values[slot.slotCode];
+    return quantity !== undefined && quantity >= 0 && quantity <= slot.capacity;
+  });
+});
 
 const adapters: HardwareAdapter[] = ["mock", "serial"];
 
@@ -1326,27 +1266,16 @@ async function exportLogs(): Promise<void> {
 async function refreshStockMaintenanceView(): Promise<void> {
   stockMaintenance.loading = true;
   try {
-    const snapshot = await daemonClient.getSaleView();
-    stockMaintenance.planogramVersion = snapshot.planogramVersion;
-    stockMaintenance.source = snapshot.source;
-    stockMaintenance.slots = snapshot.items.map((item) => ({
-      slotId: item.slotId,
-      slotCode: item.slotCode,
-      layerNo: item.layerNo,
-      cellNo: item.cellNo,
-      productName: item.productName,
-      physicalStock: item.physicalStock,
-      capacity: item.capacity,
-    }));
-    if (pendingStockMovement.value) {
-      restorePendingStockMovementForm();
-      return;
-    }
-    stockForm.planogramVersion =
-      snapshot.planogramVersion ?? stockForm.planogramVersion;
-    if (!stockForm.slotId && stockMaintenance.slots[0]) {
-      stockForm.slotId = stockMaintenance.slots[0].slotId;
-    }
+    const task = await daemonClient.getStockMaintenanceTask();
+    stockMaintenance.task = task;
+    stockMaintenance.values = Object.fromEntries(
+      task.slots.map((slot) => [
+        slot.slotCode,
+        task.mode === "routine_refill"
+          ? 0
+          : (slot.submittedQuantity ?? slot.currentQuantity),
+      ]),
+    );
   } catch (error) {
     stockMaintenance.message =
       error instanceof Error ? error.message : String(error);
@@ -1355,54 +1284,67 @@ async function refreshStockMaintenanceView(): Promise<void> {
   }
 }
 
-function nextMovementId(): string {
-  const randomId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`;
-  return `LOCAL-${randomId}`;
+function stockSyncLabel(status: string): string {
+  return (
+    {
+      not_submitted: "未提交",
+      pending: "同步中",
+      failed: "等待重试",
+      accepted: "已确认",
+      rejected: "已拒绝",
+      reconciliation: "待对账",
+    }[status] ?? status
+  );
 }
 
-async function submitStockMovement(): Promise<void> {
+function resultingStock(slotCode: string, currentQuantity: number): number {
+  return stockTaskIsRefill.value
+    ? currentQuantity + Math.max(0, stockMaintenance.values[slotCode] ?? 0)
+    : Math.max(0, stockMaintenance.values[slotCode] ?? 0);
+}
+
+async function submitStockMaintenanceTask(): Promise<void> {
+  const task = stockMaintenance.task;
+  if (!task) return;
   stockMaintenance.loading = true;
   stockMaintenance.message = null;
-  const candidate = {
-    planogramVersion: stockForm.planogramVersion.trim(),
-    slotId: stockForm.slotId,
-    movementType: stockForm.movementType,
-    quantity: Number(stockForm.quantity),
-    attributedTo: stockForm.attributedTo.trim() || "front-panel",
-  } satisfies Omit<PendingStockMovement, "movementId">;
-  const pending = pendingStockMovement.value ?? {
-    movementId: nextMovementId(),
-    ...candidate,
-  };
-  pendingStockMovement.value = pending;
-  savePendingStockMovement(pending);
   try {
-    const snapshot = await daemonClient.recordStockMovement({
-      movementId: pending.movementId,
-      planogramVersion: pending.planogramVersion,
-      slotId: pending.slotId,
-      movementType: pending.movementType,
-      quantity: pending.quantity,
-      source: "local_maintenance",
-      attributedTo: pending.attributedTo,
-    });
-    catalogStore.applySnapshot(snapshot);
-    pendingStockMovement.value = null;
-    savePendingStockMovement(null);
-    stockMaintenance.message = "库存动作已记录";
-    await refreshStockMaintenanceView();
+    const response =
+      task.mode === "routine_refill"
+        ? await daemonClient.submitStockMaintenanceBatch({
+            taskId: task.taskId,
+            mode: "routine_refill",
+            slots: task.slots
+              .map((slot) => ({
+                slotCode: slot.slotCode,
+                addition: Math.max(
+                  0,
+                  Math.trunc(stockMaintenance.values[slot.slotCode] ?? 0),
+                ),
+              }))
+              .filter((slot) => slot.addition > 0),
+          })
+        : await daemonClient.submitStockMaintenanceBatch({
+            taskId: task.taskId,
+            mode: task.mode,
+            slots: task.slots.map((slot) => ({
+              slotCode: slot.slotCode,
+              quantity: Math.max(
+                0,
+                Math.trunc(stockMaintenance.values[slot.slotCode] ?? 0),
+              ),
+            })),
+          });
+    stockMaintenance.task = response.task;
+    stockMaintenance.message = response.duplicate
+      ? "批次已存在，已恢复原同步状态。"
+      : "库存批次已提交，等待平台逐货道确认。";
   } catch (error) {
     clearMaintenanceSessionAfterAuthorizationFailure(error);
-    if (isDefiniteStockMovementRejection(error)) {
-      pendingStockMovement.value = null;
-      savePendingStockMovement(null);
-      stockMaintenance.message = `${error.responseMessage ?? error.message}；本次动作未记录，可修正后重新提交。`;
-    } else {
-      stockMaintenance.message =
-        error instanceof Error
-          ? `${error.message}；将保留本次动作编号，可在修复后重试。`
-          : "库存动作提交结果未确认；将保留本次动作编号，可重试。";
-    }
+    stockMaintenance.message =
+      error instanceof Error
+        ? `${error.message}；本机服务保留批次状态，可刷新后恢复。`
+        : "库存批次提交结果未确认，可刷新后恢复。";
   } finally {
     stockMaintenance.loading = false;
   }
@@ -1698,90 +1640,61 @@ async function submitStockMovement(): Promise<void> {
         >
           库存维护
         </p>
-        <form class="mt-4 grid gap-4" @submit.prevent="submitStockMovement">
+        <form
+          class="mt-4 grid gap-4"
+          @submit.prevent="submitStockMaintenanceTask"
+        >
           <fieldset :disabled="!maintenanceSessionAuthorized" class="contents">
-            <div class="grid gap-4 md:grid-cols-2">
-              <label class="grid gap-2 text-left">
-                <span class="text-sm font-semibold text-slate-200"
-                  >动作类型</span
-                >
-                <select
-                  v-model="stockForm.movementType"
-                  :disabled="
-                    !maintenanceSessionAuthorized ||
-                    stockMovementAwaitingResolution
-                  "
-                  class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-                >
-                  <option value="planned_refill">计划补货</option>
-                  <option value="stock_count_correction">盘点修正</option>
-                </select>
-              </label>
-              <label class="grid gap-2 text-left">
-                <span class="text-sm font-semibold text-slate-200">数量</span>
-                <input
-                  v-model.number="stockForm.quantity"
-                  :disabled="
-                    !maintenanceSessionAuthorized ||
-                    stockMovementAwaitingResolution
-                  "
-                  class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-                  min="0"
-                  step="1"
-                  type="number"
-                />
-              </label>
+            <div class="grid gap-3">
+              <article
+                v-for="slot in stockMaintenance.task?.slots ?? []"
+                :key="slot.slotCode"
+                class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-left md:grid-cols-[1fr_11rem]"
+              >
+                <div>
+                  <p class="font-semibold text-white">
+                    {{ slot.slotCode }} ·
+                    {{ formatMachineSlotCoordinate(slot) }}
+                  </p>
+                  <p class="text-sm text-slate-200">
+                    {{ slot.productName }} · {{ slot.sku }}
+                  </p>
+                  <p class="text-sm text-slate-400">
+                    {{ slot.currentQuantity }}/{{ slot.capacity }} ·
+                    {{ stockSyncLabel(slot.syncStatus) }}
+                  </p>
+                  <p
+                    v-if="slot.reconciliationReason"
+                    class="mt-1 text-sm text-amber-200"
+                  >
+                    仅此货道待对账：{{ slot.reconciliationReason }}
+                  </p>
+                </div>
+                <label class="grid gap-2">
+                  <span class="text-sm font-semibold text-slate-200">
+                    {{ stockTaskIsRefill ? "补货数量" : "实际数量" }}
+                  </span>
+                  <input
+                    v-model.number="stockMaintenance.values[slot.slotCode]"
+                    class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+                    :max="
+                      stockTaskIsRefill
+                        ? slot.capacity - slot.currentQuantity
+                        : slot.capacity
+                    "
+                    min="0"
+                    step="1"
+                    type="number"
+                  />
+                  <span class="text-xs text-emerald-200">
+                    {{ stockTaskIsRefill ? "补货后" : "提交后" }}
+                    {{ resultingStock(slot.slotCode, slot.currentQuantity) }}/{{
+                      slot.capacity
+                    }}
+                  </span>
+                </label>
+              </article>
             </div>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >货道图版本</span
-              >
-              <input
-                v-model="stockForm.planogramVersion"
-                :disabled="
-                  !maintenanceSessionAuthorized ||
-                  stockMovementAwaitingResolution
-                "
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-              />
-            </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">货道</span>
-              <select
-                v-model="stockForm.slotId"
-                :disabled="
-                  !maintenanceSessionAuthorized ||
-                  stockMovementAwaitingResolution
-                "
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-              >
-                <option
-                  v-for="slot in stockMaintenance.slots"
-                  :key="slot.slotId"
-                  :value="slot.slotId"
-                >
-                  {{ formatMachineSlotCoordinate(slot) }} ·
-                  {{ slot.productName }} · {{ slot.physicalStock }}/{{
-                    slot.capacity
-                  }}
-                </option>
-              </select>
-            </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">记录人</span>
-              <input
-                v-model="stockForm.attributedTo"
-                :disabled="
-                  !maintenanceSessionAuthorized ||
-                  stockMovementAwaitingResolution
-                "
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-              />
-            </label>
-
             <div class="grid gap-3 md:grid-cols-2">
               <button
                 class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
@@ -1797,15 +1710,10 @@ async function submitStockMovement(): Promise<void> {
                 :disabled="
                   !maintenanceSessionAuthorized ||
                   stockMaintenance.loading ||
-                  !stockForm.planogramVersion ||
-                  !stockForm.slotId
+                  !stockTaskCanSubmit
                 "
               >
-                {{
-                  stockMovementAwaitingResolution
-                    ? "查询并恢复待确认库存动作"
-                    : "记录库存动作"
-                }}
+                {{ stockTaskIsRefill ? "确认补货" : "提交盘点" }}
               </button>
             </div>
           </fieldset>
@@ -2057,8 +1965,8 @@ async function submitStockMovement(): Promise<void> {
           <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">本地状态</dt>
             <dd class="mt-1 font-bold text-white">
-              {{ runtimeStatusLabel(stockMaintenance.source ?? "unknown") }} ·
-              {{ stockMaintenance.planogramVersion ?? "无货道图" }}
+              {{ stockMaintenance.task?.status ?? "未读取" }} ·
+              {{ stockMaintenance.task?.slots.length ?? 0 }} 个货道
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
