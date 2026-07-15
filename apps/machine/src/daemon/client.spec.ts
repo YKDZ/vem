@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getDaemonConnectionInfo } from "@/native/daemon-connection";
 
 import { DaemonUnavailableError, daemonClient } from "./client";
+import { networkSettingsResponseSchema } from "./schemas";
 
 declare global {
   interface Window {
@@ -86,6 +87,37 @@ function healthFixture() {
     operatorReason: "ok",
     updatedAt: "2026-01-01T00:00:00Z",
   };
+}
+
+const configureNetworkTask: Parameters<
+  typeof daemonClient.executeBringUpTask
+>[0] = {
+  contractVersion: 1,
+  taskId: "bring_up.configure_network",
+  taskVersion: 1,
+  kind: "configure_network",
+  intent: "refresh_network",
+  rotateMaintenanceIdentity: false,
+  projection: {
+    type: "network_settings",
+    supportsHiddenNetwork: true,
+    supportsExistingNetworkProbe: true,
+  },
+};
+
+async function executeProtectedNetworkTask(
+  mutation:
+    | {
+        type: "configure_network";
+        ssid: string;
+        password: string;
+        hidden: boolean;
+      }
+    | { type: "probe_network" },
+) {
+  return networkSettingsResponseSchema.parse(
+    await daemonClient.executeBringUpTask(configureNetworkTask, mutation),
+  );
 }
 
 describe("DaemonApiClient", () => {
@@ -726,7 +758,8 @@ describe("DaemonApiClient", () => {
       ),
     );
 
-    const result = await daemonClient.applyNetworkSettings({
+    const result = await executeProtectedNetworkTask({
+      type: "configure_network",
       ssid: "VEM-Lab",
       password: submittedPassword,
       hidden: false,
@@ -734,13 +767,21 @@ describe("DaemonApiClient", () => {
 
     expect(result.status).toBe("connected");
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7891/v1/network/settings",
+      "http://127.0.0.1:7891/v1/bring-up/tasks/execute",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
-          ssid: "VEM-Lab",
-          password: submittedPassword,
-          hidden: false,
+          contractVersion: 1,
+          taskId: "bring_up.configure_network",
+          taskVersion: 1,
+          kind: "configure_network",
+          intent: "refresh_network",
+          mutation: {
+            type: "configure_network",
+            ssid: "VEM-Lab",
+            password: submittedPassword,
+            hidden: false,
+          },
         }),
       }),
     );
@@ -783,7 +824,8 @@ describe("DaemonApiClient", () => {
       ),
     );
 
-    const result = await daemonClient.applyNetworkSettings({
+    const result = await executeProtectedNetworkTask({
+      type: "configure_network",
       ssid: "VEM-Lab",
       password: submittedPassword,
       hidden: false,
@@ -796,7 +838,7 @@ describe("DaemonApiClient", () => {
     expect(JSON.stringify(result)).not.toContain(submittedPassword);
   });
 
-  it("preserves all five typed network diagnostics from a standard 422 response", async () => {
+  it("preserves typed network evidence when an authorized Bring-Up task is rejected", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -832,21 +874,36 @@ describe("DaemonApiClient", () => {
         recoveryAction: "Follow the operator guidance and retry.",
       },
     }));
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status: "failed",
-          ssid: "Store-WiFi",
-          hidden: false,
-          diagnostics,
-          operatorGuidance: "请检查本机网络和平台连接。",
-          updatedAt: "2026-07-14T00:00:00Z",
-        }),
-        { status: 422 },
-      ),
-    );
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "network-session",
+            expiresAt: "2030-07-14T12:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "failed",
+            ssid: "Store-WiFi",
+            hidden: false,
+            diagnostics,
+            operatorGuidance: "请检查本机网络和平台连接。",
+            updatedAt: "2026-07-14T00:00:00Z",
+          }),
+          { status: 422 },
+        ),
+      );
 
-    const result = await daemonClient.applyNetworkSettings({
+    await daemonClient.beginMaintenanceSession("2468");
+    expect(daemonClient.handoffMaintenanceSessionToBringUp()).toBe(true);
+
+    const result = await executeProtectedNetworkTask({
+      type: "configure_network",
       ssid: "Store-WiFi",
       password: "correct-password",
       hidden: false,
@@ -866,6 +923,15 @@ describe("DaemonApiClient", () => {
       "platform_api",
       "mqtt_broker",
     ]);
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:7891/v1/bring-up/tasks/execute",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-vem-maintenance-session": "network-session",
+        }),
+      }),
+    );
   });
 
   it("safely falls back when a rejected daemon response exceeds the read limit", async () => {
@@ -880,7 +946,8 @@ describe("DaemonApiClient", () => {
     );
 
     await expect(
-      daemonClient.applyNetworkSettings({
+      executeProtectedNetworkTask({
+        type: "configure_network",
         ssid: "Store-WiFi",
         password: "correct-password",
         hidden: false,
@@ -1019,7 +1086,8 @@ describe("DaemonApiClient", () => {
       ),
     );
 
-    const result = await daemonClient.applyNetworkSettings({
+    const result = await executeProtectedNetworkTask({
+      type: "configure_network",
       ssid: "Venue-Guest",
       password: submittedPassword,
       hidden: false,
@@ -1050,7 +1118,23 @@ describe("DaemonApiClient", () => {
       ),
     );
 
-    await expect(daemonClient.claimMachine("ABCD-2345")).rejects.toMatchObject({
+    await expect(
+      daemonClient.executeBringUpTask(
+        {
+          contractVersion: 1,
+          taskId: "bring_up.claim_machine",
+          taskVersion: 1,
+          kind: "claim_machine",
+          intent: "claim_machine",
+          rotateMaintenanceIdentity: false,
+          projection: {
+            type: "claim_code",
+            rotateMaintenanceIdentity: false,
+          },
+        },
+        { type: "claim_machine", claimCode: "ABCD-2345" },
+      ),
+    ).rejects.toMatchObject({
       statusCode: 400,
       responseCode: "machine_claim_expired",
       responseMessage: "claim ABCD-2345 expired with secret-value",
