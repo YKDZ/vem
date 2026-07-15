@@ -140,7 +140,7 @@ test("PowerShell behavior fixtures execute through the real binder", () => {
   assert.match(result.stdout, /executable PowerShell probes passed/);
 });
 
-test("Factory OOBE cleanup resumes after the bootstrap account was removed", () => {
+test("Factory OOBE cleanup keeps its task through reboot and completes only after a kiosk console session", () => {
   const root = mkdtempSync(join(tmpdir(), "vem-oobe-cleanup-reentry-"));
   const fixturePath = join(root, "fixture.ps1");
   const bootstrapStatusPath = join(root, "oobe-bootstrap-status.json");
@@ -156,13 +156,6 @@ test("Factory OOBE cleanup resumes after the bootstrap account was removed", () 
         errorType: "",
       }),
     );
-    writeFileSync(
-      cleanupStatusPath,
-      JSON.stringify({
-        schemaVersion: "vem-factory-oobe-cleanup-status/v1",
-        phase: "ready",
-      }),
-    );
     writeFileSync(kioskAutologonStatePath, "fixture-kiosk-password");
     const escapedRoot = root.replaceAll("'", "''");
     const completion = factoryOobeCompletionScript().replace(
@@ -176,21 +169,24 @@ test("Factory OOBE cleanup resumes after the bootstrap account was removed", () 
 $script:TaskRegistered = $true
 $script:Winlogon = @{}
 $script:RestartRequests = 0
+$script:RestartSleeps = 0
 $env:COMPUTERNAME = 'VEM-TESTBED'
 function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
 function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Get-CimInstance { param($ClassName, $ErrorAction) if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [DateTime]'2026-07-15T00:00:00Z' } }; throw "unexpected CIM class: $ClassName" }
 function Set-ItemProperty { param($Path, $Name, $Value, [switch]$Force) $script:Winlogon[$Name] = $Value }
 function Remove-ItemProperty { param($Path, $Name, $ErrorAction) }
 function Remove-LocalUser { param($Name, $ErrorAction) }
 function Get-Volume { param($ErrorAction) @() }
 function New-Object { param($ComObject) [pscustomobject]@{} }
-function Start-Sleep { param($Seconds) throw "unexpected cleanup retry: resuming=$resumingCleanup bootstrap=$($bootstrapStatus.state)/$($bootstrapStatus.stage)" }
+function Start-Sleep { param($Seconds) if ($Seconds -ne 5) { throw "unexpected sleep: $Seconds" }; $script:RestartSleeps += 1 }
 function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
-function Restart-Computer { param([switch]$Force) if (-not $Force) { throw 'cleanup restart must be forced' }; $script:RestartRequests += 1 }
-${completion}
-if ($script:TaskRegistered) { throw 'cleanup task was not unregistered' }
-if ($script:RestartRequests -cne 1) { throw "cleanup must request exactly one reboot; got $script:RestartRequests" }
+function Restart-Computer { param([switch]$Force, $ErrorAction) if (-not $Force) { throw 'cleanup restart must be forced' }; $script:RestartRequests += 1; throw 'restart service temporarily unavailable' }
+try { ${completion}; throw 'cleanup reboot failure fixture unexpectedly succeeded' } catch { if ([string]$_ -notmatch 'could not request the handoff reboot after bounded retries') { throw } }
+if (-not $script:TaskRegistered) { throw 'cleanup task was removed before the requested reboot' }
+if ($script:RestartRequests -cne 3) { throw "cleanup must bound restart attempts; got $script:RestartRequests" }
+if ($script:RestartSleeps -cne 2) { throw "cleanup restart retries must be bounded; got $script:RestartSleeps sleeps" }
 if ($script:Winlogon.AutoAdminLogon -cne '1') { throw 'AutoAdminLogon was not restored' }
 if ($script:Winlogon.ForceAutoLogon -cne '1') { throw 'ForceAutoLogon was not restored' }
 if ($script:Winlogon.DefaultUserName -cne 'VEMKiosk') { throw 'DefaultUserName was not restored' }
@@ -198,7 +194,8 @@ if ($script:Winlogon.DefaultDomainName -cne 'VEM-TESTBED') { throw 'DefaultDomai
 if ($script:Winlogon.DefaultPassword -cne 'fixture-kiosk-password') { throw 'DefaultPassword was not restored from the persisted handoff' }
 if (Test-Path -LiteralPath '${kioskAutologonStatePath.replaceAll("'", "''")}') { throw 'kiosk autologon handoff was not consumed' }
 $cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
-if ($cleanupStatus.phase -cne 'complete') { throw 'cleanup did not reach the complete phase' }
+if ($cleanupStatus.phase -cne 'reboot-pending') { throw 'cleanup did not persist reboot-pending before restart' }
+if ($cleanupStatus.rebootOriginBootIdentity -cne '2026-07-15T00:00:00.0000000Z') { throw 'cleanup did not persist the pre-reboot boot identity' }
 `,
     );
     const result = run("pwsh", [
@@ -210,34 +207,78 @@ if ($cleanupStatus.phase -cne 'complete') { throw 'cleanup did not reach the com
     ]);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 
-    const unexpectedRestartPath = join(root, "unexpected-restart");
-    const alreadyCompleteFixturePath = join(root, "already-complete.ps1");
     writeFileSync(
-      alreadyCompleteFixturePath,
+      cleanupStatusPath,
+      JSON.stringify({
+        schemaVersion: "vem-factory-oobe-cleanup-status/v1",
+        phase: "reboot-pending",
+        rebootOriginBootIdentity: "2026-07-15T00:00:00.0000000Z",
+      }),
+    );
+    const afterRebootFixturePath = join(root, "after-reboot.ps1");
+    writeFileSync(
+      afterRebootFixturePath,
       `$ErrorActionPreference = 'Stop'
+$script:TaskRegistered = $true
+$script:RestartRequests = 0
 $env:COMPUTERNAME = 'VEM-TESTBED'
 function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
 function Get-LocalUser { param($Name, $ErrorAction) $null }
-function Restart-Computer { param([switch]$Force) New-Item -ItemType File -Path '${unexpectedRestartPath.replaceAll("'", "''")}' -Force | Out-Null }
+function Get-CimInstance { param($ClassName, $ErrorAction) if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [DateTime]'2026-07-15T00:10:00Z' } }; if ($ClassName -eq 'Win32_ComputerSystem') { return [pscustomobject]@{ UserName = 'VEM-TESTBED\\VEMKiosk' } }; throw "unexpected CIM class: $ClassName" }
+function Start-Sleep { param($Seconds) throw "unexpected post-reboot wait: $Seconds" }
+function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
+function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
+function Restart-Computer { param([switch]$Force, $ErrorAction) $script:RestartRequests += 1 }
 ${completion}
+if ($script:TaskRegistered) { throw 'cleanup task was not removed after kiosk console proof' }
+if ($script:RestartRequests -ne 0) { throw 'post-reboot cleanup must not request another reboot' }
+$cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
+if ($cleanupStatus.phase -cne 'complete') { throw 'post-reboot cleanup did not reach complete' }
+if ($cleanupStatus.completedBootIdentity -cne '2026-07-15T00:10:00.0000000Z') { throw 'post-reboot cleanup did not record the completed boot identity' }
+if ($cleanupStatus.kioskConsoleSession.user -cne 'VEMKiosk') { throw 'post-reboot cleanup did not record the VEMKiosk console session' }
 `,
     );
-    const alreadyComplete = run("pwsh", [
+    const afterReboot = run("pwsh", [
       "-NoLogo",
       "-NoProfile",
       "-NonInteractive",
       "-File",
-      alreadyCompleteFixturePath,
+      afterRebootFixturePath,
     ]);
     assert.equal(
-      alreadyComplete.status,
+      afterReboot.status,
       0,
-      `${alreadyComplete.stdout}\n${alreadyComplete.stderr}`,
+      `${afterReboot.stdout}\n${afterReboot.stderr}`,
     );
+
+    const completedReentryFixturePath = join(root, "completed-reentry.ps1");
+    writeFileSync(
+      completedReentryFixturePath,
+      `$ErrorActionPreference = 'Stop'
+$script:TaskRegistered = $true
+$script:RestartRequests = 0
+function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
+function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Start-Sleep { param($Seconds) throw "completed cleanup must not wait: $Seconds" }
+function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
+function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
+function Restart-Computer { param([switch]$Force, $ErrorAction) $script:RestartRequests += 1 }
+${completion}
+if ($script:TaskRegistered) { throw 'completed cleanup reentry did not remove its retained task' }
+if ($script:RestartRequests -ne 0) { throw 'completed cleanup reentry requested another reboot' }
+`,
+    );
+    const completedReentry = run("pwsh", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      completedReentryFixturePath,
+    ]);
     assert.equal(
-      existsSync(unexpectedRestartPath),
-      false,
-      "a completed cleanup must not request another reboot",
+      completedReentry.status,
+      0,
+      `${completedReentry.stdout}\n${completedReentry.stderr}`,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

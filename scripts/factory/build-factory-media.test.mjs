@@ -1858,23 +1858,32 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.match(
         completeOobe,
-        /\$cleanupStatus\.phase -in @\('ready', 'autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected', 'complete'\)/,
+        /\$cleanupStatus\.phase -in @\('ready', 'autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected', 'reboot-pending', 'complete'\)/,
       );
       assert.match(
         completeOobe,
-        /if \(\$cleanupPhase -eq 'complete'\) \{ exit 0 \}/,
+        /if \(\$cleanupPhase -eq 'complete'\) \{[\s\S]+Remove-CleanupTask[\s\S]+exit 0 \}/,
       );
       assert.match(completeOobe, /Write-CleanupStatus 'media-ejected'/);
-      assert.match(completeOobe, /Write-CleanupStatus 'complete'/);
       assert.match(
         completeOobe,
-        /Unregister-ScheduledTask[\s\S]+Write-CleanupStatus 'complete'[\s\S]+Restart-Computer -Force/,
-        "cleanup unregisters its startup task and records completion before rebooting into the kiosk account",
+        /Get-BootIdentity[\s\S]+Write-CleanupStatus 'reboot-pending' \$rebootOriginBootIdentity[\s\S]+Restart-Computer -Force -ErrorAction Stop/,
+        "cleanup persists its pre-reboot boot identity before requesting the kiosk handoff reboot",
       );
-      assert.equal(
-        (completeOobe.match(/Restart-Computer -Force/g) ?? []).length,
-        1,
-        "cleanup requests exactly one reboot",
+      assert.match(
+        completeOobe,
+        /\$currentBootIdentity -ceq \$rebootOriginBootIdentity[\s\S]+waiting for the requested reboot to change the boot identity/,
+        "reboot-pending cleanup must not request another reboot from the same boot",
+      );
+      assert.match(
+        completeOobe,
+        /Get-ActiveVemKioskConsoleSession[\s\S]+did not observe an active VEMKiosk console session after reboot[\s\S]+Write-CleanupStatus 'complete' \$rebootOriginBootIdentity \$currentBootIdentity \$kioskConsoleSession[\s\S]+Remove-CleanupTask/,
+        "only a post-reboot VEMKiosk console session may complete and unregister cleanup",
+      );
+      assert.match(
+        completeOobe,
+        /for \(\$attempt = 0; \$attempt -lt 3; \$attempt \+= 1\)[\s\S]+could not request the handoff reboot after bounded retries/,
+        "restart failures must retry only within a bounded handoff request",
       );
       assert.match(
         completeOobe,

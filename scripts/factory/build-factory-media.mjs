@@ -1061,15 +1061,51 @@ $personalizationPath = Join-Path $factoryRoot 'one-time-personalization.json'
 $kioskAutologonStatePath = Join-Path $factoryRoot 'oobe-kiosk-autologon-password'
 $oobeDeadline = (Get-Date).AddMinutes(30)
 $oobeComplete = $false
-function Write-CleanupStatus([string]$Phase) {
+function Get-BootIdentity {
+  $boot = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+  if ($null -eq $boot.LastBootUpTime) { throw 'VEM Factory could not determine the current boot identity' }
+  return ([DateTime]$boot.LastBootUpTime).ToUniversalTime().ToString('o')
+}
+function Get-ActiveVemKioskConsoleSession {
+  $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+  $consoleUser = [string]$computer.UserName
+  if ([string]::IsNullOrWhiteSpace($consoleUser)) { return $null }
+  $user = $consoleUser.Split('\\')[-1]
+  if ($user -cne 'VEMKiosk') { return $null }
+  return [ordered]@{
+    user = $user
+    consoleUser = $consoleUser
+    source = 'Win32_ComputerSystem'
+  }
+}
+function Write-CleanupStatus(
+  [string]$Phase,
+  [string]$RebootOriginBootIdentity = '',
+  [string]$CompletedBootIdentity = '',
+  $KioskConsoleSession = $null
+) {
   $status = [ordered]@{
     schemaVersion = 'vem-factory-oobe-cleanup-status/v1'
     phase = $Phase
-  } | ConvertTo-Json -Compress
+  }
+  if (-not [string]::IsNullOrWhiteSpace($RebootOriginBootIdentity)) {
+    $status.rebootOriginBootIdentity = $RebootOriginBootIdentity
+    $status.completedBootIdentity = if ([string]::IsNullOrWhiteSpace($CompletedBootIdentity)) { $null } else { $CompletedBootIdentity }
+    $status.kioskConsoleSession = $KioskConsoleSession
+  }
+  $status = $status | ConvertTo-Json -Depth 10 -Compress
   $temporaryPath = "$cleanupStatusPath.tmp"
   $temporaryFileSystemPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($temporaryPath)
   [IO.File]::WriteAllText($temporaryFileSystemPath, $status, [Text.UTF8Encoding]::new($false))
   Move-Item -LiteralPath $temporaryPath -Destination $cleanupStatusPath -Force
+}
+function Remove-CleanupTask {
+  for ($attempt = 0; $attempt -lt 10; $attempt += 1) {
+    Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
+    if ($null -eq (Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue)) { return }
+    Start-Sleep -Seconds 1
+  }
+  throw 'VEM Factory OOBE cleanup task remains registered'
 }
 do {
   $bootstrapStatus = if (Test-Path -LiteralPath $diagnosticPath -PathType Leaf) {
@@ -1084,7 +1120,7 @@ do {
   $resumingCleanup =
     $null -ne $cleanupStatus -and
     $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1' -and
-    $cleanupStatus.phase -in @('ready', 'autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected', 'complete')
+    $cleanupStatus.phase -in @('ready', 'autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected', 'reboot-pending', 'complete')
   $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
   $bootstrapUser = Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
   $oobeComplete =
@@ -1100,7 +1136,29 @@ do {
 } while ((Get-Date) -lt $oobeDeadline)
 if (-not $oobeComplete) { throw 'VEM Factory OOBE did not complete before cleanup deadline' }
 $cleanupPhase = if ($null -ne $cleanupStatus -and $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1') { [string]$cleanupStatus.phase } else { '' }
-if ($cleanupPhase -eq 'complete') { exit 0 }
+if ($cleanupPhase -eq 'complete') {
+  Remove-CleanupTask
+  exit 0
+}
+if ($cleanupPhase -eq 'reboot-pending') {
+  $rebootOriginBootIdentity = [string]$cleanupStatus.rebootOriginBootIdentity
+  if ([string]::IsNullOrWhiteSpace($rebootOriginBootIdentity)) { throw 'VEM Factory OOBE cleanup reboot origin is unavailable' }
+  $currentBootIdentity = Get-BootIdentity
+  if ($currentBootIdentity -ceq $rebootOriginBootIdentity) {
+    throw 'VEM Factory OOBE cleanup is waiting for the requested reboot to change the boot identity'
+  }
+  $kioskSessionDeadline = (Get-Date).AddMinutes(30)
+  $kioskConsoleSession = $null
+  do {
+    $kioskConsoleSession = Get-ActiveVemKioskConsoleSession
+    if ($null -ne $kioskConsoleSession) { break }
+    Start-Sleep -Seconds 5
+  } while ((Get-Date) -lt $kioskSessionDeadline)
+  if ($null -eq $kioskConsoleSession) { throw 'VEM Factory OOBE cleanup did not observe an active VEMKiosk console session after reboot' }
+  Write-CleanupStatus 'complete' $rebootOriginBootIdentity $currentBootIdentity $kioskConsoleSession
+  Remove-CleanupTask
+  exit 0
+}
 $winlogonPath = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'
 if ($cleanupPhase -notin @('autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected')) {
   Write-CleanupStatus 'ready'
@@ -1139,16 +1197,17 @@ for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
 }
 if ($personalizationVolumes.Count -ne 0) { throw 'VEM personalization medium remains mounted after cleanup retries' }
 Write-CleanupStatus 'media-ejected'
-for ($attempt = 0; $attempt -lt 10; $attempt += 1) {
-  Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
-  if ($null -eq (Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue)) { break }
-  Start-Sleep -Seconds 1
+$rebootOriginBootIdentity = Get-BootIdentity
+Write-CleanupStatus 'reboot-pending' $rebootOriginBootIdentity
+for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
+  try {
+    Restart-Computer -Force -ErrorAction Stop
+    exit 0
+  } catch {
+    if ($attempt -eq 2) { throw 'VEM Factory OOBE cleanup could not request the handoff reboot after bounded retries' }
+    Start-Sleep -Seconds 5
+  }
 }
-if ($null -ne (Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue)) {
-  throw 'VEM Factory OOBE cleanup task remains registered'
-}
-Write-CleanupStatus 'complete'
-Restart-Computer -Force
 `;
 }
 

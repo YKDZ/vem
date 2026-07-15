@@ -3083,6 +3083,13 @@ try {
     assert.match(script, /VEM_PERSONALIZATION/);
     assert.match(script, /oobe-unattend\.xml/);
     assert.match(script, /Get-LocalUser -Name 'VEMOobeBootstrap'/);
+    assert.match(script, /oobe-cleanup-status\.json/);
+    assert.match(script, /cleanupStatus\.phase -ceq 'complete'/);
+    assert.match(script, /rebootOriginBootIdentity/);
+    assert.match(script, /Win32_OperatingSystem/);
+    assert.match(script, /postRebootBootIdentityChanged = \$cleanupComplete/);
+    assert.match(script, /Win32_ComputerSystem/);
+    assert.match(script, /activeVemKioskConsoleSession/);
     assert.match(script, /-and \$oobeComplete/);
     assert.match(script, /AddMinutes\(30\)/);
     assert.match(script, /Start-Sleep -Seconds 10/);

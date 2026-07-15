@@ -3985,6 +3985,8 @@ export function buildFactoryPreclaimVerificationScript(options = {}) {
     "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json";
   const oobeStatusPath =
     "C:\\ProgramData\\VEM\\factory\\oobe-bootstrap-status.json";
+  const cleanupStatusPath =
+    "C:\\ProgramData\\VEM\\factory\\oobe-cleanup-status.json";
   const deprecatedOobeAnswerPath =
     "C:\\ProgramData\\VEM\\factory\\oobe-unattend.xml";
   const identityPaths = [
@@ -3997,6 +3999,7 @@ $verifierPath = ${psString(verifierPath)}
 $verifierEvidencePath = ${psString(verifierEvidencePath)}
 $machineConfigPath = ${psString(machineConfigPath)}
 $oobeStatusPath = ${psString(oobeStatusPath)}
+$cleanupStatusPath = ${psString(cleanupStatusPath)}
 $deprecatedOobeAnswerPath = ${psString(deprecatedOobeAnswerPath)}
 $identityPaths = ${psString(JSON.stringify(identityPaths))} | ConvertFrom-Json
 if (-not (Test-Path -LiteralPath $verifierPath -PathType Leaf)) {
@@ -4009,9 +4012,27 @@ try {
     $oobeStatus = if (Test-Path -LiteralPath $oobeStatusPath -PathType Leaf) {
       Get-Content -LiteralPath $oobeStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
     } else { $null }
+    $cleanupStatus = if (Test-Path -LiteralPath $cleanupStatusPath -PathType Leaf) {
+      Get-Content -LiteralPath $cleanupStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    } else { $null }
     $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
     $cleanupTask = Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue
     $personalizationVolumes = @(Get-Volume -FileSystemLabel 'VEM_PERSONALIZATION' -ErrorAction SilentlyContinue)
+    $currentBoot = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    $currentBootIdentity = if ($null -ne $currentBoot.LastBootUpTime) { ([DateTime]$currentBoot.LastBootUpTime).ToUniversalTime().ToString('o') } else { $null }
+    $console = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+    $consoleUser = [string]$console.UserName
+    $consoleUserName = if ([string]::IsNullOrWhiteSpace($consoleUser)) { $null } else { $consoleUser.Split('\\')[-1] }
+    $activeVemKioskConsoleSession = $consoleUserName -ceq 'VEMKiosk'
+    $cleanupComplete =
+      $null -ne $cleanupStatus -and
+      $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1' -and
+      $cleanupStatus.phase -ceq 'complete' -and
+      -not [string]::IsNullOrWhiteSpace([string]$cleanupStatus.rebootOriginBootIdentity) -and
+      -not [string]::IsNullOrWhiteSpace([string]$currentBootIdentity) -and
+      $currentBootIdentity -cne [string]$cleanupStatus.rebootOriginBootIdentity -and
+      [string]$cleanupStatus.completedBootIdentity -ceq [string]$currentBootIdentity -and
+      [string]$cleanupStatus.kioskConsoleSession.user -ceq 'VEMKiosk'
     $oobeComplete =
       $null -ne $oobeStatus -and
       $oobeStatus.state -eq 'succeeded' -and
@@ -4021,9 +4042,11 @@ try {
       [int]$setupState.SetupType -eq 0 -and
     [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
     -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
-    $null -eq (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue) -and
+      $null -eq (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue) -and
       $null -eq $cleanupTask -and
-      $personalizationVolumes.Count -eq 0
+      $personalizationVolumes.Count -eq 0 -and
+      $cleanupComplete -and
+      $activeVemKioskConsoleSession
     if ($oobeComplete) { break }
     Start-Sleep -Seconds 10
   } while ((Get-Date) -lt $oobeDeadline)
@@ -4133,6 +4156,12 @@ try {
         bootstrapAccountPresent = $null -ne (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue)
         cleanupTaskPresent = $null -ne $cleanupTask
         personalizationVolumeCount = $personalizationVolumes.Count
+        cleanupPhase = if ($null -ne $cleanupStatus) { [string]$cleanupStatus.phase } else { $null }
+        rebootOriginBootIdentity = if ($null -ne $cleanupStatus) { [string]$cleanupStatus.rebootOriginBootIdentity } else { $null }
+        currentBootIdentity = $currentBootIdentity
+        postRebootBootIdentityChanged = $cleanupComplete
+        activeVemKioskConsoleSession = $activeVemKioskConsoleSession
+        consoleUser = $consoleUser
       }
     }
   }
@@ -8164,15 +8193,19 @@ function buildEncodedPowerShellCommand(script) {
 const TRANSIENT_SSH_TRANSPORT_FAILURE =
   /(?:kex_exchange_identification|ssh_exchange_identification|connection (?:closed|refused|reset|timed out)|no route to host|operation timed out)/i;
 
-function spawnSshOperation(command, args, { signal } = {}) {
+function spawnSshOperation(command, args, { input, signal } = {}) {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
     const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       signal,
     });
+    if (input !== undefined) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -8196,6 +8229,7 @@ export async function runTransientSshOperation(
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
     maxAttempts = 24,
     retryDelayMs = 5000,
+    input,
     signal,
   } = {},
 ) {
@@ -8210,7 +8244,7 @@ export async function runTransientSshOperation(
   };
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfAborted();
-    const result = await run(command, args, { signal });
+    const result = await run(command, args, { input, signal });
     throwIfAborted();
     if (result.status === 0) return result;
     const diagnostic = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
@@ -8778,13 +8812,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           const sshCommand = buildSshCommand(options);
           const remoteScript = buildRemotePowerShellScript(options);
           const remoteCommand = buildStdinPowerShellCommand();
-          const result = spawnSync(
+          const result = await runTransientSshOperation(
             sshCommand[0],
             [...sshCommand.slice(1), remoteCommand],
             {
-              encoding: "utf8",
               input: `${remoteScript}\n`,
-              stdio: ["pipe", "pipe", "pipe"],
+              maxAttempts: 72,
+              retryDelayMs: 5000,
             },
           );
           if (result.stderr) process.stderr.write(result.stderr);
