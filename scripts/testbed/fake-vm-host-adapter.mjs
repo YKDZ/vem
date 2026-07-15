@@ -728,7 +728,9 @@ const serialFault = String(
 const serialFaultOperation =
   serialFault === "scanner-timeout"
     ? "inject-scanner-code"
-    : "collect-serial-evidence";
+    : serialFault === "swapped-roles" || serialFault === "missing-device"
+      ? "start-serial-session"
+      : "collect-serial-evidence";
 const observedSerialFaultCode =
   request.operation === serialFaultOperation &&
   new Set([

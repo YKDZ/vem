@@ -2929,6 +2929,12 @@ describe("VM Host Adapter contract", () => {
       ).vendingCommandId,
       undefined,
     );
+    assert.equal(
+      report.failureMatrix.find(
+        (entry) => entry.failureMode === "scanner-timeout",
+      ).source.fault.request.serialSession.saleBindings[0].vendingCommandId,
+      null,
+    );
     for (const failureMode of ["swapped-roles", "missing-device"]) {
       const mappingFailure = report.failureMatrix.find(
         (entry) => entry.failureMode === failureMode,
@@ -2943,6 +2949,18 @@ describe("VM Host Adapter contract", () => {
           mappingFailure.daemonFailClosed.adapterSession.faultStartedAt,
       });
       assert.equal(mappingFailure.recovery.runtimeReady, "passed");
+      assert.equal(
+        mappingFailure.source.fault.request.operation,
+        "start-serial-session",
+      );
+      assert.deepEqual(
+        mappingFailure.source.fault.request.serialSession.saleBindings,
+        [],
+      );
+      assert.deepEqual(
+        mappingFailure.source.start,
+        mappingFailure.source.fault,
+      );
     }
     assert.doesNotMatch(
       JSON.stringify(report),
@@ -3093,7 +3111,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.match(source, /paymentOption\?\.method === "payment_code"/);
     assert.match(source, /startSerialSession/);
-    assert.match(source, /runtimeRecoveryCommandJson/);
+    assert.match(source, /failureCommands/);
     assert.match(source, /did not restore healthy daemon runtime/);
     assert.match(source, /VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST/);
     assert.doesNotMatch(source, /hardware-mapping-fault-code/);
