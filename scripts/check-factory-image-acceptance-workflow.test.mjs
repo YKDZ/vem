@@ -13,6 +13,13 @@ const factoryMedia = readFileSync(
 );
 const workflowDocument = parse(workflow);
 
+function stepBlock(stepName) {
+  const start = workflow.indexOf(`- name: ${stepName}`);
+  assert.notEqual(start, -1, `missing workflow step: ${stepName}`);
+  const next = workflow.indexOf("\n      - name:", start + 1);
+  return workflow.slice(start, next === -1 ? workflow.length : next);
+}
+
 describe("Factory Image Acceptance workflow", () => {
   it("requires the real platform-neutral Factory lifecycle orchestrator", () => {
     assert.match(
@@ -27,6 +34,8 @@ describe("Factory Image Acceptance workflow", () => {
       "VEM_FACTORY_UDF_WRITER_HOST_PATH",
       "VEM_FACTORY_WIMLIB_HOST_PATH",
       "VEM_FACTORY_WORK_ROOT",
+      "VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY",
+      "VEM_VM_HOST_EXPECTED_ADAPTER_SHA256",
     ])
       assert.match(workflow, new RegExp(input));
     assert.doesNotMatch(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
@@ -85,6 +94,63 @@ describe("Factory Image Acceptance workflow", () => {
     );
     assert.match(workflow, /audience=vem-maintenance/);
     assert.match(workflow, /maintenance-automation\/exchange/);
+  });
+
+  it("pins the deployment-external VM Host Adapter by digest and lifecycle identity", () => {
+    const guard = stepBlock("Guard Exact Protected Runner Before Checkout");
+    const lifecycle = stepBlock("Run Typed Factory Lifecycle");
+
+    assert.match(guard, /VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY/);
+    assert.match(guard, /VEM_VM_HOST_EXPECTED_ADAPTER_SHA256/);
+    assert.match(guard, /sha256sum "\$VEM_VM_HOST_ADAPTER"/);
+    assert.match(
+      guard,
+      /test "\$observed_adapter_sha256" = "\$VEM_VM_HOST_EXPECTED_ADAPTER_SHA256"/,
+    );
+    assert.match(
+      guard,
+      /\^vm-host-adapter:\/\/\[A-Za-z0-9\._\/-\]\+@\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$/,
+    );
+    assert.match(lifecycle, /VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY/);
+    assert.match(lifecycle, /lifecycle\.reports/);
+    assert.match(lifecycle, /value\.adapter/);
+    assert.match(lifecycle, /Factory VM Host Adapter identity mismatch/);
+    assert.doesNotMatch(workflow, /\bunraid\b/i);
+    assert.doesNotMatch(workflow, /unraid:\/\//i);
+  });
+
+  it("creates run-scoped SSH key material and requests the certificate from the same automation session", () => {
+    const exchange = stepBlock("Create Maintenance Relay Session");
+    const input = stepBlock("Generate Typed Factory Lifecycle Input");
+    const cleanup = stepBlock("Cleanup Ephemeral Services");
+
+    assert.doesNotMatch(workflow, /VEM_FACTORY_ACCEPTANCE_SSH_/);
+    assert.match(
+      exchange,
+      /ssh_dir="\$RUNNER_TEMP\/vem-factory-maintenance-ssh-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}"/,
+    );
+    assert.match(
+      exchange,
+      /ssh-keygen -q -t ed25519 -N '' -f "\$ssh_key_path"/,
+    );
+    assert.match(exchange, /maintenance-automation\/session\/ssh-certificate/);
+    assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_IDENTITY_PATH/);
+    assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_CERTIFICATE_PATH/);
+    assert.match(
+      input,
+      /sshIdentityPath\.startsWith\(process\.env\.RUNNER_TEMP \+ "\/vem-factory-maintenance-ssh-"\)/,
+    );
+    assert.match(
+      input,
+      /identityPath: sshIdentityPath,\n\s+certificatePath: sshCertificatePath/,
+    );
+    assert.match(cleanup, /maintenance-automation\/session\/revoke/);
+    assert.match(cleanup, /revoked\.status !== "revoked"/);
+    assert.match(
+      cleanup,
+      /rm -f "\$automation_token_path" "\$revoke_response_path"/,
+    );
+    assert.match(cleanup, /rm -rf -- "\$ssh_directory"/);
   });
 
   it("starts a same-run ephemeral platform and writes the typed lifecycle input at runtime", () => {
