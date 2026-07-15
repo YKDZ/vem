@@ -181,6 +181,8 @@ function Assert-NoPlatformPaymentSecretBytes {
         $detectedEntries = [BitConverter]::ToUInt16($Bytes, $candidate + 10)
         $detectedCentralSize = [BitConverter]::ToUInt32($Bytes, $candidate + 12)
         $detectedCentralStart = [BitConverter]::ToUInt32($Bytes, $candidate + 16)
+        $detectedPrefixBias =
+          [long]$candidate - $detectedCentralSize - $detectedCentralStart
         if (
           $detectedDisk -ne 0 -or
           $detectedCentralDisk -ne 0 -or
@@ -188,11 +190,13 @@ function Assert-NoPlatformPaymentSecretBytes {
           $detectedEntries -eq 0xffff -or
           $detectedCentralSize -eq 0xffffffff -or
           $detectedCentralStart -eq 0xffffffff -or
-          [long]$detectedCentralStart + $detectedCentralSize -ne $candidate
+          $detectedPrefixBias -lt 0
         ) {
           continue
         }
-        $detectedCentralOffset = [long]$detectedCentralStart
+        $detectedCentralAbsoluteStart =
+          $detectedPrefixBias + $detectedCentralStart
+        $detectedCentralOffset = $detectedCentralAbsoluteStart
         $recognizable = $true
         $entriesToCheck = [Math]::Min($detectedEntries, 257)
         for ($detectedIndex = 0; $detectedIndex -lt $entriesToCheck; $detectedIndex += 1) {
@@ -206,16 +210,24 @@ function Assert-NoPlatformPaymentSecretBytes {
           $detectedNameLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 28)
           $detectedExtraLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 30)
           $detectedCommentLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 32)
+          $detectedEntryDisk = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 34)
           $detectedLocalOffset = [BitConverter]::ToUInt32($Bytes, [int]$detectedCentralOffset + 42)
+          $detectedCentralEnd =
+            $detectedCentralOffset + 46 + $detectedNameLength +
+            $detectedExtraLength + $detectedCommentLength
+          $detectedLocalAbsoluteOffset =
+            $detectedPrefixBias + $detectedLocalOffset
           if (
-            $detectedLocalOffset + 30 -gt $detectedCentralStart -or
-            [BitConverter]::ToUInt32($Bytes, [int]$detectedLocalOffset) -ne 0x04034b50
+            $detectedCentralEnd -gt $candidate -or
+            $detectedEntryDisk -ne 0 -or
+            $detectedLocalOffset -eq 0xffffffff -or
+            $detectedLocalAbsoluteOffset + 30 -gt $detectedCentralAbsoluteStart -or
+            [BitConverter]::ToUInt32($Bytes, [int]$detectedLocalAbsoluteOffset) -ne 0x04034b50
           ) {
             $recognizable = $false
             break
           }
-          $detectedCentralOffset +=
-            46 + $detectedNameLength + $detectedExtraLength + $detectedCommentLength
+          $detectedCentralOffset = $detectedCentralEnd
         }
         if (
           $recognizable -and

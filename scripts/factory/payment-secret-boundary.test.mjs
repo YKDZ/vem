@@ -197,6 +197,13 @@ function prefixedReadableZip(content) {
   return prefixed;
 }
 
+function prefixedZipWithUnadjustedOffsets(content) {
+  return Buffer.concat([
+    Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x56, 0x45, 0x4d]),
+    deflatedZip("nested/private.pem", content),
+  ]);
+}
+
 describe("Factory runtime payment secret boundary", () => {
   it("allows ordinary public certificates but rejects private-key PEM encodings", () => {
     assert.doesNotThrow(() =>
@@ -472,6 +479,20 @@ describe("Factory runtime payment secret boundary", () => {
         assertNoPlatformPrivateKeyMaterial(
           prefixedReadableZip(privateKey),
           "prefixed-vision-release.bin",
+        ),
+      /invalid archive|private-key material/i,
+    );
+  });
+
+  it("rejects a prefixed ZIP whose offsets remain relative to the archive start", () => {
+    const privateKey = Buffer.from(
+      "-----BEGIN PRIVATE KEY-----\nunadjusted-prefix-secret\n-----END PRIVATE KEY-----",
+    );
+    assert.throws(
+      () =>
+        assertNoPlatformPrivateKeyMaterial(
+          prefixedZipWithUnadjustedOffsets(privateKey),
+          "unadjusted-prefixed-vision-release.bin",
         ),
       /invalid archive|private-key material/i,
     );

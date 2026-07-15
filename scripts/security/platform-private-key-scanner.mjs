@@ -125,17 +125,20 @@ function scanZipEntries(bytes, label, state, depth) {
       const entryCount = bytes.readUInt16LE(endOffset + 10);
       const centralSize = bytes.readUInt32LE(endOffset + 12);
       const centralStart = bytes.readUInt32LE(endOffset + 16);
+      const prefixBias = endOffset - centralSize - centralStart;
       if (
         diskNumber !== 0 ||
         centralDisk !== 0 ||
         diskEntryCount !== entryCount ||
+        entryCount === 0xffff ||
         centralSize === 0xffffffff ||
         centralStart === 0xffffffff ||
-        centralStart + centralSize !== endOffset
+        prefixBias < 0
       ) {
         continue;
       }
-      let centralOffset = centralStart;
+      const centralAbsoluteStart = prefixBias + centralStart;
+      let centralOffset = centralAbsoluteStart;
       let recognizable = true;
       const entriesToCheck = Math.min(entryCount, MAX_ARCHIVE_ENTRIES + 1);
       for (let index = 0; index < entriesToCheck; index += 1) {
@@ -149,15 +152,22 @@ function scanZipEntries(bytes, label, state, depth) {
         const nameLength = bytes.readUInt16LE(centralOffset + 28);
         const extraLength = bytes.readUInt16LE(centralOffset + 30);
         const commentLength = bytes.readUInt16LE(centralOffset + 32);
+        const entryDisk = bytes.readUInt16LE(centralOffset + 34);
         const localOffset = bytes.readUInt32LE(centralOffset + 42);
+        const centralEnd =
+          centralOffset + 46 + nameLength + extraLength + commentLength;
+        const localAbsoluteOffset = prefixBias + localOffset;
         if (
-          localOffset + 30 > centralStart ||
-          bytes.readUInt32LE(localOffset) !== 0x04034b50
+          centralEnd > endOffset ||
+          entryDisk !== 0 ||
+          localOffset === 0xffffffff ||
+          localAbsoluteOffset + 30 > centralAbsoluteStart ||
+          bytes.readUInt32LE(localAbsoluteOffset) !== 0x04034b50
         ) {
           recognizable = false;
           break;
         }
-        centralOffset += 46 + nameLength + extraLength + commentLength;
+        centralOffset = centralEnd;
       }
       if (
         recognizable &&
