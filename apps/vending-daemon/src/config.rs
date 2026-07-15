@@ -222,6 +222,15 @@ fn default_audio_cue_enabled() -> bool {
     false
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAudioOutputBinding {
+    pub endpoint_id: String,
+    #[serde(default)]
+    pub friendly_name: Option<String>,
+    pub confirmed_heard_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
@@ -254,6 +263,8 @@ pub struct MachinePublicConfig {
     pub vision_request_timeout_ms: u64,
     #[serde(default = "default_machine_audio_volume")]
     pub machine_audio_volume: f64,
+    #[serde(default)]
+    pub machine_audio_output_binding: Option<MachineAudioOutputBinding>,
     #[serde(default, skip_serializing)]
     pub try_on_camera_device_id: Option<String>,
     #[serde(default)]
@@ -289,6 +300,14 @@ pub struct MachineConfigSecretsUpdate {
 pub struct MachineConfigUpdateRequest {
     pub public: MachinePublicConfig,
     pub secrets: Option<MachineConfigSecretsUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAudioSettingsUpdateRequest {
+    pub machine_audio_output_binding: MachineAudioOutputBinding,
+    pub audio_cue_settings: AudioCueSettings,
+    pub machine_audio_volume: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -551,6 +570,8 @@ pub struct LocalBringUpSettings {
     pub vision_request_timeout_ms: Option<u64>,
     #[serde(default)]
     pub machine_audio_volume: Option<f64>,
+    #[serde(default)]
+    pub machine_audio_output_binding: Option<MachineAudioOutputBinding>,
     #[serde(default)]
     pub try_on_camera_device_id: Option<String>,
     #[serde(default)]
@@ -841,6 +862,7 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_ws_url: vending_core::vision::DEFAULT_VISION_WS_URL.to_string(),
         vision_request_timeout_ms: 8_000,
         machine_audio_volume: default_machine_audio_volume(),
+        machine_audio_output_binding: None,
         try_on_camera_device_id: None,
         audio_cue_settings: AudioCueSettings::default(),
         presence_audio_enabled: None,
@@ -896,6 +918,22 @@ fn normalize_required_string(value: String, field: &str) -> Result<String, Strin
     Ok(value)
 }
 
+fn normalize_machine_audio_output_binding(
+    binding: Option<MachineAudioOutputBinding>,
+) -> Result<Option<MachineAudioOutputBinding>, String> {
+    let Some(mut binding) = binding else {
+        return Ok(None);
+    };
+    binding.endpoint_id =
+        normalize_required_string(binding.endpoint_id, "machineAudioOutputBinding.endpointId")?;
+    binding.friendly_name = normalize_optional_string(binding.friendly_name);
+    ConfigStore::validate_iso_datetime(
+        &binding.confirmed_heard_at,
+        "machineAudioOutputBinding.confirmedHeardAt invalid",
+    )?;
+    Ok(Some(binding))
+}
+
 fn normalize_http_endpoint(value: String, field: &str) -> Result<String, String> {
     let value = normalize_required_string(value, field)?
         .trim_end_matches('/')
@@ -944,6 +982,8 @@ fn normalize_local_bring_up_settings(
         .provisioning_endpoint_override
         .map(|value| normalize_http_endpoint(value, "provisioningEndpointOverride"))
         .transpose()?;
+    settings.machine_audio_output_binding =
+        normalize_machine_audio_output_binding(settings.machine_audio_output_binding)?;
     Ok(settings)
 }
 
@@ -989,6 +1029,9 @@ fn apply_local_bring_up_settings_to_public(
     }
     if let Some(value) = settings.machine_audio_volume {
         public.machine_audio_volume = value;
+    }
+    if settings.machine_audio_output_binding.is_some() {
+        public.machine_audio_output_binding = settings.machine_audio_output_binding.clone();
     }
     if settings.try_on_camera_device_id.is_some() {
         public.try_on_camera_device_id = settings.try_on_camera_device_id.clone();
@@ -1295,6 +1338,8 @@ pub fn normalize_public_config(
 
     let vision_ws_url = config.vision_ws_url.trim().to_string();
     config.try_on_camera_device_id = None;
+    config.machine_audio_output_binding =
+        normalize_machine_audio_output_binding(config.machine_audio_output_binding.take())?;
 
     if let Some(presence_audio_enabled) = config.presence_audio_enabled {
         if config.audio_cue_settings == AudioCueSettings::default() {
@@ -2388,6 +2433,7 @@ impl ConfigStore {
         settings.vision_ws_url = Some(public.vision_ws_url.clone());
         settings.vision_request_timeout_ms = Some(public.vision_request_timeout_ms);
         settings.machine_audio_volume = Some(public.machine_audio_volume);
+        settings.machine_audio_output_binding = public.machine_audio_output_binding.clone();
         settings.try_on_camera_device_id = public.try_on_camera_device_id.clone();
         settings.audio_cue_settings = Some(public.audio_cue_settings.clone());
         settings.kiosk_mode = Some(public.kiosk_mode);
@@ -2642,6 +2688,21 @@ impl ConfigStore {
         }
 
         self.save_public_config(request.public).await
+    }
+
+    pub async fn save_machine_audio_settings_update(
+        &self,
+        request: MachineAudioSettingsUpdateRequest,
+    ) -> Result<RuntimeConfigurationSummary, String> {
+        let mut settings = self
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        settings.machine_audio_output_binding = Some(request.machine_audio_output_binding);
+        settings.audio_cue_settings = Some(request.audio_cue_settings);
+        settings.machine_audio_volume = Some(request.machine_audio_volume);
+        self.write_local_bring_up_settings(&settings).await?;
+        self.load_runtime_configuration_summary().await
     }
 
     pub async fn apply_provisioning_profile(
@@ -5036,6 +5097,81 @@ mod tests {
             .expect("read config");
         let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
         assert_eq!(saved["machineAudioVolume"], 0.35);
+    }
+
+    #[tokio::test]
+    async fn save_machine_audio_settings_update_persists_binding_cues_and_volume() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let request = MachineAudioSettingsUpdateRequest {
+            machine_audio_output_binding: MachineAudioOutputBinding {
+                endpoint_id: "{0.0.0.00000000}.{field-speaker-1}".to_string(),
+                friendly_name: Some("现场喇叭".to_string()),
+                confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+            },
+            audio_cue_settings: AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: false,
+                    transaction: true,
+                },
+            },
+            machine_audio_volume: 0.42,
+        };
+
+        let summary = store
+            .save_machine_audio_settings_update(request.clone())
+            .await
+            .expect("save machine audio settings");
+
+        assert_eq!(
+            summary.effective_public.machine_audio_output_binding,
+            Some(request.machine_audio_output_binding.clone())
+        );
+        assert_eq!(
+            summary.effective_public.audio_cue_settings,
+            request.audio_cue_settings
+        );
+        assert_eq!(summary.effective_public.machine_audio_volume, 0.42);
+
+        let local = summary
+            .local_bring_up_settings
+            .expect("local bring-up settings present");
+        assert_eq!(
+            local.machine_audio_output_binding,
+            Some(request.machine_audio_output_binding.clone())
+        );
+        assert_eq!(local.audio_cue_settings, Some(request.audio_cue_settings));
+        assert_eq!(local.machine_audio_volume, Some(0.42));
+
+        let saved = tokio::fs::read_to_string(local_bring_up_settings_path(&data_dir))
+            .await
+            .expect("read local settings");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(
+            saved["machineAudioOutputBinding"]["endpointId"],
+            "{0.0.0.00000000}.{field-speaker-1}"
+        );
+        assert_eq!(
+            saved["machineAudioOutputBinding"]["friendlyName"],
+            "现场喇叭"
+        );
+        assert_eq!(
+            saved["machineAudioOutputBinding"]["confirmedHeardAt"],
+            "2026-07-15T10:00:00.000Z"
+        );
+        assert_eq!(saved["audioCueSettings"]["enabled"], true);
+        assert_eq!(saved["audioCueSettings"]["categories"]["presence"], false);
+        assert_eq!(saved["audioCueSettings"]["categories"]["transaction"], true);
+        assert_eq!(saved["machineAudioVolume"], 0.42);
     }
 
     #[test]

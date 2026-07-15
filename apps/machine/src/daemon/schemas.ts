@@ -34,6 +34,15 @@ const audioCueSettingsSchema = z.object({
     }),
 });
 
+const machineAudioOutputBindingSchema = z
+  .object({
+    endpointId: z.string().trim().min(1),
+    friendlyName: z.string().trim().min(1).nullable().default(null),
+    confirmedHeardAt: z.iso.datetime(),
+  })
+  .nullable()
+  .default(null);
+
 const configSummaryPublicSchema = z.preprocess(
   (value) => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -75,6 +84,7 @@ const configSummaryPublicSchema = z.preprocess(
     visionWsUrl: z.string(),
     visionRequestTimeoutMs: z.number().int(),
     machineAudioVolume: z.number().min(0).max(1).default(0.7),
+    machineAudioOutputBinding: machineAudioOutputBindingSchema.default(null),
     audioCueSettings: audioCueSettingsSchema.default({
       enabled: false,
       categories: {

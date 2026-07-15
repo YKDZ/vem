@@ -228,6 +228,24 @@ describe("createMachineAudioPlayback", () => {
     ]);
   });
 
+  it("passes the requested bound output device id to the active driver", async () => {
+    const driver = createMockMachineAudioPlaybackDriver();
+    const playback = createMachineAudioPlayback({
+      driver,
+      outputDeviceId: "{0.0.0.00000000}.bound-speaker",
+    });
+
+    await playback.playLocal("/assets/customer-greeting.wav");
+
+    expect(driver.requests).toEqual([
+      {
+        sourceUrl: "/assets/customer-greeting.wav",
+        volume: 1,
+        outputDeviceId: "{0.0.0.00000000}.bound-speaker",
+      },
+    ]);
+  });
+
   it("plays a local packaged audio URL through the browser driver", async () => {
     const created: MockBrowserAudio[] = [];
     const driver = createBrowserMachineAudioPlaybackDriver({
@@ -318,6 +336,72 @@ describe("createMachineAudioPlayback", () => {
       message: "native playback degraded: native output unavailable",
     });
     expect(nativeStops).toEqual([]);
+  });
+
+  it("does not fall back to browser playback when strict native output binding is required", async () => {
+    const nativeDriver = {
+      name: "native" as const,
+      playLocal: vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValue(new Error("configured audio output binding not found")),
+      stop: vi.fn(),
+    };
+    const created: MockBrowserAudio[] = [];
+    const browserDriver = createBrowserMachineAudioPlaybackDriver({
+      audioFactory: (sourceUrl) => {
+        const audio = new MockBrowserAudio(sourceUrl);
+        created.push(audio);
+        return audio;
+      },
+    });
+    const playback = createMachineAudioPlayback({
+      nativeDriver,
+      browserDriver,
+      outputDeviceId: "{0.0.0.00000000}.missing-speaker",
+      requireNativeOutputBinding: true,
+    });
+
+    const played = await playback.playLocal("/assets/payment-succeeded.wav");
+
+    expect(played).toBe(false);
+    expect(nativeDriver.playLocal).toHaveBeenCalledTimes(1);
+    expect(created).toHaveLength(0);
+    expect(playback.currentDriver()).toBe("native");
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "failed",
+      driver: "native",
+      sourceUrl: "/assets/payment-succeeded.wav",
+      message: "configured audio output binding not found",
+    });
+  });
+
+  it("fails before playback when strict native output binding is required but no output device is confirmed", async () => {
+    const nativeDriver = createMockMachineAudioPlaybackDriver("native");
+    const created: MockBrowserAudio[] = [];
+    const browserDriver = createBrowserMachineAudioPlaybackDriver({
+      audioFactory: (sourceUrl) => {
+        const audio = new MockBrowserAudio(sourceUrl);
+        created.push(audio);
+        return audio;
+      },
+    });
+    const playback = createMachineAudioPlayback({
+      nativeDriver,
+      browserDriver,
+      requireNativeOutputBinding: true,
+    });
+
+    const played = await playback.playLocal("/assets/payment-succeeded.wav");
+
+    expect(played).toBe(false);
+    expect(nativeDriver.requests).toEqual([]);
+    expect(created).toHaveLength(0);
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "failed",
+      driver: "native",
+      sourceUrl: "/assets/payment-succeeded.wav",
+      message: "confirmed audio output binding is required",
+    });
   });
 
   it("falls back to browser playback when native playback is unavailable", async () => {

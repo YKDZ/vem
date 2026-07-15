@@ -433,6 +433,15 @@ export class DaemonApiClient {
     );
   }
 
+  async saveMachineAudioSettings(body: unknown): Promise<ConfigSummary> {
+    return configSummaryFromRuntimeConfigurationSummary(
+      await this.request("/v1/config/audio-settings", {
+        method: "PUT",
+        body,
+      }),
+    );
+  }
+
   async saveConfig(_body: unknown): Promise<never> {
     throw new DaemonUnavailableError(
       "直接配置编辑已禁用；请通过守护进程 Bring-Up 流程完成部署。",

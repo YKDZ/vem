@@ -2,10 +2,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use base64::prelude::*;
+use serde::Serialize;
 
 #[cfg(windows)]
 use {
-    rodio::{cpal::traits::HostTrait, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player},
+    rodio::{
+        cpal::traits::{DeviceTrait, HostTrait},
+        Decoder, DeviceSinkBuilder, MixerDeviceSink, Player,
+    },
     std::fs::File,
     std::io::{BufReader, Cursor},
 };
@@ -39,6 +43,16 @@ enum MachineAudioSourcePath {
 pub struct PlayMachineAudioRequest {
     pub source_url: String,
     pub volume: f32,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub output_device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAudioOutputCandidate {
+    pub endpoint_id: String,
+    pub friendly_name: String,
+    pub is_default: bool,
 }
 
 impl Default for MachineAudioState {
@@ -110,7 +124,7 @@ impl MachineAudioState {
         {
             self.stop();
             let source = MachineAudioSource::from_source_url(&input.source_url, resolve_asset)?;
-            let sink = open_os_default_sink()?;
+            let sink = open_requested_output_sink(input.output_device_id.as_deref())?;
             let player = Player::connect_new(&sink.mixer());
             player.set_volume(normalize_volume(input.volume));
             match source {
@@ -156,12 +170,14 @@ pub fn play_machine_audio(
     state: tauri::State<'_, MachineAudioState>,
     source_url: String,
     volume: Option<f32>,
+    output_device_id: Option<String>,
 ) -> Result<(), String> {
     let resolver = app.asset_resolver();
     state.play(
         PlayMachineAudioRequest {
             source_url,
             volume: volume.unwrap_or_else(default_volume),
+            output_device_id,
         },
         |asset_path| {
             Ok(resolver.get(asset_path.to_string()).and_then(|asset| {
@@ -179,6 +195,19 @@ pub fn play_machine_audio(
 pub fn stop_machine_audio(state: tauri::State<'_, MachineAudioState>) -> Result<(), String> {
     state.stop();
     Ok(())
+}
+
+#[tauri::command]
+pub fn list_machine_audio_outputs() -> Result<Vec<MachineAudioOutputCandidate>, String> {
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+
+    #[cfg(windows)]
+    {
+        list_windows_audio_outputs()
+    }
 }
 
 fn default_volume() -> f32 {
@@ -201,6 +230,82 @@ fn open_os_default_sink() -> Result<MixerDeviceSink, String> {
             .and_then(|builder| builder.open_stream())
             .map_err(|error| error.to_string())
     })
+}
+
+#[cfg(windows)]
+fn open_requested_output_sink(output_device_id: Option<&str>) -> Result<MixerDeviceSink, String> {
+    match output_device_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(device_id) => {
+            let device = find_output_device_by_id(device_id)?
+                .ok_or_else(|| "configured audio output binding not found".to_string())?;
+            DeviceSinkBuilder::from_device(device)
+                .and_then(|builder| builder.open_stream())
+                .map_err(|error| format!("open configured audio output failed: {error}"))
+        }
+        None => open_os_default_sink(),
+    }
+}
+
+#[cfg(windows)]
+fn list_windows_audio_outputs() -> Result<Vec<MachineAudioOutputCandidate>, String> {
+    let host = rodio::cpal::default_host();
+    let default_output_id = host
+        .default_output_device()
+        .and_then(|device| device.id().ok().map(|id| id.1));
+    let mut outputs = host
+        .output_devices()
+        .map_err(|error| format!("enumerate audio outputs failed: {error}"))?
+        .map(|device| {
+            let endpoint_id = device
+                .id()
+                .map_err(|error| format!("read audio output identity failed: {error}"))?
+                .1;
+            let friendly_name = device
+                .name()
+                .or_else(|_| {
+                    device
+                        .description()
+                        .map(|description| description.name().to_string())
+                })
+                .map_err(|error| format!("read audio output name failed: {error}"))?;
+            Ok(MachineAudioOutputCandidate {
+                is_default: default_output_id
+                    .as_deref()
+                    .is_some_and(|default_id| default_id == endpoint_id),
+                endpoint_id,
+                friendly_name,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    outputs.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.friendly_name.cmp(&right.friendly_name))
+            .then_with(|| left.endpoint_id.cmp(&right.endpoint_id))
+    });
+    Ok(outputs)
+}
+
+#[cfg(windows)]
+fn find_output_device_by_id(output_device_id: &str) -> Result<Option<rodio::cpal::Device>, String> {
+    let host = rodio::cpal::default_host();
+    for device in host
+        .output_devices()
+        .map_err(|error| format!("enumerate audio outputs failed: {error}"))?
+    {
+        let device_id = device
+            .id()
+            .map_err(|error| format!("read audio output identity failed: {error}"))?
+            .1;
+        if device_id == output_device_id {
+            return Ok(Some(device));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]

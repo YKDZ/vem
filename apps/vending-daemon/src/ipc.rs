@@ -17,7 +17,7 @@ use axum::{
         HeaderMap, Method, StatusCode,
     },
     response::{IntoResponse, Json},
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -870,6 +870,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
             get(legacy_config_endpoint_disabled).put(legacy_config_endpoint_disabled),
         )
         .route("/v1/config/summary", get(get_config_summary))
+        .route(
+            "/v1/config/audio-settings",
+            put(update_machine_audio_settings),
+        )
         .route("/v1/provisioning/claim", post(claim_machine))
         .route("/v1/maintenance/status", get(maintenance_status))
         .route("/v1/maintenance/sessions", post(create_maintenance_session))
@@ -1798,6 +1802,41 @@ async fn get_config_summary(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorMessage {
                 code: "config_load_failed",
+                message: error,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn update_machine_audio_settings(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(payload): Json<crate::config::MachineAudioSettingsUpdateRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_non_bring_up_maintenance_authorization(
+        &ctx,
+        &headers,
+        "update_machine_audio_settings",
+    )
+    .await
+    {
+        return response;
+    }
+
+    match ctx
+        .config_store
+        .save_machine_audio_settings_update(payload)
+        .await
+    {
+        Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_audio_settings_invalid",
                 message: error,
             }),
         )
@@ -8821,6 +8860,134 @@ mod tests {
             .expect("response body");
         let payload: serde_json::Value = serde_json::from_slice(&body).expect("response json");
         assert_eq!(payload["code"], "ordinary_config_endpoint_disabled");
+    }
+
+    #[tokio::test]
+    async fn machine_audio_settings_endpoint_rejects_unauthorized_maintenance_mutation() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: false });
+        let app = build_router(ctx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/v1/config/audio-settings")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({
+                            "machineAudioOutputBinding": {
+                                "endpointId": "{0.0.0.00000000}.{field-speaker-1}",
+                                "friendlyName": "现场喇叭",
+                                "confirmedHeardAt": "2026-07-15T10:00:00.000Z"
+                            },
+                            "audioCueSettings": {
+                                "enabled": true,
+                                "categories": {
+                                    "presence": false,
+                                    "transaction": true
+                                }
+                            },
+                            "machineAudioVolume": 0.42
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(
+            payload["code"],
+            "protected_maintenance_authorization_denied"
+        );
+    }
+
+    #[tokio::test]
+    async fn machine_audio_settings_endpoint_persists_binding_cues_and_volume() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: true });
+        let app = build_router(ctx);
+
+        let response = put_json(
+            &app,
+            "/v1/config/audio-settings",
+            "token-1",
+            json!({
+                "machineAudioOutputBinding": {
+                    "endpointId": "{0.0.0.00000000}.{field-speaker-1}",
+                    "friendlyName": "现场喇叭",
+                    "confirmedHeardAt": "2026-07-15T10:00:00.000Z"
+                },
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": {
+                        "presence": false,
+                        "transaction": true
+                    }
+                },
+                "machineAudioVolume": 0.42
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(
+            payload["effectivePublic"]["machineAudioOutputBinding"]["endpointId"],
+            "{0.0.0.00000000}.{field-speaker-1}"
+        );
+        assert_eq!(
+            payload["effectivePublic"]["machineAudioOutputBinding"]["friendlyName"],
+            "现场喇叭"
+        );
+        assert_eq!(
+            payload["effectivePublic"]["machineAudioOutputBinding"]["confirmedHeardAt"],
+            "2026-07-15T10:00:00.000Z"
+        );
+        assert_eq!(
+            payload["effectivePublic"]["audioCueSettings"]["enabled"],
+            true
+        );
+        assert_eq!(
+            payload["effectivePublic"]["audioCueSettings"]["categories"]["presence"],
+            false
+        );
+        assert_eq!(
+            payload["effectivePublic"]["audioCueSettings"]["categories"]["transaction"],
+            true
+        );
+        assert_eq!(payload["effectivePublic"]["machineAudioVolume"], 0.42);
+        assert_eq!(
+            payload["localBringUpSettings"]["machineAudioOutputBinding"]["endpointId"],
+            "{0.0.0.00000000}.{field-speaker-1}"
+        );
+        assert_eq!(payload["localBringUpSettings"]["machineAudioVolume"], 0.42);
     }
 
     #[tokio::test]

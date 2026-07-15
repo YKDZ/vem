@@ -50,12 +50,14 @@ describe("Tauri native Machine Audio playback driver", () => {
 
     await driver?.playLocal("/assets/payment-succeeded.wav", {
       volume: 0.35,
+      outputDeviceId: "{0.0.0.00000000}.bound-speaker",
     });
 
     expect(driver?.name).toBe("native");
     expect(callTauriCommandMock).toHaveBeenCalledWith("play_machine_audio", {
       sourceUrl: "/assets/payment-succeeded.wav",
       volume: 0.35,
+      outputDeviceId: "{0.0.0.00000000}.bound-speaker",
     });
   });
 
