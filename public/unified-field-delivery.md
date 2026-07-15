@@ -7,7 +7,24 @@
 - Power-on 前的全部材料放在仓库外临时目录；现场传输通道只负责传输、调用、取证，不得直接替换 exe。
 - 非 ISO 仍然通过 `apply-managed-update.ps1` 执行 daemon/UI 更新、校验、服务/任务生命周期和 rollback。
 
-## 标准准备入口
+## 首次 L3 Vision 预批准阶段
+
+首次真实 Vision 现场测试还没有 conformance，因此也不可能已经具备合法的 Factory delivery。先只输入 exact runtime artifacts、自包含 Vision preapproval delivery 和操作员钉住的 digest：
+
+```bash
+node scripts/windows/prepare-unified-field-delivery.mjs prepare-preapproval \
+  --output /tmp/vem-field-preapproval-20260715T120000Z \
+  --update-id field-20260715T120000Z \
+  --runtime-directory /tmp/windows-runtime-artifacts \
+  --vision-preapproval-directory /tmp/vision-preapproval/VEM-VISION-PREAPPROVAL \
+  --expected-vision-bundle-digest sha256:<operator-pinned-exact-bundle-digest>
+```
+
+这个阶段不接受或要求 `--vision-factory-directory`，也不会输出 `vision-factory/`。输出只包含当前适用的 runtime、`managed-update.json`、`candidate.json`、`vision-preapproval/`、`progressive-acceptance.json`、`APPLY-FIELD-UPDATE.ps1` 和 `SHA256SUMS`。APPLY 指引在 Candidate conformance 后停止，不会提前调用 `provision-vision-factory-release.ps1`，也不声明 Factory acceptance。Vision Python 未显式指定时固定为 3.11.9。
+
+取得 `vision-conformance.json` 后，再针对同一个 immutable Candidate digest 运行 `experimental-vision-candidate.mjs finalize`。后续 final stage 必须复用同一个 update ID、同一个 runtime 目录和同一个 preapproval 目录；因此 runtime bytes 与 `managed-update.json` 保持完全相同，只增加 conformance 所授权的 Factory delivery。不得重建 Candidate、维护另一份 managed update，或创建第二套 Vision installer。
+
+## Factory final stage 准备入口
 
 当 exact runtime artifact 目录、Vision preapproval delivery、Vision experimental Factory delivery 都已具备时：
 

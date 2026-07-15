@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -217,6 +218,152 @@ test("prepare stages one exact delivery unit for managed update and progressive 
       manifest.components[1].sidecars[0].targetPath,
       "C:\\VEM\\bringup\\WebView2Loader.dll",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepare-preapproval stages the L3 delivery without Factory inputs", async () => {
+  const root = fixtureRoot();
+  try {
+    const { runtime, descriptor } = await createRuntimeInput(root);
+    const expectedVisionDigest = "sha256:" + "b".repeat(64);
+    const preapproval = createVisionPreapproval(root, expectedVisionDigest);
+    const output = join(root, "out");
+    const script = join(
+      process.cwd(),
+      "scripts/windows/prepare-unified-field-delivery.mjs",
+    );
+    const { execFileSync } = await import("node:child_process");
+
+    execFileSync(process.execPath, [
+      script,
+      "prepare-preapproval",
+      "--output",
+      output,
+      "--update-id",
+      "field-preapproval-20260715T120000Z",
+      "--runtime-directory",
+      runtime,
+      "--vision-preapproval-directory",
+      preapproval,
+      "--expected-vision-bundle-digest",
+      expectedVisionDigest,
+    ]);
+
+    assert.equal(existsSync(join(output, "vision-factory")), false);
+    assert.equal(
+      existsSync(
+        join(
+          output,
+          "vision-preapproval",
+          "VEM-VISION-PREAPPROVAL",
+          "preapproval-manifest.json",
+        ),
+      ),
+      true,
+    );
+    const stagedCandidate = JSON.parse(
+      readFileSync(join(output, "candidate.json"), "utf8"),
+    );
+    assert.equal(stagedCandidate.vision.pythonVersion, "3.11.9");
+    assert.equal(stagedCandidate.vision.experimentalAcceptanceDigest, null);
+
+    const stagedManifest = JSON.parse(
+      readFileSync(join(output, "managed-update.json"), "utf8"),
+    );
+    const runtimeByRole = Object.fromEntries(
+      descriptor.artifacts.map((artifact) => [artifact.role, artifact]),
+    );
+    assert.equal(
+      `sha256:${stagedManifest.components[0].sha256}`,
+      runtimeByRole["vem-daemon"].digest,
+    );
+    assert.equal(
+      `sha256:${stagedManifest.components[1].sha256}`,
+      runtimeByRole["vem-machine-ui"].digest,
+    );
+    assert.equal(
+      `sha256:${stagedManifest.components[1].sidecars[0].sha256}`,
+      runtimeByRole["webview2-loader"].digest,
+    );
+
+    const stagedPreapprovalRoot = join(
+      output,
+      "vision-preapproval",
+      "VEM-VISION-PREAPPROVAL",
+    );
+    const stagedPreapprovalManifest = JSON.parse(
+      readFileSync(join(stagedPreapprovalRoot, "preapproval-manifest.json")),
+    );
+    assert.equal(
+      sha(readFileSync(join(stagedPreapprovalRoot, "bundle.bin"))),
+      stagedPreapprovalManifest.files["bundle.bin"],
+    );
+
+    const stagedSums = new Map(
+      readFileSync(join(output, "SHA256SUMS"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const [digest, relativePath] = line.split("  ");
+          return [relativePath, `sha256:${digest}`];
+        }),
+    );
+    assert.equal(
+      stagedSums.get("runtime/vending-daemon.exe"),
+      runtimeByRole["vem-daemon"].digest,
+    );
+    assert.equal(
+      stagedSums.get("vision-preapproval/VEM-VISION-PREAPPROVAL/bundle.bin"),
+      stagedPreapprovalManifest.files["bundle.bin"],
+    );
+
+    const applyInstructions = readFileSync(
+      join(output, "APPLY-FIELD-UPDATE.ps1"),
+      "utf8",
+    );
+    assert.doesNotMatch(
+      applyInstructions,
+      /provision-vision-factory-release|vision-factory/i,
+    );
+    assert.match(applyInstructions, /same exact runtime bytes/i);
+    assert.match(applyInstructions, /same managed-update\.json/i);
+    assert.match(applyInstructions, /do not create a second Vision installer/i);
+    assert.match(applyInstructions, /does not claim Factory acceptance/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepare-preapproval requires an operator-pinned Vision digest", async () => {
+  const root = fixtureRoot();
+  try {
+    const { runtime } = await createRuntimeInput(root);
+    const preapproval = createVisionPreapproval(
+      root,
+      "sha256:" + "c".repeat(64),
+    );
+    const script = join(
+      process.cwd(),
+      "scripts/windows/prepare-unified-field-delivery.mjs",
+    );
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync(process.execPath, [
+      script,
+      "prepare-preapproval",
+      "--output",
+      join(root, "out"),
+      "--update-id",
+      "field-preapproval-20260715T130000Z",
+      "--runtime-directory",
+      runtime,
+      "--vision-preapproval-directory",
+      preapproval,
+    ]);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr.toString(), /expected vision bundle digest/i);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
