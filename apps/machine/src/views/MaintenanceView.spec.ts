@@ -3,7 +3,6 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-<<<<<<< HEAD
 import { DaemonUnavailableError } from "@/daemon/client";
 import {
   deviceBindingSnapshotSchema,
@@ -188,7 +187,6 @@ function stockMaintenanceTaskFixture(
         reconciliationReason: null,
       },
     ],
-<<<<<<< HEAD
     discoveryDiagnostics: [],
     source: "local_stock",
     planogramVersion: "PLAN-1",
