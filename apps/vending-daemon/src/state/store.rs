@@ -16,8 +16,8 @@ use vending_core::domain::{
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
-    MIGRATION_V15, MIGRATION_V16, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
-    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4,
+    MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -157,6 +157,8 @@ pub enum StoreError {
     InvalidCheckoutFlowAction(String),
     #[error("manual dispense diagnostic capacity limit reached")]
     ManualDispenseDiagnosticCapacity,
+    #[error("manual dispense idempotency key belongs to a different principal or request")]
+    ManualDispenseIdempotencyConflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +270,7 @@ pub struct OrderSessionUpsert<'a> {
 pub struct ManualDispenseDiagnostic {
     pub diagnostic_id: String,
     pub idempotency_key: String,
+    pub request_fingerprint: String,
     pub status: String,
     pub operator_id: String,
     pub session_correlation_id: String,
@@ -866,6 +869,18 @@ impl LocalStateStore {
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
+        if current_version < 17 {
+            let columns: Vec<(String,)> =
+                sqlx::query_as("SELECT name FROM pragma_table_info('manual_dispense_diagnostics')")
+                    .fetch_all(&self.pool)
+                    .await?;
+            if !columns.iter().any(|(name,)| name == "request_fingerprint") {
+                sqlx::query(MIGRATION_V17)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(StoreError::Sqlx)?;
+            }
+        }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
         Ok(())
     }
@@ -890,10 +905,17 @@ impl LocalStateStore {
         &self,
         record: &ManualDispenseDiagnostic,
     ) -> Result<ManualDispenseReservation, StoreError> {
+        self.prune_manual_dispense_diagnostics().await?;
         let mut tx = self.begin_immediate_write_transaction().await?;
         let existing =
             manual_dispense_by_idempotency_in_tx(&mut tx, &record.idempotency_key).await?;
         if let Some(existing) = existing {
+            if existing.operator_id != record.operator_id
+                || existing.request_fingerprint != record.request_fingerprint
+            {
+                tx.rollback().await?;
+                return Err(StoreError::ManualDispenseIdempotencyConflict);
+            }
             tx.commit().await?;
             return Ok(ManualDispenseReservation::Existing(existing));
         }
@@ -907,8 +929,9 @@ impl LocalStateStore {
         sqlx::query(
             "INSERT INTO manual_dispense_diagnostics(
               diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
-              controller_json,command_json,started_at,reconciliation_status,expires_at
-             ) VALUES (?1,?2,'pending',?3,?4,?5,?6,?7,'open',?8)",
+              controller_json,command_json,started_at,reconciliation_status,expires_at,
+              request_fingerprint
+             ) VALUES (?1,?2,'pending',?3,?4,?5,?6,?7,'open',?8,?9)",
         )
         .bind(&record.diagnostic_id)
         .bind(&record.idempotency_key)
@@ -918,6 +941,7 @@ impl LocalStateStore {
         .bind(record.command.to_string())
         .bind(&record.started_at)
         .bind(&record.expires_at)
+        .bind(&record.request_fingerprint)
         .execute(tx.as_mut())
         .await?;
         tx.commit().await?;
@@ -990,8 +1014,91 @@ impl LocalStateStore {
     }
 
     pub async fn prune_manual_dispense_diagnostics(&self) -> Result<u64, StoreError> {
-        Ok(sqlx::query("DELETE FROM manual_dispense_diagnostics WHERE expires_at < ?1 AND reconciliation_status='reconciled'")
-            .bind(now_iso()).execute(&self.pool).await?.rows_affected())
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        let expired = sqlx::query(
+            "DELETE FROM manual_dispense_diagnostics
+             WHERE expires_at < ?1 AND reconciliation_status='reconciled'",
+        )
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?
+        .rows_affected();
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM manual_dispense_diagnostics")
+            .fetch_one(tx.as_mut())
+            .await?;
+        let overflow = (count.0 - (MANUAL_DISPENSE_DIAGNOSTIC_MAX_ENTRIES - 1)).max(0);
+        let bounded = if overflow > 0 {
+            sqlx::query(
+                "DELETE FROM manual_dispense_diagnostics
+                 WHERE diagnostic_id IN (
+                   SELECT diagnostic_id FROM manual_dispense_diagnostics
+                   WHERE reconciliation_status='reconciled'
+                   ORDER BY COALESCE(completed_at,started_at),diagnostic_id
+                   LIMIT ?1
+                 )",
+            )
+            .bind(overflow)
+            .execute(tx.as_mut())
+            .await?
+            .rows_affected()
+        } else {
+            0
+        };
+        tx.commit().await?;
+        Ok(expired + bounded)
+    }
+
+    pub async fn reconcile_manual_dispense_diagnostic(
+        &self,
+        diagnostic_id: &str,
+        stock_count_movement_id: &str,
+    ) -> Result<ManualDispenseDiagnostic, StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        let diagnostic = manual_dispense_by_id_in_tx(&mut tx, diagnostic_id)
+            .await?
+            .ok_or(StoreError::Sqlx(sqlx::Error::RowNotFound))?;
+        let diagnostic_slot = diagnostic
+            .command
+            .get("slotCode")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let evidence: Option<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT s.slot_code,y.status,y.platform_receipt_json
+             FROM stock_movements m
+             JOIN machine_planogram_slots s
+               ON s.planogram_version=m.planogram_version AND s.slot_id=m.slot_id
+             JOIN stock_movement_sync y ON y.movement_id=m.movement_id
+             WHERE m.movement_id=?1 AND m.movement_type='stock_count_correction'",
+        )
+        .bind(stock_count_movement_id)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        let Some((counted_slot, status, receipt)) = evidence else {
+            return Err(StoreError::InvalidStockInput(
+                "manual dispense reconciliation requires an explicit stock count movement"
+                    .to_string(),
+            ));
+        };
+        if counted_slot != diagnostic_slot || status != "accepted" || receipt.is_none() {
+            return Err(StoreError::InvalidStockInput(
+                "stock count must match the diagnostic slot and carry a Platform acceptance receipt"
+                    .to_string(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE manual_dispense_diagnostics
+             SET reconciliation_status='reconciled'
+             WHERE diagnostic_id=?1 AND reconciliation_status='open'",
+        )
+        .bind(diagnostic_id)
+        .execute(tx.as_mut())
+        .await?;
+        let reconciled = manual_dispense_by_id_in_tx(&mut tx, diagnostic_id)
+            .await?
+            .ok_or(StoreError::Sqlx(sqlx::Error::RowNotFound))?;
+        tx.commit().await?;
+        self.prune_manual_dispense_diagnostics().await?;
+        Ok(reconciled)
     }
 
     async fn record_stock_ledger_quarantine(
@@ -1382,37 +1489,53 @@ impl LocalStateStore {
     pub async fn record_dispense_progress(
         &self,
         event: &DispenseProgressEvent,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
         let row: Option<(Option<String>, String)> = sqlx::query_as(
             "SELECT last_backend_status_json,next_action FROM order_sessions WHERE order_no=?1",
         )
         .bind(&event.order_no)
-        .fetch_optional(&self.pool)
+        .fetch_optional(tx.as_mut())
         .await?;
         let Some((last_backend_status_json, next_action)) = row else {
-            return Ok(());
+            tx.rollback().await?;
+            return Ok(false);
         };
         if next_action != "dispensing" {
-            return Ok(());
+            tx.rollback().await?;
+            return Ok(false);
         }
 
         let mut backend_status = last_backend_status_json
             .as_deref()
             .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
             .unwrap_or_else(|| serde_json::json!({}));
+        let current_command_no = backend_status
+            .pointer("/vending/commandNo")
+            .and_then(|value| value.as_str());
+        if current_command_no != Some(event.command_no.as_str()) {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let previous = backend_status.clone();
         patch_backend_status_for_dispense_progress(&mut backend_status, event);
+        if backend_status == previous {
+            tx.rollback().await?;
+            return Ok(false);
+        }
 
         sqlx::query(
             "UPDATE order_sessions
              SET last_backend_status_json=?2, updated_at=?3
-             WHERE order_no=?1",
+             WHERE order_no=?1 AND next_action='dispensing'",
         )
         .bind(&event.order_no)
         .bind(backend_status.to_string())
         .bind(now_iso())
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
-        Ok(())
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn record_command_result_and_enqueue_tx(
@@ -1460,6 +1583,148 @@ impl LocalStateStore {
 
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// Persists the physical controller outcome before any derived write.  A
+    /// duplicate command can therefore repair the remaining side effects
+    /// without ever issuing the physical dispense again.
+    pub async fn record_command_result_journal(
+        &self,
+        command: &DispenseCommandPayload,
+        result: &DispenseResultPayload,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        upsert_command_received_in_tx(&mut tx, command).await?;
+        let existing: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT result_payload_json FROM command_log WHERE command_no=?1")
+                .bind(&command.command_no)
+                .fetch_optional(tx.as_mut())
+                .await?;
+        if existing.and_then(|row| row.0).is_some() {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let final_status = if result.success {
+            "succeeded"
+        } else {
+            "failed"
+        };
+        let changed = sqlx::query(
+            "UPDATE command_log
+             SET status=?2,result_payload_json=?3,error_code=?4,error_message=?5,updated_at=?6
+             WHERE command_no=?1 AND result_payload_json IS NULL",
+        )
+        .bind(&command.command_no)
+        .bind(final_status)
+        .bind(serde_json::to_string(result)?)
+        .bind(&result.error_code)
+        .bind(&result.message)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?
+        .rows_affected()
+            == 1;
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    /// Atomically projects a journaled controller result into the result
+    /// outbox, local order terminal state and (for F2 success) the stock
+    /// ledger/projections.  The method is idempotent and intentionally fails
+    /// closed when the command's physical slot cannot be resolved.
+    pub async fn commit_journaled_dispense_side_effects(
+        &self,
+        command: &DispenseCommandPayload,
+        result: &DispenseResultPayload,
+        result_event: &OutboxInput,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        let journaled: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT result_payload_json FROM command_log WHERE command_no=?1")
+                .bind(&command.command_no)
+                .fetch_optional(tx.as_mut())
+                .await?;
+        let journaled = journaled.and_then(|row| row.0).ok_or_else(|| {
+            StoreError::InvalidStockInput(
+                "dispense result side effects require a durable controller result journal"
+                    .to_string(),
+            )
+        })?;
+        let journaled_result: DispenseResultPayload = serde_json::from_str(&journaled)?;
+        if journaled_result != *result {
+            return Err(StoreError::InvalidStockInput(
+                "dispense result journal is immutable".to_string(),
+            ));
+        }
+
+        let outbox_existed: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM outbox_events WHERE id=?1")
+                .bind(&result_event.id)
+                .fetch_optional(tx.as_mut())
+                .await?;
+        let movement_id = format!("dispense:{}", command.command_no);
+        let movement_existed: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM stock_movements WHERE movement_id=?1")
+                .bind(&movement_id)
+                .fetch_optional(tx.as_mut())
+                .await?;
+
+        let order_row: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT last_backend_status_json,next_action FROM order_sessions WHERE order_no=?1",
+        )
+        .bind(&command.order_no)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        let Some((last_backend_status_json, next_action)) = order_row else {
+            if result.success {
+                return Err(StoreError::InvalidStockInput(
+                    "dispense result order session is missing".to_string(),
+                ));
+            }
+            insert_outbox_in_tx(&mut tx, result_event).await?;
+            tx.commit().await?;
+            return Ok(outbox_existed.is_none());
+        };
+        let mut backend_status = last_backend_status_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let current_command_no = backend_status
+            .pointer("/vending/commandNo")
+            .and_then(|value| value.as_str());
+        if current_command_no != Some(command.command_no.as_str()) {
+            return Err(StoreError::InvalidStockInput(
+                "dispense result does not belong to the order session's current command"
+                    .to_string(),
+            ));
+        }
+
+        if result.success {
+            apply_dispense_success_to_local_stock_in_tx(&mut tx, command, &movement_id).await?;
+        }
+        insert_outbox_in_tx(&mut tx, result_event).await?;
+        patch_backend_status_for_dispense_result(&mut backend_status, command, result);
+        let (status, terminal_action) = if result.success {
+            ("succeeded", "success")
+        } else {
+            ("failed", "dispense_failed")
+        };
+        sqlx::query(
+            "UPDATE order_sessions
+             SET status=?2,next_action=?3,last_backend_status_json=?4,updated_at=?5
+             WHERE order_no=?1",
+        )
+        .bind(&command.order_no)
+        .bind(status)
+        .bind(terminal_action)
+        .bind(backend_status.to_string())
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?;
+        tx.commit().await?;
+        Ok(outbox_existed.is_none()
+            || (result.success && movement_existed.is_none())
+            || next_action == "dispensing")
     }
 
     pub async fn apply_dispense_result_to_order_session(
@@ -6330,6 +6595,98 @@ fn merge_backend_payment_code_attempt(
     Ok(Some(serde_json::Value::Object(merged)))
 }
 
+async fn apply_dispense_success_to_local_stock_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    command: &DispenseCommandPayload,
+    movement_id: &str,
+) -> Result<(), StoreError> {
+    let row: Option<(String, String, String, i64, String, String, i64)> = sqlx::query_as(
+        "SELECT s.planogram_version,s.slot_id,s.slot_code,s.capacity,s.inventory_id,s.variant_id,c.physical_stock
+         FROM machine_planogram_slots s
+         JOIN machine_planogram_versions v
+           ON v.planogram_version=s.planogram_version AND v.active=1
+         JOIN current_stock_projection c
+           ON c.planogram_version=s.planogram_version AND c.slot_id=s.slot_id
+         WHERE s.slot_code=?1 AND s.layer_no=?2 AND s.cell_no=?3
+         LIMIT 1",
+    )
+    .bind(&command.slot.slot_code)
+    .bind(command.slot.layer_no)
+    .bind(command.slot.cell_no)
+    .fetch_optional(tx.as_mut())
+    .await?;
+    let Some((
+        planogram_version,
+        slot_id,
+        slot_code,
+        capacity,
+        inventory_id,
+        variant_id,
+        physical_stock,
+    )) = row
+    else {
+        return Err(StoreError::InvalidStockInput(format!(
+            "dispense slot {} ({},{}) is missing from the active counted planogram",
+            command.slot.slot_code, command.slot.layer_no, command.slot.cell_no
+        )));
+    };
+
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT 1 FROM stock_movements WHERE movement_id=?1")
+            .bind(movement_id)
+            .fetch_optional(tx.as_mut())
+            .await?;
+    if existing.is_some() {
+        return Ok(());
+    }
+    let quantity = i64::from(command.quantity);
+    let after_quantity = physical_stock
+        .checked_sub(quantity)
+        .filter(|value| *value >= 0)
+        .ok_or_else(|| {
+            StoreError::InvalidStockInput(format!(
+                "dispense quantity exceeds counted stock for slot {}",
+                command.slot.slot_code
+            ))
+        })?;
+    let occurred_at = now_iso();
+    let slot_mapping_snapshot = serde_json::json!({
+        "slotCode": slot_code,
+        "capacity": capacity,
+        "inventoryId": inventory_id,
+        "variantId": variant_id,
+    });
+    sqlx::query(
+        "INSERT INTO stock_movements(
+           movement_id,planogram_version,slot_id,movement_type,quantity,
+           before_quantity,after_quantity,slot_mapping_snapshot_json,
+           source,attributed_to,occurred_at
+         ) VALUES (?1,?2,?3,'dispense_succeeded',?4,?5,?6,?7,'vending_command',?8,?9)",
+    )
+    .bind(movement_id)
+    .bind(&planogram_version)
+    .bind(&slot_id)
+    .bind(quantity)
+    .bind(physical_stock)
+    .bind(after_quantity)
+    .bind(slot_mapping_snapshot.to_string())
+    .bind(&command.command_no)
+    .bind(occurred_at)
+    .execute(tx.as_mut())
+    .await?;
+    upsert_stock_projection_in_tx(
+        tx,
+        &planogram_version,
+        &slot_id,
+        after_quantity,
+        capacity,
+        false,
+    )
+    .await?;
+    upsert_sale_view_projection_in_tx(tx, &planogram_version, &slot_id).await?;
+    Ok(())
+}
+
 fn patch_backend_status_for_dispense_result(
     backend_status: &mut serde_json::Value,
     command: &DispenseCommandPayload,
@@ -6458,6 +6815,15 @@ fn patch_backend_status_for_dispense_progress(
     backend_status: &mut serde_json::Value,
     event: &DispenseProgressEvent,
 ) {
+    let incoming_rank = dispense_progress_rank(&event.stage);
+    let current_rank = backend_status
+        .pointer("/vending/fulfillmentProgressStage")
+        .and_then(|value| value.as_str())
+        .map(dispense_progress_name_rank)
+        .unwrap_or(0);
+    if incoming_rank < current_rank {
+        return;
+    }
     if !backend_status.is_object() {
         *backend_status = serde_json::json!({});
     }
@@ -6479,15 +6845,6 @@ fn patch_backend_status_for_dispense_progress(
         *vending = serde_json::json!({});
     }
     if let Some(vending) = vending.as_object_mut() {
-        let incoming_rank = dispense_progress_rank(&event.stage);
-        let current_rank = vending
-            .get("fulfillmentProgressStage")
-            .and_then(|value| value.as_str())
-            .map(dispense_progress_name_rank)
-            .unwrap_or(0);
-        if incoming_rank < current_rank {
-            return;
-        }
         vending.insert(
             "fulfillmentProgressStage".to_string(),
             serde_json::Value::String(dispense_progress_stage_name(&event.stage).to_string()),
@@ -6667,6 +7024,7 @@ type ManualDispenseRow = (
     Option<String>,
     String,
     String,
+    Option<String>,
 );
 
 async fn manual_dispense_by_idempotency_in_tx(
@@ -6676,7 +7034,7 @@ async fn manual_dispense_by_idempotency_in_tx(
     let row: Option<ManualDispenseRow> = sqlx::query_as(
         "SELECT diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
          controller_json,command_json,started_at,completed_at,raw_result_json,
-         normalized_result_json,reconciliation_status,expires_at
+         normalized_result_json,reconciliation_status,expires_at,request_fingerprint
          FROM manual_dispense_diagnostics WHERE idempotency_key=?1",
     )
     .bind(key)
@@ -6692,7 +7050,7 @@ async fn manual_dispense_by_id_in_tx(
     let row: Option<ManualDispenseRow> = sqlx::query_as(
         "SELECT diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
          controller_json,command_json,started_at,completed_at,raw_result_json,
-         normalized_result_json,reconciliation_status,expires_at
+         normalized_result_json,reconciliation_status,expires_at,request_fingerprint
          FROM manual_dispense_diagnostics WHERE diagnostic_id=?1",
     )
     .bind(id)
@@ -6704,14 +7062,40 @@ async fn manual_dispense_by_id_in_tx(
 fn to_manual_dispense_diagnostic(
     row: ManualDispenseRow,
 ) -> Result<ManualDispenseDiagnostic, StoreError> {
+    let command: serde_json::Value = serde_json::from_str(&row.6)?;
+    let request_fingerprint = row.13.unwrap_or_else(|| {
+        manual_dispense_request_fingerprint(
+            command
+                .get("slotCode")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default(),
+            command
+                .get("layerNo")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default(),
+            command
+                .get("cellNo")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default(),
+            command
+                .get("quantity")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default(),
+            command
+                .get("timeoutSeconds")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default(),
+        )
+    });
     Ok(ManualDispenseDiagnostic {
         diagnostic_id: row.0,
         idempotency_key: row.1,
+        request_fingerprint,
         status: row.2,
         operator_id: row.3,
         session_correlation_id: row.4,
         controller: serde_json::from_str(&row.5)?,
-        command: serde_json::from_str(&row.6)?,
+        command,
         started_at: row.7,
         completed_at: row.8,
         raw_result: row.9.map(|v| serde_json::from_str(&v)).transpose()?,
@@ -6719,6 +7103,24 @@ fn to_manual_dispense_diagnostic(
         reconciliation_status: row.11,
         expires_at: row.12,
     })
+}
+
+pub fn manual_dispense_request_fingerprint(
+    slot_code: &str,
+    layer_no: u64,
+    cell_no: u64,
+    quantity: u64,
+    timeout_seconds: u64,
+) -> String {
+    let canonical = serde_json::json!({
+        "cellNo": cell_no,
+        "layerNo": layer_no,
+        "quantity": quantity,
+        "slotCode": slot_code.trim(),
+        "timeoutSeconds": timeout_seconds,
+    })
+    .to_string();
+    format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
 fn to_stock_movement_sync_record(
@@ -8422,7 +8824,7 @@ mod tests {
                     .get_metadata::<i64>("schema_version")
                     .await
                     .unwrap(),
-                Some(16)
+                Some(SCHEMA_VERSION)
             );
         }
     }
@@ -8436,6 +8838,7 @@ mod tests {
         let pending = ManualDispenseDiagnostic {
             diagnostic_id: "manual-1".to_string(),
             idempotency_key: "operator-request-1".to_string(),
+            request_fingerprint: "sha256:manual-1".to_string(),
             status: "pending".to_string(),
             operator_id: "operator-1".to_string(),
             session_correlation_id: "session-hash".to_string(),
@@ -8493,6 +8896,7 @@ mod tests {
         let pending = ManualDispenseDiagnostic {
             diagnostic_id: "manual-pending-1".to_string(),
             idempotency_key: "key-1".to_string(),
+            request_fingerprint: "sha256:key-1".to_string(),
             status: "pending".to_string(),
             operator_id: "operator".to_string(),
             session_correlation_id: "correlation".to_string(),
@@ -8551,11 +8955,179 @@ mod tests {
             panic!("must replay recovered diagnostic")
         };
         assert_eq!(replayed.status, "result_unknown");
+        let cross_principal = reopened
+            .reserve_manual_dispense_diagnostic(&ManualDispenseDiagnostic {
+                diagnostic_id: "manual-cross-principal".to_string(),
+                operator_id: "other-operator".to_string(),
+                ..recovered.clone()
+            })
+            .await;
+        assert!(matches!(
+            cross_principal,
+            Err(StoreError::ManualDispenseIdempotencyConflict)
+        ));
+        let changed_payload = reopened
+            .reserve_manual_dispense_diagnostic(&ManualDispenseDiagnostic {
+                diagnostic_id: "manual-changed-payload".to_string(),
+                request_fingerprint: "sha256:different-request".to_string(),
+                ..recovered
+            })
+            .await;
+        assert!(matches!(
+            changed_payload,
+            Err(StoreError::ManualDispenseIdempotencyConflict)
+        ));
         let business_outbox: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM outbox_events")
             .fetch_one(reopened.pool())
             .await
             .unwrap();
         assert_eq!(business_outbox.0, 0);
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_capacity_prunes_only_reconciled_history_and_never_open_evidence() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let mut tx = store.begin_immediate_write_transaction().await.unwrap();
+        for index in 0..MANUAL_DISPENSE_DIAGNOSTIC_MAX_ENTRIES {
+            sqlx::query(
+                "INSERT INTO manual_dispense_diagnostics(
+                   diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
+                   controller_json,command_json,started_at,completed_at,reconciliation_status,
+                   expires_at,request_fingerprint
+                 ) VALUES (?1,?2,'completed','operator','session','{}','{}',?3,?3,'reconciled',?4,'sha256:history')",
+            )
+            .bind(format!("history-{index:04}"))
+            .bind(format!("history-key-{index:04}"))
+            .bind(format!("2026-07-{:02}T00:00:00Z", 1 + index % 9))
+            .bind("2027-07-15T00:00:00Z")
+            .execute(tx.as_mut())
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO manual_dispense_diagnostics(
+               diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
+               controller_json,command_json,started_at,reconciliation_status,expires_at,
+               request_fingerprint
+             ) VALUES ('open-evidence','open-key','result_unknown','operator','session','{}','{}',
+                       '2026-07-01T00:00:00Z','open','2027-07-15T00:00:00Z','sha256:open')",
+        )
+        .execute(tx.as_mut())
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let new_record = ManualDispenseDiagnostic {
+            diagnostic_id: "new-diagnostic".to_string(),
+            idempotency_key: "new-key".to_string(),
+            request_fingerprint: "sha256:new".to_string(),
+            status: "pending".to_string(),
+            operator_id: "operator".to_string(),
+            session_correlation_id: "new-session".to_string(),
+            controller: json!({}),
+            command: json!({}),
+            started_at: now_iso(),
+            completed_at: None,
+            raw_result: None,
+            normalized_result: None,
+            reconciliation_status: "open".to_string(),
+            expires_at: "2027-07-15T00:00:00Z".to_string(),
+        };
+        assert!(matches!(
+            store
+                .reserve_manual_dispense_diagnostic(&new_record)
+                .await
+                .unwrap(),
+            ManualDispenseReservation::Reserved(_)
+        ));
+        let open_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM manual_dispense_diagnostics
+             WHERE diagnostic_id IN ('open-evidence','new-diagnostic') AND reconciliation_status='open'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM manual_dispense_diagnostics")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(open_count.0, 2);
+        assert!(total.0 <= MANUAL_DISPENSE_DIAGNOSTIC_MAX_ENTRIES);
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_reconciliation_requires_matching_accepted_stock_count_receipt() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "COUNT-MANUAL-RECONCILE".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO stock_movement_sync(
+               movement_id,status,outbox_event_id,attempt_count,accepted_at,
+               platform_receipt_json,created_at,updated_at
+             ) VALUES (?1,'accepted',?2,1,?3,'{\"rawMovementId\":\"platform-count-1\"}',?3,?3)",
+        )
+        .bind("COUNT-MANUAL-RECONCILE")
+        .bind("stock-movement:COUNT-MANUAL-RECONCILE")
+        .bind(now_iso())
+        .execute(store.pool())
+        .await
+        .unwrap();
+        let diagnostic = ManualDispenseDiagnostic {
+            diagnostic_id: "manual-reconcile-1".to_string(),
+            idempotency_key: "manual-reconcile-key-1".to_string(),
+            request_fingerprint: "sha256:manual-reconcile-1".to_string(),
+            status: "completed".to_string(),
+            operator_id: "operator-1".to_string(),
+            session_correlation_id: "session-1".to_string(),
+            controller: json!({}),
+            command: json!({"slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
+            started_at: now_iso(),
+            completed_at: None,
+            raw_result: None,
+            normalized_result: None,
+            reconciliation_status: "open".to_string(),
+            expires_at: "2027-07-15T00:00:00Z".to_string(),
+        };
+        store
+            .reserve_manual_dispense_diagnostic(&diagnostic)
+            .await
+            .unwrap();
+
+        let missing = store
+            .reconcile_manual_dispense_diagnostic("manual-reconcile-1", "UNKNOWN-COUNT")
+            .await;
+        assert!(matches!(missing, Err(StoreError::InvalidStockInput(_))));
+        assert_eq!(
+            store
+                .manual_dispense_diagnostic("manual-reconcile-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .reconciliation_status,
+            "open"
+        );
+        let reconciled = store
+            .reconcile_manual_dispense_diagnostic("manual-reconcile-1", "COUNT-MANUAL-RECONCILE")
+            .await
+            .unwrap();
+        assert_eq!(reconciled.reconciliation_status, "reconciled");
     }
 
     #[tokio::test]
@@ -8753,6 +9325,103 @@ mod tests {
         let persisted = store.sale_view(None).await.expect("sale view");
         assert_eq!(persisted.items[0].physical_stock, 3);
         assert_eq!(persisted.items[0].saleable_stock, 3);
+    }
+
+    #[tokio::test]
+    async fn journaled_dispense_result_repairs_all_terminal_side_effects_after_slot_recovery() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let command = dispense_command_for_slot("CMD-JOURNAL-RECOVERY");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: &command.order_no,
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": command.order_no,
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": { "commandNo": command.command_no, "status": "dispensing" }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed order");
+        let result = DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "F2 reset completed".to_string(),
+            reported_at: now_iso(),
+        };
+        let event = OutboxInput::dispense_result("MACHINE-1", &result);
+
+        assert!(store
+            .record_command_result_journal(&command, &result)
+            .await
+            .expect("journal result"));
+        let missing = store
+            .commit_journaled_dispense_side_effects(&command, &result, &event)
+            .await;
+        assert!(matches!(missing, Err(StoreError::InvalidStockInput(_))));
+        assert!(store
+            .get_command(&command.command_no)
+            .await
+            .unwrap()
+            .unwrap()
+            .result_payload
+            .is_some());
+        assert!(store.outbox_record(&event.id).await.unwrap().is_none());
+        assert_eq!(
+            store
+                .current_transaction_snapshot()
+                .await
+                .unwrap()
+                .unwrap()
+                .next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
+
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "COUNT-BEFORE-JOURNAL-RECOVERY".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        assert!(store
+            .commit_journaled_dispense_side_effects(&command, &result, &event)
+            .await
+            .expect("repair side effects"));
+        assert!(!store
+            .commit_journaled_dispense_side_effects(&command, &result, &event)
+            .await
+            .expect("duplicate repair"));
+        let sale_view = store.sale_view(None).await.unwrap();
+        assert_eq!(sale_view.items[0].physical_stock, 3);
+        assert!(store.outbox_record(&event.id).await.unwrap().is_some());
+        assert_eq!(
+            store
+                .current_transaction_snapshot()
+                .await
+                .unwrap()
+                .unwrap()
+                .next_action,
+            Some(InternalCheckoutFlowAction::Success)
+        );
     }
 
     #[tokio::test]
@@ -12204,7 +12873,7 @@ mod tests {
             })
             .await
             .unwrap();
-        store
+        let delayed_applied = store
             .record_dispense_progress(&DispenseProgressEvent {
                 command_no: "CMD-F1".to_string(),
                 order_no: "ORDER-F1".to_string(),
@@ -12215,6 +12884,7 @@ mod tests {
             })
             .await
             .unwrap();
+        assert!(!delayed_applied, "regressive progress must be ignored");
         let snapshot = store.current_transaction_snapshot().await.unwrap().unwrap();
         assert_eq!(
             snapshot.next_action,
@@ -12230,6 +12900,59 @@ mod tests {
                 .as_deref(),
             Some("pickup_completed")
         );
+    }
+
+    #[tokio::test]
+    async fn dispense_progress_ignores_a_different_command_for_the_same_order() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-CURRENT-COMMAND",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-CURRENT-COMMAND",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-CURRENT",
+                        "status": "dispensing",
+                        "fulfillmentProgressStage": "pickup_waiting"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let applied = store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-STALE".to_string(),
+                order_no: "ORDER-CURRENT-COMMAND".to_string(),
+                stage: DispenseProgressStage::PickupTimeoutWarning,
+                warning_no: Some(2),
+                message: "stale command warning".to_string(),
+                reported_at: now_iso(),
+            })
+            .await
+            .expect("ignore stale progress");
+
+        assert!(
+            !applied,
+            "ignored progress must not emit a transaction event"
+        );
+        let snapshot = store.current_transaction_snapshot().await.unwrap().unwrap();
+        let vending = snapshot.vending.unwrap();
+        assert_eq!(vending.command_no.as_deref(), Some("CMD-CURRENT"));
+        assert!(vending.pickup_reminder.is_none());
     }
 
     #[tokio::test]

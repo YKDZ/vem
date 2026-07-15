@@ -444,6 +444,25 @@ async fn run_device_binding_watch(
         if settings.lower_controller_binding.is_none() && settings.scanner_binding.is_none() {
             continue;
         }
+        // Keep discovery, stable-identity resolution, runtime replacement and
+        // the replacement self-check under one lease.  Otherwise a sale could
+        // start after discovery and an unrelated device later occupying the
+        // same COM address could be mistaken for the bound controller.
+        let _binding_lease =
+            match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state).await {
+                Ok(lease) => lease,
+                Err(error) => {
+                    record_binding_watch_retry(
+                        &status_cache,
+                        "DEVICE_BINDING_SALE_GATE_RETRY",
+                        error,
+                        settings.lower_controller_binding.is_some(),
+                        settings.scanner_binding.is_some(),
+                    )
+                    .await;
+                    continue;
+                }
+            };
         let observed = match platform.discover().await {
             Ok(observed) => observed,
             Err(error) => {
@@ -502,23 +521,6 @@ async fn run_device_binding_watch(
             ) {
                 Ok(port) => {
                     if current_port.as_deref() != Some(port.as_str()) && !active_sale {
-                        let _binding_lease =
-                            match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state)
-                                .await
-                            {
-                                Ok(lease) => lease,
-                                Err(error) => {
-                                    record_binding_watch_retry(
-                                        &status_cache,
-                                        "DEVICE_BINDING_SALE_GATE_RETRY",
-                                        error,
-                                        true,
-                                        false,
-                                    )
-                                    .await;
-                                    continue;
-                                }
-                            };
                         match hardware
                             .reconfigure_from_config(
                                 &resolved,
@@ -540,23 +542,6 @@ async fn run_device_binding_watch(
                     }
                 }
                 Err(code) => {
-                    let _binding_lease =
-                        match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state)
-                            .await
-                        {
-                            Ok(lease) => lease,
-                            Err(error) => {
-                                record_binding_watch_retry(
-                                    &status_cache,
-                                    "DEVICE_BINDING_SALE_GATE_RETRY",
-                                    error,
-                                    true,
-                                    false,
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
                     let message =
                         format!("lower controller stable binding requires maintenance: {code}");
                     hardware.deactivate_bound_adapter(message.clone())?;
@@ -576,23 +561,6 @@ async fn run_device_binding_watch(
             ) {
                 Ok(port) => {
                     if current_port.as_deref() != Some(port.as_str()) && !active_sale {
-                        let _binding_lease =
-                            match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state)
-                                .await
-                            {
-                                Ok(lease) => lease,
-                                Err(error) => {
-                                    record_binding_watch_retry(
-                                        &status_cache,
-                                        "SCANNER_SALE_GATE_RETRY",
-                                        error,
-                                        false,
-                                        true,
-                                    )
-                                    .await;
-                                    continue;
-                                }
-                            };
                         if let Err(error) = scanner_runtime.reconfigure_from_config(&resolved).await
                         {
                             *status_cache.scanner.write().await =
@@ -613,23 +581,6 @@ async fn run_device_binding_watch(
                     }
                 }
                 Err(code) => {
-                    let _binding_lease =
-                        match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state)
-                            .await
-                        {
-                            Ok(lease) => lease,
-                            Err(error) => {
-                                record_binding_watch_retry(
-                                    &status_cache,
-                                    "SCANNER_SALE_GATE_RETRY",
-                                    error,
-                                    false,
-                                    true,
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
                     let stop_error = scanner_runtime.stop().await.err();
                     *status_cache.scanner.write().await =
                         vending_core::scanner::ScannerHealthSnapshot {

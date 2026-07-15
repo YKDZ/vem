@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -403,6 +403,11 @@ CREATE INDEX IF NOT EXISTS idx_manual_dispense_diagnostics_time
   ON manual_dispense_diagnostics(completed_at);
 CREATE INDEX IF NOT EXISTS idx_manual_dispense_diagnostics_expiry
   ON manual_dispense_diagnostics(expires_at);
+"#;
+
+pub const MIGRATION_V17: &str = r#"
+ALTER TABLE manual_dispense_diagnostics
+  ADD COLUMN request_fingerprint TEXT;
 "#;
 
 pub const MIGRATION_V4: &str = r#"
