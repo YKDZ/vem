@@ -11,6 +11,7 @@ import {
   machinePaymentOptionKeySchema,
   machinePaymentOptionSchema,
   machinePaymentProviderCodeSchema,
+  paymentProviderEnvironmentDiagnosticSchema,
 } from "./orders";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
@@ -775,6 +776,11 @@ export const paymentOpsReadinessSchema = z.object({
   status: z.enum(["ready", "blocked"]),
   checkedAt: z.iso.datetime(),
   environment: z.enum(["development", "test", "production"]),
+  providerEnvironment: paymentProviderEnvironmentDiagnosticSchema.default({
+    environment: "unavailable",
+    readiness: "blocked",
+    errorCategory: "provider_unconfigured",
+  }),
   checks: z.array(paymentOpsCheckSchema),
 });
 

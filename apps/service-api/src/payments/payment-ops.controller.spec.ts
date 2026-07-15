@@ -21,6 +21,11 @@ describe("PaymentOpsController", () => {
         status: "ready" as const,
         checkedAt: new Date().toISOString(),
         environment: "development" as const,
+        providerEnvironment: {
+          environment: "unavailable" as const,
+          readiness: "blocked" as const,
+          errorCategory: "provider_unconfigured" as const,
+        },
         checks: [],
       };
       vi.mocked(service.getReadiness).mockResolvedValue(expected);

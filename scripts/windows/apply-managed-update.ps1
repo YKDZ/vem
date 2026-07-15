@@ -81,6 +81,53 @@ function Normalize-Sha256 {
   return $normalized
 }
 
+function Assert-NoPlatformPaymentSecrets {
+  param(
+    [object]$Value,
+    [string]$Path = "manifest"
+  )
+
+  if ($null -eq $Value) { return }
+  if ($Value -is [string]) {
+    if (
+      $Value -match 'BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY' -or
+      $Value -match 'BEGIN\s+CERTIFICATE'
+    ) {
+      throw "$Path contains platform payment private-key or certificate material"
+    }
+    return
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [pscustomobject]) {
+    $index = 0
+    foreach ($item in $Value) {
+      Assert-NoPlatformPaymentSecrets -Value $item -Path "$Path[$index]"
+      $index += 1
+    }
+    return
+  }
+  foreach ($property in @($Value.PSObject.Properties)) {
+    if ($property.Name -match '^(?:privateKeyPem|appCertPem|alipayPublicCertPem|alipayRootCertPem|apiV[23]Key|merchantApiCertPem|merchantApiKeyPem|platformCertificatePem|platformPublicKeyPem|paymentProviderCredentials)$') {
+      throw "$Path.$($property.Name) is platform-only payment secret material"
+    }
+    Assert-NoPlatformPaymentSecrets -Value $property.Value -Path "$Path.$($property.Name)"
+  }
+}
+
+function Assert-NoPlatformPaymentSecretFile {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "artifact not found: $Path"
+  }
+  $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($Path))
+  if (
+    $text -match 'BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY' -or
+    $text -match 'BEGIN\s+CERTIFICATE'
+  ) {
+    throw "artifact contains platform payment private-key or certificate material: $Path"
+  }
+}
+
 function Get-DefaultTargetPath {
   param([string]$Component)
 
@@ -619,6 +666,7 @@ function Install-Component {
   }
 
   try {
+    Assert-NoPlatformPaymentSecretFile -Path $Spec.artifactPath
     Assert-Sha256 -Path $Spec.artifactPath -ExpectedSha256 $Spec.sha256 | Out-Null
     if (-not (Test-Path -LiteralPath $Spec.targetPath -PathType Leaf)) {
       throw "target executable not found: $($Spec.targetPath)"
@@ -628,6 +676,7 @@ function Install-Component {
 
     for ($index = 0; $index -lt @($Spec.sidecars).Count; $index += 1) {
       $sidecar = @($Spec.sidecars)[$index]
+      Assert-NoPlatformPaymentSecretFile -Path $sidecar.artifactPath
       Assert-Sha256 -Path $sidecar.artifactPath -ExpectedSha256 $sidecar.sha256 | Out-Null
       if (-not (Test-Path -LiteralPath $sidecar.targetPath -PathType Leaf)) {
         throw "target sidecar not found: $($sidecar.targetPath)"
@@ -708,6 +757,7 @@ $manifestUpdateId = "direct-input"
 $manifestForEvidence = $null
 if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
   $manifestForEvidence = Read-JsonFile -Path $ManifestPath
+  Assert-NoPlatformPaymentSecrets -Value $manifestForEvidence -Path manifest
   if ([string]::IsNullOrWhiteSpace([string]$manifestForEvidence.updateId)) {
     throw "manifest updateId is required"
   }

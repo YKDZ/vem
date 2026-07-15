@@ -1702,7 +1702,27 @@ struct BackendPaymentOptionsResponse {
     options: Vec<BackendPaymentOption>,
     default_option_key: Option<String>,
     default_provider_code: Option<String>,
+    #[serde(default)]
+    provider_environment: BackendPaymentProviderEnvironment,
     server_time: String,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendPaymentProviderEnvironment {
+    environment: String,
+    readiness: String,
+    error_category: String,
+}
+
+impl Default for BackendPaymentProviderEnvironment {
+    fn default() -> Self {
+        Self {
+            environment: "unavailable".to_string(),
+            readiness: "blocked".to_string(),
+            error_category: "provider_unconfigured".to_string(),
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -4391,14 +4411,42 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     let scanner_ready = scanner_readiness.ready;
 
     let payment_capability = load_machine_payment_capability(ctx).await;
+    let production_payment_environment_required = ctx
+        .config_store
+        .load_factory_manifest()
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|manifest| {
+            matches!(
+                manifest.environment,
+                crate::config::FactoryProfile::Production
+            )
+        });
     let payment_probe = ctx.ui.backend.get_payment_options().await;
     let platform_ready = payment_probe.is_ok();
     let mut payment_methods = Vec::new();
     let mut payment_options_error = None;
+    let mut payment_environment = BackendPaymentProviderEnvironment::default();
+    let mut payment_environment_diagnostic_ready = false;
+    let mut payment_environment_allowed = false;
     if let Ok(payload) = payment_probe.as_ref() {
         match strict_payment_options(payload) {
-            Ok(options) => {
-                for option in options {
+            Ok(response) => {
+                payment_environment = response.provider_environment;
+                payment_environment_diagnostic_ready = payment_environment.readiness == "ready"
+                    && payment_environment.error_category == "none"
+                    && matches!(
+                        payment_environment.environment.as_str(),
+                        "sandbox" | "production"
+                    );
+                payment_environment_allowed = payment_environment_diagnostic_ready
+                    && (!production_payment_environment_required
+                        || payment_environment.environment == "production");
+                for option in response.options {
+                    if !payment_environment_allowed {
+                        continue;
+                    }
                     if !payment_method_allowed_by_capability(&option.method, &payment_capability) {
                         continue;
                     }
@@ -4444,6 +4492,18 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     }
     if !payment_options_ready {
         blocking_codes.push("NO_PAYMENT_OPTIONS");
+    }
+    if !payment_environment_allowed {
+        blocking_codes.push(
+            if production_payment_environment_required
+                && payment_environment_diagnostic_ready
+                && payment_environment.environment != "production"
+            {
+                "PAYMENT_ENVIRONMENT_NOT_PRODUCTION"
+            } else {
+                "PAYMENT_ENVIRONMENT_NOT_READY"
+            },
+        );
     }
     if !sync_ready {
         blocking_codes.push("SYNC_UNHEALTHY");
@@ -4528,6 +4588,7 @@ pub(crate) async fn machine_sale_readiness_snapshot(
                 "code": if payment_options_ready { "PAYMENT_OPTIONS_READY" } else { "NO_PAYMENT_OPTIONS" },
                 "message": if payment_options_ready { "payment option available".to_string() } else { payment_options_error.unwrap_or_else(|| "no ready payment option".to_string()) },
                 "methods": payment_methods,
+                "providerEnvironment": payment_environment,
             }),
             "scannerCapability": readiness_component(
                 scanner_ready,
@@ -4803,11 +4864,27 @@ fn payment_method_allowed_by_capability(
 
 fn strict_payment_options(
     payload: &serde_json::Value,
-) -> Result<Vec<BackendPaymentOption>, String> {
+) -> Result<BackendPaymentOptionsResponse, String> {
     let response: BackendPaymentOptionsResponse = serde_json::from_value(payload.clone())
         .map_err(|error| format!("payment options schema invalid: {error}"))?;
     if response.server_time.trim().is_empty() {
         return Err("payment options serverTime is required".to_string());
+    }
+    if !matches!(
+        response.provider_environment.environment.as_str(),
+        "sandbox" | "production" | "mixed" | "unavailable"
+    ) || !matches!(
+        response.provider_environment.readiness.as_str(),
+        "ready" | "blocked"
+    ) || !matches!(
+        response.provider_environment.error_category.as_str(),
+        "none"
+            | "no_enabled_channel"
+            | "provider_unconfigured"
+            | "credentials_incomplete"
+            | "mixed_environment"
+    ) {
+        return Err("payment provider environment diagnostic is invalid".to_string());
     }
     if let Some(default_option_key) = response.default_option_key.as_deref() {
         if default_option_key.trim().is_empty() {
@@ -4845,7 +4922,7 @@ fn strict_payment_options(
             // part of strict parsing without changing readiness semantics.
         }
     }
-    Ok(response.options)
+    Ok(response)
 }
 
 fn validate_selected_payment_option(
@@ -5613,6 +5690,39 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
 
     match ctx.ui.backend.get_payment_options().await {
         Ok(mut payload) => {
+            let provider_environment = match strict_payment_options(&payload) {
+                Ok(response) => response.provider_environment,
+                Err(error) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(ErrorMessage {
+                            code: "payment_options_invalid",
+                            message: error,
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            let production_profile = ctx
+                .config_store
+                .load_factory_manifest()
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|manifest| {
+                    matches!(
+                        manifest.environment,
+                        crate::config::FactoryProfile::Production
+                    )
+                });
+            let diagnostic_ready = provider_environment.readiness == "ready"
+                && provider_environment.error_category == "none"
+                && matches!(
+                    provider_environment.environment.as_str(),
+                    "sandbox" | "production"
+                );
+            let provider_environment_allowed = diagnostic_ready
+                && (!production_profile || provider_environment.environment == "production");
             let platform_default_option_key = payload
                 .get("defaultOptionKey")
                 .and_then(|value| value.as_str())
@@ -5626,6 +5736,9 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 .get_mut("options")
                 .and_then(|value| value.as_array_mut())
             {
+                if !provider_environment_allowed {
+                    options.clear();
+                }
                 options.retain(|option| {
                     option
                         .get("method")
@@ -8382,6 +8495,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-08T16:30:00.000Z"
             })))
             .mount(&server)
@@ -12547,6 +12665,14 @@ mod tests {
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "options": [],
+                "defaultOptionKey": null,
+                "defaultProviderCode": null,
+                "providerEnvironment": {
+                    "environment": "unavailable",
+                    "readiness": "blocked",
+                    "errorCategory": "provider_unconfigured"
+                },
+                "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
             .await;
@@ -13166,6 +13292,11 @@ mod tests {
                 }],
                 "defaultOptionKey": null,
                 "defaultProviderCode": null,
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13265,6 +13396,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13349,6 +13485,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13445,6 +13586,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13520,6 +13666,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13673,6 +13824,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13757,6 +13913,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13839,6 +14000,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13915,6 +14081,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -14033,6 +14204,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -14114,6 +14290,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -14210,6 +14391,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn production_factory_profile_blocks_sandbox_payment_but_testbed_accepts_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "qr_code:alipay",
+                    "providerCode": "alipay",
+                    "method": "qr_code",
+                    "displayName": "支付宝扫码",
+                    "description": "请使用支付宝扫描屏幕二维码",
+                    "icon": "alipay",
+                    "disabled": false,
+                    "disabledReason": null,
+                    "recommended": true
+                }],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "sandbox",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let production_dir = tempdir().expect("production tmp");
+        let production = test_ipc_context(
+            production_dir.path(),
+            "token-production",
+            Some("MACHINE-PRODUCTION".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let production_readiness = machine_sale_readiness_snapshot(&production)
+            .await
+            .expect("production readiness");
+        assert!(production_readiness["blockingCodes"]
+            .as_array()
+            .expect("production blockers")
+            .contains(&json!("PAYMENT_ENVIRONMENT_NOT_PRODUCTION")));
+        assert_eq!(
+            production_readiness["components"]["paymentOptions"]["providerEnvironment"]
+                ["environment"],
+            "sandbox"
+        );
+
+        let testbed_dir = tempdir().expect("testbed tmp");
+        let testbed = test_ipc_context(
+            testbed_dir.path(),
+            "token-testbed",
+            Some("MACHINE-TESTBED".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let mut manifest = testbed
+            .config_store
+            .load_factory_manifest()
+            .await
+            .expect("load manifest")
+            .expect("factory manifest");
+        manifest.environment = FactoryProfile::Testbed;
+        manifest.hardware_mode = RuntimeHardwareMode::Simulated;
+        tokio::fs::write(
+            testbed.config_store.factory_manifest_path(),
+            serde_json::to_vec_pretty(&manifest).expect("serialize testbed manifest"),
+        )
+        .await
+        .expect("write testbed manifest");
+        let testbed_readiness = machine_sale_readiness_snapshot(&testbed)
+            .await
+            .expect("testbed readiness");
+        assert!(!testbed_readiness["blockingCodes"]
+            .as_array()
+            .expect("testbed blockers")
+            .contains(&json!("PAYMENT_ENVIRONMENT_NOT_PRODUCTION")));
+    }
+
+    #[tokio::test]
     async fn sale_readiness_enforces_production_dispense_path_for_production_machine() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -14228,6 +14490,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-08T16:30:00.000Z"
             })))
             .mount(&server)
@@ -15857,6 +16124,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -15997,6 +16269,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16162,6 +16439,11 @@ mod tests {
                 ],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16274,6 +16556,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16415,6 +16702,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16526,6 +16818,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16634,6 +16931,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16859,6 +17161,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16958,6 +17265,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -17667,6 +17979,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-26T08:00:00.000Z"
             })))
             .mount(&server)
@@ -17987,6 +18304,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -18087,6 +18409,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:wechat_pay",
                 "defaultProviderCode": "wechat_pay",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -18488,6 +18815,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -18609,6 +18941,11 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
+                "providerEnvironment": {
+                    "environment": "production",
+                    "readiness": "ready",
+                    "errorCategory": "none"
+                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
