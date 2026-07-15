@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
@@ -14,6 +15,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import {
+  deriveSerialConformanceReportDigest,
+  isolatedCommandOutput,
+  validateSerialConformanceReport,
+} from "./vm-host-adapter-serial-conformance.mjs";
 import {
   buildBringUpPlan,
   buildFactoryPreclaimVerificationScript,
@@ -64,14 +70,38 @@ const SERIAL_CONFORMANCE = new URL(
 ).pathname;
 
 let capturedSerialConformance;
+let capturedSerialRunnerPrivateKey;
+
+function resignSerialConformance(conformance) {
+  const reportDigest = deriveSerialConformanceReportDigest(conformance);
+  conformance.runnerEvidence.conformance = {
+    reportDigest,
+    signature: `ed25519-signature:base64:${sign(
+      null,
+      Buffer.from(reportDigest),
+      capturedSerialRunnerPrivateKey,
+    ).toString("base64")}`,
+  };
+}
 
 function completedSerialSaleEvidence(overrides = {}) {
   if (!capturedSerialConformance) {
     const root = mkdtempSync(join(tmpdir(), "vem-serial-evidence-consumer-"));
     const scannerCodePath = join(root, "protected-scanner-code.txt");
+    const runnerSigningKeyFile = join(root, "runner-signing-key.pem");
     const outputPath = join(root, "conformance.json");
     try {
+      const runnerKey = generateKeyPairSync("ed25519");
+      capturedSerialRunnerPrivateKey = runnerKey.privateKey;
+      const expectedRunnerPublicKey = `ed25519-public-key:base64:${runnerKey.publicKey
+        .export({ type: "spki", format: "der" })
+        .toString("base64")}`;
       writeFileSync(scannerCodePath, "test-scanner-secret", { mode: 0o600 });
+      writeFileSync(
+        runnerSigningKeyFile,
+        runnerKey.privateKey.export({ type: "pkcs8", format: "pem" }),
+        { mode: 0o600 },
+      );
       execFileSync(
         process.execPath,
         [
@@ -82,6 +112,10 @@ function completedSerialSaleEvidence(overrides = {}) {
           outputPath,
           "--scanner-code-file",
           scannerCodePath,
+          "--runner-signing-key-file",
+          runnerSigningKeyFile,
+          "--expected-runner-public-key",
+          expectedRunnerPublicKey,
           "--run-id",
           "RUN-180-EVIDENCE",
           "--target-identity",
@@ -139,6 +173,8 @@ function completedSerialSaleEvidence(overrides = {}) {
     },
     serialConformance: structuredClone(capturedSerialConformance),
     expectedRunnerPublicKey: capturedSerialConformance.runnerEvidence.publicKey,
+    expectedAdapterIdentity:
+      capturedSerialConformance.reports.start.adapter.identity,
     ...overrides,
   };
 }
@@ -461,6 +497,13 @@ describe("transient SSH operation retry", () => {
 });
 
 describe("simulated hardware serial acceptance evidence", () => {
+  it("isolates failed-dispense output from the successful sale report", () => {
+    assert.deepEqual(
+      isolatedCommandOutput(["node", "sale.mjs", "--out", "success.json"]),
+      ["node", "sale.mjs", "--out", "success.json.dispense-failed"],
+    );
+  });
+
   it("binds the completed sale to real Windows COM mappings and guest frames", () => {
     const evidence = evaluateSimulatedHardwareSerialEvidence(
       completedSerialSaleEvidence(),
@@ -508,6 +551,32 @@ describe("simulated hardware serial acceptance evidence", () => {
       conformance.requests[name].runId = "RUN-ATTACKER";
       conformance.reports[name].request.runId = "RUN-ATTACKER";
     }
+
+    const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+    assert.equal(evidence.status, "failed");
+    assert.ok(
+      evidence.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_conformance_report_invalid",
+      ),
+    );
+  });
+
+  it("rejects a correctly signed report that combines another VM lifecycle", () => {
+    const input = completedSerialSaleEvidence();
+    const report = input.serialConformance.reports.firstStop;
+    report.observed.vmIdentity = "vm-instance://different-runtime";
+    report.observed.overlayIdentity = "vm-overlay://different-runtime";
+    resignSerialConformance(input.serialConformance);
+
+    assert.throws(
+      () =>
+        validateSerialConformanceReport(input.serialConformance, {
+          expectedRunnerPublicKey: input.expectedRunnerPublicKey,
+          expectedAdapterIdentity: input.expectedAdapterIdentity,
+        }),
+      /must bind one trusted adapter and VM lifecycle/,
+    );
 
     const evidence = evaluateSimulatedHardwareSerialEvidence(input);
 
@@ -614,10 +683,95 @@ describe("simulated hardware serial acceptance evidence", () => {
         delete mappingFailure.recovery;
       },
     ],
+    [
+      "failure operation relabeling",
+      (input) => {
+        input.serialConformance.failureMatrix[0].operation = "cleanup";
+      },
+    ],
+    [
+      "failure business identity relabeling",
+      (input) => {
+        input.serialConformance.failureMatrix[0].orderId = "ORDER-OTHER";
+      },
+    ],
+    [
+      "mapping fail-closed session relabeling",
+      (input) => {
+        const mappingFailure = input.serialConformance.failureMatrix.find(
+          (entry) => entry.failureMode === "missing-device",
+        );
+        mappingFailure.daemonFailClosed.adapterSession.serialSessionId =
+          "serial-session://other";
+      },
+    ],
+    [
+      "coordinated failed-sale relabeling",
+      (input) => {
+        for (const failureMode of ["scanner-timeout", "dispense-failed"]) {
+          const failure = input.serialConformance.failureMatrix.find(
+            (entry) => entry.failureMode === failureMode,
+          );
+          failure.orderId = "ORDER-OTHER";
+          failure.paymentId = "PAYMENT-OTHER";
+        }
+      },
+    ],
+    [
+      "coordinated mapping session relabeling",
+      (input) => {
+        const failure = input.serialConformance.failureMatrix.find(
+          (entry) => entry.failureMode === "swapped-roles",
+        );
+        for (const key of [
+          "serialSessionId",
+          "startOperationReference",
+          "deviceMappingDigest",
+        ]) {
+          failure.startSerialSession[key] = `other-${key}`;
+          failure.daemonFailClosed.adapterSession[key] = `other-${key}`;
+        }
+      },
+    ],
+    [
+      "empty coordinated mapping session",
+      (input) => {
+        const failure = input.serialConformance.failureMatrix.find(
+          (entry) => entry.failureMode === "missing-device",
+        );
+        for (const key of [
+          "serialSessionId",
+          "startOperationReference",
+          "deviceMappingDigest",
+        ]) {
+          failure.startSerialSession[key] = "";
+          failure.daemonFailClosed.adapterSession[key] = "";
+        }
+      },
+    ],
+    [
+      "mapping start and fault source splicing",
+      (input) => {
+        const missing = input.serialConformance.failureMatrix.find(
+          (entry) => entry.failureMode === "missing-device",
+        );
+        const swapped = input.serialConformance.failureMatrix.find(
+          (entry) => entry.failureMode === "swapped-roles",
+        );
+        missing.source.start = structuredClone(swapped.source.start);
+        missing.startSerialSession = structuredClone(
+          swapped.startSerialSession,
+        );
+        missing.daemonFailClosed.adapterSession = structuredClone(
+          swapped.daemonFailClosed.adapterSession,
+        );
+      },
+    ],
   ]) {
     it(`rejects runner-signed conformance tampered by ${name}`, () => {
       const input = completedSerialSaleEvidence();
       mutate(input);
+      resignSerialConformance(input.serialConformance);
       const evidence = evaluateSimulatedHardwareSerialEvidence(input);
 
       assert.equal(evidence.status, "failed");

@@ -2912,80 +2912,38 @@ describe("VM Host Adapter contract", () => {
       true,
     );
     assert.equal(report.reports.collect.serialEvidence.records.length, 9);
-    assert.deepEqual(report.failureMatrix, [
-      {
-        failureMode: "malformed-frame",
-        operation: "collect-serial-evidence",
-        result: "observed_failure",
-        adapterResult: "succeeded",
-        diagnosticCode: "serial_malformed_frame",
-        orderId: "order-001",
-        paymentId: "payment-001",
-        vendingCommandId: "vending-command-001",
-      },
-      {
-        failureMode: "device-disconnected",
-        operation: "collect-serial-evidence",
-        result: "observed_failure",
-        adapterResult: "succeeded",
-        diagnosticCode: "serial_device_disconnected",
-        orderId: "order-001",
-        paymentId: "payment-001",
-        vendingCommandId: "vending-command-001",
-      },
-      {
-        failureMode: "scanner-timeout",
-        operation: "inject-scanner-code",
-        result: "observed_failure",
-        adapterResult: "succeeded",
-        diagnosticCode: "serial_scanner_timeout",
-        orderId: "order-001",
-        paymentId: "payment-001",
-        vendingCommandId: "vending-command-001",
-      },
-      {
-        failureMode: "dispense-failed",
-        operation: "collect-serial-evidence",
-        result: "observed_failure",
-        adapterResult: "succeeded",
-        diagnosticCode: "serial_dispense_failed",
-        orderId: "order-001",
-        paymentId: "payment-001",
-        vendingCommandId: "vending-command-001",
-      },
-      {
-        failureMode: "swapped-roles",
-        operation: "collect-serial-evidence",
-        result: "observed_failure",
-        adapterResult: "succeeded",
-        diagnosticCode: "serial_swapped_roles",
-        orderId: "order-001",
-        paymentId: "payment-001",
-        vendingCommandId: "vending-command-001",
-        recovery: {
-          runtimeReady: "passed",
-          hardwareOnline: true,
-          scannerOnline: true,
-          ready: true,
-        },
-      },
-      {
-        failureMode: "missing-device",
-        operation: "collect-serial-evidence",
-        result: "observed_failure",
-        adapterResult: "succeeded",
-        diagnosticCode: "serial_missing_device",
-        orderId: "order-001",
-        paymentId: "payment-001",
-        vendingCommandId: "vending-command-001",
-        recovery: {
-          runtimeReady: "passed",
-          hardwareOnline: true,
-          scannerOnline: true,
-          ready: true,
-        },
-      },
-    ]);
+    assert.deepEqual(
+      report.failureMatrix.map((entry) => entry.failureMode),
+      [
+        "malformed-frame",
+        "device-disconnected",
+        "scanner-timeout",
+        "dispense-failed",
+        "swapped-roles",
+        "missing-device",
+      ],
+    );
+    assert.equal(
+      report.failureMatrix.find(
+        (entry) => entry.failureMode === "scanner-timeout",
+      ).vendingCommandId,
+      undefined,
+    );
+    for (const failureMode of ["swapped-roles", "missing-device"]) {
+      const mappingFailure = report.failureMatrix.find(
+        (entry) => entry.failureMode === failureMode,
+      );
+      assert.equal(
+        mappingFailure.operation,
+        "prepare-sale-with-faulted-mapping",
+      );
+      assert.deepEqual(mappingFailure.daemonFailClosed.adapterSession, {
+        ...mappingFailure.startSerialSession,
+        faultStartedAt:
+          mappingFailure.daemonFailClosed.adapterSession.faultStartedAt,
+      });
+      assert.equal(mappingFailure.recovery.runtimeReady, "passed");
+    }
     assert.doesNotMatch(
       JSON.stringify(report),
       new RegExp(PROTECTED_SCANNER_INPUT),
@@ -3011,6 +2969,7 @@ describe("VM Host Adapter contract", () => {
       () =>
         validateSerialConformanceReport(rekeyed, {
           expectedRunnerPublicKey: report.runnerEvidence.publicKey,
+          expectedAdapterIdentity: report.reports.start.adapter.identity,
         }),
       /expected runner public key/,
     );
@@ -3107,6 +3066,7 @@ describe("VM Host Adapter contract", () => {
       () =>
         validateSerialConformanceReport(forged, {
           expectedRunnerPublicKey: report.runnerEvidence.publicKey,
+          expectedAdapterIdentity: report.reports.start.adapter.identity,
         }),
       /runner serial conformance evidence does not bind the report/,
     );
