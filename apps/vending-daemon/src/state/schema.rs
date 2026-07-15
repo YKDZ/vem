@@ -386,17 +386,23 @@ PRAGMA foreign_keys = ON;
 pub const MIGRATION_V16: &str = r#"
 CREATE TABLE IF NOT EXISTS manual_dispense_diagnostics (
   diagnostic_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('pending','completed','failed','result_unknown')),
   operator_id TEXT NOT NULL,
   session_correlation_id TEXT NOT NULL,
   controller_json TEXT NOT NULL,
   command_json TEXT NOT NULL,
   started_at TEXT NOT NULL,
-  completed_at TEXT NOT NULL,
-  raw_result_json TEXT NOT NULL,
-  normalized_result_json TEXT NOT NULL
+  completed_at TEXT,
+  raw_result_json TEXT,
+  normalized_result_json TEXT,
+  reconciliation_status TEXT NOT NULL CHECK (reconciliation_status IN ('open','reconciled')),
+  expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_manual_dispense_diagnostics_time
   ON manual_dispense_diagnostics(completed_at);
+CREATE INDEX IF NOT EXISTS idx_manual_dispense_diagnostics_expiry
+  ON manual_dispense_diagnostics(expires_at);
 "#;
 
 pub const MIGRATION_V4: &str = r#"
