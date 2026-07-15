@@ -7,6 +7,7 @@ import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundar
 import { installCustomerEventSources } from "@/composables/useCustomerEventSources";
 import { useReturnHomeOnCustomerDeparture } from "@/composables/usePresenceInteraction";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
+import { installInstalledKioskSaleRouteObserver } from "@/dev/ui-debug-daemon";
 import { maintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
 
 const route = useRoute();
@@ -16,6 +17,7 @@ const cleanupCustomerEventSources = installCustomerEventSources({
 });
 useReturnHomeOnCustomerDeparture();
 installActiveUiDebugRuntimeScenario();
+installInstalledKioskSaleRouteObserver(router);
 
 onUnmounted(() => {
   cleanupCustomerEventSources();

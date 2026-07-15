@@ -15,6 +15,7 @@ export * from "./schemas/dashboard";
 export * from "./schemas/daemon-ipc";
 export * from "./schemas/inventory";
 export * from "./schemas/hardware-error-policies";
+export * from "./schemas/installed-kiosk-sale-acceptance";
 export * from "./schemas/machines";
 export * from "./schemas/maintenance-access";
 export * from "./schemas/machine-slot-coordinate";

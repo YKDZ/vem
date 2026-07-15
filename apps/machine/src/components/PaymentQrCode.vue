@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import * as QRCode from "qrcode";
 import { ref, watch } from "vue";
+
+import { renderPaymentQrDataUrl } from "@/utils/payment-qr";
 
 const props = defineProps<{
   value: string | null | undefined;
@@ -21,17 +22,7 @@ watch(
       return;
     }
     try {
-      const svg = await QRCode.toString(value, {
-        type: "svg",
-        width: 360,
-        margin: 1,
-        errorCorrectionLevel: "M",
-        color: {
-          dark: "#020617",
-          light: "#ffffff",
-        },
-      });
-      dataUrl.value = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      dataUrl.value = await renderPaymentQrDataUrl(value);
     } catch (err) {
       dataUrl.value = "";
       error.value = err instanceof Error ? err.message : String(err);
@@ -48,6 +39,7 @@ watch(
       class="mx-auto size-[320px] max-h-[45vh] max-w-full"
       :src="dataUrl"
       alt="支付二维码"
+      data-installed-kiosk-sale-qr
     />
     <div
       v-else

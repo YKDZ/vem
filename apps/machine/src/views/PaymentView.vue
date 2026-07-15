@@ -190,7 +190,15 @@ onUnmounted(() => {
 
 <template>
   <KioskLayout>
-    <section v-if="paymentView" class="payment-page">
+    <section
+      v-if="paymentView"
+      class="payment-page"
+      data-installed-kiosk-sale-payment-surface
+      :data-order-id="checkoutStore.transaction?.orderId ?? ''"
+      :data-payment-id="checkoutStore.transaction?.paymentId ?? ''"
+      :data-transaction-id="checkoutStore.transaction?.orderNo ?? ''"
+      :data-payment-url="paymentView.paymentUrl ?? ''"
+    >
       <div class="payment-mist payment-mist-left"></div>
       <div class="payment-mist payment-mist-right"></div>
 

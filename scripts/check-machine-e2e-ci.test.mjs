@@ -28,6 +28,14 @@ describe("Machine UI daemon E2E CI contract", () => {
     );
   });
 
+  it("includes Installed Kiosk Sale Acceptance in the required browser lane", () => {
+    const job = checkCiSource.match(
+      /async function runMachineE2eJob\(\) \{([\s\S]*?)\n\}/,
+    )?.[1];
+    assert.ok(job, "machine-e2e job implementation is missing");
+    assert.match(job, /"installed-kiosk-sale-acceptance\.spec\.ts"/);
+  });
+
   it("runs this clean-workspace contract in the required static gate", () => {
     assert.equal(
       packageJson.scripts["check:machine-e2e-ci"],

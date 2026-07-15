@@ -1,5 +1,11 @@
+import type { Router } from "vue-router";
+
 import {
+  type BrowserInstalledKioskSaleContractFacts,
   daemonIpcMachinePaymentProviderSchema,
+  type InstalledKioskSaleDisturbance,
+  type InstalledKioskSaleCustomerPaymentSurface,
+  type InstalledKioskSaleCustomerTransactionSurface,
   paymentMethodSchema,
   type StockMaintenanceBatchResponse,
   type StockMaintenanceTask,
@@ -20,6 +26,9 @@ import type { DaemonConnectionInfo } from "@/native/daemon-connection";
 
 import { daemonClient } from "@/daemon/client";
 import { transactionSnapshotSchema } from "@/daemon/schemas";
+import { useCatalogStore } from "@/stores/catalog";
+import { useCheckoutStore } from "@/stores/checkout";
+import { useVisionStore } from "@/stores/vision";
 
 import {
   getActiveUiDebugScenario,
@@ -44,6 +53,40 @@ const UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY =
 
 let installed = false;
 let currentTransaction: TransactionSnapshot | null = null;
+let currentTransactionFailuresRemaining = 0;
+let disturbanceInjectionSequence = 0;
+let timelineObservationSequence = 0;
+const handledPaymentStatusDeliveryIds = new Set<string>();
+const vendingCommandLog: Array<{
+  commandId: string;
+  orderId: string;
+  transactionId: string;
+}> = [];
+const stockMovementLog: Array<{
+  movementId: string;
+  commandId: string;
+  orderId: string;
+  transactionId: string;
+}> = [];
+let removeRouteObserver: (() => void) | null = null;
+let captureCurrentRoute: (() => void) | null = null;
+
+type UiDebugSaleEvidence = BrowserInstalledKioskSaleContractFacts;
+
+function emptySaleEvidence(): UiDebugSaleEvidence {
+  return {
+    source: "browser_ui_contract",
+    transactions: [],
+    timeline: [],
+    disturbanceInjections: [],
+    observationWindow: {
+      openedAt: nowIso(),
+      closedAt: nowIso(),
+    },
+  };
+}
+
+let saleEvidence = emptySaleEvidence();
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -87,6 +130,16 @@ function clearTransactionMarkers(): void {
   if (!storage) return;
   storage.removeItem(UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY);
   storage.removeItem(UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY);
+}
+
+function resetSaleEvidence(): void {
+  saleEvidence = emptySaleEvidence();
+  currentTransactionFailuresRemaining = 0;
+  disturbanceInjectionSequence = 0;
+  timelineObservationSequence = 0;
+  handledPaymentStatusDeliveryIds.clear();
+  vendingCommandLog.length = 0;
+  stockMovementLog.length = 0;
 }
 
 function currentScenario() {
@@ -247,6 +300,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
     inventoryId?: string;
     paymentMethod?: unknown;
     paymentProviderCode?: unknown;
+    idempotencyKey?: unknown;
   };
   const item =
     currentSaleView().items.find(
@@ -262,9 +316,18 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
     paymentMethod === "qr_code"
       ? "https://pay.example.test/ui-debug-created"
       : null;
+  const idempotencyKey =
+    typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
+      ? input.idempotencyKey
+      : "missing-ui-idempotency-key";
+  const orderId = "550e8400-e29b-41d4-a716-446655449901";
+  const paymentId = "550e8400-e29b-41d4-a716-446655449902";
+  const orderNo = `UI-DEBUG-${Date.now()}`;
+  const reservationId = `UI-DEBUG-RES-${orderNo}`;
+  const transactionId = orderNo;
   const transaction: TransactionSnapshot = {
-    orderId: "550e8400-e29b-41d4-a716-446655449901",
-    orderNo: `UI-DEBUG-${Date.now()}`,
+    orderId,
+    orderNo,
     productSummary: item
       ? {
           name: item.productName,
@@ -273,7 +336,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
           color: item.color,
         }
       : null,
-    paymentId: null,
+    paymentId,
     paymentNo: "UI-DEBUG-PAY",
     paymentMethod,
     paymentProvider: providerCode,
@@ -292,13 +355,95 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
       paymentMethod === "payment_code" ? "请出示付款码" : "等待用户支付",
     updatedAt: nowIso(),
   };
+  if (paymentUrl) {
+    saleEvidence.transactions.push({
+      checkout: { idempotencyKey },
+      order: {
+        orderId,
+        checkoutIdempotencyKey: idempotencyKey,
+        status: "pending_payment",
+      },
+      reservation: {
+        reservationId,
+        orderId,
+        status: "reserved",
+      },
+      payment: {
+        paymentId,
+        orderId,
+        reservationId,
+        paymentUrl,
+        status: "processing",
+        statusDeliveries: [],
+      },
+      transaction: {
+        transactionId,
+        orderId,
+        paymentId,
+        reservationId,
+        status: "awaiting_payment",
+      },
+      vendingCommand: null,
+      stockMovement: null,
+      fulfillment: null,
+    });
+  }
   currentTransaction = transaction;
   persistTransaction(currentTransaction);
   return transaction;
 }
 
-function transitionMockPayment(succeed: boolean): TransactionSnapshot {
+function activeSaleRecord() {
+  return (
+    saleEvidence.transactions[saleEvidence.transactions.length - 1] ?? null
+  );
+}
+
+function handleUiDebugPaymentStatus(succeed: boolean): TransactionSnapshot {
   const snapshot = currentTransactionOrScenario();
+  const record = activeSaleRecord();
+  const commandId =
+    snapshot.vending?.commandId ??
+    record?.vendingCommand?.commandId ??
+    `UI-DEBUG-CMD-${snapshot.orderNo}`;
+  if (record) {
+    const deliveryId = `payment-status-${record.payment.paymentId}-${succeed ? "succeeded" : "failed"}`;
+    record.payment.statusDeliveries.push({
+      deliveryId,
+      status: succeed ? "succeeded" : "failed",
+      deliveredAt: nowIso(),
+      payload: {
+        orderId: record.order.orderId,
+        paymentId: record.payment.paymentId,
+        transactionId: record.transaction.transactionId,
+        paymentStatus: succeed ? "succeeded" : "failed",
+      },
+    });
+    if (!handledPaymentStatusDeliveryIds.has(deliveryId)) {
+      handledPaymentStatusDeliveryIds.add(deliveryId);
+      if (succeed) {
+        vendingCommandLog.push({
+          commandId,
+          orderId: record.order.orderId,
+          transactionId: record.transaction.transactionId,
+        });
+      }
+    }
+    record.payment.status = succeed ? "succeeded" : "failed";
+    record.order.status = succeed ? "dispensing" : "failed";
+    record.transaction.status = succeed ? "dispensing" : "failed";
+    if (succeed) {
+      record.vendingCommand = {
+        commandId,
+        orderId: record.order.orderId,
+        transactionId: record.transaction.transactionId,
+        status: "sent",
+        creationCount: vendingCommandLog.filter(
+          (command) => command.commandId === commandId,
+        ).length,
+      };
+    }
+  }
   currentTransaction = {
     ...snapshot,
     paymentStatus: succeed ? "succeeded" : "failed",
@@ -306,8 +451,8 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
     nextAction: succeed ? "dispensing" : "payment_failed",
     vending: succeed
       ? {
-          commandId: null,
-          commandNo: "UI-DEBUG-CMD",
+          commandId,
+          commandNo: commandId,
           status: "sent",
           lastError: null,
         }
@@ -316,6 +461,298 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
   };
   persistTransaction(currentTransaction);
   return currentTransaction;
+}
+
+function completeSimulatedDispense(): TransactionSnapshot {
+  const snapshot = currentTransactionOrScenario();
+  const record = activeSaleRecord();
+  const commandId =
+    snapshot.vending?.commandId ??
+    record?.vendingCommand?.commandId ??
+    `UI-DEBUG-CMD-${snapshot.orderNo}`;
+  if (record) {
+    const movementId = `UI-DEBUG-STOCK-${snapshot.orderNo}`;
+    record.order.status = "fulfilled";
+    record.reservation.status = "consumed";
+    record.payment.status = "succeeded";
+    record.transaction.status = "succeeded";
+    const commandCreationCount = vendingCommandLog.filter(
+      (command) => command.commandId === commandId,
+    ).length;
+    if (commandCreationCount === 0) {
+      throw new Error("UI debug dispense completed without a payment command");
+    }
+    if (
+      !stockMovementLog.some((movement) => movement.movementId === movementId)
+    ) {
+      stockMovementLog.push({
+        movementId,
+        commandId,
+        orderId: record.order.orderId,
+        transactionId: record.transaction.transactionId,
+      });
+    }
+    record.vendingCommand = {
+      commandId,
+      orderId: record.order.orderId,
+      transactionId: record.transaction.transactionId,
+      status: "succeeded",
+      creationCount: commandCreationCount,
+    };
+    record.stockMovement = {
+      movementId,
+      orderId: record.order.orderId,
+      transactionId: record.transaction.transactionId,
+      commandId,
+      quantity: -1,
+      status: "accepted",
+      creationCount: stockMovementLog.filter(
+        (movement) => movement.movementId === movementId,
+      ).length,
+    };
+    record.fulfillment = {
+      status: "succeeded",
+      orderId: record.order.orderId,
+      transactionId: record.transaction.transactionId,
+      commandId,
+      stockMovementId: movementId,
+    };
+  }
+  currentTransaction = {
+    ...snapshot,
+    paymentStatus: "succeeded",
+    orderStatus: "fulfilled",
+    nextAction: "success",
+    vending: {
+      commandId,
+      commandNo: commandId,
+      status: "succeeded",
+      lastError: null,
+      pickupReminder: null,
+    },
+    updatedAt: nowIso(),
+  };
+  persistTransaction(currentTransaction);
+  return currentTransaction;
+}
+
+async function routeToTransactionProjection(): Promise<void> {
+  const { router } = await import("@/router");
+  const target = useCheckoutStore().customerCheckoutView.routeTarget;
+  if ("path" in target) {
+    await router.replace(target.path);
+    return;
+  }
+  await router.replace(target);
+}
+
+function installedKioskSaleRoute(path: string) {
+  if (path.startsWith("/catalog")) return "home" as const;
+  if (path.startsWith("/products")) return "product" as const;
+  if (path.startsWith("/checkout")) return "checkout" as const;
+  if (path.startsWith("/payment")) return "payment" as const;
+  if (path.startsWith("/dispensing")) return "fulfillment" as const;
+  if (path.startsWith("/result")) return "result" as const;
+  if (path.startsWith("/maintenance")) return "maintenance" as const;
+  if (path.startsWith("/offline")) return "offline" as const;
+  return "other" as const;
+}
+
+function nextTimelineObservationId(): string {
+  timelineObservationSequence += 1;
+  return `browser-observation-${timelineObservationSequence}`;
+}
+
+function recordInstalledKioskSaleRoute(path: string): void {
+  const record = activeSaleRecord();
+  if (!record) return;
+  const route = installedKioskSaleRoute(path);
+  if (["payment", "fulfillment", "result"].includes(route)) return;
+  saleEvidence.timeline.push({
+    observationId: nextTimelineObservationId(),
+    observedAt: nowIso(),
+    route,
+    identitySource: "router_transaction_state",
+    renderedQrSource: null,
+    decodedQrPayload: null,
+    commandId: currentTransaction?.vending?.commandId ?? null,
+    orderId: record.order.orderId,
+    paymentId: record.payment.paymentId,
+    transactionId: record.transaction.transactionId,
+    paymentUrl: record.payment.paymentUrl,
+  });
+}
+
+function recordCustomerPaymentSurface(
+  surface: InstalledKioskSaleCustomerPaymentSurface,
+): void {
+  const record = activeSaleRecord();
+  if (!record) {
+    throw new Error("Installed Kiosk Sale transaction evidence is unavailable");
+  }
+  const hasPaymentSurface = saleEvidence.timeline.some(
+    (entry) => entry.route === "payment",
+  );
+  saleEvidence.timeline.push({
+    observationId: nextTimelineObservationId(),
+    observedAt: surface.observedAt,
+    route: "payment",
+    identitySource: "customer_payment_surface",
+    orderId: surface.orderId,
+    paymentId: surface.paymentId,
+    transactionId: surface.transactionId,
+    paymentUrl: surface.paymentUrl,
+    renderedQrSource: surface.renderedQrSource,
+    decodedQrPayload: surface.decodedQrPayload,
+    commandId: null,
+  });
+  if (!hasPaymentSurface) {
+    saleEvidence.observationWindow.openedAt = surface.observedAt;
+  }
+}
+
+function recordCustomerTransactionSurface(
+  surface: InstalledKioskSaleCustomerTransactionSurface,
+): void {
+  const route = surface.route;
+  saleEvidence.timeline.push({
+    observationId: nextTimelineObservationId(),
+    observedAt: surface.observedAt,
+    route,
+    identitySource:
+      route === "fulfillment"
+        ? "customer_fulfillment_surface"
+        : "customer_result_surface",
+    orderId: surface.orderId,
+    paymentId: surface.paymentId,
+    transactionId: surface.transactionId,
+    paymentUrl: surface.paymentUrl,
+    renderedQrSource: null,
+    decodedQrPayload: null,
+    commandId: surface.commandId,
+  });
+}
+
+export function installInstalledKioskSaleRouteObserver(router: Router): void {
+  if (!shouldInstallUiDebugDaemon()) return;
+  removeRouteObserver?.();
+  removeRouteObserver = router.afterEach((to) => {
+    recordInstalledKioskSaleRoute(to.path);
+  });
+  captureCurrentRoute = () => {
+    recordInstalledKioskSaleRoute(router.currentRoute.value.path);
+  };
+}
+
+async function injectInstalledKioskSaleDisturbance(
+  disturbance: InstalledKioskSaleDisturbance,
+): Promise<void> {
+  let barrierObservation: UiDebugSaleEvidence["timeline"][number] | undefined;
+  for (const entry of saleEvidence.timeline) {
+    if (
+      entry.route === "payment" &&
+      entry.identitySource === "customer_payment_surface"
+    ) {
+      barrierObservation = entry;
+    }
+  }
+  if (!barrierObservation) {
+    throw new Error("Customer payment QR barrier has not been observed");
+  }
+  disturbanceInjectionSequence += 1;
+  const injection = {
+    injectionId: `browser-injection-${disturbanceInjectionSequence}`,
+    kind: disturbance,
+    injectedAt: nowIso(),
+    barrier: "payment_qr_presented" as const,
+    barrierObservationId: barrierObservation.observationId,
+    count: 1,
+    outcome: "failed" as "completed" | "failed",
+    pressure:
+      null as UiDebugSaleEvidence["disturbanceInjections"][number]["pressure"],
+  };
+  saleEvidence.disturbanceInjections.push(injection);
+  try {
+    switch (disturbance) {
+      case "catalog_refresh":
+        await Promise.all([
+          useCatalogStore().refresh(),
+          (async () => {
+            const { router } = await import("@/router");
+            await router.push("/catalog");
+            injection.pressure = {
+              refreshedState: "catalog",
+              attemptedRoute: "/catalog",
+              resolvedRoute: router.currentRoute.value.path,
+              routeAuthorityWon: router.currentRoute.value.path === "/payment",
+            };
+          })(),
+        ]);
+        break;
+      case "readiness_refresh":
+        await Promise.all([
+          useCheckoutStore().refreshCustomerCheckoutReadiness(),
+          (async () => {
+            const { router } = await import("@/router");
+            await router.push("/maintenance");
+            injection.pressure = {
+              refreshedState: "readiness",
+              attemptedRoute: "/maintenance",
+              resolvedRoute: router.currentRoute.value.path,
+              routeAuthorityWon: router.currentRoute.value.path === "/payment",
+            };
+          })(),
+        ]);
+        break;
+      case "presence_departure":
+        useVisionStore().applyPersonDeparted({
+          eventId: "ui-debug-presence-departure",
+          detectedAt: nowIso(),
+          lastSeenAt: nowIso(),
+          reason: "left_frame",
+        });
+        break;
+      case "duplicate_payment_status":
+        useCheckoutStore().applyTransaction(handleUiDebugPaymentStatus(true));
+        useCheckoutStore().applyTransaction(handleUiDebugPaymentStatus(true));
+        await routeToTransactionProjection();
+        break;
+      case "ipc_interruption":
+        currentTransactionFailuresRemaining = 1;
+        await useCheckoutStore().refreshCurrentTransaction();
+        await useCheckoutStore().refreshCurrentTransaction();
+        break;
+    }
+    injection.outcome = "completed";
+    captureCurrentRoute?.();
+  } catch (error) {
+    captureCurrentRoute?.();
+    throw error;
+  }
+}
+
+function installInstalledKioskSaleDebugControl(): void {
+  if (typeof window === "undefined") return;
+  Reflect.set(window, "__VEM_INSTALLED_KIOSK_SALE_DEBUG__", {
+    inject: injectInstalledKioskSaleDisturbance,
+    observePaymentSurface: recordCustomerPaymentSurface,
+    observeTransactionSurface: recordCustomerTransactionSurface,
+    readEvidence: (): UiDebugSaleEvidence => structuredClone(saleEvidence),
+    recordRouteObservation: recordInstalledKioskSaleRoute,
+    completePayment: async (): Promise<void> => {
+      useCheckoutStore().applyTransaction(handleUiDebugPaymentStatus(true));
+      await routeToTransactionProjection();
+    },
+    completeDispense: async (): Promise<void> => {
+      useCheckoutStore().applyTransaction(completeSimulatedDispense());
+      await routeToTransactionProjection();
+    },
+    closeObservationWindow: (): UiDebugSaleEvidence => {
+      captureCurrentRoute?.();
+      saleEvidence.observationWindow.closedAt = nowIso();
+      return structuredClone(saleEvidence);
+    },
+  });
 }
 
 function closedTransaction(): TransactionSnapshot {
@@ -339,6 +776,7 @@ export function resetUiDebugTransaction(): void {
   currentTransaction = null;
   persistTransaction(null);
   clearTransactionMarkers();
+  resetSaleEvidence();
 }
 
 export function hasStoredUiDebugTransaction(): boolean {
@@ -432,8 +870,14 @@ export function installUiDebugDaemon(): void {
   client.createOrder = async (body: unknown) =>
     createTransactionFromOrder(body);
   client.cancelOrder = async () => closedTransaction();
-  client.submitDevPaymentCode = async () => transitionMockPayment(true);
-  client.getCurrentTransaction = async () => currentTransactionOrScenario();
+  client.submitDevPaymentCode = async () => handleUiDebugPaymentStatus(true);
+  client.getCurrentTransaction = async () => {
+    if (currentTransactionFailuresRemaining > 0) {
+      currentTransactionFailuresRemaining -= 1;
+      throw new Error("UI debug bounded IPC interruption");
+    }
+    return currentTransactionOrScenario();
+  };
   client.getSyncStatus = async () => currentScenario().sync;
   client.getScannerStatus = async () => currentScenario().scanner;
   client.getVisionStatus = async () => currentScenario().vision;
@@ -449,12 +893,13 @@ export function installUiDebugDaemon(): void {
     configUpdated: false,
   });
   client.markMockPayment = async (_orderNo: string, succeed: boolean) =>
-    transitionMockPayment(succeed);
+    handleUiDebugPaymentStatus(succeed);
   client.downloadLogExport = async () =>
     new Response("ui debug log export\n", {
       headers: { "Content-Type": "text/plain" },
     });
   client.subscribeEvents = () => ({ close: () => undefined });
+  installInstalledKioskSaleDebugControl();
   client.getNaturalContext = async (): Promise<NaturalContextSnapshot> => {
     const now = new Date();
     return {
