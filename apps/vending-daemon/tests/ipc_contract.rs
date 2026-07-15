@@ -285,6 +285,7 @@ async fn preclaim_platform_success_cannot_claim_through_a_failed_physical_local_
     config["machineCode"] = serde_json::Value::Null;
     let mut daemon = DaemonHarness::start(
         config,
+        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "platform_success_local_failure"),
@@ -402,7 +403,6 @@ async fn network_bootstrap_persists_only_local_bring_up_settings_for_unclaimed_r
     config["apiBaseUrl"] = serde_json::Value::String(String::new());
     let mut daemon = start_network_daemon(
         config,
-        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
@@ -527,7 +527,6 @@ async fn network_bootstrap_moves_unclaimed_runtime_from_offline_to_claim_ready()
         serde_json::Value::String("https://provisioning.example.test/api".to_string());
     let mut daemon = start_network_daemon(
         config,
-        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
@@ -609,7 +608,6 @@ async fn network_bootstrap_connected_pending_persists_without_claim_ready() {
         serde_json::Value::String("https://provisioning.example.test/api".to_string());
     let mut daemon = start_network_daemon(
         config,
-        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "pending_success"),
@@ -668,7 +666,6 @@ async fn protected_network_settings_does_not_report_reachability_until_diagnosti
     let wifi_password = ["diagnostics", "network", "pass"].join("-");
     let mut daemon = start_network_daemon(
         configured_daemon(),
-        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "associated_only"),
@@ -735,7 +732,6 @@ async fn protected_network_settings_reports_invalid_password_without_echoing_sec
     let wifi_password = ["wrong", "network", "credential"].join("-");
     let mut daemon = start_network_daemon(
         configured_daemon(),
-        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "invalid_password"),
@@ -791,7 +787,6 @@ async fn protected_network_settings_accepts_hidden_ssid_manual_entry() {
     let wifi_password = ["hidden", "network", "credential"].join("-");
     let mut daemon = start_network_daemon(
         configured_daemon(),
-        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "success"),
@@ -835,7 +830,6 @@ async fn protected_network_settings_rejects_captive_portal_with_operator_guidanc
     let wifi_password = ["guest", "network", "credential"].join("-");
     let mut daemon = start_network_daemon(
         configured_daemon(),
-        &[],
         &[
             ("VEM_NETWORK_ADAPTER", "fake"),
             ("VEM_FAKE_NETWORK_OUTCOME", "captive_portal"),

@@ -22,6 +22,17 @@ Factory capability into this bundle, its README, or its logs.
 The smoke script must acquire a daemon-issued protected maintenance session;
 it never accepts an invented session ID.
 
+`VEM_MAINTENANCE_PIN` is the approved operator-secret custody name, not a
+daemon environment variable or a field in machine runtime configuration. Its
+source is the protected Factory personalization gate: that gate derives the
+salted maintenance PIN verifier, Factory preparation stages only that verifier
+with SYSTEM/Administrators-only ACLs, and the daemon imports it into its single
+machine-scoped Protected Machine Secret Store before deleting the staging file.
+Never place the PIN itself in a bundle, manifest, ordinary file, process
+environment, command line, log, IPC response, or customer-facing UI. Customer
+surfaces expose neither this custody name nor its value, and there is no
+environment-store compatibility fallback.
+
 For the first Factory/Testbed smoke only, the Factory runtime bootstrap may
 already have placed its single-use capability at
 `C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability`.
