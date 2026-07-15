@@ -800,13 +800,78 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
         // Expire locally and release inventory
         return await this.db.transaction(async (tx) => {
+          await tx.execute(sql`
+            select p.id
+            from payments p
+            inner join orders o on o.id = p.order_id
+            where p.id = ${payment.paymentId} and o.id = ${payment.orderId}
+            for update of p, o
+          `);
+
+          const [current] = await tx
+            .select({
+              paymentId: payments.id,
+              paymentStatus: payments.status,
+              paymentExpiresAt: payments.expiresAt,
+              paymentIsDrill: payments.isDrill,
+              orderId: orders.id,
+              orderStatus: orders.status,
+              paymentState: orders.paymentState,
+              fulfillmentState: orders.fulfillmentState,
+              orderIsDrill: orders.isDrill,
+            })
+            .from(payments)
+            .innerJoin(orders, eq(orders.id, payments.orderId))
+            .where(
+              and(
+                eq(payments.id, payment.paymentId),
+                eq(orders.id, payment.orderId),
+              ),
+            );
+          if (
+            !current ||
+            current.paymentIsDrill ||
+            current.orderIsDrill ||
+            !canApplyProviderTerminalStatus(current.paymentStatus) ||
+            isPaymentIncidentLocked(current) ||
+            !current.paymentExpiresAt ||
+            current.paymentExpiresAt.getTime() >= now.getTime()
+          ) {
+            return false;
+          }
+
+          const providerEventId = `expired:${payment.paymentNo}`;
+          const [existingEvent] = await tx
+            .select({ id: paymentEvents.id })
+            .from(paymentEvents)
+            .where(
+              and(
+                eq(paymentEvents.providerId, payment.providerId),
+                eq(paymentEvents.providerEventId, providerEventId),
+              ),
+            )
+            .limit(1);
+          if (existingEvent) return false;
+
+          const updatedPayments = await tx
+            .update(payments)
+            .set({ status: "expired", updatedAt: new Date() })
+            .where(
+              and(
+                eq(payments.id, payment.paymentId),
+                inArray(payments.status, PROVIDER_MUTABLE_PAYMENT_STATUSES),
+              ),
+            )
+            .returning({ id: payments.id });
+          if (updatedPayments.length === 0) return false;
+
           const inserted = await tx
             .insert(paymentEvents)
             .values({
               paymentId: payment.paymentId,
               providerId: payment.providerId,
               eventType: "payment.expired",
-              providerEventId: `expired:${payment.paymentNo}`,
+              providerEventId,
               rawPayloadJson: buildStoredEventPayload({
                 paymentNo: payment.paymentNo,
                 event: "expired",
@@ -817,15 +882,12 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             .onConflictDoNothing()
             .returning({ id: paymentEvents.id });
           if (inserted.length === 0) {
-            return false;
+            throw new Error(
+              `payment expiry event conflict after terminal lock: ${payment.paymentNo}`,
+            );
           }
 
-          await tx
-            .update(payments)
-            .set({ status: "expired", updatedAt: new Date() })
-            .where(eq(payments.id, payment.paymentId));
-
-          if (payment.orderStatus !== "payment_expired") {
+          if (current.orderStatus !== "payment_expired") {
             await tx
               .update(orders)
               .set({
@@ -837,7 +899,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               .where(eq(orders.id, payment.orderId));
             await tx.insert(orderStatusEvents).values({
               orderId: payment.orderId,
-              fromStatus: payment.orderStatus,
+              fromStatus: current.orderStatus,
               toStatus: "payment_expired",
               reason: "payment_expired",
             });
@@ -1831,7 +1893,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       if (
         webhook.paymentStatus === "succeeded" &&
-        transition.outcome !== "stale"
+        transition.outcome === "applied"
       ) {
         await this.vendingService.dispatchPendingCommandsForOrder(
           payment.orderId,
@@ -1887,15 +1949,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     if (duplicate) {
-      // A transaction may have committed payment success before process death
-      // prevented dispatch. Re-enter the idempotent command creator on a
-      // provider redelivery; it joins an existing command rather than issuing
-      // a second dispense command.
-      if (webhook.paymentStatus === "succeeded") {
-        await this.vendingService.dispatchPendingCommandsForOrder(
-          payment.orderId,
-        );
-      }
       await this.webhookAttemptRecorder.finish({
         attemptId,
         providerId: payment.providerId,

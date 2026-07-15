@@ -1519,7 +1519,7 @@ describe("PaymentsService", () => {
         "",
       );
       expect(result).toMatchObject({ handled: true, duplicate: true });
-      expect(dispatchPendingCommandsForOrder).toHaveBeenCalledWith("ord-001");
+      expect(dispatchPendingCommandsForOrder).not.toHaveBeenCalled();
     });
 
     it("returns {handled:false,reason:'payment_not_found'} when paymentNo not in db", async () => {
@@ -2877,6 +2877,49 @@ describe("PaymentsService", () => {
       });
     }
 
+    function makeLocalExpiryTransitionMocks(
+      db: ReturnType<typeof makeDb>,
+      input: {
+        paymentId: string;
+        orderId: string;
+        expiresAt: Date;
+      },
+    ) {
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                paymentId: input.paymentId,
+                paymentStatus: "pending",
+                paymentExpiresAt: input.expiresAt,
+                paymentIsDrill: false,
+                orderId: input.orderId,
+                orderStatus: "pending_payment",
+                paymentState: "awaiting_payment",
+                fulfillmentState: "awaiting_fulfillment",
+                orderIsDrill: false,
+              },
+            ]),
+          }),
+        }),
+      });
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
+      db.update.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: input.paymentId }]),
+          }),
+        }),
+      });
+    }
+
     it("query succeeds → calls applyPaymentStatusUpdate + dispatches, no cancel", async () => {
       const now = new Date();
       const expiresAt = new Date(now.getTime() - 10_000); // 10s ago
@@ -3105,6 +3148,11 @@ describe("PaymentsService", () => {
             publicConfigJson: {},
           },
         ]);
+        makeLocalExpiryTransitionMocks(db, {
+          paymentId: `pay-exp-${providerStatus}-001`,
+          orderId: `ord-exp-${providerStatus}-001`,
+          expiresAt,
+        });
         db.select.mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -3178,6 +3226,11 @@ describe("PaymentsService", () => {
           publicConfigJson: {},
         },
       ]);
+      makeLocalExpiryTransitionMocks(db, {
+        paymentId: "pay-exp-002",
+        orderId: "ord-exp-002",
+        expiresAt,
+      });
 
       // reservation query resolves directly at .where() level (no .limit() call)
       db.select.mockReturnValueOnce({
@@ -3240,6 +3293,11 @@ describe("PaymentsService", () => {
           publicConfigJson: {},
         },
       ]);
+      makeLocalExpiryTransitionMocks(db, {
+        paymentId: "pay-missing-trade-001",
+        orderId: "ord-missing-trade-001",
+        expiresAt,
+      });
 
       db.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
