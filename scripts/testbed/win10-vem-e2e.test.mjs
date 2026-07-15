@@ -2010,10 +2010,7 @@ try {
       script,
       /Invoke-IpcJson "GET" "\$baseUrl\/v1\/maintenance\/status" \$headers/,
     );
-    assert.match(
-      script,
-      /maintenanceStatusAfterClaimFailure\.lastError = if/,
-    );
+    assert.match(script, /maintenanceStatusAfterClaimFailure\.lastError = if/);
     assert.match(
       script,
       /daemon IPC claim failed: \$\(\$evidence.claimFailureCode\)/,
