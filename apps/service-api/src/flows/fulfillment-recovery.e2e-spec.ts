@@ -11,6 +11,7 @@ import {
   inventories,
   inventoryMovements,
   inventoryReservations,
+  machineEvents,
   machineSlots,
   orderItems,
   orderRecoveryActions,
@@ -392,6 +393,96 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       fulfillmentState: "dispensed",
     });
     expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(1);
+  }, 60_000);
+
+  it("resumes a successful dispense when the same messageId inbox row predates its side effects", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-INBOX-RESUME");
+    const messageId = `result:${ctx.commandNo}:resume-after-inbox`;
+    const topic = `vem/machines/${ctx.seeded.machineCode}/events/dispense-result`;
+    const payload = {
+      commandNo: ctx.commandNo,
+      success: true,
+      errorCode: null,
+      message: "resume after inbox crash boundary",
+      reportedAt: new Date().toISOString(),
+    };
+    await db.client.insert(machineEvents).values({
+      machineId: ctx.seeded.machineId,
+      eventType: "dispense_result",
+      payloadJson: payload,
+      mqttTopic: topic,
+      messageId,
+    });
+
+    await publishMqtt(
+      mqttClient,
+      topic,
+      signMqttPayload({
+        machineCode: ctx.seeded.machineCode,
+        mqttSigningSecret: ctx.seeded.mqttSigningSecret,
+        messageId,
+        payload,
+      }),
+    );
+
+    await eventually(async () => {
+      const [command] = await db.client
+        .select({ status: vendingCommands.status })
+        .from(vendingCommands)
+        .where(eq(vendingCommands.id, ctx.commandId));
+      expect(command.status).toBe("succeeded");
+    });
+    expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(1);
+    const [events] = await db.client
+      .select({ total: count() })
+      .from(machineEvents)
+      .where(eq(machineEvents.messageId, messageId));
+    expect(Number(events.total)).toBe(1);
+  }, 60_000);
+
+  it("resumes a failed dispense when the same messageId inbox row predates its compensation", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-INBOX-FAILURE");
+    const messageId = `result:${ctx.commandNo}:resume-failure-after-inbox`;
+    const topic = `vem/machines/${ctx.seeded.machineCode}/events/dispense-result`;
+    const payload = {
+      commandNo: ctx.commandNo,
+      success: false,
+      errorCode: "NO_DROP",
+      message: "resume failure after inbox crash boundary",
+      reportedAt: new Date().toISOString(),
+    };
+    await db.client.insert(machineEvents).values({
+      machineId: ctx.seeded.machineId,
+      eventType: "dispense_result",
+      payloadJson: payload,
+      mqttTopic: topic,
+      messageId,
+    });
+
+    await publishMqtt(
+      mqttClient,
+      topic,
+      signMqttPayload({
+        machineCode: ctx.seeded.machineCode,
+        mqttSigningSecret: ctx.seeded.mqttSigningSecret,
+        messageId,
+        payload,
+      }),
+    );
+
+    await eventually(async () => {
+      const [reservation] = await db.client
+        .select({ status: inventoryReservations.status })
+        .from(inventoryReservations)
+        .where(eq(inventoryReservations.orderId, ctx.orderId));
+      expect(reservation.status).toBe("released");
+    });
+    expect(await movementCount(ctx.orderId, "reservation_released")).toBe(1);
+    const [events] = await db.client
+      .select({ total: count() })
+      .from(machineEvents)
+      .where(eq(machineEvents.messageId, messageId));
+    expect(Number(events.total)).toBe(1);
   }, 60_000);
 
   it("stock movement replay after unknown is idempotent", async () => {

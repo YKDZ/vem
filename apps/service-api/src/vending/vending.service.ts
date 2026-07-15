@@ -1275,21 +1275,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     if (!machine) return;
 
     const resultContext = await this.db.transaction(async (tx) => {
-      const inserted = await tx
-        .insert(machineEvents)
-        .values({
-          machineId: machine.id,
-          eventType: "dispense_result",
-          payloadJson: payload,
-          mqttTopic: topic,
-          messageId,
-        })
-        .onConflictDoNothing()
-        .returning({ id: machineEvents.id });
-      if (inserted.length === 0) {
-        return null;
-      }
-
       const [command] = await tx
         .select({
           id: vendingCommands.id,
@@ -1312,17 +1297,35 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           ),
         );
       if (!command) {
+        await this.insertDispenseResultInboxEvent(tx, {
+          machineId: machine.id,
+          payload,
+          topic,
+          messageId,
+        });
         return null;
       }
       if (
         command.orderIsDrill ||
         isProtectedFulfillmentDrillPayload(command.payloadJson)
       ) {
+        await this.insertDispenseResultInboxEvent(tx, {
+          machineId: machine.id,
+          payload,
+          topic,
+          messageId,
+        });
         return null;
       }
 
       if (payload.success) {
-        if (command.status === "succeeded" || command.status === "failed") {
+        if (command.status === "failed") {
+          await this.insertDispenseResultInboxEvent(tx, {
+            machineId: machine.id,
+            payload,
+            topic,
+            messageId,
+          });
           return null;
         }
         return {
@@ -1336,8 +1339,21 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       }
 
       if (command.status === "succeeded" || command.status === "failed") {
+        await this.insertDispenseResultInboxEvent(tx, {
+          machineId: machine.id,
+          payload,
+          topic,
+          messageId,
+        });
         return null;
       }
+
+      await this.insertDispenseResultInboxEvent(tx, {
+        machineId: machine.id,
+        payload,
+        topic,
+        messageId,
+      });
 
       if (payload.errorCode === "UNKNOWN") {
         const changed = await this.markDispenseResultUnknown(tx, {
@@ -1353,7 +1369,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           : null;
       }
 
-      await tx
+      const [updated] = await tx
         .update(vendingCommands)
         .set({
           status: "failed",
@@ -1361,7 +1377,20 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           lastError: payload.message,
           updatedAt: new Date(),
         })
-        .where(eq(vendingCommands.id, command.id));
+        .where(
+          and(
+            eq(vendingCommands.id, command.id),
+            inArray(vendingCommands.status, [
+              "pending",
+              "sent",
+              "acknowledged",
+              "result_unknown",
+              "timeout",
+            ]),
+          ),
+        )
+        .returning({ id: vendingCommands.id });
+      if (!updated) return null;
 
       const compensation =
         await this.inventoryService.releaseAffectedReservationForDispenseFailure(
@@ -1431,12 +1460,47 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           occurredAt: payload.reportedAt,
         },
       );
+      // Success projection is itself idempotent (movementId + command CAS).
+      // Persist the inbox receipt only after it commits, so a crash or
+      // transient failure is resumed by the same messageId instead of being
+      // permanently hidden behind the inbox unique key.
+      await this.db
+        .insert(machineEvents)
+        .values({
+          machineId: machine.id,
+          eventType: "dispense_result",
+          payloadJson: payload,
+          mqttTopic: topic,
+          messageId,
+        })
+        .onConflictDoNothing();
       return;
     }
 
     if (resultContext?.kind === "failure") {
       await this.requestRefundForFailedLines(resultContext.refundDecision);
     }
+  }
+
+  private async insertDispenseResultInboxEvent(
+    tx: DrizzleTransaction,
+    input: {
+      machineId: string;
+      payload: z.infer<typeof dispenseResultPayloadSchema>;
+      topic: string;
+      messageId: string;
+    },
+  ): Promise<void> {
+    await tx
+      .insert(machineEvents)
+      .values({
+        machineId: input.machineId,
+        eventType: "dispense_result",
+        payloadJson: input.payload,
+        mqttTopic: input.topic,
+        messageId: input.messageId,
+      })
+      .onConflictDoNothing();
   }
 
   private async markOrderLinesFailedAndBuildRefundDecision(
