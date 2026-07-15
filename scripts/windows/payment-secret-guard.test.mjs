@@ -261,6 +261,49 @@ function nestedBase64Payload(layers) {
   return payload;
 }
 
+async function generatePbes1EncryptedPkcs8(root) {
+  const keyPath = join(root, "fixture-key.pem");
+  const encryptedPath = join(root, "fixture-encrypted.der");
+  const generated = spawnSync(
+    "openssl",
+    [
+      "genpkey",
+      "-algorithm",
+      "RSA",
+      "-pkeyopt",
+      "rsa_keygen_bits:1024",
+      "-out",
+      keyPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr);
+  const encrypted = spawnSync(
+    "openssl",
+    [
+      "pkcs8",
+      "-topk8",
+      "-in",
+      keyPath,
+      "-outform",
+      "DER",
+      "-v1",
+      "PBE-MD5-DES",
+      "-passout",
+      "pass:fixture-passphrase",
+      "-provider",
+      "default",
+      "-provider",
+      "legacy",
+      "-out",
+      encryptedPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(encrypted.status, 0, encrypted.stderr);
+  return readFile(encryptedPath);
+}
+
 async function runGuards(value, artifactBytes = "machine-runtime") {
   const root = await mkdtemp(join(tmpdir(), "vem-payment-secret-guard-"));
   try {
@@ -361,6 +404,60 @@ describe("managed-update payment secret guard", () => {
     );
     assert.notEqual(encryptedZip.status, 0);
     assert.match(encryptedZip.stderr, /encrypted archive/i);
+  });
+
+  it("rejects algorithm-independent PBES1 EncryptedPrivateKeyInfo", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-pbes1-private-key-"));
+    try {
+      const encryptedPrivateKey = await generatePbes1EncryptedPkcs8(root);
+      const result = await runGuards(
+        { updateId: "field-pbes1", components: [] },
+        encryptedPrivateKey,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /platform private-key material/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects provider credential fields in runtime content but allows public certificate contracts", async () => {
+    for (const field of [
+      "appCertPem",
+      "alipayPublicCertPem",
+      "alipayRootCertPem",
+      "merchantApiCertPem",
+      "platformCertificatePem",
+    ]) {
+      const result = await runGuards(
+        { updateId: `field-provider-${field}`, components: [] },
+        JSON.stringify({ [field]: "configured" }),
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /provider credential field/i);
+    }
+    const publicCertificate = await runGuards(
+      { updateId: "field-public-certificate", components: [] },
+      JSON.stringify({
+        publicCertificatePem:
+          "-----BEGIN CERTIFICATE----- public-ca -----END CERTIFICATE-----",
+      }),
+    );
+    assert.equal(publicCertificate.status, 0, publicCertificate.stderr);
+    for (const oid of [
+      "06092a864886f70d01050d",
+      "060b2a864886f70d010c0a0101",
+    ]) {
+      const incidental = await runGuards(
+        { updateId: "field-incidental-oid", components: [] },
+        Buffer.concat([
+          Buffer.from("incidental-prefix"),
+          Buffer.from(oid, "hex"),
+          Buffer.from("incidental-suffix"),
+        ]),
+      );
+      assert.equal(incidental.status, 0, incidental.stderr);
+    }
   });
 
   it("scans every recursive manifest string for encoded private-key bytes", async () => {

@@ -109,20 +109,143 @@ function Assert-NoPlatformPaymentSecretBytes {
       [Text.Encoding]::Unicode.GetString($Bytes)
     )
     foreach ($text in $texts) {
+      if ($text -match '(?im)(?:^|[,\x7b;\r\n])\s*["'']?(?:privateKeyPem|appCertPem|alipayPublicCertPem|alipayRootCertPem|apiV[23]Key|merchantApiCertPem|merchantApiKeyPem|platformCertificatePem|platformPublicKeyPem|paymentProviderCredentials)["'']?\s*[:=]') {
+        throw "artifact contains provider credential field: $Label"
+      }
       if ($text -match 'BEGIN\s+(?:(?:RSA|EC)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY') {
         throw "artifact contains platform private-key material: $Label"
       }
     }
 
-    $hex = [Convert]::ToHexString($Bytes)
-    foreach ($privateContainerOid in @(
-      '060B2A864886F70D010C0A0101',
-      '060B2A864886F70D010C0A0102',
-      '06092A864886F70D01050D'
-    )) {
-      if ($hex.Contains($privateContainerOid, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "artifact contains platform private-key material: $Label"
+    $readDerElement = {
+      param([int]$Offset, [int]$Limit)
+      if ($Offset + 2 -gt $Limit) { return $null }
+      $tag = $Bytes[$Offset]
+      if (($tag -band 0x1f) -eq 0x1f) { return $null }
+      $firstLength = $Bytes[$Offset + 1]
+      $headerBytes = 2
+      [long]$length = $firstLength
+      if (($firstLength -band 0x80) -ne 0) {
+        $lengthBytes = $firstLength -band 0x7f
+        if (
+          $lengthBytes -eq 0 -or
+          $lengthBytes -gt 4 -or
+          $Offset + 2 + $lengthBytes -gt $Limit -or
+          $Bytes[$Offset + 2] -eq 0
+        ) {
+          return $null
+        }
+        $length = 0
+        for ($index = 0; $index -lt $lengthBytes; $index += 1) {
+          $length = $length * 256 + $Bytes[$Offset + 2 + $index]
+        }
+        if ($length -lt 128) { return $null }
+        $headerBytes += $lengthBytes
       }
+      [long]$contentStart = $Offset + $headerBytes
+      [long]$end = $contentStart + $length
+      if ($end -gt $Limit -or $end -gt [int]::MaxValue) { return $null }
+      return [pscustomobject]@{
+        tag = $tag
+        contentStart = [int]$contentStart
+        end = [int]$end
+        next = [int]$end
+      }
+    }
+    $isValidDerOid = {
+      param([int]$Start, [int]$End)
+      if ($Start -ge $End) { return $false }
+      $atSubidentifierStart = $true
+      for ($index = $Start; $index -lt $End; $index += 1) {
+        if ($atSubidentifierStart -and $Bytes[$index] -eq 0x80) { return $false }
+        $atSubidentifierStart = ($Bytes[$index] -band 0x80) -eq 0
+      }
+      return $atSubidentifierStart
+    }
+    $isEncryptedPrivateKeyInfo = {
+      $outer = & $readDerElement 0 $Bytes.Length
+      if ($null -eq $outer -or $outer.tag -ne 0x30 -or $outer.end -ne $Bytes.Length) {
+        return $false
+      }
+      $algorithm = & $readDerElement $outer.contentStart $outer.end
+      if ($null -eq $algorithm -or $algorithm.tag -ne 0x30) { return $false }
+      $oid = & $readDerElement $algorithm.contentStart $algorithm.end
+      if (
+        $null -eq $oid -or
+        $oid.tag -ne 0x06 -or
+        -not (& $isValidDerOid $oid.contentStart $oid.end)
+      ) {
+        return $false
+      }
+      if ($oid.next -lt $algorithm.end) {
+        $parameters = & $readDerElement $oid.next $algorithm.end
+        if ($null -eq $parameters -or $parameters.next -ne $algorithm.end) {
+          return $false
+        }
+      } elseif ($oid.next -ne $algorithm.end) {
+        return $false
+      }
+      $encryptedData = & $readDerElement $algorithm.next $outer.end
+      return (
+        $null -ne $encryptedData -and
+        $encryptedData.tag -eq 0x04 -and
+        $encryptedData.end -gt $encryptedData.contentStart -and
+        $encryptedData.next -eq $outer.end
+      )
+    }
+    if (& $isEncryptedPrivateKeyInfo) {
+      throw "artifact contains platform private-key material: $Label"
+    }
+
+    $privateBagOidValues = @(
+      '2A864886F70D010C0A0101',
+      '2A864886F70D010C0A0102'
+    )
+    $derState = @{ Visited = 0 }
+    $walkStructuredDer = $null
+    $walkStructuredDer = {
+      param([int]$Start, [int]$End, [int]$DerDepth)
+      if ($DerDepth -gt 16) {
+        return [pscustomobject]@{ valid = $false; found = $false }
+      }
+      $offset = $Start
+      while ($offset -lt $End) {
+        $derState.Visited = [int]$derState.Visited + 1
+        if ($derState.Visited -gt 4096) {
+          return [pscustomobject]@{ valid = $false; found = $false }
+        }
+        $element = & $readDerElement $offset $End
+        if ($null -eq $element) {
+          return [pscustomobject]@{ valid = $false; found = $false }
+        }
+        if (
+          $element.tag -eq 0x06 -and
+          (& $isValidDerOid $element.contentStart $element.end)
+        ) {
+          [byte[]]$oidValue = $Bytes[$element.contentStart..($element.end - 1)]
+          if ($privateBagOidValues -contains [Convert]::ToHexString($oidValue)) {
+            return [pscustomobject]@{ valid = $true; found = $true }
+          }
+        }
+        if (($element.tag -band 0x20) -ne 0) {
+          $nested = & $walkStructuredDer $element.contentStart $element.end ($DerDepth + 1)
+          if ($nested.found) { return $nested }
+          if (-not $nested.valid) { return $nested }
+        } elseif (
+          $element.tag -eq 0x04 -and
+          $element.end - $element.contentStart -ge 2 -and
+          $Bytes[$element.contentStart] -eq 0x30
+        ) {
+          $nested = & $walkStructuredDer $element.contentStart $element.end ($DerDepth + 1)
+          if ($nested.found) { return $nested }
+        }
+        $offset = $element.next
+      }
+      return [pscustomobject]@{ valid = $offset -eq $End; found = $false }
+    }
+    $privateBagScan = & $walkStructuredDer 0 $Bytes.Length 0
+    if ($privateBagScan.valid -and $privateBagScan.found) {
+      throw "artifact contains platform private-key material: $Label"
     }
 
     $privateKeyDetected = $false

@@ -10,17 +10,14 @@ const MAX_ARCHIVE_ENTRY_BYTES = 16 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 256;
 const privateKeyPemPattern =
   /-----BEGIN\s+(?:(?:RSA|EC)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/i;
+const providerCredentialFieldPattern =
+  /(?:^|[,{;\r\n])\s*["']?(?:privateKeyPem|appCertPem|alipayPublicCertPem|alipayRootCertPem|apiV[23]Key|merchantApiCertPem|merchantApiKeyPem|platformCertificatePem|platformPublicKeyPem|paymentProviderCredentials)["']?\s*[:=]/im;
 const base64Pattern =
   /(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?/g;
 const pkcs12PrivateBagOids = [
-  Buffer.from("060b2a864886f70d010c0a0101", "hex"),
-  Buffer.from("060b2a864886f70d010c0a0102", "hex"),
+  Buffer.from("2a864886f70d010c0a0101", "hex"),
+  Buffer.from("2a864886f70d010c0a0102", "hex"),
 ];
-const pbes2OidValue = Buffer.from("2a864886f70d01050d", "hex");
-
-function containsBytes(haystack, needle) {
-  return haystack.indexOf(needle) >= 0;
-}
 
 function crc32(bytes) {
   let crc = 0xffffffff;
@@ -48,9 +45,10 @@ function isDerPrivateKey(bytes) {
   return false;
 }
 
-function readDerElement(bytes, offset) {
-  if (offset + 2 > bytes.length) return null;
+function readDerElement(bytes, offset, limit = bytes.length) {
+  if (offset + 2 > limit) return null;
   const tag = bytes[offset];
+  if ((tag & 0x1f) === 0x1f) return null;
   const firstLength = bytes[offset + 1];
   let headerBytes = 2;
   let length = firstLength;
@@ -59,7 +57,8 @@ function readDerElement(bytes, offset) {
     if (
       lengthBytes === 0 ||
       lengthBytes > 4 ||
-      offset + 2 + lengthBytes > bytes.length
+      offset + 2 + lengthBytes > limit ||
+      bytes[offset + 2] === 0
     ) {
       return null;
     }
@@ -67,33 +66,88 @@ function readDerElement(bytes, offset) {
     for (let index = 0; index < lengthBytes; index += 1) {
       length = length * 256 + bytes[offset + 2 + index];
     }
+    if (length < 128) return null;
     headerBytes += lengthBytes;
   }
   const contentStart = offset + headerBytes;
   const end = contentStart + length;
-  if (end > bytes.length) return null;
+  if (end > limit) return null;
   return { tag, contentStart, end, next: end };
+}
+
+function isValidDerOidValue(value) {
+  if (value.length === 0) return false;
+  let atSubidentifierStart = true;
+  for (const byte of value) {
+    if (atSubidentifierStart && byte === 0x80) return false;
+    atSubidentifierStart = (byte & 0x80) === 0;
+  }
+  return atSubidentifierStart;
 }
 
 function isPasswordEncryptedPkcs8(bytes) {
   const outer = readDerElement(bytes, 0);
   if (!outer || outer.tag !== 0x30 || outer.end !== bytes.length) return false;
-  const algorithm = readDerElement(bytes, outer.contentStart);
+  const algorithm = readDerElement(bytes, outer.contentStart, outer.end);
   if (!algorithm || algorithm.tag !== 0x30) return false;
-  const oid = readDerElement(bytes, algorithm.contentStart);
+  const oid = readDerElement(bytes, algorithm.contentStart, algorithm.end);
   if (
     !oid ||
     oid.tag !== 0x06 ||
-    !bytes.subarray(oid.contentStart, oid.end).equals(pbes2OidValue)
+    !isValidDerOidValue(bytes.subarray(oid.contentStart, oid.end))
   ) {
     return false;
   }
-  const encryptedData = readDerElement(bytes, algorithm.next);
+  if (oid.next < algorithm.end) {
+    const parameters = readDerElement(bytes, oid.next, algorithm.end);
+    if (!parameters || parameters.next !== algorithm.end) return false;
+  } else if (oid.next !== algorithm.end) {
+    return false;
+  }
+  const encryptedData = readDerElement(bytes, algorithm.next, outer.end);
   return (
     encryptedData?.tag === 0x04 &&
     encryptedData.next === outer.end &&
     encryptedData.end > encryptedData.contentStart
   );
+}
+
+function containsStructuredPrivateBagOid(bytes) {
+  let visited = 0;
+  const walk = (start, end, depth) => {
+    if (depth > 16) return { valid: false, found: false };
+    let offset = start;
+    while (offset < end) {
+      visited += 1;
+      if (visited > 4096) return { valid: false, found: false };
+      const element = readDerElement(bytes, offset, end);
+      if (!element) return { valid: false, found: false };
+      const value = bytes.subarray(element.contentStart, element.end);
+      if (
+        element.tag === 0x06 &&
+        isValidDerOidValue(value) &&
+        pkcs12PrivateBagOids.some((oid) => value.equals(oid))
+      ) {
+        return { valid: true, found: true };
+      }
+      if ((element.tag & 0x20) !== 0) {
+        const nested = walk(element.contentStart, element.end, depth + 1);
+        if (nested.found) return nested;
+        if (!nested.valid) return nested;
+      } else if (
+        element.tag === 0x04 &&
+        value.length >= 2 &&
+        value[0] === 0x30
+      ) {
+        const nested = walk(element.contentStart, element.end, depth + 1);
+        if (nested.found) return nested;
+      }
+      offset = element.next;
+    }
+    return { valid: offset === end, found: false };
+  };
+  const result = walk(0, bytes.length, 0);
+  return result.valid && result.found;
 }
 
 function textRepresentations(bytes) {
@@ -466,13 +520,16 @@ function scanBytes(bytes, label, state, depth) {
   if (
     isDerPrivateKey(bytes) ||
     isPasswordEncryptedPkcs8(bytes) ||
-    pkcs12PrivateBagOids.some((oid) => containsBytes(bytes, oid))
+    containsStructuredPrivateBagOid(bytes)
   ) {
     throw new Error(`${label} contains platform private-key material`);
   }
   scanZipEntries(bytes, label, state, depth);
 
   for (const text of textRepresentations(bytes)) {
+    if (providerCredentialFieldPattern.test(text)) {
+      throw new Error(`${label} contains provider credential field`);
+    }
     if (privateKeyPemPattern.test(text)) {
       throw new Error(`${label} contains platform private-key material`);
     }
