@@ -86,7 +86,7 @@ async function render(props: {
   mountedApp = app;
   app.mount("#app");
   await nextTick();
-  return document.querySelector("#app") as HTMLElement;
+  return document.querySelector<HTMLElement>("#app")!;
 }
 
 describe("VisionCameraMaintenancePanel", () => {
