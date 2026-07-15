@@ -327,7 +327,10 @@ async function seedRuntimeScreenshotMode(page: Page): Promise<void> {
 async function expectPaymentQrVisual(page: Page): Promise<void> {
   const qrImage = page.getByRole("img", { name: "支付二维码" });
   await expect(qrImage).toBeVisible();
-  await expect(qrImage).toHaveAttribute("src", /^data:image\/png;base64,/);
+  await expect(qrImage).toHaveAttribute(
+    "src",
+    /^data:image\/svg\+xml;charset=utf-8,/,
+  );
 
   const visual = await qrImage.evaluate((element) => {
     if (!(element instanceof HTMLImageElement)) {
