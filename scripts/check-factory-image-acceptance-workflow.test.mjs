@@ -199,6 +199,16 @@ describe("Factory Image Acceptance workflow", () => {
       /--mqtt-url\s+"mqtt:\/\/\$\{VEM_FACTORY_PLATFORM_INGRESS_HOST\}:18884"/,
     );
     assert.match(workflow, /curl -fsS "\$EPHEMERAL_API_READY_URL\/health"/);
+    const lifecycle = stepBlock("Run Typed Factory Lifecycle");
+    assert.match(
+      lifecycle,
+      /export VEM_FACTORY_EPHEMERAL_DATABASE_URL="\$DATABASE_URL"/,
+    );
+    assert.match(lifecycle, /unset VEM_FACTORY_EPHEMERAL_DATABASE_URL/);
+    assert.doesNotMatch(
+      stepBlock("Generate Typed Factory Lifecycle Input"),
+      /databaseUrl|database_url|VEM_FACTORY_EPHEMERAL_DATABASE_URL/,
+    );
     assert.match(workflow, /SERVICE_HOST: "0\.0\.0\.0"/);
     assert.match(workflow, /-p 18884:1883/);
     assert.doesNotMatch(workflow, /192\.168\.2\.23/);

@@ -43,12 +43,7 @@ const ABSOLUTE_HOST_PATH =
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const WIREGUARD_PUBLIC_KEY = /^[A-Za-z0-9+/]{43}=$/;
-const FORBIDDEN_CUSTOMER_ROUTES = [
-  "/catalog",
-  "/maintenance",
-  "/offline",
-  "/bring-up",
-];
+const PAYMENT_BARRIER_ALLOWED_ROUTES = ["/payment", "/dispensing", "/result"];
 const FACTORY_ROUTE_COMPETITION_CASES = new Set([
   "catalog_refresh",
   "readiness_refresh",
@@ -512,15 +507,13 @@ function routePath(value) {
   return url.hash.slice(1).split("?")[0].replace(/\/+$/, "") || "/";
 }
 
-function assertNoForbiddenCustomerRoute(value, label) {
-  if (typeof value !== "string" || value.length === 0) return;
+function isPaymentBarrierRoute(value) {
+  if (typeof value !== "string" || value.length === 0) return false;
   const actual = routePath(value);
-  for (const forbidden of FORBIDDEN_CUSTOMER_ROUTES) {
-    const forbiddenPath = routePath(forbidden);
-    if (actual === forbiddenPath || actual.startsWith(`${forbiddenPath}/`)) {
-      throw new Error(`${label} observed forbidden customer route: ${value}`);
-    }
-  }
+  return PAYMENT_BARRIER_ALLOWED_ROUTES.some((allowed) => {
+    const allowedPath = routePath(allowed);
+    return actual === allowedPath || actual.startsWith(`${allowedPath}/`);
+  });
 }
 
 function commonVerifierArgs(
@@ -617,8 +610,13 @@ export function buildFactoryInstalledKioskSaleInvocation(
   endpoint,
   runtimeAcceptance,
   sshKnownHostsPath = null,
+  runnerDatabaseUrl = process.env.VEM_FACTORY_EPHEMERAL_DATABASE_URL,
 ) {
   const accepted = validateFactoryImageAcceptanceInput(input);
+  const databaseUrl = nonEmpty(
+    runnerDatabaseUrl,
+    "VEM_FACTORY_EPHEMERAL_DATABASE_URL",
+  );
   const displayBinding = runtimeAcceptance?.displayBinding;
   if (
     displayBinding?.activeKioskSession?.sessionUser !== "VEMKiosk" ||
@@ -635,6 +633,8 @@ export function buildFactoryInstalledKioskSaleInvocation(
     "node",
     "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
     ...commonVerifierArgs(accepted, endpoint, { sshKnownHostsPath }),
+    "--ephemeral-database-url",
+    databaseUrl,
     "--runtime-acceptance-report",
     verifierOutput(accepted, "runtime-acceptance.json"),
     "--adapter",
@@ -772,32 +772,29 @@ function hasOneObservedIdentity(observation, expected) {
   );
 }
 
-function hasReservationExactOnce(reservation, observation, count) {
+function hasReservationExactOnce(reservation, observation, count, orderId) {
   if (
     !reservation ||
-    typeof reservation.exposed !== "boolean" ||
     typeof reservation.source !== "string" ||
-    !Number.isSafeInteger(reservation.rawRecordCount)
+    !Number.isSafeInteger(reservation.rawRecordCount) ||
+    typeof reservation.reservationId !== "string" ||
+    typeof reservation.orderId !== "string" ||
+    typeof reservation.orderItemId !== "string" ||
+    typeof reservation.inventoryId !== "string" ||
+    !Number.isSafeInteger(reservation.quantity)
   ) {
     return false;
   }
-  if (!reservation.exposed) {
-    return (
-      reservation.source === "not_exposed" &&
-      reservation.rawRecordCount === 0 &&
-      count === 0 &&
-      Array.isArray(observation?.occurrences) &&
-      observation.occurrences.length === 0 &&
-      Array.isArray(observation?.unique) &&
-      observation.unique.length === 0 &&
-      observation.count === 0
-    );
-  }
   return (
-    reservation.source !== "not_exposed" &&
+    reservation.exposed === true &&
+    reservation.source ===
+      "authoritative_ephemeral_platform.inventory_reservations" &&
     reservation.rawRecordCount === 1 &&
+    reservation.orderId === orderId &&
+    reservation.quantity === 1 &&
+    reservation.status === "confirmed" &&
     count === 1 &&
-    hasOneObservedIdentity(observation, observation?.unique?.[0])
+    hasOneObservedIdentity(observation, reservation.reservationId)
   );
 }
 
@@ -821,15 +818,21 @@ export function verifyInstalledKioskSaleScenarioResult(
   const barrierIndex = scenario?.evidence?.findIndex(
     (entry) => entry?.type === "route-barrier",
   );
-  const forbiddenAfterBarrier = scenario?.evidence
+  const barrier =
+    barrierIndex != null && barrierIndex >= 0
+      ? scenario?.evidence?.[barrierIndex]
+      : null;
+  const routesAfterBarrier = scenario?.evidence
     ?.slice((barrierIndex ?? -1) + 1)
-    .some((entry) => {
-      const route = entry?.identity?.route ?? entry?.routeBefore;
-      return (
-        typeof route === "string" &&
-        /^#\/(catalog|home|maintenance)(?:[/?]|$)/.test(route)
-      );
-    });
+    .flatMap((entry) => [
+      entry?.identity?.route,
+      entry?.routeBefore,
+      entry?.routeAfter,
+    ])
+    .filter((route) => typeof route === "string");
+  const nonPaymentRouteAfterBarrier = routesAfterBarrier?.some(
+    (route) => !isPaymentBarrierRoute(route),
+  );
   if (
     report?.schemaVersion !== "installed-kiosk-sale-acceptance/v2" ||
     report.status !== "passed" ||
@@ -854,13 +857,18 @@ export function verifyInstalledKioskSaleScenarioResult(
     continuousEvidence.length < 1 ||
     barrierIndex == null ||
     barrierIndex < 0 ||
+    !Array.isArray(barrier?.allowedRoutes) ||
+    JSON.stringify([...barrier.allowedRoutes].sort()) !==
+      JSON.stringify([...PAYMENT_BARRIER_ALLOWED_ROUTES].sort()) ||
     !scenario.evidence?.some(
       (entry) =>
         entry?.type === "route-action" &&
         entry.stimulus === "history-back" &&
+        isPaymentBarrierRoute(entry.routeBefore) &&
+        isPaymentBarrierRoute(entry.routeAfter) &&
         entry.triggerAcknowledged === true,
     ) ||
-    forbiddenAfterBarrier ||
+    nonPaymentRouteAfterBarrier ||
     exactOnce?.orderCount !== 1 ||
     exactOnce.paymentCount !== 1 ||
     exactOnce.orderNoCount !== 1 ||
@@ -868,6 +876,7 @@ export function verifyInstalledKioskSaleScenarioResult(
       reservation,
       observations?.reservationIds,
       exactOnce?.reservationCount,
+      correlation?.rendered?.orderId,
     ) ||
     exactOnce.commandCount !== 1 ||
     exactOnce.movementCount !== 1 ||

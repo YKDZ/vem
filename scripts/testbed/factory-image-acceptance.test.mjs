@@ -350,12 +350,14 @@ function saleScenario(input, _runtimeDigest) {
           type: "route-barrier",
           label: "payment option",
           forbiddenRoutes: ["/catalog", "/home", "/maintenance"],
+          allowedRoutes: ["/payment", "/dispensing", "/result"],
         },
         {
           type: "route-action",
           label: "history competition during payment",
           stimulus: "history-back",
           routeBefore: "#/payment",
+          routeAfter: "#/payment",
           triggerAcknowledged: true,
         },
         {
@@ -394,8 +396,14 @@ function saleScenario(input, _runtimeDigest) {
         status: "accepted",
         reservation: {
           exposed: true,
-          source: "current_transaction.reservations",
+          source: "authoritative_ephemeral_platform.inventory_reservations",
           rawRecordCount: 1,
+          reservationId: "reservation-factory-1",
+          orderId: "order-factory-1",
+          orderItemId: "order-item-factory-1",
+          inventoryId: "inventory-factory-1",
+          quantity: 1,
+          status: "confirmed",
         },
         observations: {
           orderIds: {
@@ -598,6 +606,7 @@ describe("Factory Image Acceptance lifecycle", () => {
       endpoint,
       runtimeAcceptanceSummary(),
       sshKnownHostsPath,
+      "postgresql://vem:runner-only@127.0.0.1:55433/vem_factory_acceptance",
     );
 
     assert.deepEqual(invocation.slice(0, 2), [
@@ -626,6 +635,10 @@ describe("Factory Image Acceptance lifecycle", () => {
     );
     assert.equal(invocation.includes("--already-claimed"), true);
     assert.equal(
+      invocation[invocation.indexOf("--ephemeral-database-url") + 1],
+      "postgresql://vem:runner-only@127.0.0.1:55433/vem_factory_acceptance",
+    );
+    assert.equal(
       invocation[invocation.indexOf("--ssh-known-hosts-path") + 1],
       sshKnownHostsPath,
     );
@@ -646,6 +659,7 @@ describe("Factory Image Acceptance lifecycle", () => {
       plan.artifacts.report,
       join(input.evidence.root, "verifier", "customer-ui-sale-scenario.json"),
     );
+    assert.equal(JSON.stringify(plan).includes("runner-only@127.0.0.1"), false);
   });
 
   it("requires the installed kiosk sale scenario to bind UI, runtime, hardware, and stock evidence", () => {
@@ -681,8 +695,14 @@ describe("Factory Image Acceptance lifecycle", () => {
           orderNo: "order-no-factory-1",
           reservation: {
             exposed: true,
-            source: "current_transaction.reservations",
+            source: "authoritative_ephemeral_platform.inventory_reservations",
             rawRecordCount: 1,
+            reservationId: "reservation-factory-1",
+            orderId: "order-factory-1",
+            orderItemId: "order-item-factory-1",
+            inventoryId: "inventory-factory-1",
+            quantity: 1,
+            status: "confirmed",
           },
           commandId: "command-factory-1",
           stockMovementId: "movement-factory-1",
@@ -718,14 +738,57 @@ describe("Factory Image Acceptance lifecycle", () => {
       /rendered payment, serial command, and stock movement/,
     );
 
-    const duplicateOrder = saleScenario(input, digest);
-    duplicateOrder.correlation.platform.observations.orderIds = {
-      occurrences: ["order-factory-1", "order-factory-1"],
-      unique: ["order-factory-1"],
-      count: 2,
+    for (const [identity, observation, exactOnceField, value] of [
+      ["order", "orderIds", "orderCount", "order-factory-1"],
+      ["payment", "paymentIds", "paymentCount", "payment-factory-1"],
+      [
+        "business order number",
+        "orderNos",
+        "orderNoCount",
+        "order-no-factory-1",
+      ],
+      [
+        "reservation",
+        "reservationIds",
+        "reservationCount",
+        "reservation-factory-1",
+      ],
+      ["command", "commandIds", "commandCount", "command-factory-1"],
+      ["movement", "movementIds", "movementCount", "movement-factory-1"],
+    ]) {
+      const duplicate = saleScenario(input, digest);
+      duplicate.correlation.platform.observations[observation] = {
+        occurrences: [value, value],
+        unique: [value],
+        count: 2,
+      };
+      duplicate.correlation.exactOnce[exactOnceField] = 2;
+      writeFileSync(output, `${JSON.stringify(duplicate)}\n`);
+      assert.throws(
+        () =>
+          verifyInstalledKioskSaleScenarioResult(
+            output,
+            input,
+            runtimeAcceptanceSummary(),
+          ),
+        /exact-once contract/,
+        `duplicate ${identity} identity must fail Factory acceptance`,
+      );
+    }
+
+    const notExposedReservation = saleScenario(input, digest);
+    notExposedReservation.correlation.platform.reservation = {
+      exposed: false,
+      source: "not_exposed",
+      rawRecordCount: 0,
     };
-    duplicateOrder.correlation.exactOnce.orderCount = 2;
-    writeFileSync(output, `${JSON.stringify(duplicateOrder)}\n`);
+    notExposedReservation.correlation.platform.observations.reservationIds = {
+      occurrences: [],
+      unique: [],
+      count: 0,
+    };
+    notExposedReservation.correlation.exactOnce.reservationCount = 0;
+    writeFileSync(output, `${JSON.stringify(notExposedReservation)}\n`);
     assert.throws(
       () =>
         verifyInstalledKioskSaleScenarioResult(
@@ -736,23 +799,34 @@ describe("Factory Image Acceptance lifecycle", () => {
       /exact-once contract/,
     );
 
-    const duplicateReservation = saleScenario(input);
-    duplicateReservation.correlation.platform.observations.reservationIds = {
-      occurrences: ["reservation-factory-1", "reservation-factory-1"],
-      unique: ["reservation-factory-1"],
-      count: 2,
-    };
-    duplicateReservation.correlation.exactOnce.reservationCount = 2;
-    writeFileSync(output, `${JSON.stringify(duplicateReservation)}\n`);
-    assert.throws(
-      () =>
-        verifyInstalledKioskSaleScenarioResult(
-          output,
-          input,
-          runtimeAcceptanceSummary(),
-        ),
-      /exact-once contract/,
-    );
+    for (const route of [
+      "#/checkout",
+      "#/products/factory-1",
+      "#/catalog",
+      "#/home",
+      "#/maintenance",
+    ]) {
+      const routeEscape = saleScenario(input, digest);
+      routeEscape.machineUiCdpScenario.evidence.push({
+        type: "checkpoint",
+        label: "continuous",
+        identity: {
+          url: `http://tauri.localhost/${route}`,
+          route,
+        },
+      });
+      writeFileSync(output, `${JSON.stringify(routeEscape)}\n`);
+      assert.throws(
+        () =>
+          verifyInstalledKioskSaleScenarioResult(
+            output,
+            input,
+            runtimeAcceptanceSummary(),
+          ),
+        /route-barrier/,
+        `post-payment ${route} must fail Factory acceptance`,
+      );
+    }
   });
 
   it("writes sanitized JSON copies into a dedicated upload boundary", () => {

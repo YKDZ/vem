@@ -421,6 +421,7 @@ jobs:
         run: |
           set -euo pipefail
           export VEM_FACTORY_PERSONALIZATION_RUNNER_NAME="$RUNNER_NAME"
+          export VEM_FACTORY_EPHEMERAL_DATABASE_URL="$DATABASE_URL"
           admission_tmp="$VEM_FACTORY_WORK_ROOT/acceptance-tmp/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           rm -rf "$admission_tmp"
           mkdir -p "$admission_tmp"
@@ -429,6 +430,7 @@ jobs:
           mkdir -p "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"
           chmod 700 "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"
           node scripts/testbed/factory-image-acceptance.mjs
+          unset VEM_FACTORY_EPHEMERAL_DATABASE_URL
           node - "$VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH" <<'NODE'
           const fs = require("node:fs");
           const input = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));

@@ -2833,6 +2833,8 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       platformTarget,
       "--ephemeral-platform-evidence",
       ephemeralPlatformEvidence,
+      "--ephemeral-database-url",
+      databaseUrl,
       "--runtime-acceptance-report",
       runtimeAcceptanceReport,
       "--identity",
@@ -3654,32 +3656,29 @@ function hasOneObservedIdentity(observation, expected) {
   );
 }
 
-function hasReservationExactOnce(reservation, observation, count) {
+function hasReservationExactOnce(reservation, observation, count, orderId) {
   if (
     !reservation ||
-    typeof reservation.exposed !== "boolean" ||
     typeof reservation.source !== "string" ||
-    !Number.isSafeInteger(reservation.rawRecordCount)
+    !Number.isSafeInteger(reservation.rawRecordCount) ||
+    typeof reservation.reservationId !== "string" ||
+    typeof reservation.orderId !== "string" ||
+    typeof reservation.orderItemId !== "string" ||
+    typeof reservation.inventoryId !== "string" ||
+    !Number.isSafeInteger(reservation.quantity)
   ) {
     return false;
   }
-  if (!reservation.exposed) {
-    return (
-      reservation.source === "not_exposed" &&
-      reservation.rawRecordCount === 0 &&
-      count === 0 &&
-      Array.isArray(observation?.occurrences) &&
-      observation.occurrences.length === 0 &&
-      Array.isArray(observation?.unique) &&
-      observation.unique.length === 0 &&
-      observation.count === 0
-    );
-  }
   return (
-    reservation.source !== "not_exposed" &&
+    reservation.exposed === true &&
+    reservation.source ===
+      "authoritative_ephemeral_platform.inventory_reservations" &&
     reservation.rawRecordCount === 1 &&
+    reservation.orderId === orderId &&
+    reservation.quantity === 1 &&
+    reservation.status === "confirmed" &&
     count === 1 &&
-    hasOneObservedIdentity(observation, observation?.unique?.[0])
+    hasOneObservedIdentity(observation, reservation.reservationId)
   );
 }
 
@@ -4029,6 +4028,7 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
       reservation,
       observations?.reservationIds,
       exactOnce?.reservationCount,
+      rendered?.orderId,
     ) ||
     exactOnce.commandCount !== 1 ||
     exactOnce.movementCount !== 1 ||

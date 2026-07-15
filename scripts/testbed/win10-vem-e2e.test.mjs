@@ -15,7 +15,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { runInstalledKioskSaleAcceptanceCli } from "./installed-kiosk-sale-acceptance.mjs";
+import {
+  deriveCorrelation,
+  runInstalledKioskSaleAcceptanceCli,
+} from "./installed-kiosk-sale-acceptance.mjs";
 import {
   deriveSerialConformanceReportDigest,
   readFailureMatrixCommands,
@@ -181,6 +184,68 @@ function completedSerialSaleEvidence(overrides = {}) {
     expectedAdapterIdentity:
       capturedSerialConformance.reports.start.adapter.identity,
     ...overrides,
+  };
+}
+
+function platformRawRecords({
+  runId = "RUN-180-EVIDENCE",
+  machineCode = "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
+} = {}) {
+  const machineId = "MACHINE-180";
+  return {
+    schemaVersion: "installed-kiosk-sale-platform-raw-records/v1",
+    source: "authoritative_ephemeral_platform_database",
+    scope: { runId, machineCode, machineId },
+    raw: {
+      orders: [
+        {
+          id: "ORDER-180",
+          orderNo: "ORDER-NO-180",
+          machineId,
+          status: "completed",
+        },
+      ],
+      payments: [
+        {
+          id: "PAYMENT-180",
+          orderId: "ORDER-180",
+          paymentNo: "PAYMENT-NO-180",
+          status: "succeeded",
+        },
+      ],
+      reservations: [
+        {
+          id: "RESERVATION-180",
+          orderId: "ORDER-180",
+          orderItemId: "ORDER-ITEM-180",
+          inventoryId: "INVENTORY-180",
+          quantity: 1,
+          status: "confirmed",
+        },
+      ],
+      commands: [
+        {
+          id: "VEND-180",
+          commandNo: "COMMAND-NO-180",
+          orderId: "ORDER-180",
+          machineId,
+          orderItemId: "ORDER-ITEM-180",
+          status: "succeeded",
+        },
+      ],
+      movements: [
+        {
+          id: "RAW-MOVEMENT-180",
+          movementId: "MOVEMENT-180",
+          machineId,
+          movementType: "dispense_succeeded",
+          quantity: 1,
+          status: "accepted",
+          orderNo: "ORDER-NO-180",
+          commandNo: "COMMAND-NO-180",
+        },
+      ],
+    },
   };
 }
 
@@ -607,6 +672,8 @@ describe("simulated hardware serial acceptance evidence", () => {
           machine_code: "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
           platform_target: "ephemeral-run-180",
           ephemeral_platform_evidence: join(root, "ephemeral-platform.json"),
+          ephemeral_database_url:
+            "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime",
           runtime_acceptance_report: runtimeReport,
           remote: "YKDZ@vm.example.test",
           identity: join(root, "identity"),
@@ -638,6 +705,15 @@ describe("simulated hardware serial acceptance evidence", () => {
               );
               return { status: 0 };
             }
+            if (label === "authoritative platform raw query") {
+              assert.equal(
+                command[command.indexOf("--database-url") + 1],
+                "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime",
+              );
+              assert.equal(command.includes("--remote"), false);
+              writeFileSync(out, JSON.stringify(platformRawRecords()), "utf8");
+              return { status: 0 };
+            }
             const scannerCodePath =
               command[command.indexOf("--scanner-code-file") + 1];
             assert.notEqual(scannerCodePath, scannerInput);
@@ -663,25 +739,12 @@ describe("simulated hardware serial acceptance evidence", () => {
                     dispenseResult: "dispensed",
                   },
                   platformState: {
-                    reservation: {
-                      exposed: false,
-                      source: "not_exposed",
-                      rawRecordCount: 0,
-                    },
                     postSaleDispenseMovement: {
                       movementId: "MOVEMENT-180",
                       orderId: "ORDER-180",
                       vendingCommandId: "VEND-180",
                       deltaQuantity: -1,
                       status: "accepted",
-                    },
-                    observedIdentities: {
-                      orderIds: ["ORDER-180"],
-                      paymentIds: ["PAYMENT-180"],
-                      reservationIds: [],
-                      orderNos: ["ORDER-NO-180"],
-                      commandIds: ["VEND-180"],
-                      movementIds: ["MOVEMENT-180"],
                     },
                   },
                 },
@@ -757,11 +820,16 @@ describe("simulated hardware serial acceptance evidence", () => {
               status: "passed",
               target: { id: "debug-target" },
               evidence: [
-                { type: "route-barrier", forbiddenRoutes: ["/catalog"] },
+                {
+                  type: "route-barrier",
+                  forbiddenRoutes: ["/catalog"],
+                  allowedRoutes: ["/payment", "/dispensing", "/result"],
+                },
                 {
                   type: "route-action",
                   stimulus: "history-back",
                   routeBefore: "#/payment",
+                  routeAfter: "#/payment",
                   triggerAcknowledged: true,
                 },
               ],
@@ -796,16 +864,80 @@ describe("simulated hardware serial acceptance evidence", () => {
       assert.equal(report.runtimeBinding.debug.targetId, "debug-target");
       assert.equal(report.correlation.exactOnce.commandCount, 1);
       assert.equal(report.correlation.exactOnce.orderNoCount, 1);
-      assert.equal(report.correlation.exactOnce.reservationCount, 0);
+      assert.equal(report.correlation.exactOnce.reservationCount, 1);
+      assert.equal(
+        report.correlation.platform.reservation.source,
+        "authoritative_ephemeral_platform.inventory_reservations",
+      );
+      assert.equal(
+        JSON.stringify(report).includes("runner-only@127.0.0.1"),
+        false,
+      );
       assert.equal(readFileSync(scannerInput, "utf8"), "CALLER-SCANNER-CODE\n");
       assert.deepEqual(calls, [
         "simulated hardware fixture",
         "launch",
         "serial conformance",
+        "authoritative platform raw query",
         "cleanup",
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("derives every exact-once identity from raw platform records and rejects same-ID duplicates", () => {
+    const serial = completedSerialSaleEvidence().serialConformance;
+    const payment = {
+      orderId: "ORDER-180",
+      paymentId: "PAYMENT-180",
+      orderNo: "ORDER-NO-180",
+    };
+    const fulfillment = {
+      ...payment,
+      commandId: "VEND-180",
+    };
+    const completion = {
+      simulatedHardwareSaleFlow: {
+        sale: {
+          ...payment,
+          paymentStatus: "succeeded",
+          vendingCommandId: "VEND-180",
+          dispenseResult: "dispensed",
+        },
+        platformState: {
+          postSaleDispenseMovement: { movementId: "MOVEMENT-180" },
+        },
+      },
+    };
+    const derive = (platformRaw) =>
+      deriveCorrelation({
+        payment,
+        fulfillment,
+        serial,
+        completion,
+        platformRaw,
+        runId: "RUN-180-EVIDENCE",
+        machineCode: "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
+        saleCorrelationId:
+          "sale-correlation://installed-kiosk-run-180-evidence",
+      });
+
+    assert.equal(derive(platformRawRecords()).exactOnce.orderNoCount, 1);
+    for (const [identity, recordName] of [
+      ["order", "orders"],
+      ["payment", "payments"],
+      ["reservation", "reservations"],
+      ["command", "commands"],
+      ["movement", "movements"],
+    ]) {
+      const duplicate = platformRawRecords();
+      duplicate.raw[recordName].push({ ...duplicate.raw[recordName][0] });
+      assert.throws(
+        () => derive(duplicate),
+        /do not prove one exact sale/,
+        `duplicate ${identity} identity must fail raw exact-once evidence`,
+      );
     }
   });
 

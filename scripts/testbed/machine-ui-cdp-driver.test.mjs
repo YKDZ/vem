@@ -74,7 +74,7 @@ function runScenarioForTest(options) {
 }
 
 async function runInstalledRouteCompetitionScenario({
-  emitForbiddenCatalog = false,
+  competingRoute = null,
 } = {}) {
   return withFakeHttpTargets(
     [target("machine-target", "#/catalog")],
@@ -101,14 +101,16 @@ async function runInstalledRouteCompetitionScenario({
             }
             if (expression.includes("history.back()")) {
               assert.doesNotMatch(expression, /location\.hash\s*=/);
-              if (emitForbiddenCatalog) {
+              const routeBefore = route;
+              if (competingRoute) {
+                route = competingRoute;
                 socket.emitMessage({
                   method: "Page.navigatedWithinDocument",
-                  params: { url: "http://tauri.localhost/#/catalog" },
+                  params: { url: `http://tauri.localhost/${route}` },
                 });
               }
               return cdpValue(
-                { stimulus: "history-back", routeBefore: route },
+                { stimulus: "history-back", routeBefore },
                 message.id,
               );
             }
@@ -717,7 +719,9 @@ describe("machine-ui-cdp-driver", () => {
         (entry) =>
           entry.type === "route-action" &&
           entry.stimulus === "history-back" &&
-          entry.triggerAcknowledged === true,
+          entry.triggerAcknowledged === true &&
+          entry.routeBefore === "#/payment" &&
+          entry.routeAfter === "#/payment",
       ),
     );
     assert.ok(
@@ -729,12 +733,14 @@ describe("machine-ui-cdp-driver", () => {
     );
   });
 
-  it("keeps the continuous route oracle fail-closed for catalog after the payment barrier", async () => {
-    await assert.rejects(
-      runInstalledRouteCompetitionScenario({ emitForbiddenCatalog: true }),
-      /forbidden customer route observed: #\/catalog/,
-    );
-  });
+  for (const competingRoute of ["#/checkout", "#/products/test-item"]) {
+    it(`rejects ${competingRoute} committed by history-back after the payment barrier`, async () => {
+      await assert.rejects(
+        runInstalledRouteCompetitionScenario({ competingRoute }),
+        new RegExp(`payment barrier route observed: ${competingRoute}`),
+      );
+    });
+  }
 
   it("records Input evidence and bounded chronological checkpoints", async () => {
     await withFakeHttpTargets(

@@ -24,7 +24,7 @@ const INITIAL_FORBIDDEN_CUSTOMER_ROUTES = [
   "/offline",
   "/bring-up",
 ];
-const PAYMENT_BARRIER_FORBIDDEN_ROUTES = ["/catalog", "/home", "/maintenance"];
+const PAYMENT_BARRIER_ALLOWED_ROUTES = ["/payment", "/dispensing", "/result"];
 const PRODUCTION_TUNNEL_OPTION_KEYS = new Set([
   "remote",
   "sshPort",
@@ -1030,7 +1030,11 @@ export async function waitForRoute(client, expected, options = {}) {
   do {
     options.assertHealthy?.();
     lastIdentity = await captureDomIdentity(client, options);
-    assertAllowedRoute(lastIdentity.route, options.forbiddenRoutes);
+    assertAllowedRoute(
+      lastIdentity.route,
+      options.forbiddenRoutes,
+      options.allowedRoutes,
+    );
     if (matchesRoute(lastIdentity.route, expected)) return lastIdentity;
     await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
   } while (Date.now() < deadline);
@@ -1075,6 +1079,7 @@ export function startContinuousIdentityCapture(client, options = {}) {
         assertAllowedRoute(
           checkpoint.identity.route,
           resolveForbiddenRoutes(options.forbiddenRoutes),
+          resolveAllowedRoutes(options.allowedRoutes),
         );
         checkpoints.push(checkpoint);
       })
@@ -1180,6 +1185,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     routeActions: 0,
   };
   let activeForbiddenRoutes = validateForbiddenRoutes(initialForbiddenRoutes);
+  let activeAllowedRoutes = null;
   const observedRuntime = await dependencies.inspectRuntime({
     remote: tunnelTransport.remote,
     sshPort: tunnelTransport.sshPort,
@@ -1227,7 +1233,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     if (fatalError) return;
     try {
       const identity = boundIdentity(event?.identity ?? event);
-      assertAllowedRoute(identity.route, activeForbiddenRoutes);
+      assertAllowedRoute(
+        identity.route,
+        activeForbiddenRoutes,
+        activeAllowedRoutes,
+      );
       record({ type: "route-changed", source, identity });
     } catch (error) {
       fatalError = new Error(`route capture failed: ${error.message}`, {
@@ -1258,7 +1268,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         `initial CDP target route mismatch: expected ${formatExpectedRoute(expectedInitialRoute)}, got ${target.route}`,
       );
     }
-    assertAllowedRoute(target.route, activeForbiddenRoutes);
+    assertAllowedRoute(
+      target.route,
+      activeForbiddenRoutes,
+      activeAllowedRoutes,
+    );
     const webSocketUrl = rewriteWebSocketDebuggerUrl(
       target.webSocketDebuggerUrl,
       sidecar.endpoint,
@@ -1293,6 +1307,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           screenshot: screenshotCheckpoints,
           screenshotSink: adapter.screenshotSink,
           forbiddenRoutes: () => activeForbiddenRoutes,
+          allowedRoutes: () => activeAllowedRoutes,
           timeoutMs,
           clock,
           startOrdinal: 1_000_000,
@@ -1306,7 +1321,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       screenshotSink: adapter.screenshotSink,
       clock,
     });
-    assertAllowedRoute(initial.identity.route, activeForbiddenRoutes);
+    assertAllowedRoute(
+      initial.identity.route,
+      activeForbiddenRoutes,
+      activeAllowedRoutes,
+    );
     assertRouteIdentity(initial.identity, expectedInitialRoute, "initial");
     record(initial);
 
@@ -1317,6 +1336,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           timeoutMs: step.timeoutMs ?? timeoutMs,
           pollMs: routePollMs,
           forbiddenRoutes: activeForbiddenRoutes,
+          allowedRoutes: activeAllowedRoutes,
           assertHealthy,
         });
         assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
@@ -1345,14 +1365,14 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         });
         executedExecution.customerActivations += 1;
         if (step.activatesRouteBarrier) {
-          activeForbiddenRoutes = mergeForbiddenRoutes(
-            activeForbiddenRoutes,
-            PAYMENT_BARRIER_FORBIDDEN_ROUTES,
+          activeAllowedRoutes = validateAllowedRoutes(
+            PAYMENT_BARRIER_ALLOWED_ROUTES,
           );
           record({
             type: "route-barrier",
             label: step.name,
             forbiddenRoutes: activeForbiddenRoutes,
+            allowedRoutes: activeAllowedRoutes,
           });
         }
         assertHealthy();
@@ -1360,6 +1380,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           timeoutMs: step.timeoutMs ?? timeoutMs,
           pollMs: routePollMs,
           forbiddenRoutes: activeForbiddenRoutes,
+          allowedRoutes: activeAllowedRoutes,
           assertHealthy,
         });
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
@@ -1375,7 +1396,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           screenshotSink: adapter.screenshotSink,
           clock,
         });
-        assertAllowedRoute(observation.identity.route, activeForbiddenRoutes);
+        assertAllowedRoute(
+          observation.identity.route,
+          activeForbiddenRoutes,
+          activeAllowedRoutes,
+        );
         assertRouteIdentity(
           observation.identity,
           step.route,
@@ -1388,7 +1413,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         const before = await captureDomIdentity(client, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
         });
-        assertAllowedRoute(before.route, activeForbiddenRoutes);
+        assertAllowedRoute(
+          before.route,
+          activeForbiddenRoutes,
+          activeAllowedRoutes,
+        );
         assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
         record({
           type: "checkpoint",
@@ -1410,22 +1439,24 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         ) {
           throw new Error(`${step.name} did not acknowledge ${step.stimulus}`);
         }
-        record({
-          type: "route-action",
-          label: step.name,
-          stimulus: step.stimulus,
-          routeBefore: before.route,
-          triggerAcknowledged: true,
-        });
         executedExecution.routeActions += 1;
         assertHealthy();
         const after = await waitForRoute(client, step.routeAfter, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
           pollMs: routePollMs,
           forbiddenRoutes: activeForbiddenRoutes,
+          allowedRoutes: activeAllowedRoutes,
           assertHealthy,
         });
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
+        record({
+          type: "route-action",
+          label: step.name,
+          stimulus: step.stimulus,
+          routeBefore: before.route,
+          routeAfter: after.route,
+          triggerAcknowledged: true,
+        });
         record({
           type: "checkpoint",
           label: `${step.name}:after`,
@@ -1439,7 +1470,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         screenshotSink: adapter.screenshotSink,
         clock,
       });
-      assertAllowedRoute(checkpoint.identity.route, activeForbiddenRoutes);
+      assertAllowedRoute(
+        checkpoint.identity.route,
+        activeForbiddenRoutes,
+        activeAllowedRoutes,
+      );
       record(checkpoint);
     }
 
@@ -1449,7 +1484,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       screenshotSink: adapter.screenshotSink,
       clock,
     });
-    assertAllowedRoute(final.identity.route, activeForbiddenRoutes);
+    assertAllowedRoute(
+      final.identity.route,
+      activeForbiddenRoutes,
+      activeAllowedRoutes,
+    );
     record(final);
     assertHealthy();
     const continuous = capture ? await capture.stop() : [];
@@ -1725,23 +1764,32 @@ function assertScenarioExecutionCounts(planned, executed) {
 function assertAllowedRoute(
   route,
   forbiddenRoutes = INITIAL_FORBIDDEN_CUSTOMER_ROUTES,
+  allowedRoutes = null,
 ) {
   forbiddenRoutes = resolveForbiddenRoutes(forbiddenRoutes);
+  allowedRoutes = resolveAllowedRoutes(allowedRoutes);
   const normalized = normalizeMachineRoute(route);
   const path = routePath(normalized);
   if (
+    allowedRoutes !== null &&
+    !allowedRoutes.some((candidate) => routeMatchesRoutePath(path, candidate))
+  ) {
+    throw new Error(`payment barrier route observed: ${normalized}`);
+  }
+  if (
     forbiddenRoutes.some((candidate) => {
-      if (typeof candidate === "string") {
-        const forbiddenPath = candidate.startsWith("#")
-          ? routePath(normalizeMachineRoute(candidate))
-          : normalizeForbiddenRoutePath(candidate);
-        return path === forbiddenPath || path.startsWith(`${forbiddenPath}/`);
-      }
-      return matchesRoute(normalized, candidate);
+      return routeMatchesRoutePath(path, candidate);
     })
   ) {
     throw new Error(`forbidden customer route observed: ${normalized}`);
   }
+}
+
+function routeMatchesRoutePath(path, candidate) {
+  const route = candidate.startsWith("#")
+    ? routePath(normalizeMachineRoute(candidate))
+    : normalizeForbiddenRoutePath(candidate);
+  return path === route || path.startsWith(`${route}/`);
 }
 
 function validateForbiddenRoutes(routes) {
@@ -1760,14 +1808,23 @@ function validateForbiddenRoutes(routes) {
   );
 }
 
-function mergeForbiddenRoutes(current, additions) {
-  return validateForbiddenRoutes([...current, ...additions]);
+function validateAllowedRoutes(routes) {
+  if (!Array.isArray(routes) || routes.length === 0) {
+    throw new Error("allowedRoutes must be a nonempty array");
+  }
+  return validateForbiddenRoutes(routes);
 }
 
 function resolveForbiddenRoutes(routes) {
   return typeof routes === "function"
     ? validateForbiddenRoutes(routes())
     : validateForbiddenRoutes(routes ?? INITIAL_FORBIDDEN_CUSTOMER_ROUTES);
+}
+
+function resolveAllowedRoutes(routes) {
+  if (routes == null) return null;
+  const resolved = typeof routes === "function" ? routes() : routes;
+  return resolved == null ? null : validateAllowedRoutes(resolved);
 }
 
 function boundIdentity(identity) {
@@ -1895,6 +1952,7 @@ function boundEvidenceEntry(entry) {
         MAX_LABEL_LENGTH,
       ),
       forbiddenRoutes: validateForbiddenRoutes(entry.forbiddenRoutes),
+      allowedRoutes: validateAllowedRoutes(entry.allowedRoutes),
     };
   }
   if (entry.type === "route-action") {
@@ -1913,6 +1971,7 @@ function boundEvidenceEntry(entry) {
       ),
       stimulus: "history-back",
       routeBefore: normalizeMachineRoute(entry.routeBefore),
+      routeAfter: normalizeMachineRoute(entry.routeAfter),
       triggerAcknowledged: true,
     };
   }

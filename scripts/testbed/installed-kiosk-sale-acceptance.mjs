@@ -49,6 +49,7 @@ function parseArgs(argv) {
     "machine-code",
     "platform-target",
     "ephemeral-platform-evidence",
+    "ephemeral-database-url",
     "runtime-acceptance-report",
     "remote",
     "ssh-port",
@@ -90,6 +91,7 @@ function parseArgs(argv) {
     "machine_code",
     "platform_target",
     "ephemeral_platform_evidence",
+    "ephemeral_database_url",
     "runtime_acceptance_report",
     "identity",
     "certificate",
@@ -222,7 +224,6 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       selector: '[data-test="payment-option"]',
       routeBefore: "#/checkout",
       routeAfter: "#/checkout",
-      activatesRouteBarrier: true,
     },
     {
       type: "customer-activation",
@@ -230,6 +231,7 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       selector: '[data-test="checkout-submit"]',
       routeBefore: "#/checkout",
       routeAfter: /^#\/payment/,
+      activatesRouteBarrier: true,
       screenshot: true,
     },
   ];
@@ -308,17 +310,25 @@ function observedIdentity(values, name) {
   return { occurrences, unique, count: occurrences.length };
 }
 
-function optionalObservedIdentity(values, name, exposed) {
-  if (exposed) return observedIdentity(values, name);
-  const occurrences = values.filter(
-    (value) => typeof value === "string" && value.trim() !== "",
-  );
-  if (occurrences.length !== 0) {
+function requiredRawRecords(platformRaw) {
+  if (
+    platformRaw?.schemaVersion !==
+      "installed-kiosk-sale-platform-raw-records/v1" ||
+    platformRaw?.source !== "authoritative_ephemeral_platform_database" ||
+    !platformRaw.raw ||
+    typeof platformRaw.raw !== "object"
+  ) {
     throw new Error(
-      `${name} must be absent when platform evidence is unavailable`,
+      "authoritative platform raw query did not return the installed kiosk sale record contract",
     );
   }
-  return { occurrences: [], unique: [], count: 0 };
+  const names = ["orders", "payments", "reservations", "commands", "movements"];
+  for (const name of names) {
+    if (!Array.isArray(platformRaw.raw[name])) {
+      throw new Error(`authoritative platform raw query omitted ${name}`);
+    }
+  }
+  return platformRaw.raw;
 }
 
 function serialSaleBinding(conformance) {
@@ -343,19 +353,26 @@ function serialSaleBinding(conformance) {
   };
 }
 
-function deriveCorrelation({
+export function deriveCorrelation({
   payment,
   fulfillment,
   serial,
   completion,
+  platformRaw,
+  runId,
+  machineCode,
   saleCorrelationId,
 }) {
   const platform = completion?.simulatedHardwareSaleFlow;
   const sale = platform?.sale;
-  const movement = platform?.platformState?.postSaleDispenseMovement;
-  const platformIdentities = platform?.platformState?.observedIdentities;
-  const reservation = platform?.platformState?.reservation;
-  const reservationExposed = reservation?.exposed === true;
+  const projectedMovementId =
+    platform?.platformState?.postSaleDispenseMovement?.movementId;
+  const raw = requiredRawRecords(platformRaw);
+  const rawOrder = raw.orders[0] ?? null;
+  const rawPayment = raw.payments[0] ?? null;
+  const rawReservation = raw.reservations[0] ?? null;
+  const rawCommand = raw.commands[0] ?? null;
+  const rawMovement = raw.movements[0] ?? null;
   const bindings = serialSaleBinding(serial);
   const rendered = {
     orderId: payment.orderId,
@@ -376,44 +393,63 @@ function deriveCorrelation({
     sale?.paymentId === rendered.paymentId &&
     sale?.orderNo === rendered.orderNo &&
     sale?.vendingCommandId === rendered.commandId &&
-    movement?.orderId === rendered.orderId &&
-    movement?.vendingCommandId === rendered.commandId;
+    rawOrder?.id === rendered.orderId &&
+    rawOrder?.orderNo === rendered.orderNo &&
+    rawPayment?.id === rendered.paymentId &&
+    rawPayment?.orderId === rendered.orderId &&
+    rawCommand?.id === rendered.commandId &&
+    rawCommand?.orderId === rendered.orderId &&
+    rawMovement?.movementId === projectedMovementId &&
+    rawMovement?.orderNo === rendered.orderNo &&
+    rawMovement?.commandNo === rawCommand?.commandNo;
   const observations = {
     orderIds: observedIdentity(
-      platformIdentities?.orderIds ?? [],
+      raw.orders.map((record) => record?.id),
       "platform order evidence",
     ),
     paymentIds: observedIdentity(
-      platformIdentities?.paymentIds ?? [],
+      raw.payments.map((record) => record?.id),
       "platform payment evidence",
     ),
     orderNos: observedIdentity(
-      platformIdentities?.orderNos ?? [],
+      raw.orders.map((record) => record?.orderNo),
       "platform order-number evidence",
     ),
     commandIds: observedIdentity(
-      platformIdentities?.commandIds ?? [],
+      raw.commands.map((record) => record?.id),
       "platform command evidence",
     ),
     movementIds: observedIdentity(
-      platformIdentities?.movementIds ?? [],
+      raw.movements.map((record) => record?.movementId),
       "platform movement evidence",
     ),
-    reservationIds: optionalObservedIdentity(
-      platformIdentities?.reservationIds ?? [],
+    reservationIds: observedIdentity(
+      raw.reservations.map((record) => record?.id),
       "platform reservation evidence",
-      reservationExposed,
     ),
   };
-  const reservationEvidenceMatches = reservationExposed
-    ? typeof reservation?.source === "string" &&
-      reservation.source !== "not_exposed" &&
-      Number.isSafeInteger(reservation.rawRecordCount) &&
-      reservation.rawRecordCount === observations.reservationIds.count &&
-      observations.reservationIds.count === 1
-    : reservation?.source === "not_exposed" &&
-      reservation?.rawRecordCount === 0 &&
-      observations.reservationIds.count === 0;
+  const reservationEvidenceMatches =
+    raw.reservations.length === 1 &&
+    rawReservation?.id === observations.reservationIds.unique[0] &&
+    rawReservation?.orderId === rendered.orderId &&
+    rawReservation?.quantity === 1 &&
+    rawReservation?.status === "confirmed" &&
+    typeof rawReservation?.orderItemId === "string" &&
+    rawReservation.orderItemId.length > 0 &&
+    typeof rawReservation?.inventoryId === "string" &&
+    rawReservation.inventoryId.length > 0 &&
+    rawCommand?.orderItemId === rawReservation.orderItemId;
+  const rawScopeMatches =
+    platformRaw.scope?.runId === runId &&
+    platformRaw.scope?.machineCode === machineCode &&
+    typeof platformRaw.scope?.machineId === "string" &&
+    rawOrder?.machineId === platformRaw.scope.machineId &&
+    rawCommand?.machineId === platformRaw.scope.machineId &&
+    rawMovement?.machineId === platformRaw.scope.machineId;
+  const rawMovementMatches =
+    rawMovement?.movementType === "dispense_succeeded" &&
+    rawMovement?.quantity === 1 &&
+    rawMovement?.status === "accepted";
   const exactOnce = {
     orderCount: observations.orderIds.count,
     paymentCount: observations.paymentIds.count,
@@ -421,18 +457,20 @@ function deriveCorrelation({
     reservationCount: observations.reservationIds.count,
     commandCount: observations.commandIds.count,
     movementCount: observations.movementIds.count,
-    stockDelta: movement?.deltaQuantity,
+    stockDelta: rawMovement ? -rawMovement.quantity : null,
     serialSaleBindingCount: bindings.counts,
   };
   if (
     !identitiesMatch ||
+    !rawScopeMatches ||
     !reservationEvidenceMatches ||
     observations.orderIds.count !== 1 ||
     observations.paymentIds.count !== 1 ||
+    observations.orderNos.count !== 1 ||
+    observations.reservationIds.count !== 1 ||
     observations.commandIds.count !== 1 ||
     observations.movementIds.count !== 1 ||
-    movement?.status !== "accepted" ||
-    movement?.deltaQuantity !== -1 ||
+    !rawMovementMatches ||
     sale?.paymentStatus !== "succeeded" ||
     sale?.dispenseResult !== "dispensed"
   ) {
@@ -448,14 +486,20 @@ function deriveCorrelation({
       paymentId: sale.paymentId,
       orderNo: sale.orderNo,
       commandId: sale.vendingCommandId,
-      stockMovementId: movement.movementId,
-      stockDelta: movement.deltaQuantity,
-      status: movement.status,
+      stockMovementId: rawMovement.movementId,
+      stockDelta: -rawMovement.quantity,
+      status: rawMovement.status,
       observations,
       reservation: {
-        exposed: reservationExposed,
-        source: reservation?.source ?? "not_exposed",
-        rawRecordCount: reservation?.rawRecordCount ?? 0,
+        exposed: true,
+        source: "authoritative_ephemeral_platform.inventory_reservations",
+        rawRecordCount: raw.reservations.length,
+        reservationId: rawReservation.id,
+        orderId: rawReservation.orderId,
+        orderItemId: rawReservation.orderItemId,
+        inventoryId: rawReservation.inventoryId,
+        quantity: rawReservation.quantity,
+        status: rawReservation.status,
       },
     },
     serial: {
@@ -481,6 +525,10 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
   const scenarioReport = join(outputRoot, "machine-ui-cdp-sale-scenario.json");
   const bindingReport = join(outputRoot, "rendered-payment-binding.json");
   const serialReport = join(outputRoot, "serial-conformance.json");
+  const platformRawRecordsReport = join(
+    outputRoot,
+    "platform-raw-records.json",
+  );
   const fixtureCommand = buildAcceptanceScriptCommand(
     "simulated-hardware-sale-flow",
     remote,
@@ -508,6 +556,7 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
       scenarioReport,
       bindingReport,
       serialReport,
+      platformRawRecordsReport,
     },
   };
 }
@@ -639,6 +688,17 @@ export async function runInstalledKioskSaleAcceptanceCli(
     const completion = JSON.parse(
       readFileSync(plan.artifacts.completionReport, "utf8"),
     );
+    const projectedMovementId =
+      completion?.simulatedHardwareSaleFlow?.platformState
+        ?.postSaleDispenseMovement?.movementId;
+    if (
+      typeof projectedMovementId !== "string" ||
+      projectedMovementId.trim() === ""
+    ) {
+      throw new Error(
+        "simulated hardware completion did not expose a movement identity for authoritative platform verification",
+      );
+    }
     const fulfillment = await capture({
       options: remote,
       attestation,
@@ -646,11 +706,43 @@ export async function runInstalledKioskSaleAcceptanceCli(
         "[data-installed-kiosk-sale-fulfillment-surface], [data-installed-kiosk-sale-result-surface]",
       route: /^#\/(dispensing|result)/,
     });
+    const platformRawQuery = [
+      process.execPath,
+      "--conditions=vem-source",
+      "--import",
+      "tsx",
+      "apps/service-api/src/testbed/query-installed-kiosk-sale-platform.cli.ts",
+      "--database-url",
+      options.ephemeral_database_url,
+      "--run-id",
+      options.run_id,
+      "--machine-code",
+      options.machine_code,
+      "--order-id",
+      payment.orderId,
+      "--payment-id",
+      payment.paymentId,
+      "--order-no",
+      payment.orderNo,
+      "--command-id",
+      fulfillment.commandId,
+      "--movement-id",
+      projectedMovementId,
+      "--out",
+      plan.artifacts.platformRawRecordsReport,
+    ];
+    run(platformRawQuery, "authoritative platform raw query");
+    const platformRaw = JSON.parse(
+      readFileSync(plan.artifacts.platformRawRecordsReport, "utf8"),
+    );
     const correlation = deriveCorrelation({
       payment,
       fulfillment,
       serial,
       completion,
+      platformRaw,
+      runId: options.run_id,
+      machineCode: options.machine_code,
       saleCorrelationId,
     });
     const report = {
@@ -676,6 +768,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
         scenarioPath: plan.artifacts.scenarioReport,
         serialConformancePath: plan.artifacts.serialReport,
         completionPath: plan.artifacts.completionReport,
+        platformRawRecordsPath: plan.artifacts.platformRawRecordsReport,
       },
     };
     writeJson(options.out, report);
@@ -726,7 +819,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
 
 function usage() {
   console.error(
-    `Usage: installed-kiosk-sale-acceptance.mjs --run-id ID --machine-code CODE --platform-target TARGET --ephemeral-platform-evidence PATH --runtime-acceptance-report PATH (--remote USER@HOST | --factory-guest-endpoint-json JSON --expected-testbed-user USER) --identity KEY --certificate CERT --adapter PATH --target-identity ID --approved-runtime-base factory-cas://sha256/HASH [--scanner-code-file PATH] [--profile vm-normal|vm-route-competition|factory-route-competition] --out PATH [--dry-run]`,
+    `Usage: installed-kiosk-sale-acceptance.mjs --run-id ID --machine-code CODE --platform-target TARGET --ephemeral-platform-evidence PATH --ephemeral-database-url URL --runtime-acceptance-report PATH (--remote USER@HOST | --factory-guest-endpoint-json JSON --expected-testbed-user USER) --identity KEY --certificate CERT --adapter PATH --target-identity ID --approved-runtime-base factory-cas://sha256/HASH [--scanner-code-file PATH] [--profile vm-normal|vm-route-competition|factory-route-competition] --out PATH [--dry-run]`,
   );
 }
 
