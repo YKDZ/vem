@@ -990,6 +990,7 @@ $factoryRoot = 'C:\\ProgramData\\VEM\\factory'
 $personalizationPath = Join-Path $factoryRoot 'one-time-personalization.json'
 $diagnosticPath = Join-Path $factoryRoot 'oobe-bootstrap-status.json'
 $kioskAutologonStatePath = Join-Path $factoryRoot 'oobe-kiosk-autologon-password'
+$temporaryKioskAutologonStatePath = "$kioskAutologonStatePath.tmp"
 $stage = 'initialize'
 function Write-BootstrapStatus([string]$State, [string]$Stage, [string]$ErrorType = '') {
   $status = [ordered]@{
@@ -1023,11 +1024,12 @@ try {
   $winlogon = Get-ItemProperty -Path $winlogonPath -Name DefaultUserName, DefaultPassword -ErrorAction Stop
   $kioskAutologonPassword = [string]$winlogon.DefaultPassword
   if ([string]$winlogon.DefaultUserName -cne 'VEMKiosk' -or $kioskAutologonPassword.Length -eq 0 -or $kioskAutologonPassword -cne [string]$kiosk.password) { throw 'Factory runtime did not configure the personalized kiosk autologon' }
-  $temporaryKioskAutologonStatePath = "$kioskAutologonStatePath.tmp"
+  Remove-Item -LiteralPath $temporaryKioskAutologonStatePath -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType File -Path $temporaryKioskAutologonStatePath -Force -ErrorAction Stop | Out-Null
+  icacls.exe $temporaryKioskAutologonStatePath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Factory OOBE kiosk autologon handoff ACL setup failed' }
   [IO.File]::WriteAllText($temporaryKioskAutologonStatePath, $kioskAutologonPassword, [Text.UTF8Encoding]::new($false))
   Move-Item -LiteralPath $temporaryKioskAutologonStatePath -Destination $kioskAutologonStatePath -Force
-  icacls.exe $kioskAutologonStatePath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Factory OOBE kiosk autologon handoff ACL setup failed' }
   $stage = 'register-cleanup'
   $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\complete-oobe-bootstrap.ps1'
   $cleanupTrigger = New-ScheduledTaskTrigger -AtStartup
@@ -1041,6 +1043,7 @@ try {
   Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name DefaultPassword -ErrorAction SilentlyContinue
   Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $temporaryKioskAutologonStatePath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $kioskAutologonStatePath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
   Write-BootstrapStatus 'failed' $stage $failureType
@@ -1145,6 +1148,7 @@ if ($null -ne (Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction 
   throw 'VEM Factory OOBE cleanup task remains registered'
 }
 Write-CleanupStatus 'complete'
+Restart-Computer -Force
 `;
 }
 

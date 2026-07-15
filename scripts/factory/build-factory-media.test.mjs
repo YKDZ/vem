@@ -1753,11 +1753,13 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(prepareOobe, /oobe-kiosk-autologon-password/);
       assert.match(
         prepareOobe,
-        /icacls\.exe \$kioskAutologonStatePath \/inheritance:r \/grant:r "\*S-1-5-18:F" "\*S-1-5-32-544:F"/,
+        /Remove-Item -LiteralPath \$temporaryKioskAutologonStatePath -Force -ErrorAction SilentlyContinue[\s\S]+New-Item -ItemType File -Path \$temporaryKioskAutologonStatePath -Force -ErrorAction Stop[\s\S]+icacls\.exe \$temporaryKioskAutologonStatePath \/inheritance:r \/grant:r "\*S-1-5-18:F" "\*S-1-5-32-544:F"[\s\S]+\$LASTEXITCODE -ne 0[\s\S]+WriteAllText\(\$temporaryKioskAutologonStatePath[\s\S]+Move-Item -LiteralPath \$temporaryKioskAutologonStatePath -Destination \$kioskAutologonStatePath -Force/,
+        "kiosk autologon handoff temp file is restricted before its password is written or moved",
       );
       assert.match(
         prepareOobe,
-        /catch \{[\s\S]+Remove-Item[^\n]+\$kioskAutologonStatePath[\s\S]+Remove-Item[^\n]+\$personalizationPath/,
+        /catch \{[\s\S]+Remove-Item[^\n]+\$temporaryKioskAutologonStatePath[\s\S]+Remove-Item[^\n]+\$kioskAutologonStatePath[\s\S]+Remove-Item[^\n]+\$personalizationPath/,
+        "handoff failure cleanup removes both staged and final password paths",
       );
       assert.match(prepareOobe, /VEMFactoryOobeCleanup/);
       assert.match(prepareOobe, /oobe-bootstrap-status\.json/);
@@ -1864,6 +1866,16 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.match(completeOobe, /Write-CleanupStatus 'media-ejected'/);
       assert.match(completeOobe, /Write-CleanupStatus 'complete'/);
+      assert.match(
+        completeOobe,
+        /Unregister-ScheduledTask[\s\S]+Write-CleanupStatus 'complete'[\s\S]+Restart-Computer -Force/,
+        "cleanup unregisters its startup task and records completion before rebooting into the kiosk account",
+      );
+      assert.equal(
+        (completeOobe.match(/Restart-Computer -Force/g) ?? []).length,
+        1,
+        "cleanup requests exactly one reboot",
+      );
       assert.match(
         completeOobe,
         /if \(-not \$oobeComplete\) \{ throw 'VEM Factory OOBE did not complete before cleanup deadline' \}[\s\S]+Remove-LocalUser/,

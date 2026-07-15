@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -174,6 +175,7 @@ test("Factory OOBE cleanup resumes after the bootstrap account was removed", () 
       `$ErrorActionPreference = 'Stop'
 $script:TaskRegistered = $true
 $script:Winlogon = @{}
+$script:RestartRequests = 0
 $env:COMPUTERNAME = 'VEM-TESTBED'
 function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
 function Get-LocalUser { param($Name, $ErrorAction) $null }
@@ -185,8 +187,10 @@ function New-Object { param($ComObject) [pscustomobject]@{} }
 function Start-Sleep { param($Seconds) throw "unexpected cleanup retry: resuming=$resumingCleanup bootstrap=$($bootstrapStatus.state)/$($bootstrapStatus.stage)" }
 function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
+function Restart-Computer { param([switch]$Force) if (-not $Force) { throw 'cleanup restart must be forced' }; $script:RestartRequests += 1 }
 ${completion}
 if ($script:TaskRegistered) { throw 'cleanup task was not unregistered' }
+if ($script:RestartRequests -cne 1) { throw "cleanup must request exactly one reboot; got $script:RestartRequests" }
 if ($script:Winlogon.AutoAdminLogon -cne '1') { throw 'AutoAdminLogon was not restored' }
 if ($script:Winlogon.ForceAutoLogon -cne '1') { throw 'ForceAutoLogon was not restored' }
 if ($script:Winlogon.DefaultUserName -cne 'VEMKiosk') { throw 'DefaultUserName was not restored' }
@@ -205,6 +209,36 @@ if ($cleanupStatus.phase -cne 'complete') { throw 'cleanup did not reach the com
       fixturePath,
     ]);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+    const unexpectedRestartPath = join(root, "unexpected-restart");
+    const alreadyCompleteFixturePath = join(root, "already-complete.ps1");
+    writeFileSync(
+      alreadyCompleteFixturePath,
+      `$ErrorActionPreference = 'Stop'
+$env:COMPUTERNAME = 'VEM-TESTBED'
+function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ OOBEInProgress = 0; SystemSetupInProgress = 0; SetupType = 0 } }
+function Get-LocalUser { param($Name, $ErrorAction) $null }
+function Restart-Computer { param([switch]$Force) New-Item -ItemType File -Path '${unexpectedRestartPath.replaceAll("'", "''")}' -Force | Out-Null }
+${completion}
+`,
+    );
+    const alreadyComplete = run("pwsh", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      alreadyCompleteFixturePath,
+    ]);
+    assert.equal(
+      alreadyComplete.status,
+      0,
+      `${alreadyComplete.stdout}\n${alreadyComplete.stderr}`,
+    );
+    assert.equal(
+      existsSync(unexpectedRestartPath),
+      false,
+      "a completed cleanup must not request another reboot",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
