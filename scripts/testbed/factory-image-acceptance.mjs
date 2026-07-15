@@ -43,6 +43,16 @@ const ABSOLUTE_HOST_PATH =
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const WIREGUARD_PUBLIC_KEY = /^[A-Za-z0-9+/]{43}=$/;
+const FORBIDDEN_CUSTOMER_ROUTES = [
+  "/catalog",
+  "/maintenance",
+  "/offline",
+  "/bring-up",
+];
+const FACTORY_ROUTE_COMPETITION_CASES = new Set([
+  "catalog_refresh",
+  "readiness_refresh",
+]);
 
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -487,6 +497,32 @@ function verifierOutput(input, name) {
   return join(input.evidence.root, "verifier", name);
 }
 
+function routeFromTauriUrl(value) {
+  const url = new URL(nonEmpty(value, "tauri route"));
+  if (url.protocol !== "http:" || url.host !== "tauri.localhost" || !url.hash)
+    throw new Error("tauri route must be a strict Machine UI hash URL");
+  return url.hash;
+}
+
+function routePath(value) {
+  const route = nonEmpty(value, "route").startsWith("#")
+    ? nonEmpty(value, "route")
+    : `#${nonEmpty(value, "route")}`;
+  const url = new URL(`http://tauri.localhost/${route}`);
+  return url.hash.slice(1).split("?")[0].replace(/\/+$/, "") || "/";
+}
+
+function assertNoForbiddenCustomerRoute(value, label) {
+  if (typeof value !== "string" || value.length === 0) return;
+  const actual = routePath(value);
+  for (const forbidden of FORBIDDEN_CUSTOMER_ROUTES) {
+    const forbiddenPath = routePath(forbidden);
+    if (actual === forbiddenPath || actual.startsWith(`${forbiddenPath}/`)) {
+      throw new Error(`${label} observed forbidden customer route: ${value}`);
+    }
+  }
+}
+
 function commonVerifierArgs(
   input,
   endpoint,
@@ -576,6 +612,52 @@ export function buildFactoryRuntimeAcceptanceInvocation(
   ];
 }
 
+export function buildFactoryInstalledKioskSaleInvocation(
+  input,
+  endpoint,
+  runtimeAcceptance,
+  sshKnownHostsPath = null,
+) {
+  const accepted = validateFactoryImageAcceptanceInput(input);
+  const displayBinding = runtimeAcceptance?.displayBinding;
+  if (
+    displayBinding?.activeKioskSession?.sessionUser !== "VEMKiosk" ||
+    !Number.isInteger(displayBinding.activeKioskSession.sessionId) ||
+    displayBinding.activeKioskSession.sessionId < 1 ||
+    typeof displayBinding.cdpTargetId !== "string" ||
+    displayBinding.cdpTargetId.length === 0
+  ) {
+    throw new Error(
+      "installed kiosk sale acceptance requires VEMKiosk runtime display binding",
+    );
+  }
+  return [
+    "node",
+    "scripts/testbed/win10-vem-e2e.mjs",
+    "--mode",
+    "installed-kiosk-sale-acceptance",
+    ...commonVerifierArgs(accepted, endpoint, { sshKnownHostsPath }),
+    "--runtime-acceptance-report",
+    verifierOutput(accepted, "runtime-acceptance.json"),
+    "--expected-cdp-target-id",
+    displayBinding.cdpTargetId,
+    "--expected-kiosk-session-user",
+    displayBinding.activeKioskSession.sessionUser,
+    "--expected-kiosk-session-id",
+    String(displayBinding.activeKioskSession.sessionId),
+    "--expected-tauri-route",
+    displayBinding.tauriRoute,
+    "--factory-profile",
+    "factory",
+    "--route-competition-case",
+    "catalog_refresh",
+    "--business-assertion-retries",
+    "0",
+    "--out",
+    verifierOutput(accepted, "customer-ui-sale-scenario.json"),
+  ];
+}
+
 function runExact(command, failureMessage) {
   const result = spawnSync(command[0], command.slice(1), {
     stdio: "inherit",
@@ -656,6 +738,203 @@ function verifyRuntimeResult(path) {
       tauriRoute: runtime.kioskRuntime.url,
       cdpTargetId: runtime.kioskRuntime.cdpTargetId,
     },
+  };
+}
+
+function linkedSaleRecord(report) {
+  const record = report?.sale?.linkedTransaction;
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error(
+      "installed kiosk sale scenario must include sale.linkedTransaction",
+    );
+  }
+  return record;
+}
+
+function assertLinkedSaleBindings(record) {
+  const command = record.vendingCommand;
+  const movement = record.stockMovement;
+  const fulfillment = record.fulfillment;
+  if (
+    record.order?.status !== "fulfilled" ||
+    record.reservation?.status !== "consumed" ||
+    record.payment?.status !== "succeeded" ||
+    record.transaction?.status !== "succeeded" ||
+    command?.status !== "succeeded" ||
+    command.creationCount !== 1 ||
+    movement?.status !== "accepted" ||
+    movement.creationCount !== 1 ||
+    movement.quantity !== -1 ||
+    fulfillment?.status !== "succeeded" ||
+    record.order.checkoutIdempotencyKey !== record.checkout?.idempotencyKey ||
+    record.reservation.orderId !== record.order.orderId ||
+    record.payment.orderId !== record.order.orderId ||
+    record.payment.reservationId !== record.reservation.reservationId ||
+    record.transaction.orderId !== record.order.orderId ||
+    record.transaction.paymentId !== record.payment.paymentId ||
+    record.transaction.reservationId !== record.reservation.reservationId ||
+    command.orderId !== record.order.orderId ||
+    command.transactionId !== record.transaction.transactionId ||
+    movement.orderId !== record.order.orderId ||
+    movement.transactionId !== record.transaction.transactionId ||
+    movement.commandId !== command.commandId ||
+    fulfillment.orderId !== record.order.orderId ||
+    fulfillment.transactionId !== record.transaction.transactionId ||
+    fulfillment.commandId !== command.commandId ||
+    fulfillment.stockMovementId !== movement.movementId
+  ) {
+    throw new Error(
+      "installed kiosk sale scenario did not bind order/payment/transaction/command/stock identities",
+    );
+  }
+}
+
+function assertPhysicalInputActivations(report) {
+  const activations =
+    report.evidence?.filter((entry) => entry?.type === "customer-activation") ??
+    [];
+  if (
+    activations.length < 1 ||
+    report.execution?.planned?.customerActivations !==
+      report.execution?.executed?.customerActivations ||
+    report.execution.executed.customerActivations < 1 ||
+    activations.some(
+      (entry) =>
+        typeof entry.input?.method !== "string" ||
+        !entry.input.method.startsWith("Input.") ||
+        entry.input.released !== true,
+    )
+  ) {
+    throw new Error(
+      "installed kiosk sale scenario must prove physical Input activations",
+    );
+  }
+}
+
+function assertNoForbiddenRoutes(report) {
+  assertNoForbiddenCustomerRoute(report.target?.route, "target");
+  assertNoForbiddenCustomerRoute(
+    report.target?.attestation?.observed?.cdpTarget?.route,
+    "runtime attestation",
+  );
+  for (const [index, entry] of (report.evidence ?? []).entries()) {
+    assertNoForbiddenCustomerRoute(
+      entry?.identity?.route,
+      `evidence[${index}]`,
+    );
+    assertNoForbiddenCustomerRoute(
+      entry?.routeBefore,
+      `evidence[${index}].routeBefore`,
+    );
+  }
+}
+
+function assertFactorySaleBindings(report, record, input, runtimeAcceptance) {
+  const bindings = report.factoryBindings;
+  const runtimeBinding = bindings?.runtimeAcceptance;
+  const hardwareBinding = bindings?.simulatedHardware;
+  const displayBinding = runtimeAcceptance.displayBinding;
+  const evidenceDigest = readAndHashRegularFile(
+    verifierOutput(input, "runtime-acceptance.json"),
+    "runtime acceptance verifier evidence",
+  ).digest;
+  if (
+    runtimeBinding?.evidencePath !== "verifier/runtime-acceptance.json" ||
+    runtimeBinding?.evidenceDigest !== evidenceDigest ||
+    runtimeBinding?.cdpTargetId !== displayBinding.cdpTargetId ||
+    runtimeBinding?.sessionUser !== "VEMKiosk" ||
+    runtimeBinding?.sessionId !== displayBinding.activeKioskSession.sessionId ||
+    runtimeBinding?.tauriRoute !== displayBinding.tauriRoute
+  ) {
+    throw new Error(
+      "installed kiosk sale scenario is not bound to runtime acceptance evidence",
+    );
+  }
+  if (
+    hardwareBinding?.status !== "passed" ||
+    typeof hardwareBinding.saleCorrelationId !== "string" ||
+    !hardwareBinding.saleCorrelationId ||
+    hardwareBinding.orderId !== record.order.orderId ||
+    hardwareBinding.paymentId !== record.payment.paymentId ||
+    hardwareBinding.transactionId !== record.transaction.transactionId ||
+    hardwareBinding.commandId !== record.vendingCommand.commandId ||
+    hardwareBinding.stockMovementId !== record.stockMovement.movementId ||
+    hardwareBinding.dispense?.status !== "succeeded" ||
+    hardwareBinding.stock?.status !== "accepted"
+  ) {
+    throw new Error(
+      "installed kiosk sale scenario is not bound to simulated hardware sale evidence",
+    );
+  }
+}
+
+export function verifyInstalledKioskSaleScenarioResult(
+  path,
+  input,
+  runtimeAcceptance,
+) {
+  const report = JSON.parse(readFileSync(path, "utf8"));
+  const displayBinding = runtimeAcceptance.displayBinding;
+  const session = displayBinding.activeKioskSession;
+  const expectedRoute = routeFromTauriUrl(displayBinding.tauriRoute);
+  if (
+    report?.schemaVersion !== "machine-ui-cdp-sale-scenario/v3" ||
+    report.status !== "passed" ||
+    report.target?.id !== displayBinding.cdpTargetId ||
+    report.target?.route !== expectedRoute ||
+    report.target?.attestation?.expected?.targetId !==
+      displayBinding.cdpTargetId ||
+    report.target?.attestation?.expected?.machine?.sessionId !==
+      session.sessionId ||
+    !String(
+      report.target?.attestation?.expected?.machine?.principal ?? "",
+    ).endsWith("\\VEMKiosk") ||
+    report.target?.attestation?.observed?.machine?.sessionId !==
+      session.sessionId ||
+    !String(
+      report.target?.attestation?.observed?.machine?.principal ?? "",
+    ).endsWith("\\VEMKiosk") ||
+    report.target?.attestation?.observed?.cdpListener?.sessionId !==
+      session.sessionId ||
+    report.target?.attestation?.observed?.cdpTarget?.id !==
+      displayBinding.cdpTargetId
+  ) {
+    throw new Error(
+      "installed kiosk sale scenario did not prove the exact VEMKiosk target/session",
+    );
+  }
+  const routeCompetitionCases = report.factoryProfile?.routeCompetitionCases;
+  if (
+    !Array.isArray(routeCompetitionCases) ||
+    routeCompetitionCases.length !== 1 ||
+    !FACTORY_ROUTE_COMPETITION_CASES.has(routeCompetitionCases[0])
+  ) {
+    throw new Error(
+      "factory installed kiosk sale profile must include exactly one route-competition case",
+    );
+  }
+  const record = linkedSaleRecord(report);
+  assertPhysicalInputActivations(report);
+  assertNoForbiddenRoutes(report);
+  assertLinkedSaleBindings(record);
+  assertFactorySaleBindings(report, record, input, runtimeAcceptance);
+  return {
+    status: "passed",
+    schemaVersion: report.schemaVersion,
+    target: {
+      id: report.target.id,
+      route: report.target.route,
+      sessionUser: "VEMKiosk",
+      sessionId: session.sessionId,
+    },
+    linkedSale: {
+      orderId: record.order.orderId,
+      paymentId: record.payment.paymentId,
+      transactionId: record.transaction.transactionId,
+      commandId: record.vendingCommand.commandId,
+      stockMovementId: record.stockMovement.movementId,
+    },
+    routeCompetitionCase: routeCompetitionCases[0],
   };
 }
 
@@ -958,6 +1237,21 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
     runExact(runtime, "runtime acceptance failed");
     reports.runtimeAcceptance = verifyRuntimeResult(
       verifierOutput(input, "runtime-acceptance.json"),
+    );
+    const customerSale = buildFactoryInstalledKioskSaleInvocation(
+      input,
+      endpoint,
+      reports.runtimeAcceptance,
+      sshKnownHostsPath,
+    );
+    runExact(
+      customerSale,
+      "installed kiosk customer UI sale acceptance failed",
+    );
+    reports.customerUiSale = verifyInstalledKioskSaleScenarioResult(
+      verifierOutput(input, "customer-ui-sale-scenario.json"),
+      input,
+      reports.runtimeAcceptance,
     );
     const display = await runAdapter(
       input,

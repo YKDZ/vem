@@ -17,6 +17,7 @@ import { describe, it } from "node:test";
 
 import {
   adapterEnvironment,
+  buildFactoryInstalledKioskSaleInvocation,
   buildFactoryPreclaimVerifyInvocation,
   buildFactoryMachineClaimInvocation,
   buildFactoryRuntimeAcceptanceInvocation,
@@ -25,6 +26,7 @@ import {
   runAdmittedFactoryImageAcceptanceLifecycle,
   sanitizeFactoryAcceptanceEvidence,
   validateFactoryImageAcceptanceInput,
+  verifyInstalledKioskSaleScenarioResult,
 } from "./factory-image-acceptance.mjs";
 
 const runner = new URL("./factory-image-acceptance.mjs", import.meta.url)
@@ -130,6 +132,226 @@ function typedInput(root) {
   };
 }
 
+function overlayEndpoint(input) {
+  return {
+    protocol: "ssh",
+    host: "10.91.16.10",
+    port: 22,
+    reachability: "discovered",
+    relayProof: {
+      ...input.endpoint.maintenanceRelaySession,
+      relayPeer: {
+        ...input.endpoint.maintenanceRelaySession.relayPeer,
+      },
+      endpointAllowedIp: "10.91.16.10/32",
+      endpointRoute: "10.91.16.10/32",
+      handshakeUnixSeconds: 1_784_160_000,
+    },
+  };
+}
+
+function runtimeAcceptanceSummary() {
+  return {
+    status: "passed",
+    runtimeReady: {
+      status: "passed",
+      asserted: true,
+    },
+    displayBinding: {
+      activeKioskSession: {
+        sessionUser: "VEMKiosk",
+        sessionId: 1,
+      },
+      tauriRoute: "http://tauri.localhost/#/sale",
+      cdpTargetId: "machine-ui-cdp-target-1",
+    },
+  };
+}
+
+function writeRuntimeAcceptanceVerifier(input) {
+  const report = {
+    ok: true,
+    runtimeAcceptanceReport: {
+      schemaVersion: "runtime-acceptance-report/v1",
+      result: { runtimeReady: { status: "passed", asserted: true } },
+      kioskRuntime: {
+        sessionUser: "VEMKiosk",
+        sessionId: 1,
+        url: "http://tauri.localhost/#/sale",
+        cdpTargetId: "machine-ui-cdp-target-1",
+      },
+    },
+  };
+  const path = join(input.evidence.root, "verifier", "runtime-acceptance.json");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(report)}\n`);
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function linkedSale() {
+  return {
+    checkout: { idempotencyKey: "checkout-factory-1" },
+    order: {
+      orderId: "order-factory-1",
+      checkoutIdempotencyKey: "checkout-factory-1",
+      status: "fulfilled",
+    },
+    reservation: {
+      reservationId: "reservation-factory-1",
+      orderId: "order-factory-1",
+      status: "consumed",
+    },
+    payment: {
+      paymentId: "payment-factory-1",
+      orderId: "order-factory-1",
+      reservationId: "reservation-factory-1",
+      paymentUrl: "https://payments.example.test/factory-1",
+      status: "succeeded",
+      statusDeliveries: [
+        {
+          deliveryId: "delivery-factory-1",
+          status: "succeeded",
+          deliveredAt: "2026-07-15T00:00:00.000Z",
+          payload: {
+            orderId: "order-factory-1",
+            paymentId: "payment-factory-1",
+            transactionId: "transaction-factory-1",
+            paymentStatus: "succeeded",
+          },
+        },
+      ],
+    },
+    transaction: {
+      transactionId: "transaction-factory-1",
+      orderId: "order-factory-1",
+      paymentId: "payment-factory-1",
+      reservationId: "reservation-factory-1",
+      status: "succeeded",
+    },
+    vendingCommand: {
+      commandId: "command-factory-1",
+      orderId: "order-factory-1",
+      transactionId: "transaction-factory-1",
+      status: "succeeded",
+      creationCount: 1,
+    },
+    stockMovement: {
+      movementId: "movement-factory-1",
+      orderId: "order-factory-1",
+      transactionId: "transaction-factory-1",
+      commandId: "command-factory-1",
+      quantity: -1,
+      status: "accepted",
+      creationCount: 1,
+    },
+    fulfillment: {
+      status: "succeeded",
+      orderId: "order-factory-1",
+      transactionId: "transaction-factory-1",
+      commandId: "command-factory-1",
+      stockMovementId: "movement-factory-1",
+    },
+  };
+}
+
+function saleScenario(input, runtimeDigest) {
+  const sale = linkedSale();
+  return {
+    schemaVersion: "machine-ui-cdp-sale-scenario/v3",
+    status: "passed",
+    sequenceName: "factory-installed-kiosk-sale",
+    target: {
+      id: "machine-ui-cdp-target-1",
+      route: "#/sale",
+      attestation: {
+        expected: {
+          targetId: "machine-ui-cdp-target-1",
+          machine: {
+            processId: 4242,
+            executablePath: "C:\\VEM\\bringup\\machine.exe",
+            sessionId: 1,
+            principal: "VEM\\VEMKiosk",
+          },
+        },
+        observed: {
+          machine: {
+            processId: 4242,
+            executablePath: "C:\\VEM\\bringup\\machine.exe",
+            sessionId: 1,
+            principal: "VEM\\VEMKiosk",
+          },
+          cdpListener: {
+            processId: 5151,
+            executablePath: "C:\\Program Files\\WebView\\msedgewebview2.exe",
+            sessionId: 1,
+            principal: "VEM\\VEMKiosk",
+            machineAncestorProcessId: 4242,
+            localAddress: "127.0.0.1",
+            localPort: 9222,
+          },
+          cdpTarget: {
+            id: "machine-ui-cdp-target-1",
+            url: "http://tauri.localhost/#/sale",
+            route: "#/sale",
+          },
+        },
+      },
+    },
+    execution: {
+      planned: { customerActivations: 1, observations: 1 },
+      executed: { customerActivations: 1, observations: 1 },
+    },
+    evidence: [
+      {
+        type: "customer-activation",
+        label: "start-sale",
+        selector: "[data-testid='start-sale']",
+        input: {
+          method: "Input.dispatchTouchEvent",
+          kind: "touch",
+          x: 10,
+          y: 20,
+          released: true,
+        },
+        routeBefore: "#/sale",
+      },
+      {
+        type: "observation",
+        label: "result",
+        identity: {
+          url: "http://tauri.localhost/#/result",
+          route: "#/result",
+        },
+      },
+    ],
+    sale: { linkedTransaction: sale },
+    factoryProfile: {
+      routeCompetitionCases: ["catalog_refresh"],
+    },
+    factoryBindings: {
+      runtimeAcceptance: {
+        evidencePath: "verifier/runtime-acceptance.json",
+        evidenceDigest: `sha256:${runtimeDigest}`,
+        cdpTargetId: "machine-ui-cdp-target-1",
+        sessionUser: "VEMKiosk",
+        sessionId: 1,
+        tauriRoute: "http://tauri.localhost/#/sale",
+      },
+      simulatedHardware: {
+        status: "passed",
+        saleCorrelationId: `sale-correlation://factory-${input.runId.toLowerCase()}`,
+        orderId: "order-factory-1",
+        paymentId: "payment-factory-1",
+        transactionId: "transaction-factory-1",
+        commandId: "command-factory-1",
+        stockMovementId: "movement-factory-1",
+        dispense: { status: "succeeded" },
+        stock: { status: "accepted" },
+      },
+    },
+  };
+}
+
 describe("Factory Image Acceptance lifecycle", () => {
   it("extends only clean-install adapter execution", () => {
     const environment = {
@@ -164,21 +386,7 @@ describe("Factory Image Acceptance lifecycle", () => {
   it("verifies the installed Factory runtime before base capture and binds claim to the discovered endpoint", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-factory-image-command-"));
     const input = typedInput(root);
-    const endpoint = {
-      protocol: "ssh",
-      host: "10.91.16.10",
-      port: 22,
-      reachability: "discovered",
-      relayProof: {
-        ...input.endpoint.maintenanceRelaySession,
-        relayPeer: {
-          ...input.endpoint.maintenanceRelaySession.relayPeer,
-        },
-        endpointAllowedIp: "10.91.16.10/32",
-        endpointRoute: "10.91.16.10/32",
-        handshakeUnixSeconds: 1_784_160_000,
-      },
-    };
+    const endpoint = overlayEndpoint(input);
     const sshKnownHostsPath = join(root, "lifecycle-known-hosts");
     const preclaimInvocation = buildFactoryPreclaimVerifyInvocation(
       input,
@@ -279,6 +487,131 @@ describe("Factory Image Acceptance lifecycle", () => {
     });
     assert.equal(evidence.token, undefined);
     assert.equal(evidence.path, "[REDACTED]");
+  });
+
+  it("runs one installed customer UI sale after runtime acceptance and before display capture", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-factory-image-sale-command-"));
+    const input = typedInput(root);
+    const endpoint = overlayEndpoint(input);
+    const sshKnownHostsPath = join(root, "lifecycle-known-hosts");
+    const invocation = buildFactoryInstalledKioskSaleInvocation(
+      input,
+      endpoint,
+      runtimeAcceptanceSummary(),
+      sshKnownHostsPath,
+    );
+
+    assert.deepEqual(invocation.slice(0, 4), [
+      "node",
+      "scripts/testbed/win10-vem-e2e.mjs",
+      "--mode",
+      "installed-kiosk-sale-acceptance",
+    ]);
+    assert.equal(
+      invocation[invocation.indexOf("--out") + 1],
+      join(input.evidence.root, "verifier", "customer-ui-sale-scenario.json"),
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--runtime-acceptance-report") + 1],
+      join(input.evidence.root, "verifier", "runtime-acceptance.json"),
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--expected-cdp-target-id") + 1],
+      "machine-ui-cdp-target-1",
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--expected-kiosk-session-user") + 1],
+      "VEMKiosk",
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--expected-kiosk-session-id") + 1],
+      "1",
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--expected-tauri-route") + 1],
+      "http://tauri.localhost/#/sale",
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--factory-profile") + 1],
+      "factory",
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--route-competition-case") + 1],
+      "catalog_refresh",
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--business-assertion-retries") + 1],
+      "0",
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--ssh-known-hosts-path") + 1],
+      sshKnownHostsPath,
+    );
+  });
+
+  it("requires the installed kiosk sale scenario to bind UI, runtime, hardware, and stock evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-factory-image-sale-report-"));
+    const input = typedInput(root);
+    const digest = writeRuntimeAcceptanceVerifier(input);
+    const output = join(
+      input.evidence.root,
+      "verifier",
+      "customer-ui-sale-scenario.json",
+    );
+    mkdirSync(dirname(output), { recursive: true });
+    writeFileSync(output, `${JSON.stringify(saleScenario(input, digest))}\n`);
+
+    assert.deepEqual(
+      verifyInstalledKioskSaleScenarioResult(
+        output,
+        input,
+        runtimeAcceptanceSummary(),
+      ),
+      {
+        status: "passed",
+        schemaVersion: "machine-ui-cdp-sale-scenario/v3",
+        target: {
+          id: "machine-ui-cdp-target-1",
+          route: "#/sale",
+          sessionUser: "VEMKiosk",
+          sessionId: 1,
+        },
+        linkedSale: {
+          orderId: "order-factory-1",
+          paymentId: "payment-factory-1",
+          transactionId: "transaction-factory-1",
+          commandId: "command-factory-1",
+          stockMovementId: "movement-factory-1",
+        },
+        routeCompetitionCase: "catalog_refresh",
+      },
+    );
+
+    const missingInput = saleScenario(input, digest);
+    missingInput.evidence[0].input.method = "HTMLElement.click";
+    writeFileSync(output, `${JSON.stringify(missingInput)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /physical Input/,
+    );
+
+    const wrongStock = saleScenario(input, digest);
+    wrongStock.sale.linkedTransaction.stockMovement.movementId = "unbound";
+    writeFileSync(output, `${JSON.stringify(wrongStock)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /order\/payment\/transaction\/command\/stock/,
+    );
   });
 
   it("writes sanitized JSON copies into a dedicated upload boundary", () => {
