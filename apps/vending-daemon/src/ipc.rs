@@ -1317,11 +1317,20 @@ fn disk_pressure_component(
 async fn production_maintenance_status(
     ctx: &IpcContext,
 ) -> Option<crate::maintenance::MaintenanceEnrollmentStatus> {
-    match ctx
-        .config_store
-        .production_claim_maintenance_identity()
-        .await
-    {
+    project_production_maintenance_status(
+        ctx,
+        ctx.config_store
+            .production_claim_maintenance_identity()
+            .await,
+    )
+    .await
+}
+
+async fn project_production_maintenance_status(
+    ctx: &IpcContext,
+    authority: Result<Option<crate::config::ProvisioningMaintenanceIdentity>, String>,
+) -> Option<crate::maintenance::MaintenanceEnrollmentStatus> {
+    match authority {
         Ok(None) => None,
         Ok(Some(_)) => Some(ctx.config_store.maintenance_status().await),
         Err(error) => Some(crate::maintenance::MaintenanceEnrollmentStatus {
@@ -3241,8 +3250,25 @@ pub(crate) async fn machine_sale_readiness_snapshot(
         .as_ref()
         .and_then(|config| config.machine_code.clone())
         .filter(|code| !code.trim().is_empty());
-    let machine_auth_ready = machine_code.is_some();
-    let maintenance = production_maintenance_status(ctx).await;
+    let production_claim_authority = ctx
+        .config_store
+        .production_claim_maintenance_identity()
+        .await;
+    let production_profile = ctx
+        .config_store
+        .provisioning_profile_name()
+        .await
+        .is_ok_and(|profile| profile == "production");
+    let machine_auth_ready = machine_code.is_some()
+        && if production_profile {
+            matches!(production_claim_authority.as_ref(), Ok(Some(_)))
+        } else {
+            ctx.config_store
+                .load_provisioning_profile_cache_summary()
+                .await
+                .is_ok_and(|profile| profile.is_some())
+        };
+    let maintenance = project_production_maintenance_status(ctx, production_claim_authority).await;
     let maintenance_commissioning_required = maintenance.is_some();
     let maintenance = maintenance.unwrap_or_default();
     let maintenance_first_handshake_ready = maintenance.first_handshake_verified_at.is_some();
@@ -5197,7 +5223,7 @@ mod tests {
             default_public_config, FactoryProfile, FactoryRuntimeManifest,
             HardwareSlotTopologyIdentity, RuntimeHardwareMode,
         },
-        secret::{InMemorySecretStore, SecretStore},
+        secret::{InMemorySecretStore, SecretStore, SecretStoreStatus},
         state::{
             store::{OrderSessionUpsert, OutboxInput},
             LocalStateStore,
@@ -5223,6 +5249,35 @@ mod tests {
     struct SwitchableMaintenanceTunnel {
         apply_available: AtomicBool,
         connected: AtomicBool,
+    }
+
+    struct ToggleMachineSecretReadStore {
+        inner: InMemorySecretStore,
+        fail_machine_secret_reads: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStore for ToggleMachineSecretReadStore {
+        async fn read_secret(&self, account: &str) -> Result<Option<String>, String> {
+            if account == crate::secret::MACHINE_SECRET_ACCOUNT
+                && self.fail_machine_secret_reads.load(Ordering::SeqCst)
+            {
+                return Err("injected machine secret read failure".to_string());
+            }
+            self.inner.read_secret(account).await
+        }
+
+        async fn write_secret(&self, account: &str, value: &str) -> Result<(), String> {
+            self.inner.write_secret(account, value).await
+        }
+
+        async fn clear_all(&self) -> Result<(), String> {
+            self.inner.clear_all().await
+        }
+
+        async fn status(&self) -> Result<SecretStoreStatus, String> {
+            self.inner.status().await
+        }
     }
 
     #[async_trait::async_trait]
@@ -5443,6 +5498,25 @@ mod tests {
         backend_base_url: &str,
         tunnel: Arc<dyn crate::maintenance::WindowsTunnelBackend>,
     ) -> IpcContext {
+        test_ipc_context_with_dependencies(
+            data_dir,
+            token,
+            machine_code,
+            backend_base_url,
+            Arc::new(InMemorySecretStore::default()),
+            tunnel,
+        )
+        .await
+    }
+
+    async fn test_ipc_context_with_dependencies(
+        data_dir: &std::path::Path,
+        token: impl Into<String>,
+        machine_code: Option<String>,
+        backend_base_url: &str,
+        secrets: Arc<dyn crate::secret::SecretStore>,
+        tunnel: Arc<dyn crate::maintenance::WindowsTunnelBackend>,
+    ) -> IpcContext {
         let data_dir =
             if data_dir.file_name().and_then(|name| name.to_str()) == Some("vending-daemon") {
                 data_dir.to_path_buf()
@@ -5452,7 +5526,6 @@ mod tests {
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
             .await
             .expect("state");
-        let secrets = Arc::new(InMemorySecretStore::default());
         secrets
             .write_secret(
                 crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
@@ -5467,11 +5540,10 @@ mod tests {
             )
             .await
             .expect("seed maintenance PIN");
-        let secrets: Arc<dyn crate::secret::SecretStore> = secrets;
         let config_store = Arc::new(crate::config::ConfigStore::new_with_tunnel(
             data_dir.clone(),
             state.clone(),
-            secrets,
+            secrets.clone(),
             tunnel,
         ));
         let factory_manifest_path = config_store.factory_manifest_path();
@@ -5519,6 +5591,50 @@ mod tests {
             )
             .await
             .expect("write default profile cache");
+            state
+                .put_metadata(
+                    "machine_provisioning_claim_code_id",
+                    &"550e8400-e29b-41d4-a716-446655440111".to_string(),
+                )
+                .await
+                .expect("seed claim code credential");
+            state
+                .put_metadata("machine_provisioning_profile_version", &"1".to_string())
+                .await
+                .expect("seed profile version credential");
+            state
+                .put_metadata(
+                    "machine_provisioning_claimed_at",
+                    &"2026-06-08T16:30:00.000Z".to_string(),
+                )
+                .await
+                .expect("seed claimed-at credential");
+            secrets
+                .write_secret(
+                    crate::secret::MACHINE_SECRET_ACCOUNT,
+                    "vms_fixture-machine-shared-secret-change-before-prod",
+                )
+                .await
+                .expect("seed machine secret");
+            let maintenance = config_store
+                .load_provisioning_profile_cache_summary()
+                .await
+                .expect("load default profile cache")
+                .and_then(|profile| profile.maintenance)
+                .expect("default maintenance identity");
+            secrets
+                .write_secret(
+                    crate::secret::MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+                    &json!({
+                        "active": maintenance,
+                        "activeFirstHandshakeAt": "2026-06-08T16:31:00.000Z",
+                        "pending": null,
+                        "operation": null
+                    })
+                    .to_string(),
+                )
+                .await
+                .expect("seed commissioned maintenance lifecycle");
         }
         let public = config_store
             .load_public_config()
@@ -6123,6 +6239,25 @@ mod tests {
                 "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
                 "claimedAt": "2026-06-08T16:30:00.000Z",
                 "serverTime": "2026-06-08T16:30:00.000Z"
+            },
+            "provisioningProfile": "production",
+            "maintenance": {
+                "publicKey": crate::maintenance::public_key_from_private_key(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+                ).expect("fixture public key"),
+                "tunnelAddress": "10.91.16.10",
+                "address": "10.91.16.10/32",
+                "endpoint": "relay.example:51820",
+                "relay": {
+                    "publicKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+                    "tunnelAddress": "10.91.0.1",
+                    "address": "10.91.0.1/32"
+                },
+                "roleRoutes": {
+                    "relay": "10.91.0.1/32",
+                    "runner": "10.91.1.0/24",
+                    "maintainer": "10.91.3.0/24"
+                }
             }
         });
         if let Some((identity, version)) = topology {
@@ -7544,6 +7679,219 @@ mod tests {
             .expect("health components")
             .iter()
             .any(|component| component["code"] == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+    }
+
+    async fn assert_production_credentials_fail_closed(app: &Router) {
+        let bring_up = get_ipc_json(app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(bring_up["state"], "maintenance_convergence_required");
+        let sale = get_ipc_json(app, "/v1/sale-readiness", Some("token-1")).await;
+        let blockers = sale["blockingCodes"].as_array().expect("sale blockers");
+        assert!(blockers.iter().any(|code| code == "MACHINE_AUTH_MISSING"));
+        assert!(blockers
+            .iter()
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+        let ready = get_ipc_json(app, "/readyz", None).await;
+        assert!(ready["blockingCodes"]
+            .as_array()
+            .expect("ready blockers")
+            .iter()
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+        let health = get_ipc_json(app, "/healthz", None).await;
+        assert!(health["components"]
+            .as_array()
+            .expect("health components")
+            .iter()
+            .any(|component| component["code"] == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+    }
+
+    #[tokio::test]
+    async fn production_claim_and_old_handshake_cannot_bypass_missing_or_unreadable_machine_secret()
+    {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let secrets = Arc::new(ToggleMachineSecretReadStore {
+            inner: InMemorySecretStore::default(),
+            fail_machine_secret_reads: AtomicBool::new(false),
+        });
+        let ctx = test_ipc_context_with_dependencies(
+            temp_dir.path(),
+            "token-1",
+            None,
+            &server.uri(),
+            secrets.clone(),
+            Arc::new(SwitchableMaintenanceTunnel {
+                apply_available: AtomicBool::new(true),
+                connected: AtomicBool::new(false),
+            }),
+        )
+        .await;
+        let app = build_router(ctx);
+        let claim = post_json_with_maintenance(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(claim.status(), StatusCode::OK);
+        let commissioned = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert_eq!(
+            commissioned["components"]["maintenanceTunnel"]["firstHandshakeVerified"],
+            true
+        );
+
+        secrets
+            .write_secret(crate::secret::MACHINE_SECRET_ACCOUNT, "")
+            .await
+            .expect("remove machine secret");
+        assert_production_credentials_fail_closed(&app).await;
+
+        secrets
+            .write_secret(
+                crate::secret::MACHINE_SECRET_ACCOUNT,
+                "vms_local-machine-shared-secret-change-before-prod",
+            )
+            .await
+            .expect("restore machine secret");
+        secrets
+            .fail_machine_secret_reads
+            .store(true, Ordering::SeqCst);
+        assert_production_credentials_fail_closed(&app).await;
+
+        secrets
+            .fail_machine_secret_reads
+            .store(false, Ordering::SeqCst);
+        let recovered_sale = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert_eq!(
+            recovered_sale["components"]["machineAuthentication"]["ready"],
+            true
+        );
+        assert_eq!(
+            recovered_sale["components"]["maintenanceTunnel"]["firstHandshakeVerified"],
+            true
+        );
+        assert!(!recovered_sale["blockingCodes"]
+            .as_array()
+            .expect("sale blockers")
+            .iter()
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+    }
+
+    #[tokio::test]
+    async fn production_authority_rejects_missing_claim_metadata_identity_and_profile_marker() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context_with_tunnel(
+            temp_dir.path(),
+            "token-1",
+            None,
+            &server.uri(),
+            Arc::new(SwitchableMaintenanceTunnel {
+                apply_available: AtomicBool::new(true),
+                connected: AtomicBool::new(false),
+            }),
+        )
+        .await;
+        let state = ctx.state.clone();
+        let profile_path = ctx.config_store.provisioning_profile_cache_summary_path();
+        let app = build_router(ctx);
+        assert_eq!(
+            post_json_with_maintenance(
+                &app,
+                "/v1/provisioning/claim",
+                "token-1",
+                json!({ "claimCode": "ABCD-2345" }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        let original_profile = tokio::fs::read(&profile_path)
+            .await
+            .expect("read claimed profile");
+
+        state
+            .delete_metadata("machine_provisioning_claim_code_id")
+            .await
+            .expect("remove claim credential");
+        assert_production_credentials_fail_closed(&app).await;
+        state
+            .put_metadata(
+                "machine_provisioning_claim_code_id",
+                &"550e8400-e29b-41d4-a716-446655440111".to_string(),
+            )
+            .await
+            .expect("restore claim credential");
+
+        let mut missing_identity: serde_json::Value =
+            serde_json::from_slice(&original_profile).expect("profile json");
+        missing_identity["maintenance"] = serde_json::Value::Null;
+        tokio::fs::write(
+            &profile_path,
+            serde_json::to_vec_pretty(&missing_identity).expect("serialize missing identity"),
+        )
+        .await
+        .expect("write missing identity profile");
+        assert_production_credentials_fail_closed(&app).await;
+
+        let mut wrong_marker: serde_json::Value =
+            serde_json::from_slice(&original_profile).expect("profile json");
+        wrong_marker["provisioningProfile"] = json!("testbed");
+        tokio::fs::write(
+            &profile_path,
+            serde_json::to_vec_pretty(&wrong_marker).expect("serialize wrong marker"),
+        )
+        .await
+        .expect("write wrong marker profile");
+        assert_production_credentials_fail_closed(&app).await;
+    }
+
+    #[tokio::test]
+    async fn unclaimed_machine_does_not_gain_a_maintenance_gate_from_secret_store_read_failure() {
+        let server = MockServer::start().await;
+        let temp_dir = tempdir().expect("tmp");
+        let secrets = Arc::new(ToggleMachineSecretReadStore {
+            inner: InMemorySecretStore::default(),
+            fail_machine_secret_reads: AtomicBool::new(false),
+        });
+        let ctx = test_ipc_context_with_dependencies(
+            temp_dir.path(),
+            "token-1",
+            None,
+            &server.uri(),
+            secrets.clone(),
+            Arc::new(crate::maintenance::WindowsWireGuardTunnel::default()),
+        )
+        .await;
+        let app = build_router(ctx);
+        secrets
+            .fail_machine_secret_reads
+            .store(true, Ordering::SeqCst);
+
+        let bring_up = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(bring_up["state"], "claim_required");
+        let sale = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        let blockers = sale["blockingCodes"].as_array().expect("sale blockers");
+        assert!(blockers.iter().any(|code| code == "MACHINE_AUTH_MISSING"));
+        assert!(!blockers
+            .iter()
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+        let health = get_ipc_json(&app, "/healthz", None).await;
+        assert!(!health["components"]
+            .as_array()
+            .expect("health components")
+            .iter()
+            .any(|component| component["component"] == "maintenance_tunnel"));
     }
 
     #[tokio::test]
@@ -9342,7 +9690,10 @@ mod tests {
             .await
             .unwrap();
         let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(readiness["canStartNetworkAuthorizedSale"], true);
+        assert_eq!(
+            readiness["canStartNetworkAuthorizedSale"], true,
+            "readiness payload: {readiness}"
+        );
         assert_eq!(readiness["components"]["paymentOptions"]["ready"], true);
         assert_eq!(readiness["components"]["scannerCapability"]["ready"], false);
         assert_eq!(
@@ -9886,7 +10237,10 @@ mod tests {
         record_attested_stock(&ctx.state, "PLAN-TOPOLOGY-MATCH", slot_id, 2).await;
 
         let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
-        assert_eq!(readiness["canStartNetworkAuthorizedSale"], true);
+        assert_eq!(
+            readiness["canStartNetworkAuthorizedSale"], true,
+            "readiness payload: {readiness}"
+        );
         assert_eq!(
             readiness["components"]["hardwareSlotTopology"]["code"],
             "HARDWARE_SLOT_TOPOLOGY_MATCH"

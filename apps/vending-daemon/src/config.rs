@@ -1864,24 +1864,57 @@ impl ConfigStore {
         if factory.environment != FactoryProfile::Production {
             return Ok(None);
         }
-        let Some(profile) = self.load_provisioning_profile_cache_summary().await? else {
-            if self.runtime_secrets().await?.machine_secret.is_some() {
-                return Err(
-                    "persisted production claim profile is missing for configured machine"
-                        .to_string(),
-                );
-            }
+        let profile = self.load_provisioning_profile_cache_summary().await?;
+        let claim_code_id = self
+            .state
+            .get_metadata::<String>("machine_provisioning_claim_code_id")
+            .await
+            .map_err(|error| error.to_string())?;
+        let profile_version = self
+            .state
+            .get_metadata::<String>("machine_provisioning_profile_version")
+            .await
+            .map_err(|error| error.to_string())?;
+        let claimed_at = self
+            .state
+            .get_metadata::<String>("machine_provisioning_claimed_at")
+            .await
+            .map_err(|error| error.to_string())?;
+        let profile_marks_claim = profile.as_ref().is_some_and(|profile| {
+            profile.provisioning_profile.is_some() || profile.maintenance.is_some()
+        });
+        let metadata_marks_claim =
+            claim_code_id.is_some() || profile_version.is_some() || claimed_at.is_some();
+        if !profile_marks_claim && !metadata_marks_claim {
             return Ok(None);
-        };
-        let production_claim = profile.provisioning_profile.as_deref() == Some("production")
-            || profile.maintenance.is_some();
-        if !production_claim {
-            return Ok(None);
+        }
+        let profile = profile.ok_or_else(|| {
+            "persisted production claim profile is missing for configured machine".to_string()
+        })?;
+        if profile.provisioning_profile.as_deref() != Some("production") {
+            return Err("persisted production claim profile marker is invalid".to_string());
         }
         let identity = profile.maintenance.ok_or_else(|| {
             "persisted production claim is missing maintenance identity".to_string()
         })?;
         validate_maintenance_identity(&identity)?;
+        let expected_profile_version = profile.profile_version.to_string();
+        if claim_code_id.as_deref() != Some(profile.provisioning_metadata.claim_code_id.as_str())
+            || profile_version.as_deref() != Some(expected_profile_version.as_str())
+            || claimed_at.as_deref() != Some(profile.claimed_at.as_str())
+        {
+            return Err(
+                "persisted production claim credentials are missing or invalid".to_string(),
+            );
+        }
+        let machine_secret = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_SECRET_ACCOUNT)
+            .await?
+            .ok_or_else(|| "persisted production machine secret is missing".to_string())?;
+        if !(32..=256).contains(&machine_secret.trim().len()) {
+            return Err("persisted production machine secret is invalid".to_string());
+        }
         Ok(Some(identity))
     }
 

@@ -85,6 +85,7 @@ fn resolve_pinned_wireguard_executable(executable: &str) -> Result<PathBuf, Stri
         Path::is_file,
     )
 }
+const WINDOWS_SERVICE_CONTROL_EXECUTABLE: &str = "sc.exe";
 const WIREGUARD_HANDSHAKE_FRESH_SECONDS: i64 = 180;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,6 +418,46 @@ impl WindowsWireGuardTunnel {
         }
         Err("WireGuard tunnel service rejected configuration".to_string())
     }
+
+    async fn tunnel_service_is_absent(&self, tunnel_name: &str) -> Result<bool, String> {
+        let service_name = format!("WireGuardTunnel${tunnel_name}");
+        let output = self
+            .commands
+            .run(
+                WINDOWS_SERVICE_CONTROL_EXECUTABLE,
+                &["query".to_string(), service_name],
+            )
+            .await
+            .map_err(|_| "query WireGuard tunnel service state failed".to_string())?;
+        if output.success {
+            return Ok(false);
+        }
+        if scm_output_reports_missing_service(&output) {
+            return Ok(true);
+        }
+        Err("query WireGuard tunnel service state failed".to_string())
+    }
+}
+
+fn scm_output_reports_missing_service(output: &CommandOutput) -> bool {
+    let normalized = output
+        .stdout
+        .chars()
+        .chain(std::iter::once(' '))
+        .chain(output.stderr.chars())
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character.to_ascii_uppercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    let fields = normalized.split_whitespace().collect::<Vec<_>>();
+    fields
+        .windows(2)
+        .any(|pair| pair == ["FAILED", "1060"] || pair == ["FAILED", "0X424"])
+        || fields.contains(&"ERROR_SERVICE_DOES_NOT_EXIST")
 }
 
 #[async_trait]
@@ -476,7 +517,13 @@ impl WindowsTunnelBackend for WindowsWireGuardTunnel {
             .uninstall_service(&wireguard_executable, tunnel_name)
             .await?;
         if !uninstall.success {
-            return Err("WireGuard tunnel service removal failed".to_string());
+            match self.tunnel_service_is_absent(tunnel_name).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err("WireGuard tunnel service removal failed".to_string());
+                }
+                Err(error) => return Err(error),
+            }
         }
         self.config_store.remove(tunnel_name).await
     }
@@ -1870,6 +1917,18 @@ mod tests {
     struct FakeEncryptedConfigStore {
         path: PathBuf,
         writes: Mutex<Vec<(String, Vec<u8>)>>,
+        removals: AtomicUsize,
+    }
+
+    struct RemovalTriggersLifecycleFailureConfigStore {
+        path: PathBuf,
+        fail_lifecycle_writes: Arc<AtomicBool>,
+        removals: AtomicUsize,
+    }
+
+    struct FailingRemovalConfigStore {
+        path: PathBuf,
+        error: String,
     }
 
     #[async_trait]
@@ -1884,6 +1943,43 @@ mod tests {
                 .await
                 .push((tunnel_name.to_string(), plaintext_config.to_vec()));
             Ok(self.path.clone())
+        }
+
+        async fn remove(&self, _tunnel_name: &str) -> Result<(), String> {
+            self.removals.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl WireGuardEncryptedConfigStore for RemovalTriggersLifecycleFailureConfigStore {
+        async fn persist(
+            &self,
+            _tunnel_name: &str,
+            _plaintext_config: &[u8],
+        ) -> Result<PathBuf, String> {
+            Ok(self.path.clone())
+        }
+
+        async fn remove(&self, _tunnel_name: &str) -> Result<(), String> {
+            self.removals.fetch_add(1, Ordering::SeqCst);
+            self.fail_lifecycle_writes.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl WireGuardEncryptedConfigStore for FailingRemovalConfigStore {
+        async fn persist(
+            &self,
+            _tunnel_name: &str,
+            _plaintext_config: &[u8],
+        ) -> Result<PathBuf, String> {
+            Ok(self.path.clone())
+        }
+
+        async fn remove(&self, _tunnel_name: &str) -> Result<(), String> {
+            Err(self.error.clone())
         }
     }
 
@@ -2095,6 +2191,7 @@ mod tests {
         let config_store = Arc::new(FakeEncryptedConfigStore {
             path: encrypted_path.clone(),
             writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
         });
         let commands = Arc::new(FakeCommandRunner::default());
         let tunnel =
@@ -2142,6 +2239,7 @@ mod tests {
         let config_store = Arc::new(FakeEncryptedConfigStore {
             path: encrypted_path.clone(),
             writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
         });
         let commands = Arc::new(FakeCommandRunner {
             calls: Mutex::new(Vec::new()),
@@ -2273,6 +2371,7 @@ mod tests {
         let config_store = Arc::new(FakeEncryptedConfigStore {
             path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
             writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
         });
         let fresh_handshake = Utc::now().timestamp();
         let commands = Arc::new(FakeCommandRunner {
@@ -2310,6 +2409,7 @@ mod tests {
         let config_store = Arc::new(FakeEncryptedConfigStore {
             path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
             writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
         });
         let stale_handshake = Utc::now().timestamp() - 600;
         let commands = Arc::new(FakeCommandRunner {
@@ -2338,6 +2438,7 @@ mod tests {
         let config_store = Arc::new(FakeEncryptedConfigStore {
             path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
             writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
         });
         let commands = Arc::new(FakeCommandRunner {
             calls: Mutex::new(Vec::new()),
@@ -2355,6 +2456,87 @@ mod tests {
             .expect_err("nonzero uninstall must fail");
 
         assert_eq!(error, "WireGuard tunnel service removal failed");
+    }
+
+    #[tokio::test]
+    async fn tunnel_removal_accepts_explicit_scm_1060_and_missing_config_as_complete() {
+        let config_store = Arc::new(FakeEncryptedConfigStore {
+            path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
+            writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
+        });
+        let commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::from([
+                CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "Error: The specified service does not exist".to_string(),
+                },
+                CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "[SC] OpenService FAILED 1060".to_string(),
+                },
+            ])),
+        });
+        let tunnel = WindowsWireGuardTunnel::with_dependencies(config_store.clone(), commands);
+
+        tunnel
+            .remove(MaintenanceTunnelIdentity::Active)
+            .await
+            .expect("SCM 1060 proves the tunnel service is already absent");
+        assert_eq!(config_store.removals.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn tunnel_removal_does_not_treat_scm_access_denied_as_service_absence() {
+        let config_store = Arc::new(FakeEncryptedConfigStore {
+            path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
+            writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
+        });
+        let commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::from([
+                CommandOutput::failure(),
+                CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "[SC] OpenService FAILED 5: Access is denied".to_string(),
+                },
+            ])),
+        });
+        let tunnel = WindowsWireGuardTunnel::with_dependencies(config_store.clone(), commands);
+
+        let error = tunnel
+            .remove(MaintenanceTunnelIdentity::Active)
+            .await
+            .expect_err("SCM access denial is not absence evidence");
+        assert_eq!(error, "query WireGuard tunnel service state failed");
+        assert_eq!(config_store.removals.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn tunnel_removal_preserves_configuration_permission_errors() {
+        let config_store = Arc::new(FailingRemovalConfigStore {
+            path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
+            error: "remove WireGuard configuration failed: access denied".to_string(),
+        });
+        let commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::from([CommandOutput::success()])),
+        });
+        let tunnel = WindowsWireGuardTunnel::with_dependencies(config_store, commands);
+
+        let error = tunnel
+            .remove(MaintenanceTunnelIdentity::Active)
+            .await
+            .expect_err("configuration permission error must remain visible");
+        assert_eq!(
+            error,
+            "remove WireGuard configuration failed: access denied"
+        );
     }
 
     #[tokio::test]
@@ -2827,6 +3009,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn promotion_repeats_an_already_removed_pending_tunnel_after_cursor_save_failure() {
+        let fail_lifecycle_writes = Arc::new(AtomicBool::new(false));
+        let secrets: Arc<dyn SecretStore> = Arc::new(LifecycleWriteFaultStore {
+            inner: InMemorySecretStore::default(),
+            fail_lifecycle_writes: fail_lifecycle_writes.clone(),
+        });
+        let setup_tunnel = Arc::new(FakeTunnel::default());
+        let setup = MaintenanceEnrollment::new(secrets.clone(), setup_tunnel.clone());
+        let active_public_key = setup.ensure_public_key().await.expect("active key");
+        let active_identity = identity(active_public_key);
+        setup
+            .apply_profile(&active_identity)
+            .await
+            .expect("active profile");
+        let pending_public_key = setup
+            .ensure_reclaim_public_key("ABCD-2345", Some(&active_identity))
+            .await
+            .expect("pending key");
+        let mut pending_identity = identity(pending_public_key.clone());
+        pending_identity.address = "10.91.16.15/32".to_string();
+        pending_identity.reclaim_expires_at = Some("2099-01-01T00:00:00Z".to_string());
+        setup_tunnel.pending_verified.store(true, Ordering::SeqCst);
+        setup
+            .apply_reclaim_profile(&pending_identity)
+            .await
+            .expect("pending profile");
+
+        let first_config = Arc::new(RemovalTriggersLifecycleFailureConfigStore {
+            path: PathBuf::from(
+                r"C:\Program Files\WireGuard\Data\Configurations\VEM-Maintenance.conf.dpapi",
+            ),
+            fail_lifecycle_writes: fail_lifecycle_writes.clone(),
+            removals: AtomicUsize::new(0),
+        });
+        let first_commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::from([
+                CommandOutput::success(),
+                CommandOutput::success(),
+                CommandOutput::success(),
+            ])),
+        });
+        let interrupted = MaintenanceEnrollment::new(
+            secrets.clone(),
+            Arc::new(WindowsWireGuardTunnel::with_dependencies(
+                first_config.clone(),
+                first_commands,
+            )),
+        );
+        interrupted
+            .promote_reclaim(&pending_public_key)
+            .await
+            .expect_err("cursor save after pending tunnel removal is interrupted");
+        assert_eq!(first_config.removals.load(Ordering::SeqCst), 1);
+
+        fail_lifecycle_writes.store(false, Ordering::SeqCst);
+        let retry_config = Arc::new(FakeEncryptedConfigStore {
+            path: PathBuf::from(
+                r"C:\Program Files\WireGuard\Data\Configurations\VEM-Maintenance.conf.dpapi",
+            ),
+            writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
+        });
+        let retry_commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::from([
+                CommandOutput::failure(),
+                CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "[SC] OpenService FAILED 1060".to_string(),
+                },
+                CommandOutput::success(),
+                CommandOutput::success(),
+                CommandOutput::with_stdout(&format!(
+                    "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\t{}\n",
+                    Utc::now().timestamp()
+                )),
+            ])),
+        });
+        let restarted = MaintenanceEnrollment::new(
+            secrets,
+            Arc::new(WindowsWireGuardTunnel::with_dependencies(
+                retry_config.clone(),
+                retry_commands,
+            )),
+        );
+
+        let recovered = restarted
+            .recover(None)
+            .await
+            .expect("restart repeats idempotent removal")
+            .expect("promoted identity");
+        assert_eq!(
+            recovered.public_key.as_deref(),
+            Some(pending_public_key.as_str())
+        );
+        assert_eq!(retry_config.removals.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn interrupted_decommission_resumes_after_restart_without_resurrecting_identity() {
         let secrets = Arc::new(SelectiveWriteFaultStore {
             inner: InMemorySecretStore::default(),
@@ -2872,6 +3155,81 @@ mod tests {
             .expect("lifecycle read")
             .is_none());
         assert_eq!(restarted.status().await.state, "not_enrolled");
+    }
+
+    #[tokio::test]
+    async fn decommission_repeats_an_already_removed_active_tunnel_after_cursor_save_failure() {
+        let fail_lifecycle_writes = Arc::new(AtomicBool::new(false));
+        let secrets: Arc<dyn SecretStore> = Arc::new(LifecycleWriteFaultStore {
+            inner: InMemorySecretStore::default(),
+            fail_lifecycle_writes: fail_lifecycle_writes.clone(),
+        });
+        let setup = MaintenanceEnrollment::new(secrets.clone(), Arc::new(FakeTunnel::default()));
+        let public_key = setup.ensure_public_key().await.expect("active key");
+        let active_identity = identity(public_key);
+        setup
+            .apply_profile(&active_identity)
+            .await
+            .expect("active profile");
+
+        let first_config = Arc::new(RemovalTriggersLifecycleFailureConfigStore {
+            path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
+            fail_lifecycle_writes: fail_lifecycle_writes.clone(),
+            removals: AtomicUsize::new(0),
+        });
+        let first_commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::from([CommandOutput::success()])),
+        });
+        let interrupted = MaintenanceEnrollment::new(
+            secrets.clone(),
+            Arc::new(WindowsWireGuardTunnel::with_dependencies(
+                first_config.clone(),
+                first_commands,
+            )),
+        );
+        interrupted
+            .decommission()
+            .await
+            .expect_err("cursor save after active tunnel removal is interrupted");
+        assert_eq!(first_config.removals.load(Ordering::SeqCst), 1);
+
+        fail_lifecycle_writes.store(false, Ordering::SeqCst);
+        let retry_config = Arc::new(FakeEncryptedConfigStore {
+            path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
+            writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
+        });
+        let retry_commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::from([
+                CommandOutput::failure(),
+                CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "[SC] OpenService FAILED 1060".to_string(),
+                },
+            ])),
+        });
+        let restarted = MaintenanceEnrollment::new(
+            secrets.clone(),
+            Arc::new(WindowsWireGuardTunnel::with_dependencies(
+                retry_config.clone(),
+                retry_commands,
+            )),
+        );
+
+        assert!(restarted
+            .recover(Some(&active_identity))
+            .await
+            .expect("restart repeats idempotent removal")
+            .is_none());
+        assert_eq!(retry_config.removals.load(Ordering::SeqCst), 1);
+        assert!(secrets
+            .read_secret(MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT)
+            .await
+            .expect("lifecycle read")
+            .is_none());
     }
 
     #[tokio::test]
