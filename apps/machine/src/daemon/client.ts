@@ -578,7 +578,15 @@ export class DaemonApiClient {
       () => {
         this.maintenanceSessionExpiryTimer = null;
         if (this.currentMaintenanceSession === null) return;
-        this.scheduleMaintenanceSessionExpiry();
+        const route = this.maintenanceSessionRouteScope;
+        if (route) {
+          void this.revokeMaintenanceSessionRoute(route).catch(() => {
+            // The revoke method clears local state in finally.  Expiry must
+            // never create an unhandled rejection while the daemon is down.
+          });
+          return;
+        }
+        this.clearMaintenanceSession();
       },
       Math.min(remainingMs, MAX_TIMEOUT_MS),
     );
