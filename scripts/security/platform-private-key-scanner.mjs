@@ -1,6 +1,5 @@
 import { createPrivateKey } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { inflateRawSync } from "node:zlib";
 
 const MAX_INPUT_BYTES = 256 * 1024 * 1024;
@@ -111,6 +110,9 @@ function scanZipEntries(bytes, label, state, depth) {
     bytes.length >= 4 && bytes.readUInt32LE(0) === 0x04034b50;
   const findRecognizableContainer = () => {
     const endSignature = Buffer.from("504b0506", "hex");
+    const centralSignature = Buffer.from("504b0102", "hex");
+    const localSignature = Buffer.from("504b0304", "hex");
+    const zip64EndSignature = Buffer.from("504b0606", "hex");
     let searchFrom = bytes.length - 4;
     while (searchFrom >= 0) {
       const endOffset = bytes.lastIndexOf(endSignature, searchFrom);
@@ -125,25 +127,37 @@ function scanZipEntries(bytes, label, state, depth) {
       const entryCount = bytes.readUInt16LE(endOffset + 10);
       const centralSize = bytes.readUInt32LE(endOffset + 12);
       const centralStart = bytes.readUInt32LE(endOffset + 16);
-      const prefixBias = endOffset - centralSize - centralStart;
-      if (
-        diskNumber !== 0 ||
-        centralDisk !== 0 ||
-        diskEntryCount !== entryCount ||
-        entryCount === 0xffff ||
-        centralSize === 0xffffffff ||
-        centralStart === 0xffffffff ||
-        prefixBias < 0
-      ) {
-        continue;
+      let centralPhysicalEnd = endOffset;
+      let prefixBias = null;
+      let centralAbsoluteStart = -1;
+      if (centralSize !== 0xffffffff && centralStart !== 0xffffffff) {
+        const candidateBias = endOffset - centralSize - centralStart;
+        if (candidateBias >= 0) {
+          prefixBias = candidateBias;
+          centralAbsoluteStart = candidateBias + centralStart;
+        }
       }
-      const centralAbsoluteStart = prefixBias + centralStart;
+      if (centralAbsoluteStart < 0) {
+        const zip64EndOffset = bytes.lastIndexOf(
+          zip64EndSignature,
+          endOffset - 1,
+        );
+        if (zip64EndOffset >= 0) centralPhysicalEnd = zip64EndOffset;
+        centralAbsoluteStart = bytes.lastIndexOf(
+          centralSignature,
+          centralPhysicalEnd - 1,
+        );
+        if (centralAbsoluteStart < 0) continue;
+      }
       let centralOffset = centralAbsoluteStart;
       let recognizable = true;
-      const entriesToCheck = Math.min(entryCount, MAX_ARCHIVE_ENTRIES + 1);
-      for (let index = 0; index < entriesToCheck; index += 1) {
+      let physicalEntryCount = 0;
+      while (
+        centralOffset < centralPhysicalEnd &&
+        physicalEntryCount <= MAX_ARCHIVE_ENTRIES
+      ) {
         if (
-          centralOffset + 46 > endOffset ||
+          centralOffset + 46 > centralPhysicalEnd ||
           bytes.readUInt32LE(centralOffset) !== 0x02014b50
         ) {
           recognizable = false;
@@ -152,28 +166,47 @@ function scanZipEntries(bytes, label, state, depth) {
         const nameLength = bytes.readUInt16LE(centralOffset + 28);
         const extraLength = bytes.readUInt16LE(centralOffset + 30);
         const commentLength = bytes.readUInt16LE(centralOffset + 32);
-        const entryDisk = bytes.readUInt16LE(centralOffset + 34);
         const localOffset = bytes.readUInt32LE(centralOffset + 42);
         const centralEnd =
           centralOffset + 46 + nameLength + extraLength + commentLength;
-        const localAbsoluteOffset = prefixBias + localOffset;
-        if (
-          centralEnd > endOffset ||
-          entryDisk !== 0 ||
-          localOffset === 0xffffffff ||
-          localAbsoluteOffset + 30 > centralAbsoluteStart ||
-          bytes.readUInt32LE(localAbsoluteOffset) !== 0x04034b50
-        ) {
+        let localShapeFound = false;
+        if (prefixBias !== null && localOffset !== 0xffffffff) {
+          const localAbsoluteOffset = prefixBias + localOffset;
+          localShapeFound =
+            localAbsoluteOffset + 30 <= centralAbsoluteStart &&
+            bytes.readUInt32LE(localAbsoluteOffset) === 0x04034b50;
+        }
+        if (!localShapeFound) {
+          const fallbackLocalOffset = bytes.lastIndexOf(
+            localSignature,
+            centralAbsoluteStart - 1,
+          );
+          localShapeFound =
+            fallbackLocalOffset >= 0 &&
+            fallbackLocalOffset + 30 <= centralAbsoluteStart;
+        }
+        if (centralEnd > centralPhysicalEnd || !localShapeFound) {
           recognizable = false;
           break;
         }
         centralOffset = centralEnd;
+        physicalEntryCount += 1;
       }
       if (
         recognizable &&
-        (entryCount > MAX_ARCHIVE_ENTRIES || centralOffset === endOffset)
+        (physicalEntryCount > MAX_ARCHIVE_ENTRIES ||
+          centralOffset === centralPhysicalEnd)
       ) {
-        return { archiveEnd };
+        return {
+          archiveEnd,
+          invalidMetadata:
+            diskNumber !== 0 ||
+            centralDisk !== 0 ||
+            diskEntryCount !== entryCount ||
+            entryCount === 0xffff ||
+            centralSize === 0xffffffff ||
+            centralStart === 0xffffffff,
+        };
       }
     }
     return null;
@@ -181,7 +214,8 @@ function scanZipEntries(bytes, label, state, depth) {
   const recognizableContainer = findRecognizableContainer();
   if (
     recognizableContainer &&
-    (!startsWithLocalHeader ||
+    (recognizableContainer.invalidMetadata ||
+      !startsWithLocalHeader ||
       recognizableContainer.archiveEnd !== bytes.length)
   ) {
     invalidArchive();
@@ -459,21 +493,10 @@ export function assertNoPlatformPrivateKeyMaterial(input, label) {
 
 export async function assertNoPlatformPrivateKeyMaterialFile(path, label) {
   const file = await stat(path);
-  if (file.size <= MAX_INPUT_BYTES) {
-    const chunks = [];
-    for await (const chunk of createReadStream(path)) chunks.push(chunk);
-    assertNoPlatformPrivateKeyMaterial(Buffer.concat(chunks), label);
-    return;
+  if (file.size > MAX_INPUT_BYTES) {
+    throw new Error(
+      `${label} exceeds the bounded private-key scan input limit`,
+    );
   }
-
-  let overlap = Buffer.alloc(0);
-  let offset = 0;
-  for await (const chunk of createReadStream(path, {
-    highWaterMark: 1024 * 1024,
-  })) {
-    const window = Buffer.concat([overlap, chunk]);
-    scanBytes(window, `${label}@${offset}`, { decodedBytes: 0 }, 0);
-    overlap = window.subarray(Math.max(0, window.length - 4096));
-    offset += chunk.length;
-  }
+  assertNoPlatformPrivateKeyMaterial(await readFile(path), label);
 }

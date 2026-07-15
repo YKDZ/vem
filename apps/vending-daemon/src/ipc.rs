@@ -1778,7 +1778,34 @@ enum FactoryPaymentEnvironmentPolicy {
     Unavailable,
 }
 
-async fn payment_environment_allowed(ctx: &IpcContext) -> bool {
+struct PaymentEnvironmentGate {
+    policy: FactoryPaymentEnvironmentPolicy,
+    diagnostic: BackendPaymentProviderEnvironment,
+}
+
+impl PaymentEnvironmentGate {
+    fn allows(&self, option: &BackendPaymentOption) -> bool {
+        let explicit_mock = option.provider_code == "mock" && option.method == "mock";
+        let real_provider = option.provider_code != "mock" && option.method != "mock";
+        let real_provider_ready = real_provider
+            && self.diagnostic.readiness == "ready"
+            && self.diagnostic.error_category == "none"
+            && matches!(
+                self.diagnostic.environment.as_str(),
+                "sandbox" | "production"
+            );
+
+        match self.policy {
+            FactoryPaymentEnvironmentPolicy::Production => {
+                real_provider_ready && self.diagnostic.environment == "production"
+            }
+            FactoryPaymentEnvironmentPolicy::Testbed => explicit_mock || real_provider_ready,
+            FactoryPaymentEnvironmentPolicy::Unavailable => false,
+        }
+    }
+}
+
+async fn payment_environment_gate(ctx: &IpcContext) -> PaymentEnvironmentGate {
     let policy = match ctx.config_store.load_factory_manifest().await {
         Ok(Some(manifest)) => match manifest.environment {
             crate::config::FactoryProfile::Production => {
@@ -1799,15 +1826,7 @@ async fn payment_environment_allowed(ctx: &IpcContext) -> bool {
         })
         .filter(BackendPaymentProviderEnvironment::is_valid)
         .unwrap_or_default();
-    let ready = diagnostic.readiness == "ready"
-        && diagnostic.error_category == "none"
-        && matches!(diagnostic.environment.as_str(), "sandbox" | "production");
-    ready
-        && match policy {
-            FactoryPaymentEnvironmentPolicy::Production => diagnostic.environment == "production",
-            FactoryPaymentEnvironmentPolicy::Testbed => true,
-            FactoryPaymentEnvironmentPolicy::Unavailable => false,
-        }
+    PaymentEnvironmentGate { policy, diagnostic }
 }
 
 #[derive(serde::Deserialize)]
@@ -4496,18 +4515,20 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     let scanner_ready = scanner_readiness.ready;
 
     let payment_capability = load_machine_payment_capability(ctx).await;
-    let payment_environment_allowed = payment_environment_allowed(ctx).await;
+    let payment_environment_gate = payment_environment_gate(ctx).await;
     let payment_probe = ctx.ui.backend.get_payment_options().await;
     let platform_ready = payment_probe.is_ok();
     let mut payment_methods = Vec::new();
+    let mut payment_environment_allowed = false;
     let mut payment_options_error = None;
     if let Ok(payload) = payment_probe.as_ref() {
         match strict_payment_options(payload) {
             Ok(response) => {
                 for option in response.options {
-                    if !payment_environment_allowed {
+                    if !payment_environment_gate.allows(&option) {
                         continue;
                     }
+                    payment_environment_allowed = true;
                     if !payment_method_allowed_by_capability(&option.method, &payment_capability) {
                         continue;
                     }
@@ -5738,7 +5759,7 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             if let Some(object) = payload.as_object_mut() {
                 object.remove("providerEnvironment");
             }
-            let provider_environment_allowed = payment_environment_allowed(&ctx).await;
+            let payment_environment_gate = payment_environment_gate(&ctx).await;
             let platform_default_option_key = payload
                 .get("defaultOptionKey")
                 .and_then(|value| value.as_str())
@@ -5752,15 +5773,15 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 .get_mut("options")
                 .and_then(|value| value.as_array_mut())
             {
-                if !provider_environment_allowed {
-                    options.clear();
-                }
                 options.retain(|option| {
-                    option
-                        .get("method")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|method| {
-                            payment_method_allowed_by_capability(method, &payment_capability)
+                    serde_json::from_value::<BackendPaymentOption>(option.clone())
+                        .ok()
+                        .is_some_and(|parsed| {
+                            payment_environment_gate.allows(&parsed)
+                                && payment_method_allowed_by_capability(
+                                    &parsed.method,
+                                    &payment_capability,
+                                )
                         })
                 });
                 for option in options.iter_mut() {
@@ -8547,6 +8568,23 @@ mod tests {
                 .expect("save production config");
         }
         ensure_platform_profile(ctx).await;
+    }
+
+    async fn mark_factory_testbed(ctx: &IpcContext) {
+        let mut manifest = ctx
+            .config_store
+            .load_factory_manifest()
+            .await
+            .expect("load factory manifest")
+            .expect("factory manifest");
+        manifest.environment = FactoryProfile::Testbed;
+        manifest.hardware_mode = RuntimeHardwareMode::Simulated;
+        tokio::fs::write(
+            ctx.config_store.factory_manifest_path(),
+            serde_json::to_vec_pretty(&manifest).expect("serialize testbed manifest"),
+        )
+        .await
+        .expect("write testbed manifest");
     }
 
     async fn ready_payment_options_server() -> MockServer {
@@ -13514,7 +13552,7 @@ mod tests {
             .iter()
             .filter_map(|option| option["optionKey"].as_str())
             .collect();
-        assert_eq!(option_keys, vec!["qr_code:alipay", "mock:mock"]);
+        assert_eq!(option_keys, vec!["qr_code:alipay"]);
         assert_eq!(options["defaultOptionKey"], "qr_code:alipay");
         assert_eq!(options["defaultProviderCode"], "alipay");
     }
@@ -14514,6 +14552,98 @@ mod tests {
             .as_array()
             .expect("testbed blockers")
             .contains(&json!("PAYMENT_ENVIRONMENT_NOT_READY")));
+    }
+
+    #[tokio::test]
+    async fn testbed_keeps_explicit_mock_option_when_real_provider_is_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "测试平台显式模拟支付",
+                    "icon": "mock",
+                    "disabled": false,
+                    "disabledReason": null,
+                    "recommended": true
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "unavailable",
+                "readiness": "blocked",
+                "errorCategory": "provider_unconfigured"
+            })))
+            .mount(&server)
+            .await;
+
+        let testbed_dir = tempdir().expect("testbed tmp");
+        let testbed = test_ipc_context(
+            testbed_dir.path(),
+            "token-testbed",
+            Some("MACHINE-TESTBED".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_factory_testbed(&testbed).await;
+        let testbed_app = build_router(testbed.clone());
+        let testbed_options =
+            get_ipc_json(&testbed_app, "/v1/payment-options", Some("token-testbed")).await;
+        assert_eq!(testbed_options["options"][0]["optionKey"], "mock:mock");
+        assert_eq!(testbed_options["defaultOptionKey"], "mock:mock");
+        let testbed_readiness = machine_sale_readiness_snapshot(&testbed)
+            .await
+            .expect("testbed readiness");
+        assert_eq!(
+            testbed_readiness["components"]["paymentOptions"]["ready"],
+            true
+        );
+        assert_eq!(
+            testbed_readiness["components"]["paymentOptions"]["methods"][0]["optionKey"],
+            "mock:mock"
+        );
+
+        let production_dir = tempdir().expect("production tmp");
+        let production = test_ipc_context(
+            production_dir.path(),
+            "token-production",
+            Some("MACHINE-PRODUCTION".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let production_app = build_router(production.clone());
+        let production_options = get_ipc_json(
+            &production_app,
+            "/v1/payment-options",
+            Some("token-production"),
+        )
+        .await;
+        assert_eq!(production_options["options"], json!([]));
+        assert_eq!(
+            production_options["defaultOptionKey"],
+            serde_json::Value::Null
+        );
+        let production_readiness = machine_sale_readiness_snapshot(&production)
+            .await
+            .expect("production readiness");
+        assert_eq!(
+            production_readiness["components"]["paymentOptions"]["ready"],
+            false
+        );
+        assert_eq!(
+            production_readiness["components"]["paymentOptions"]["methods"],
+            json!([])
+        );
     }
 
     #[tokio::test]
@@ -16302,6 +16432,7 @@ mod tests {
             &server.uri(),
         )
         .await;
+        mark_factory_testbed(&ctx).await;
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx.clone());
         let slot_id = "550e8400-e29b-41d4-a716-446655440201";
@@ -16408,19 +16539,19 @@ mod tests {
                         "disabledReason": null
                     },
                     {
-                        "optionKey": "mock:mock",
-                        "providerCode": "mock",
-                        "method": "mock",
-                        "displayName": "模拟支付",
-                        "description": "本地模拟",
-                        "icon": "mock",
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请扫描屏幕二维码",
+                        "icon": "alipay",
                         "recommended": false,
                         "disabled": false,
                         "disabledReason": null
                     }
                 ],
-                "defaultOptionKey": "mock:mock",
-                "defaultProviderCode": "mock",
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16865,6 +16996,7 @@ mod tests {
             &server.uri(),
         )
         .await;
+        mark_factory_testbed(&ctx).await;
         mark_runtime_sale_ready(&ctx).await;
         {
             let mut scanner = ctx.ui.status_cache.scanner.write().await;
@@ -16990,6 +17122,7 @@ mod tests {
             &server.uri(),
         )
         .await;
+        mark_factory_testbed(&ctx).await;
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx.clone());
         assert_eq!(
@@ -17086,6 +17219,7 @@ mod tests {
             &server.uri(),
         )
         .await;
+        mark_factory_testbed(&ctx).await;
         mark_runtime_sale_ready(&ctx).await;
         let app = build_router(ctx.clone());
         assert_eq!(
