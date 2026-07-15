@@ -19,6 +19,9 @@ use crate::{
     },
 };
 
+#[cfg(windows)]
+use crate::secret::harden_machine_protected_file_permissions;
+
 const WINDOWS_TUNNEL_NAME: &str = "VEM-Maintenance";
 const WINDOWS_WIREGUARD_EXECUTABLE: &str = "wireguard.exe";
 const WINDOWS_WG_EXECUTABLE: &str = "wg.exe";
@@ -281,15 +284,9 @@ async fn persist_encrypted_config(
     tokio::fs::write(staging_path, encrypted)
         .await
         .map_err(|error| format!("write encrypted WireGuard configuration failed: {error}"))?;
-    let acl_status = tokio::process::Command::new("icacls.exe")
-        .arg(staging_path)
-        .args(["/inheritance:r", "/grant:r", "SYSTEM:F", "Administrators:D"])
-        .status()
+    harden_machine_protected_file_permissions(staging_path)
         .await
         .map_err(|error| format!("harden encrypted WireGuard configuration failed: {error}"))?;
-    if !acl_status.success() {
-        return Err("harden encrypted WireGuard configuration failed".to_string());
-    }
     match tokio::fs::remove_file(path).await {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -309,7 +306,10 @@ fn protect_wireguard_config(value: &[u8], tunnel_name: &str) -> Result<Vec<u8>, 
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
-        Security::Cryptography::{CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB},
+        Security::Cryptography::{
+            CryptProtectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
+            CRYPT_INTEGER_BLOB,
+        },
     };
 
     let input = CRYPT_INTEGER_BLOB {
@@ -331,7 +331,7 @@ fn protect_wireguard_config(value: &[u8], tunnel_name: &str) -> Result<Vec<u8>, 
             null(),
             null(),
             null(),
-            CRYPTPROTECT_UI_FORBIDDEN,
+            CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN,
             &mut output,
         )
     };

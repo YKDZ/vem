@@ -4492,6 +4492,12 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     claimStatus = "not_attempted"
     claimFailureCode = $null
     claimHttpStatus = $null
+    maintenanceStatusAfterClaimFailure = [ordered]@{
+      observed = $false
+      state = $null
+      handshakeVerified = $null
+      lastError = $null
+    }
     claimResult = [ordered]@{
       restartRequested = $null
       restartAttempted = $false
@@ -4549,6 +4555,17 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       $evidence.claimStatus = "failed"
       $evidence.claimFailureCode = Convert-ClaimFailureClassification $claimError
       $evidence.claimHttpStatus = $claimError.statusCode
+      try {
+        $maintenanceStatus = Invoke-IpcJson "GET" "$baseUrl/v1/maintenance/status" $headers
+        $evidence.maintenanceStatusAfterClaimFailure.observed = $true
+        $evidence.maintenanceStatusAfterClaimFailure.state = [string]$maintenanceStatus.state
+        $evidence.maintenanceStatusAfterClaimFailure.handshakeVerified = [bool]$maintenanceStatus.handshakeVerified
+        $evidence.maintenanceStatusAfterClaimFailure.lastError = if (
+          [string]::IsNullOrWhiteSpace([string]$maintenanceStatus.lastError)
+        ) { $null } else { [string]$maintenanceStatus.lastError }
+      } catch {
+        $evidence.maintenanceStatusAfterClaimFailure.lastError = "maintenance_status_unavailable"
+      }
       throw "daemon IPC claim failed: $($evidence.claimFailureCode)"
     }
 

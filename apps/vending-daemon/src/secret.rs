@@ -26,6 +26,14 @@ const SECRET_ACCOUNTS: [&str; 6] = [
     MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
 ];
 
+#[cfg(any(windows, test))]
+pub(crate) const WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS: [&str; 4] = [
+    "/inheritance:r",
+    "/grant:r",
+    "*S-1-5-18:F",
+    "*S-1-5-32-544:F",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretStoreStatus {
@@ -255,11 +263,11 @@ impl SecretStore for FileSecretStore {
         tokio::fs::write(&temp_path, value)
             .await
             .map_err(|error| format!("write file secret failed: {error}"))?;
-        harden_secret_file_permissions(&temp_path).await?;
+        harden_machine_protected_file_permissions(&temp_path).await?;
         tokio::fs::rename(&temp_path, &path)
             .await
             .map_err(|error| format!("replace file secret failed: {error}"))?;
-        harden_secret_file_permissions(&path).await?;
+        harden_machine_protected_file_permissions(&path).await?;
         Ok(())
     }
 
@@ -327,11 +335,11 @@ impl SecretStore for ProtectedLocalSecretStore {
         tokio::fs::write(&temp_path, blob)
             .await
             .map_err(|error| format!("write protected local secret failed: {error}"))?;
-        harden_secret_file_permissions(&temp_path).await?;
+        harden_machine_protected_file_permissions(&temp_path).await?;
         tokio::fs::rename(&temp_path, &path)
             .await
             .map_err(|error| format!("replace protected local secret failed: {error}"))?;
-        harden_secret_file_permissions(&path).await?;
+        harden_machine_protected_file_permissions(&path).await?;
         Ok(())
     }
 
@@ -381,7 +389,9 @@ impl SecretStore for ProtectedLocalSecretStore {
     }
 }
 
-async fn harden_secret_file_permissions(path: &std::path::Path) -> Result<(), String> {
+pub(crate) async fn harden_machine_protected_file_permissions(
+    path: &std::path::Path,
+) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -394,12 +404,9 @@ async fn harden_secret_file_permissions(path: &std::path::Path) -> Result<(), St
 
     #[cfg(windows)]
     {
-        let status = tokio::process::Command::new("icacls")
+        let status = tokio::process::Command::new("icacls.exe")
             .arg(path)
-            .arg("/inheritance:r")
-            .arg("/grant:r")
-            .arg("Administrators:F")
-            .arg("SYSTEM:F")
+            .args(WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS)
             .status()
             .await
             .map_err(|error| format!("run icacls for file secret failed: {error}"))?;
@@ -629,6 +636,19 @@ pub fn default_secret_store(data_dir: PathBuf) -> Arc<dyn SecretStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_file_acl_uses_language_independent_builtin_sids() {
+        assert_eq!(
+            WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS,
+            [
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-5-18:F",
+                "*S-1-5-32-544:F",
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn in_memory_secret_store_round_trips_and_ignores_empty_set() {

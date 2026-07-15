@@ -2008,6 +2008,11 @@ try {
     assert.match(script, /claimHttpStatus = \$claimError.statusCode/);
     assert.match(
       script,
+      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/maintenance\/status" \$headers/,
+    );
+    assert.match(script, /maintenanceStatusAfterClaimFailure\.lastError = if/);
+    assert.match(
+      script,
       /daemon IPC claim failed: \$\(\$evidence.claimFailureCode\)/,
     );
     assert.match(script, /claimStatus = "provisioned"/);
