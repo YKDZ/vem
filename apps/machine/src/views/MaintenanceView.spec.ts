@@ -24,9 +24,7 @@ const {
   getRemoteOpsStatusMock,
   getStockMaintenanceTaskMock,
   submitStockMaintenanceBatchMock,
-  getSaleViewMock,
   getPaymentEnvironmentDiagnosticMock,
-  recordStockMovementMock,
   clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
   getConfigMock,
@@ -59,9 +57,7 @@ const {
   getRemoteOpsStatusMock: vi.fn(),
   getStockMaintenanceTaskMock: vi.fn(),
   submitStockMaintenanceBatchMock: vi.fn(),
-  getSaleViewMock: vi.fn(),
   getPaymentEnvironmentDiagnosticMock: vi.fn(),
-  recordStockMovementMock: vi.fn(),
   clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
   getConfigMock: vi.fn(),
@@ -111,9 +107,7 @@ vi.mock("@/daemon/client", async (importOriginal) => {
       getRemoteOpsStatus: getRemoteOpsStatusMock,
       getStockMaintenanceTask: getStockMaintenanceTaskMock,
       submitStockMaintenanceBatch: submitStockMaintenanceBatchMock,
-      getSaleView: getSaleViewMock,
       getPaymentEnvironmentDiagnostic: getPaymentEnvironmentDiagnosticMock,
-      recordStockMovement: recordStockMovementMock,
       clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
       runHardwareSelfCheck: runHardwareSelfCheckMock,
       getConfig: getConfigMock,
@@ -493,13 +487,11 @@ beforeEach(() => {
     task: { ...stockMaintenanceTaskFixture(), status: "pending" },
     duplicate: false,
   });
-  getSaleViewMock.mockResolvedValue(saleViewFixture());
   getPaymentEnvironmentDiagnosticMock.mockResolvedValue({
     environment: "sandbox",
     readiness: "ready",
     errorCategory: "none",
   });
-  recordStockMovementMock.mockResolvedValue(saleViewFixture());
   clearWholeMachineMaintenanceLockMock.mockResolvedValue({ cleared: true });
   runHardwareSelfCheckMock.mockResolvedValue({
     online: true,
