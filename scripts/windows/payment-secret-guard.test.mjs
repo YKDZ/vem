@@ -208,6 +208,13 @@ function prefixedReadableZip(content) {
   return prefixed;
 }
 
+function prefixedZipWithUnadjustedOffsets(content) {
+  return Buffer.concat([
+    Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x56, 0x45, 0x4d]),
+    deflatedZip("nested/private.pem", content),
+  ]);
+}
+
 async function runGuards(value, artifactBytes = "machine-runtime") {
   const root = await mkdtemp(join(tmpdir(), "vem-payment-secret-guard-"));
   try {
@@ -451,6 +458,18 @@ describe("managed-update payment secret guard", () => {
       prefixedReadableZip(privateKey),
     );
 
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid archive|private-key material/i);
+  });
+
+  it("rejects a prefixed ZIP whose offsets remain relative to the archive start", async () => {
+    const privateKey = Buffer.from(
+      "-----BEGIN PRIVATE KEY-----\nunadjusted-prefix-secret\n-----END PRIVATE KEY-----",
+    );
+    const result = await runGuards(
+      { updateId: "field-unadjusted-prefixed-zip", components: [] },
+      prefixedZipWithUnadjustedOffsets(privateKey),
+    );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /invalid archive|private-key material/i);
   });
