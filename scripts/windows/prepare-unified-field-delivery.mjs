@@ -46,6 +46,13 @@ prepare-unified-field-delivery.mjs prepare \
   --vision-factory-directory DIR \
   --expected-vision-bundle-digest sha256:...
 
+prepare-unified-field-delivery.mjs prepare-preapproval \
+  --output DIR \
+  --update-id ID \
+  --runtime-directory DIR \
+  --vision-preapproval-directory DIR \
+  --expected-vision-bundle-digest sha256:...
+
 prepare-unified-field-delivery.mjs skeleton \
   --output DIR \
   --update-id ID \
@@ -306,7 +313,11 @@ function stageSha256Sums(root) {
   writeFileSync(join(root, "SHA256SUMS"), `${lines.join("\n")}\n`);
 }
 
-function writeApplyInstructions(path, candidate) {
+function writeApplyInstructions(
+  path,
+  candidate,
+  { includeVisionFactory = true } = {},
+) {
   const lines = [
     "# Non-ISO / field host apply",
     `$updateRoot = "C:\\VEM\\updates\\${candidate.updateId}"`,
@@ -326,11 +337,22 @@ function writeApplyInstructions(path, candidate) {
     `  -PreapprovalManifestPath "$preapproval\\preapproval-manifest.json" \\`,
     `  -ConformanceEvidencePath "$preapproval\\vision-conformance.json" \\`,
     `  -ReportPath "$preapproval\\vision-conformance-report.json"`,
-    "",
-    "# Provision experimental Factory delivery bytes onto the host without changing install semantics",
-    `powershell -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\bringup\\provision-vision-factory-release.ps1 \\`,
-    `  -FactoryMediaRoot "$updateRoot\\vision-factory\\VEM"`,
   ];
+  if (includeVisionFactory) {
+    lines.push(
+      "",
+      "# Provision experimental Factory delivery bytes onto the host without changing install semantics",
+      `powershell -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\bringup\\provision-vision-factory-release.ps1 \\`,
+      `  -FactoryMediaRoot "$updateRoot\\vision-factory\\VEM"`,
+    );
+  } else {
+    lines.push(
+      "",
+      "# Preapproval stops here and does not claim Factory acceptance.",
+      "# Finalize later with the same exact runtime bytes, the same managed-update.json, and the same immutable Vision Candidate bytes.",
+      "# Do not create a second Vision installer.",
+    );
+  }
   writeFileSync(path, `${lines.join("\n")}\n`);
 }
 
@@ -380,7 +402,13 @@ function buildCandidate({
   };
 }
 
-async function prepare(options) {
+async function prepare(
+  options,
+  {
+    includeVisionFactory = true,
+    requireExpectedVisionBundleDigest = false,
+  } = {},
+) {
   const outputRoot = ensureEmptyDirectory(options.output);
   const updateId = assertUpdateId(options["update-id"]);
   const runtimeDirectory = resolve(String(options["runtime-directory"] ?? ""));
@@ -389,20 +417,25 @@ async function prepare(options) {
     runtimeDescriptor.commit,
     "runtime descriptor commit",
   );
-  const expectedVisionBundleDigest = options["expected-vision-bundle-digest"]
-    ? assertSha256(
-        options["expected-vision-bundle-digest"],
-        "expected vision bundle digest",
-      )
+  const suppliedVisionBundleDigest = options["expected-vision-bundle-digest"];
+  if (requireExpectedVisionBundleDigest && !suppliedVisionBundleDigest) {
+    throw new Error(
+      "expected vision bundle digest is required for preapproval",
+    );
+  }
+  const expectedVisionBundleDigest = suppliedVisionBundleDigest
+    ? assertSha256(suppliedVisionBundleDigest, "expected vision bundle digest")
     : null;
   const preapproval = verifyPreapprovalDirectory(
     options["vision-preapproval-directory"],
     expectedVisionBundleDigest,
   );
-  const visionFactory = verifyVisionFactoryDirectory(
-    options["vision-factory-directory"],
-    expectedVisionBundleDigest ?? preapproval.expectedDigest,
-  );
+  const visionFactory = includeVisionFactory
+    ? verifyVisionFactoryDirectory(
+        options["vision-factory-directory"],
+        expectedVisionBundleDigest ?? preapproval.expectedDigest,
+      )
+    : null;
   const visionBundleDigest =
     expectedVisionBundleDigest ?? preapproval.expectedDigest;
   const visionPythonVersion = String(
@@ -424,8 +457,10 @@ async function prepare(options) {
     "VEM-VISION-PREAPPROVAL",
   );
   copyTreeStrict(preapproval.root, preapprovalOut);
-  const visionFactoryOut = join(outputRoot, "vision-factory");
-  copyTreeStrict(visionFactory.root, visionFactoryOut);
+  if (visionFactory) {
+    const visionFactoryOut = join(outputRoot, "vision-factory");
+    copyTreeStrict(visionFactory.root, visionFactoryOut);
+  }
 
   const windowsUpdateRoot = `C:\\VEM\\updates\\${updateId}`;
   const managedUpdateManifest = buildManagedUpdateManifest({
@@ -446,7 +481,13 @@ async function prepare(options) {
     visionFactory,
   });
   writeJson(join(outputRoot, "candidate.json"), candidate);
-  writeApplyInstructions(join(outputRoot, "APPLY-FIELD-UPDATE.ps1"), candidate);
+  writeApplyInstructions(
+    join(outputRoot, "APPLY-FIELD-UPDATE.ps1"),
+    candidate,
+    {
+      includeVisionFactory,
+    },
+  );
   writeJson(join(outputRoot, "progressive-acceptance.json"), {
     schemaVersion: "vem-progressive-acceptance-inputs/v1",
     kind: "progressive-acceptance-inputs",
@@ -507,7 +548,20 @@ function skeleton(options) {
       "  --output vision-preapproval-input",
       "```",
       "",
-      "3. Finalize the same exact Vision digest into an experimental Factory delivery with:",
+      "3. Build and apply the L3 preapproval phase before any Factory provisioning:",
+      "",
+      "```bash",
+      "node scripts/windows/prepare-unified-field-delivery.mjs prepare-preapproval \\",
+      `  --output /tmp/vem-field-preapproval-${updateId} \\`,
+      `  --update-id ${updateId} \\`,
+      "  --runtime-directory runtime-input \\",
+      "  --vision-preapproval-directory vision-preapproval-input/VEM-VISION-PREAPPROVAL \\",
+      `  --expected-vision-bundle-digest ${visionBundleDigest ?? "sha256:<operator-pinned-exact-bundle-digest>"}`,
+      "```",
+      "",
+      "Run its APPLY-FIELD-UPDATE.ps1 to produce Vision conformance. This phase stops before Factory provisioning and does not claim Factory acceptance.",
+      "",
+      "4. Finalize the same exact Vision digest into an experimental Factory delivery with:",
       "",
       "```bash",
       "node scripts/factory/experimental-vision-candidate.mjs finalize \\",
@@ -523,7 +577,7 @@ function skeleton(options) {
       "  --output vision-factory-input",
       "```",
       "",
-      "4. Re-run the prepare command against these populated directories to build the exact delivery unit.",
+      "5. Re-run the final prepare command with the same update ID, runtime bytes, managed update, preapproval unit, and Vision installer; do not create a second installer.",
       "",
       "```bash",
       "node scripts/windows/prepare-unified-field-delivery.mjs prepare \\",
@@ -545,6 +599,12 @@ Promise.resolve()
   .then(async () => {
     if (options.command === "prepare") {
       return prepare(options);
+    }
+    if (options.command === "prepare-preapproval") {
+      return prepare(options, {
+        includeVisionFactory: false,
+        requireExpectedVisionBundleDigest: true,
+      });
     }
     if (options.command === "skeleton") {
       return skeleton(options);
