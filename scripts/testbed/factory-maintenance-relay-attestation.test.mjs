@@ -103,9 +103,11 @@ describe("Factory maintenance relay attestation", () => {
         "#!/bin/sh\nprintf '%s\\n' '10.91.16.10 dev wg-factory src 10.91.2.10 uid 1000'\n",
         { mode: 0o755 },
       );
-      writeFileSync(join(root, "ping"), "#!/bin/sh\nexit 99\n", {
-        mode: 0o755,
-      });
+      writeFileSync(
+        join(root, "ping"),
+        '#!/bin/sh\n[ "$*" = "-c 1 -W 5 10.91.0.1" ]\n',
+        { mode: 0o755 },
+      );
       process.env.PATH = `${root}:${previousPath}`;
       process.env.VEM_MAINTENANCE_RELAY_INTERFACE = "wg-factory";
 
