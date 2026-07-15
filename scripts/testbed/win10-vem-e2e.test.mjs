@@ -1927,8 +1927,12 @@ describe("win10-vem-e2e reset planning", () => {
       'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $claimPayload',
       provisioningStart,
     );
-    const restart = script.indexOf(
-      "$recoveredIpc = Restart-DaemonIpcAfterProvisioning ",
+    const generationSnapshot = script.indexOf(
+      "$preClaimReadyGeneration = [long](Get-Item ",
+      provisioningStart,
+    );
+    const convergence = script.indexOf(
+      "$recoveredIpc = Wait-DaemonIpcAfterProvisioning ",
       provisioningStart,
     );
     const claimHttpCatch = script.indexOf("} catch {", claim);
@@ -1951,12 +1955,25 @@ describe("win10-vem-e2e reset planning", () => {
     assert.ok(taskSnapshot < networkProbe);
     assert.ok(networkProbe < claimTaskSnapshot);
     assert.ok(claimTaskSnapshot < claim);
+    assert.ok(claimTaskSnapshot < generationSnapshot);
+    assert.ok(generationSnapshot < claim);
     assert.ok(claim < claimHttpCatch);
-    assert.ok(claimHttpCatch < restart);
-    assert.match(script, /restartAttempted = \$true/);
+    assert.ok(claimHttpCatch < convergence);
     assert.match(
       script,
-      /recoveredAfterRestart = \[bool\]\$recoveredIpc\.recovered/,
+      /if \(-not \[bool\]\$evidence\.claimResult\.restartRequested\) \{/,
+    );
+    assert.match(
+      script,
+      /throw "daemon Claim did not request the required runtime reconfigure"/,
+    );
+    assert.match(
+      script,
+      /\$RecoveryEvidence\["runtimeReconfigureObserved"\] = \$true/,
+    );
+    assert.match(
+      script,
+      /\$RecoveryEvidence\["recoveredAfterReconfigure"\] = \$true/,
     );
     assert.match(script, /recoveryFailure = \$_\.Exception\.Message/);
     assert.match(script, /claimStatus = "provisioned"/);
@@ -2080,86 +2097,135 @@ try {
     assert.match(result.failure, /last service start error.*SCM access denied/);
   });
 
-  it("restarts the daemon service before accepting post-claim IPC recovery", () => {
+  it("observes a new ready-file generation before accepting daemon-owned post-claim recovery", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
       machineCode: "VEM-TESTBED-WINVM-01",
     });
     const result = runPowerShellSemanticHarness(
-      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Restart-DaemonIpcAfterProvisioning")}`,
+      `${extractPowerShellFunction(script, "Get-ConfigSnapshotFromRuntimeSummary")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioning")}`,
       `
 $calls = [System.Collections.Generic.List[string]]::new()
 $calls.Add("claim")
-function Restart-Service {
-  param([string]$Name, [switch]$Force, $ErrorAction)
-  $calls.Add("restart-service")
+$recovery = [ordered]@{
+  runtimeReconfigureObserved = $false
+  previousReadyGeneration = $null
+  observedReadyGeneration = $null
+  observedHealthAfterReconfigure = $null
+  observedMachineCodeAfterReconfigure = $null
+  observedProvisionedAfterReconfigure = $null
+  recoveredAfterReconfigure = $null
+  recoveryAttempts = $null
+  recoveryEvidence = $null
 }
 function Get-Service {
   param([string]$Name, $ErrorAction)
   $calls.Add("get-service")
   [pscustomobject]@{ Status = "Running" }
 }
-function Start-Service { throw "not reached" }
+function Get-Item {
+  param([string]$LiteralPath, $ErrorAction)
+  $calls.Add("get-ready-generation")
+  $generation = if (($calls | Where-Object { $_ -eq "get-ready-generation" }).Count -eq 1) { 100 } else { 101 }
+  [pscustomobject]@{ LastWriteTimeUtc = [pscustomobject]@{ Ticks = $generation } }
+}
 function Read-JsonFile {
   param([string]$Path)
   $calls.Add("read-ready")
-  [pscustomobject]@{ ipcToken = "token"; healthzUrl = "http://127.0.0.1:7891/healthz" }
+  [pscustomobject]@{ ipcToken = "token-2"; healthzUrl = "http://127.0.0.1:7891/healthz" }
 }
 function Get-IpcBaseUrl { param($Ready) "http://127.0.0.1:7891" }
 function Invoke-IpcJson {
   param([string]$Method, [string]$Uri, $Headers, $Body = $null, [int]$TimeoutSec = 20)
-  $calls.Add("health:$TimeoutSec")
-  [pscustomobject]@{ status = "ok" }
+  if ($Uri.EndsWith("/healthz")) {
+    $calls.Add("health:$TimeoutSec")
+    return [pscustomobject]@{ status = "ok" }
+  }
+  $calls.Add("summary:$TimeoutSec")
+  [pscustomobject]@{
+    effectivePublic = [pscustomobject]@{ machineCode = "VEM-TESTBED-WINVM-01"; mqttUsername = $null }
+    configuredState = [pscustomobject]@{
+      provisioningProfileCache = $true
+      machineSecretConfigured = $true
+      mqttSigningSecretConfigured = $true
+      mqttPasswordConfigured = $false
+      maintenancePinConfigured = $true
+      factoryManifest = $true
+    }
+  }
 }
 function Start-Sleep {
   param([int]$Milliseconds)
   $calls.Add("sleep:$Milliseconds")
 }
 
-$daemonIpc = Restart-DaemonIpcAfterProvisioning "C:\\daemon-ready.json"
+$daemonIpc = Wait-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" 100 "VEM-TESTBED-WINVM-01" $recovery 3000 1
 @{
   calls = @($calls)
   recovered = $daemonIpc.recovered
   attempts = $daemonIpc.attempts
   recoveryEvidence = $daemonIpc.recoveryEvidence
+  persistedEvidence = $recovery
 } | ConvertTo-Json -Compress
 `,
     );
 
     assert.deepEqual(result.calls, [
       "claim",
-      "restart-service",
       "get-service",
+      "get-ready-generation",
+      "sleep:1",
+      "get-service",
+      "get-ready-generation",
       "read-ready",
       "health:2",
+      "summary:2",
     ]);
     assert.equal(result.recovered, true);
-    assert.equal(result.attempts, 1);
+    assert.equal(result.attempts, 2);
     assert.equal(
       result.recoveryEvidence,
-      "scm_restart_completed_then_ipc_healthy",
+      "daemon_ready_generation_advanced_then_runtime_healthy",
     );
+    assert.equal(result.persistedEvidence.previousReadyGeneration, 100);
+    assert.equal(result.persistedEvidence.observedReadyGeneration, 101);
+    assert.equal(result.persistedEvidence.runtimeReconfigureObserved, true);
+    assert.equal(result.persistedEvidence.observedHealthAfterReconfigure, true);
+    assert.equal(
+      result.persistedEvidence.observedMachineCodeAfterReconfigure,
+      "VEM-TESTBED-WINVM-01",
+    );
+    assert.equal(
+      result.persistedEvidence.observedProvisionedAfterReconfigure,
+      true,
+    );
+    assert.equal(result.persistedEvidence.recoveredAfterReconfigure, true);
+    const waitFunction = extractPowerShellFunction(
+      script,
+      "Wait-DaemonIpcAfterProvisioning",
+    );
+    assert.doesNotMatch(waitFunction, /Start-Service|Restart-Service/);
   });
 
-  it("fails post-claim recovery when the SCM restart fails", () => {
+  it("fails post-claim recovery when the daemon service leaves Running", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
       machineCode: "VEM-TESTBED-WINVM-01",
     });
     const result = runPowerShellSemanticHarness(
-      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Restart-DaemonIpcAfterProvisioning")}`,
+      `${extractPowerShellFunction(script, "Get-ConfigSnapshotFromRuntimeSummary")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioning")}`,
       `
 $calls = [System.Collections.Generic.List[string]]::new()
 $calls.Add("claim")
-function Restart-Service {
-  param([string]$Name, [switch]$Force, $ErrorAction)
-  $calls.Add("restart-service")
-  throw "SCM restart denied"
+$recovery = [ordered]@{ runtimeReconfigureObserved = $false }
+function Get-Service {
+  param([string]$Name, $ErrorAction)
+  $calls.Add("get-service")
+  [pscustomobject]@{ Status = "Stopped" }
 }
-function Get-Service { throw "not reached" }
-function Start-Service { throw "not reached" }
+function Get-Item { throw "not reached" }
 function Read-JsonFile { throw "not reached" }
 function Get-IpcBaseUrl { throw "not reached" }
 function Invoke-IpcJson { throw "not reached" }
@@ -2167,7 +2233,7 @@ function Start-Sleep { throw "not reached" }
 
 $failure = $null
 try {
-  Restart-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" | Out-Null
+  Wait-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" 100 "VEM-TESTBED-WINVM-01" $recovery 3000 1 | Out-Null
 } catch {
   $failure = $_.Exception.Message
 }
@@ -2175,9 +2241,79 @@ try {
 `,
     );
 
-    assert.deepEqual(result.calls, ["claim", "restart-service"]);
-    assert.match(result.failure, /Restart-Service.*SCM restart denied/);
+    assert.deepEqual(result.calls, ["claim", "get-service"]);
+    assert.match(result.failure, /left Running during post-claim reconfigure/);
   });
+
+  for (const fixture of [
+    {
+      name: "ready generation does not advance",
+      generation: 100,
+      machineCode: "VEM-TESTBED-WINVM-01",
+      provisioned: true,
+      expected: /ready generation has not advanced/,
+    },
+    {
+      name: "runtime exposes the wrong machine code",
+      generation: 101,
+      machineCode: "WRONG-MACHINE",
+      provisioned: true,
+      expected: /daemon runtime machineCode is WRONG-MACHINE/,
+    },
+    {
+      name: "runtime is not provisioned",
+      generation: 101,
+      machineCode: "VEM-TESTBED-WINVM-01",
+      provisioned: false,
+      expected: /daemon runtime config is not provisioned/,
+    },
+  ]) {
+    it(`fails closed when post-claim ${fixture.name}`, () => {
+      const script = buildRemotePowerShellScript({
+        mode: "provision",
+        claimCode: "ABCD-2345",
+        machineCode: "VEM-TESTBED-WINVM-01",
+      });
+      const result = runPowerShellSemanticHarness(
+        `${extractPowerShellFunction(script, "Get-ConfigSnapshotFromRuntimeSummary")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioning")}`,
+        `
+$recovery = [ordered]@{ runtimeReconfigureObserved = $false }
+function Get-Service { [pscustomobject]@{ Status = "Running" } }
+function Get-Item { [pscustomobject]@{ LastWriteTimeUtc = [pscustomobject]@{ Ticks = ${fixture.generation} } } }
+function Read-JsonFile { [pscustomobject]@{ ipcToken = "token"; healthzUrl = "http://127.0.0.1:7891/healthz" } }
+function Get-IpcBaseUrl { "http://127.0.0.1:7891" }
+function Invoke-IpcJson {
+  param([string]$Method, [string]$Uri)
+  if ($Uri.EndsWith("/healthz")) { return [pscustomobject]@{ status = "ok" } }
+  [pscustomobject]@{
+    effectivePublic = [pscustomobject]@{ machineCode = ${JSON.stringify(fixture.machineCode)}; mqttUsername = $null }
+    configuredState = [pscustomobject]@{
+      provisioningProfileCache = ${fixture.provisioned ? "$true" : "$false"}
+      machineSecretConfigured = ${fixture.provisioned ? "$true" : "$false"}
+      mqttSigningSecretConfigured = ${fixture.provisioned ? "$true" : "$false"}
+      mqttPasswordConfigured = $false
+      maintenancePinConfigured = ${fixture.provisioned ? "$true" : "$false"}
+      factoryManifest = $true
+    }
+  }
+}
+$failure = $null
+try {
+  Wait-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" 100 "VEM-TESTBED-WINVM-01" $recovery 20 1 | Out-Null
+} catch { $failure = $_.Exception.Message }
+@{ failure = $failure; recovery = $recovery } | ConvertTo-Json -Compress
+`,
+      );
+
+      assert.match(result.failure, /did not converge within 20 ms/);
+      assert.match(result.failure, fixture.expected);
+      assert.equal(result.recovery.observedReadyGeneration, fixture.generation);
+      assert.equal(
+        result.recovery.runtimeReconfigureObserved,
+        fixture.generation > 100,
+      );
+    });
+  }
 
   it("emits provision diagnostics for missing ready file and token failures", () => {
     const script = buildRemotePowerShellScript({

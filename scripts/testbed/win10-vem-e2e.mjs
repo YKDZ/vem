@@ -4378,23 +4378,74 @@ function Wait-DaemonIpc(
   throw "daemon IPC did not become available after $MaxAttempts attempts: $lastError$serviceStartDiagnostic"
 }
 
-function Restart-DaemonIpcAfterProvisioning([string]$ReadyFilePath) {
-  try {
-    Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
-  } catch {
-    throw "Restart-Service VemVendingDaemon failed: $($_.Exception.Message)"
-  }
-
-  $currentIpc = Wait-DaemonIpc $ReadyFilePath
-  return [ordered]@{
-    ready = $currentIpc.ready
-    baseUrl = $currentIpc.baseUrl
-    headers = $currentIpc.headers
-    attempts = $currentIpc.attempts
-    observedHealth = [bool]$currentIpc.observedHealth
-    recovered = $true
-    recoveryEvidence = "scm_restart_completed_then_ipc_healthy"
-  }
+function Wait-DaemonIpcAfterProvisioning(
+  [string]$ReadyFilePath,
+  [long]$PreviousReadyGeneration,
+  [string]$ExpectedMachineCode,
+  $RecoveryEvidence,
+  [int]$TimeoutMilliseconds = 60000,
+  [int]$RetryDelayMilliseconds = 500
+) {
+  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+  $attempts = 0
+  $lastError = $null
+  $lastObservedGeneration = $PreviousReadyGeneration
+  $lastObservedMachineCode = $null
+  $RecoveryEvidence["previousReadyGeneration"] = $PreviousReadyGeneration
+  do {
+    $attempts += 1
+    $service = Get-Service -Name "VemVendingDaemon" -ErrorAction Stop
+    if ([string]$service.Status -ne "Running") {
+      throw "VemVendingDaemon left Running during post-claim reconfigure: $($service.Status)"
+    }
+    try {
+      $readyItem = Get-Item -LiteralPath $ReadyFilePath -ErrorAction Stop
+      $lastObservedGeneration = [long]$readyItem.LastWriteTimeUtc.Ticks
+      $RecoveryEvidence["observedReadyGeneration"] = $lastObservedGeneration
+      if ($lastObservedGeneration -le $PreviousReadyGeneration) {
+        throw "daemon ready generation has not advanced"
+      }
+      $RecoveryEvidence["runtimeReconfigureObserved"] = $true
+      $ready = Read-JsonFile $ReadyFilePath
+      if ([string]::IsNullOrWhiteSpace([string]$ready.ipcToken)) {
+        throw "ipcToken missing from daemon ready file"
+      }
+      $baseUrl = Get-IpcBaseUrl $ready
+      $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+      Invoke-IpcJson "GET" "$baseUrl/healthz" @{} -TimeoutSec 2 | Out-Null
+      $RecoveryEvidence["observedHealthAfterReconfigure"] = $true
+      $summary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers -TimeoutSec 2
+      $config = Get-ConfigSnapshotFromRuntimeSummary $summary
+      $lastObservedMachineCode = [string]$config.public.machineCode
+      $RecoveryEvidence["observedMachineCodeAfterReconfigure"] = $lastObservedMachineCode
+      $RecoveryEvidence["observedProvisionedAfterReconfigure"] = [bool]$config.provisioned
+      if (-not [bool]$config.provisioned) {
+        throw "daemon runtime config is not provisioned"
+      }
+      if ($lastObservedMachineCode -ne $ExpectedMachineCode) {
+        throw "daemon runtime machineCode is $lastObservedMachineCode"
+      }
+      $RecoveryEvidence["recoveredAfterReconfigure"] = $true
+      $RecoveryEvidence["recoveryAttempts"] = $attempts
+      $RecoveryEvidence["recoveryEvidence"] = "daemon_ready_generation_advanced_then_runtime_healthy"
+      return [ordered]@{
+        ready = $ready
+        baseUrl = $baseUrl
+        headers = $headers
+        attempts = $attempts
+        readyGeneration = $lastObservedGeneration
+        observedHealth = $true
+        recovered = $true
+        recoveryEvidence = "daemon_ready_generation_advanced_then_runtime_healthy"
+      }
+    } catch {
+      $lastError = $_.Exception.Message
+    }
+    if ([DateTime]::UtcNow -lt $deadline) {
+      Start-Sleep -Milliseconds $RetryDelayMilliseconds
+    }
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "daemon-owned post-claim reconfigure did not converge within $TimeoutMilliseconds ms; expected machineCode $ExpectedMachineCode; previous ready generation $PreviousReadyGeneration; last observed generation $lastObservedGeneration; last observed machineCode $lastObservedMachineCode; last error: $lastError"
 }
 
 function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
@@ -4531,9 +4582,13 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     }
     claimResult = [ordered]@{
       restartRequested = $null
-      restartAttempted = $false
-      observedHealthAfterRestart = $null
-      recoveredAfterRestart = $null
+      runtimeReconfigureObserved = $false
+      previousReadyGeneration = $null
+      observedReadyGeneration = $null
+      observedHealthAfterReconfigure = $null
+      observedMachineCodeAfterReconfigure = $null
+      observedProvisionedAfterReconfigure = $null
+      recoveredAfterReconfigure = $null
       recoveryAttempts = $null
       recoveryEvidence = $null
       recoveryFailure = $null
@@ -4670,6 +4725,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     }
     $evidence.endpoint = "$baseUrl/v1/bring-up/tasks/execute"
     $evidence.usedDaemonIpcTaskExecute = $true
+    $preClaimReadyGeneration = [long](Get-Item -LiteralPath ${psString(bringUpPlan.arguments.DaemonReadyFile)} -ErrorAction Stop).LastWriteTimeUtc.Ticks
     try {
       $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $claimPayload
       $evidence.claimStatus = "provisioned"
@@ -4695,22 +4751,18 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       throw "daemon IPC claim failed: $($evidence.claimFailureCode)"
     }
 
-    if ([bool]$evidence.claimResult.restartRequested) {
-      $evidence.claimResult.restartAttempted = $true
-      try {
-        $recoveredIpc = Restart-DaemonIpcAfterProvisioning ${psString(bringUpPlan.arguments.DaemonReadyFile)}
-        $ready = $recoveredIpc.ready
-        $baseUrl = $recoveredIpc.baseUrl
-        $headers = $recoveredIpc.headers
-        $evidence.claimResult.observedHealthAfterRestart = [bool]$recoveredIpc.observedHealth
-        $evidence.claimResult.recoveredAfterRestart = [bool]$recoveredIpc.recovered
-        $evidence.claimResult.recoveryAttempts = [int]$recoveredIpc.attempts
-        $evidence.claimResult.recoveryEvidence = [string]$recoveredIpc.recoveryEvidence
-      } catch {
-        $evidence.claimResult.recoveredAfterRestart = $false
-        $evidence.claimResult.recoveryFailure = $_.Exception.Message
-        throw
-      }
+    if (-not [bool]$evidence.claimResult.restartRequested) {
+      throw "daemon Claim did not request the required runtime reconfigure"
+    }
+    try {
+      $recoveredIpc = Wait-DaemonIpcAfterProvisioning ${psString(bringUpPlan.arguments.DaemonReadyFile)} $preClaimReadyGeneration $evidence.machineCode $evidence.claimResult
+      $ready = $recoveredIpc.ready
+      $baseUrl = $recoveredIpc.baseUrl
+      $headers = $recoveredIpc.headers
+    } catch {
+      $evidence.claimResult.recoveredAfterReconfigure = $false
+      $evidence.claimResult.recoveryFailure = $_.Exception.Message
+      throw
     }
 
     $evidence.healthzAfterClaim = Get-SafeHealthzEvidence $baseUrl
