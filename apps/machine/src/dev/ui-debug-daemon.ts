@@ -5,6 +5,7 @@ import {
   daemonIpcMachinePaymentProviderSchema,
   type InstalledKioskSaleDisturbance,
   type InstalledKioskSaleCustomerPaymentSurface,
+  type InstalledKioskSaleCustomerTransactionSurface,
   paymentMethodSchema,
   type StockMaintenanceBatchResponse,
   type StockMaintenanceTask,
@@ -55,6 +56,18 @@ let currentTransaction: TransactionSnapshot | null = null;
 let currentTransactionFailuresRemaining = 0;
 let disturbanceInjectionSequence = 0;
 let timelineObservationSequence = 0;
+const handledPaymentStatusDeliveryIds = new Set<string>();
+const vendingCommandLog: Array<{
+  commandId: string;
+  orderId: string;
+  transactionId: string;
+}> = [];
+const stockMovementLog: Array<{
+  movementId: string;
+  commandId: string;
+  orderId: string;
+  transactionId: string;
+}> = [];
 let removeRouteObserver: (() => void) | null = null;
 let captureCurrentRoute: (() => void) | null = null;
 
@@ -66,6 +79,10 @@ function emptySaleEvidence(): UiDebugSaleEvidence {
     transactions: [],
     timeline: [],
     disturbanceInjections: [],
+    observationWindow: {
+      openedAt: nowIso(),
+      closedAt: nowIso(),
+    },
   };
 }
 
@@ -120,6 +137,9 @@ function resetSaleEvidence(): void {
   currentTransactionFailuresRemaining = 0;
   disturbanceInjectionSequence = 0;
   timelineObservationSequence = 0;
+  handledPaymentStatusDeliveryIds.clear();
+  vendingCommandLog.length = 0;
+  stockMovementLog.length = 0;
 }
 
 function currentScenario() {
@@ -304,7 +324,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
   const paymentId = "550e8400-e29b-41d4-a716-446655449902";
   const orderNo = `UI-DEBUG-${Date.now()}`;
   const reservationId = `UI-DEBUG-RES-${orderNo}`;
-  const transactionId = `UI-DEBUG-TXN-${orderNo}`;
+  const transactionId = orderNo;
   const transaction: TransactionSnapshot = {
     orderId,
     orderNo,
@@ -379,7 +399,7 @@ function activeSaleRecord() {
   );
 }
 
-function transitionMockPayment(succeed: boolean): TransactionSnapshot {
+function handleUiDebugPaymentStatus(succeed: boolean): TransactionSnapshot {
   const snapshot = currentTransactionOrScenario();
   const record = activeSaleRecord();
   const commandId =
@@ -387,8 +407,9 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
     record?.vendingCommand?.commandId ??
     `UI-DEBUG-CMD-${snapshot.orderNo}`;
   if (record) {
+    const deliveryId = `payment-status-${record.payment.paymentId}-${succeed ? "succeeded" : "failed"}`;
     record.payment.statusDeliveries.push({
-      deliveryId: `payment-status-${record.payment.paymentId}-${succeed ? "succeeded" : "failed"}`,
+      deliveryId,
       status: succeed ? "succeeded" : "failed",
       deliveredAt: nowIso(),
       payload: {
@@ -398,16 +419,28 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
         paymentStatus: succeed ? "succeeded" : "failed",
       },
     });
+    if (!handledPaymentStatusDeliveryIds.has(deliveryId)) {
+      handledPaymentStatusDeliveryIds.add(deliveryId);
+      if (succeed) {
+        vendingCommandLog.push({
+          commandId,
+          orderId: record.order.orderId,
+          transactionId: record.transaction.transactionId,
+        });
+      }
+    }
     record.payment.status = succeed ? "succeeded" : "failed";
     record.order.status = succeed ? "dispensing" : "failed";
     record.transaction.status = succeed ? "dispensing" : "failed";
-    if (succeed && !record.vendingCommand) {
+    if (succeed) {
       record.vendingCommand = {
         commandId,
         orderId: record.order.orderId,
         transactionId: record.transaction.transactionId,
         status: "sent",
-        creationCount: 1,
+        creationCount: vendingCommandLog.filter(
+          (command) => command.commandId === commandId,
+        ).length,
       };
     }
   }
@@ -443,12 +476,28 @@ function completeSimulatedDispense(): TransactionSnapshot {
     record.reservation.status = "consumed";
     record.payment.status = "succeeded";
     record.transaction.status = "succeeded";
+    const commandCreationCount = vendingCommandLog.filter(
+      (command) => command.commandId === commandId,
+    ).length;
+    if (commandCreationCount === 0) {
+      throw new Error("UI debug dispense completed without a payment command");
+    }
+    if (
+      !stockMovementLog.some((movement) => movement.movementId === movementId)
+    ) {
+      stockMovementLog.push({
+        movementId,
+        commandId,
+        orderId: record.order.orderId,
+        transactionId: record.transaction.transactionId,
+      });
+    }
     record.vendingCommand = {
       commandId,
       orderId: record.order.orderId,
       transactionId: record.transaction.transactionId,
       status: "succeeded",
-      creationCount: record.vendingCommand?.creationCount ?? 1,
+      creationCount: commandCreationCount,
     };
     record.stockMovement = {
       movementId,
@@ -457,7 +506,9 @@ function completeSimulatedDispense(): TransactionSnapshot {
       commandId,
       quantity: -1,
       status: "accepted",
-      creationCount: record.stockMovement?.creationCount ?? 1,
+      creationCount: stockMovementLog.filter(
+        (movement) => movement.movementId === movementId,
+      ).length,
     };
     record.fulfillment = {
       status: "succeeded",
@@ -516,14 +567,15 @@ function recordInstalledKioskSaleRoute(path: string): void {
   const record = activeSaleRecord();
   if (!record) return;
   const route = installedKioskSaleRoute(path);
-  if (route === "payment") return;
+  if (["payment", "fulfillment", "result"].includes(route)) return;
   saleEvidence.timeline.push({
     observationId: nextTimelineObservationId(),
     observedAt: nowIso(),
     route,
     identitySource: "router_transaction_state",
     renderedQrSource: null,
-    expectedQrSource: null,
+    decodedQrPayload: null,
+    commandId: currentTransaction?.vending?.commandId ?? null,
     orderId: record.order.orderId,
     paymentId: record.payment.paymentId,
     transactionId: record.transaction.transactionId,
@@ -538,6 +590,9 @@ function recordCustomerPaymentSurface(
   if (!record) {
     throw new Error("Installed Kiosk Sale transaction evidence is unavailable");
   }
+  const hasPaymentSurface = saleEvidence.timeline.some(
+    (entry) => entry.route === "payment",
+  );
   saleEvidence.timeline.push({
     observationId: nextTimelineObservationId(),
     observedAt: surface.observedAt,
@@ -545,10 +600,36 @@ function recordCustomerPaymentSurface(
     identitySource: "customer_payment_surface",
     orderId: surface.orderId,
     paymentId: surface.paymentId,
-    transactionId: record.transaction.transactionId,
+    transactionId: surface.transactionId,
     paymentUrl: surface.paymentUrl,
     renderedQrSource: surface.renderedQrSource,
-    expectedQrSource: surface.expectedQrSource,
+    decodedQrPayload: surface.decodedQrPayload,
+    commandId: null,
+  });
+  if (!hasPaymentSurface) {
+    saleEvidence.observationWindow.openedAt = surface.observedAt;
+  }
+}
+
+function recordCustomerTransactionSurface(
+  surface: InstalledKioskSaleCustomerTransactionSurface,
+): void {
+  const route = surface.route;
+  saleEvidence.timeline.push({
+    observationId: nextTimelineObservationId(),
+    observedAt: surface.observedAt,
+    route,
+    identitySource:
+      route === "fulfillment"
+        ? "customer_fulfillment_surface"
+        : "customer_result_surface",
+    orderId: surface.orderId,
+    paymentId: surface.paymentId,
+    transactionId: surface.transactionId,
+    paymentUrl: surface.paymentUrl,
+    renderedQrSource: null,
+    decodedQrPayload: null,
+    commandId: surface.commandId,
   });
 }
 
@@ -587,15 +668,41 @@ async function injectInstalledKioskSaleDisturbance(
     barrierObservationId: barrierObservation.observationId,
     count: 1,
     outcome: "failed" as "completed" | "failed",
+    pressure:
+      null as UiDebugSaleEvidence["disturbanceInjections"][number]["pressure"],
   };
   saleEvidence.disturbanceInjections.push(injection);
   try {
     switch (disturbance) {
       case "catalog_refresh":
-        await useCatalogStore().refresh();
+        await Promise.all([
+          useCatalogStore().refresh(),
+          (async () => {
+            const { router } = await import("@/router");
+            await router.push("/catalog");
+            injection.pressure = {
+              refreshedState: "catalog",
+              attemptedRoute: "/catalog",
+              resolvedRoute: router.currentRoute.value.path,
+              routeAuthorityWon: router.currentRoute.value.path === "/payment",
+            };
+          })(),
+        ]);
         break;
       case "readiness_refresh":
-        await useCheckoutStore().refreshCustomerCheckoutReadiness();
+        await Promise.all([
+          useCheckoutStore().refreshCustomerCheckoutReadiness(),
+          (async () => {
+            const { router } = await import("@/router");
+            await router.push("/maintenance");
+            injection.pressure = {
+              refreshedState: "readiness",
+              attemptedRoute: "/maintenance",
+              resolvedRoute: router.currentRoute.value.path,
+              routeAuthorityWon: router.currentRoute.value.path === "/payment",
+            };
+          })(),
+        ]);
         break;
       case "presence_departure":
         useVisionStore().applyPersonDeparted({
@@ -606,8 +713,8 @@ async function injectInstalledKioskSaleDisturbance(
         });
         break;
       case "duplicate_payment_status":
-        await useCheckoutStore().markMockSucceeded();
-        await useCheckoutStore().markMockSucceeded();
+        useCheckoutStore().applyTransaction(handleUiDebugPaymentStatus(true));
+        useCheckoutStore().applyTransaction(handleUiDebugPaymentStatus(true));
         await routeToTransactionProjection();
         break;
       case "ipc_interruption":
@@ -629,14 +736,18 @@ function installInstalledKioskSaleDebugControl(): void {
   Reflect.set(window, "__VEM_INSTALLED_KIOSK_SALE_DEBUG__", {
     inject: injectInstalledKioskSaleDisturbance,
     observePaymentSurface: recordCustomerPaymentSurface,
+    observeTransactionSurface: recordCustomerTransactionSurface,
     readEvidence: (): UiDebugSaleEvidence => structuredClone(saleEvidence),
     completePayment: async (): Promise<void> => {
-      await useCheckoutStore().markMockSucceeded();
+      useCheckoutStore().applyTransaction(handleUiDebugPaymentStatus(true));
       await routeToTransactionProjection();
     },
     completeDispense: async (): Promise<void> => {
       useCheckoutStore().applyTransaction(completeSimulatedDispense());
       await routeToTransactionProjection();
+    },
+    closeObservationWindow: (closedAt: string): void => {
+      saleEvidence.observationWindow.closedAt = closedAt;
     },
   });
 }
@@ -756,7 +867,7 @@ export function installUiDebugDaemon(): void {
   client.createOrder = async (body: unknown) =>
     createTransactionFromOrder(body);
   client.cancelOrder = async () => closedTransaction();
-  client.submitDevPaymentCode = async () => transitionMockPayment(true);
+  client.submitDevPaymentCode = async () => handleUiDebugPaymentStatus(true);
   client.getCurrentTransaction = async () => {
     if (currentTransactionFailuresRemaining > 0) {
       currentTransactionFailuresRemaining -= 1;
@@ -779,7 +890,7 @@ export function installUiDebugDaemon(): void {
     configUpdated: false,
   });
   client.markMockPayment = async (_orderNo: string, succeed: boolean) =>
-    transitionMockPayment(succeed);
+    handleUiDebugPaymentStatus(succeed);
   client.downloadLogExport = async () =>
     new Response("ui debug log export\n", {
       headers: { "Content-Type": "text/plain" },

@@ -87,26 +87,39 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
         observedAt: "2026-07-15T00:00:01.000Z",
         route: "payment",
         identitySource: "customer_payment_surface",
-        renderedQrSource: "data:image/svg+xml,expected-qr",
-        expectedQrSource: "data:image/svg+xml,expected-qr",
+        renderedQrSource: "data:image/png;base64,expected-qr",
+        decodedQrPayload: identity.paymentUrl,
+        commandId: null,
         ...identity,
       },
       {
         observationId: "observation-fulfillment-1",
         observedAt: "2026-07-15T00:00:02.000Z",
         route: "fulfillment",
-        identitySource: "router_transaction_state",
+        identitySource: "customer_fulfillment_surface",
         renderedQrSource: null,
-        expectedQrSource: null,
+        decodedQrPayload: null,
+        commandId: "command-1",
         ...identity,
       },
       {
         observationId: "observation-result-1",
         observedAt: "2026-07-15T00:00:03.000Z",
         route: "result",
-        identitySource: "router_transaction_state",
+        identitySource: "customer_result_surface",
         renderedQrSource: null,
-        expectedQrSource: null,
+        decodedQrPayload: null,
+        commandId: "command-1",
+        ...identity,
+      },
+      {
+        observationId: "observation-result-post-window-1",
+        observedAt: "2026-07-15T00:00:03.250Z",
+        route: "result",
+        identitySource: "customer_result_surface",
+        renderedQrSource: null,
+        decodedQrPayload: null,
+        commandId: "command-1",
         ...identity,
       },
     ],
@@ -119,8 +132,18 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
         barrierObservationId: "observation-payment-1",
         count: 1,
         outcome: "completed",
+        pressure: {
+          refreshedState: "catalog",
+          attemptedRoute: "/catalog",
+          resolvedRoute: "/payment",
+          routeAuthorityWon: true,
+        },
       },
     ],
+    observationWindow: {
+      openedAt: "2026-07-15T00:00:01.000Z",
+      closedAt: "2026-07-15T00:00:03.500Z",
+    },
   };
 }
 
@@ -232,6 +255,7 @@ describe("browser Installed Kiosk Sale UI contract", () => {
   it("accepts the same succeeded payment status twice with one fulfillment side effect chain", () => {
     const facts = completeFacts();
     facts.disturbanceInjections[0].kind = "duplicate_payment_status";
+    facts.disturbanceInjections[0].pressure = null;
     facts.transactions[0].payment.statusDeliveries.push({
       ...facts.transactions[0].payment.statusDeliveries[0],
       deliveredAt: "2026-07-15T00:00:01.800Z",
@@ -245,6 +269,7 @@ describe("browser Installed Kiosk Sale UI contract", () => {
   it("rejects a third failed delivery appended to duplicate succeeded statuses", () => {
     const facts = completeFacts();
     facts.disturbanceInjections[0].kind = "duplicate_payment_status";
+    facts.disturbanceInjections[0].pressure = null;
     facts.transactions[0].payment.statusDeliveries.push(
       {
         ...facts.transactions[0].payment.statusDeliveries[0],
@@ -268,6 +293,7 @@ describe("browser Installed Kiosk Sale UI contract", () => {
   it("rejects duplicate succeeded deliveries with a different payload", () => {
     const facts = completeFacts();
     facts.disturbanceInjections[0].kind = "duplicate_payment_status";
+    facts.disturbanceInjections[0].pressure = null;
     facts.transactions[0].payment.statusDeliveries.push({
       ...facts.transactions[0].payment.statusDeliveries[0],
       deliveredAt: "2026-07-15T00:00:01.800Z",
@@ -311,10 +337,10 @@ describe("browser Installed Kiosk Sale UI contract", () => {
     ).toContain("timeline_payment_qr_mismatch");
   });
 
-  it("rejects a rendered QR image source unrelated to its declared payload", () => {
+  it("rejects a rendered QR image whose decoded payload is unrelated", () => {
     const facts = completeFacts();
-    facts.timeline[0].renderedQrSource =
-      "data:image/svg+xml,unrelated-rendered-qr";
+    facts.timeline[0].decodedQrPayload =
+      "https://pay.example.test/unrelated-order";
 
     expect(
       classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
@@ -401,6 +427,24 @@ describe("browser Installed Kiosk Sale UI contract", () => {
         "active_transaction_route_replaced",
       ]),
     );
+  });
+
+  it("rejects a monotonic forbidden route after the first result", () => {
+    const facts = completeFacts();
+    facts.timeline.push({
+      ...facts.timeline[3],
+      observationId: "observation-post-result-home-1",
+      observedAt: "2026-07-15T00:00:03.300Z",
+      route: "home",
+      identitySource: "router_transaction_state",
+      commandId: null,
+    });
+
+    expect(
+      classifyBrowserInstalledKioskSaleContract(facts).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("active_transaction_route_replaced");
   });
 
   it.each(["home", "maintenance"] as const)(

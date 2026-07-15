@@ -136,7 +136,16 @@ onUnmounted(() => {
 
 <template>
   <KioskLayout>
-    <section v-if="hasOrder" class="dispensing-page">
+    <section
+      v-if="hasOrder"
+      class="dispensing-page"
+      data-installed-kiosk-sale-fulfillment-surface
+      :data-order-id="checkoutStore.transaction?.orderId ?? ''"
+      :data-payment-id="checkoutStore.transaction?.paymentId ?? ''"
+      :data-transaction-id="checkoutStore.transaction?.orderNo ?? ''"
+      :data-payment-url="checkoutStore.transaction?.paymentUrl ?? ''"
+      :data-command-id="checkoutStore.transaction?.vending?.commandId ?? ''"
+    >
       <div class="dispensing-mist dispensing-mist-left"></div>
       <div class="dispensing-mist dispensing-mist-right"></div>
 

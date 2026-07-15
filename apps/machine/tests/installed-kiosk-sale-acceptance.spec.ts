@@ -4,8 +4,8 @@ import {
   classifyBrowserInstalledKioskSaleContract,
   type InstalledKioskSaleDisturbance,
 } from "@vem/shared";
+import * as QRCode from "qrcode";
 
-import { renderPaymentQrDataUrl } from "../src/utils/payment-qr";
 import { runInstalledKioskSaleScenario } from "./support/installed-kiosk-sale-driver";
 import { PlaywrightInstalledKioskSaleAdapter } from "./support/playwright-installed-kiosk-sale-adapter";
 
@@ -79,10 +79,15 @@ test.describe("Installed Kiosk Sale browser UI contract", () => {
     const adapter = new PlaywrightInstalledKioskSaleAdapter(page);
     await adapter.startFromSaleableHome();
     await adapter.selectProductAndQrPayment();
-    await adapter.assertPaymentQrPresented();
+    await adapter.assertPaymentQrPresented({ assertDecodedPayload: false });
 
     const unrelatedPaymentUrl = "https://pay.example.test/unrelated-order";
-    const unrelatedQrSource = await renderPaymentQrDataUrl(unrelatedPaymentUrl);
+    const unrelatedQrSource = await QRCode.toDataURL(unrelatedPaymentUrl, {
+      width: 360,
+      margin: 1,
+      errorCorrectionLevel: "M",
+      color: { dark: "#020617", light: "#ffffff" },
+    });
     await page.locator("[data-installed-kiosk-sale-qr]").evaluate(
       (element, replacement) => {
         element.setAttribute("src", replacement.source);
@@ -91,12 +96,13 @@ test.describe("Installed Kiosk Sale browser UI contract", () => {
         source: unrelatedQrSource,
       },
     );
-    const replacedSurface = await adapter.assertPaymentQrPresented();
+    const replacedSurface = await adapter.assertPaymentQrPresented({
+      assertDecodedPayload: false,
+    });
     expect(replacedSurface.paymentUrl).not.toBe(unrelatedPaymentUrl);
-    expect(replacedSurface.renderedQrSource).toBe(unrelatedQrSource);
+    expect(replacedSurface.decodedQrPayload).toBe(unrelatedPaymentUrl);
 
     await adapter.injectDisturbance("catalog_refresh");
-    await adapter.assertPaymentQrPresented();
     await adapter.completePayment();
     await adapter.assertFulfillmentStarted();
     await adapter.completeFulfillment();

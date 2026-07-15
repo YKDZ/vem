@@ -35,13 +35,25 @@ export const installedKioskSaleCustomerPaymentSurfaceSchema = z.object({
   observedAt: z.iso.datetime(),
   orderId: z.string().min(1),
   paymentId: z.string().min(1),
+  transactionId: z.string().min(1),
   paymentUrl: z.url(),
   renderedQrSource: z.string().min(1),
-  expectedQrSource: z.string().min(1),
+  decodedQrPayload: z.url(),
 });
 
 export type InstalledKioskSaleCustomerPaymentSurface = z.infer<
   typeof installedKioskSaleCustomerPaymentSurfaceSchema
+>;
+
+export const installedKioskSaleCustomerTransactionSurfaceSchema =
+  linkedTransactionIdentitySchema.extend({
+    observedAt: z.iso.datetime(),
+    route: z.enum(["fulfillment", "result"]),
+    commandId: z.string().min(1),
+  });
+
+export type InstalledKioskSaleCustomerTransactionSurface = z.infer<
+  typeof installedKioskSaleCustomerTransactionSurfaceSchema
 >;
 
 export const installedKioskSaleTimelineEntrySchema =
@@ -51,10 +63,13 @@ export const installedKioskSaleTimelineEntrySchema =
     route: installedKioskSaleRouteSchema,
     identitySource: z.enum([
       "customer_payment_surface",
+      "customer_fulfillment_surface",
+      "customer_result_surface",
       "router_transaction_state",
     ]),
     renderedQrSource: z.string().min(1).nullable(),
-    expectedQrSource: z.string().min(1).nullable(),
+    decodedQrPayload: z.string().min(1).nullable(),
+    commandId: z.string().min(1).nullable(),
   });
 
 export const installedKioskSaleLinkedTransactionSchema = z.object({
@@ -141,6 +156,14 @@ export const installedKioskSaleDisturbanceInjectionSchema = z.object({
   barrierObservationId: z.string().min(1),
   count: z.number().int().nonnegative(),
   outcome: z.enum(["completed", "failed"]),
+  pressure: z
+    .object({
+      refreshedState: z.enum(["catalog", "readiness"]),
+      attemptedRoute: z.string().min(1),
+      resolvedRoute: z.string().min(1),
+      routeAuthorityWon: z.boolean(),
+    })
+    .nullable(),
 });
 
 export type InstalledKioskSaleDisturbanceInjection = z.infer<
@@ -152,6 +175,10 @@ export const browserInstalledKioskSaleContractFactsSchema = z.object({
   transactions: z.array(installedKioskSaleLinkedTransactionSchema),
   timeline: z.array(installedKioskSaleTimelineEntrySchema),
   disturbanceInjections: z.array(installedKioskSaleDisturbanceInjectionSchema),
+  observationWindow: z.object({
+    openedAt: z.iso.datetime(),
+    closedAt: z.iso.datetime(),
+  }),
 });
 
 export type BrowserInstalledKioskSaleContractFacts = z.infer<
@@ -337,9 +364,24 @@ function inspectTimeline(
   const terminalTimestamp = Date.parse(
     facts.timeline[terminalIndex].observedAt,
   );
+  const observationWindowClosedAt = Date.parse(
+    facts.observationWindow.closedAt,
+  );
+  if (
+    Date.parse(facts.observationWindow.openedAt) > paymentTimestamp ||
+    observationWindowClosedAt < terminalTimestamp
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "observation_window_invalid",
+      "The bounded observation window must open by Payment and close after the first Result.",
+    );
+  }
   const activeTimeline = facts.timeline.filter((entry) => {
     const timestamp = Date.parse(entry.observedAt);
-    return timestamp >= paymentTimestamp && timestamp <= terminalTimestamp;
+    return (
+      timestamp >= paymentTimestamp && timestamp <= observationWindowClosedAt
+    );
   });
   if (!activeTimeline.some((entry) => entry.route === "fulfillment")) {
     addDiagnostic(
@@ -359,6 +401,18 @@ function inspectTimeline(
       "Timeline indexes must strictly order Payment before Fulfillment before Result.",
     );
   }
+  const hasPostResultObservation = facts.timeline.some(
+    (entry, index) =>
+      index > terminalIndex &&
+      Date.parse(entry.observedAt) <= observationWindowClosedAt,
+  );
+  if (!hasPostResultObservation) {
+    addDiagnostic(
+      diagnostics,
+      "post_result_observation_missing",
+      "The bounded observation window must include an observation after the first Result.",
+    );
+  }
   for (const entry of activeTimeline) {
     if (!new Set(["payment", "fulfillment", "result"]).has(entry.route)) {
       addDiagnostic(
@@ -376,6 +430,30 @@ function inspectTimeline(
         diagnostics,
         "payment_identity_not_customer_surface_observed",
         "Payment observations must derive from the QR and identities rendered to the customer.",
+      );
+      break;
+    }
+    if (
+      entry.route === "fulfillment" &&
+      (entry.identitySource !== "customer_fulfillment_surface" ||
+        entry.commandId !== record.vendingCommand?.commandId)
+    ) {
+      addDiagnostic(
+        diagnostics,
+        "fulfillment_identity_not_customer_surface_observed",
+        "Fulfillment observations must derive from the rendered customer surface and command identity.",
+      );
+      break;
+    }
+    if (
+      entry.route === "result" &&
+      (entry.identitySource !== "customer_result_surface" ||
+        entry.commandId !== record.vendingCommand?.commandId)
+    ) {
+      addDiagnostic(
+        diagnostics,
+        "result_identity_not_customer_surface_observed",
+        "Result observations must derive from the rendered customer surface and command identity.",
       );
       break;
     }
@@ -402,13 +480,13 @@ function inspectTimeline(
     if (
       entry.route === "payment" &&
       (entry.renderedQrSource === null ||
-        entry.expectedQrSource === null ||
-        entry.renderedQrSource !== entry.expectedQrSource)
+        entry.decodedQrPayload === null ||
+        entry.decodedQrPayload !== entry.paymentUrl)
     ) {
       addDiagnostic(
         diagnostics,
         "rendered_payment_qr_source_mismatch",
-        "The rendered QR image source must encode the declared linked transaction payment URL.",
+        "The loaded rendered QR image must decode to the declared linked transaction payment URL.",
       );
       break;
     }
@@ -467,13 +545,38 @@ function inspectDisturbance(
       barrierObservation.paymentId !== record.payment.paymentId ||
       barrierObservation.paymentUrl !== record.payment.paymentUrl ||
       barrierObservation.renderedQrSource === null ||
-      barrierObservation.renderedQrSource !==
-        barrierObservation.expectedQrSource
+      barrierObservation.decodedQrPayload !== barrierObservation.paymentUrl
     ) {
       addDiagnostic(
         diagnostics,
         "disturbance_barrier_payment_qr_mismatch",
         "The disturbance barrier must reference the observed customer payment QR for the linked transaction.",
+      );
+    }
+    if (
+      injection.kind === "catalog_refresh" ||
+      injection.kind === "readiness_refresh"
+    ) {
+      const expectedState =
+        injection.kind === "catalog_refresh" ? "catalog" : "readiness";
+      if (
+        injection.pressure?.refreshedState !== expectedState ||
+        !injection.pressure.routeAuthorityWon ||
+        injection.pressure.attemptedRoute ===
+          injection.pressure.resolvedRoute ||
+        injection.pressure.resolvedRoute !== "/payment"
+      ) {
+        addDiagnostic(
+          diagnostics,
+          "competing_navigation_pressure_not_resolved",
+          "Catalog and readiness disturbances must compete with the active transaction route and prove route authority wins.",
+        );
+      }
+    } else if (injection.pressure !== null) {
+      addDiagnostic(
+        diagnostics,
+        "unexpected_competing_navigation_pressure",
+        "Only catalog and readiness disturbances may report competing navigation pressure.",
       );
     }
     const paymentEntry = facts.timeline.find(

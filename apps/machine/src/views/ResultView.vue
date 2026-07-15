@@ -342,7 +342,16 @@ onBeforeUnmount(stopAutoReturn);
         class="failure-slogan pointer-events-none"
       />
     </section>
-    <section v-else-if="copy" class="dispense-result-page">
+    <section
+      v-else-if="copy"
+      class="dispense-result-page"
+      data-installed-kiosk-sale-result-surface
+      :data-order-id="checkoutStore.transaction?.orderId ?? ''"
+      :data-payment-id="checkoutStore.transaction?.paymentId ?? ''"
+      :data-transaction-id="checkoutStore.transaction?.orderNo ?? ''"
+      :data-payment-url="checkoutStore.transaction?.paymentUrl ?? ''"
+      :data-command-id="checkoutStore.transaction?.vending?.commandId ?? ''"
+    >
       <div class="result-mist result-mist-left"></div>
       <div class="result-mist result-mist-right"></div>
 

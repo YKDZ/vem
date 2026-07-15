@@ -40,7 +40,6 @@ watch(
       :src="dataUrl"
       alt="支付二维码"
       data-installed-kiosk-sale-qr
-      :data-qr-payload="props.value"
     />
     <div
       v-else

@@ -1,20 +1,25 @@
 import type {
   InstalledKioskSaleCustomerPaymentSurface,
+  InstalledKioskSaleCustomerTransactionSurface,
   InstalledKioskSaleDisturbance,
 } from "@vem/shared";
 
 import { expect, type Page } from "@playwright/test";
+import jsQR from "jsqr";
+import { PNG } from "pngjs";
 
 import type { InstalledKioskSaleScenarioAdapter } from "./installed-kiosk-sale-driver";
 
 import { getMachineRuntimeScenario } from "../../src/dev/runtime-scenarios";
-import { renderPaymentQrDataUrl } from "../../src/utils/payment-qr";
 import { tapLocator } from "./touchscreen";
 import { loadMachineRuntimeScenario } from "./ui-debug";
 
 const readyCatalogScenario = getMachineRuntimeScenario("ready-catalog");
 
 export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleScenarioAdapter {
+  private paymentSurface: InstalledKioskSaleCustomerPaymentSurface | null =
+    null;
+
   constructor(private readonly page: Page) {}
 
   async startFromSaleableHome(): Promise<void> {
@@ -41,7 +46,9 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     );
   }
 
-  async assertPaymentQrPresented(): Promise<InstalledKioskSaleCustomerPaymentSurface> {
+  async assertPaymentQrPresented(
+    options: { assertDecodedPayload?: boolean } = {},
+  ): Promise<InstalledKioskSaleCustomerPaymentSurface> {
     await expect(this.page).toHaveURL(/#\/payment$/);
     await expect(
       this.page.getByRole("heading", { name: "订单支付" }),
@@ -49,6 +56,19 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     await expect(
       this.page.locator("[data-installed-kiosk-sale-qr]"),
     ).toBeVisible();
+    const qr = this.page.locator("[data-installed-kiosk-sale-qr]");
+    await expect
+      .poll(async () =>
+        qr.evaluate((element) => {
+          if (!(element instanceof HTMLImageElement)) return false;
+          return (
+            element.complete &&
+            element.naturalWidth > 0 &&
+            element.naturalHeight > 0
+          );
+        }),
+      )
+      .toBe(true);
     const surface = await this.page
       .locator("[data-installed-kiosk-sale-payment-surface]")
       .evaluate((element) => {
@@ -57,28 +77,38 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
           observedAt: new Date().toISOString(),
           orderId: element.getAttribute("data-order-id"),
           paymentId: element.getAttribute("data-payment-id"),
-          paymentUrl: qr?.getAttribute("data-qr-payload") ?? null,
+          transactionId: element.getAttribute("data-transaction-id"),
+          paymentUrl: element.getAttribute("data-payment-url"),
           renderedQrSource: qr?.getAttribute("src") ?? null,
         };
       });
     if (
       !surface.orderId ||
       !surface.paymentId ||
+      !surface.transactionId ||
       !surface.paymentUrl ||
       !surface.renderedQrSource ||
       !URL.canParse(surface.paymentUrl)
     ) {
       throw new Error("Rendered customer payment identity is incomplete");
     }
-    const observedSurface = {
+    const observedSurface: InstalledKioskSaleCustomerPaymentSurface = {
       observedAt: surface.observedAt,
       orderId: surface.orderId,
       paymentId: surface.paymentId,
+      transactionId: surface.transactionId,
       paymentUrl: surface.paymentUrl,
       renderedQrSource: surface.renderedQrSource,
-      expectedQrSource: await renderPaymentQrDataUrl(surface.paymentUrl),
+      decodedQrPayload: decodeRenderedPaymentQr(surface.renderedQrSource),
     };
+    if (
+      options.assertDecodedPayload !== false &&
+      observedSurface.decodedQrPayload !== observedSurface.paymentUrl
+    ) {
+      throw new Error("Rendered payment QR does not decode to the payment URL");
+    }
     await this.control("observePaymentSurface", observedSurface);
+    this.paymentSurface = observedSurface;
     return observedSurface;
   }
 
@@ -94,6 +124,10 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
 
   async assertFulfillmentStarted(): Promise<void> {
     await expect(this.page).toHaveURL(/#\/dispensing$/);
+    await this.observeTransactionSurface(
+      "[data-installed-kiosk-sale-fulfillment-surface]",
+      "fulfillment",
+    );
   }
 
   async completeFulfillment(): Promise<void> {
@@ -102,6 +136,16 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
 
   async assertSuccessfulResult(): Promise<void> {
     await expect(this.page).toHaveURL(/#\/result\/success$/);
+    await this.observeTransactionSurface(
+      "[data-installed-kiosk-sale-result-surface]",
+      "result",
+    );
+    await this.page.waitForTimeout(125);
+    const postResultSurface = await this.observeTransactionSurface(
+      "[data-installed-kiosk-sale-result-surface]",
+      "result",
+    );
+    await this.control("closeObservationWindow", postResultSurface.observedAt);
   }
 
   async readEvidence(): Promise<unknown> {
@@ -134,11 +178,21 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     surface: InstalledKioskSaleCustomerPaymentSurface,
   ): Promise<void>;
   private async control(
+    action: "observeTransactionSurface",
+    surface: InstalledKioskSaleCustomerTransactionSurface,
+  ): Promise<void>;
+  private async control(
+    action: "closeObservationWindow",
+    closedAt: string,
+  ): Promise<void>;
+  private async control(
     action:
       | "completePayment"
       | "completeDispense"
       | "inject"
-      | "observePaymentSurface",
+      | "observePaymentSurface"
+      | "observeTransactionSurface"
+      | "closeObservationWindow",
     argument?: unknown,
   ): Promise<void> {
     await this.page.evaluate(
@@ -163,4 +217,60 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
       { action, argument },
     );
   }
+
+  private async observeTransactionSurface(
+    selector: string,
+    route: InstalledKioskSaleCustomerTransactionSurface["route"],
+  ): Promise<InstalledKioskSaleCustomerTransactionSurface> {
+    const surface = await this.page.locator(selector).evaluate(
+      (element, route) => ({
+        observedAt: new Date().toISOString(),
+        route,
+        orderId: element.getAttribute("data-order-id"),
+        paymentId: element.getAttribute("data-payment-id"),
+        transactionId: element.getAttribute("data-transaction-id"),
+        paymentUrl: element.getAttribute("data-payment-url"),
+        commandId: element.getAttribute("data-command-id"),
+      }),
+      route,
+    );
+    if (
+      !surface.orderId ||
+      !surface.paymentId ||
+      !surface.transactionId ||
+      !surface.paymentUrl ||
+      !surface.commandId ||
+      !URL.canParse(surface.paymentUrl)
+    ) {
+      throw new Error(`Rendered ${route} identity is incomplete`);
+    }
+    const observedSurface: InstalledKioskSaleCustomerTransactionSurface =
+      surface;
+    if (!this.paymentSurface) {
+      throw new Error(
+        "Payment surface must be observed before transaction progress",
+      );
+    }
+    expect(observedSurface).toMatchObject({
+      orderId: this.paymentSurface.orderId,
+      paymentId: this.paymentSurface.paymentId,
+      transactionId: this.paymentSurface.transactionId,
+      paymentUrl: this.paymentSurface.paymentUrl,
+    });
+    await this.control("observeTransactionSurface", observedSurface);
+    return observedSurface;
+  }
+}
+
+function decodeRenderedPaymentQr(source: string): string {
+  const encoded = source.match(/^data:image\/png;base64,(.+)$/)?.[1];
+  if (!encoded) {
+    throw new Error("Rendered payment QR is not a PNG data URL");
+  }
+  const png = PNG.sync.read(Buffer.from(encoded, "base64"));
+  const decoded = jsQR(new Uint8ClampedArray(png.data), png.width, png.height);
+  if (!decoded) {
+    throw new Error("Rendered payment QR could not be decoded");
+  }
+  return decoded.data;
 }

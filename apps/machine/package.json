@@ -39,6 +39,7 @@
     "@types/pngjs": "^6.0.5",
     "@types/qrcode": "catalog:",
     "@vitejs/plugin-vue": "catalog:",
+    "jsqr": "^1.4.0",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
     "oxlint-tsgolint": "catalog:",
