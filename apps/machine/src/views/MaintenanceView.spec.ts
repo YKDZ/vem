@@ -1349,7 +1349,9 @@ describe("MaintenanceView hardware config", () => {
       machineAudioVolume: 0.42,
     });
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("顾客音频输出绑定与音频提示设置已保存");
+      expect(host.textContent).toContain(
+        "顾客音频输出绑定与音频提示设置已保存",
+      );
     });
   });
 

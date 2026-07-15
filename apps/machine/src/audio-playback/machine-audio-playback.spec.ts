@@ -343,7 +343,9 @@ describe("createMachineAudioPlayback", () => {
       name: "native" as const,
       playLocal: vi
         .fn<() => Promise<void>>()
-        .mockRejectedValue(new Error("configured audio output binding not found")),
+        .mockRejectedValue(
+          new Error("configured audio output binding not found"),
+        ),
       stop: vi.fn(),
     };
     const created: MockBrowserAudio[] = [];

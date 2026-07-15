@@ -109,8 +109,7 @@ export const machineConfigSchema = z
       .min(0)
       .max(1)
       .default(machineAudioVolumeDefault),
-    machineAudioOutputBinding:
-      machineAudioOutputBindingSchema.default(null),
+    machineAudioOutputBinding: machineAudioOutputBindingSchema.default(null),
     audioCueSettings: audioCueSettingsSchema.default(audioCueSettingsDefaults),
     kioskMode: z.boolean().default(false),
     stockMovementRetentionDays: z.int().min(1).max(366).default(30),

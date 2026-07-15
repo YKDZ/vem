@@ -113,7 +113,8 @@ export function createMachineAudioPlayback(
   const browserDriver =
     options.browserDriver ??
     (!options.driver ? createBrowserMachineAudioPlaybackDriver() : undefined);
-  const requireNativeOutputBinding = options.requireNativeOutputBinding === true;
+  const requireNativeOutputBinding =
+    options.requireNativeOutputBinding === true;
   const outputDeviceId = options.outputDeviceId ?? null;
   const nativePlaybackUnavailable =
     !options.driver &&
