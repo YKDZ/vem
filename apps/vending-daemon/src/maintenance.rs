@@ -1,6 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -26,6 +27,8 @@ const WINDOWS_TUNNEL_NAME: &str = "VEM-Maintenance";
 const WINDOWS_WIREGUARD_EXECUTABLE: &str = "wireguard.exe";
 const WINDOWS_WG_EXECUTABLE: &str = "wg.exe";
 const WINDOWS_WIREGUARD_DIRECTORY: &str = "WireGuard";
+const WINDOWS_TUNNEL_INSTALL_ATTEMPTS: usize = 20;
+const WINDOWS_TUNNEL_INSTALL_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 struct WireGuardExecutables {
@@ -355,6 +358,7 @@ pub struct WindowsWireGuardTunnel {
     config_store: Arc<dyn WireGuardEncryptedConfigStore>,
     commands: Arc<dyn TunnelCommandRunner>,
     executables: Option<WireGuardExecutables>,
+    install_retry_delay: Duration,
     apply_lock: Arc<Mutex<()>>,
 }
 
@@ -365,6 +369,7 @@ impl Default for WindowsWireGuardTunnel {
             config_store: Arc::new(WindowsDpapiWireGuardConfigStore),
             commands: Arc::new(ProcessTunnelCommandRunner),
             executables: None,
+            install_retry_delay: WINDOWS_TUNNEL_INSTALL_RETRY_DELAY,
             apply_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -384,6 +389,7 @@ impl WindowsWireGuardTunnel {
                 wireguard: PathBuf::from(r"C:\Program Files\WireGuard\wireguard.exe"),
                 wg: PathBuf::from(r"C:\Program Files\WireGuard\wg.exe"),
             }),
+            install_retry_delay: Duration::from_millis(0),
             apply_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -414,6 +420,31 @@ impl WindowsWireGuardTunnel {
                 ],
             )
             .await
+    }
+
+    async fn install_service_after_removal(
+        &self,
+        wireguard_executable: &str,
+        config_path: &Path,
+    ) -> Result<(), String> {
+        let args = vec![
+            "/installtunnelservice".to_string(),
+            config_path.to_string_lossy().to_string(),
+        ];
+        for attempt in 0..WINDOWS_TUNNEL_INSTALL_ATTEMPTS {
+            let install = self
+                .commands
+                .run(wireguard_executable, &args)
+                .await
+                .map_err(|_| "WireGuard tunnel service installation failed".to_string())?;
+            if install.success {
+                return Ok(());
+            }
+            if attempt + 1 < WINDOWS_TUNNEL_INSTALL_ATTEMPTS {
+                tokio::time::sleep(self.install_retry_delay).await;
+            }
+        }
+        Err("WireGuard tunnel service rejected configuration".to_string())
     }
 }
 
@@ -451,30 +482,14 @@ impl WindowsTunnelBackend for WindowsWireGuardTunnel {
         let _ = self
             .uninstall_service(&wireguard_executable, tunnel_name)
             .await;
-        let install = self
-            .commands
-            .run(
-                &wireguard_executable,
-                &[
-                    "/installtunnelservice".to_string(),
-                    path.to_string_lossy().to_string(),
-                ],
-            )
-            .await;
-        let install = match install {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = self
-                    .uninstall_service(&wireguard_executable, tunnel_name)
-                    .await;
-                return Err(error);
-            }
-        };
-        if !install.success {
+        if let Err(error) = self
+            .install_service_after_removal(&wireguard_executable, &path)
+            .await
+        {
             let _ = self
                 .uninstall_service(&wireguard_executable, tunnel_name)
                 .await;
-            return Err("WireGuard tunnel service rejected configuration".to_string());
+            return Err(error);
         }
         Ok(())
     }
@@ -1463,50 +1478,137 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_install_is_cleaned_up_and_retries_the_same_tunnel_identity() {
+    async fn install_retries_after_service_removal_until_the_stable_identity_is_accepted() {
         let encrypted_path = PathBuf::from(
             r"C:\Program Files\WireGuard\Data\Configurations\VEM-Maintenance.conf.dpapi",
         );
         let config_store = Arc::new(FakeEncryptedConfigStore {
-            path: encrypted_path,
+            path: encrypted_path.clone(),
             writes: Mutex::new(Vec::new()),
         });
         let commands = Arc::new(FakeCommandRunner {
             calls: Mutex::new(Vec::new()),
             results: Mutex::new(VecDeque::from([
-                CommandOutput::failure(),
-                CommandOutput::failure(),
                 CommandOutput::success(),
-                CommandOutput::failure(),
+                CommandOutput {
+                    success: false,
+                    stdout: "ignored".to_string(),
+                    stderr: "ignored".to_string(),
+                },
                 CommandOutput::success(),
             ])),
         });
         let tunnel = WindowsWireGuardTunnel::with_dependencies(config_store, commands.clone());
 
-        assert!(tunnel
+        tunnel
             .apply(MaintenanceTunnelIdentity::Active, tunnel_config())
             .await
-            .is_err());
+            .expect("retry after service deletion");
+
+        assert_eq!(
+            commands.calls.lock().await.as_slice(),
+            [
+                (
+                    r"C:\Program Files\WireGuard\wireguard.exe".to_string(),
+                    vec![
+                        "/uninstalltunnelservice".to_string(),
+                        "VEM-Maintenance".to_string(),
+                    ],
+                ),
+                (
+                    r"C:\Program Files\WireGuard\wireguard.exe".to_string(),
+                    vec![
+                        "/installtunnelservice".to_string(),
+                        encrypted_path.to_string_lossy().to_string(),
+                    ],
+                ),
+                (
+                    r"C:\Program Files\WireGuard\wireguard.exe".to_string(),
+                    vec![
+                        "/installtunnelservice".to_string(),
+                        encrypted_path.to_string_lossy().to_string(),
+                    ],
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_install_is_cleaned_up_and_returns_a_generic_error() {
+        let encrypted_path = PathBuf::from(
+            r"C:\Program Files\WireGuard\Data\Configurations\VEM-Maintenance.conf.dpapi",
+        );
+        let config_store = Arc::new(FakeEncryptedConfigStore {
+            path: encrypted_path.clone(),
+            writes: Mutex::new(Vec::new()),
+        });
+        let mut results = VecDeque::from([
+            CommandOutput::success(),
+            CommandOutput {
+                success: false,
+                stdout: "PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                stderr: "WireGuard diagnostic output".to_string(),
+            },
+        ]);
+        results.extend(
+            std::iter::repeat_with(CommandOutput::failure)
+                .take(WINDOWS_TUNNEL_INSTALL_ATTEMPTS - 1),
+        );
+        results.extend([
+            CommandOutput::success(),
+            CommandOutput::success(),
+            CommandOutput::success(),
+        ]);
+        let commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(results),
+        });
+        let tunnel = WindowsWireGuardTunnel::with_dependencies(config_store, commands.clone());
+
+        let error = tunnel
+            .apply(MaintenanceTunnelIdentity::Active, tunnel_config())
+            .await
+            .expect_err("reject configuration after bounded retries");
+        assert_eq!(error, "WireGuard tunnel service rejected configuration");
+        assert!(!error.contains("PrivateKey"));
+        assert!(!error.contains("diagnostic"));
         tunnel
             .apply(MaintenanceTunnelIdentity::Active, tunnel_config())
             .await
             .expect("retry tunnel");
 
         let calls = commands.calls.lock().await;
+        let uninstall_call = (
+            r"C:\Program Files\WireGuard\wireguard.exe".to_string(),
+            vec![
+                "/uninstalltunnelservice".to_string(),
+                "VEM-Maintenance".to_string(),
+            ],
+        );
+        let install_call = (
+            r"C:\Program Files\WireGuard\wireguard.exe".to_string(),
+            vec![
+                "/installtunnelservice".to_string(),
+                encrypted_path.to_string_lossy().to_string(),
+            ],
+        );
+        let mut expected_calls = Vec::with_capacity(WINDOWS_TUNNEL_INSTALL_ATTEMPTS + 4);
+        expected_calls.push(uninstall_call.clone());
+        expected_calls.extend((0..WINDOWS_TUNNEL_INSTALL_ATTEMPTS).map(|_| install_call.clone()));
+        expected_calls.push(uninstall_call.clone());
+        expected_calls.push(uninstall_call);
+        expected_calls.push(install_call);
+
+        assert_eq!(calls.as_slice(), expected_calls.as_slice());
         assert_eq!(
             calls
                 .iter()
-                .filter(
-                    |(_, args)| args.first().map(String::as_str) == Some("/installtunnelservice")
-                )
+                .filter(|(_, args)| {
+                    args.first().map(String::as_str) == Some("/uninstalltunnelservice")
+                })
                 .count(),
-            2
+            3
         );
-        assert!(calls.iter().all(|(_, args)| {
-            args.get(1).is_some_and(|identity| {
-                identity == "VEM-Maintenance" || identity.ends_with("VEM-Maintenance.conf.dpapi")
-            })
-        }));
     }
 
     #[tokio::test]
