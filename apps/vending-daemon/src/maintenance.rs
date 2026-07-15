@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -19,6 +22,63 @@ use crate::{
 const WINDOWS_TUNNEL_NAME: &str = "VEM-Maintenance";
 const WINDOWS_WIREGUARD_EXECUTABLE: &str = "wireguard.exe";
 const WINDOWS_WG_EXECUTABLE: &str = "wg.exe";
+const WINDOWS_WIREGUARD_DIRECTORY: &str = "WireGuard";
+
+#[derive(Clone)]
+struct WireGuardExecutables {
+    wireguard: PathBuf,
+    wg: PathBuf,
+}
+
+fn pinned_wireguard_executable_candidates(
+    executable: &str,
+    program_files: Option<PathBuf>,
+    program_files_x86: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    [program_files, program_files_x86]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join(WINDOWS_WIREGUARD_DIRECTORY).join(executable))
+        .collect()
+}
+
+fn resolve_pinned_wireguard_executable_from_roots<F>(
+    executable: &str,
+    program_files: Option<PathBuf>,
+    program_files_x86: Option<PathBuf>,
+    exists: F,
+) -> Result<PathBuf, String>
+where
+    F: Fn(&Path) -> bool,
+{
+    let candidates =
+        pinned_wireguard_executable_candidates(executable, program_files, program_files_x86);
+    if let Some(path) = candidates.iter().find(|path| exists(path)) {
+        return Ok(path.clone());
+    }
+    if candidates.is_empty() {
+        return Err(format!(
+            "pinned WireGuard executable {executable} cannot be resolved: ProgramFiles and ProgramFiles(x86) are unavailable"
+        ));
+    }
+    Err(format!(
+        "pinned WireGuard executable {executable} was not found; checked {}",
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    ))
+}
+
+fn resolve_pinned_wireguard_executable(executable: &str) -> Result<PathBuf, String> {
+    resolve_pinned_wireguard_executable_from_roots(
+        executable,
+        std::env::var_os("ProgramFiles").map(PathBuf::from),
+        std::env::var_os("ProgramFiles(x86)").map(PathBuf::from),
+        Path::is_file,
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaintenanceTunnelIdentity {
@@ -294,6 +354,7 @@ pub struct WindowsWireGuardTunnel {
     enabled: bool,
     config_store: Arc<dyn WireGuardEncryptedConfigStore>,
     commands: Arc<dyn TunnelCommandRunner>,
+    executables: Option<WireGuardExecutables>,
     apply_lock: Arc<Mutex<()>>,
 }
 
@@ -303,6 +364,7 @@ impl Default for WindowsWireGuardTunnel {
             enabled: cfg!(windows),
             config_store: Arc::new(WindowsDpapiWireGuardConfigStore),
             commands: Arc::new(ProcessTunnelCommandRunner),
+            executables: None,
             apply_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -318,14 +380,34 @@ impl WindowsWireGuardTunnel {
             enabled: true,
             config_store,
             commands,
+            executables: Some(WireGuardExecutables {
+                wireguard: PathBuf::from(r"C:\Program Files\WireGuard\wireguard.exe"),
+                wg: PathBuf::from(r"C:\Program Files\WireGuard\wg.exe"),
+            }),
             apply_lock: Arc::new(Mutex::new(())),
         }
     }
 
-    async fn uninstall_service(&self, tunnel_name: &str) -> Result<CommandOutput, String> {
+    fn executable(&self, name: &str) -> Result<String, String> {
+        let path = match self.executables.as_ref() {
+            Some(executables) => match name {
+                WINDOWS_WIREGUARD_EXECUTABLE => executables.wireguard.clone(),
+                WINDOWS_WG_EXECUTABLE => executables.wg.clone(),
+                _ => return Err(format!("unsupported pinned WireGuard executable: {name}")),
+            },
+            None => resolve_pinned_wireguard_executable(name)?,
+        };
+        Ok(path.to_string_lossy().into_owned())
+    }
+
+    async fn uninstall_service(
+        &self,
+        wireguard_executable: &str,
+        tunnel_name: &str,
+    ) -> Result<CommandOutput, String> {
         self.commands
             .run(
-                WINDOWS_WIREGUARD_EXECUTABLE,
+                wireguard_executable,
                 &[
                     "/uninstalltunnelservice".to_string(),
                     tunnel_name.to_string(),
@@ -347,6 +429,7 @@ impl WindowsTunnelBackend for WindowsWireGuardTunnel {
         }
         let _apply_guard = self.apply_lock.lock().await;
         let tunnel_name = identity.tunnel_name();
+        let wireguard_executable = self.executable(WINDOWS_WIREGUARD_EXECUTABLE)?;
         let allowed_ips = config.role_routes.join(",");
         let contents = format!(
             "[Interface]\nPrivateKey = {}\nAddress = {}\n\n[Peer]\nPublicKey = {}\nAllowedIPs = {}\nEndpoint = {}\nPersistentKeepalive = 25\n",
@@ -365,11 +448,13 @@ impl WindowsTunnelBackend for WindowsWireGuardTunnel {
         if !normalized_path.ends_with(&format!("/{tunnel_name}.conf.dpapi")) {
             return Err("WireGuard tunnel configuration identity is unstable".to_string());
         }
-        let _ = self.uninstall_service(tunnel_name).await;
+        let _ = self
+            .uninstall_service(&wireguard_executable, tunnel_name)
+            .await;
         let install = self
             .commands
             .run(
-                WINDOWS_WIREGUARD_EXECUTABLE,
+                &wireguard_executable,
                 &[
                     "/installtunnelservice".to_string(),
                     path.to_string_lossy().to_string(),
@@ -379,12 +464,16 @@ impl WindowsTunnelBackend for WindowsWireGuardTunnel {
         let install = match install {
             Ok(output) => output,
             Err(error) => {
-                let _ = self.uninstall_service(tunnel_name).await;
+                let _ = self
+                    .uninstall_service(&wireguard_executable, tunnel_name)
+                    .await;
                 return Err(error);
             }
         };
         if !install.success {
-            let _ = self.uninstall_service(tunnel_name).await;
+            let _ = self
+                .uninstall_service(&wireguard_executable, tunnel_name)
+                .await;
             return Err("WireGuard tunnel service rejected configuration".to_string());
         }
         Ok(())
@@ -396,7 +485,10 @@ impl WindowsTunnelBackend for WindowsWireGuardTunnel {
         }
         let _guard = self.apply_lock.lock().await;
         let tunnel_name = identity.tunnel_name();
-        let uninstall = self.uninstall_service(tunnel_name).await?;
+        let wireguard_executable = self.executable(WINDOWS_WIREGUARD_EXECUTABLE)?;
+        let uninstall = self
+            .uninstall_service(&wireguard_executable, tunnel_name)
+            .await?;
         if !uninstall.success {
             return Err("WireGuard tunnel service removal failed".to_string());
         }
@@ -415,10 +507,11 @@ impl WindowsTunnelBackend for WindowsWireGuardTunnel {
                 message: "first WireGuard handshake has not been observed".to_string(),
             });
         }
+        let wg_executable = self.executable(WINDOWS_WG_EXECUTABLE)?;
         let output = self
             .commands
             .run(
-                WINDOWS_WG_EXECUTABLE,
+                &wg_executable,
                 &[
                     "show".to_string(),
                     identity.tunnel_name().to_string(),
@@ -1292,6 +1385,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resolves_pinned_wireguard_executables_from_program_files_before_x86_fallback() {
+        let program_files = PathBuf::from("/pinned/Program Files");
+        let program_files_x86 = PathBuf::from("/pinned/Program Files (x86)");
+        let primary = program_files
+            .join(WINDOWS_WIREGUARD_DIRECTORY)
+            .join(WINDOWS_WIREGUARD_EXECUTABLE);
+        let x86_fallback = program_files_x86
+            .join(WINDOWS_WIREGUARD_DIRECTORY)
+            .join(WINDOWS_WIREGUARD_EXECUTABLE);
+
+        let selected = resolve_pinned_wireguard_executable_from_roots(
+            WINDOWS_WIREGUARD_EXECUTABLE,
+            Some(program_files.clone()),
+            Some(program_files_x86.clone()),
+            |path| path == primary || path == x86_fallback,
+        )
+        .expect("select primary pinned executable");
+        assert_eq!(selected, primary);
+
+        let selected = resolve_pinned_wireguard_executable_from_roots(
+            WINDOWS_WIREGUARD_EXECUTABLE,
+            Some(program_files),
+            Some(program_files_x86),
+            |path| path == x86_fallback,
+        )
+        .expect("select x86 fallback executable");
+        assert_eq!(selected, x86_fallback);
+    }
+
     #[tokio::test]
     async fn installs_one_stable_dpapi_tunnel_identity_without_plaintext_temp_files() {
         let encrypted_path = PathBuf::from(
@@ -1319,14 +1442,14 @@ mod tests {
             commands.calls.lock().await.as_slice(),
             [
                 (
-                    "wireguard.exe".to_string(),
+                    r"C:\Program Files\WireGuard\wireguard.exe".to_string(),
                     vec![
                         "/uninstalltunnelservice".to_string(),
                         "VEM-Maintenance".to_string(),
                     ],
                 ),
                 (
-                    "wireguard.exe".to_string(),
+                    r"C:\Program Files\WireGuard\wireguard.exe".to_string(),
                     vec![
                         "/installtunnelservice".to_string(),
                         encrypted_path.to_string_lossy().to_string(),
@@ -1412,7 +1535,7 @@ mod tests {
         assert_eq!(
             commands.calls.lock().await.as_slice(),
             [(
-                "wg.exe".to_string(),
+                r"C:\Program Files\WireGuard\wg.exe".to_string(),
                 vec![
                     "show".to_string(),
                     "VEM-Maintenance".to_string(),
