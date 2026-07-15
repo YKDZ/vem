@@ -149,9 +149,6 @@ export type MachineAudioOutputBinding = z.infer<
   typeof machineAudioOutputBindingSchema
 >;
 export type MachineConfig = z.infer<typeof machineConfigSchema>;
-export type MachineAudioOutputBinding = NonNullable<
-  MachineConfig["machineAudioOutputBinding"]
->;
 
 export const machineConfigDefaults: MachineConfig = machineConfigSchema.parse(
   {},
