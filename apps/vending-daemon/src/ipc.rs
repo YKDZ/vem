@@ -353,8 +353,11 @@ impl DaemonMaintenanceAuthorization {
         &self,
         request: CreateMaintenanceSessionRequest,
     ) -> Result<MaintenanceSessionResponse, String> {
-        let now = Instant::now();
-        if self.pin_verification_throttle.lock().await.blocks_now(now) {
+        // PIN verification is deliberately part of the throttle critical
+        // section. Releasing this guard before the KDF completes would let
+        // concurrent attempts all pass the initial rate-limit check.
+        let mut throttle = self.pin_verification_throttle.lock().await;
+        if throttle.blocks_now(Instant::now()) {
             return Err("maintenance PIN verification failed".to_string());
         }
         let verified = !request.pin.is_empty()
@@ -362,7 +365,6 @@ impl DaemonMaintenanceAuthorization {
                 .config_store
                 .verify_maintenance_pin(&request.pin)
                 .await?;
-        let mut throttle = self.pin_verification_throttle.lock().await;
         if !verified {
             throttle.record_failure(Instant::now());
             return Err("maintenance PIN verification failed".to_string());
@@ -6314,6 +6316,22 @@ mod tests {
         fail_machine_secret_reads: AtomicBool,
     }
 
+    struct BarrierMaintenancePinSecretStore {
+        inner: InMemorySecretStore,
+        verification_barrier: tokio::sync::Barrier,
+        verification_calls: AtomicUsize,
+    }
+
+    impl BarrierMaintenancePinSecretStore {
+        fn new(concurrent_attempts: usize) -> Self {
+            Self {
+                inner: InMemorySecretStore::default(),
+                verification_barrier: tokio::sync::Barrier::new(concurrent_attempts),
+                verification_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl SecretStore for ToggleMachineSecretReadStore {
         async fn read_secret(&self, account: &str) -> Result<Option<String>, String> {
@@ -6321,6 +6339,33 @@ mod tests {
                 && self.fail_machine_secret_reads.load(Ordering::SeqCst)
             {
                 return Err("injected machine secret read failure".to_string());
+            }
+            self.inner.read_secret(account).await
+        }
+
+        async fn write_secret(&self, account: &str, value: &str) -> Result<(), String> {
+            self.inner.write_secret(account, value).await
+        }
+
+        async fn clear_all(&self) -> Result<(), String> {
+            self.inner.clear_all().await
+        }
+
+        async fn status(&self) -> Result<SecretStoreStatus, String> {
+            self.inner.status().await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStore for BarrierMaintenancePinSecretStore {
+        async fn read_secret(&self, account: &str) -> Result<Option<String>, String> {
+            if account == crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT {
+                self.verification_calls.fetch_add(1, Ordering::SeqCst);
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(100),
+                    self.verification_barrier.wait(),
+                )
+                .await;
             }
             self.inner.read_secret(account).await
         }
@@ -13045,6 +13090,64 @@ mod tests {
             .await
             .expect("body");
         assert!(!String::from_utf8_lossy(&body).contains("2468"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_wrong_maintenance_pins_are_serialized_before_verification() {
+        const CONCURRENT_ATTEMPTS: usize = 4;
+
+        let temp_dir = tempdir().expect("tmp");
+        let state = LocalStateStore::open(&temp_dir.path().join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(BarrierMaintenancePinSecretStore::new(CONCURRENT_ATTEMPTS));
+        secrets
+            .write_secret(
+                crate::secret::MACHINE_MAINTENANCE_PIN_ACCOUNT,
+                TEST_MAINTENANCE_PIN_VERIFIER,
+            )
+            .await
+            .expect("seed maintenance PIN verifier");
+        let authorization = Arc::new(DaemonMaintenanceAuthorization::new(Arc::new(
+            ConfigStore::new(temp_dir.path().join("config"), state, secrets.clone()),
+        )));
+        let start = Arc::new(tokio::sync::Barrier::new(CONCURRENT_ATTEMPTS + 1));
+        let mut attempts = Vec::with_capacity(CONCURRENT_ATTEMPTS);
+
+        for _ in 0..CONCURRENT_ATTEMPTS {
+            let authorization = authorization.clone();
+            let start = start.clone();
+            attempts.push(tokio::spawn(async move {
+                start.wait().await;
+                authorization
+                    .issue(CreateMaintenanceSessionRequest {
+                        pin: "0000".to_string(),
+                        scopes: Vec::new(),
+                        operator_id: None,
+                    })
+                    .await
+            }));
+        }
+        start.wait().await;
+
+        for attempt in attempts {
+            assert_eq!(
+                attempt
+                    .await
+                    .expect("PIN attempt task")
+                    .expect_err("wrong PIN is rejected"),
+                "maintenance PIN verification failed"
+            );
+        }
+
+        assert_eq!(
+            secrets.verification_calls.load(Ordering::SeqCst),
+            3,
+            "the fourth concurrent wrong PIN must be throttled before KDF verification"
+        );
+        let throttle = authorization.pin_verification_throttle.lock().await;
+        assert_eq!(throttle.consecutive_failures, 3);
+        assert!(throttle.blocks_now(Instant::now()));
     }
 
     #[tokio::test]
