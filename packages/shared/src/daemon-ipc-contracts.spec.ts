@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   daemonIpcCheckoutFlowActionSchema,
   daemonIpcEventNotificationSchema,
+  daemonIpcDeviceBindingSnapshotSchema,
   daemonIpcDispenseProgressObservationStageSchema,
   daemonIpcScannerStatusSchema,
   daemonIpcPickupReminderSchema,
@@ -31,6 +32,74 @@ import {
 describe("Daemon IPC Contract Area", () => {
   const awaitingPaymentTransaction =
     validCurrentDaemonIpcTransactionSnapshots.awaitingPayment;
+
+  it("keeps stable serial identity separate from the observed COM address", () => {
+    const snapshot = daemonIpcDeviceBindingSnapshotSchema.parse({
+      roles: [
+        {
+          role: "lower_controller",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_SELECTION_REQUIRED",
+          message: "operator selection required",
+          ambiguous: true,
+          ambiguityPorts: ["COM5", "COM9"],
+          legacyPortHint: "COM5",
+          candidates: [
+            {
+              identity: {
+                identityKey: "container:controller-1",
+                instanceId: "USB\\CONTROLLER-1",
+                containerId: "controller-1",
+                hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+                serialNumber: null,
+              },
+              currentPort: "COM9",
+              friendlyName: "lower controller",
+              readiness: "candidate",
+              readinessCode: "ROLE_TEST_REQUIRED",
+              readinessMessage: "test required",
+            },
+          ],
+        },
+        {
+          role: "scanner",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_REQUIRED",
+          message: "binding required",
+          ambiguous: false,
+          ambiguityPorts: [],
+          legacyPortHint: "COM3",
+          candidates: [],
+        },
+      ],
+    });
+
+    expect(snapshot.roles[0]?.candidates[0]).toMatchObject({
+      currentPort: "COM9",
+      identity: { identityKey: "container:controller-1" },
+    });
+    expect(() =>
+      daemonIpcDeviceBindingSnapshotSchema.parse({
+        ...snapshot,
+        roles: [
+          {
+            ...snapshot.roles[0],
+            candidates: [
+              {
+                ...snapshot.roles[0]?.candidates[0],
+                identity: { identityKey: "COM9" },
+              },
+            ],
+          },
+          snapshot.roles[1],
+        ],
+      }),
+    ).toThrow();
+  });
 
   it("publishes the strict Checkout Flow Action vocabulary", () => {
     expect(daemonIpcCheckoutFlowActionSchema.options).toEqual([

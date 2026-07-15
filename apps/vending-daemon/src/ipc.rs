@@ -59,6 +59,20 @@ struct ClearWholeMachineMaintenanceLockRequest {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeviceBindingCandidateRequest {
+    identity_key: String,
+}
+
+fn parse_local_device_role(value: &str) -> Option<crate::device_binding::LocalDeviceRole> {
+    match value {
+        "lower_controller" => Some(crate::device_binding::LocalDeviceRole::LowerController),
+        "scanner" => Some(crate::device_binding::LocalDeviceRole::Scanner),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClaimMachineRequest {
     claim_code: String,
 }
@@ -637,6 +651,8 @@ pub struct IpcContext {
     pub hardware: HardwareSupervisor,
     pub events: broadcast::Sender<DaemonEvent>,
     pub runtime_tx: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+    pub scanner_runtime: crate::scanner::ScannerRuntimeController,
+    pub serial_device_platform: crate::device_binding::SharedSerialDevicePlatform,
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
@@ -713,6 +729,15 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(transaction_by_order_no))
         .route("/v1/hardware/self-check", post(hardware_self_check))
+        .route("/v1/hardware-bindings", get(device_binding_snapshot))
+        .route(
+            "/v1/hardware-bindings/:role/test",
+            post(test_device_binding_candidate),
+        )
+        .route(
+            "/v1/hardware-bindings/:role/confirm",
+            post(confirm_device_binding_candidate),
+        )
         .route("/v1/environment/control", post(control_environment))
         .route(
             "/v1/hardware/fault-injection/next-dispense",
@@ -4688,6 +4713,366 @@ fn normalize_current_transaction_ipc_value(value: &mut serde_json::Value) {
     *vending_status = serde_json::Value::String(normalized.to_string());
 }
 
+async fn device_binding_snapshot(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let observed = match ctx.serial_device_platform.discover().await {
+        Ok(observed) => observed,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "serial_device_discovery_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let public = match ctx.config_store.load_effective_public_config().await {
+        Ok(public) => public,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_missing",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let settings = match ctx.config_store.load_local_bring_up_settings().await {
+        Ok(settings) => settings.unwrap_or_default(),
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "local_bring_up_settings_read_failed",
+                    message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    Json(serde_json::json!({
+        "roles": [
+            crate::device_binding::project_role_binding(
+                crate::device_binding::LocalDeviceRole::LowerController,
+                settings.lower_controller_binding,
+                public.serial_port_path,
+                &observed,
+            ),
+            crate::device_binding::project_role_binding(
+                crate::device_binding::LocalDeviceRole::Scanner,
+                settings.scanner_binding,
+                public.scanner_serial_port_path,
+                &observed,
+            ),
+        ]
+    }))
+    .into_response()
+}
+
+async fn find_requested_device_candidate(
+    ctx: &IpcContext,
+    identity_key: &str,
+) -> Result<crate::device_binding::ObservedSerialDevice, axum::response::Response> {
+    let observed = ctx
+        .serial_device_platform
+        .discover()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "serial_device_discovery_failed",
+                    message: error,
+                }),
+            )
+                .into_response()
+        })?;
+    let mut matching = observed.into_iter().filter(|candidate| {
+        crate::device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
+            .is_ok_and(|identity| identity.identity_key == identity_key)
+    });
+    let candidate = matching.next().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage {
+                code: "device_binding_candidate_missing",
+                message: "selected stable device identity is not currently attached".to_string(),
+            }),
+        )
+            .into_response()
+    })?;
+    if matching.next().is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "device_binding_candidate_ambiguous",
+                message: "selected stable device identity resolves to multiple current ports"
+                    .to_string(),
+            }),
+        )
+            .into_response());
+    }
+    Ok(candidate)
+}
+
+async fn test_device_binding_candidate(
+    State(ctx): State<IpcContext>,
+    AxumPath(role): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<DeviceBindingCandidateRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let Some(role) = parse_local_device_role(&role) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage {
+                code: "device_binding_role_unknown",
+                message: "unknown local hardware role".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let action = match role {
+        crate::device_binding::LocalDeviceRole::LowerController => {
+            "hardware_binding.lower_controller.test"
+        }
+        crate::device_binding::LocalDeviceRole::Scanner => "hardware_binding.scanner.test",
+    };
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, action).await
+    {
+        return response;
+    }
+    let candidate = match find_requested_device_candidate(&ctx, request.identity_key.trim()).await {
+        Ok(candidate) => candidate,
+        Err(response) => return response,
+    };
+    let result = ctx
+        .serial_device_platform
+        .test_candidate(role, &candidate)
+        .await;
+    let status = if result.success {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
+    (status, Json(result)).into_response()
+}
+
+async fn confirm_device_binding_candidate(
+    State(ctx): State<IpcContext>,
+    AxumPath(role): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<DeviceBindingCandidateRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let Some(role) = parse_local_device_role(&role) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage {
+                code: "device_binding_role_unknown",
+                message: "unknown local hardware role".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let action = match role {
+        crate::device_binding::LocalDeviceRole::LowerController => {
+            "hardware_binding.lower_controller.confirm"
+        }
+        crate::device_binding::LocalDeviceRole::Scanner => "hardware_binding.scanner.confirm",
+    };
+    if let Err(response) =
+        require_non_bring_up_maintenance_authorization(&ctx, &headers, action).await
+    {
+        return response;
+    }
+    let _guard = ctx.bring_up_execution_lock.lock().await;
+    if ctx
+        .state
+        .current_transaction_snapshot()
+        .await
+        .ok()
+        .flatten()
+        .as_ref()
+        .is_some_and(crate::transaction::is_active_transaction)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "device_binding_active_sale",
+                message: "hardware binding cannot change during an active sale".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let candidate = match find_requested_device_candidate(&ctx, request.identity_key.trim()).await {
+        Ok(candidate) => candidate,
+        Err(response) => return response,
+    };
+    let tested = ctx
+        .serial_device_platform
+        .test_candidate(role, &candidate)
+        .await;
+    if !tested.success {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(tested)).into_response();
+    }
+    let identity =
+        match crate::device_binding::StableSerialDeviceIdentity::try_from_observation(&candidate) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ErrorMessage {
+                        code: "device_identity_unstable",
+                        message: error,
+                    }),
+                )
+                    .into_response()
+            }
+        };
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown");
+    let operator = ctx
+        .maintenance_authorization
+        .operator_id(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await;
+    let binding = crate::device_binding::LocalSerialRoleBinding {
+        identity,
+        confirmed_at: crate::state::store::now_iso(),
+        confirmed_by: operator.unwrap_or_else(|| "local_maintenance".to_string()),
+        test_evidence_code: tested.code.clone(),
+    };
+    let previous_settings = ctx
+        .config_store
+        .load_local_bring_up_settings()
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if let Err(message) = ctx
+        .config_store
+        .save_local_device_binding(role, binding.clone())
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorMessage {
+                code: "device_binding_persist_failed",
+                message,
+            }),
+        )
+            .into_response();
+    }
+    let mut runtime_config = match ctx.config_store.load_effective_public_config().await {
+        Ok(config) => config,
+        Err(message) => {
+            let _ = ctx
+                .config_store
+                .restore_local_bring_up_settings_snapshot(&previous_settings)
+                .await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_missing",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = crate::device_binding::apply_resolved_binding_to_runtime_config(
+        &mut runtime_config,
+        role,
+        &binding,
+        std::slice::from_ref(&candidate),
+    ) {
+        let _ = ctx
+            .config_store
+            .restore_local_bring_up_settings_snapshot(&previous_settings)
+            .await;
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "device_binding_resolution_failed",
+                message: error,
+            }),
+        )
+            .into_response();
+    }
+    let activation = match role {
+        crate::device_binding::LocalDeviceRole::LowerController => {
+            match ctx
+                .hardware
+                .reconfigure_from_config(
+                    &runtime_config,
+                    Some(ctx.data_dir.join("logs").join("serial-protocol.jsonl")),
+                )
+                .await
+            {
+                Ok(status) if status.online => {
+                    *ctx.ui.status_cache.hardware.write().await = status;
+                    Ok(())
+                }
+                Ok(status) => Err(status.message),
+                Err(error) => Err(error),
+            }
+        }
+        crate::device_binding::LocalDeviceRole::Scanner => {
+            ctx.scanner_runtime
+                .reconfigure_from_config(&runtime_config)
+                .await
+        }
+    };
+    if let Err(error) = activation {
+        let rollback_result = ctx
+            .config_store
+            .restore_local_bring_up_settings_snapshot(&previous_settings)
+            .await;
+        let message = match rollback_result {
+            Ok(()) => error,
+            Err(rollback_error) => format!("{error}; binding rollback failed: {rollback_error}"),
+        };
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorMessage {
+                code: "device_binding_activation_failed",
+                message,
+            }),
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "binding": binding,
+            "currentPort": candidate.current_port,
+            "ready": true,
+            "code": "DEVICE_BINDING_ACTIVATED",
+            "message": "binding persisted and affected adapter reconfigured",
+            "unrelatedRuntimeRestarted": false,
+        })),
+    )
+        .into_response()
+}
+
 async fn hardware_self_check(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -4721,7 +5106,7 @@ async fn hardware_self_check(
 async fn run_hardware_self_check(
     ctx: &IpcContext,
 ) -> Result<(vending_core::hardware::HardwareStatus, bool), axum::response::Response> {
-    let public = match ctx.config_store.load_effective_public_config().await {
+    let mut public = match ctx.config_store.load_effective_public_config().await {
         Ok(public) => public,
         Err(error) => {
             return Err((
@@ -4735,36 +5120,63 @@ async fn run_hardware_self_check(
         }
     };
 
-    let mut config_updated = false;
-    let status = match crate::hardware::HardwareSupervisor::from_config(&public) {
-        Ok(supervisor) => supervisor.self_check().await,
-        Err(error) => vending_core::hardware::HardwareStatus {
-            adapter: serde_json::to_value(&public.hardware_adapter)
-                .ok()
-                .and_then(|value| value.as_str().map(ToString::to_string))
-                .unwrap_or_else(|| "unknown".to_string()),
+    let settings = ctx
+        .config_store
+        .load_local_bring_up_settings()
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let binding_resolution_error = if let Some(binding) = settings.lower_controller_binding.as_ref()
+    {
+        match ctx.serial_device_platform.discover().await {
+            Ok(observed) => crate::device_binding::apply_resolved_binding_to_runtime_config(
+                &mut public,
+                crate::device_binding::LocalDeviceRole::LowerController,
+                binding,
+                &observed,
+            )
+            .err(),
+            Err(error) => Some(error),
+        }
+    } else if matches!(
+        public.hardware_adapter,
+        crate::config::HardwareAdapterKind::Serial
+    ) {
+        public.serial_port_path = None;
+        public.lower_controller_usb_identity = None;
+        Some("lower_controller_binding_required".to_string())
+    } else {
+        None
+    };
+    let config_updated = false;
+    let status = if let Some(error) = binding_resolution_error {
+        vending_core::hardware::HardwareStatus {
+            adapter: "serial".to_string(),
             online: false,
-            message: error,
+            message: format!("lower controller stable binding requires maintenance: {error}"),
             port_path: None,
-            resolution_source: Some("unresolved".to_string()),
+            resolution_source: Some("stable_device_binding".to_string()),
             bound_usb_identity: None,
             candidates: vec![],
-        },
-    };
-
-    if let Some(bound_identity) = status.bound_usb_identity.clone() {
-        let should_update = public
-            .lower_controller_usb_identity
-            .as_ref()
-            .is_some_and(|identity| identity.serial_number.is_none());
-        if should_update {
-            let mut updated = public.clone();
-            updated.lower_controller_usb_identity = Some(bound_identity);
-            if ctx.config_store.save_public_config(updated).await.is_ok() {
-                config_updated = true;
-            }
         }
-    }
+    } else {
+        match crate::hardware::HardwareSupervisor::from_config(&public) {
+            Ok(supervisor) => supervisor.self_check().await,
+            Err(error) => vending_core::hardware::HardwareStatus {
+                adapter: serde_json::to_value(&public.hardware_adapter)
+                    .ok()
+                    .and_then(|value| value.as_str().map(ToString::to_string))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                online: false,
+                message: error,
+                port_path: None,
+                resolution_source: Some("unresolved".to_string()),
+                bound_usb_identity: None,
+                candidates: vec![],
+            },
+        }
+    };
 
     if let Some(error_code) =
         crate::state::store::classify_whole_machine_hardware_status_fault(&status)
@@ -5313,6 +5725,46 @@ mod tests {
         }
     }
 
+    struct FixtureSerialDevicePlatform {
+        devices: Vec<crate::device_binding::ObservedSerialDevice>,
+    }
+
+    #[async_trait]
+    impl crate::device_binding::SerialDevicePlatform for FixtureSerialDevicePlatform {
+        async fn discover(
+            &self,
+        ) -> Result<Vec<crate::device_binding::ObservedSerialDevice>, String> {
+            Ok(self.devices.clone())
+        }
+
+        async fn test_candidate(
+            &self,
+            role: crate::device_binding::LocalDeviceRole,
+            candidate: &crate::device_binding::ObservedSerialDevice,
+        ) -> crate::device_binding::DeviceBindingTestResult {
+            crate::device_binding::DeviceBindingTestResult {
+                role,
+                identity_key:
+                    crate::device_binding::StableSerialDeviceIdentity::try_from_observation(
+                        candidate,
+                    )
+                    .expect("stable fixture")
+                    .identity_key,
+                current_port: candidate.current_port.clone(),
+                success: true,
+                code: match role {
+                    crate::device_binding::LocalDeviceRole::LowerController => {
+                        "LOWER_CONTROLLER_HANDSHAKE_READY"
+                    }
+                    crate::device_binding::LocalDeviceRole::Scanner => "SCANNER_PORT_OPEN_READY",
+                }
+                .to_string(),
+                message: "fixture role probe ready".to_string(),
+                tested_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
     struct EnvGuard {
         name: &'static str,
         previous: Option<String>,
@@ -5671,8 +6123,10 @@ mod tests {
             state,
             hardware: crate::hardware::HardwareSupervisor::from_config(&public)
                 .expect("hardware supervisor"),
-            events: events_tx,
-            runtime_tx,
+            events: events_tx.clone(),
+            runtime_tx: runtime_tx.clone(),
+            scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
+            serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
             disk_pressure_probe: Arc::new(FixedDiskPressureProbe {
                 available_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES + 1,
                 threshold_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES,
@@ -6428,6 +6882,166 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn device_binding_snapshot_exposes_stable_identity_current_com_and_role_ambiguity() {
+        let temp = tempdir().expect("temp");
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
+            devices: vec![
+                crate::device_binding::ObservedSerialDevice {
+                    current_port: "COM5".to_string(),
+                    instance_id: Some("USB\\CTRL-1".to_string()),
+                    container_id: Some("{controller-1}".to_string()),
+                    hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+                    serial_number: None,
+                    friendly_name: Some("lower controller candidate".to_string()),
+                },
+                crate::device_binding::ObservedSerialDevice {
+                    current_port: "COM3".to_string(),
+                    instance_id: Some("USB\\SCAN-1".to_string()),
+                    container_id: Some("{scanner-1}".to_string()),
+                    hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                    serial_number: Some("SCAN-1".to_string()),
+                    friendly_name: Some("scanner candidate".to_string()),
+                },
+            ],
+        });
+        let app = build_router(ctx);
+
+        let payload = get_ipc_json(&app, "/v1/hardware-bindings", Some("token-1")).await;
+
+        assert_eq!(payload["roles"][0]["role"], "lower_controller");
+        assert_eq!(payload["roles"][0]["ambiguous"], true);
+        assert_eq!(payload["roles"][0]["candidates"][0]["currentPort"], "COM5");
+        assert_eq!(
+            payload["roles"][0]["candidates"][0]["identity"]["identityKey"],
+            "container:controller-1"
+        );
+        assert_eq!(payload["roles"][1]["role"], "scanner");
+        assert_eq!(payload["roles"][1]["candidates"][1]["currentPort"], "COM3");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn protected_scanner_confirm_persists_stable_binding_and_reconfigures_only_scanner() {
+        let temp = tempdir().expect("temp");
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        #[cfg(unix)]
+        let (scanner_port, _scanner_master) = {
+            use nix::fcntl::OFlag;
+            use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+            let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+            grantpt(&master).expect("grant pty");
+            unlockpt(&master).expect("unlock pty");
+            (ptsname_r(&master).expect("slave path"), master)
+        };
+        #[cfg(not(unix))]
+        let scanner_port = "COM3".to_string();
+        let device = crate::device_binding::ObservedSerialDevice {
+            current_port: scanner_port,
+            instance_id: Some("USB\\SCAN-1".to_string()),
+            container_id: Some("{scanner-1}".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SCAN-1".to_string()),
+            friendly_name: Some("scanner candidate".to_string()),
+        };
+        ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
+            devices: vec![device],
+        });
+        let config_store = ctx.config_store.clone();
+        let hardware = ctx.hardware.clone();
+        let hardware_name_before = hardware.adapter_name();
+        let scanner_runtime = ctx.scanner_runtime.clone();
+        let app = build_router(ctx);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/hardware-bindings/scanner/confirm")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                r#"{"identityKey":"container:scanner-1"}"#,
+            ))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+
+        let status = response.status();
+        let response_body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&response_body)
+        );
+        let settings = config_store
+            .load_local_bring_up_settings()
+            .await
+            .expect("settings")
+            .expect("persisted");
+        assert_eq!(
+            settings
+                .scanner_binding
+                .expect("scanner binding")
+                .identity
+                .identity_key,
+            "container:scanner-1"
+        );
+        assert_eq!(
+            settings.scanner_adapter,
+            Some(crate::config::ScannerAdapterKind::Disabled)
+        );
+        assert_eq!(hardware_name_before, "mock");
+        assert_eq!(hardware.adapter_name(), "mock");
+        scanner_runtime.stop().await.expect("stop scanner fixture");
+    }
+
+    #[tokio::test]
+    async fn failed_controller_activation_restores_the_previous_binding_settings() {
+        let temp = tempdir().expect("temp");
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
+            devices: vec![crate::device_binding::ObservedSerialDevice {
+                current_port: "/dev/vem-missing-controller".to_string(),
+                instance_id: Some("USB\\CTRL-FAIL".to_string()),
+                container_id: Some("{controller-fail}".to_string()),
+                hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+                serial_number: None,
+                friendly_name: Some("controller candidate".to_string()),
+            }],
+        });
+        let config_store = ctx.config_store.clone();
+        let hardware = ctx.hardware.clone();
+        let app = build_router(ctx);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/hardware-bindings/lower_controller/confirm")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", "protected-session-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                r#"{"identityKey":"container:controller-fail"}"#,
+            ))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let settings = config_store
+            .load_local_bring_up_settings()
+            .await
+            .expect("settings")
+            .expect("existing settings");
+        assert!(settings.lower_controller_binding.is_none());
+        assert_eq!(
+            settings.hardware_adapter,
+            Some(crate::config::HardwareAdapterKind::Mock)
+        );
+        assert_eq!(hardware.adapter_name(), "mock");
     }
 
     fn valid_provisioning_profile() -> serde_json::Value {

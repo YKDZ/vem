@@ -526,6 +526,8 @@ pub struct LocalBringUpSettings {
     )]
     pub lower_controller_usb_identity: Option<Option<SerialPortUsbIdentity>>,
     #[serde(default)]
+    pub lower_controller_binding: Option<crate::device_binding::LocalSerialRoleBinding>,
+    #[serde(default)]
     pub scanner_adapter: Option<ScannerAdapterKind>,
     #[serde(default)]
     pub scanner_serial_port_path: Option<String>,
@@ -535,6 +537,8 @@ pub struct LocalBringUpSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub scanner_usb_identity: Option<Option<SerialPortUsbIdentity>>,
+    #[serde(default)]
+    pub scanner_binding: Option<crate::device_binding::LocalSerialRoleBinding>,
     #[serde(default)]
     pub scanner_baud_rate: Option<u32>,
     #[serde(default)]
@@ -1347,6 +1351,46 @@ fn default_data_base_dir() -> Result<PathBuf, String> {
             Err("resolve ProgramData failed".to_string())
         }
     }
+}
+
+#[cfg(not(windows))]
+async fn replace_file_atomically(staging_path: &Path, path: &Path) -> Result<(), String> {
+    fs::rename(staging_path, path)
+        .await
+        .map_err(|error| format!("replace local bring-up settings failed: {error}"))
+}
+
+#[cfg(windows)]
+async fn replace_file_atomically(staging_path: &Path, path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let staging = staging_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            staging.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(format!(
+            "replace local bring-up settings failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 fn daemon_config_path(data_dir: &Path) -> PathBuf {
@@ -2366,6 +2410,35 @@ impl ConfigStore {
         Ok(settings)
     }
 
+    pub async fn save_local_device_binding(
+        &self,
+        role: crate::device_binding::LocalDeviceRole,
+        binding: crate::device_binding::LocalSerialRoleBinding,
+    ) -> Result<LocalBringUpSettings, String> {
+        let mut settings = self
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        match role {
+            crate::device_binding::LocalDeviceRole::LowerController => {
+                settings.lower_controller_binding = Some(binding);
+            }
+            crate::device_binding::LocalDeviceRole::Scanner => {
+                settings.scanner_binding = Some(binding);
+            }
+        }
+        let settings = normalize_local_bring_up_settings(settings)?;
+        self.write_local_bring_up_settings(&settings).await?;
+        Ok(settings)
+    }
+
+    pub async fn restore_local_bring_up_settings_snapshot(
+        &self,
+        settings: &LocalBringUpSettings,
+    ) -> Result<(), String> {
+        self.write_local_bring_up_settings(settings).await
+    }
+
     async fn write_local_bring_up_settings(
         &self,
         settings: &LocalBringUpSettings,
@@ -2379,9 +2452,15 @@ impl ConfigStore {
         }
         let payload = serde_json::to_string_pretty(&settings)
             .map_err(|error| format!("serialize local bring-up settings failed: {error}"))?;
-        fs::write(path, payload)
+        let staging_path = path.with_extension("json.tmp");
+        fs::write(&staging_path, payload)
             .await
-            .map_err(|error| format!("write local bring-up settings failed: {error}"))
+            .map_err(|error| format!("stage local bring-up settings failed: {error}"))?;
+        if let Err(error) = replace_file_atomically(&staging_path, &path).await {
+            let _ = fs::remove_file(&staging_path).await;
+            return Err(error);
+        }
+        Ok(())
     }
 
     async fn public_runtime_config(

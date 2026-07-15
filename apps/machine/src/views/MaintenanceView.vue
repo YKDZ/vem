@@ -3,7 +3,10 @@ import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import type { MaintenanceSession } from "@/daemon/schemas";
+import type {
+  DeviceBindingSnapshot,
+  MaintenanceSession,
+} from "@/daemon/schemas";
 
 import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
@@ -549,6 +552,67 @@ const hardwareMaintenance = reactive({
   message: null as string | null,
 });
 
+const deviceBindingMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
+  snapshot: null as DeviceBindingSnapshot | null,
+  tested: {} as Partial<Record<"lower_controller" | "scanner", string>>,
+});
+
+async function refreshDeviceBindings(): Promise<void> {
+  try {
+    deviceBindingMaintenance.snapshot = await daemonClient.getDeviceBindings();
+  } catch (error) {
+    deviceBindingMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function testDeviceBinding(
+  role: "lower_controller" | "scanner",
+  identityKey: string,
+): Promise<void> {
+  if (!maintenanceSessionAuthorized.value) return;
+  deviceBindingMaintenance.loading = true;
+  deviceBindingMaintenance.message = null;
+  try {
+    const result = await daemonClient.testDeviceBinding(role, identityKey);
+    deviceBindingMaintenance.tested[role] = identityKey;
+    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}测试通过：${result.currentPort}`;
+  } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
+    deviceBindingMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    deviceBindingMaintenance.loading = false;
+  }
+}
+
+async function confirmDeviceBinding(
+  role: "lower_controller" | "scanner",
+  identityKey: string,
+): Promise<void> {
+  if (
+    !maintenanceSessionAuthorized.value ||
+    deviceBindingMaintenance.tested[role] !== identityKey
+  )
+    return;
+  deviceBindingMaintenance.loading = true;
+  deviceBindingMaintenance.message = null;
+  try {
+    const result = await daemonClient.confirmDeviceBinding(role, identityKey);
+    delete deviceBindingMaintenance.tested[role];
+    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}已绑定到 ${result.currentPort}`;
+    await Promise.all([refreshDeviceBindings(), refreshDiagnostics()]);
+  } catch (error) {
+    clearMaintenanceSessionAfterAuthorizationFailure(error);
+    deviceBindingMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    deviceBindingMaintenance.loading = false;
+  }
+}
+
 const visionMaintenance = reactive({
   loading: false,
   message: null as string | null,
@@ -933,6 +997,7 @@ async function runDiagnosticsRefresh(): Promise<void> {
       visionStore.refresh(),
       naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
+      refreshDeviceBindings(),
     ]);
     await returnToCatalogAfterSystemRecovery();
   } catch (error) {
@@ -1489,6 +1554,101 @@ async function submitStockMovement(): Promise<void> {
             </p>
           </details>
         </article>
+      </section>
+
+      <section
+        v-if="operatorEnteredMaintenance && deviceBindingMaintenance.snapshot"
+        class="mt-4 grid gap-3"
+        aria-label="设备稳定身份绑定"
+      >
+        <article
+          v-for="role in deviceBindingMaintenance.snapshot.roles"
+          :key="role.role"
+          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
+          :data-test="`device-binding-${role.role}`"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <p class="font-semibold text-white">
+              {{
+                role.role === "lower_controller" ? "下位机绑定" : "扫码器绑定"
+              }}
+            </p>
+            <span :class="role.ready ? 'text-emerald-200' : 'text-amber-200'">
+              {{ role.ready ? `已就绪 · ${role.currentPort}` : "待处理" }}
+            </span>
+          </div>
+          <p v-if="!role.ready" class="mt-2 text-sm text-amber-100">
+            {{ operatorMessageLabel(role.message) }}
+          </p>
+          <div class="mt-3 grid gap-2">
+            <div
+              v-for="candidate in role.candidates"
+              :key="candidate.identity.identityKey"
+              class="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 p-3"
+            >
+              <div>
+                <p class="font-semibold text-slate-100">
+                  {{ candidate.friendlyName ?? "串口设备" }} ·
+                  {{ candidate.currentPort }}
+                </p>
+                <p class="mt-1 text-xs text-slate-400">
+                  {{ candidate.identity.identityKey }}
+                </p>
+              </div>
+              <div class="flex gap-2">
+                <button
+                  class="kiosk-touch-target rounded-xl border border-sky-200/30 px-3 py-2 font-bold text-sky-100 disabled:opacity-40"
+                  type="button"
+                  :disabled="
+                    !maintenanceSessionAuthorized ||
+                    deviceBindingMaintenance.loading
+                  "
+                  @click="
+                    testDeviceBinding(role.role, candidate.identity.identityKey)
+                  "
+                >
+                  测试
+                </button>
+                <button
+                  class="kiosk-touch-target rounded-xl bg-emerald-300 px-3 py-2 font-bold text-slate-950 disabled:opacity-40"
+                  type="button"
+                  :disabled="
+                    !maintenanceSessionAuthorized ||
+                    deviceBindingMaintenance.loading ||
+                    deviceBindingMaintenance.tested[role.role] !==
+                      candidate.identity.identityKey
+                  "
+                  @click="
+                    confirmDeviceBinding(
+                      role.role,
+                      candidate.identity.identityKey,
+                    )
+                  "
+                >
+                  确认绑定
+                </button>
+              </div>
+            </div>
+          </div>
+          <details
+            v-if="role.binding || role.legacyPortHint"
+            class="mt-3 text-sm text-slate-300"
+          >
+            <summary>技术证据</summary>
+            <p v-if="role.binding" class="mt-2 break-all">
+              {{ role.binding.identity.identityKey }}
+            </p>
+            <p v-if="role.legacyPortHint" class="mt-1">
+              迁移提示：{{ role.legacyPortHint }}（不作为绑定）
+            </p>
+          </details>
+        </article>
+        <p
+          v-if="deviceBindingMaintenance.message"
+          class="rounded-2xl bg-sky-500/15 p-3 text-sky-100"
+        >
+          {{ deviceBindingMaintenance.message }}
+        </p>
       </section>
 
       <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
@@ -2146,10 +2306,11 @@ async function submitStockMovement(): Promise<void> {
         <div v-if="form.hardwareAdapter === 'serial'" class="grid gap-4">
           <label class="grid gap-2 text-left">
             <span class="text-sm font-semibold text-slate-200"
-              >手动串口兜底</span
+              >旧 COM 迁移提示（只读）</span
             >
             <input
               v-model="form.serialPortPath"
+              disabled
               class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
               placeholder="Linux 如 /dev/ttyUSB0；Windows 如 COM3"
             />
@@ -2163,6 +2324,7 @@ async function submitStockMovement(): Promise<void> {
               <span class="text-sm font-semibold text-slate-200">USB VID</span>
               <input
                 v-model="form.lowerControllerUsbIdentity.vendorId"
+                disabled
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
                 maxlength="4"
               />
@@ -2171,6 +2333,7 @@ async function submitStockMovement(): Promise<void> {
               <span class="text-sm font-semibold text-slate-200">USB PID</span>
               <input
                 v-model="form.lowerControllerUsbIdentity.productId"
+                disabled
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
                 maxlength="4"
               />
@@ -2181,6 +2344,7 @@ async function submitStockMovement(): Promise<void> {
               >
               <input
                 v-model="form.lowerControllerUsbIdentity.serialNumber"
+                disabled
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
                 placeholder="自检后自动绑定"
               />
@@ -2218,10 +2382,11 @@ async function submitStockMovement(): Promise<void> {
               class="grid gap-2 text-left"
             >
               <span class="text-sm font-semibold text-slate-200"
-                >扫码串口路径</span
+                >旧扫码 COM 迁移提示（只读）</span
               >
               <input
                 v-model="form.scannerSerialPortPath"
+                disabled
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
                 placeholder="Linux 如 /dev/ttyUSB1；Windows 如 COM4"
               />

@@ -1482,8 +1482,10 @@ mod tests {
             config_store,
             state,
             hardware: crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware"),
-            events: events_tx,
-            runtime_tx,
+            events: events_tx.clone(),
+            runtime_tx: runtime_tx.clone(),
+            scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
+            serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
             disk_pressure_probe: Arc::new(FixedDiskPressureProbe),
             network_adapter: crate::network::adapter_from_env(),
             ui: crate::ipc::UiRuntimeServices {

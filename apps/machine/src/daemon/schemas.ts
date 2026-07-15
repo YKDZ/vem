@@ -3,6 +3,9 @@ import {
   type DaemonIpcUnknownEventNotification,
   type DaemonIpcTransactionSnapshot,
   daemonIpcEventNotificationSchema,
+  daemonIpcDeviceBindingActivationSchema,
+  daemonIpcDeviceBindingSnapshotSchema,
+  daemonIpcDeviceBindingTestResultSchema,
   daemonIpcScannerStatusSchema,
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
@@ -465,6 +468,11 @@ export const syncStatusSchema = z.object({
 });
 
 export const scannerStatusSchema = daemonIpcScannerStatusSchema;
+export const deviceBindingSnapshotSchema = daemonIpcDeviceBindingSnapshotSchema;
+export const deviceBindingTestResultSchema =
+  daemonIpcDeviceBindingTestResultSchema;
+export const deviceBindingActivationSchema =
+  daemonIpcDeviceBindingActivationSchema;
 
 export const visionStatusSchema = z.object({
   enabled: z.boolean(),
@@ -725,6 +733,13 @@ export type MaintenanceEnrollmentStatus = z.infer<
 export type TransactionSnapshot = DaemonIpcTransactionSnapshot;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type ScannerStatus = z.infer<typeof scannerStatusSchema>;
+export type DeviceBindingSnapshot = z.infer<typeof deviceBindingSnapshotSchema>;
+export type DeviceBindingTestResult = z.infer<
+  typeof deviceBindingTestResultSchema
+>;
+export type DeviceBindingActivation = z.infer<
+  typeof deviceBindingActivationSchema
+>;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
 export type NaturalContextSnapshot = z.infer<

@@ -102,6 +102,82 @@ export type DaemonIpcScannerStatus = z.infer<
   typeof daemonIpcScannerStatusSchema
 >;
 
+export const daemonIpcStableSerialDeviceIdentitySchema = z
+  .object({
+    identityKey: z.string().min(1),
+    instanceId: z.string().nullable(),
+    containerId: z.string().nullable(),
+    hardwareIds: z.array(z.string()),
+    serialNumber: z.string().nullable(),
+  })
+  .strict();
+
+const daemonIpcLocalDeviceRoleSchema = z.enum(["lower_controller", "scanner"]);
+
+const daemonIpcLocalSerialRoleBindingSchema = z
+  .object({
+    identity: daemonIpcStableSerialDeviceIdentitySchema,
+    confirmedAt: z.string(),
+    confirmedBy: z.string(),
+    testEvidenceCode: z.string(),
+  })
+  .strict();
+
+export const daemonIpcDeviceBindingCandidateSchema = z
+  .object({
+    identity: daemonIpcStableSerialDeviceIdentitySchema,
+    currentPort: z.string(),
+    friendlyName: z.string().nullable(),
+    readiness: z.enum(["candidate", "ready", "blocked"]),
+    readinessCode: z.string(),
+    readinessMessage: z.string(),
+  })
+  .strict();
+
+export const daemonIpcDeviceRoleBindingSnapshotSchema = z
+  .object({
+    role: daemonIpcLocalDeviceRoleSchema,
+    binding: daemonIpcLocalSerialRoleBindingSchema.nullable(),
+    currentPort: z.string().nullable(),
+    ready: z.boolean(),
+    code: z.string(),
+    message: z.string(),
+    ambiguous: z.boolean(),
+    ambiguityPorts: z.array(z.string()),
+    legacyPortHint: z.string().nullable(),
+    candidates: z.array(daemonIpcDeviceBindingCandidateSchema),
+  })
+  .strict();
+
+export const daemonIpcDeviceBindingSnapshotSchema = z
+  .object({
+    roles: z.array(daemonIpcDeviceRoleBindingSnapshotSchema).length(2),
+  })
+  .strict();
+
+export const daemonIpcDeviceBindingTestResultSchema = z
+  .object({
+    role: daemonIpcLocalDeviceRoleSchema,
+    identityKey: z.string(),
+    currentPort: z.string(),
+    success: z.boolean(),
+    code: z.string(),
+    message: z.string(),
+    testedAt: z.string(),
+  })
+  .strict();
+
+export const daemonIpcDeviceBindingActivationSchema = z
+  .object({
+    binding: daemonIpcLocalSerialRoleBindingSchema,
+    currentPort: z.string(),
+    ready: z.literal(true),
+    code: z.literal("DEVICE_BINDING_ACTIVATED"),
+    message: z.string(),
+    unrelatedRuntimeRestarted: z.literal(false),
+  })
+  .strict();
+
 const daemonIpcEventEnvelopeMetadataSchema = z
   .object({
     schemaVersion: z.number().int().positive().optional(),

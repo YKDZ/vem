@@ -15,6 +15,9 @@ const {
   getReadyMock,
   getSyncStatusMock,
   getScannerStatusMock,
+  getDeviceBindingsMock,
+  testDeviceBindingMock,
+  confirmDeviceBindingMock,
   getVisionStatusMock,
   getNaturalContextMock,
   getRemoteOpsStatusMock,
@@ -42,6 +45,9 @@ const {
   getReadyMock: vi.fn(),
   getSyncStatusMock: vi.fn(),
   getScannerStatusMock: vi.fn(),
+  getDeviceBindingsMock: vi.fn(),
+  testDeviceBindingMock: vi.fn(),
+  confirmDeviceBindingMock: vi.fn(),
   getVisionStatusMock: vi.fn(),
   getNaturalContextMock: vi.fn(),
   getRemoteOpsStatusMock: vi.fn(),
@@ -88,6 +94,9 @@ vi.mock("@/daemon/client", async (importOriginal) => {
       getReady: getReadyMock,
       getSyncStatus: getSyncStatusMock,
       getScannerStatus: getScannerStatusMock,
+      getDeviceBindings: getDeviceBindingsMock,
+      testDeviceBinding: testDeviceBindingMock,
+      confirmDeviceBinding: confirmDeviceBindingMock,
       getVisionStatus: getVisionStatusMock,
       getNaturalContext: getNaturalContextMock,
       getRemoteOpsStatus: getRemoteOpsStatusMock,
@@ -333,6 +342,77 @@ beforeEach(() => {
     code: "SCANNER_READY",
     message: "scanner ready",
     updatedAt: "2026-06-05T00:00:00.000Z",
+  });
+  getDeviceBindingsMock.mockResolvedValue({
+    roles: [
+      {
+        role: "lower_controller",
+        binding: null,
+        currentPort: null,
+        ready: false,
+        code: "DEVICE_BINDING_SELECTION_REQUIRED",
+        message: "select lower controller",
+        ambiguous: true,
+        ambiguityPorts: ["COM5", "COM8"],
+        legacyPortHint: "COM5",
+        candidates: [
+          {
+            identity: {
+              identityKey: "container:controller-1",
+              instanceId: "USB\\CONTROLLER-1",
+              containerId: "controller-1",
+              hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+              serialNumber: null,
+            },
+            currentPort: "COM5",
+            friendlyName: "下位机串口",
+            readiness: "candidate",
+            readinessCode: "ROLE_TEST_REQUIRED",
+            readinessMessage: "test required",
+          },
+        ],
+      },
+      {
+        role: "scanner",
+        binding: null,
+        currentPort: null,
+        ready: false,
+        code: "DEVICE_BINDING_REQUIRED",
+        message: "select scanner",
+        ambiguous: false,
+        ambiguityPorts: [],
+        legacyPortHint: "COM3",
+        candidates: [],
+      },
+    ],
+  });
+  testDeviceBindingMock.mockResolvedValue({
+    role: "lower_controller",
+    identityKey: "container:controller-1",
+    currentPort: "COM5",
+    success: true,
+    code: "LOWER_CONTROLLER_HANDSHAKE_READY",
+    message: "ready",
+    testedAt: "2026-07-15T00:00:00Z",
+  });
+  confirmDeviceBindingMock.mockResolvedValue({
+    binding: {
+      identity: {
+        identityKey: "container:controller-1",
+        instanceId: "USB\\CONTROLLER-1",
+        containerId: "controller-1",
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: null,
+      },
+      confirmedAt: "2026-07-15T00:00:00Z",
+      confirmedBy: "operator-1",
+      testEvidenceCode: "LOWER_CONTROLLER_HANDSHAKE_READY",
+    },
+    currentPort: "COM5",
+    ready: true,
+    code: "DEVICE_BINDING_ACTIVATED",
+    message: "activated",
+    unrelatedRuntimeRestarted: false,
   });
   getVisionStatusMock.mockResolvedValue({
     enabled: true,
@@ -613,6 +693,38 @@ function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
 }
 
 describe("MaintenanceView hardware config", () => {
+  it("tests then confirms each stable device identity through protected maintenance", async () => {
+    const host = await mountView();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector("[data-test='device-binding-lower_controller']"),
+      ).not.toBeNull();
+    });
+    expect(host.textContent).toContain("下位机串口 · COM5");
+    expect(host.textContent).toContain("迁移提示：COM5（不作为绑定）");
+
+    await unlockMaintenance(host);
+    buttonByText(host, "测试").click();
+    await vi.waitFor(() => {
+      expect(testDeviceBindingMock).toHaveBeenCalledWith(
+        "lower_controller",
+        "container:controller-1",
+      );
+    });
+
+    const confirm = buttonByText(host, "确认绑定");
+    await vi.waitFor(() => {
+      expect(confirm.disabled).toBe(false);
+    });
+    confirm.click();
+    await vi.waitFor(() => {
+      expect(confirmDeviceBindingMock).toHaveBeenCalledWith(
+        "lower_controller",
+        "container:controller-1",
+      );
+    });
+  });
+
   it("shows production maintenance without editable deployment or debug configuration fields", async () => {
     const host = await mountView();
 

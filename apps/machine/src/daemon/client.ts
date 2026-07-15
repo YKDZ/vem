@@ -12,6 +12,9 @@ import {
   configSummaryFromRuntimeConfigurationSummary,
   daemonEventSchema,
   hardwareSelfCheckSchema,
+  deviceBindingActivationSchema,
+  deviceBindingSnapshotSchema,
+  deviceBindingTestResultSchema,
   environmentControlResultSchema,
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
@@ -34,6 +37,9 @@ import {
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
+  type DeviceBindingActivation,
+  type DeviceBindingSnapshot,
+  type DeviceBindingTestResult,
   type EnvironmentControlResult,
   type MachineSaleReadiness,
   type NaturalContextSnapshot,
@@ -624,6 +630,36 @@ export class DaemonApiClient {
   async runHardwareSelfCheck(): Promise<HardwareSelfCheck> {
     return hardwareSelfCheckSchema.parse(
       await this.request("/v1/hardware/self-check", { method: "POST" }),
+    );
+  }
+
+  async getDeviceBindings(): Promise<DeviceBindingSnapshot> {
+    return deviceBindingSnapshotSchema.parse(
+      await this.request("/v1/hardware-bindings"),
+    );
+  }
+
+  async testDeviceBinding(
+    role: "lower_controller" | "scanner",
+    identityKey: string,
+  ): Promise<DeviceBindingTestResult> {
+    return deviceBindingTestResultSchema.parse(
+      await this.request(`/v1/hardware-bindings/${role}/test`, {
+        method: "POST",
+        body: { identityKey },
+      }),
+    );
+  }
+
+  async confirmDeviceBinding(
+    role: "lower_controller" | "scanner",
+    identityKey: string,
+  ): Promise<DeviceBindingActivation> {
+    return deviceBindingActivationSchema.parse(
+      await this.request(`/v1/hardware-bindings/${role}/confirm`, {
+        method: "POST",
+        body: { identityKey },
+      }),
     );
   }
 

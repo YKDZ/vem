@@ -18,7 +18,7 @@ use crate::{
     ipc::{self, IpcContext},
     mqtt::MqttSyncRuntime,
     runtime::{DaemonRuntime, RuntimeStartInput},
-    scanner::ScannerRuntime,
+    scanner::ScannerRuntimeController,
     secret,
     state::store::{MachinePlanogramInput, MachinePlanogramSlotInput},
     state::LocalStateStore,
@@ -129,7 +129,64 @@ async fn run_console_cycle(
     })
     .await
     .map_err(|error| format!("runtime start failed: {error}"))?;
-    let runtime_config = runtime.config.clone();
+    let mut runtime_config = runtime.config.clone();
+    let serial_device_platform: crate::device_binding::SharedSerialDevicePlatform =
+        Arc::new(crate::device_binding::WindowsSerialDevicePlatform);
+    {
+        let settings = config_store
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        if settings.lower_controller_binding.is_some() || settings.scanner_binding.is_some() {
+            let observed = serial_device_platform.discover().await.unwrap_or_default();
+            if let Some(binding) = settings.lower_controller_binding.as_ref() {
+                if crate::device_binding::apply_resolved_binding_to_runtime_config(
+                    &mut runtime_config.public,
+                    crate::device_binding::LocalDeviceRole::LowerController,
+                    binding,
+                    &observed,
+                )
+                .is_err()
+                {
+                    runtime_config.public.serial_port_path = None;
+                    runtime_config.public.lower_controller_usb_identity = None;
+                }
+            }
+            if let Some(binding) = settings.scanner_binding.as_ref() {
+                if crate::device_binding::apply_resolved_binding_to_runtime_config(
+                    &mut runtime_config.public,
+                    crate::device_binding::LocalDeviceRole::Scanner,
+                    binding,
+                    &observed,
+                )
+                .is_err()
+                {
+                    runtime_config.public.scanner_serial_port_path = None;
+                    runtime_config.public.scanner_usb_identity = None;
+                }
+            }
+        }
+        #[cfg(windows)]
+        if settings.lower_controller_binding.is_none()
+            && matches!(
+                runtime_config.public.hardware_adapter,
+                crate::config::HardwareAdapterKind::Serial
+            )
+        {
+            runtime_config.public.serial_port_path = None;
+            runtime_config.public.lower_controller_usb_identity = None;
+        }
+        #[cfg(windows)]
+        if settings.scanner_binding.is_none()
+            && matches!(
+                runtime_config.public.scanner_adapter,
+                crate::config::ScannerAdapterKind::SerialText
+            )
+        {
+            runtime_config.public.scanner_serial_port_path = None;
+            runtime_config.public.scanner_usb_identity = None;
+        }
+    }
     let runtime_secrets = config_store
         .runtime_secrets()
         .await
@@ -143,6 +200,7 @@ async fn run_console_cycle(
 
     let (tx_raw, rx_raw) = mpsc::channel(16);
     let (events_tx, _) = broadcast::channel(64);
+    let scanner_runtime = ScannerRuntimeController::new(tx_raw.clone(), events_tx.clone());
     let backend = Arc::new(BackendClient::new(
         runtime_config.public.api_base_url.clone(),
     ));
@@ -185,6 +243,8 @@ async fn run_console_cycle(
         hardware: hardware.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw.clone(),
+        scanner_runtime: scanner_runtime.clone(),
+        serial_device_platform: serial_device_platform.clone(),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,
@@ -206,13 +266,9 @@ async fn run_console_cycle(
         ipc_ctx.ui.status_cache.clone(),
         Some(stop_token.clone()),
     ));
-    let scanner_runtime = ScannerRuntime::from_config(
-        &runtime_config.public,
-        tx_raw.clone(),
-        events_tx.clone(),
-        stop_token.clone(),
-    );
-    let scanner = tokio::spawn(scanner_runtime.run());
+    scanner_runtime
+        .start_from_config(&runtime_config.public)
+        .await?;
     let payment_watcher = tokio::spawn(run_payment_code_watcher(PaymentCodeWatcherInput {
         rx_raw,
         state: state.clone(),
@@ -227,6 +283,16 @@ async fn run_console_cycle(
         hardware.clone(),
         state.clone(),
         ipc_ctx.ui.status_cache.clone(),
+        stop_token.clone(),
+    ));
+    let device_binding_watch = tokio::spawn(run_device_binding_watch(
+        serial_device_platform.clone(),
+        config_store.clone(),
+        state.clone(),
+        hardware.clone(),
+        scanner_runtime.clone(),
+        ipc_ctx.ui.status_cache.clone(),
+        data_dir.clone(),
         stop_token.clone(),
     ));
     let stock_upload = tokio::spawn(
@@ -285,9 +351,9 @@ async fn run_console_cycle(
 
     let mut tasks = vec![
         cache_updates,
-        scanner,
         payment_watcher,
         hardware_health,
+        device_binding_watch,
         stock_upload,
         platform_stock_sync,
         ipc_task,
@@ -323,12 +389,112 @@ async fn run_console_cycle(
         .stop()
         .await
         .map_err(|error| format!("runtime shutdown failed: {error}"))?;
+    scanner_runtime.stop().await?;
     for task in tasks {
         task.abort();
         let _ = task.await;
     }
     ipc_handle.shutdown();
     Ok(cycle_exit)
+}
+
+async fn run_device_binding_watch(
+    platform: crate::device_binding::SharedSerialDevicePlatform,
+    config_store: Arc<ConfigStore>,
+    state: LocalStateStore,
+    hardware: HardwareSupervisor,
+    scanner_runtime: ScannerRuntimeController,
+    status_cache: ipc::RuntimeStatusCache,
+    data_dir: PathBuf,
+    shutdown: CancellationToken,
+) -> Result<(), String> {
+    let mut interval = time::interval(std::time::Duration::from_secs(2));
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            _ = interval.tick() => {}
+        }
+        let Some(settings) = config_store.load_local_bring_up_settings().await? else {
+            continue;
+        };
+        if settings.lower_controller_binding.is_none() && settings.scanner_binding.is_none() {
+            continue;
+        }
+        let observed = match platform.discover().await {
+            Ok(observed) => observed,
+            Err(_) => continue,
+        };
+        let public = config_store.load_effective_public_config().await?;
+
+        if let Some(binding) = settings.lower_controller_binding.as_ref() {
+            let current_port = status_cache.hardware.read().await.port_path.clone();
+            let mut resolved = public.clone();
+            match crate::device_binding::apply_resolved_binding_to_runtime_config(
+                &mut resolved,
+                crate::device_binding::LocalDeviceRole::LowerController,
+                binding,
+                &observed,
+            ) {
+                Ok(port) => {
+                    let active_sale = state
+                        .current_transaction_snapshot()
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .as_ref()
+                        .is_some_and(is_active_transaction);
+                    if current_port.as_deref() != Some(port.as_str()) && !active_sale {
+                        if let Ok(status) = hardware
+                            .reconfigure_from_config(
+                                &resolved,
+                                Some(data_dir.join("logs").join("serial-protocol.jsonl")),
+                            )
+                            .await
+                        {
+                            *status_cache.hardware.write().await = status;
+                        }
+                    }
+                }
+                Err(code) => {
+                    let message =
+                        format!("lower controller stable binding requires maintenance: {code}");
+                    hardware.deactivate_bound_adapter(message.clone())?;
+                    *status_cache.hardware.write().await = hardware.self_check().await;
+                }
+            }
+        }
+
+        if let Some(binding) = settings.scanner_binding.as_ref() {
+            let current_port = status_cache.scanner.read().await.port.clone();
+            let mut resolved = public.clone();
+            match crate::device_binding::apply_resolved_binding_to_runtime_config(
+                &mut resolved,
+                crate::device_binding::LocalDeviceRole::Scanner,
+                binding,
+                &observed,
+            ) {
+                Ok(port) => {
+                    if current_port.as_deref() != Some(port.as_str()) {
+                        scanner_runtime.reconfigure_from_config(&resolved).await?;
+                    }
+                }
+                Err(code) => {
+                    scanner_runtime.stop().await?;
+                    *status_cache.scanner.write().await =
+                        vending_core::scanner::ScannerHealthSnapshot {
+                            online: false,
+                            adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
+                                .to_string(),
+                            port: None,
+                            level: vending_core::health::HealthLevel::Offline,
+                            code: "SCANNER_BINDING_UNAVAILABLE".to_string(),
+                            message: format!("scanner stable binding requires maintenance: {code}"),
+                            updated_at: crate::state::store::now_iso(),
+                        };
+                }
+            }
+        }
+    }
 }
 
 fn maybe_spawn_mqtt_task(
