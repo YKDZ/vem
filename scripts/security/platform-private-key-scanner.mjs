@@ -23,6 +23,17 @@ function containsBytes(haystack, needle) {
   return haystack.indexOf(needle) >= 0;
 }
 
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
 function isDerPrivateKey(bytes) {
   if (bytes.length < 32 || bytes.length > MAX_BASE64_CANDIDATE_BYTES) {
     return false;
@@ -182,6 +193,7 @@ function scanZipEntries(bytes, label, state, depth) {
     compressedSize,
     uncompressedSize,
     method,
+    crc,
     name,
     dataStart,
     expandedBytes,
@@ -201,9 +213,12 @@ function scanZipEntries(bytes, label, state, depth) {
     let content;
     if (method === 0) content = compressed;
     else if (method === 8) {
-      content = inflateRawSync(compressed, {
+      const inflated = inflateRawSync(compressed, {
+        info: true,
         maxOutputLength: MAX_ARCHIVE_ENTRY_BYTES + 1,
       });
+      content = inflated.buffer;
+      if (inflated.engine.bytesWritten !== compressedSize) invalidArchive();
     } else {
       throw new Error(
         `${label} uses an unsupported archive compression method`,
@@ -212,7 +227,9 @@ function scanZipEntries(bytes, label, state, depth) {
     if (content.length > MAX_ARCHIVE_ENTRY_BYTES) {
       throw new Error(`${label} exceeds the bounded archive scan budget`);
     }
-    if (content.length !== uncompressedSize) invalidArchive();
+    if (content.length !== uncompressedSize || crc32(content) !== crc) {
+      invalidArchive();
+    }
     scanBytes(content, `${label}:${name}`, state, depth + 1);
   };
 
@@ -369,6 +386,7 @@ function scanZipEntries(bytes, label, state, depth) {
       compressedSize,
       uncompressedSize,
       method,
+      crc,
       name: central.nameBytes.toString("utf8"),
       dataStart,
       expandedBytes,

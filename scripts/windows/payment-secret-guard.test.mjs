@@ -107,6 +107,25 @@ function deflatedZipWithWrongChecksum(name, content) {
   return archive;
 }
 
+function concatenatedDeflateZip() {
+  const first = Buffer.from("first neutral runtime payload");
+  const compressed = Buffer.concat([
+    deflateRawSync(first),
+    deflateRawSync(Buffer.from("second neutral runtime payload")),
+  ]);
+  return storedZip(
+    "concatenated-deflate.bin",
+    compressed,
+    first.length,
+    0,
+    8,
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+    crc32(first),
+  );
+}
+
 function crc32(content) {
   let crc = 0xffffffff;
   for (const byte of content) {
@@ -409,6 +428,18 @@ describe("managed-update payment secret guard", () => {
     );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /invalid archive|unsupported archive/i);
+  });
+
+  it("rejects concatenated raw deflate streams inside one compressed range", async () => {
+    const result = await runGuards(
+      { updateId: "field-concatenated-deflate", components: [] },
+      concatenatedDeflateZip(),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /invalid archive|unsupported archive|cannot be scanned safely/i,
+    );
   });
 
   it("rejects a readable deflate ZIP container with a nonzero local-header offset", async () => {

@@ -426,6 +426,57 @@ function Assert-NoPlatformPaymentSecretBytes {
         & $invalidArchive
       }
       Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+      if ($null -eq ('Vem.Security.ExactDeflateInputStream' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+
+namespace Vem.Security {
+  public sealed class ExactDeflateInputStream : Stream {
+    private readonly Stream inner;
+
+    public ExactDeflateInputStream(Stream inner) {
+      if (inner == null) throw new ArgumentNullException("inner");
+      this.inner = inner;
+    }
+
+    public long BytesRead { get; private set; }
+    public override bool CanRead { get { return true; } }
+    public override bool CanSeek { get { return false; } }
+    public override bool CanWrite { get { return false; } }
+    public override long Length { get { return inner.Length; } }
+    public override long Position {
+      get { return BytesRead; }
+      set { throw new NotSupportedException(); }
+    }
+
+    public override int Read(byte[] buffer, int offset, int count) {
+      if (count <= 0) return 0;
+      var read = inner.Read(buffer, offset, 1);
+      BytesRead += read;
+      return read;
+    }
+
+    public override int ReadByte() {
+      var value = inner.ReadByte();
+      if (value >= 0) BytesRead += 1;
+      return value;
+    }
+
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) {
+      throw new NotSupportedException();
+    }
+    public override void SetLength(long value) {
+      throw new NotSupportedException();
+    }
+    public override void Write(byte[] buffer, int offset, int count) {
+      throw new NotSupportedException();
+    }
+  }
+ }
+'@ -ErrorAction Stop
+      }
       $crcTable = [uint32[]]::new(256)
       for ($crcTableIndex = 0; $crcTableIndex -lt $crcTable.Length; $crcTableIndex += 1) {
         $crcTableValue = [uint32]$crcTableIndex
@@ -458,11 +509,15 @@ function Assert-NoPlatformPaymentSecretBytes {
           $true
         )
         $decodedStream = $rawStream
+        $exactDeflateInput = $null
         $entryBytes = [IO.MemoryStream]::new()
         try {
           if ($entry.method -eq 8) {
+            $exactDeflateInput = [Vem.Security.ExactDeflateInputStream]::new(
+              $rawStream
+            )
             $decodedStream = [IO.Compression.DeflateStream]::new(
-              $rawStream,
+              $exactDeflateInput,
               [IO.Compression.CompressionMode]::Decompress,
               $true
             )
@@ -480,6 +535,12 @@ function Assert-NoPlatformPaymentSecretBytes {
             }
             $actualCrc = & $updateCrc32 $actualCrc $buffer $read
             $entryBytes.Write($buffer, 0, $read)
+          }
+          if (
+            $entry.method -eq 8 -and
+            $exactDeflateInput.BytesRead -ne $entry.compressedSize
+          ) {
+            & $invalidArchive
           }
           $actualCrc = [uint32]($actualCrc -bxor [uint32]::MaxValue)
           if (
@@ -500,6 +561,7 @@ function Assert-NoPlatformPaymentSecretBytes {
           throw "artifact archive cannot be scanned safely: $Label"
         } finally {
           if ($decodedStream -ne $rawStream) { $decodedStream.Dispose() }
+          if ($null -ne $exactDeflateInput) { $exactDeflateInput.Dispose() }
           $entryBytes.Dispose()
           $rawStream.Dispose()
         }

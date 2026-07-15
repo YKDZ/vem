@@ -72,6 +72,8 @@ addCheck(
     paymentSecretBytesGuardBlock.includes("localEntryCount") &&
     paymentSecretBytesGuardBlock.includes("validatedEntries") &&
     paymentSecretBytesGuardBlock.includes("DeflateStream") &&
+    paymentSecretBytesGuardBlock.includes("ExactDeflateInputStream") &&
+    paymentSecretBytesGuardBlock.includes("BytesRead") &&
     paymentSecretBytesGuardBlock.includes("actualLength") &&
     paymentSecretBytesGuardBlock.includes("actualCrc") &&
     !paymentSecretBytesGuardBlock.includes("ZipArchive") &&
