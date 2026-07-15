@@ -374,6 +374,9 @@ export type MaintenanceTargetMachine = z.infer<
 
 const maintenanceSessionResponseBaseShape = {
   id: z.uuid(),
+  relayPeer: maintenancePublicPeerSchema.extend({
+    role: z.literal("relay"),
+  }),
   targetMachine: maintenanceTargetMachineSchema,
   protocol: maintenanceSessionProtocolSchema,
   port: maintenanceSessionPortSchema,

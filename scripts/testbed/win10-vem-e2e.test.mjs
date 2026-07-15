@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
@@ -54,26 +54,73 @@ import {
   sanitizeFactoryPreclaimReport,
 } from "./win10-vem-e2e.mjs";
 
+const FAKE_VM_HOST_ADAPTER = new URL(
+  "./fake-vm-host-adapter.mjs",
+  import.meta.url,
+).pathname;
+const SERIAL_CONFORMANCE = new URL(
+  "./vm-host-adapter-serial-conformance.mjs",
+  import.meta.url,
+).pathname;
+
+let capturedSerialConformance;
+
 function completedSerialSaleEvidence(overrides = {}) {
+  if (!capturedSerialConformance) {
+    const root = mkdtempSync(join(tmpdir(), "vem-serial-evidence-consumer-"));
+    const scannerCodePath = join(root, "protected-scanner-code.txt");
+    const outputPath = join(root, "conformance.json");
+    try {
+      writeFileSync(scannerCodePath, "test-scanner-secret", { mode: 0o600 });
+      execFileSync(
+        process.execPath,
+        [
+          SERIAL_CONFORMANCE,
+          "--adapter",
+          FAKE_VM_HOST_ADAPTER,
+          "--out",
+          outputPath,
+          "--scanner-code-file",
+          scannerCodePath,
+          "--run-id",
+          "RUN-180-EVIDENCE",
+          "--target-identity",
+          "vm-target://runtime-testbed",
+          "--approved-runtime-base",
+          `factory-cas://sha256/${"a".repeat(64)}`,
+          "--lifecycle-reference",
+          "vm-lifecycle://run-180-evidence.runtime-testbed",
+          "--sale-correlation-id",
+          "sale-correlation://sale-180",
+          "--order-id",
+          "ORDER-180",
+          "--payment-id",
+          "PAYMENT-180",
+          "--vending-command-id",
+          "VEND-180",
+        ],
+        {
+          env: {
+            ...process.env,
+            RUNNER_TEMP: root,
+            VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY: "1",
+            VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
+            VEM_VM_HOST_FAKE_LOWER_CONTROLLER_GUEST_IDENTITY:
+              "windows-com://com31",
+            VEM_VM_HOST_FAKE_SCANNER_GUEST_IDENTITY: "windows-com://com32",
+          },
+        },
+      );
+      capturedSerialConformance = JSON.parse(readFileSync(outputPath, "utf8"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
   const sale = {
     orderId: "ORDER-180",
     paymentId: "PAYMENT-180",
     vendingCommandId: "VEND-180",
   };
-  const serialSessionId = "serial-session-180";
-  const deviceMappingDigest = "sha256:serial-mapping-180";
-  const frame = (role, event, sequence) => ({
-    role,
-    event,
-    deviceMappingDigest,
-    saleBinding: sale,
-    capturedFrame: {
-      source: "guest-serial-session",
-      sequence,
-      digest: `sha256:frame-${sequence}`,
-      byteLength: 12,
-    },
-  });
   return {
     saleFlow: {
       simulatedHardwareSaleFlow: {
@@ -90,93 +137,8 @@ function completedSerialSaleEvidence(overrides = {}) {
         },
       },
     },
-    serialConformance: {
-      reports: {
-        start: {
-          result: "succeeded",
-          serialSession: {
-            serialSessionId,
-            deviceMappingDigest,
-            deviceMappings: [
-              {
-                role: "lower-controller",
-                guestDeviceIdentity: "windows-com://COM31",
-                connectionState: "connected",
-              },
-              {
-                role: "scanner",
-                guestDeviceIdentity: "windows-com://COM32",
-                connectionState: "connected",
-              },
-            ],
-          },
-        },
-        collect: {
-          result: "succeeded",
-          serialEvidence: {
-            serialSessionId,
-            deviceMappingDigest,
-            records: [
-              frame("scanner", "scanner-injection", 1),
-              frame("lower-controller", "dispense-request", 2),
-              frame("lower-controller", "dispense-result", 3),
-            ],
-          },
-        },
-        firstStop: {
-          result: "succeeded",
-          serialSession: {
-            serialSessionId,
-            deviceMappingDigest,
-            simulatorCleanup: {
-              idempotencyVerified: false,
-              survivingProcessCount: 0,
-            },
-          },
-        },
-        repeatedStop: {
-          result: "succeeded",
-          serialSession: {
-            serialSessionId,
-            deviceMappingDigest,
-            simulatorCleanup: {
-              idempotencyVerified: true,
-              survivingProcessCount: 0,
-            },
-          },
-        },
-      },
-      failureMatrix: [
-        "malformed-frame",
-        "device-disconnected",
-        "scanner-timeout",
-        "dispense-failed",
-        "swapped-roles",
-        "missing-device",
-      ].map((failureMode) => ({
-        failureMode,
-        result: "observed_failure",
-        adapterResult: "succeeded",
-        diagnosticCode: {
-          "malformed-frame": "serial_malformed_frame",
-          "device-disconnected": "serial_device_disconnected",
-          "scanner-timeout": "serial_scanner_timeout",
-          "dispense-failed": "serial_dispense_failed",
-          "swapped-roles": "serial_swapped_roles",
-          "missing-device": "serial_missing_device",
-        }[failureMode],
-        ...(["swapped-roles", "missing-device"].includes(failureMode)
-          ? {
-              recovery: {
-                runtimeReady: "passed",
-                hardwareOnline: true,
-                scannerOnline: true,
-                ready: true,
-              },
-            }
-          : {}),
-      })),
-    },
+    serialConformance: structuredClone(capturedSerialConformance),
+    expectedRunnerPublicKey: capturedSerialConformance.runnerEvidence.publicKey,
     ...overrides,
   };
 }
@@ -507,8 +469,54 @@ describe("simulated hardware serial acceptance evidence", () => {
     assert.deepEqual(
       { status: evidence.status, asserted: evidence.asserted },
       { status: "passed", asserted: true },
+      JSON.stringify(evidence.diagnostics),
     );
     assert.deepEqual(evidence.diagnostics, []);
+  });
+
+  it("rejects serial frames relabeled after sale completion", () => {
+    const input = completedSerialSaleEvidence();
+    const relabeledSale = {
+      orderId: "ORDER-ATTACKER",
+      paymentId: "PAYMENT-ATTACKER",
+      vendingCommandId: "VEND-ATTACKER",
+    };
+    input.saleFlow.simulatedHardwareSaleFlow.sale = relabeledSale;
+    input.serialConformance.reports.collect.serialEvidence.records =
+      input.serialConformance.reports.collect.serialEvidence.records.map(
+        (record) => ({
+          ...record,
+          saleBinding: record.saleBinding === null ? null : relabeledSale,
+        }),
+      );
+
+    const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+    assert.equal(evidence.status, "failed");
+    assert.ok(
+      evidence.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_conformance_report_invalid",
+      ),
+    );
+  });
+
+  it("rejects a serial report relabeled into another run", () => {
+    const input = completedSerialSaleEvidence();
+    const conformance = input.serialConformance;
+    conformance.runId = "RUN-ATTACKER";
+    for (const name of ["start", "inject", "collect"]) {
+      conformance.requests[name].runId = "RUN-ATTACKER";
+      conformance.reports[name].request.runId = "RUN-ATTACKER";
+    }
+
+    const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+    assert.equal(evidence.status, "failed");
+    assert.ok(
+      evidence.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_conformance_report_invalid",
+      ),
+    );
   });
 
   for (const [name, mutate, code] of [
@@ -539,8 +547,9 @@ describe("simulated hardware serial acceptance evidence", () => {
     [
       "software scanner injection",
       (input) => {
-        input.serialConformance.reports.collect.serialEvidence.records[0].capturedFrame.source =
-          "software-injection";
+        input.serialConformance.reports.collect.serialEvidence.records.find(
+          (record) => record.role === "scanner",
+        ).capturedFrame.source = "software-injection";
       },
       "guest_serial_frame_evidence_required",
     ],
@@ -564,7 +573,6 @@ describe("simulated hardware serial acceptance evidence", () => {
       );
     });
   }
-
   for (const [name, mutate] of [
     [
       "missing repeated stop evidence",
@@ -607,7 +615,7 @@ describe("simulated hardware serial acceptance evidence", () => {
       },
     ],
   ]) {
-    it(`does not assert readiness for ${name}`, () => {
+    it(`rejects runner-signed conformance tampered by ${name}`, () => {
       const input = completedSerialSaleEvidence();
       mutate(input);
       const evidence = evaluateSimulatedHardwareSerialEvidence(input);
@@ -617,7 +625,7 @@ describe("simulated hardware serial acceptance evidence", () => {
       assert.ok(
         evidence.diagnostics.some(
           (diagnostic) =>
-            diagnostic.code === "guest_serial_lifecycle_evidence_required",
+            diagnostic.code === "serial_conformance_report_invalid",
         ),
       );
     });
@@ -674,7 +682,7 @@ describe("factory acceptance cancellation cleanup", () => {
       mkdirSync(join(root, "factory-personalization"));
       const cleanup = cleanupFactoryAcceptanceStaging(
         {
-          mode: "dirty-host-factory-acceptance",
+          mode: "clean-base-factory-acceptance",
           remote: "YKDZ@testbed.invalid",
           identity: "/tmp/maintenance-key",
           certificate: "/tmp/maintenance-cert.pub",
@@ -704,7 +712,7 @@ describe("factory acceptance cancellation cleanup", () => {
         () =>
           cleanupFactoryAcceptanceStaging(
             {
-              mode: "dirty-host-factory-acceptance",
+              mode: "clean-base-factory-acceptance",
               remote: "YKDZ@testbed.invalid",
               identity: "/tmp/maintenance-key",
             },
@@ -1129,7 +1137,7 @@ function approvedPreclaimBaseEvidence() {
 }
 
 describe("win10-vem-e2e reset planning", () => {
-  it("stages the complete Vision installer closure for dirty-host and clean-base Factory acceptance", () => {
+  it("stages the complete Vision installer closure for canonical clean-base Factory acceptance", () => {
     const source = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
 
     assert.match(
@@ -1254,96 +1262,43 @@ describe("win10-vem-e2e reset planning", () => {
       /Factory Personalization Media ACL verification failed before Windows reads it/,
     );
   });
-  it("rejects dirty-host acceptance against an SSH config alias unless the testbed alias is explicitly allowed", () => {
-    const result = spawnSync(
-      process.execPath,
+  it("rejects retired Factory modes and caller-controlled SSH transport arguments", () => {
+    const canonicalArgs = [
+      "--mode",
+      "clean-base-factory-acceptance",
+      "--run-id",
+      "RUN-190",
+      "--clean-base-source",
+      "factory-media://clean-windows-base",
+      "--daemon-artifact-sha256",
+      "a".repeat(64),
+      "--machine-ui-artifact-sha256",
+      "b".repeat(64),
+      "--dry-run",
+    ];
+    const retiredInvocations = [
       [
-        "scripts/testbed/win10-vem-e2e.mjs",
         "--mode",
         "dirty-host-factory-acceptance",
         "--run-id",
-        "dh-20260704-guard",
-        "--remote",
-        "testbed-maintenance-alias",
-        "--ssh-config",
+        "RUN-190",
         "--dry-run",
       ],
-      { cwd: process.cwd(), encoding: "utf8" },
-    );
+      [...canonicalArgs, "--ssh-config"],
+      [...canonicalArgs, "--proxy-command", "ssh -W %h:%p arbitrary.example"],
+      [...canonicalArgs, "--allow-testbed-remote-alias"],
+      [...canonicalArgs, "--use-existing-remote-artifacts"],
+    ];
 
-    assert.equal(result.status, 2);
-    assert.match(
-      result.stderr,
-      /dirty-host factory acceptance refuses SSH config alias remotes by default/,
-    );
-  });
-
-  it("requires explicit local artifacts for dirty-host acceptance unless existing remote artifacts are test-explicitly allowed", () => {
-    const result = spawnSync(
-      process.execPath,
-      [
-        "scripts/testbed/win10-vem-e2e.mjs",
-        "--mode",
-        "dirty-host-factory-acceptance",
-        "--run-id",
-        "dh-20260704-artifacts",
-        "--dry-run",
-      ],
-      { cwd: process.cwd(), encoding: "utf8" },
-    );
-
-    assert.equal(result.status, 2);
-    assert.match(
-      result.stderr,
-      /requires --daemon-artifact and --machine-ui-artifact/,
-    );
-  });
-
-  it("dry-run records specified local artifact hashes for dirty-host acceptance", () => {
-    const temp = mkdtempSync(join(tmpdir(), "vem-artifact-test-"));
-    try {
-      const daemonArtifact = join(temp, "vending-daemon.exe");
-      const machineUiArtifact = join(temp, "machine.exe");
-      const machineUiSidecar = join(temp, "WebView2Loader.dll");
-      writeFileSync(daemonArtifact, "daemon artifact under test", "utf8");
-      writeFileSync(
-        machineUiArtifact,
-        "machine ui artifact under test",
-        "utf8",
-      );
-      writeFileSync(machineUiSidecar, "webview2 loader under test", "utf8");
-
+    for (const args of retiredInvocations) {
       const result = spawnSync(
         process.execPath,
-        [
-          "scripts/testbed/win10-vem-e2e.mjs",
-          "--mode",
-          "dirty-host-factory-acceptance",
-          "--run-id",
-          "dh-20260704-artifact-hashes",
-          "--daemon-artifact",
-          daemonArtifact,
-          "--machine-ui-artifact",
-          machineUiArtifact,
-          "--identity",
-          CERTIFICATE_SSH_OPTIONS.identity,
-          "--certificate",
-          CERTIFICATE_SSH_OPTIONS.certificate,
-          "--dry-run",
-        ],
+        ["scripts/testbed/win10-vem-e2e.mjs", ...args],
         { cwd: process.cwd(), encoding: "utf8" },
       );
 
-      assert.equal(result.status, 0, result.stderr);
-      const dryRun = JSON.parse(result.stdout);
-      assert.match(dryRun.artifacts.daemonSha256, /^[a-f0-9]{64}$/);
-      assert.match(dryRun.artifacts.machineUiSha256, /^[a-f0-9]{64}$/);
-      assert.notEqual(
-        dryRun.artifacts.daemonSha256,
-        dryRun.artifacts.machineUiSha256,
-      );
-    } finally {
-      rmSync(temp, { recursive: true, force: true });
+      assert.equal(result.status, 2, result.stderr);
+      assert.match(result.stderr, /unknown argument|unsupported mode/);
     }
   });
 
@@ -3291,53 +3246,6 @@ try {
     );
   });
 
-  it("builds dirty-host factory reset acceptance with staged evidence and verifier output", () => {
-    const script = buildRemotePowerShellScript({
-      mode: "dirty-host-factory-acceptance",
-      runId: "dh-20260704-001",
-      platformTarget: "vem-vps",
-      machineCode: "VEM-TESTBED-WINVM-01",
-      remoteUploadedArtifactRoot:
-        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-input-artifacts",
-    });
-
-    assert.match(script, /dirty_host_reset_acceptance/);
-    assert.match(script, /clean_base_preparation_acceptance/);
-    assert.match(script, /C:\\ProgramData\\VEM\\evidence\\dh-20260704-001/);
-    assert.match(script, /inventoryBeforeReset = \$inventoryBefore/);
-    assert.match(script, /Copy-FactoryAcceptanceInputs/);
-    assert.match(script, /artifact-backup/);
-    assert.match(script, /vem-input-artifacts/);
-    assert.match(script, /vending-daemon.exe/);
-    assert.match(script, /WebView2Loader\.dll/);
-    assert.match(script, /machineUiSidecarPath/);
-    assert.match(script, /script-bundle/);
-    assert.match(script, /prepare-factory-runtime.ps1/);
-    assert.match(script, /ResetExistingVemState = \$true/);
-    assert.match(script, /PersonalizationMediaPath = ''/);
-    assert.match(
-      script,
-      /Factory Personalization Media staging path is missing/,
-    );
-    assert.match(script, /credentials = "not_logged"/);
-    assert.doesNotMatch(script, /Import-DirtyHostFactoryCredentialFile/);
-    assert.match(script, /MqttUrl = 'mqtt:\/\/118\.25\.104\.160:1883'/);
-    assert.match(script, /factory-runtime-preparation.json/);
-    assert.match(script, /-WriteStructuredJsonOutput \$true/);
-    assert.match(script, /Convert-FactoryChildStructuredJsonOutput/);
-    assert.match(script, /factory-runtime-verification.json/);
-    assert.match(script, /dirty-host-factory-acceptance.json/);
-    assert.match(script, /Get-DirtyHostFactoryDisplayProof/);
-    assert.match(script, /dirtyHostFactoryDisplayProof/);
-    assert.match(script, /dirtyHostFactoryAcceptanceOk/);
-    assert.match(script, /display_proof_missing/);
-    assert.match(script, /Start-Process -FilePath "powershell.exe"/);
-    assert.match(script, /RedirectStandardError/);
-    assert.match(script, /platformBusinessDataTouched = \$false/);
-    assert.match(script, /distinction = \[ordered\]@{/);
-    assert.doesNotMatch(script, /VEM-WIN10-REAL-01/);
-  });
-
   it("factory preparation uses production serial adapters for simulated hardware", () => {
     const script = readFileSync(
       join(process.cwd(), "scripts/windows/prepare-factory-runtime.ps1"),
@@ -3381,10 +3289,9 @@ try {
     assert.match(verifier, /hardwareModel = \$manifest\.hardware\.model/);
   });
 
-  it("passes deterministic deployment batches to both direct factory preparation paths", () => {
+  it("passes a deterministic deployment batch to canonical clean-base factory preparation", () => {
     const source = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
 
-    assert.match(source, /DeploymentBatch = "dirty-host-reset-v1"/);
     assert.match(
       source,
       /DeploymentBatch = \$\{psString\(`clean-base-\$\{cleanBaseFactoryProfile\}-v1`\)\}/,
@@ -3534,7 +3441,7 @@ try {
     assert.equal(plan.runId, "RUN-182");
     assert.equal(plan.cleanBase.source, "factory-media://clean-windows-base");
     assert.equal(plan.cleanBase.snapshot, "vem-clean-base-before-factory-prep");
-    assert.equal(plan.cleanBase.mustNotReuseDirtyHost, true);
+    assert.equal(plan.cleanBase.requiresCleanWindowsBase, true);
     assert.deepEqual(plan.cleanBase.requiredBaseline, {
       displayOrientationResolution: {
         orientation: "portrait",
@@ -3590,7 +3497,6 @@ try {
         "startupReachesBringUpOrSalesEligible",
       ),
     );
-    assert.equal(plan.readinessLevels.dirtyHostResetAcceptance, "not_asserted");
     assert.equal(
       plan.readinessLevels.cleanBasePreparationAcceptance,
       "asserted_by_clean_base_step",
@@ -3818,7 +3724,7 @@ try {
     const plan = JSON.parse(result.stdout);
     assert.equal(plan.mode, "clean-base-factory-acceptance");
     assert.equal(plan.runId, "RUN-182");
-    assert.equal(plan.cleanBase.mustNotReuseDirtyHost, true);
+    assert.equal(plan.cleanBase.requiresCleanWindowsBase, true);
     assert.equal(plan.artifacts.daemonSha256, "a".repeat(64));
     assert.equal(plan.artifacts.machineUiSha256, "b".repeat(64));
   });
@@ -3890,7 +3796,7 @@ try {
     assert.doesNotMatch(result.stderr, /not implemented/);
   });
 
-  it("rejects existing remote artifacts for live clean-base preparation", () => {
+  it("rejects the removed existing-remote-artifacts escape hatch", () => {
     const result = spawnSync(
       process.execPath,
       [
@@ -3912,9 +3818,8 @@ try {
     assert.equal(result.status, 2);
     assert.match(
       result.stderr,
-      /clean-base factory acceptance live mode rejects --use-existing-remote-artifacts/,
+      /unknown argument: --use-existing-remote-artifacts/,
     );
-    assert.doesNotMatch(result.stderr, /requires --daemon-artifact/);
   });
 
   it("refuses known production clean-base remotes before live staging", () => {
@@ -3990,7 +3895,6 @@ try {
       script,
       /cleanBasePreparationAcceptance = if \(\$passed\) \{ "passed" \} else \{ "failed" \}/,
     );
-    assert.match(script, /dirtyHostResetAcceptance = "not_asserted"/);
     assert.match(script, /runtimeReady = "not_asserted"/);
     assert.match(script, /simulatedHardwareReady = "not_asserted"/);
     assert.match(script, /sellReady = "not_asserted"/);
@@ -4341,10 +4245,6 @@ try {
         status: "passed",
         asserted: true,
       },
-      dirtyHostResetAcceptance: {
-        status: "not_asserted",
-        asserted: false,
-      },
       runtimeReady: {
         status: "not_asserted",
         asserted: false,
@@ -4623,6 +4523,17 @@ try {
     assert.equal(
       commandArg(plan.steps[3].command, "--machine-code"),
       "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
+    );
+    const saleStep = plan.steps.find(
+      (step) => step.name === "simulated hardware sale flow",
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--runner-signing-key-file"),
+      "runner-owned-serial-signing-key-file-required",
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--expected-runner-public-key"),
+      "expected-serial-runner-public-key-required",
     );
 
     assert.throws(
@@ -5411,22 +5322,6 @@ try {
     );
     assert.equal(
       getRuntimeAcceptanceExitStatus({
-        mode: "dirty-host-factory-acceptance",
-        sshStatus: 0,
-        stdout: JSON.stringify({ ok: false }),
-      }),
-      1,
-    );
-    assert.equal(
-      getRuntimeAcceptanceExitStatus({
-        mode: "dirty-host-factory-acceptance",
-        sshStatus: 0,
-        stdout: JSON.stringify({ ok: true }),
-      }),
-      0,
-    );
-    assert.equal(
-      getRuntimeAcceptanceExitStatus({
         mode: "simulated-hardware-sale-flow",
         sshStatus: 0,
         stdout: JSON.stringify({
@@ -5481,13 +5376,13 @@ try {
       buildSshCommand({
         ...CERTIFICATE_SSH_OPTIONS,
         remote: "maintainer@relay-vm.example",
-        proxyCommand: "ssh -W %h:%p maintenance-relay.example",
+        proxyCommand: "ssh -W %h:%p arbitrary.example",
       }),
       [
         "ssh",
         ...CERTIFICATE_SSH_ARGS,
         "-o",
-        "ProxyCommand=ssh -W %h:%p maintenance-relay.example",
+        "ProxyCommand=none",
         "maintainer@relay-vm.example",
       ],
     );

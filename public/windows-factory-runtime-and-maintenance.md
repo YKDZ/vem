@@ -545,6 +545,41 @@ fetches only `https://token.actions.githubusercontent.com/.well-known/jwks`,
 without redirects. Inline policy, inline signing secrets, and configurable JWKS
 URLs are rejected.
 
+The trust policy requires a non-empty `workflowIdentities` array. Each entry is
+either the direct or reusable claim model, and an assertion must match every
+field of one entry exactly. `workflowIdentity` is not accepted. A shared
+control-plane policy can authorize both CI workflows, for example:
+
+```json
+{
+  "repositoryId": "123456789",
+  "workflowIdentities": [
+    {
+      "claimModel": "direct",
+      "workflowRef": "example/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+      "allowedEnvironments": ["vem-maintenance-testbed"]
+    },
+    {
+      "claimModel": "direct",
+      "workflowRef": "example/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+      "allowedEnvironments": ["vem-factory-production"]
+    }
+  ],
+  "refs": ["refs/heads/main"],
+  "events": ["workflow_dispatch"],
+  "requireRefProtected": true,
+  "allowedRunnerPeerIds": ["11111111-1111-4111-8111-111111111111"],
+  "targetMachineCodes": [
+    "VEM-TESTBED-RUNTIME-ACCEPTANCE",
+    "VEM-TESTBED-FACTORY-ACCEPTANCE"
+  ]
+}
+```
+
+Replace the repository, peer, and machine values with deployment-owned exact
+identities. If Factory dispatches from a protected release tag, add that exact
+tag ref to `refs`; wildcard refs are not supported.
+
 The automation exchange endpoint has a process-local ceiling of 30 exchange
 requests per minute per observed source. Every deployment must also configure
 its reverse proxy or API gateway with an equal or stricter per-client limit for

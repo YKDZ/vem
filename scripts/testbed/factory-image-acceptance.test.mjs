@@ -32,6 +32,9 @@ const runner = new URL("./factory-image-acceptance.mjs", import.meta.url)
 const adapter = new URL("./fake-vm-host-adapter.mjs", import.meta.url).pathname;
 
 function typedInput(root) {
+  const now = Date.now();
+  const startedAt = new Date(now - 10_000).toISOString();
+  const completedAt = new Date(now).toISOString();
   return {
     schemaVersion: "vem-factory-image-acceptance-input/v1",
     kind: "factory-image-acceptance-input",
@@ -51,7 +54,18 @@ function typedInput(root) {
       udfWriterPath: "/runner/factory/genisoimage",
       wimlibPath: "/runner/factory/wimlib-imagex",
     },
-    endpoint: { expectedTestbedUser: "YKDZ" },
+    endpoint: {
+      expectedTestbedUser: "YKDZ",
+      maintenanceRelaySession: {
+        sessionId: "550e8400-e29b-41d4-a716-446655440001",
+        relayPeer: {
+          publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+          tunnelAddress: "10.91.0.1",
+        },
+        sourceTunnelAddress: "10.91.2.10",
+        endpointTunnelAddress: "10.91.16.10",
+      },
+    },
     ephemeralPlatform: {
       evidencePath: join(root, "ephemeral-platform.json"),
       platformTarget: "ephemeral-run-15",
@@ -60,6 +74,53 @@ function typedInput(root) {
     ssh: {
       identityPath: "/runner/ssh/maintenance",
       certificatePath: "/runner/ssh/maintenance-cert.pub",
+    },
+    maintenanceRelayAttestation: {
+      schemaVersion: "factory-maintenance-relay-attestation/v1",
+      kind: "factory-maintenance-relay-attestation",
+      source: "runner-wireguard",
+      startedAt,
+      completedAt,
+      session: {
+        id: "550e8400-e29b-41d4-a716-446655440001",
+        kind: "ci",
+        status: "active",
+        issuedAt: new Date(now - 60_000).toISOString(),
+        expiresAt: new Date(now + 60 * 60_000).toISOString(),
+        sourcePeer: {
+          id: "550e8400-e29b-41d4-a716-446655440002",
+          role: "runner",
+          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          tunnelAddress: "10.91.2.10",
+        },
+        targetMachine: {
+          id: "550e8400-e29b-41d4-a716-446655440003",
+          maintenancePeerId: "550e8400-e29b-41d4-a716-446655440004",
+          tunnelAddress: "10.91.16.10",
+        },
+        relay: {
+          id: "550e8400-e29b-41d4-a716-446655440005",
+          role: "relay",
+          publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+          tunnelAddress: "10.91.0.1",
+          endpoint: "relay.example.test:51820",
+        },
+        relayConvergence: { state: "applied" },
+      },
+      runner: {
+        interface: "wg-factory",
+        relayPeer: {
+          publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+          endpoint: "relay.example.test:51820",
+          allowedIps: ["10.91.16.10/32"],
+          latestHandshakeEpochSeconds: Math.floor(now / 1000),
+        },
+        route: {
+          destination: "10.91.16.10/32",
+          device: "wg-factory",
+          source: "10.91.2.10",
+        },
+      },
     },
     evidence: {
       root: join(root, "evidence"),
@@ -105,9 +166,18 @@ describe("Factory Image Acceptance lifecycle", () => {
     const input = typedInput(root);
     const endpoint = {
       protocol: "ssh",
-      host: "10.91.2.10",
+      host: "10.91.16.10",
       port: 22,
       reachability: "discovered",
+      relayProof: {
+        ...input.endpoint.maintenanceRelaySession,
+        relayPeer: {
+          ...input.endpoint.maintenanceRelaySession.relayPeer,
+        },
+        endpointAllowedIp: "10.91.16.10/32",
+        endpointRoute: "10.91.16.10/32",
+        handshakeUnixSeconds: 1_784_160_000,
+      },
     };
     const sshKnownHostsPath = join(root, "lifecycle-known-hosts");
     const preclaimInvocation = buildFactoryPreclaimVerifyInvocation(
@@ -163,7 +233,7 @@ describe("Factory Image Acceptance lifecycle", () => {
           preclaimInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.2.10",
+      "10.91.16.10",
     );
     assert.equal(
       JSON.parse(
@@ -171,7 +241,7 @@ describe("Factory Image Acceptance lifecycle", () => {
           claimInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.2.10",
+      "10.91.16.10",
     );
     assert.equal(
       JSON.parse(
@@ -179,7 +249,25 @@ describe("Factory Image Acceptance lifecycle", () => {
           runtimeInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.2.10",
+      "10.91.16.10",
+    );
+    assert.throws(
+      () =>
+        buildFactoryPreclaimVerifyInvocation(
+          input,
+          {
+            ...endpoint,
+            relayProof: {
+              ...endpoint.relayProof,
+              relayPeer: {
+                ...endpoint.relayProof.relayPeer,
+                publicKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+              },
+            },
+          },
+          sshKnownHostsPath,
+        ),
+      /exact maintenance-session Relay peer/,
     );
     assert.throws(
       () => validateFactoryImageAcceptanceInput({}),
@@ -568,6 +656,35 @@ if (request.operation === "capture-approved-base") {
       });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /provenanceIdentity/i);
+      assert.equal(existsSync(adapterLog), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects adapter-attested relay state before any adapter operation", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-factory-image-relay-proof-"));
+    const input = typedInput(root);
+    const inputPath = join(root, "input.json");
+    const adapterLog = join(root, "adapter-operations.log");
+    input.maintenanceRelayAttestation.source = "adapter";
+    writeFileSync(input.ephemeralPlatform.evidencePath, "{}\n");
+    writeFileSync(inputPath, JSON.stringify(input));
+    try {
+      const result = spawnSync(process.execPath, [runner], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RUNNER_TEMP: root,
+          VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH: inputPath,
+          VEM_VM_HOST_ADAPTER: adapter,
+          VEM_VM_HOST_ADAPTER_OPERATION_LOG: adapterLog,
+          VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID: `factory-cas://sha256/${"d".repeat(64)}`,
+        },
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /runner-owned/i);
       assert.equal(existsSync(adapterLog), false);
     } finally {
       rmSync(root, { recursive: true, force: true });

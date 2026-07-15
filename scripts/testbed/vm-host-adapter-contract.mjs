@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { inspectExportedDefaultAudioCapture } from "./default-audio-evidence.mjs";
@@ -31,6 +32,9 @@ const LOGICAL_IDENTITY =
   /^[a-z][a-z0-9-]{0,31}:\/\/[a-z0-9][a-z0-9._:@-]{0,191}$/;
 const SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const WIREGUARD_PUBLIC_KEY = /^[A-Za-z0-9+/]{43}=$/;
 const AUDIO_ENCODING = new Set([
   "pcm_u8",
   "pcm_s16le",
@@ -324,6 +328,59 @@ export function createScannerCodeDescriptor(scannerCode) {
   };
 }
 
+export function deriveSerialFrameCaptureBindingDigest({
+  request,
+  record,
+  previousCaptureBindingDigest = null,
+}) {
+  const frame = record?.capturedFrame ?? {};
+  const sale = record?.saleBinding;
+  const material = {
+    schemaVersion: "vem-serial-frame-capture-binding/v1",
+    runId: request?.runId ?? null,
+    lifecycleReference: request?.lifecycleReference ?? null,
+    targetIdentity: request?.target?.identity ?? null,
+    operationReference: request?.operationReference ?? null,
+    serialSessionId: request?.serialSession?.serialSessionId ?? null,
+    sessionBindingToken: request?.serialSession?.sessionBindingToken ?? null,
+    deviceMappingDigest: request?.serialSession?.deviceMappingDigest ?? null,
+    operationEvidence: request?.serialSession?.operationEvidence ?? null,
+    saleCorrelationId: record?.saleCorrelationId ?? null,
+    orderId: sale?.orderId ?? null,
+    paymentId: sale?.paymentId ?? null,
+    vendingCommandId: sale?.vendingCommandId ?? null,
+    role: record?.role ?? null,
+    event: record?.event ?? null,
+    operationNonce: record?.operationNonce ?? null,
+    rawSerialFrame: {
+      source: frame.source ?? null,
+      sequence: frame.sequence ?? null,
+      digest: frame.digest ?? null,
+      byteLength: frame.byteLength ?? null,
+    },
+    previousCaptureBindingDigest,
+  };
+  return `sha256:${sha256(JSON.stringify(material))}`;
+}
+
+export function deriveSerialEvidenceCaptureChainDigest({ request, records }) {
+  const material = {
+    schemaVersion: "vem-serial-evidence-capture-chain/v1",
+    runId: request?.runId ?? null,
+    lifecycleReference: request?.lifecycleReference ?? null,
+    targetIdentity: request?.target?.identity ?? null,
+    operationReference: request?.operationReference ?? null,
+    serialSessionId: request?.serialSession?.serialSessionId ?? null,
+    sessionBindingToken: request?.serialSession?.sessionBindingToken ?? null,
+    deviceMappingDigest: request?.serialSession?.deviceMappingDigest ?? null,
+    operationEvidence: request?.serialSession?.operationEvidence ?? null,
+    captureBindingDigests: Array.isArray(records)
+      ? records.map((record) => record?.captureBindingDigest ?? null)
+      : null,
+  };
+  return `sha256:${sha256(JSON.stringify(material))}`;
+}
+
 export function deriveSerialSessionBinding({
   runId,
   lifecycleReference,
@@ -449,6 +506,7 @@ function assertSerialSessionRequest(session, request, issues) {
         "scannerInjection",
         "saleCorrelationIds",
         "saleBindings",
+        "operationEvidence",
         "idempotencyCheck",
       ],
       "request.serialSession",
@@ -535,6 +593,45 @@ function assertSerialSessionRequest(session, request, issues) {
       issues,
       "request.serialSession.scannerInjection",
       "must be null for this operation",
+    );
+  if (request.operation === "collect-serial-evidence") {
+    const evidence = session.operationEvidence;
+    if (
+      !assertExactKeys(
+        evidence,
+        ["runnerChallenge", "startReportDigest", "injectReportDigest"],
+        "request.serialSession.operationEvidence",
+        issues,
+      )
+    ) {
+      // Exact-key diagnostics are sufficient when this object is malformed.
+    } else {
+      if (
+        !/^serial-runner-challenge:\/\/sha256-[a-f0-9]{64}$/.test(
+          evidence.runnerChallenge ?? "",
+        )
+      )
+        issue(
+          issues,
+          "request.serialSession.operationEvidence.runnerChallenge",
+          "must be a runner-created serial challenge",
+        );
+      for (const key of ["startReportDigest", "injectReportDigest"])
+        if (!SHA256_DIGEST.test(evidence[key] ?? ""))
+          issue(
+            issues,
+            `request.serialSession.operationEvidence.${key}`,
+            "must reference previously committed operation evidence",
+          );
+    }
+  } else if (
+    !["cleanup", "cancel"].includes(request.operation) &&
+    session.operationEvidence !== null
+  )
+    issue(
+      issues,
+      "request.serialSession.operationEvidence",
+      "must be null outside serial evidence collection",
     );
   if (!Array.isArray(session.saleCorrelationIds))
     issue(
@@ -708,6 +805,7 @@ function assertSemanticRecord(record, index, request, issues) {
         "saleCorrelationId",
         "saleBinding",
         "capturedFrame",
+        "captureBindingDigest",
       ],
       path,
       issues,
@@ -716,6 +814,12 @@ function assertSemanticRecord(record, index, request, issues) {
     return;
   if (!SALE_EVIDENCE_ROLES.has(record.role))
     issue(issues, `${path}.role`, "must be a supported serial evidence role");
+  if (!SHA256_DIGEST.test(record.captureBindingDigest ?? ""))
+    issue(
+      issues,
+      `${path}.captureBindingDigest`,
+      "must bind the frame capture to its sale and serial context",
+    );
   if (
     assertExactKeys(
       record.capturedFrame,
@@ -926,7 +1030,9 @@ function assertSerialEvidence(report, request, issues) {
         "serialSessionId",
         "sessionBindingToken",
         "deviceMappingDigest",
+        "operationEvidence",
         "records",
+        "captureChainDigest",
       ],
       "report.serialEvidence",
       issues,
@@ -944,6 +1050,15 @@ function assertSerialEvidence(report, request, issues) {
         `report.serialEvidence.${key}`,
         "must bind the requested serial session",
       );
+  if (
+    JSON.stringify(evidence.operationEvidence) !==
+    JSON.stringify(request.serialSession.operationEvidence)
+  )
+    issue(
+      issues,
+      "report.serialEvidence.operationEvidence",
+      "must retain the runner-held operation evidence references",
+    );
   if (!Array.isArray(evidence.records)) {
     issue(issues, "report.serialEvidence.records", "must be an array");
     return;
@@ -951,6 +1066,33 @@ function assertSerialEvidence(report, request, issues) {
   evidence.records.forEach((record, index) =>
     assertSemanticRecord(record, index, request, issues),
   );
+  let previousCaptureBindingDigest = null;
+  evidence.records.forEach((record, index) => {
+    const expectedCaptureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+      request,
+      record,
+      previousCaptureBindingDigest,
+    });
+    if (record?.captureBindingDigest !== expectedCaptureBindingDigest)
+      issue(
+        issues,
+        `report.serialEvidence.records[${index}].captureBindingDigest`,
+        "must immutably bind the run, sale, and raw serial frame at capture",
+      );
+    previousCaptureBindingDigest = record?.captureBindingDigest ?? null;
+  });
+  if (
+    evidence.captureChainDigest !==
+    deriveSerialEvidenceCaptureChainDigest({
+      request,
+      records: evidence.records,
+    })
+  )
+    issue(
+      issues,
+      "report.serialEvidence.captureChainDigest",
+      "must commit the complete immutable serial capture chain",
+    );
   const capturedFrameSequences = new Set();
   let previousFrameSequence = 0;
   evidence.records.forEach((record, index) => {
@@ -2054,11 +2196,120 @@ function assertDisplayCaptureResult(value, request, report, issues) {
     );
 }
 
-function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
+function assertMaintenanceRelaySession(session, path, issues) {
+  if (
+    !assertExactKeys(
+      session,
+      [
+        "sessionId",
+        "relayPeer",
+        "sourceTunnelAddress",
+        "endpointTunnelAddress",
+      ],
+      path,
+      issues,
+    )
+  )
+    return;
+  if (typeof session.sessionId !== "string" || !UUID.test(session.sessionId))
+    issue(issues, `${path}.sessionId`, "must be a maintenance session UUID");
+  if (
+    assertExactKeys(
+      session.relayPeer,
+      ["publicKey", "tunnelAddress"],
+      `${path}.relayPeer`,
+      issues,
+    )
+  ) {
+    if (
+      typeof session.relayPeer.publicKey !== "string" ||
+      !WIREGUARD_PUBLIC_KEY.test(session.relayPeer.publicKey)
+    )
+      issue(
+        issues,
+        `${path}.relayPeer.publicKey`,
+        "must be a canonical WireGuard public key",
+      );
+    if (isIP(session.relayPeer.tunnelAddress) !== 4)
+      issue(
+        issues,
+        `${path}.relayPeer.tunnelAddress`,
+        "must be an IPv4 Relay tunnel address",
+      );
+  }
+  for (const key of ["sourceTunnelAddress", "endpointTunnelAddress"])
+    if (isIP(session[key]) !== 4)
+      issue(issues, `${path}.${key}`, "must be an IPv4 tunnel address");
+}
+
+function assertMaintenanceRelayProof(proof, session, endpoint, path, issues) {
+  if (
+    !assertExactKeys(
+      proof,
+      [
+        "sessionId",
+        "relayPeer",
+        "sourceTunnelAddress",
+        "endpointTunnelAddress",
+        "endpointAllowedIp",
+        "endpointRoute",
+        "handshakeUnixSeconds",
+      ],
+      path,
+      issues,
+    )
+  )
+    return;
+  assertMaintenanceRelaySession(
+    {
+      sessionId: proof.sessionId,
+      relayPeer: proof.relayPeer,
+      sourceTunnelAddress: proof.sourceTunnelAddress,
+      endpointTunnelAddress: proof.endpointTunnelAddress,
+    },
+    path,
+    issues,
+  );
+  for (const key of [
+    "sessionId",
+    "relayPeer",
+    "sourceTunnelAddress",
+    "endpointTunnelAddress",
+  ])
+    if (JSON.stringify(proof[key]) !== JSON.stringify(session[key]))
+      issue(issues, `${path}.${key}`, "does not match maintenance session");
+  const endpointCidr = `${session.endpointTunnelAddress}/32`;
+  if (endpoint.host !== session.endpointTunnelAddress)
+    issue(
+      issues,
+      `${path}.endpointTunnelAddress`,
+      "does not bind the discovered endpoint host",
+    );
+  for (const key of ["endpointAllowedIp", "endpointRoute"])
+    if (proof[key] !== endpointCidr)
+      issue(issues, `${path}.${key}`, "must bind the endpoint /32 route");
+  if (
+    !Number.isInteger(proof.handshakeUnixSeconds) ||
+    proof.handshakeUnixSeconds < 1
+  )
+    issue(
+      issues,
+      `${path}.handshakeUnixSeconds`,
+      "must prove a WireGuard handshake timestamp",
+    );
+}
+
+function assertGuestMaintenanceEndpoint(endpoint, session, path, issues) {
   if (
     !assertExactKeys(
       endpoint,
-      ["protocol", "host", "port", "reachability"],
+      [
+        "protocol",
+        "host",
+        "port",
+        "reachability",
+        ...(session ? ["relayProof"] : []),
+      ],
       path,
       issues,
     )
@@ -2066,20 +2317,25 @@ function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
     return;
   if (endpoint.protocol !== "ssh")
     issue(issues, `${path}.protocol`, "must be ssh");
+  const addressFamily =
+    typeof endpoint.host === "string" ? isIP(endpoint.host) : 0;
+  const unspecifiedOrLoopback =
+    endpoint.host === "0.0.0.0" ||
+    endpoint.host === "::" ||
+    endpoint.host === "127.0.0.1" ||
+    endpoint.host === "::1";
   if (
-    typeof endpoint.host !== "string" ||
-    endpoint.host.length === 0 ||
-    endpoint.host.length > 253 ||
-    /[\\/\s]/.test(endpoint.host)
+    endpoint.reachability !== "unavailable" &&
+    (addressFamily === 0 || unspecifiedOrLoopback)
   )
-    issue(issues, `${path}.host`, "must be a discovered SSH host");
+    issue(
+      issues,
+      `${path}.host`,
+      "must be a concrete WireGuard tunnel IP address",
+    );
   else assertNoHostReference(endpoint.host, `${path}.host`, issues);
-  if (
-    !Number.isInteger(endpoint.port) ||
-    endpoint.port < 1 ||
-    endpoint.port > 65535
-  )
-    issue(issues, `${path}.port`, "must be a valid TCP port");
+  if (endpoint.port !== 22)
+    issue(issues, `${path}.port`, "must be the SSH port 22");
   if (
     !new Set(["discovered", "authenticated", "unavailable"]).has(
       endpoint.reachability,
@@ -2089,6 +2345,14 @@ function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
       issues,
       `${path}.reachability`,
       "must be a supported reachability state",
+    );
+  if (session)
+    assertMaintenanceRelayProof(
+      endpoint.relayProof,
+      session,
+      endpoint,
+      `${path}.relayProof`,
+      issues,
     );
 }
 
@@ -2161,6 +2425,7 @@ function requestEcho(request) {
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     requestedCapabilities: [...request.requestedCapabilities],
+    maintenanceRelaySession: request.maintenanceRelaySession,
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
@@ -2186,6 +2451,7 @@ function reconstructRequest(request) {
       digest: asset?.digest,
     })),
     requestedCapabilities: [...(request.requestedCapabilities ?? [])],
+    maintenanceRelaySession: request.maintenanceRelaySession ?? null,
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
@@ -2206,6 +2472,8 @@ function lifecycleSourceAsset(request) {
 
 export function validateVmHostAdapterRequest(input) {
   const request = structuredClone(input);
+  if (!("maintenanceRelaySession" in request))
+    request.maintenanceRelaySession = null;
   const issues = [];
   assertExactKeys(
     request,
@@ -2225,6 +2493,7 @@ export function validateVmHostAdapterRequest(input) {
       "audioCapture",
       "assets",
       "requestedCapabilities",
+      "maintenanceRelaySession",
       ...(isV2Request(request) ? ["serialSession"] : []),
     ],
     "request",
@@ -2296,6 +2565,12 @@ export function validateVmHostAdapterRequest(input) {
   }
   if (isV2Request(request) || isSerialSessionOperation(request.operation))
     assertSerialSessionRequest(request.serialSession, request, issues);
+  if (request.maintenanceRelaySession !== null)
+    assertMaintenanceRelaySession(
+      request.maintenanceRelaySession,
+      "request.maintenanceRelaySession",
+      issues,
+    );
   if (assertExactKeys(request.target, ["identity"], "request.target", issues)) {
     if (
       typeof request.target.identity !== "string" ||
@@ -2608,6 +2883,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "displayCapture",
         "audioCapture",
         "requestedCapabilities",
+        "maintenanceRelaySession",
         ...(isV2Request(request) ? ["serialSession"] : []),
       ],
       "report.request",
@@ -2801,6 +3077,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
     );
     assertGuestMaintenanceEndpoint(
       report.guest.maintenanceEndpoint,
+      request.maintenanceRelaySession,
       "report.guest.maintenanceEndpoint",
       issues,
     );
@@ -3082,6 +3359,16 @@ export function validateVmHostAdapterReport(input, requestInput) {
         host: report.guest.maintenanceEndpoint.host,
         port: report.guest.maintenanceEndpoint.port,
         reachability: report.guest.maintenanceEndpoint.reachability,
+        ...(request.maintenanceRelaySession
+          ? {
+              relayProof: {
+                ...report.guest.maintenanceEndpoint.relayProof,
+                relayPeer: {
+                  ...report.guest.maintenanceEndpoint.relayProof.relayPeer,
+                },
+              },
+            }
+          : {}),
       },
       deviceMappings: report.guest.deviceMappings.map((mapping) => ({
         role: mapping.role,
@@ -3185,6 +3472,8 @@ export function validateVmHostAdapterReport(input, requestInput) {
                     report.serialEvidence.sessionBindingToken,
                   deviceMappingDigest:
                     report.serialEvidence.deviceMappingDigest,
+                  operationEvidence: report.serialEvidence.operationEvidence,
+                  captureChainDigest: report.serialEvidence.captureChainDigest,
                   records: report.serialEvidence.records.map((record) => ({
                     role: record.role,
                     event: record.event,
@@ -3197,6 +3486,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
                     saleCorrelationId: record.saleCorrelationId,
                     saleBinding: record.saleBinding,
                     capturedFrame: record.capturedFrame,
+                    captureBindingDigest: record.captureBindingDigest,
                   })),
                 },
         }
@@ -3420,11 +3710,39 @@ function signalProcessGroup(child, signal) {
   }
 }
 
+function adapterEnvironment(environment) {
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      ([name]) =>
+        !/^(?:VEM_VM_HOST_SCANNER_CODE|VEM_SERIAL_RUNNER_SIGNING_KEY_FILE|VEM_SERIAL_RUNNER_EXPECTED_PUBLIC_KEY)$/i.test(
+          name,
+        ) && !/(?:^|_)(?:PRIVATE|SIGNING)_?KEY(?:_|$)/i.test(name),
+    ),
+  );
+}
+
+function terminateWindowsProcessTree(child) {
+  if (!Number.isInteger(child.pid)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const taskkill = spawn(
+      "taskkill",
+      ["/pid", String(child.pid), "/t", "/f"],
+      { stdio: "ignore", windowsHide: true },
+    );
+    taskkill.once("error", resolve);
+    taskkill.once("close", resolve);
+  });
+}
+
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function terminate(child) {
+  if (process.platform === "win32") {
+    await terminateWindowsProcessTree(child);
+    return;
+  }
   signalProcessGroup(child, "SIGTERM");
   const gracefulDeadline = Date.now() + 250;
   while (processGroupExists(child) && Date.now() < gracefulDeadline)
@@ -3491,16 +3809,10 @@ async function invokeAdapter({
               ? ["--scanner-code-file", scannerInputPath]
               : []),
           ];
-      const {
-        VEM_VM_HOST_SCANNER_CODE: _inheritedProtectedScannerCode,
-        ...processEnvironment
-      } = process.env;
-      const {
-        VEM_VM_HOST_SCANNER_CODE: _configuredProtectedScannerCode,
-        ...configuredEnvironment
-      } = environment;
+      const processEnvironment = adapterEnvironment(process.env);
+      const configuredEnvironment = adapterEnvironment(environment);
       const child = spawn(command, args, {
-        detached: process.platform !== "win32",
+        detached: true,
         stdio: "ignore",
         cwd: workDirectory,
         env: {
@@ -3547,7 +3859,7 @@ async function invokeAdapter({
           void termination.then(() => finish({ code, reason }));
           return;
         }
-        finish({ code, reason });
+        void terminate(child).then(() => finish({ code, reason }));
       });
     });
     const completedAt = new Date().toISOString();
@@ -3632,6 +3944,7 @@ function serialSessionForRecovery(request) {
     scannerInjection: null,
     saleCorrelationIds: [...request.serialSession.saleCorrelationIds],
     saleBindings: structuredClone(request.serialSession.saleBindings),
+    operationEvidence: null,
     idempotencyCheck: false,
   };
 }

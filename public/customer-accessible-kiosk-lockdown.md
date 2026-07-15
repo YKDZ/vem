@@ -22,27 +22,37 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## Controlled Maintenance Ingress 受控维护入口
 
-生产自助机锁定不得让主机变得不可访问。维护通道的稳定概念是 transport-neutral Controlled Maintenance Ingress：只允许显式授权来源通过维护账号登录。WireGuard, SSH, and the relay are implementation mechanisms；具体部署可以使用维护 relay、专用隧道或现场临时网络，但防火墙来源 allowlist 和账号隔离必须保持显式。该通道仅用于主机级恢复、证据收集，以及托管更新不可用时的紧急部署；不要把它作为正常发布路径。
+生产机器只有一条 Controlled Maintenance Ingress：WireGuard pull-reconciling Maintenance Relay。Relay 使用受限凭据拉取版本化期望状态、以 `wg syncconf` 收敛 WireGuard peer，并以 nftables 的来源、目标、协议和端口元组收敛数据面。WireGuard 仅提供到机器维护地址的受控网络路径；它本身不授予 SSH 访问。
 
-只有在维护账号凭据已知且可恢复，并且维护来源地址已明确后，才配置该通道。`-MaintenanceIngressSourceAllowlist` 没有默认值，必须传入显式 host 来源 allowlist；IPv4 可使用单个 host 地址或 `/32`，IPv6 可使用单个 host 地址或 `/128`：
+维护会话必须是 OIDC-authenticated maintenance session。控制平面将 OIDC 身份与指定的来源 peer、目标机器、角色和会话期限绑定，然后签发短时 SSH certificate-only 凭据。Windows `sshd` 只信任 profile-bound CA，禁用密码和键盘交互认证，并显式设定 `AuthorizedKeysFile none`、`AuthorizedKeysCommand none` 和 `AuthorizedKeysCommandUser nobody`，从而拒绝普通 key 或 key command 路径。维护账号是唯一允许的 SSH 主体；自助机账号始终被拒绝。
+
+只有在维护账号可恢复、Relay 已报告目标 peer 收敛、并且 runner 与 maintainer 的来源地址已明确后，才配置该入口。三个 allowlist 都没有默认值，必须传入显式 host 来源；IPv4 使用单个 host 地址或 `/32`，IPv6 使用单个 host 地址或 `/128`：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File C:\VEM\repo\scripts\windows\setup-scheduled-tasks.ps1 `
   -ConfigureControlledMaintenanceIngress `
-  -MaintenanceIngressSourceAllowlist "10.77.20.2/32"
+  -FactoryProfile production `
+  -MaintenanceIngressSourceAllowlist "10.77.20.2/32","10.77.20.3/32" `
+  -MaintenanceRunnerSourceAllowlist "10.77.20.2/32" `
+  -MaintenanceMaintainerSourceAllowlist "10.77.20.3/32" `
+  -MaintenanceWireGuardInterfaceAlias "VEM-Maintenance" `
+  -MaintenanceWireGuardListenAddress "10.77.0.10" `
+  -MaintenanceSshCaPublicKeyPath "C:\ProgramData\VEM\factory\maintenance-ca.pub"
 ```
 
 该脚本会：
 
 - 启用 Windows OpenSSH Server `sshd`，并设置为自动启动；
+- 验证生产 WireGuard 接口实际拥有指定维护地址；
 - 拒绝空 allowlist、`Any`、`0.0.0.0/0`、`::/0`、`100.64.0.0/10`、`10.0.0.0/8`、`192.168.0.0/16` 等过宽 SSH 暴露；
-- 禁用范围过宽的默认 OpenSSH 入站防火墙规则，并创建由 VEM 管理的 `VEM Controlled Maintenance SSH` 规则，允许来自显式来源 allowlist 的 TCP `22`；
+- 禁用范围过宽的默认 OpenSSH 入站防火墙规则，并创建由 VEM 管理的 `VEM Controlled Maintenance SSH` 规则，只允许 Relay 已授权的来源 peer 访问 TCP `22`；
+- 写入 `TrustedUserCAKeys`、`AuthenticationMethods publickey`、`AuthorizedKeysFile none` 和维护账号的 `AllowUsers` 配置；
 - 将维护账号加入 `OpenSSH Users`；
 - 将自助机账号从 `OpenSSH Users` 和 `Remote Desktop Users` 中移除；
 - 向 `C:\ProgramData\ssh\sshd_config` 写入由系统管理的小写 `DenyUsers <kioskuser>` 块。
 
-自助机账号不得用于远程维护。即使顾客侧 shell 已锁定，顾客访问和维护访问也必须保持分离。
+不得绕过 Relay 或手工创建长期维护密钥。自助机账号不得用于远程维护。即使顾客侧 shell 已锁定，顾客访问和维护访问也必须保持分离。
 
 ## 顾客侧启动路径
 
@@ -105,9 +115,11 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -DesktopShellUnavailable `
   -DebugRoutesUnavailable `
   -MaintenanceRecoveryConfirmed `
-  -MaintenanceIngressSourceAllowlist "10.77.20.2/32" `
+  -MaintenanceWireGuardInterfaceAlias "VEM-Maintenance" `
+  -MaintenanceWireGuardListenAddress "10.77.0.10" `
+  -MaintenanceIngressSourceAllowlist "10.77.20.2/32","10.77.20.3/32" `
   -MaintenanceIngressConfirmed `
-  -NegativeKioskSshEvidence "ssh VEMKiosk@<machine-maintenance-ingress-ip> rejected with DenyUsers/auth failure at <time>"
+  -NegativeKioskSshEvidence "ssh VEMKiosk@<machine-wireguard-address> rejected with DenyUsers/auth failure at <time>"
 ```
 
 验证器会写入 `C:\ProgramData\VEM\kiosk-lockdown-evidence.json`，并在以下情况失败：
@@ -115,7 +127,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 - 自助机账号缺失，或是本地管理员；
 - 维护账号缺失，或缺少管理员恢复权限；
 - OpenSSH Server `sshd` 缺失、停止、不是自动启动，或本地端口 `22` 不可访问；
-- `VEM Controlled Maintenance SSH` 防火墙规则缺失、未匹配显式来源 allowlist、未指向 TCP `22`，或任何范围过宽的默认 OpenSSH 入站规则仍处于启用状态；
+- `VEM Controlled Maintenance SSH` 防火墙规则缺失、未匹配显式来源 allowlist、未绑定 WireGuard 接口、未指向 TCP `22`，或任何范围过宽的默认 OpenSSH 入站规则仍处于启用状态；
+- `sshd_config` 未信任 profile-bound CA，允许交互式认证，或仍接受本地授权密钥文件；
 - 维护账号不在 `OpenSSH Users` 中；
 - 自助机账号在 `OpenSSH Users` 中；
 - 自助机账号在 `Remote Desktop Users` 中；
@@ -131,12 +144,12 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 将证据 JSON 与该机器的生产验收记录一起保存。人工确认必须包括尝试通过触摸边缘手势、Windows shell 入口、关闭或最小化控件，以及任何顾客可访问调试路由进入桌面。未完成物理触摸屏检查时，仅通过该脚本不足以作为生产验收。
 
-对于 `-MaintenanceIngressConfirmed`，从一台位于显式 allowlist 内的维护来源确认：
+对于 `-MaintenanceIngressConfirmed`，从 Relay 已授权的来源 peer 创建 OIDC 会话并取得短时 SSH 证书后确认：
 
 ```powershell
-ssh <MaintenanceUser>@<machine-maintenance-ingress-ip> hostname
-ssh <MaintenanceUser>@<machine-maintenance-ingress-ip> powershell -NoProfile -Command "whoami; Get-Service sshd | Select-Object Name,Status,StartType"
-ssh VEMKiosk@<machine-maintenance-ingress-ip> hostname
+ssh -i <ephemeral-private-key> -o CertificateFile=<short-lived-ssh-certificate> <MaintenanceUser>@<machine-wireguard-address> hostname
+ssh -i <ephemeral-private-key> -o CertificateFile=<short-lived-ssh-certificate> <MaintenanceUser>@<machine-wireguard-address> powershell -NoProfile -Command "whoami; Get-Service sshd | Select-Object Name,Status,StartType"
+ssh -i <ephemeral-private-key> -o CertificateFile=<short-lived-ssh-certificate> VEMKiosk@<machine-wireguard-address> hostname
 ```
 
-成功的 SSH 登录必须使用维护账号。自助机账号 SSH 尝试必须失败，且该失败结果必须通过 `-NegativeKioskSshEvidence` 记录；不要把自助机账号 SSH 登录成功作为证据接受。
+成功的 SSH 登录必须使用维护账号和该会话签发的短时证书。自助机账号 SSH 尝试必须失败，且该失败结果必须通过 `-NegativeKioskSshEvidence` 记录；不要把自助机账号 SSH 登录成功作为证据接受。

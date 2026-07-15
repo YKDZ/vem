@@ -18,6 +18,12 @@ const targetMachine = {
   maintenancePeerId: MACHINE_PEER_ID,
   tunnelAddress: "10.91.16.10",
 };
+const relayPeer = {
+  id: "550e8400-e29b-41d4-a716-446655440010",
+  role: "relay",
+  publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+  tunnelAddress: "10.91.0.1",
+};
 
 function session(status: "active" | "revoked" = "active") {
   return {
@@ -27,6 +33,7 @@ function session(status: "active" | "revoked" = "active") {
       type: "admin",
       adminUserId: "550e8400-e29b-41d4-a716-446655440005",
     },
+    relayPeer,
     sourcePeer: maintainerPeer,
     targetMachine,
     protocol: "tcp",

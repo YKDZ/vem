@@ -653,6 +653,7 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
   $caEvidence = Get-MaintenanceCaEvidence -Manifest $Manifest
   $firewallScope = Get-MaintenanceFirewallEvidence -Manifest $Manifest
   $ingress = Get-MaintenanceIngressEvidence -Manifest $Manifest
+  $wireGuardListenAddressEvidence = Get-WireGuardListenAddressEvidence -Manifest $Manifest
   $wireGuardService = Get-WireGuardServiceEvidence -Manifest $Manifest
   $accountPolicy = [ordered]@{
     profile = [string]$Manifest.factoryProfile
@@ -670,7 +671,7 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
     winRmDenied = -not $kioskAdministrator -and -not $kioskInRemoteManagementUsers
     effectiveKioskRemoteAdministrationDenied = $kioskRemoteAccessDenied
   }
-  $passwordFallback = -not ($sshdEffectiveConfig.passwordAuthentication -and $sshdEffectiveConfig.keyboardInteractiveAuthentication -and $sshdEffectiveConfig.authenticationMethods -and $sshdEffectiveConfig.authorizedKeysFile)
+  $passwordFallback = -not ($sshdEffectiveConfig.passwordAuthentication -and $sshdEffectiveConfig.keyboardInteractiveAuthentication -and $sshdEffectiveConfig.authenticationMethods -and $sshdEffectiveConfig.authorizedKeysFile -and $sshdEffectiveConfig.authorizedKeysCommand -and $sshdEffectiveConfig.authorizedKeysCommandUser)
   $passwordAuthentication = [ordered]@{
     sshdPasswordAuthentication = $sshdEffectiveConfig.passwordAuthentication
     sshdKeyboardInteractiveAuthentication = $sshdEffectiveConfig.keyboardInteractiveAuthentication
@@ -712,6 +713,7 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
     ingress = $ingress
     sshdEffectiveConfig = $sshdEffectiveConfig
     firewallScope = $firewallScope
+    wireGuardListenAddressEvidence = $wireGuardListenAddressEvidence
     accountPolicy = $accountPolicy
     passwordAuthentication = $passwordAuthentication
     wireGuardService = $wireGuardService
@@ -775,17 +777,11 @@ function Get-MaintenanceIngressEvidence {
   $mode = [string]$policy.ingressMode
   $listenAddress = [string]$policy.effectiveListenAddress
   $interfaceScope = [string]$policy.effectiveFirewallInterfaceScope
-  $expected = if ($profile -eq "production") {
+  $expected = if ($profile -eq "production" -or $profile -eq "testbed") {
     [ordered]@{
       mode = "wireguard-only"
       listenAddress = [string]$policy.wireGuardListenAddress
       interfaceScope = [string]$policy.wireGuardInterfaceAlias
-    }
-  } elseif ($profile -eq "testbed") {
-    [ordered]@{
-      mode = "testbed-bootstrap-certificate"
-      listenAddress = "0.0.0.0"
-      interfaceScope = "Any"
     }
   } else {
     $null
@@ -802,7 +798,37 @@ function Get-MaintenanceIngressEvidence {
       $mode -ceq [string]$expected.mode -and
       $listenAddress -ceq [string]$expected.listenAddress -and
       $interfaceScope -ceq [string]$expected.interfaceScope
-    bootstrapTestbedOnly = $profile -eq "testbed" -and $mode -eq "testbed-bootstrap-certificate"
+    wireGuardOnly = $mode -ceq "wireguard-only" -and
+      -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardInterfaceAlias) -and
+      -not [string]::IsNullOrWhiteSpace([string]$policy.wireGuardListenAddress)
+  }
+}
+
+function Get-WireGuardListenAddressEvidence {
+  param($Manifest)
+
+  $policy = $Manifest.maintenanceSsh
+  $interfaceAlias = [string]$policy.wireGuardInterfaceAlias
+  $listenAddress = [string]$policy.wireGuardListenAddress
+  $parsedAddress = [System.Net.IPAddress]::None
+  $validAddress = -not [string]::IsNullOrWhiteSpace($listenAddress) -and
+    [System.Net.IPAddress]::TryParse($listenAddress, [ref]$parsedAddress) -and
+    -not $parsedAddress.Equals([System.Net.IPAddress]::Any) -and
+    -not $parsedAddress.Equals([System.Net.IPAddress]::IPv6Any) -and
+    -not $parsedAddress.Equals([System.Net.IPAddress]::Loopback) -and
+    -not $parsedAddress.Equals([System.Net.IPAddress]::IPv6Loopback)
+  $ownedAddress = if ($validAddress -and -not [string]::IsNullOrWhiteSpace($interfaceAlias)) {
+    Get-NetIPAddress -InterfaceAlias $interfaceAlias -IPAddress $parsedAddress.IPAddressToString -ErrorAction SilentlyContinue | Select-Object -First 1
+  } else {
+    $null
+  }
+  return [ordered]@{
+    wireGuardInterfaceAlias = $interfaceAlias
+    wireGuardListenAddress = $listenAddress
+    addressIsConcrete = $validAddress
+    addressOwnedByInterface = $null -ne $ownedAddress
+    effectiveListenerMatchesWireGuardAddress = [string]$policy.effectiveListenAddress -ceq $listenAddress
+    effectiveFirewallMatchesWireGuardInterface = [string]$policy.effectiveFirewallInterfaceScope -ceq $interfaceAlias
   }
 }
 
@@ -863,6 +889,10 @@ function Get-SshdEffectiveConfigEvidence {
     authenticationMethods = [string]$values.authenticationmethods -ceq "publickey"
     authorizedKeysFileValue = [string]$values.authorizedkeysfile
     authorizedKeysFile = [string]$values.authorizedkeysfile -ceq "none"
+    authorizedKeysCommandValue = [string]$values.authorizedkeyscommand
+    authorizedKeysCommand = [string]$values.authorizedkeyscommand -ceq "none"
+    authorizedKeysCommandUserValue = [string]$values.authorizedkeyscommanduser
+    authorizedKeysCommandUser = [string]$values.authorizedkeyscommanduser -ceq "nobody"
     allowUsersValue = $allowUsers
     allowUsers = $allowUsers -ceq $MaintenanceUser.ToLowerInvariant()
     denyUsersValue = $denyUsers
@@ -1582,12 +1612,15 @@ if ($null -ne $manifest) {
   if (-not [bool]$maintenanceIngress.profileBound) {
     Add-Failure $failures "Factory Maintenance SSH ingress mode, listen address, and firewall interface scope must match the selected profile"
   }
-  if ([string]$manifest.factoryProfile -eq "production" -and
-      ([string]$maintenanceIngress.effectiveListenAddress -eq "0.0.0.0" -or [string]$maintenanceIngress.effectiveFirewallInterfaceScope -eq "Any")) {
-    Add-Failure $failures "production verifier rejects wildcard SSH listener or firewall interface scope"
+  if ([string]$maintenanceIngress.effectiveListenAddress -eq "0.0.0.0" -or [string]$maintenanceIngress.effectiveFirewallInterfaceScope -eq "Any") {
+    Add-Failure $failures "Factory verifier rejects wildcard SSH listener or firewall interface scope"
   }
-  if ([string]$manifest.factoryProfile -eq "testbed" -and -not [bool]$maintenanceIngress.bootstrapTestbedOnly) {
-    Add-Failure $failures "testbed verifier requires the explicit testbed bootstrap certificate ingress mode"
+  if (-not [bool]$maintenanceIngress.wireGuardOnly -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressIsConcrete -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressOwnedByInterface -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.effectiveListenerMatchesWireGuardAddress -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.effectiveFirewallMatchesWireGuardInterface) {
+    Add-Failure $failures "Factory verifier requires SSH listener and firewall scope on the declared WireGuard interface/address"
   }
   if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.hardware.mode -ne "production") {
     Add-Failure $failures "production verifier rejects simulated hardware mode"
@@ -1610,10 +1643,13 @@ if ($null -ne $manifest) {
   if (-not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.trustedUserCaKeys -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.syntaxValid -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.listenAddressMatches -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.pubkeyAuthentication -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.passwordAuthentication -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.keyboardInteractiveAuthentication -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authenticationMethods -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authorizedKeysFile -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authorizedKeysCommand -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authorizedKeysCommandUser -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.allowUsers -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.denyUsers -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.systemEntrypoint) {
@@ -1624,6 +1660,7 @@ if ($null -ne $manifest) {
       [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.protocol -ne "TCP" -or
       [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.localPort -ne "22" -or
       [string]$checks.factoryRemoteMaintenanceCapability.firewallScope.interfaceAlias -ne [string]$manifest.maintenanceSsh.effectiveFirewallInterfaceScope -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressOwnedByInterface -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.firewallScope.sourceRolePoolsMatch -or
       @($checks.factoryRemoteMaintenanceCapability.firewallScope.unexpectedEnabledInboundTcp22Rules).Count -gt 0 -or
       @($checks.factoryRemoteMaintenanceCapability.firewallScope.listeners).Count -eq 0 -or

@@ -480,6 +480,12 @@ describe("Maintenance Access shared contracts", () => {
         publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
         tunnelAddress: "10.91.2.10",
       },
+      relayPeer: {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+        role: "relay",
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
       targetMachine: {
         id: TARGET_MACHINE_ID,
         code: "VEM-MAINT-01",

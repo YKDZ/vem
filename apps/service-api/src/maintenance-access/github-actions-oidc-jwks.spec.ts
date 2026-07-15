@@ -184,14 +184,16 @@ describe("GitHub Actions OIDC JWKS provider", () => {
     const now = 1_783_684_800;
     const policy: GithubOidcTrustPolicy = {
       repositoryId: "123456789",
-      workflowIdentity: {
-        claimModel: "direct",
-        workflowRef:
-          "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
-      },
+      workflowIdentities: [
+        {
+          claimModel: "direct",
+          workflowRef:
+            "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+          allowedEnvironments: ["vem-maintenance-testbed"],
+        },
+      ],
       refs: ["refs/heads/main"],
       events: ["workflow_dispatch"],
-      environments: ["vem-maintenance-testbed"],
       requireRefProtected: true,
       allowedRunnerPeerIds: ["11111111-1111-4111-8111-111111111111"],
       targetMachineCodes: ["VEM-TESTBED-RUNTIME-ACCEPTANCE"],

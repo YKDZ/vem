@@ -297,6 +297,7 @@ function serialSessionForOperation(operation, scannerCode) {
       : sessionBindingFromOptions()),
     deviceRoles: ["lower-controller", "scanner"],
     scannerInjection: scannerInjectionFromOptions(operation, scannerCode),
+    operationEvidence: null,
     saleCorrelationIds: readOptions("--sale-correlation-id"),
     saleBindings: isStart
       ? []
@@ -310,6 +311,18 @@ function serialSessionForOperation(operation, scannerCode) {
       operation === "stop-serial-session" &&
       process.argv.includes("--idempotency-check"),
   };
+}
+
+function maintenanceRelaySessionFromOptions() {
+  const raw = readOption("--maintenance-relay-session-json", {
+    optional: true,
+  });
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("--maintenance-relay-session-json must be valid JSON");
+  }
 }
 
 async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
@@ -376,6 +389,7 @@ async function main() {
   const audioCapture = audioCaptureForOperation(operation);
   const scannerCode = protectedScannerCode(operation);
   const serialSession = serialSessionForOperation(operation, scannerCode);
+  const maintenanceRelaySession = maintenanceRelaySessionFromOptions();
   if (serialSession?.scannerInjection?.operationNonce === null)
     serialSession.scannerInjection.operationNonce = nonce;
   const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
@@ -398,6 +412,7 @@ async function main() {
     audioCapture,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
+    maintenanceRelaySession,
     serialSession,
   });
   mkdirSync(dirname(out), { recursive: true });

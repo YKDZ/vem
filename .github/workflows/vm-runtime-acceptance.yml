@@ -252,12 +252,26 @@ jobs:
             created.status !== "active" ||
             created.sourcePeer?.id !== process.env.MAINTENANCE_RUNNER_PEER_ID ||
             created.targetMachine?.id !== process.env.MAINTENANCE_TARGET_MACHINE_ID ||
+            created.relayPeer?.role !== "relay" ||
+            typeof created.relayPeer?.publicKey !== "string" ||
+            typeof created.relayPeer?.tunnelAddress !== "string" ||
             ttlMinutes !== 150 ||
             verified?.id !== created.id ||
             verified.status !== "active"
           ) {
             throw new Error("maintenance session create/get verification failed");
           }
+          const relaySession = {
+            sessionId: created.id,
+            relayPeer: created.relayPeer,
+            sourceTunnelAddress: created.sourcePeer.tunnelAddress,
+            endpointTunnelAddress: created.targetMachine.tunnelAddress,
+          };
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `VEM_MAINTENANCE_RELAY_SESSION_JSON=${JSON.stringify(relaySession)}\n`,
+            { mode: 0o600 },
+          );
           NODE
           rm -rf -- "$MAINTENANCE_SSH_DIR"
           install -d -m 0700 "$MAINTENANCE_SSH_DIR"
@@ -471,6 +485,7 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --maintenance-relay-session-json "$VEM_MAINTENANCE_RELAY_SESSION_JSON" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
           node - "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json" <<'NODE'
           const fs = require("node:fs");
@@ -488,13 +503,26 @@ jobs:
           const fs = require("node:fs");
           const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           const endpoint = report.guest?.maintenanceEndpoint;
+          const session = JSON.parse(process.env.VEM_MAINTENANCE_RELAY_SESSION_JSON);
+          const proof = endpoint?.relayProof;
           if (
             endpoint?.protocol !== "ssh" ||
             endpoint.reachability !== "discovered" ||
             typeof endpoint.host !== "string" ||
-            !Number.isInteger(endpoint.port)
+            !Number.isInteger(endpoint.port) ||
+            endpoint.host !== session.endpointTunnelAddress ||
+            JSON.stringify({
+              sessionId: proof?.sessionId,
+              relayPeer: proof?.relayPeer,
+              sourceTunnelAddress: proof?.sourceTunnelAddress,
+              endpointTunnelAddress: proof?.endpointTunnelAddress,
+            }) !== JSON.stringify(session) ||
+            proof?.endpointAllowedIp !== `${endpoint.host}/32` ||
+            proof?.endpointRoute !== `${endpoint.host}/32` ||
+            !Number.isInteger(proof?.handshakeUnixSeconds) ||
+            proof.handshakeUnixSeconds < 1
           ) {
-            throw new Error("VM Host Adapter did not provide a host-discovered guest maintenance endpoint");
+            throw new Error("VM Host Adapter did not provide the maintenance-session Relay-bound guest endpoint");
           }
           process.stdout.write(`VM_GUEST_MAINTENANCE_ENDPOINT_JSON=${JSON.stringify(endpoint)}\n`);
           NODE
@@ -510,6 +538,105 @@ jobs:
           host_key_alias="vem-runtime-$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
           printf 'VM_RUNTIME_SSH_KNOWN_HOSTS_PATH=%s\n' "$known_hosts_path" >> "$GITHUB_ENV"
           printf 'VM_RUNTIME_SSH_HOST_KEY_ALIAS=%s\n' "$host_key_alias" >> "$GITHUB_ENV"
+
+      - name: Prove Relay WireGuard SSH Data Plane
+        run: |
+          set -euo pipefail
+          artifact_dir="artifacts/vm-runtime-acceptance/${RUN_ID}"
+          mkdir -p "$artifact_dir"
+          endpoint_host="$(node -e 'process.stdout.write(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).host)')"
+          endpoint_port="$(node -e 'process.stdout.write(String(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).port))')"
+          session_json="$VEM_MAINTENANCE_RELAY_SESSION_JSON"
+          route_json="$(ip -j route get "$endpoint_host" from "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP")"
+          allowed_ips="$(sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" allowed-ips)"
+          node - "$route_json" "$session_json" "$VM_GUEST_MAINTENANCE_ENDPOINT_JSON" <<'NODE'
+          const [routeJson, sessionJson, endpointJson] = process.argv.slice(2);
+          const routes = JSON.parse(routeJson);
+          const session = JSON.parse(sessionJson);
+          const endpoint = JSON.parse(endpointJson);
+          const route = routes[0];
+          if (
+            !route ||
+            route.dev !== process.env.VEM_MAINTENANCE_RELAY_INTERFACE ||
+            endpoint.host !== session.endpointTunnelAddress ||
+            process.env.VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP !== session.sourceTunnelAddress
+          ) {
+            throw new Error("Relay WireGuard SSH data-plane route is not bound to the maintenance session endpoint and source address");
+          }
+          NODE
+          node - "$allowed_ips" "$session_json" <<'NODE'
+          const [lines, sessionJson] = process.argv.slice(2);
+          const session = JSON.parse(sessionJson);
+          const selected = lines.trim().split(/\r?\n/).map((line) => line.trim().split(/\s+/)).find(
+            ([peer]) => peer === session.relayPeer.publicKey,
+          );
+          if (!selected || !selected.slice(1).join(" ").split(",").includes(`${session.endpointTunnelAddress}/32`)) {
+            throw new Error("maintenance-session Relay peer does not own the endpoint /32 AllowedIPs route");
+          }
+          NODE
+          ssh_common=(
+            -b "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP"
+            -p "$endpoint_port"
+            -i "$MAINTENANCE_SSH_DIR/id_ed25519"
+            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
+            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH"
+            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS"
+            -o StrictHostKeyChecking=accept-new
+            -o IdentitiesOnly=yes
+            -o IdentityAgent=none
+            -o BatchMode=yes
+            -o PasswordAuthentication=no
+            -o KbdInteractiveAuthentication=no
+            -o PreferredAuthentications=publickey
+            -o ProxyCommand=none
+          )
+          target="${WINDOWS_SSH_USER}@${endpoint_host}"
+          proof_started_at="$(date +%s)"
+          ssh "${ssh_common[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -Command \"whoami | Out-Null\"" >/dev/null
+          handshake_observed=false
+          for attempt in $(seq 1 15); do
+            handshakes="$(sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" latest-handshakes)"
+            if node - "$handshakes" "$proof_started_at" "$session_json" <<'NODE'
+          const [lines, startedAt, sessionJson] = process.argv.slice(2);
+          const session = JSON.parse(sessionJson);
+          const relayHandshake = lines
+            .trim()
+            .split(/\r?\n/)
+            .map((line) => line.trim().split(/\s+/))
+            .find(([peer]) => peer === session.relayPeer.publicKey);
+          if (
+            !relayHandshake ||
+            !Number.isInteger(Number(relayHandshake.at(-1))) ||
+            Number(relayHandshake.at(-1)) < Number(startedAt) - 5
+          ) {
+            process.exit(1);
+          }
+          NODE
+            then
+              handshake_observed=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$handshake_observed" != true ]; then
+            echo "Relay WireGuard SSH data-plane proof failed: no fresh Relay handshake after certificate SSH." >&2
+            exit 1
+          fi
+          node - "$artifact_dir/wireguard-ssh-data-plane.json" <<'NODE'
+          const fs = require("node:fs");
+          fs.writeFileSync(process.argv[2], `${JSON.stringify({
+            schemaVersion: "vem-wireguard-ssh-data-plane/v1",
+            interface: process.env.VEM_MAINTENANCE_RELAY_INTERFACE,
+            sessionId: JSON.parse(process.env.VEM_MAINTENANCE_RELAY_SESSION_JSON).sessionId,
+            relayPeerPublicKey: JSON.parse(process.env.VEM_MAINTENANCE_RELAY_SESSION_JSON).relayPeer.publicKey,
+            sourceAddress: process.env.VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP,
+            endpointAllowedIp: `${endpoint_host}/32`,
+            endpointRoute: `${endpoint_host}/32`,
+            routeBoundToWireGuard: true,
+            certificateSshAuthenticated: true,
+            freshRelayHandshakeObserved: true,
+          })}\n`, { mode: 0o600 });
+          NODE
 
       - name: Prepare Protected Simulated Scanner Code
         shell: bash

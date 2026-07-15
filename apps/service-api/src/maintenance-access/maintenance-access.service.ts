@@ -2020,6 +2020,12 @@ export class MaintenanceAccessService implements OnModuleDestroy {
       kind: session.kind,
       actor,
       sourcePeer,
+      relayPeer: {
+        id: this.config.maintenanceRelayPeerId,
+        role: "relay",
+        publicKey: this.config.maintenanceRelayPublicKey,
+        tunnelAddress: this.config.maintenanceRelayTunnelAddress,
+      },
       targetMachine,
       protocol: session.protocol,
       port: session.port,

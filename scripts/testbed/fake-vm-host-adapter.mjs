@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +9,8 @@ import { deflateSync } from "node:zlib";
 import {
   createScannerCodeDescriptor,
   deriveSerialDeviceMappingDigest,
+  deriveSerialEvidenceCaptureChainDigest,
+  deriveSerialFrameCaptureBindingDigest,
   deriveSerialSessionBinding,
   validateVmHostAdapterRequest,
   VM_HOST_ADAPTER_CONTRACT_VERSION,
@@ -260,14 +263,18 @@ function serialMappings(state) {
   return [
     {
       role: "lower-controller",
-      guestDeviceIdentity: "guest-device://fake-lower-controller-001",
+      guestDeviceIdentity:
+        process.env.VEM_VM_HOST_FAKE_LOWER_CONTROLLER_GUEST_IDENTITY ??
+        "guest-device://fake-lower-controller-001",
       simulatorProcessIdentity: "simulator-process://fake-lower-controller-001",
       simulatorSocketIdentity: "simulator-socket://fake-lower-controller-001",
       connectionState: state,
     },
     {
       role: "scanner",
-      guestDeviceIdentity: "guest-device://fake-scanner-001",
+      guestDeviceIdentity:
+        process.env.VEM_VM_HOST_FAKE_SCANNER_GUEST_IDENTITY ??
+        "guest-device://fake-scanner-001",
       simulatorProcessIdentity: "simulator-process://fake-scanner-001",
       simulatorSocketIdentity: "simulator-socket://fake-scanner-001",
       connectionState: state,
@@ -373,10 +380,20 @@ function semanticRecords(request) {
     })),
     ...lower.slice(2),
   ];
-  return records.map((record, index) => ({
-    ...record,
-    capturedFrame: capturedFrame(index + 1),
-  }));
+  let previousCaptureBindingDigest = null;
+  return records.map((record, index) => {
+    const captured = {
+      ...record,
+      capturedFrame: capturedFrame(index + 1),
+    };
+    captured.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+      request,
+      record: captured,
+      previousCaptureBindingDigest,
+    });
+    previousCaptureBindingDigest = captured.captureBindingDigest;
+    return captured;
+  });
 }
 
 function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
@@ -458,6 +475,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
+      maintenanceRelaySession: request.maintenanceRelaySession ?? null,
       ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result,
@@ -487,9 +505,22 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
         "guest-maintenance://fake-runtime-testbed-001",
       maintenanceEndpoint: {
         protocol: "ssh",
-        host: "10.91.2.10",
+        host:
+          request.maintenanceRelaySession?.endpointTunnelAddress ??
+          "10.91.2.10",
         port: 22,
         reachability: "discovered",
+        ...(request.maintenanceRelaySession
+          ? {
+              relayProof: {
+                ...request.maintenanceRelaySession,
+                relayPeer: { ...request.maintenanceRelaySession.relayPeer },
+                endpointAllowedIp: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
+                endpointRoute: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
+                handshakeUnixSeconds: 1_784_160_000,
+              },
+            }
+          : {}),
       },
       deviceMappings,
       defaultAudioIdentity: "guest-audio://fake-runtime-testbed-001",
@@ -586,12 +617,20 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
           serialEvidence:
             request.operation === "collect-serial-evidence" &&
             result === "succeeded"
-              ? {
-                  serialSessionId: serialRequest.serialSessionId,
-                  sessionBindingToken: serialRequest.sessionBindingToken,
-                  deviceMappingDigest: serialRequest.deviceMappingDigest,
-                  records: semanticRecords(request),
-                }
+              ? (() => {
+                  const records = semanticRecords(request);
+                  return {
+                    serialSessionId: serialRequest.serialSessionId,
+                    sessionBindingToken: serialRequest.sessionBindingToken,
+                    deviceMappingDigest: serialRequest.deviceMappingDigest,
+                    operationEvidence: serialRequest.operationEvidence,
+                    records,
+                    captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
+                      request,
+                      records,
+                    }),
+                  };
+                })()
               : null,
         }
       : {}),
@@ -600,6 +639,14 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
 
 const requestPath = readOption("--request");
 const reportPath = readOption("--report");
+if (process.env.VEM_VM_HOST_ADAPTER_EXPECT_ABSENT_ENV) {
+  for (const name of process.env.VEM_VM_HOST_ADAPTER_EXPECT_ABSENT_ENV.split(
+    ",",
+  )) {
+    if (process.env[name])
+      throw new Error(`adapter received protected ${name}`);
+  }
+}
 const request = validateVmHostAdapterRequest(
   JSON.parse(readFileSync(requestPath, "utf8")),
 );
@@ -721,12 +768,34 @@ if (
   });
   setInterval(() => {}, 1000);
 } else {
+  if (
+    scenarioForOperation === "spawn-descendant" &&
+    request.operation !== "cleanup" &&
+    request.operation !== "cancel"
+  ) {
+    const descendant = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {
+        detached: false,
+        stdio: "ignore",
+      },
+    );
+    descendant.unref();
+    const descendantPidFile =
+      process.env.VEM_VM_HOST_ADAPTER_DESCENDANT_PID_FILE;
+    if (!descendantPidFile || !Number.isInteger(descendant.pid))
+      throw new Error("spawn-descendant requires a descendant PID file");
+    writeFileSync(descendantPidFile, `${descendant.pid}\n`, { mode: 0o600 });
+  }
   const scenario =
     request.operation === "cleanup" || request.operation === "cancel"
       ? "success"
       : scenarioForOperation === "hang"
         ? "success"
-        : scenarioForOperation;
+        : scenarioForOperation === "spawn-descendant"
+          ? "success"
+          : scenarioForOperation;
   const statePath = process.env.VEM_VM_HOST_ADAPTER_STATE_FILE;
   const state = readState(statePath);
   const report = fakeReport(request, scenario, state, observedSerialFaultCode);

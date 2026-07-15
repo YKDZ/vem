@@ -13,6 +13,13 @@ const factoryMedia = readFileSync(
 );
 const workflowDocument = parse(workflow);
 
+function stepBlock(stepName) {
+  const start = workflow.indexOf(`- name: ${stepName}`);
+  assert.notEqual(start, -1, `missing workflow step: ${stepName}`);
+  const next = workflow.indexOf("\n      - name:", start + 1);
+  return workflow.slice(start, next === -1 ? workflow.length : next);
+}
+
 describe("Factory Image Acceptance workflow", () => {
   it("requires the real platform-neutral Factory lifecycle orchestrator", () => {
     assert.match(
@@ -27,6 +34,8 @@ describe("Factory Image Acceptance workflow", () => {
       "VEM_FACTORY_UDF_WRITER_HOST_PATH",
       "VEM_FACTORY_WIMLIB_HOST_PATH",
       "VEM_FACTORY_WORK_ROOT",
+      "VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY",
+      "VEM_VM_HOST_EXPECTED_ADAPTER_SHA256",
     ])
       assert.match(workflow, new RegExp(input));
     assert.doesNotMatch(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
@@ -74,6 +83,76 @@ describe("Factory Image Acceptance workflow", () => {
     assert.match(lifecycle, /mkdir -p "\$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"/);
   });
 
+  it("grants OIDC only to the Factory acceptance job that creates the relay session", () => {
+    assert.match(
+      workflow,
+      /accept:\n(?:.*\n)*?\s+permissions:\n\s+contents: read\n\s+id-token: write/,
+    );
+    assert.doesNotMatch(
+      workflow,
+      /^permissions:\n\s+contents: read\n\s+id-token: write/m,
+    );
+    assert.match(workflow, /audience=vem-maintenance/);
+    assert.match(workflow, /maintenance-automation\/exchange/);
+  });
+
+  it("pins the deployment-external VM Host Adapter by digest and lifecycle identity", () => {
+    const guard = stepBlock("Guard Exact Protected Runner Before Checkout");
+    const lifecycle = stepBlock("Run Typed Factory Lifecycle");
+
+    assert.match(guard, /VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY/);
+    assert.match(guard, /VEM_VM_HOST_EXPECTED_ADAPTER_SHA256/);
+    assert.match(guard, /sha256sum "\$VEM_VM_HOST_ADAPTER"/);
+    assert.match(
+      guard,
+      /test "\$observed_adapter_sha256" = "\$VEM_VM_HOST_EXPECTED_ADAPTER_SHA256"/,
+    );
+    assert.match(
+      guard,
+      /\^vm-host-adapter:\/\/\[A-Za-z0-9\._\/-\]\+@\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$/,
+    );
+    assert.match(lifecycle, /VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY/);
+    assert.match(lifecycle, /lifecycle\.reports/);
+    assert.match(lifecycle, /value\.adapter/);
+    assert.match(lifecycle, /Factory VM Host Adapter identity mismatch/);
+    assert.doesNotMatch(workflow, /\bunraid\b/i);
+    assert.doesNotMatch(workflow, /unraid:\/\//i);
+  });
+
+  it("creates run-scoped SSH key material and requests the certificate from the same automation session", () => {
+    const exchange = stepBlock("Create Maintenance Relay Session");
+    const input = stepBlock("Generate Typed Factory Lifecycle Input");
+    const cleanup = stepBlock("Cleanup Ephemeral Services");
+
+    assert.doesNotMatch(workflow, /VEM_FACTORY_ACCEPTANCE_SSH_/);
+    assert.match(
+      exchange,
+      /ssh_dir="\$RUNNER_TEMP\/vem-factory-maintenance-ssh-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}"/,
+    );
+    assert.match(
+      exchange,
+      /ssh-keygen -q -t ed25519 -N '' -f "\$ssh_key_path"/,
+    );
+    assert.match(exchange, /maintenance-automation\/session\/ssh-certificate/);
+    assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_IDENTITY_PATH/);
+    assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_CERTIFICATE_PATH/);
+    assert.match(
+      input,
+      /sshIdentityPath\.startsWith\(process\.env\.RUNNER_TEMP \+ "\/vem-factory-maintenance-ssh-"\)/,
+    );
+    assert.match(
+      input,
+      /identityPath: sshIdentityPath,\n\s+certificatePath: sshCertificatePath/,
+    );
+    assert.match(cleanup, /maintenance-automation\/session\/revoke/);
+    assert.match(cleanup, /revoked\.status !== "revoked"/);
+    assert.match(
+      cleanup,
+      /rm -f "\$automation_token_path" "\$revoke_response_path"/,
+    );
+    assert.match(cleanup, /rm -rf -- "\$ssh_directory"/);
+  });
+
   it("starts a same-run ephemeral platform and writes the typed lifecycle input at runtime", () => {
     for (const required of [
       "Start Ephemeral Postgres And MQTT",
@@ -83,6 +162,11 @@ describe("Factory Image Acceptance workflow", () => {
       "DATABASE_URL",
       "EPHEMERAL_API_READY_URL",
       "VEM_FACTORY_PLATFORM_INGRESS_HOST",
+      "MAINTENANCE_CONTROL_PLANE_URL",
+      "MAINTENANCE_ALLOW_INSECURE_HTTP",
+      "MAINTENANCE_RUNNER_PEER_ID",
+      "MAINTENANCE_TARGET_MACHINE_ID",
+      "VEM_MAINTENANCE_RELAY_INTERFACE",
       "MAINTENANCE_RELAY_PEER_ID",
       "MAINTENANCE_RELAY_PUBLIC_KEY",
       "MAINTENANCE_RELAY_TUNNEL_ADDRESS",
@@ -104,7 +188,12 @@ describe("Factory Image Acceptance workflow", () => {
     assert.match(workflow, /SERVICE_HOST: "0\.0\.0\.0"/);
     assert.match(workflow, /-p 18884:1883/);
     assert.doesNotMatch(workflow, /192\.168\.2\.23/);
-    assert.doesNotMatch(workflow, /MAINTENANCE_CONTROL_PLANE_URL/);
+    assert.match(workflow, /Create Maintenance Relay Session/);
+    assert.match(workflow, /Prove Relay WireGuard SSH Data Plane/);
+    assert.match(workflow, /maintenance-automation\/exchange/);
+    assert.match(workflow, /maintenance-automation\/session/);
+    assert.match(workflow, /factory-maintenance-relay-attestation\.mjs/);
+    assert.doesNotMatch(workflow, /VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON/);
   });
 
   it("writes ephemeral platform evidence through an absolute workspace path", () => {
@@ -124,18 +213,16 @@ describe("Factory Image Acceptance workflow", () => {
   });
 
   it("shares every required testbed maintenance setting with the Service API and preparer", () => {
-    for (const [name, value] of [
-      ["MACHINE_PROVISIONING_PROFILE", "testbed"],
-      ["MAINTENANCE_RELAY_PEER_ID", "550e8400-e29b-41d4-a716-446655440010"],
-      ["MAINTENANCE_RELAY_ENDPOINT", "127.0.0.1:51820"],
-      [
-        "MAINTENANCE_RELAY_PUBLIC_KEY",
-        "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-      ],
-      ["MAINTENANCE_RELAY_TUNNEL_ADDRESS", "10.91.0.1"],
-    ]) {
-      assert.match(workflow, new RegExp(`${name}: ${value}`));
-    }
+    assert.match(workflow, /MACHINE_PROVISIONING_PROFILE: testbed/);
+    assert.doesNotMatch(workflow, /550e8400-e29b-41d4-a716-446655440010/);
+    assert.doesNotMatch(
+      workflow,
+      /AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=/,
+    );
+    assert.doesNotMatch(
+      workflow,
+      /MAINTENANCE_RELAY_ENDPOINT: 127\.0\.0\.1:51820/,
+    );
     assert.match(
       workflow,
       /--maintenance-relay-peer-id\s+"\$MAINTENANCE_RELAY_PEER_ID"/,
@@ -148,6 +235,12 @@ describe("Factory Image Acceptance workflow", () => {
       workflow,
       /--maintenance-relay-tunnel-address\s+"\$MAINTENANCE_RELAY_TUNNEL_ADDRESS"/,
     );
+    assert.match(
+      workflow,
+      /controlPlaneSession = JSON\.parse\(fs\.readFileSync\(process\.env\.VEM_FACTORY_MAINTENANCE_SESSION_PATH/,
+    );
+    assert.doesNotMatch(workflow, /VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON/);
+    assert.match(workflow, /maintenanceRelaySession,/);
   });
 
   it("separates runner-local Service API MQTT from machine-facing endpoints", () => {

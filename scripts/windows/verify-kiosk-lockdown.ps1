@@ -5,6 +5,9 @@ param(
   [string]$MachineUiLauncher = "C:\VEM\bringup\launch-machine-ui.vbs",
   [string]$MachineUiDebugLauncher = "C:\VEM\bringup\launch-machine-ui-debug.vbs",
   [string]$SshdConfigPath = "C:\ProgramData\ssh\sshd_config",
+  [string]$MaintenanceSshCaPublicKeyPath = "C:\ProgramData\VEM\factory\maintenance-ca.pub",
+  [string]$MaintenanceWireGuardInterfaceAlias,
+  [string]$MaintenanceWireGuardListenAddress,
   [string]$EvidencePath = "C:\ProgramData\VEM\kiosk-lockdown-evidence.json",
   [string[]]$MaintenanceIngressSourceAllowlist,
 
@@ -101,6 +104,94 @@ function Test-SshdConfigDeniesUser([string]$ConfigPath, [string]$User) {
   return $false
 }
 
+function Get-WireGuardListenAddressEvidence {
+  param(
+    [string]$InterfaceAlias,
+    [string]$ListenAddress
+  )
+
+  $parsedAddress = [System.Net.IPAddress]::None
+  $addressIsConcrete = -not [string]::IsNullOrWhiteSpace($InterfaceAlias) -and
+    -not [string]::IsNullOrWhiteSpace($ListenAddress) -and
+    [System.Net.IPAddress]::TryParse($ListenAddress, [ref]$parsedAddress) -and
+    -not $parsedAddress.Equals([System.Net.IPAddress]::Any) -and
+    -not $parsedAddress.Equals([System.Net.IPAddress]::IPv6Any) -and
+    -not $parsedAddress.Equals([System.Net.IPAddress]::Loopback) -and
+    -not $parsedAddress.Equals([System.Net.IPAddress]::IPv6Loopback)
+  $ownedAddress = if ($addressIsConcrete) {
+    Get-NetIPAddress -InterfaceAlias $InterfaceAlias -IPAddress $parsedAddress.IPAddressToString -ErrorAction SilentlyContinue | Select-Object -First 1
+  } else {
+    $null
+  }
+  return [pscustomobject]@{
+    wireGuardInterfaceAlias = $InterfaceAlias
+    wireGuardListenAddress = $ListenAddress
+    addressIsConcrete = [bool]$addressIsConcrete
+    addressOwnedByInterface = $null -ne $ownedAddress
+  }
+}
+
+function Get-OpenSshServerExePath {
+  foreach ($candidate in @(
+      "C:\Program Files\OpenSSH\sshd.exe",
+      "C:\Windows\System32\OpenSSH\sshd.exe"
+    )) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+  }
+  $command = Get-Command "sshd.exe" -ErrorAction SilentlyContinue
+  if ($null -eq $command) { $command = Get-Command "sshd" -ErrorAction SilentlyContinue }
+  if ($null -ne $command) { return [string]$command.Source }
+  return $null
+}
+
+function Get-ControlledMaintenanceIngressSshdState {
+  param(
+    [string]$ConfigPath,
+    [string]$MaintenanceUser,
+    [string]$CaPath,
+    [string]$ListenAddress
+  )
+
+  $sshdExePath = Get-OpenSshServerExePath
+  $values = @{}
+  $syntaxValid = $false
+  $syntaxError = $null
+  if (-not [string]::IsNullOrWhiteSpace($sshdExePath) -and (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+    $syntaxOutput = @(& $sshdExePath -t -f $ConfigPath 2>&1)
+    $syntaxValid = $LASTEXITCODE -eq 0
+    if (-not $syntaxValid) { $syntaxError = $syntaxOutput -join "; " }
+    if ($syntaxValid) {
+      $effectiveOutput = @(& $sshdExePath -T -f $ConfigPath -C "user=$($MaintenanceUser.ToLowerInvariant()),host=localhost,addr=127.0.0.1" 2>&1)
+      if ($LASTEXITCODE -ne 0) {
+        $syntaxValid = $false
+        $syntaxError = $effectiveOutput -join "; "
+      } else {
+        foreach ($line in $effectiveOutput) {
+          $parts = ([string]$line).Trim() -split "\s+", 2
+          if ($parts.Count -eq 2 -and -not $values.ContainsKey($parts[0])) { $values[$parts[0]] = $parts[1] }
+        }
+      }
+    }
+  }
+  $listeners = @(Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.LocalAddress })
+  $actualListenAddress = [string]$values.listenaddress
+  return [pscustomobject]@{
+    syntaxValid = $syntaxValid
+    syntaxError = $syntaxError
+    listenAddress = $actualListenAddress
+    listenAddressMatches = $actualListenAddress -ceq "$ListenAddress`:22"
+    onlyDeclaredWireGuardListener = $listeners.Count -gt 0 -and @($listeners | Where-Object { $_ -cne $ListenAddress }).Count -eq 0
+    trustedUserCaKeys = [string]$values.trustedusercakeys -ceq $CaPath
+    pubkeyAuthentication = [string]$values.pubkeyauthentication -ceq "yes"
+    passwordAuthentication = [string]$values.passwordauthentication -ceq "no"
+    keyboardInteractiveAuthentication = [string]$values.kbdinteractiveauthentication -ceq "no"
+    authenticationMethods = [string]$values.authenticationmethods -ceq "publickey"
+    authorizedKeysFile = [string]$values.authorizedkeysfile -ceq "none"
+    authorizedKeysCommand = [string]$values.authorizedkeyscommand -ceq "none"
+    authorizedKeysCommandUser = [string]$values.authorizedkeyscommanduser -ceq "nobody"
+  }
+}
+
 function Assert-ControlledMaintenanceIngressSourceAllowlist {
   param([string[]]$SourceAllowlist)
 
@@ -178,7 +269,10 @@ function Assert-ControlledMaintenanceIngressSourceAllowlist {
 }
 
 function Get-ControlledMaintenanceIngressFirewallState {
-  param([string[]]$SourceAllowlist)
+  param(
+    [string[]]$SourceAllowlist,
+    [string]$InterfaceAlias
+  )
 
   $ruleName = "VEM Controlled Maintenance SSH"
   try {
@@ -208,6 +302,7 @@ function Get-ControlledMaintenanceIngressFirewallState {
 
     $portFilter = $rule | Get-NetFirewallPortFilter
     $addressFilter = $rule | Get-NetFirewallAddressFilter
+    $interfaceFilter = $rule | Get-NetFirewallInterfaceFilter
     $defaultOpenSshInboundRulesEnabled = @(Get-NetFirewallRule -ErrorAction SilentlyContinue |
       Where-Object {
         $_.Direction -eq "Inbound" -and
@@ -236,6 +331,8 @@ function Get-ControlledMaintenanceIngressFirewallState {
       $rule.Action -eq "Allow" -and
       $portFilter.Protocol -eq "TCP" -and
       $portFilter.LocalPort -eq "22" -and
+      [string]$interfaceFilter.InterfaceAlias -ceq $InterfaceAlias -and
+      [string]$interfaceFilter.InterfaceAlias -cne "Any" -and
       $remoteAddressMatches -and
       $defaultOpenSshInboundRulesEnabled.Count -eq 0
 
@@ -248,6 +345,8 @@ function Get-ControlledMaintenanceIngressFirewallState {
       profile = [string]$rule.Profile
       protocol = [string]$portFilter.Protocol
       localPort = [string]$portFilter.LocalPort
+      interfaceAlias = [string]$interfaceFilter.InterfaceAlias
+      expectedInterfaceAlias = $InterfaceAlias
       remoteAddress = $remoteAddresses
       normalizedRemoteAddress = @($normalizedRemoteAddresses)
       expectedRemoteAddress = @($normalizedExpectedRemoteAddresses)
@@ -386,9 +485,29 @@ if (-not $sshdConfigDeniesKioskUser) {
   Add-Failure $failures "sshd_config does not deny the lowercase kiosk account: $kioskUserForSshdDeny"
 }
 
-$controlledMaintenanceIngressFirewall = Get-ControlledMaintenanceIngressFirewallState -SourceAllowlist $MaintenanceIngressSourceAllowlist
+$wireGuardListenAddressEvidence = Get-WireGuardListenAddressEvidence -InterfaceAlias $MaintenanceWireGuardInterfaceAlias -ListenAddress $MaintenanceWireGuardListenAddress
+if (-not [bool]$wireGuardListenAddressEvidence.addressIsConcrete -or -not [bool]$wireGuardListenAddressEvidence.addressOwnedByInterface) {
+  Add-Failure $failures "Controlled Maintenance Ingress requires the declared concrete WireGuard listener address on its interface"
+}
+
+$controlledMaintenanceIngressFirewall = Get-ControlledMaintenanceIngressFirewallState -SourceAllowlist $MaintenanceIngressSourceAllowlist -InterfaceAlias $MaintenanceWireGuardInterfaceAlias
 if (-not [bool]$controlledMaintenanceIngressFirewall.ok) {
-  Add-Failure $failures "VEM Controlled Maintenance SSH firewall rule is missing, too broad, does not match the explicit allowlist, or default OpenSSH inbound rules remain enabled"
+  Add-Failure $failures "VEM Controlled Maintenance SSH firewall rule is missing, too broad, not scoped to the declared WireGuard interface, does not match the explicit allowlist, or default OpenSSH inbound rules remain enabled"
+}
+
+$sshdEffectiveConfig = Get-ControlledMaintenanceIngressSshdState -ConfigPath $SshdConfigPath -MaintenanceUser $MaintenanceUser -CaPath $MaintenanceSshCaPublicKeyPath -ListenAddress $MaintenanceWireGuardListenAddress
+if (-not [bool]$sshdEffectiveConfig.syntaxValid -or
+    -not [bool]$sshdEffectiveConfig.listenAddressMatches -or
+    -not [bool]$sshdEffectiveConfig.onlyDeclaredWireGuardListener -or
+    -not [bool]$sshdEffectiveConfig.trustedUserCaKeys -or
+    -not [bool]$sshdEffectiveConfig.pubkeyAuthentication -or
+    -not [bool]$sshdEffectiveConfig.passwordAuthentication -or
+    -not [bool]$sshdEffectiveConfig.keyboardInteractiveAuthentication -or
+    -not [bool]$sshdEffectiveConfig.authenticationMethods -or
+    -not [bool]$sshdEffectiveConfig.authorizedKeysFile -or
+    -not [bool]$sshdEffectiveConfig.authorizedKeysCommand -or
+    -not [bool]$sshdEffectiveConfig.authorizedKeysCommandUser) {
+  Add-Failure $failures "effective sshd configuration must require the declared TrustedUserCAKeys certificate policy, publickey authentication, disabled password/keyboard-interactive authentication, and no authorized-key file or command bypass on the WireGuard listener"
 }
 
 $sshdService = Get-ServiceStateOrNull -Name "sshd"
@@ -403,9 +522,9 @@ if ($null -eq $sshdService) {
   }
 }
 
-$port22 = Test-NetConnection -ComputerName "127.0.0.1" -Port 22 -WarningAction SilentlyContinue
+$port22 = Test-NetConnection -ComputerName $MaintenanceWireGuardListenAddress -Port 22 -WarningAction SilentlyContinue
 if (-not [bool]$port22.TcpTestSucceeded) {
-  Add-Failure $failures "OpenSSH port 22 is not reachable locally"
+  Add-Failure $failures "OpenSSH port 22 is not reachable on the declared WireGuard listener"
 }
 
 if (-not [bool]$MaintenanceIngressConfirmed) {
@@ -512,6 +631,8 @@ $result = [pscustomobject]@{
     kioskInRemoteDesktopUsers = $kioskInRemoteDesktopUsers
     maintenanceIngressSourceAllowlist = @($MaintenanceIngressSourceAllowlist)
     firewall = $controlledMaintenanceIngressFirewall
+    wireGuardListenAddressEvidence = $wireGuardListenAddressEvidence
+    sshdEffectiveConfig = $sshdEffectiveConfig
     hitlMaintenanceIngressConfirmed = [bool]$MaintenanceIngressConfirmed
     negativeKioskSshEvidence = $NegativeKioskSshEvidence
   }

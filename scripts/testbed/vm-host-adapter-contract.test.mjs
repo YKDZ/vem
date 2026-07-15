@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
@@ -16,6 +17,8 @@ import {
   createScannerCodeDescriptor,
   createVmHostAdapterRequest,
   deriveSerialDeviceMappingDigest,
+  deriveSerialEvidenceCaptureChainDigest,
+  deriveSerialFrameCaptureBindingDigest,
   deriveSerialSessionBinding,
   redactScannerCode,
   runVmHostAdapter,
@@ -26,7 +29,9 @@ import {
 } from "./vm-host-adapter-contract.mjs";
 import {
   assertBlockedSaleEvidence,
+  deriveSerialOperationReportDigest,
   observedMappingFailureCase,
+  validateSerialConformanceReport,
 } from "./vm-host-adapter-serial-conformance.mjs";
 
 const HASH = "a".repeat(64);
@@ -309,6 +314,14 @@ function serialSessionRequest(operation, overrides = {}) {
                 vendingCommandId: "vending-command-001",
               },
             ],
+      operationEvidence:
+        operation === "collect-serial-evidence"
+          ? {
+              runnerChallenge: `serial-runner-challenge://sha256-${"c".repeat(64)}`,
+              startReportDigest: `sha256:${"d".repeat(64)}`,
+              injectReportDigest: `sha256:${"e".repeat(64)}`,
+            }
+          : null,
       idempotencyCheck: false,
     },
     ...overrides,
@@ -398,10 +411,20 @@ function serialEvidenceRecords(request) {
     })),
     ...lower.slice(2),
   ];
-  return records.map((record, index) => ({
-    ...record,
-    capturedFrame: capturedFrame(index + 1),
-  }));
+  let previousCaptureBindingDigest = null;
+  return records.map((record, index) => {
+    const captured = {
+      ...record,
+      capturedFrame: capturedFrame(index + 1),
+    };
+    captured.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+      request,
+      record: captured,
+      previousCaptureBindingDigest,
+    });
+    previousCaptureBindingDigest = captured.captureBindingDigest;
+    return captured;
+  });
 }
 
 function cleanInstallRequest() {
@@ -504,6 +527,7 @@ function reportFor(request, overrides = {}) {
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
+      maintenanceRelaySession: request.maintenanceRelaySession ?? null,
       ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result: "succeeded",
@@ -529,9 +553,22 @@ function reportFor(request, overrides = {}) {
       maintenanceEndpointIdentity: "guest-maintenance://runtime-testbed-001",
       maintenanceEndpoint: {
         protocol: "ssh",
-        host: "10.91.2.10",
+        host:
+          request.maintenanceRelaySession?.endpointTunnelAddress ??
+          "10.91.2.10",
         port: 22,
         reachability: "discovered",
+        ...(request.maintenanceRelaySession
+          ? {
+              relayProof: {
+                ...request.maintenanceRelaySession,
+                relayPeer: { ...request.maintenanceRelaySession.relayPeer },
+                endpointAllowedIp: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
+                endpointRoute: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
+                handshakeUnixSeconds: 1_784_160_000,
+              },
+            }
+          : {}),
       },
       deviceMappings:
         request.requestedCapabilities.includes("serial:lower-controller") ||
@@ -714,14 +751,22 @@ function reportFor(request, overrides = {}) {
                 },
           serialEvidence:
             request.operation === "collect-serial-evidence"
-              ? {
-                  serialSessionId: request.serialSession.serialSessionId,
-                  sessionBindingToken:
-                    request.serialSession.sessionBindingToken,
-                  deviceMappingDigest:
-                    request.serialSession.deviceMappingDigest,
-                  records: serialEvidenceRecords(request),
-                }
+              ? (() => {
+                  const records = serialEvidenceRecords(request);
+                  return {
+                    serialSessionId: request.serialSession.serialSessionId,
+                    sessionBindingToken:
+                      request.serialSession.sessionBindingToken,
+                    deviceMappingDigest:
+                      request.serialSession.deviceMappingDigest,
+                    operationEvidence: request.serialSession.operationEvidence,
+                    records,
+                    captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
+                      request,
+                      records,
+                    }),
+                  };
+                })()
               : null,
         }
       : {}),
@@ -1015,6 +1060,40 @@ describe("VM Host Adapter contract", () => {
           collect,
         ),
       );
+  });
+
+  it("rejects a completed sale relabeled without recapturing its serial frames", () => {
+    const collect = createVmHostAdapterRequest(
+      serialSessionRequest("collect-serial-evidence"),
+    );
+    const original = reportFor(collect);
+    const retaggedRequest = createVmHostAdapterRequest({
+      ...collect,
+      serialSession: {
+        ...collect.serialSession,
+        saleBindings: [
+          {
+            ...collect.serialSession.saleBindings[0],
+            orderId: "order-attacker",
+            paymentId: "payment-attacker",
+            vendingCommandId: "vending-command-attacker",
+          },
+        ],
+      },
+    });
+    const retagged = reportFor(retaggedRequest);
+    retagged.serialEvidence.records = retagged.serialEvidence.records.map(
+      (record, index) => ({
+        ...record,
+        captureBindingDigest:
+          original.serialEvidence.records[index].captureBindingDigest,
+      }),
+    );
+
+    assert.throws(
+      () => validateVmHostAdapterReport(retagged, retaggedRequest),
+      /immutably bind the run, sale, and raw serial frame at capture/,
+    );
   });
 
   it("rejects duplicate, non-monotonic, and causally inverted sale frames", () => {
@@ -1523,6 +1602,62 @@ describe("VM Host Adapter contract", () => {
         }),
         request,
       ),
+    );
+  });
+
+  it("requires the discovered maintenance endpoint to be a concrete SSH tunnel address", () => {
+    const request = createVmHostAdapterRequest(requestFor());
+    const report = reportFor(request);
+
+    for (const host of [
+      "guest.testbed.internal",
+      "0.0.0.0",
+      "127.0.0.1",
+      "::",
+    ]) {
+      const invalid = structuredClone(report);
+      invalid.guest.maintenanceEndpoint.host = host;
+      assert.throws(
+        () => validateVmHostAdapterReport(invalid, request),
+        /maintenanceEndpoint\.host must be a concrete WireGuard tunnel IP address/,
+      );
+    }
+
+    const wrongPort = structuredClone(report);
+    wrongPort.guest.maintenanceEndpoint.port = 2222;
+    assert.throws(
+      () => validateVmHostAdapterReport(wrongPort, request),
+      /maintenanceEndpoint\.port must be the SSH port 22/,
+    );
+  });
+
+  it("rejects a fresh handshake from a non-session Relay peer", () => {
+    const maintenanceRelaySession = {
+      sessionId: "550e8400-e29b-41d4-a716-446655440000",
+      relayPeer: {
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
+      sourceTunnelAddress: "10.91.2.10",
+      endpointTunnelAddress: "10.91.16.10",
+    };
+    const request = createVmHostAdapterRequest(
+      requestFor("restore-approved-base", { maintenanceRelaySession }),
+    );
+    const report = reportFor(request);
+    report.guest.maintenanceEndpoint.relayProof = {
+      ...maintenanceRelaySession,
+      relayPeer: {
+        ...maintenanceRelaySession.relayPeer,
+        publicKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      },
+      endpointAllowedIp: "10.91.16.10/32",
+      endpointRoute: "10.91.16.10/32",
+      handshakeUnixSeconds: 1_784_160_000,
+    };
+    assert.throws(
+      () => validateVmHostAdapterReport(report, request),
+      /relayProof\.relayPeer does not match maintenance session/,
     );
   });
 
@@ -2266,6 +2401,44 @@ describe("VM Host Adapter contract", () => {
     assert.equal(readFileSync(signalFile, "utf8"), "SIGTERM\n");
   });
 
+  it("removes descendants left by a successful adapter before accepting its report", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-descendant-"));
+    const descendantPidFile = join(root, "adapter-descendant.pid");
+    await runVmHostAdapter({
+      request: createVmHostAdapterRequest(requestFor()),
+      workDirectory: root,
+      environment: {
+        VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+        VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "spawn-descendant",
+        VEM_VM_HOST_ADAPTER_DESCENDANT_PID_FILE: descendantPidFile,
+      },
+    });
+    const descendantPid = Number.parseInt(
+      readFileSync(descendantPidFile, "utf8"),
+      10,
+    );
+    assert.ok(Number.isInteger(descendantPid));
+    assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
+  });
+
+  it("withholds runner signing-key metadata from the adapter subprocess", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-signing-key-env-"));
+    const signingKeyFile = join(root, "runner-ed25519.pem");
+    writeFileSync(signingKeyFile, "private signing key", { mode: 0o600 });
+    await runVmHostAdapter({
+      request: createVmHostAdapterRequest(requestFor()),
+      workDirectory: root,
+      environment: {
+        VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+        VEM_SERIAL_RUNNER_SIGNING_KEY_FILE: signingKeyFile,
+        VEM_SERIAL_RUNNER_EXPECTED_PUBLIC_KEY: "runner-public-key",
+        VEM_VM_HOST_ADAPTER_EXPECT_ABSENT_ENV:
+          "VEM_SERIAL_RUNNER_SIGNING_KEY_FILE,VEM_SERIAL_RUNNER_EXPECTED_PUBLIC_KEY",
+      },
+    });
+    assert.equal(readFileSync(signingKeyFile, "utf8"), "private signing key");
+  });
+
   it("cancels a hanging child through AbortSignal with the same cleanup and signal semantics", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-cancel-"));
     const signalFile = join(root, "adapter.signal");
@@ -2676,8 +2849,18 @@ describe("VM Host Adapter contract", () => {
   it("drives an external adapter executable through serial conformance without scanner persistence", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-conformance-"));
     const scannerCodePath = join(root, "protected-scanner-code.txt");
+    const runnerSigningKeyFile = join(root, "runner-ed25519.pem");
     const out = join(root, "conformance.json");
     writeFileSync(scannerCodePath, PROTECTED_SCANNER_INPUT, { mode: 0o600 });
+    const runnerKey = generateKeyPairSync("ed25519");
+    const expectedRunnerPublicKey = `ed25519-public-key:base64:${runnerKey.publicKey
+      .export({ type: "spki", format: "der" })
+      .toString("base64")}`;
+    writeFileSync(
+      runnerSigningKeyFile,
+      runnerKey.privateKey.export({ type: "pkcs8", format: "pem" }),
+      { mode: 0o600 },
+    );
     execFileSync(
       process.execPath,
       [
@@ -2688,6 +2871,10 @@ describe("VM Host Adapter contract", () => {
         out,
         "--scanner-code-file",
         scannerCodePath,
+        "--runner-signing-key-file",
+        runnerSigningKeyFile,
+        "--expected-runner-public-key",
+        expectedRunnerPublicKey,
         "--run-id",
         "RUN-12-CONTRACT",
         "--target-identity",
@@ -2710,10 +2897,15 @@ describe("VM Host Adapter contract", () => {
           ...process.env,
           RUNNER_TEMP: root,
           VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
+          VEM_SERIAL_RUNNER_SIGNING_KEY_FILE: runnerSigningKeyFile,
+          VEM_VM_HOST_ADAPTER_EXPECT_ABSENT_ENV:
+            "VEM_SERIAL_RUNNER_SIGNING_KEY_FILE",
         },
       },
     );
     const report = JSON.parse(readFileSync(out, "utf8"));
+    assert.equal(existsSync(runnerSigningKeyFile), false);
+    assert.equal(report.runnerEvidence.publicKey, expectedRunnerPublicKey);
     assert.equal(
       report.reports.repeatedStop.serialSession.simulatorCleanup
         .idempotencyVerified,
@@ -2770,6 +2962,12 @@ describe("VM Host Adapter contract", () => {
         orderId: "order-001",
         paymentId: "payment-001",
         vendingCommandId: "vending-command-001",
+        recovery: {
+          runtimeReady: "passed",
+          hardwareOnline: true,
+          scannerOnline: true,
+          ready: true,
+        },
       },
       {
         failureMode: "missing-device",
@@ -2780,11 +2978,137 @@ describe("VM Host Adapter contract", () => {
         orderId: "order-001",
         paymentId: "payment-001",
         vendingCommandId: "vending-command-001",
+        recovery: {
+          runtimeReady: "passed",
+          hardwareOnline: true,
+          scannerOnline: true,
+          ready: true,
+        },
       },
     ]);
     assert.doesNotMatch(
       JSON.stringify(report),
       new RegExp(PROTECTED_SCANNER_INPUT),
+    );
+
+    const rekeyed = structuredClone(report);
+    const attacker = generateKeyPairSync("ed25519");
+    rekeyed.runnerEvidence.publicKey = `ed25519-public-key:base64:${attacker.publicKey
+      .export({ type: "spki", format: "der" })
+      .toString("base64")}`;
+    for (const name of ["start", "inject", "collect"]) {
+      const receipt = rekeyed.runnerEvidence.operations[name];
+      receipt.reportDigest = deriveSerialOperationReportDigest(
+        rekeyed.reports[name],
+      );
+      receipt.signature = `ed25519-signature:base64:${sign(
+        null,
+        Buffer.from(receipt.reportDigest),
+        attacker.privateKey,
+      ).toString("base64")}`;
+    }
+    assert.throws(
+      () =>
+        validateSerialConformanceReport(rekeyed, {
+          expectedRunnerPublicKey: report.runnerEvidence.publicKey,
+        }),
+      /expected runner public key/,
+    );
+
+    const forged = structuredClone(report);
+    const collectRequest = forged.requests.collect;
+    const forgedNonce = "op-abcdefabcdefabcdefabcdefabcdefab";
+    const forgedStartReference = `vm-operation://${forgedNonce}`;
+    const forgedBinding = deriveSerialSessionBinding({
+      runId: "RUN-ATTACKER",
+      lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
+      targetIdentity: "vm-target://attacker",
+      startOperationReference: forgedStartReference,
+    });
+    const forgedSale = {
+      saleCorrelationId: "sale-correlation://sale-attacker",
+      orderId: "order-attacker",
+      paymentId: "payment-attacker",
+      vendingCommandId: "vending-command-attacker",
+    };
+    const forgedOperationEvidence = {
+      runnerChallenge: `serial-runner-challenge://sha256-${"b".repeat(64)}`,
+      startReportDigest: `sha256:${"c".repeat(64)}`,
+      injectReportDigest: `sha256:${"d".repeat(64)}`,
+    };
+    Object.assign(collectRequest, {
+      runId: "RUN-ATTACKER",
+      operationNonce: forgedNonce,
+      operationReference: forgedStartReference,
+      lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
+      target: { identity: "vm-target://attacker" },
+      serialSession: {
+        ...collectRequest.serialSession,
+        ...forgedBinding,
+        startOperationReference: forgedStartReference,
+        scannerInjection: {
+          ...collectRequest.serialSession.scannerInjection,
+          operationNonce: "op-fedcba9876543210",
+        },
+        saleCorrelationIds: [forgedSale.saleCorrelationId],
+        saleBindings: [forgedSale],
+        operationEvidence: forgedOperationEvidence,
+      },
+    });
+    const collectReport = forged.reports.collect;
+    Object.assign(collectReport.request, {
+      runId: collectRequest.runId,
+      operationNonce: collectRequest.operationNonce,
+      operationReference: collectRequest.operationReference,
+      lifecycleReference: collectRequest.lifecycleReference,
+      targetIdentity: collectRequest.target.identity,
+      serialSession: collectRequest.serialSession,
+    });
+    collectReport.observed.targetBinding.targetIdentity =
+      collectRequest.target.identity;
+    Object.assign(collectReport.serialSession, {
+      ...forgedBinding,
+      startOperationReference: forgedStartReference,
+    });
+    const records = collectReport.serialEvidence.records.map((record) => ({
+      ...record,
+      operationNonce:
+        record.role === "scanner"
+          ? collectRequest.serialSession.scannerInjection.operationNonce
+          : collectRequest.operationNonce,
+      sessionBindingToken: forgedBinding.sessionBindingToken,
+      saleCorrelationId:
+        record.saleCorrelationId === null ? null : forgedSale.saleCorrelationId,
+      saleBinding: record.saleBinding === null ? null : forgedSale,
+    }));
+    let previousCaptureBindingDigest = null;
+    for (const record of records) {
+      record.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+        request: collectRequest,
+        record,
+        previousCaptureBindingDigest,
+      });
+      previousCaptureBindingDigest = record.captureBindingDigest;
+    }
+    Object.assign(collectReport.serialEvidence, {
+      serialSessionId: forgedBinding.serialSessionId,
+      sessionBindingToken: forgedBinding.sessionBindingToken,
+      operationEvidence: forgedOperationEvidence,
+      records,
+      captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
+        request: collectRequest,
+        records,
+      }),
+    });
+    assert.doesNotThrow(() =>
+      validateVmHostAdapterReport(collectReport, collectRequest),
+    );
+    assert.throws(
+      () =>
+        validateSerialConformanceReport(forged, {
+          expectedRunnerPublicKey: report.runnerEvidence.publicKey,
+        }),
+      /runner serial conformance evidence does not bind the report/,
     );
   });
 
@@ -3020,6 +3344,14 @@ describe("VM Host Adapter contract", () => {
       ),
     );
     const report = JSON.parse(readFileSync(out, "utf8"));
+    assert.match(
+      report.runnerEvidence?.publicKey ?? "",
+      /^ed25519-public-key:base64:/,
+    );
+    assert.deepEqual(
+      Object.keys(report.runnerEvidence?.operations ?? {}).sort(),
+      ["inject", "start"],
+    );
     assert.equal(report.reports.recoveryStop.serialSession.state, "stopped");
     assert.equal(
       report.reports.recoveryStop.serialSession.simulatorCleanup

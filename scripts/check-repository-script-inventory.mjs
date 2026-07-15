@@ -450,6 +450,26 @@ const DEFAULT_INVENTORY = [
     ],
   },
   {
+    path: "scripts/testbed/factory-maintenance-relay-attestation.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: [
+      "factory preparation",
+      "runtime acceptance",
+      "testbed workflows",
+    ],
+  },
+  {
+    path: "scripts/testbed/factory-maintenance-relay-attestation.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: [
+      "factory preparation",
+      "runtime acceptance",
+      "testbed workflows",
+    ],
+  },
+  {
     path: "scripts/testbed/win10-vem-e2e.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -553,12 +573,6 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/windows/apply-managed-update.ps1",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["managed update"],
-  },
-  {
-    path: "scripts/windows/deploy-windows-artifact.sh",
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["managed update"],
@@ -812,20 +826,33 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
     ],
     requiredText: [
       "Controlled Maintenance Ingress",
-      "WireGuard, SSH, and the relay are implementation mechanisms",
+      "WireGuard pull-reconciling Maintenance Relay",
+      "OIDC-authenticated maintenance session",
+      "SSH certificate-only",
       "VEM Controlled Maintenance SSH",
     ],
-    forbiddenText: ["VEM Tailscale SSH", "ConfigureRemoteMaintenanceAccess"],
+    forbiddenText: [
+      "VEM Tailscale SSH",
+      "ConfigureRemoteMaintenanceAccess",
+      "transport-neutral",
+      "VEM_TESTBED_WINDOWS_PASSWORD",
+    ],
   },
   {
     path: "public/production-pilot-sop.md",
     scripts: [],
     requiredText: [
       "Controlled Maintenance Ingress",
-      "Maintenance Relay",
-      "SSH, WireGuard, and relay",
+      "唯一合法的远程维护路径",
+      "session-scoped WireGuard pull relay",
+      "OIDC-authenticated maintenance session",
+      "SSH certificate-only",
     ],
-    forbiddenText: ["Tailscale SSH", "受控 Tailscale"],
+    forbiddenText: [
+      "Tailscale SSH",
+      "受控 Tailscale",
+      "SSH, WireGuard, and relay are implementation mechanisms",
+    ],
   },
   {
     path: "public/managed-machine-update.md",
@@ -834,7 +861,6 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
       "scripts/check-machine-vision-deployment.mjs",
       "scripts/factory/experimental-vision-candidate.mjs",
       "scripts/windows/apply-managed-update.ps1",
-      "scripts/windows/deploy-windows-artifact.sh",
       "scripts/windows/install-vision-release.ps1",
       "scripts/windows/setup-scheduled-tasks.ps1",
       "scripts/windows/test-vision-candidate.ps1",
@@ -869,10 +895,6 @@ const STALE_PUBLIC_CONTRACT_PATTERNS = [
   { pattern: /\bqcow2\b/i, label: "platform-specific disk format" },
   { pattern: /\/mnt\/user\b/i, label: "host filesystem path" },
   { pattern: /unraid:\/\//i, label: "platform-specific source URI" },
-  {
-    pattern: /static\s+(?:Service API\s+)?relay\s+plan(?:ner)?/i,
-    label: "static relay planner",
-  },
   { pattern: /\biptables\b/i, label: "iptables renderer" },
   { pattern: /maintenance-relay:plan/i, label: "static relay command" },
   { pattern: /\bsshpass\b|\bSSHPASS\b/, label: "password SSH helper" },
@@ -891,6 +913,108 @@ const STALE_INTEGRATION_TEXT_EXEMPT_PATHS = new Set([
   "scripts/check-repository-script-inventory.mjs",
   "scripts/check-repository-script-inventory.test.mjs",
 ]);
+
+const ACCEPTED_MAINTENANCE_ARCHITECTURE_CATEGORIES = new Set([
+  "canonical entrypoint",
+  "public runbook operation",
+  "explicitly maintained legacy operation",
+]);
+
+const RETIRED_MAINTENANCE_ARCHITECTURE_PATTERNS = [
+  {
+    pattern: /\bVEM_TESTBED_WINDOWS_PASSWORD\b/,
+    label: "Windows testbed password secret",
+  },
+  {
+    pattern: /\bstatic\s+(?:Service API\s+)?relay\s+plan(?:ner)?\b/i,
+    label: "static relay planner",
+  },
+  {
+    pattern:
+      /\b(?:online(?:\s+(?:package|Windows\s+Capability))?|(?:Windows\s+)?Capability)\s+(?:installation\s+)?fallback\b/i,
+    label: "online or capability fallback",
+  },
+  {
+    pattern:
+      /\bfallback\s+to\s+(?:an?\s+)?(?:online(?:\s+(?:package|Windows\s+Capability))?|(?:Windows\s+)?Capability)\b/i,
+    label: "online or capability fallback",
+  },
+  {
+    pattern:
+      /\b(?:mock|TCP)\b[^\n]{0,120}\bproduction\s+(?:evidence|acceptance)\b/i,
+    label: "mock or TCP production evidence",
+  },
+  {
+    pattern:
+      /\bproduction\s+(?:evidence|acceptance)\b[^\n]{0,120}\b(?:mock|TCP)\b/i,
+    label: "mock or TCP production evidence",
+  },
+  { pattern: /\btransport-neutral\b/i, label: "transport-neutral ingress" },
+  {
+    pattern: /\btemporary[-\s]network\b|现场临时网络/u,
+    label: "temporary network ingress",
+  },
+  {
+    pattern:
+      /\b(?:alternative|alternate|dedicated)\s+(?:maintenance\s+)?tunnel\b|(?:替代|专用)隧道/iu,
+    label: "alternative tunnel ingress",
+  },
+  { pattern: /\bpassword\s+SSH\b/i, label: "password SSH" },
+  {
+    pattern: /\bemergency\s+deployment\b|紧急部署/iu,
+    label: "emergency deployment compatibility path",
+  },
+];
+
+const NEGATIVE_MAINTENANCE_ARCHITECTURE_CONTEXT =
+  /\b(?:no|not|never|must\s+not|do\s+not|does\s+not|without|disabled?|reject(?:ed|s|ing)?|removed|forbidden|hard-fail(?:s|ed)?|not\s+accepted|negative\s+test\s+fixture)\b/i;
+
+function isAcceptedMaintenanceArchitectureWorkflow(entry) {
+  return ACCEPTED_MAINTENANCE_ARCHITECTURE_CATEGORIES.has(entry.category);
+}
+
+function isAllowedMaintenanceArchitectureNegativeContext(path, lines, index) {
+  const line = lines[index];
+  if (
+    /(?:\.test\.[cm]?[jt]s$|\/fixtures?\/)/.test(path) &&
+    /\b(?:negative\s+test|fixture)\b/i.test(line)
+  ) {
+    return true;
+  }
+  if (NEGATIVE_MAINTENANCE_ARCHITECTURE_CONTEXT.test(line)) {
+    return true;
+  }
+  const wrappedNegativeContext = lines
+    .slice(Math.max(0, index - 1), index + 1)
+    .join(" ");
+  if (NEGATIVE_MAINTENANCE_ARCHITECTURE_CONTEXT.test(wrappedNegativeContext)) {
+    return true;
+  }
+  const removalListContext = lines
+    .slice(Math.max(0, index - 12), index)
+    .join(" ");
+  return /requires deleting, not retaining, superseded paths/i.test(
+    removalListContext,
+  );
+}
+
+function validateRetiredMaintenanceArchitectureText(path, text) {
+  const failures = [];
+  const lines = text.split(/\r?\n/u);
+  for (const [index, line] of lines.entries()) {
+    if (isAllowedMaintenanceArchitectureNegativeContext(path, lines, index)) {
+      continue;
+    }
+    for (const rule of RETIRED_MAINTENANCE_ARCHITECTURE_PATTERNS.filter(
+      (candidate) => candidate.pattern.test(line),
+    )) {
+      failures.push(
+        `${path}:${index + 1} contains retired maintenance architecture (${rule.label}): ${line.trim()}`,
+      );
+    }
+  }
+  return failures;
+}
 
 const STALE_TAILSCALE_INTEGRATION_PATTERNS = [
   {
@@ -1460,6 +1584,7 @@ function isRunbookFailure(failure) {
     failure.includes(" contains stale integration text ") ||
     failure.includes(" contains non-negative Tailscale wording") ||
     failure.includes(" contains retired public contract ") ||
+    failure.includes(" contains retired maintenance architecture ") ||
     failure.startsWith("retired public runbook present") ||
     failure.includes(" missing required runbook contract: ") ||
     failure.includes(" invalid required runbook contract ") ||
@@ -1645,6 +1770,14 @@ export function checkRepositoryScriptInventory(options = {}) {
         }
       }
     }
+    if (isAcceptedMaintenanceArchitectureWorkflow(entry)) {
+      failures.push(
+        ...validateRetiredMaintenanceArchitectureText(
+          entry.path,
+          readText(root, entry.path),
+        ),
+      );
+    }
     for (const failure of validateLegacyEvidence(root, entry)) {
       failures.push(failure);
     }
@@ -1697,6 +1830,19 @@ export function checkRepositoryScriptInventory(options = {}) {
       const text = readText(root, path);
       failures.push(...validateStaleIntegrationText(path, text));
       failures.push(...validateStalePublicContractText(path, text));
+      failures.push(...validateRetiredMaintenanceArchitectureText(path, text));
+    }
+  }
+
+  if (directoryExists(root, ".github/workflows")) {
+    for (const path of listFiles(root, ".github/workflows")) {
+      if (!path.endsWith(".yml") && !path.endsWith(".yaml")) continue;
+      failures.push(
+        ...validateRetiredMaintenanceArchitectureText(
+          path,
+          readText(root, path),
+        ),
+      );
     }
   }
 

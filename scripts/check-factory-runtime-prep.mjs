@@ -175,13 +175,13 @@ addCheck(
 );
 
 addCheck(
-  "direct-factory-preparation-keeps-batch-like-labels-outside-daemon-environment",
+  "clean-base-factory-preparation-keeps-batch-like-labels-outside-daemon-environment",
   testbedRunner.includes("vps-fresh-${cleanBaseFactoryProfile}-clean-base") &&
-    testbedRunner.includes('DeploymentBatch = "dirty-host-reset-v1"') &&
     testbedRunner.includes(
       "DeploymentBatch = ${psString(`clean-base-${cleanBaseFactoryProfile}-v1`)}",
-    ),
-  "Dirty-host and clean-base direct preparation must retain deterministic deployment batches outside the daemon environment",
+    ) &&
+    !testbedRunner.includes('DeploymentBatch = "dirty-host-reset-v1"'),
+  "Canonical clean-base preparation must retain a deterministic deployment batch outside the daemon environment without restoring dirty-host acceptance",
 );
 
 addCheck(
@@ -447,23 +447,26 @@ addCheck(
 );
 
 addCheck(
-  "testbed-bootstrap-certificate-ingress-is-explicit-and-production-remains-wireguard-only",
+  "all-factory-profiles-require-relay-wireguard-ssh-ingress",
   setupTasks.includes('mode = "wireguard-only"') &&
-    setupTasks.includes('mode = "testbed-bootstrap-certificate"') &&
-    setupTasks.includes('sshListenAddress = "0.0.0.0"') &&
-    setupTasks.includes('firewallInterfaceScope = "Any"') &&
+    !setupTasks.includes('mode = "testbed-bootstrap-certificate"') &&
+    !setupTasks.includes('sshListenAddress = "0.0.0.0"') &&
+    !setupTasks.includes('firewallInterfaceScope = "Any"') &&
     setupTasks.includes("Assert-WireGuardListenAddress") &&
-    setupTasks.includes("if ([bool]$ingressPolicy.requiresWireGuardAddress)") &&
+    setupTasks.includes("requiresWireGuardAddress = $true") &&
+    setupTasks.includes(
+      "WireGuard tunnel ListenAddress must not be wildcard or loopback",
+    ) &&
     prepare.includes("Get-FactoryMaintenanceIngressPolicy") &&
     prepare.includes("effectiveListenAddress") &&
     prepare.includes("effectiveFirewallInterfaceScope") &&
     verifier.includes("Get-MaintenanceIngressEvidence") &&
-    verifier.includes("bootstrapTestbedOnly") &&
+    !verifier.includes("bootstrapTestbedOnly") &&
     verifier.includes(
-      "production verifier rejects wildcard SSH listener or firewall interface scope",
+      "Factory verifier rejects wildcard SSH listener or firewall interface scope",
     ) &&
     verifier.includes("sourceRolePoolsMatch"),
-  "testbed bootstrap ingress must be explicit, certificate-only, source-pool scoped, and reject any production wildcard listener or interface scope",
+  "Factory testbed and production SSH ingress must be certificate-only on the declared WireGuard listener/interface, never a wildcard bootstrap listener",
 );
 
 addCheck(
@@ -557,6 +560,26 @@ addCheck(
     verifier.includes("storeAutomaticAppUpdates") &&
     verifier.includes("kioskForegroundTakeover"),
   `${verifierPath} should collect structured Factory Windows Baseline evidence for update, power, boot, security, remote maintenance, and consumer-experience posture`,
+);
+
+addCheck(
+  "factory-verifier-proves-wireguard-listener-interface-and-certificate-only-sshd",
+  verifier.includes("Get-WireGuardListenAddressEvidence") &&
+    verifier.includes("Get-NetIPAddress -InterfaceAlias") &&
+    verifier.includes("wireGuardListenAddress") &&
+    verifier.includes("wireGuardInterfaceAlias") &&
+    verifier.includes("pubkeyAuthentication") &&
+    verifier.includes("authorizedKeysFile") &&
+    verifier.includes("authorizedKeysCommand") &&
+    verifier.includes("authorizedKeysCommandUser") &&
+    verifier.includes('"nobody"') &&
+    verifier.includes("trustedUserCaKeys") &&
+    verifier.includes(
+      "Factory verifier rejects wildcard SSH listener or firewall interface scope",
+    ) &&
+    verifier.includes("sshdEffectiveConfig.pubkeyAuthentication") &&
+    verifier.includes("wireGuardListenAddressEvidence.addressOwnedByInterface"),
+  `${verifierPath} should prove sshd listens only on the declared WireGuard address, the firewall scopes that interface, and the effective policy is CA certificate/public-key only`,
 );
 
 addCheck(

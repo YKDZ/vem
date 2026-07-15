@@ -26,6 +26,13 @@ function stepBlock(workflow, stepName) {
 }
 
 describe("VM runtime acceptance workflow maintenance relay path", () => {
+  it("delegates serial trust-anchor creation to the E2E runner before serial adapter invocation", () => {
+    const workflow = readWorkflow();
+    const runtimeAcceptance = stepBlock(workflow, "Run VM Runtime Acceptance");
+    assert.match(runtimeAcceptance, /scripts\/testbed\/win10-vem-e2e\.mjs/);
+    assert.doesNotMatch(workflow, /VEM_SERIAL_RUNNER_SIGNING_KEY_FILE/);
+  });
+
   it("checks out the dispatched commit before using repository validation code", () => {
     const workflow = readWorkflow();
     const checkout = stepBlock(workflow, "Checkout Trusted Commit");
@@ -92,13 +99,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.doesNotMatch(serviceApi, /\n\s+PORT:\s+"26849"/);
   });
 
-  it("starts runner WireGuard before a platform-neutral adapter request and consumes only its discovered guest endpoint", () => {
+  it("proves certificate SSH uses the Relay-established WireGuard data plane before consuming the discovered guest endpoint", () => {
     const workflow = readWorkflow();
 
     for (const requiredText of [
       "VEM_MAINTENANCE_RELAY_INTERFACE",
       "VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP",
       "Start Runner Maintenance Relay WireGuard Peer",
+      "Prove Relay WireGuard SSH Data Plane",
       "command -v wg-quick",
       "sudo wg-quick up",
       "root-owned runner WireGuard config",
@@ -133,6 +141,10 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       restoreBlock,
       /--approved-runtime-base\s+"\$VEM_VM_HOST_APPROVED_BASE_ID"/,
     );
+    assert.match(
+      restoreBlock,
+      /--maintenance-relay-session-json\s+"\$VEM_MAINTENANCE_RELAY_SESSION_JSON"/,
+    );
     assert.doesNotMatch(restoreBlock, /scripts\/testbed\/vm-host-adapter\.mjs/);
     assert.doesNotMatch(
       restoreBlock,
@@ -153,10 +165,43 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(endpoint, /vm-host-adapter-report\.json/);
     assert.match(endpoint, /endpoint\.reachability !== "discovered"/);
+    assert.match(endpoint, /maintenance-session Relay-bound guest endpoint/);
+    assert.match(
+      endpoint,
+      /proof\?\.endpointAllowedIp !== `\$\{endpoint\.host\}\/32`/,
+    );
     assert.match(
       endpoint,
       /VM_GUEST_MAINTENANCE_ENDPOINT_JSON=\$\{JSON\.stringify\(endpoint\)\}/,
     );
+
+    const relayDataPlane = stepBlock(
+      workflow,
+      "Prove Relay WireGuard SSH Data Plane",
+    );
+    assert.match(relayDataPlane, /ip -j route get/);
+    assert.match(
+      relayDataPlane,
+      /route\.dev !== process\.env\.VEM_MAINTENANCE_RELAY_INTERFACE/,
+    );
+    assert.match(relayDataPlane, /-b "\$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP"/);
+    assert.match(
+      relayDataPlane,
+      /CertificateFile=\$MAINTENANCE_SSH_DIR\/id_ed25519-cert\.pub/,
+    );
+    assert.match(
+      relayDataPlane,
+      /sudo wg show "\$VEM_MAINTENANCE_RELAY_INTERFACE" latest-handshakes/,
+    );
+    assert.match(
+      relayDataPlane,
+      /sudo wg show "\$VEM_MAINTENANCE_RELAY_INTERFACE" allowed-ips/,
+    );
+    assert.match(relayDataPlane, /peer === session\.relayPeer\.publicKey/);
+    assert.match(relayDataPlane, /session\.endpointTunnelAddress\}\/32/);
+    assert.doesNotMatch(relayDataPlane, /timestamps\.some/);
+    assert.match(relayDataPlane, /Relay WireGuard SSH data-plane proof failed/);
+    assert.match(relayDataPlane, /wireguard-ssh-data-plane\.json/);
 
     const sshTrust = stepBlock(
       workflow,

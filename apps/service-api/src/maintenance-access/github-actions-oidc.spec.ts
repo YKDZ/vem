@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   GithubActionsOidcValidationError,
+  parseGithubOidcTrustPolicy,
   validateGithubActionsOidcToken,
   type GithubOidcTrustPolicy,
 } from "./github-actions-oidc";
@@ -37,15 +38,17 @@ const jwks = {
 
 const policy: GithubOidcTrustPolicy = {
   repositoryId: "123456789",
-  workflowIdentity: {
-    claimModel: "direct",
-    workflowRef:
-      "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
-    allowedWorkflowShas: ["a".repeat(40)],
-  },
+  workflowIdentities: [
+    {
+      claimModel: "direct",
+      workflowRef:
+        "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+      allowedWorkflowShas: ["a".repeat(40)],
+      allowedEnvironments: ["vem-maintenance-testbed"],
+    },
+  ],
   refs: ["refs/heads/main"],
   events: ["workflow_dispatch"],
-  environments: ["vem-maintenance-testbed"],
   requireRefProtected: true,
   allowedRunnerPeerIds: ["11111111-1111-4111-8111-111111111111"],
   targetMachineCodes: ["VEM-TESTBED-RUNTIME-ACCEPTANCE"],
@@ -142,14 +145,17 @@ describe("GitHub Actions OIDC validation", () => {
   it("uses job_workflow_ref only when policy explicitly selects the reusable claim model", async () => {
     const reusablePolicy: GithubOidcTrustPolicy = {
       ...policy,
-      workflowIdentity: {
-        claimModel: "reusable",
-        workflowRef: "vem/vem/.github/workflows/caller.yml@refs/heads/main",
-        jobWorkflowRef:
-          "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
-        allowedWorkflowShas: ["a".repeat(40)],
-        allowedJobWorkflowShas: ["b".repeat(40)],
-      },
+      workflowIdentities: [
+        {
+          claimModel: "reusable",
+          workflowRef: "vem/vem/.github/workflows/caller.yml@refs/heads/main",
+          jobWorkflowRef:
+            "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+          allowedWorkflowShas: ["a".repeat(40)],
+          allowedJobWorkflowShas: ["b".repeat(40)],
+          allowedEnvironments: ["vem-maintenance-testbed"],
+        },
+      ],
     };
 
     await expect(
@@ -181,6 +187,70 @@ describe("GitHub Actions OIDC validation", () => {
       runAttempt: "3",
       sha: "a".repeat(40),
     });
+  });
+
+  it("accepts either explicitly trusted workflow identity and reports the match", async () => {
+    const sharedPolicy: GithubOidcTrustPolicy = {
+      ...policy,
+      workflowIdentities: [
+        ...policy.workflowIdentities,
+        {
+          claimModel: "direct",
+          workflowRef:
+            "vem/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+          allowedWorkflowShas: ["a".repeat(40)],
+          allowedEnvironments: ["vem-factory-production"],
+        },
+      ],
+    };
+
+    await expect(
+      validateGithubActionsOidcToken(
+        signedFixture({
+          workflow: "Factory Image Acceptance",
+          workflow_ref:
+            "vem/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+          environment: "vem-factory-production",
+        }),
+        { jwks, now, policy: sharedPolicy },
+      ),
+    ).resolves.toMatchObject({
+      claimModel: "direct",
+      workflowRef:
+        "vem/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+    });
+  });
+
+  it("rejects a trusted workflow when it presents another identity's environment", async () => {
+    const sharedPolicy: GithubOidcTrustPolicy = {
+      ...policy,
+      workflowIdentities: [
+        ...policy.workflowIdentities,
+        {
+          claimModel: "direct",
+          workflowRef:
+            "vem/vem/.github/workflows/factory-image-acceptance.yml@refs/heads/main",
+          allowedWorkflowShas: ["a".repeat(40)],
+          allowedEnvironments: ["vem-factory-production"],
+        },
+      ],
+    };
+
+    await expect(
+      validateGithubActionsOidcToken(
+        signedFixture({ environment: "vem-factory-production" }),
+        { jwks, now, policy: sharedPolicy },
+      ),
+    ).rejects.toBeInstanceOf(GithubActionsOidcValidationError);
+  });
+
+  it("requires a non-empty workflowIdentities array and rejects singular compatibility", () => {
+    const { workflowIdentities: _workflowIdentities, ...legacyPolicy } = policy;
+
+    expect(() => parseGithubOidcTrustPolicy(legacyPolicy)).toThrow();
+    expect(() =>
+      parseGithubOidcTrustPolicy({ ...policy, workflowIdentities: [] }),
+    ).toThrow();
   });
 
   it.each([
