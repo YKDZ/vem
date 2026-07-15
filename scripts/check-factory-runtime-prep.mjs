@@ -175,13 +175,13 @@ addCheck(
 );
 
 addCheck(
-  "direct-factory-preparation-keeps-batch-like-labels-outside-daemon-environment",
+  "clean-base-factory-preparation-keeps-batch-like-labels-outside-daemon-environment",
   testbedRunner.includes("vps-fresh-${cleanBaseFactoryProfile}-clean-base") &&
-    testbedRunner.includes('DeploymentBatch = "dirty-host-reset-v1"') &&
     testbedRunner.includes(
       "DeploymentBatch = ${psString(`clean-base-${cleanBaseFactoryProfile}-v1`)}",
-    ),
-  "Dirty-host and clean-base direct preparation must retain deterministic deployment batches outside the daemon environment",
+    ) &&
+    !testbedRunner.includes('DeploymentBatch = "dirty-host-reset-v1"'),
+  "Canonical clean-base preparation must retain a deterministic deployment batch outside the daemon environment without restoring dirty-host acceptance",
 );
 
 addCheck(
