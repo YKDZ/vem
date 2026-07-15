@@ -991,7 +991,7 @@ describe("repository script inventory guard", () => {
         );
         assert.match(
           result.failures.join("\n"),
-          /public\/legacy\.md:1 contains retired public contract \(static relay planner\)/,
+          /public\/legacy\.md:1 contains retired maintenance architecture \(static relay planner\)/,
         );
         assert.match(
           result.failures.join("\n"),
@@ -1017,6 +1017,86 @@ describe("repository script inventory guard", () => {
         assert.match(
           result.failures.join("\n"),
           /public\/legacy\.md:1 contains stale integration text/,
+        );
+      },
+    );
+  });
+
+  it("rejects retired maintenance architecture from accepted workflows and public runbooks", () => {
+    withFixture(
+      {
+        ".github/workflows/runtime.yml":
+          "env:\n  VEM_TESTBED_WINDOWS_PASSWORD: retained-secret",
+        "public/legacy.md": [
+          "Use a static relay planner.",
+          "Use an online package fallback.",
+          "Treat mock production evidence as sufficient.",
+          "Use a temporary network for maintenance.",
+          "Use an alternative tunnel for maintenance.",
+          "Use password SSH for maintenance.",
+          "Use emergency deployment when updates fail.",
+        ].join("\n"),
+        "scripts/testbed/accepted.mjs":
+          'const route = "transport-neutral Controlled Maintenance Ingress";',
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/testbed/accepted.mjs",
+              owner: "field-operations",
+              category: "canonical entrypoint",
+              workflows: ["runtime acceptance"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.equal(result.ok, false);
+        for (const label of [
+          "Windows testbed password secret",
+          "static relay planner",
+          "online or capability fallback",
+          "mock or TCP production evidence",
+          "temporary network ingress",
+          "alternative tunnel ingress",
+          "password SSH",
+          "emergency deployment compatibility path",
+          "transport-neutral ingress",
+        ]) {
+          assert.match(
+            result.failures.join("\n"),
+            new RegExp(`retired maintenance architecture \\(${label}\\)`),
+          );
+        }
+      },
+    );
+  });
+
+  it("allows retired architecture strings only in negative test fixture context", () => {
+    withFixture(
+      {
+        "scripts/testbed/accepted.test.mjs":
+          'const assertion = "negative test fixture: VEM_TESTBED_WINDOWS_PASSWORD must be rejected";',
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/testbed/accepted.test.mjs",
+              owner: "field-operations",
+              category: "canonical entrypoint",
+              workflows: ["runtime acceptance"],
+            },
+          ],
+          publicRunbooks: [],
+        });
+
+        assert.doesNotMatch(
+          result.failures.join("\n"),
+          /retired maintenance architecture/,
         );
       },
     );
