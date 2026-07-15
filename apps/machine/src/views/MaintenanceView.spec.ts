@@ -353,8 +353,8 @@ beforeEach(() => {
         ready: false,
         code: "DEVICE_BINDING_SELECTION_REQUIRED",
         message: "select lower controller",
-        ambiguous: true,
-        ambiguityPorts: ["COM5", "COM8"],
+        ambiguous: false,
+        ambiguityPorts: [],
         legacyPortHint: "COM5",
         candidates: [
           {
@@ -699,6 +699,59 @@ function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
 }
 
 describe("MaintenanceView hardware config", () => {
+  it("hides unsafe binding actions for duplicate observations and offers an actionable refresh", async () => {
+    const duplicateCandidate = {
+      identity: {
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
+        instanceId: "USB\\VID_1A86&PID_55D3\\CONTROLLER-1",
+        containerId: "11111111-2222-3333-4444-555555555555",
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: null,
+      },
+      currentPort: "COM5",
+      friendlyName: "下位机串口",
+      readiness: "blocked" as const,
+      readinessCode: "DEVICE_BINDING_AMBIGUOUS",
+      readinessMessage: "duplicate observation",
+    };
+    getDeviceBindingsMock.mockResolvedValueOnce({
+      roles: [
+        {
+          role: "lower_controller",
+          binding: null,
+          currentPort: null,
+          ready: false,
+          code: "DEVICE_BINDING_AMBIGUOUS",
+          message: "same identity observed more than once",
+          ambiguous: true,
+          ambiguityPorts: ["COM5", "COM5"],
+          legacyPortHint: "COM5",
+          candidates: [duplicateCandidate, { ...duplicateCandidate }],
+          discoveryDiagnostics: [],
+        },
+      ],
+    });
+    const host = await mountView();
+    const role = await vi.waitFor(() => {
+      const element = host.querySelector(
+        "[data-test='device-binding-lower_controller']",
+      );
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    });
+
+    expect(role.textContent).toContain("拔除重复设备后刷新");
+    expect(
+      Array.from(role.querySelectorAll("button")).some((button) =>
+        ["测试", "确认绑定"].includes(button.textContent?.trim() ?? ""),
+      ),
+    ).toBe(false);
+    buttonByText(role, "刷新设备").click();
+    await vi.waitFor(() => {
+      expect(getDeviceBindingsMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("tests then confirms each stable device identity through protected maintenance", async () => {
     const host = await mountView();
     await vi.waitFor(() => {

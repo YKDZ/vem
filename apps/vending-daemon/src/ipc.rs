@@ -777,6 +777,7 @@ pub struct IpcContext {
     pub scanner_runtime: crate::scanner::ScannerRuntimeController,
     pub serial_device_platform: crate::device_binding::SharedSerialDevicePlatform,
     pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
+    pub(crate) sale_binding_gate: Arc<SaleBindingOperationGate>,
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
@@ -786,6 +787,60 @@ pub struct IpcContext {
     /// this critical section would reintroduce the UI-side TOCTOU.
     pub bring_up_execution_lock: Arc<Mutex<()>>,
     pub maintenance_authorization: Arc<dyn MaintenanceAuthorization>,
+}
+
+const SALE_BINDING_GATE_IDLE: u8 = 0;
+const SALE_BINDING_GATE_SALE_START: u8 = 1;
+const SALE_BINDING_GATE_RECONFIGURE: u8 = 2;
+
+#[derive(Debug, Default)]
+pub(crate) struct SaleBindingOperationGate {
+    state: std::sync::atomic::AtomicU8,
+}
+
+impl SaleBindingOperationGate {
+    pub(crate) fn try_acquire_sale_start(
+        self: &Arc<Self>,
+    ) -> Result<SaleBindingOperationLease, u8> {
+        self.try_acquire(SALE_BINDING_GATE_SALE_START)
+    }
+
+    pub(crate) fn try_acquire_reconfigure(
+        self: &Arc<Self>,
+    ) -> Result<SaleBindingOperationLease, u8> {
+        self.try_acquire(SALE_BINDING_GATE_RECONFIGURE)
+    }
+
+    fn try_acquire(self: &Arc<Self>, operation: u8) -> Result<SaleBindingOperationLease, u8> {
+        self.state
+            .compare_exchange(
+                SALE_BINDING_GATE_IDLE,
+                operation,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map(|_| SaleBindingOperationLease {
+                gate: self.clone(),
+                operation,
+            })
+            .map_err(|active| active)
+    }
+}
+
+pub(crate) struct SaleBindingOperationLease {
+    gate: Arc<SaleBindingOperationGate>,
+    operation: u8,
+}
+
+impl Drop for SaleBindingOperationLease {
+    fn drop(&mut self) {
+        let _ = self.gate.state.compare_exchange(
+            self.operation,
+            SALE_BINDING_GATE_IDLE,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -2790,6 +2845,49 @@ async fn create_order_intent(
                 })),
             )
             .await;
+        }
+    }
+
+    let _sale_start_lease = match ctx.sale_binding_gate.try_acquire_sale_start() {
+        Ok(lease) => lease,
+        Err(SALE_BINDING_GATE_RECONFIGURE) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "create_order_hardware_reconfiguring",
+                    message: "local hardware binding is changing; retry the sale after maintenance completes"
+                        .to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "create_order_start_in_progress",
+                    message: "another sale is starting; retry this request".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match ctx.state.current_transaction_snapshot().await {
+        Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
+            return current_transaction_snapshot_response(&ctx, snapshot).await;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "create_order_sale_state_unavailable",
+                    message: format!(
+                        "cannot safely start a sale while transaction state is unavailable: {error}"
+                    ),
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -5115,7 +5213,6 @@ async fn confirm_device_binding_candidate(
     {
         return response;
     }
-    let _guard = ctx.bring_up_execution_lock.lock().await;
     match ctx.state.current_transaction_snapshot().await {
         Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
             return (
@@ -5161,6 +5258,17 @@ async fn confirm_device_binding_candidate(
         )
             .into_response();
     };
+    let tested = ctx
+        .serial_device_platform
+        .test_candidate(role, &candidate)
+        .await;
+    if !tested.success {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(tested)).into_response();
+    }
+    let candidate = match find_requested_device_candidate(&ctx, request.identity_key.trim()).await {
+        Ok(candidate) => candidate,
+        Err(response) => return response,
+    };
     let observation_revision = match device_binding_observation_revision(&candidate) {
         Ok(revision) => revision,
         Err(message) => {
@@ -5187,6 +5295,59 @@ async fn confirm_device_binding_candidate(
                 .into_response();
         }
     };
+    let _binding_lease = match ctx.sale_binding_gate.try_acquire_reconfigure() {
+        Ok(lease) => lease,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "device_binding_sale_start_in_progress",
+                    message: "a sale is starting; hardware binding remains unchanged".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match ctx.state.current_transaction_snapshot().await {
+        Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "device_binding_active_sale",
+                    message: "hardware binding cannot change during an active sale".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "device_binding_sale_state_unavailable",
+                    message: format!(
+                        "cannot prove that no sale is active; hardware binding remains unchanged: {error}"
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    }
+    let previous_binding = match ctx.config_store.local_device_binding_snapshot(role).await {
+        Ok(snapshot) => snapshot,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "device_binding_settings_read_failed",
+                    message: format!(
+                        "cannot read the current role binding; hardware binding remains unchanged: {message}"
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    };
     if let Err((code, message)) = ctx
         .device_binding_test_evidence
         .consume(
@@ -5200,13 +5361,6 @@ async fn confirm_device_binding_candidate(
         .await
     {
         return (StatusCode::CONFLICT, Json(ErrorMessage { code, message })).into_response();
-    }
-    let tested = ctx
-        .serial_device_platform
-        .test_candidate(role, &candidate)
-        .await;
-    if !tested.success {
-        return (StatusCode::UNPROCESSABLE_ENTITY, Json(tested)).into_response();
     }
     let identity =
         match crate::device_binding::StableSerialDeviceIdentity::try_from_observation(&candidate) {
@@ -5238,33 +5392,33 @@ async fn confirm_device_binding_candidate(
         confirmed_by: operator.unwrap_or_else(|| "local_maintenance".to_string()),
         test_evidence_code: tested.code.clone(),
     };
-    let previous_settings = ctx
+    let saved_binding_revision = match ctx
         .config_store
-        .load_local_bring_up_settings()
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if let Err(message) = ctx
-        .config_store
-        .save_local_device_binding(role, binding.clone())
+        .save_local_device_binding_if_revision(role, binding.clone(), &previous_binding.revision)
         .await
     {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorMessage {
-                code: "device_binding_persist_failed",
-                message,
-            }),
-        )
-            .into_response();
-    }
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "device_binding_persist_conflict",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
     let mut runtime_config = match ctx.config_store.load_effective_public_config().await {
         Ok(config) => config,
         Err(message) => {
             let _ = ctx
                 .config_store
-                .restore_local_bring_up_settings_snapshot(&previous_settings)
+                .restore_local_device_binding_if_revision(
+                    role,
+                    previous_binding.binding.clone(),
+                    &saved_binding_revision,
+                )
                 .await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -5284,7 +5438,11 @@ async fn confirm_device_binding_candidate(
     ) {
         let _ = ctx
             .config_store
-            .restore_local_bring_up_settings_snapshot(&previous_settings)
+            .restore_local_device_binding_if_revision(
+                role,
+                previous_binding.binding.clone(),
+                &saved_binding_revision,
+            )
             .await;
         return (
             StatusCode::CONFLICT,
@@ -5322,10 +5480,14 @@ async fn confirm_device_binding_candidate(
     if let Err(error) = activation {
         let rollback_result = ctx
             .config_store
-            .restore_local_bring_up_settings_snapshot(&previous_settings)
+            .restore_local_device_binding_if_revision(
+                role,
+                previous_binding.binding,
+                &saved_binding_revision,
+            )
             .await;
         let message = match rollback_result {
-            Ok(()) => error,
+            Ok(_) => error,
             Err(rollback_error) => format!("{error}; binding rollback failed: {rollback_error}"),
         };
         return (
@@ -6007,6 +6169,14 @@ mod tests {
         devices: Vec<crate::device_binding::ObservedSerialDevice>,
     }
 
+    #[cfg(unix)]
+    struct PausingProbeSerialDevicePlatform {
+        device: crate::device_binding::ObservedSerialDevice,
+        probes: AtomicUsize,
+        confirm_probe_started: Arc<tokio::sync::Notify>,
+        release_confirm_probe: Arc<tokio::sync::Notify>,
+    }
+
     #[async_trait]
     impl crate::device_binding::SerialDevicePlatform for FixtureSerialDevicePlatform {
         async fn discover(
@@ -6038,6 +6208,41 @@ mod tests {
                 }
                 .to_string(),
                 message: "fixture role probe ready".to_string(),
+                tested_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl crate::device_binding::SerialDevicePlatform for PausingProbeSerialDevicePlatform {
+        async fn discover(
+            &self,
+        ) -> Result<Vec<crate::device_binding::ObservedSerialDevice>, String> {
+            Ok(vec![self.device.clone()])
+        }
+
+        async fn test_candidate(
+            &self,
+            role: crate::device_binding::LocalDeviceRole,
+            candidate: &crate::device_binding::ObservedSerialDevice,
+        ) -> crate::device_binding::DeviceBindingTestResult {
+            if self.probes.fetch_add(1, Ordering::SeqCst) > 0 {
+                self.confirm_probe_started.notify_waiters();
+                self.release_confirm_probe.notified().await;
+            }
+            crate::device_binding::DeviceBindingTestResult {
+                role,
+                identity_key:
+                    crate::device_binding::StableSerialDeviceIdentity::try_from_observation(
+                        candidate,
+                    )
+                    .expect("stable fixture")
+                    .identity_key,
+                current_port: candidate.current_port.clone(),
+                success: true,
+                code: "SCANNER_PROTOCOL_FRAME_READY".to_string(),
+                message: "fixture scanner protocol evidence ready".to_string(),
                 tested_at: crate::state::store::now_iso(),
             }
         }
@@ -6406,6 +6611,7 @@ mod tests {
             scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
             serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
             device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
+            sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
             disk_pressure_probe: Arc::new(FixedDiskPressureProbe {
                 available_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES + 1,
                 threshold_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES,
@@ -7200,7 +7406,7 @@ mod tests {
             devices: vec![
                 crate::device_binding::ObservedSerialDevice {
                     current_port: "COM5".to_string(),
-                    instance_id: Some("USB\\CTRL-1".to_string()),
+                    instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-1".to_string()),
                     container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
                     hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
                     serial_number: None,
@@ -7208,7 +7414,7 @@ mod tests {
                 },
                 crate::device_binding::ObservedSerialDevice {
                     current_port: "COM3".to_string(),
-                    instance_id: Some("USB\\SCAN-1".to_string()),
+                    instance_id: Some("USB\\VID_1234&PID_5678\\SCAN-1".to_string()),
                     container_id: Some("{22222222-3333-4444-5555-666666666666}".to_string()),
                     hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
                     serial_number: Some("SCAN-1".to_string()),
@@ -7249,7 +7455,7 @@ mod tests {
         let scanner_port = "COM3".to_string();
         let device = crate::device_binding::ObservedSerialDevice {
             current_port: scanner_port,
-            instance_id: Some("USB\\SCAN-1".to_string()),
+            instance_id: Some("USB\\VID_1234&PID_5678\\SCAN-1".to_string()),
             container_id: Some("{22222222-3333-4444-5555-666666666666}".to_string()),
             hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
             serial_number: Some("SCAN-1".to_string()),
@@ -7319,13 +7525,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_controller_activation_restores_the_previous_binding_settings() {
+    #[cfg(unix)]
+    async fn failed_controller_activation_rolls_back_only_the_role_and_preserves_concurrent_settings(
+    ) {
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+
         let temp = tempdir().expect("temp");
         let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        let controller_master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+        grantpt(&controller_master).expect("grant pty");
+        unlockpt(&controller_master).expect("unlock pty");
+        let controller_port = ptsname_r(&controller_master).expect("slave path");
         ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
             devices: vec![crate::device_binding::ObservedSerialDevice {
-                current_port: "/dev/vem-missing-controller".to_string(),
-                instance_id: Some("USB\\CTRL-FAIL".to_string()),
+                current_port: controller_port,
+                instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-FAIL".to_string()),
                 container_id: Some("{33333333-4444-5555-6666-777777777777}".to_string()),
                 hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
                 serial_number: None,
@@ -7356,7 +7571,27 @@ mod tests {
             ))
             .expect("request");
 
-        let response = app.oneshot(request).await.expect("response");
+        let confirm = tokio::spawn(app.oneshot(request));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if config_store
+                    .load_local_bring_up_settings()
+                    .await
+                    .expect("settings while activation waits")
+                    .is_some_and(|settings| settings.lower_controller_binding.is_some())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("candidate binding persisted before activation failure");
+        config_store
+            .save_local_bring_up_network_profile("field-network-updated")
+            .await
+            .expect("concurrent network update");
+        let response = confirm.await.expect("confirm join").expect("response");
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let settings = config_store
@@ -7365,6 +7600,10 @@ mod tests {
             .expect("settings")
             .expect("existing settings");
         assert!(settings.lower_controller_binding.is_none());
+        assert_eq!(
+            settings.network_profile.as_deref(),
+            Some("field-network-updated")
+        );
         assert_eq!(
             settings.hardware_adapter,
             Some(crate::config::HardwareAdapterKind::Mock)
@@ -7379,7 +7618,7 @@ mod tests {
         ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
             devices: vec![crate::device_binding::ObservedSerialDevice {
                 current_port: "COM5".to_string(),
-                instance_id: Some("USB\\CTRL-STATE".to_string()),
+                instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-STATE".to_string()),
                 container_id: Some("{44444444-5555-6666-7777-888888888888}".to_string()),
                 hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
                 serial_number: None,
@@ -7423,7 +7662,7 @@ mod tests {
         ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
             devices: vec![crate::device_binding::ObservedSerialDevice {
                 current_port: "COM5".to_string(),
-                instance_id: Some("USB\\CTRL-ACTIVE".to_string()),
+                instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-ACTIVE".to_string()),
                 container_id: Some("{45454545-5656-6767-7878-898989898989}".to_string()),
                 hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
                 serial_number: None,
@@ -7475,13 +7714,97 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn sale_start_while_confirm_probe_is_waiting_blocks_the_later_binding_swap() {
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+
+        let temp = tempdir().expect("temp");
+        let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
+        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+        grantpt(&master).expect("grant pty");
+        unlockpt(&master).expect("unlock pty");
+        let scanner_port = ptsname_r(&master).expect("slave path");
+        let identity_key = "container:91919191-8282-7373-6464-555555555555";
+        let confirm_probe_started = Arc::new(tokio::sync::Notify::new());
+        let release_confirm_probe = Arc::new(tokio::sync::Notify::new());
+        ctx.serial_device_platform = Arc::new(PausingProbeSerialDevicePlatform {
+            device: crate::device_binding::ObservedSerialDevice {
+                current_port: scanner_port,
+                instance_id: Some("USB\\VID_1234&PID_5678\\SCAN-TOCTOU".to_string()),
+                container_id: Some("{91919191-8282-7373-6464-555555555555}".to_string()),
+                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                serial_number: Some("SCAN-TOCTOU".to_string()),
+                friendly_name: Some("scanner".to_string()),
+            },
+            probes: AtomicUsize::new(0),
+            confirm_probe_started: confirm_probe_started.clone(),
+            release_confirm_probe: release_confirm_probe.clone(),
+        });
+        let state = ctx.state.clone();
+        let config_store = ctx.config_store.clone();
+        let app = build_router(ctx);
+        let tested = test_binding_candidate(&app, "scanner", identity_key).await;
+        let confirm = tokio::spawn(
+            app.clone().oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/hardware-bindings/scanner/confirm")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({
+                            "identityKey": identity_key,
+                            "testEvidenceToken": tested["testEvidenceToken"],
+                        })
+                        .to_string(),
+                    ))
+                    .expect("confirm request"),
+            ),
+        );
+        tokio::time::timeout(Duration::from_secs(1), confirm_probe_started.notified())
+            .await
+            .expect("confirm probe paused");
+        state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: "ORDER-STARTED-DURING-PROBE",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "paid",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("start sale while probe waits");
+        release_confirm_probe.notify_waiters();
+
+        let response = confirm
+            .await
+            .expect("confirm join")
+            .expect("confirm response");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let settings = config_store
+            .load_local_bring_up_settings()
+            .await
+            .expect("settings")
+            .expect("existing settings");
+        assert!(settings.scanner_binding.is_none());
+    }
+
+    #[tokio::test]
     async fn device_binding_confirm_rejects_direct_confirmation_without_test_evidence() {
         let temp = tempdir().expect("temp");
         let mut ctx = test_ipc_context(temp.path(), "token-1", None, "http://127.0.0.1:9").await;
         ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
             devices: vec![crate::device_binding::ObservedSerialDevice {
                 current_port: "COM5".to_string(),
-                instance_id: Some("USB\\CTRL-EVIDENCE".to_string()),
+                instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-EVIDENCE".to_string()),
                 container_id: Some("{55555555-6666-7777-8888-999999999999}".to_string()),
                 hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
                 serial_number: None,
@@ -7523,7 +7846,7 @@ mod tests {
         ctx.serial_device_platform = Arc::new(FixtureSerialDevicePlatform {
             devices: vec![crate::device_binding::ObservedSerialDevice {
                 current_port: "/dev/vem-missing-controller".to_string(),
-                instance_id: Some("USB\\CTRL-CONCURRENT".to_string()),
+                instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-CONCURRENT".to_string()),
                 container_id: Some("{66666666-7777-8888-9999-aaaaaaaaaaaa}".to_string()),
                 hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
                 serial_number: None,

@@ -165,47 +165,96 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
         candidate: &ObservedSerialDevice,
     ) -> DeviceBindingTestResult {
         let tested_at = crate::state::store::now_iso();
-        let result = match role {
-            LocalDeviceRole::LowerController => {
-                let mut config = crate::config::default_public_config();
-                config.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
-                config.serial_port_path = Some(candidate.current_port.clone());
-                config.lower_controller_usb_identity = None;
-                match crate::hardware::HardwareSupervisor::from_config(&config) {
-                    Ok(supervisor) => {
-                        let status = supervisor.self_check().await;
-                        (
-                            status.online,
-                            if status.online {
-                                "LOWER_CONTROLLER_HANDSHAKE_READY"
-                            } else {
-                                "LOWER_CONTROLLER_HANDSHAKE_FAILED"
-                            },
-                            status.message,
-                        )
+        let stable_identity = StableSerialDeviceIdentity::try_from_observation(candidate);
+        let result = if let Err(error) = &stable_identity {
+            (false, "DEVICE_PHYSICAL_IDENTITY_INVALID", error.to_string())
+        } else {
+            match role {
+                LocalDeviceRole::LowerController => {
+                    let mut config = crate::config::default_public_config();
+                    config.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
+                    config.serial_port_path = Some(candidate.current_port.clone());
+                    config.lower_controller_usb_identity = None;
+                    match crate::hardware::HardwareSupervisor::from_config(&config) {
+                        Ok(supervisor) => {
+                            let status = supervisor.self_check().await;
+                            (
+                                status.online,
+                                if status.online {
+                                    "LOWER_CONTROLLER_HANDSHAKE_READY"
+                                } else {
+                                    "LOWER_CONTROLLER_HANDSHAKE_FAILED"
+                                },
+                                status.message,
+                            )
+                        }
+                        Err(error) => (false, "LOWER_CONTROLLER_TEST_CONFIG_INVALID", error),
                     }
-                    Err(error) => (false, "LOWER_CONTROLLER_TEST_CONFIG_INVALID", error),
                 }
-            }
-            LocalDeviceRole::Scanner => {
-                use tokio_serial::SerialPortBuilderExt as _;
-                match tokio_serial::new(&candidate.current_port, 9_600).open_native_async() {
-                    Ok(_) => (
-                        true,
-                        "SCANNER_PORT_OPEN_READY",
-                        "scanner serial port opened successfully".to_string(),
-                    ),
-                    Err(error) => (
-                        false,
-                        "SCANNER_PORT_OPEN_FAILED",
-                        format!("open scanner serial failed: {error}"),
-                    ),
+                LocalDeviceRole::Scanner => {
+                    use tokio::io::AsyncReadExt as _;
+                    use tokio_serial::SerialPortBuilderExt as _;
+                    match tokio_serial::new(&candidate.current_port, 9_600).open_native_async() {
+                        Ok(mut port) => {
+                            let probe =
+                                tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                                    let mut frame = Vec::with_capacity(64);
+                                    let mut chunk = [0_u8; 64];
+                                    loop {
+                                        let read =
+                                            port.read(&mut chunk).await.map_err(|error| {
+                                                format!(
+                                                    "read scanner protocol frame failed: {error}"
+                                                )
+                                            })?;
+                                        if read == 0 {
+                                            tokio::task::yield_now().await;
+                                            continue;
+                                        }
+                                        for byte in &chunk[..read] {
+                                            if matches!(byte, b'\r' | b'\n') {
+                                                if is_scanner_protocol_frame(&frame) {
+                                                    return Ok(());
+                                                }
+                                                frame.clear();
+                                            } else if frame.len() < 256 {
+                                                frame.push(*byte);
+                                            } else {
+                                                frame.clear();
+                                            }
+                                        }
+                                    }
+                                })
+                                .await;
+                            match probe {
+                                Ok(Ok(())) => (
+                                    true,
+                                    "SCANNER_PROTOCOL_FRAME_READY",
+                                    "scanner emitted a valid delimited protocol frame".to_string(),
+                                ),
+                                Ok(Err(error)) => {
+                                    (false, "SCANNER_PROTOCOL_READ_FAILED", error)
+                                }
+                                Err(_) => (
+                                    false,
+                                    "SCANNER_PROTOCOL_FRAME_TIMEOUT",
+                                    "scanner port opened but emitted no valid protocol frame within 2 seconds"
+                                        .to_string(),
+                                ),
+                            }
+                        }
+                        Err(error) => (
+                            false,
+                            "SCANNER_PORT_OPEN_FAILED",
+                            format!("open scanner serial failed: {error}"),
+                        ),
+                    }
                 }
             }
         };
         DeviceBindingTestResult {
             role,
-            identity_key: StableSerialDeviceIdentity::try_from_observation(candidate)
+            identity_key: stable_identity
                 .map(|identity| identity.identity_key)
                 .unwrap_or_default(),
             current_port: candidate.current_port.clone(),
@@ -215,6 +264,10 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
             tested_at,
         }
     }
+}
+
+fn is_scanner_protocol_frame(frame: &[u8]) -> bool {
+    (4..=256).contains(&frame.len()) && frame.iter().all(u8::is_ascii_graphic)
 }
 
 const WINDOWS_SERIAL_DISCOVERY_SCRIPT: &str = r#"
@@ -274,6 +327,13 @@ fn normalize_windows_com_port(value: &str) -> Option<String> {
 
 impl StableSerialDeviceIdentity {
     pub fn try_from_observation(observed: &ObservedSerialDevice) -> Result<Self, String> {
+        let hardware_ids = canonical_usb_hardware_ids(&observed.hardware_ids);
+        if !has_physical_usb_evidence(observed, &hardware_ids) {
+            return Err(
+                "serial device has no supported physical USB VID/PID evidence; virtual, ROOT, ACPI, software and pseudo ports cannot be bound"
+                    .to_string(),
+            );
+        }
         let container_id = observed
             .container_id
             .as_deref()
@@ -283,7 +343,6 @@ impl StableSerialDeviceIdentity {
             .serial_number
             .as_deref()
             .and_then(normalize_stable_usb_serial);
-        let hardware_ids = canonical_usb_hardware_ids(&observed.hardware_ids);
         let identity_key = if let Some(container_id) = container_id.as_deref() {
             format!("container:{container_id}")
         } else if let (Some(serial), Some(hardware_id)) =
@@ -326,6 +385,7 @@ fn normalize_container_id(value: &str) -> Option<String> {
     let normalized = value.trim().trim_start_matches('{').trim_end_matches('}');
     uuid::Uuid::parse_str(normalized)
         .ok()
+        .filter(|value| !value.is_nil())
         .map(|value| value.hyphenated().to_string())
 }
 
@@ -335,8 +395,9 @@ fn normalize_stable_usb_serial(value: &str) -> Option<String> {
     if value.is_empty()
         || value.len() > 128
         || value.contains('&')
-        || upper.starts_with("LOCATION")
-        || upper.starts_with("PORT_")
+        || upper.contains("PSEUDO")
+        || upper.contains("LOCATION")
+        || upper.contains("PORT")
         || upper.starts_with("MI_")
         || !value
             .bytes()
@@ -345,6 +406,27 @@ fn normalize_stable_usb_serial(value: &str) -> Option<String> {
         return None;
     }
     Some(value.to_string())
+}
+
+fn has_physical_usb_evidence(observed: &ObservedSerialDevice, hardware_ids: &[String]) -> bool {
+    let Some(instance_id) = observed.instance_id.as_deref() else {
+        return false;
+    };
+    let instance_id = instance_id.trim().to_ascii_uppercase();
+    if !instance_id.starts_with("USB\\") || hardware_ids.is_empty() {
+        return false;
+    }
+    if observed.friendly_name.as_deref().is_some_and(|name| {
+        let name = name.to_ascii_uppercase();
+        ["VIRTUAL", "PSEUDO", "EMULATED"]
+            .iter()
+            .any(|marker| name.contains(marker))
+    }) {
+        return false;
+    }
+    hardware_ids
+        .iter()
+        .any(|hardware_id| instance_id.contains(hardware_id))
 }
 
 fn canonical_usb_hardware_ids(values: &[String]) -> Vec<String> {
@@ -559,6 +641,73 @@ pub fn apply_resolved_binding_to_runtime_config(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn scanner_candidate_open_without_a_protocol_frame_is_not_ready() {
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+
+        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+        grantpt(&master).expect("grant pty");
+        unlockpt(&master).expect("unlock pty");
+        let candidate = ObservedSerialDevice {
+            current_port: ptsname_r(&master).expect("slave path"),
+            instance_id: Some("USB\\VID_1234&PID_5678\\SCANNER-1".to_string()),
+            container_id: Some("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SCANNER-1".to_string()),
+            friendly_name: Some("USB scanner".to_string()),
+        };
+
+        let result = WindowsSerialDevicePlatform
+            .test_candidate(LocalDeviceRole::Scanner, &candidate)
+            .await;
+
+        assert!(!result.success);
+        assert_eq!(result.code, "SCANNER_PROTOCOL_FRAME_TIMEOUT");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn scanner_candidate_requires_and_accepts_a_delimited_protocol_frame() {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+        use tokio::io::AsyncWriteExt as _;
+
+        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+        grantpt(&master).expect("grant pty");
+        unlockpt(&master).expect("unlock pty");
+        let candidate = ObservedSerialDevice {
+            current_port: ptsname_r(&master).expect("slave path"),
+            instance_id: Some("USB\\VID_1234&PID_5678\\SCANNER-2".to_string()),
+            container_id: Some("{bbbbbbbb-cccc-dddd-eeee-ffffffffffff}".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("SCANNER-2".to_string()),
+            friendly_name: Some("USB scanner".to_string()),
+        };
+        let fd = master.into_raw_fd();
+        // SAFETY: ownership of the freshly extracted PTY file descriptor is transferred once.
+        let mut master = tokio::fs::File::from_std(unsafe { std::fs::File::from_raw_fd(fd) });
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            master
+                .write_all(b"6901234567892\r\n")
+                .await
+                .expect("write scanner frame");
+            master.flush().await.expect("flush scanner frame");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        });
+
+        let result = WindowsSerialDevicePlatform
+            .test_candidate(LocalDeviceRole::Scanner, &candidate)
+            .await;
+
+        assert!(result.success, "unexpected probe failure: {result:?}");
+        assert_eq!(result.code, "SCANNER_PROTOCOL_FRAME_READY");
+    }
+
     #[test]
     fn stable_identity_follows_container_across_com_reenumeration() {
         let before = ObservedSerialDevice {
@@ -609,9 +758,9 @@ mod tests {
         };
         let observed = ["COM4", "COM9"].map(|port| ObservedSerialDevice {
             current_port: port.to_string(),
-            instance_id: None,
+            instance_id: Some("USB\\VID_1234&PID_5678\\AMBIGUOUS-1".to_string()),
             container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
-            hardware_ids: vec![],
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
             serial_number: None,
             friendly_name: None,
         });
@@ -681,6 +830,50 @@ mod tests {
         let error = StableSerialDeviceIdentity::try_from_observation(&observed)
             .expect_err("location-dependent identity must not be bindable");
 
+        assert!(error.contains("physical USB"));
+    }
+
+    #[test]
+    fn valid_guid_does_not_make_a_virtual_or_root_port_bindable() {
+        for observed in [
+            ObservedSerialDevice {
+                current_port: "COM8".to_string(),
+                instance_id: Some("ROOT\\VIRTUALCOM\\0000".to_string()),
+                container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
+                hardware_ids: vec!["ROOT\\PORTS\\0000".to_string()],
+                serial_number: Some("PSEUDO-PORT-1".to_string()),
+                friendly_name: Some("Virtual Serial Port".to_string()),
+            },
+            ObservedSerialDevice {
+                current_port: "COM9".to_string(),
+                instance_id: Some("ACPI\\PNP0501\\1".to_string()),
+                container_id: Some("{22222222-3333-4444-5555-666666666666}".to_string()),
+                hardware_ids: vec!["ROOT\\PORTS\\0000".to_string()],
+                serial_number: Some("LOCATION-1".to_string()),
+                friendly_name: Some("Communications Port".to_string()),
+            },
+        ] {
+            let error = StableSerialDeviceIdentity::try_from_observation(&observed)
+                .expect_err("a valid GUID is not physical USB evidence");
+
+            assert!(error.contains("physical USB"), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn nil_container_guid_is_not_a_stable_identity() {
+        let observed = ObservedSerialDevice {
+            current_port: "COM10".to_string(),
+            instance_id: Some("USB\\VID_1234&PID_5678\\LOCATION-1".to_string()),
+            container_id: Some("{00000000-0000-0000-0000-000000000000}".to_string()),
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+            serial_number: Some("PSEUDO".to_string()),
+            friendly_name: Some("USB Serial Port".to_string()),
+        };
+
+        let error = StableSerialDeviceIdentity::try_from_observation(&observed)
+            .expect_err("nil GUID and pseudo serial are not stable identity evidence");
+
         assert!(error.contains("stable USB identity"));
     }
 
@@ -745,16 +938,16 @@ mod tests {
         assert_eq!(snapshot.discovery_diagnostics[0].current_port, "COM8");
         assert!(snapshot.discovery_diagnostics[0]
             .message
-            .contains("ContainerId"));
+            .contains("physical USB"));
     }
 
     #[test]
     fn resolved_port_is_not_ready_when_the_role_runtime_self_check_is_offline() {
         let observed = ObservedSerialDevice {
             current_port: "COM5".to_string(),
-            instance_id: None,
+            instance_id: Some("USB\\VID_1234&PID_5678\\CTRL-1".to_string()),
             container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
-            hardware_ids: vec![],
+            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
             serial_number: None,
             friendly_name: None,
         };

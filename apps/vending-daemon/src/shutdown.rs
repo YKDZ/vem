@@ -246,6 +246,7 @@ async fn run_console_cycle(
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
+        sale_binding_gate: Arc::new(ipc::SaleBindingOperationGate::default()),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,
@@ -293,6 +294,7 @@ async fn run_console_cycle(
         hardware.clone(),
         scanner_runtime.clone(),
         ipc_ctx.ui.status_cache.clone(),
+        ipc_ctx.sale_binding_gate.clone(),
         data_dir.clone(),
         stop_token.clone(),
     ));
@@ -406,6 +408,7 @@ async fn run_device_binding_watch(
     hardware: HardwareSupervisor,
     scanner_runtime: ScannerRuntimeController,
     status_cache: ipc::RuntimeStatusCache,
+    sale_binding_gate: Arc<ipc::SaleBindingOperationGate>,
     data_dir: PathBuf,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
@@ -492,6 +495,23 @@ async fn run_device_binding_watch(
             ) {
                 Ok(port) => {
                     if current_port.as_deref() != Some(port.as_str()) && !active_sale {
+                        let _binding_lease =
+                            match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state)
+                                .await
+                            {
+                                Ok(lease) => lease,
+                                Err(error) => {
+                                    record_binding_watch_retry(
+                                        &status_cache,
+                                        "DEVICE_BINDING_SALE_GATE_RETRY",
+                                        error,
+                                        true,
+                                        false,
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                            };
                         match hardware
                             .reconfigure_from_config(
                                 &resolved,
@@ -513,6 +533,23 @@ async fn run_device_binding_watch(
                     }
                 }
                 Err(code) => {
+                    let _binding_lease =
+                        match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state)
+                            .await
+                        {
+                            Ok(lease) => lease,
+                            Err(error) => {
+                                record_binding_watch_retry(
+                                    &status_cache,
+                                    "DEVICE_BINDING_SALE_GATE_RETRY",
+                                    error,
+                                    true,
+                                    false,
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
                     let message =
                         format!("lower controller stable binding requires maintenance: {code}");
                     hardware.deactivate_bound_adapter(message.clone())?;
@@ -532,6 +569,23 @@ async fn run_device_binding_watch(
             ) {
                 Ok(port) => {
                     if current_port.as_deref() != Some(port.as_str()) && !active_sale {
+                        let _binding_lease =
+                            match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state)
+                                .await
+                            {
+                                Ok(lease) => lease,
+                                Err(error) => {
+                                    record_binding_watch_retry(
+                                        &status_cache,
+                                        "SCANNER_SALE_GATE_RETRY",
+                                        error,
+                                        false,
+                                        true,
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                            };
                         if let Err(error) = scanner_runtime.reconfigure_from_config(&resolved).await
                         {
                             *status_cache.scanner.write().await =
@@ -552,6 +606,23 @@ async fn run_device_binding_watch(
                     }
                 }
                 Err(code) => {
+                    let _binding_lease =
+                        match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state)
+                            .await
+                        {
+                            Ok(lease) => lease,
+                            Err(error) => {
+                                record_binding_watch_retry(
+                                    &status_cache,
+                                    "SCANNER_SALE_GATE_RETRY",
+                                    error,
+                                    false,
+                                    true,
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
                     let stop_error = scanner_runtime.stop().await.err();
                     *status_cache.scanner.write().await =
                         vending_core::scanner::ScannerHealthSnapshot {
@@ -572,6 +643,24 @@ async fn run_device_binding_watch(
                 }
             }
         }
+    }
+}
+
+async fn acquire_binding_reconfiguration_lease(
+    gate: &Arc<ipc::SaleBindingOperationGate>,
+    state: &LocalStateStore,
+) -> Result<ipc::SaleBindingOperationLease, String> {
+    let lease = gate.try_acquire_reconfigure().map_err(|_| {
+        "sale start is in progress; device binding reconfiguration deferred".to_string()
+    })?;
+    match state.current_transaction_snapshot().await {
+        Ok(Some(snapshot)) if is_active_transaction(&snapshot) => {
+            Err("active sale detected; device binding reconfiguration deferred".to_string())
+        }
+        Ok(_) => Ok(lease),
+        Err(error) => Err(format!(
+            "cannot prove sale state; device binding reconfiguration deferred: {error}"
+        )),
     }
 }
 
@@ -1224,6 +1313,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn binding_watcher_rejects_reconfiguration_when_sale_starts_during_discovery() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let gate = Arc::new(ipc::SaleBindingOperationGate::default());
+        let discovery_started = Arc::new(tokio::sync::Notify::new());
+        let discovery_release = Arc::new(tokio::sync::Notify::new());
+        let watcher_gate = gate.clone();
+        let watcher_state = state.clone();
+        let watcher_started = discovery_started.clone();
+        let watcher_release = discovery_release.clone();
+        let watcher = tokio::spawn(async move {
+            watcher_started.notify_one();
+            watcher_release.notified().await;
+            acquire_binding_reconfiguration_lease(&watcher_gate, &watcher_state).await
+        });
+        discovery_started.notified().await;
+        let sale_start = gate
+            .try_acquire_sale_start()
+            .expect("sale starts while discovery waits");
+        discovery_release.notify_one();
+
+        let error = match watcher.await.expect("watcher join") {
+            Ok(_) => panic!("watcher must defer to sale start"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("sale start is in progress"));
+        drop(sale_start);
+    }
+
+    #[tokio::test]
     #[cfg(unix)]
     async fn device_binding_watch_reports_transient_failure_then_converges_after_retry() {
         use crate::secret::InMemorySecretStore;
@@ -1292,6 +1414,7 @@ mod tests {
             HardwareSupervisor::from_config(&public).expect("hardware"),
             scanner_runtime.clone(),
             status_cache.clone(),
+            Arc::new(ipc::SaleBindingOperationGate::default()),
             data_dir,
             shutdown.clone(),
         ));

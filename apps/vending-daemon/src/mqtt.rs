@@ -1489,6 +1489,7 @@ mod tests {
             device_binding_test_evidence: Arc::new(
                 crate::ipc::DeviceBindingTestEvidenceStore::default(),
             ),
+            sale_binding_gate: Arc::new(crate::ipc::SaleBindingOperationGate::default()),
             disk_pressure_probe: Arc::new(FixedDiskPressureProbe),
             network_adapter: crate::network::adapter_from_env(),
             ui: crate::ipc::UiRuntimeServices {

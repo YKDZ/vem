@@ -565,6 +565,8 @@ const deviceBindingMaintenance = reactive({
 });
 
 async function refreshDeviceBindings(): Promise<void> {
+  delete deviceBindingMaintenance.tested.lower_controller;
+  delete deviceBindingMaintenance.tested.scanner;
   try {
     deviceBindingMaintenance.snapshot = await daemonClient.getDeviceBindings();
   } catch (error) {
@@ -1594,10 +1596,26 @@ async function submitStockMovement(): Promise<void> {
           <p v-if="!role.ready" class="mt-2 text-sm text-amber-100">
             {{ operatorMessageLabel(role.message) }}
           </p>
-          <div class="mt-3 grid gap-2">
+          <div
+            v-if="role.ambiguous"
+            class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200/20 bg-amber-500/10 p-3"
+          >
+            <p class="text-sm font-semibold text-amber-100">
+              检测到重复设备。请拔除重复设备后刷新，再进行测试和绑定。
+            </p>
+            <button
+              class="kiosk-touch-target rounded-xl border border-amber-200/30 px-3 py-2 font-bold text-amber-100 disabled:opacity-40"
+              type="button"
+              :disabled="deviceBindingMaintenance.loading"
+              @click="refreshDeviceBindings"
+            >
+              刷新设备
+            </button>
+          </div>
+          <div v-else class="mt-3 grid gap-2">
             <div
-              v-for="candidate in role.candidates"
-              :key="candidate.identity.identityKey"
+              v-for="(candidate, candidateIndex) in role.candidates"
+              :key="`${candidate.identity.identityKey}:${candidate.currentPort}:${candidateIndex}`"
               class="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 p-3"
             >
               <div>
@@ -1643,16 +1661,16 @@ async function submitStockMovement(): Promise<void> {
                 </button>
               </div>
             </div>
-            <p
-              v-for="diagnostic in role.discoveryDiagnostics"
-              :key="`${diagnostic.currentPort}:${diagnostic.code}`"
-              class="rounded-2xl border border-amber-200/20 p-3 text-sm text-amber-100"
-            >
-              {{ diagnostic.friendlyName ?? "串口设备" }} ·
-              {{ diagnostic.currentPort }}：
-              {{ operatorMessageLabel(diagnostic.message) }}
-            </p>
           </div>
+          <p
+            v-for="(diagnostic, diagnosticIndex) in role.discoveryDiagnostics"
+            :key="`${diagnostic.currentPort}:${diagnostic.code}:${diagnosticIndex}`"
+            class="mt-2 rounded-2xl border border-amber-200/20 p-3 text-sm text-amber-100"
+          >
+            {{ diagnostic.friendlyName ?? "串口设备" }} ·
+            {{ diagnostic.currentPort }}：
+            {{ operatorMessageLabel(diagnostic.message) }}
+          </p>
           <details
             v-if="role.binding || role.legacyPortHint"
             class="mt-3 text-sm text-slate-300"
