@@ -1327,7 +1327,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         };
       }
 
-      if (command.status === "succeeded" || command.status === "failed") {
+      if (command.status === "succeeded") {
         await this.insertDispenseResultInboxEvent(tx, {
           machineId: machine.id,
           payload,
@@ -1335,6 +1335,15 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           messageId,
         });
         return null;
+      }
+      if (command.status === "failed") {
+        await this.insertDispenseResultInboxEvent(tx, {
+          machineId: machine.id,
+          payload,
+          topic,
+          messageId,
+        });
+        return { kind: "refund_recovery" as const };
       }
 
       await this.insertDispenseResultInboxEvent(tx, {
@@ -1407,6 +1416,19 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             slotSalesState: compensation.slotSalesState,
           },
         });
+      if (refundDecision.kind === "full") {
+        await this.refundsService.stageAutomaticFullRefund(tx, {
+          orderId: refundDecision.orderId,
+          metadata: refundDecision.metadata,
+        });
+      } else if (refundDecision.kind === "partial") {
+        await this.refundsService.stageAutomaticPartialRefund(tx, {
+          orderId: refundDecision.orderId,
+          orderItemIds: refundDecision.orderItemIds,
+          amountCents: refundDecision.amountCents,
+          metadata: refundDecision.metadata,
+        });
+      }
 
       await this.notificationsService.createDispenseFailedNotification(tx, {
         orderId: command.orderId,
@@ -1462,8 +1484,11 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       return;
     }
 
-    if (resultContext?.kind === "failure") {
-      await this.requestRefundForFailedLines(resultContext.refundDecision);
+    if (
+      resultContext?.kind === "failure" ||
+      resultContext?.kind === "refund_recovery"
+    ) {
+      await this.refundsService.dispatchPendingRefunds();
     }
   }
 
