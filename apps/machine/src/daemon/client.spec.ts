@@ -248,11 +248,15 @@ describe("DaemonApiClient", () => {
           { status: 201 },
         ),
       )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(
         new Response(JSON.stringify(healthFixture()), { status: 200 }),
       );
 
     await daemonClient.beginMaintenanceSession("2468");
+    await vi.waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    });
     await daemonClient.getHealth();
 
     expect(globalThis.fetch).toHaveBeenLastCalledWith(
@@ -267,7 +271,7 @@ describe("DaemonApiClient", () => {
     expect(daemonClient.currentMaintenanceSession).toBeNull();
   });
 
-  it("clears a route-scoped maintenance session at expiry without another IPC request", async () => {
+  it("revokes the original route-scoped session at expiry before clearing it", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2030-07-14T12:00:00.000Z"));
     try {
@@ -277,28 +281,89 @@ describe("DaemonApiClient", () => {
         source: "browser_env",
         mock: true,
       });
-      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            sessionId: "soon-expired-session",
-            expiresAt: "2030-07-14T12:00:01.000Z",
-            scopes: ["maintenance.mutate"],
-          }),
-          { status: 201 },
-        ),
-      );
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              sessionId: "soon-expired-session",
+              expiresAt: "2030-07-14T12:00:01.000Z",
+              scopes: ["maintenance.mutate"],
+            }),
+            { status: 201 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
       const invalidated = vi.fn();
       daemonClient.onMaintenanceSessionInvalidated(invalidated);
 
       await daemonClient.beginMaintenanceSession("2468");
       expect(daemonClient.handoffMaintenanceSessionToBringUp()).toBe(true);
-      vi.advanceTimersByTime(1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
 
+      expect(globalThis.fetch).toHaveBeenNthCalledWith(
+        2,
+        "http://127.0.0.1:7891/v1/maintenance/sessions/revoke",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "x-vem-maintenance-session": "soon-expired-session",
+          }),
+        }),
+      );
       expect(invalidated).toHaveBeenCalledOnce();
       expect(daemonClient.currentMaintenanceSession).toBeNull();
       expect(daemonClient.hasMaintenanceSessionForRoute("bring-up")).toBe(
         false,
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds an unreachable expiry revoke without letting the getter clear first", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-07-14T12:00:00.000Z"));
+    try {
+      vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+        baseUrl: "http://127.0.0.1:7891",
+        token: "daemon-token",
+        source: "browser_env",
+        mock: true,
+      });
+      let revokeSignal: AbortSignal | undefined;
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              sessionId: "unreachable-expiry-session",
+              expiresAt: "2030-07-14T12:00:01.000Z",
+              scopes: ["maintenance.mutate"],
+            }),
+            { status: 201 },
+          ),
+        )
+        .mockImplementationOnce((_input, init) => {
+          revokeSignal = init?.signal ?? undefined;
+          return new Promise<Response>((_resolve, reject) => {
+            revokeSignal?.addEventListener("abort", () => {
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          });
+        });
+      const invalidated = vi.fn();
+      daemonClient.onMaintenanceSessionInvalidated(invalidated);
+
+      await daemonClient.beginMaintenanceSession("2468");
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(daemonClient.currentMaintenanceSession).toBeNull();
+      expect(invalidated).not.toHaveBeenCalled();
+      expect(revokeSignal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(revokeSignal?.aborted).toBe(true);
+      expect(invalidated).toHaveBeenCalledOnce();
+      expect(daemonClient.currentMaintenanceSession).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -336,6 +401,66 @@ describe("DaemonApiClient", () => {
     await daemonClient.beginMaintenanceSession("2468");
     await expect(daemonClient.getHealth()).rejects.toThrow("HTTP 403");
 
+    expect(daemonClient.currentMaintenanceSession).toBeNull();
+  });
+
+  it("reads payment environment only with a live maintenance bearer and clears it on 403", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "diagnostic-session",
+            expiresAt: "2030-01-01T00:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            environment: "sandbox",
+            readiness: "ready",
+            errorCategory: "none",
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: "protected_maintenance_authorization_denied",
+          }),
+          { status: 403 },
+        ),
+      );
+
+    await daemonClient.beginMaintenanceSession("2468");
+    await expect(
+      daemonClient.getPaymentEnvironmentDiagnostic(),
+    ).resolves.toEqual({
+      environment: "sandbox",
+      readiness: "ready",
+      errorCategory: "none",
+    });
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:7891/v1/maintenance/payment-environment",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-vem-maintenance-session": "diagnostic-session",
+        }),
+      }),
+    );
+    await expect(
+      daemonClient.getPaymentEnvironmentDiagnostic(),
+    ).rejects.toThrow("HTTP 403");
     expect(daemonClient.currentMaintenanceSession).toBeNull();
   });
 

@@ -469,6 +469,7 @@ describe("simulated hardware serial acceptance evidence", () => {
     assert.deepEqual(
       { status: evidence.status, asserted: evidence.asserted },
       { status: "passed", asserted: true },
+      JSON.stringify(evidence.diagnostics),
     );
     assert.deepEqual(evidence.diagnostics, []);
   });
@@ -569,6 +570,63 @@ describe("simulated hardware serial acceptance evidence", () => {
       assert.equal(evidence.asserted, false);
       assert.ok(
         evidence.diagnostics.some((diagnostic) => diagnostic.code === code),
+      );
+    });
+  }
+  for (const [name, mutate] of [
+    [
+      "missing repeated stop evidence",
+      (input) => {
+        delete input.serialConformance.reports.repeatedStop;
+      },
+    ],
+    [
+      "non-idempotent repeated stop",
+      (input) => {
+        input.serialConformance.reports.repeatedStop.serialSession.simulatorCleanup.idempotencyVerified = false;
+      },
+    ],
+    [
+      "surviving simulator process",
+      (input) => {
+        input.serialConformance.reports.repeatedStop.serialSession.simulatorCleanup.survivingProcessCount = 1;
+      },
+    ],
+    [
+      "incomplete failure matrix",
+      (input) => {
+        input.serialConformance.failureMatrix.pop();
+      },
+    ],
+    [
+      "mismatched failure diagnostic",
+      (input) => {
+        input.serialConformance.failureMatrix[0].diagnosticCode =
+          "serial_device_disconnected";
+      },
+    ],
+    [
+      "missing mapping recovery",
+      (input) => {
+        const mappingFailure = input.serialConformance.failureMatrix.find(
+          (entry) => entry.failureMode === "swapped-roles",
+        );
+        delete mappingFailure.recovery;
+      },
+    ],
+  ]) {
+    it(`rejects runner-signed conformance tampered by ${name}`, () => {
+      const input = completedSerialSaleEvidence();
+      mutate(input);
+      const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+
+      assert.equal(evidence.status, "failed");
+      assert.equal(evidence.asserted, false);
+      assert.ok(
+        evidence.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === "serial_conformance_report_invalid",
+        ),
       );
     });
   }

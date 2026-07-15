@@ -402,7 +402,10 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(audio, /--active-kiosk-session-user/);
     assert.match(audio, /--active-kiosk-session-id/);
+    assert.match(audio, /--selected-audio-endpoint-id/);
+    assert.match(audio, /--daemon-calibration-response-out/);
     assert.match(verifyAudio, /windows-native-audio-evidence\.mjs/);
+    assert.match(verifyAudio, /--daemon-calibration-response/);
     assert.match(verifyAudio, /windows-native-audio-evidence\.json/);
     assert.match(cleanup, /if:\s+always\(\)/);
     assert.match(cleanup, /--operation cleanup/);

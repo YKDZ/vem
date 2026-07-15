@@ -1,7 +1,10 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -229,6 +232,8 @@ pub struct MachineAudioOutputBinding {
     #[serde(default)]
     pub friendly_name: Option<String>,
     pub confirmed_heard_at: String,
+    #[serde(default)]
+    pub confirmed_observation_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -924,6 +929,11 @@ fn normalize_machine_audio_output_binding(
     let Some(mut binding) = binding else {
         return Ok(None);
     };
+    if binding.confirmed_observation_revision.trim().is_empty() {
+        // Bindings written before daemon-owned observation evidence existed
+        // are not confirmed bindings and must be calibrated again.
+        return Ok(None);
+    }
     binding.endpoint_id =
         normalize_required_string(binding.endpoint_id, "machineAudioOutputBinding.endpointId")?;
     binding.friendly_name = normalize_optional_string(binding.friendly_name);
@@ -931,6 +941,27 @@ fn normalize_machine_audio_output_binding(
         &binding.confirmed_heard_at,
         "machineAudioOutputBinding.confirmedHeardAt invalid",
     )?;
+    binding.confirmed_observation_revision = normalize_required_string(
+        binding.confirmed_observation_revision,
+        "machineAudioOutputBinding.confirmedObservationRevision",
+    )?;
+    let revision_digest = binding
+        .confirmed_observation_revision
+        .strip_prefix("sha256:")
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            "machineAudioOutputBinding.confirmedObservationRevision must be a sha256 revision"
+                .to_string()
+        })?;
+    if revision_digest
+        .bytes()
+        .any(|byte| byte.is_ascii_uppercase())
+    {
+        return Err(
+            "machineAudioOutputBinding.confirmedObservationRevision must use lowercase hex"
+                .to_string(),
+        );
+    }
     Ok(Some(binding))
 }
 
@@ -1517,6 +1548,7 @@ pub struct ConfigStore {
     secrets: Arc<dyn SecretStore>,
     maintenance: Arc<crate::maintenance::MaintenanceEnrollment>,
     local_settings_mutation_lock: tokio::sync::Mutex<()>,
+    effective_config_generation: AtomicU64,
 }
 
 impl ConfigStore {
@@ -1719,6 +1751,7 @@ impl ConfigStore {
             secrets,
             maintenance,
             local_settings_mutation_lock: tokio::sync::Mutex::new(()),
+            effective_config_generation: AtomicU64::new(0),
         }
     }
 
@@ -2191,10 +2224,16 @@ impl ConfigStore {
             .clear_all()
             .await
             .map_err(|error| format!("clear decommissioned machine secrets failed: {error}"))?;
-        match fs::remove_file(self.provisioning_profile_cache_summary_path()).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("remove provisioning profile failed: {error}")),
+        {
+            let _mutation = self.local_settings_mutation_lock.lock().await;
+            match fs::remove_file(self.provisioning_profile_cache_summary_path()).await {
+                Ok(()) => {
+                    self.effective_config_generation
+                        .fetch_add(1, Ordering::AcqRel);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("remove provisioning profile failed: {error}")),
+            }
         }
         self.save_public_config(default_public_config()).await?;
         self.state
@@ -2340,6 +2379,17 @@ impl ConfigStore {
         Ok(public)
     }
 
+    pub async fn load_effective_public_config_snapshot(
+        &self,
+    ) -> Result<(MachinePublicConfig, u64), String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
+        let (public, _, _, _) = self.load_layered_runtime_config_parts().await?;
+        Ok((
+            public,
+            self.effective_config_generation.load(Ordering::Acquire),
+        ))
+    }
+
     async fn persist_snapshot(&self, public: &MachinePublicConfig) -> Result<(), String> {
         let secret_status = self.secrets.status().await?;
 
@@ -2403,18 +2453,19 @@ impl ConfigStore {
         config: MachinePublicConfig,
     ) -> Result<MachinePublicRuntimeConfig, String> {
         let normalized = normalize_public_config(config)?;
-        self.write_local_runtime_settings_from_public_config(&normalized)
+        let mutation = self.local_settings_mutation_lock.lock().await;
+        self.write_local_runtime_settings_from_public_config_unlocked(&normalized)
             .await?;
         self.write_public_config_file(&normalized).await?;
+        drop(mutation);
         self.persist_snapshot(&normalized).await?;
         self.public_runtime_config(normalized).await
     }
 
-    async fn write_local_runtime_settings_from_public_config(
+    async fn write_local_runtime_settings_from_public_config_unlocked(
         &self,
         public: &MachinePublicConfig,
     ) -> Result<(), String> {
-        let _mutation = self.local_settings_mutation_lock.lock().await;
         let mut settings = self
             .load_local_bring_up_settings()
             .await?
@@ -2460,6 +2511,7 @@ impl ConfigStore {
         &self,
         summary: &ProvisioningProfileCacheSummary,
     ) -> Result<(), String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
         let summary = normalize_provisioning_profile_cache_summary(summary.clone())?;
         let path = self.provisioning_profile_cache_summary_path();
         if let Some(parent) = path.parent() {
@@ -2472,6 +2524,8 @@ impl ConfigStore {
         fs::write(path, payload)
             .await
             .map_err(|error| format!("write provisioning profile cache failed: {error}"))?;
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -2619,6 +2673,8 @@ impl ConfigStore {
             let _ = fs::remove_file(&staging_path).await;
             return Err(error);
         }
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -2694,7 +2750,32 @@ impl ConfigStore {
         &self,
         request: MachineAudioSettingsUpdateRequest,
     ) -> Result<RuntimeConfigurationSummary, String> {
+        let mutation = self.local_settings_mutation_lock.lock().await;
+        self.save_machine_audio_settings_update_unlocked(request, mutation)
+            .await
+    }
+
+    pub async fn save_machine_audio_settings_update_if_generation(
+        &self,
+        request: MachineAudioSettingsUpdateRequest,
+        expected_generation: u64,
+    ) -> Result<RuntimeConfigurationSummary, String> {
         let _mutation = self.local_settings_mutation_lock.lock().await;
+        let current_generation = self.effective_config_generation.load(Ordering::Acquire);
+        if current_generation != expected_generation {
+            return Err(format!(
+                "effective configuration generation changed: expected {expected_generation}, current {current_generation}"
+            ));
+        }
+        self.save_machine_audio_settings_update_unlocked(request, _mutation)
+            .await
+    }
+
+    async fn save_machine_audio_settings_update_unlocked(
+        &self,
+        request: MachineAudioSettingsUpdateRequest,
+        mutation: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<RuntimeConfigurationSummary, String> {
         let mut settings = self
             .load_local_bring_up_settings()
             .await?
@@ -2704,7 +2785,7 @@ impl ConfigStore {
         settings.machine_audio_volume = Some(request.machine_audio_volume);
         self.write_local_bring_up_settings_unlocked(&settings)
             .await?;
-        drop(_mutation);
+        drop(mutation);
         self.load_runtime_configuration_summary().await
     }
 
@@ -5102,6 +5183,33 @@ mod tests {
         assert_eq!(saved["machineAudioVolume"], 0.35);
     }
 
+    #[test]
+    fn legacy_audio_output_binding_without_observation_evidence_requires_recalibration() {
+        let binding = MachineAudioOutputBinding {
+            endpoint_id: "wasapi:endpoint-1".to_string(),
+            friendly_name: Some("USB Speaker".to_string()),
+            confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+            confirmed_observation_revision: String::new(),
+        };
+
+        assert_eq!(
+            normalize_machine_audio_output_binding(Some(binding)).expect("legacy migration"),
+            None
+        );
+    }
+
+    #[test]
+    fn audio_output_binding_rejects_forged_observation_revision() {
+        let binding = MachineAudioOutputBinding {
+            endpoint_id: "wasapi:endpoint-1".to_string(),
+            friendly_name: Some("USB Speaker".to_string()),
+            confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+            confirmed_observation_revision: "ui-forged".to_string(),
+        };
+
+        assert!(normalize_machine_audio_output_binding(Some(binding)).is_err());
+    }
+
     #[tokio::test]
     async fn save_machine_audio_settings_update_persists_binding_cues_and_volume() {
         let temp = TempDir::new().expect("temp");
@@ -5119,6 +5227,7 @@ mod tests {
                 endpoint_id: "{0.0.0.00000000}.{field-speaker-1}".to_string(),
                 friendly_name: Some("现场喇叭".to_string()),
                 confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+                confirmed_observation_revision: format!("sha256:{}", "a".repeat(64)),
             },
             audio_cue_settings: AudioCueSettings {
                 enabled: true,
@@ -5171,6 +5280,10 @@ mod tests {
             saved["machineAudioOutputBinding"]["confirmedHeardAt"],
             "2026-07-15T10:00:00.000Z"
         );
+        assert_eq!(
+            saved["machineAudioOutputBinding"]["confirmedObservationRevision"],
+            format!("sha256:{}", "a".repeat(64))
+        );
         assert_eq!(saved["audioCueSettings"]["enabled"], true);
         assert_eq!(saved["audioCueSettings"]["categories"]["presence"], false);
         assert_eq!(saved["audioCueSettings"]["categories"]["transaction"], true);
@@ -5178,7 +5291,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_machine_audio_settings_update_preserves_concurrent_network_and_device_changes() {
+    async fn machine_audio_settings_rmw_preserves_concurrent_network_and_scanner_updates() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
@@ -5187,82 +5300,146 @@ mod tests {
         let store = Arc::new(ConfigStore::new(
             data_dir,
             state,
-            Arc::new(InMemorySecretStore::default()),
+            std::sync::Arc::new(InMemorySecretStore::default()),
         ));
-        let audio_request = MachineAudioSettingsUpdateRequest {
-            machine_audio_output_binding: MachineAudioOutputBinding {
-                endpoint_id: "{0.0.0.00000000}.{field-speaker-2}".to_string(),
-                friendly_name: Some("现场喇叭".to_string()),
-                confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
-            },
-            audio_cue_settings: AudioCueSettings {
-                enabled: true,
-                categories: AudioCueCategorySettings {
-                    presence: true,
-                    transaction: false,
-                },
-            },
-            machine_audio_volume: 0.42,
-        };
-
-        // Queue a network update before the audio save. The audio path must not
-        // read the old file before it owns the same mutation lock.
-        let held_lock = store.local_settings_mutation_lock.lock().await;
-        let network_store = Arc::clone(&store);
-        let network = tokio::spawn(async move {
-            network_store
-                .save_local_bring_up_network_profile("field-network-updated")
-                .await
-        });
-        tokio::task::yield_now().await;
-        let device_store = Arc::clone(&store);
-        let device = tokio::spawn(async move {
-            device_store
-                .save_local_device_binding(
-                    crate::device_binding::LocalDeviceRole::Scanner,
-                    local_binding_fixture("container:scanner"),
-                )
-                .await
-        });
-        tokio::task::yield_now().await;
-        let audio_store = Arc::clone(&store);
-        let audio = tokio::spawn(async move {
+        let mutation = store.local_settings_mutation_lock.lock().await;
+        let audio_store = store.clone();
+        let audio_update = tokio::spawn(async move {
             audio_store
-                .save_machine_audio_settings_update(audio_request)
+                .save_machine_audio_settings_update(MachineAudioSettingsUpdateRequest {
+                    machine_audio_output_binding: MachineAudioOutputBinding {
+                        endpoint_id: "wasapi:endpoint-1".to_string(),
+                        friendly_name: Some("Near-field speaker".to_string()),
+                        confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+                        confirmed_observation_revision: format!("sha256:{}", "a".repeat(64)),
+                    },
+                    audio_cue_settings: AudioCueSettings::default(),
+                    machine_audio_volume: 0.42,
+                })
                 .await
         });
-        tokio::task::yield_now().await;
-        drop(held_lock);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let network_profile = "field-network-profile".to_string();
+        let scanner_binding = crate::device_binding::LocalSerialRoleBinding {
+            identity: crate::device_binding::StableSerialDeviceIdentity {
+                identity_key: "container:11111111-2222-3333-4444-555555555555".to_string(),
+                instance_id: Some("USB\\SCANNER-1".to_string()),
+                container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                serial_number: Some("SCANNER-1".to_string()),
+            },
+            confirmed_at: "2026-07-15T10:00:00.000Z".to_string(),
+            confirmed_by: "operator-console".to_string(),
+            test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
+        };
+        store
+            .write_local_bring_up_settings_unlocked(&LocalBringUpSettings {
+                network_profile: Some(network_profile.clone()),
+                scanner_binding: Some(scanner_binding.clone()),
+                ..LocalBringUpSettings::default()
+            })
+            .await
+            .expect("write concurrent network settings");
+        drop(mutation);
+        audio_update
+            .await
+            .expect("audio task")
+            .expect("save audio settings");
 
-        network.await.expect("network task").expect("network save");
-        device.await.expect("device task").expect("device save");
-        audio.await.expect("audio task").expect("audio save");
-
-        let settings = store
+        let saved = store
             .load_local_bring_up_settings()
             .await
-            .expect("settings")
-            .expect("persisted settings");
+            .expect("load settings")
+            .expect("settings exist");
         assert_eq!(
-            settings.network_profile.as_deref(),
-            Some("field-network-updated")
+            saved.network_profile.as_deref(),
+            Some(network_profile.as_str())
         );
-        assert_eq!(
-            settings
-                .scanner_binding
-                .expect("scanner binding preserved")
-                .identity
-                .identity_key,
-            "container:scanner"
+        assert_eq!(saved.scanner_binding, Some(scanner_binding));
+        assert_eq!(saved.machine_audio_volume, Some(0.42));
+    }
+
+    #[tokio::test]
+    async fn machine_audio_settings_cas_rejects_network_aba_and_device_writer_races() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir,
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
         );
-        assert_eq!(
-            settings
-                .machine_audio_output_binding
-                .expect("audio binding preserved")
-                .endpoint_id,
-            "{0.0.0.00000000}.{field-speaker-2}"
-        );
-        assert_eq!(settings.machine_audio_volume, Some(0.42));
+        store
+            .save_local_bring_up_network_profile("network-r1")
+            .await
+            .expect("seed network r1");
+        let (_, before_aba) = store
+            .load_effective_public_config_snapshot()
+            .await
+            .expect("snapshot before ABA");
+        store
+            .save_local_bring_up_network_profile("network-r2")
+            .await
+            .expect("write network r2");
+        store
+            .save_local_bring_up_network_profile("network-r1")
+            .await
+            .expect("restore network r1");
+        let audio_request = || MachineAudioSettingsUpdateRequest {
+            machine_audio_output_binding: MachineAudioOutputBinding {
+                endpoint_id: "wasapi:endpoint-1".to_string(),
+                friendly_name: Some("Near-field speaker".to_string()),
+                confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+                confirmed_observation_revision: format!("sha256:{}", "a".repeat(64)),
+            },
+            audio_cue_settings: AudioCueSettings::default(),
+            machine_audio_volume: 0.42,
+        };
+        let aba = store
+            .save_machine_audio_settings_update_if_generation(audio_request(), before_aba)
+            .await
+            .expect_err("R1-R2-R1 must advance generation");
+        assert!(aba.contains("generation changed"));
+
+        let (_, before_device_write) = store
+            .load_effective_public_config_snapshot()
+            .await
+            .expect("snapshot before device write");
+        let scanner_binding = crate::device_binding::LocalSerialRoleBinding {
+            identity: crate::device_binding::StableSerialDeviceIdentity {
+                identity_key: "container:11111111-2222-3333-4444-555555555555".to_string(),
+                instance_id: Some("USB\\SCANNER-1".to_string()),
+                container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                serial_number: Some("SCANNER-1".to_string()),
+            },
+            confirmed_at: "2026-07-15T10:00:00.000Z".to_string(),
+            confirmed_by: "operator-console".to_string(),
+            test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
+        };
+        store
+            .save_local_device_binding(
+                crate::device_binding::LocalDeviceRole::Scanner,
+                scanner_binding.clone(),
+            )
+            .await
+            .expect("save concurrent scanner binding");
+        let device_race = store
+            .save_machine_audio_settings_update_if_generation(audio_request(), before_device_write)
+            .await
+            .expect_err("device writer must invalidate audio CAS");
+        assert!(device_race.contains("generation changed"));
+
+        let saved = store
+            .load_local_bring_up_settings()
+            .await
+            .expect("load settings")
+            .expect("settings exist");
+        assert_eq!(saved.network_profile.as_deref(), Some("network-r1"));
+        assert_eq!(saved.scanner_binding, Some(scanner_binding));
+        assert!(saved.machine_audio_output_binding.is_none());
     }
 
     #[test]

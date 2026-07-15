@@ -52,6 +52,7 @@ function makeCompleteAlipayRow(overrides: Record<string, unknown> = {}) {
     merchantNo: "ALI-MERCHANT-001",
     appId: "ALI-APP-001",
     publicConfigJson: {
+      mode: "production",
       gatewayUrl: "https://openapi.alipay.com/gateway.do",
       keyType: "PKCS8",
     },
@@ -125,7 +126,11 @@ function makeService(rows: unknown[]) {
 
 function makeListOptionsService(
   rowsQueue: unknown[],
-  overrides: { paymentMockEnabled?: boolean; policyRows?: unknown[] } = {},
+  overrides: {
+    paymentMockEnabled?: boolean;
+    policyRows?: unknown[];
+    nodeEnv?: "development" | "test" | "production";
+  } = {},
 ) {
   const queue = [...rowsQueue];
   const policyRows = overrides.policyRows ?? [];
@@ -146,6 +151,7 @@ function makeListOptionsService(
   const appConfig = makeAppConfig();
   return new PaymentProviderConfigService(mockDb as never, makeSecrets(), {
     paymentMockEnabled: overrides.paymentMockEnabled ?? false,
+    nodeEnv: overrides.nodeEnv ?? "test",
     buildPaymentNotifyUrl: appConfig.buildPaymentNotifyUrl,
   } as never);
 }
@@ -556,6 +562,200 @@ describe("PaymentProviderConfigService", () => {
   });
 
   describe("listMachinePaymentOptionsForMachine", () => {
+    it("keeps sandbox and production customer copy identical and uses the real provider", async () => {
+      const sandbox = makeListOptionsService(
+        [
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                mode: "sandbox",
+                gatewayUrl:
+                  "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+                keyType: "PKCS8",
+                notifyUrl:
+                  "https://platform.example/api/payments/webhooks/alipay",
+              },
+            }),
+          ],
+          [],
+        ],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+      const production = makeListOptionsService(
+        [
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                mode: "production",
+                gatewayUrl: "https://openapi.alipay.com/gateway.do",
+                keyType: "PKCS8",
+                notifyUrl:
+                  "https://platform.example/api/payments/webhooks/alipay",
+              },
+            }),
+          ],
+          [],
+        ],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+
+      const sandboxResult =
+        await sandbox.listMachinePaymentOptionsForMachine("machine-1");
+      const productionResult =
+        await production.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(sandboxResult).not.toHaveProperty("providerEnvironment");
+      expect(sandboxResult.options).toEqual(productionResult.options);
+      expect(JSON.stringify(sandboxResult.options)).not.toMatch(
+        /sandbox|沙箱/i,
+      );
+      expect(sandboxResult.options[0]?.providerCode).toBe("alipay");
+    });
+
+    it("keeps sandbox candidates when the Docker API runtime uses NODE_ENV=production", async () => {
+      const service = makeListOptionsService(
+        [
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                mode: "sandbox",
+                gatewayUrl:
+                  "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+                keyType: "PKCS8",
+                notifyUrl:
+                  "https://platform.example/api/payments/webhooks/alipay",
+              },
+            }),
+          ],
+          [],
+        ],
+        {
+          nodeEnv: "production",
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+
+      await expect(
+        service.listMachinePaymentOptionsForMachine("machine-1"),
+      ).resolves.toMatchObject({
+        options: [
+          expect.objectContaining({
+            optionKey: "qr_code:alipay",
+            providerCode: "alipay",
+          }),
+        ],
+        defaultOptionKey: "qr_code:alipay",
+        defaultProviderCode: "alipay",
+      });
+    });
+
+    it("reports the provider environment through a separate diagnostic projection", async () => {
+      const service = makeListOptionsService(
+        [
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                mode: "sandbox",
+                gatewayUrl:
+                  "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+                keyType: "PKCS8",
+                notifyUrl:
+                  "https://platform.example/api/payments/webhooks/alipay",
+              },
+            }),
+          ],
+          [],
+        ],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+
+      await expect(
+        service.getPaymentProviderEnvironmentDiagnosticForMachine("machine-1"),
+      ).resolves.toEqual({
+        environment: "sandbox",
+        readiness: "ready",
+        errorCategory: "none",
+      });
+    });
+
+    it("fails closed when stored Alipay mode and gateway do not define one effective environment", async () => {
+      const service = makeListOptionsService(
+        [
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                mode: "production",
+                gatewayUrl:
+                  "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+                keyType: "PKCS8",
+                notifyUrl:
+                  "https://platform.example/api/payments/webhooks/alipay",
+              },
+            }),
+          ],
+          [],
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                mode: "production",
+                gatewayUrl:
+                  "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+                keyType: "PKCS8",
+                notifyUrl:
+                  "https://platform.example/api/payments/webhooks/alipay",
+              },
+            }),
+          ],
+          [],
+        ],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+
+      await expect(
+        service.listMachinePaymentOptionsForMachine("machine-1"),
+      ).resolves.toMatchObject({ options: [] });
+      await expect(
+        service.getPaymentProviderEnvironmentDiagnosticForMachine("machine-1"),
+      ).resolves.toEqual({
+        environment: "unavailable",
+        readiness: "blocked",
+        errorCategory: "credentials_incomplete",
+      });
+    });
+
     it("projects ready machine options from global channel policy order and default", async () => {
       const service = makeListOptionsService(
         [[makeCompleteAlipayRow()], [makeCompleteWechatRow()]],
@@ -623,6 +823,7 @@ describe("PaymentProviderConfigService", () => {
           [
             makeCompleteAlipayRow({
               publicConfigJson: {
+                mode: "production",
                 gatewayUrl: "https://openapi.alipay.com/gateway.do",
                 keyType: "PKCS8",
                 paymentCodeEnabled: true,
@@ -656,6 +857,7 @@ describe("PaymentProviderConfigService", () => {
           [
             makeCompleteAlipayRow({
               publicConfigJson: {
+                mode: "production",
                 gatewayUrl: "https://openapi.alipay.com/gateway.do",
                 keyType: "PKCS8",
                 paymentCodeEnabled: false,
@@ -859,6 +1061,7 @@ describe("PaymentProviderConfigService", () => {
         providerCode: "wechat_pay",
         method: "payment_code",
         ready: false,
+        environment: "production",
         missingCredentialKeys: [
           "apiV2Key",
           "merchantApiCertPem",
@@ -870,6 +1073,7 @@ describe("PaymentProviderConfigService", () => {
         providerCode: "wechat_pay",
         method: "qr_code",
         ready: true,
+        environment: "production",
         missingCredentialKeys: [],
       });
     });

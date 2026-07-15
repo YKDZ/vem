@@ -2,6 +2,7 @@ import type {
   PaymentChannelKey,
   MachinePaymentOption,
   MachinePaymentOptionsResponse,
+  PaymentProviderEnvironmentDiagnostic,
 } from "@vem/shared";
 
 import {
@@ -22,6 +23,7 @@ import {
   type DrizzleClient,
 } from "@vem/db";
 import {
+  alipayEffectiveEnvironmentSchema,
   supportedPaymentChannelKeys,
   type MachinePaymentProviderCode,
   type PaymentChannelPolicyResponse,
@@ -71,6 +73,7 @@ export type PaymentChannelProviderReadiness = {
   method: "qr_code" | "payment_code";
   ready: boolean;
   missingCredentialKeys: string[];
+  environment: "sandbox" | "production" | null;
 };
 
 type PaymentChannelPolicyRow = {
@@ -443,7 +446,7 @@ export class PaymentProviderConfigService {
 
     // Add mock option if available (dev/test environments)
     const mockAvailable = await this.isMockOptionAvailable();
-    if (mockAvailable) {
+    if (mockAvailable && this.appConfig.nodeEnv !== "production") {
       options.push({
         optionKey: "payment_code:mock",
         providerCode: "mock",
@@ -474,7 +477,6 @@ export class PaymentProviderConfigService {
     const defaultProviderCode =
       options.find((option) => option.optionKey === defaultOptionKey)
         ?.providerCode ?? null;
-
     return {
       options: options.map((option) => ({
         ...option,
@@ -483,6 +485,53 @@ export class PaymentProviderConfigService {
       defaultOptionKey,
       defaultProviderCode,
       serverTime: new Date().toISOString(),
+    };
+  }
+
+  async getPaymentProviderEnvironmentDiagnosticForMachine(
+    machineId: string,
+  ): Promise<PaymentProviderEnvironmentDiagnostic> {
+    const policy = await this.getPaymentChannelPolicy();
+    const readiness =
+      await this.listPaymentChannelProviderReadinessForMachine(machineId);
+    const readinessByChannel = new Map(
+      readiness.map((item) => [item.channelKey, item]),
+    );
+    const enabledReadiness = policy.channels
+      .filter((channel) => channel.enabled)
+      .flatMap((channel) => {
+        const item = readinessByChannel.get(channel.channelKey);
+        return item ? [item] : [];
+      });
+    const configuredEnvironments = [
+      ...new Set(
+        enabledReadiness.flatMap((item) =>
+          item.environment === null ? [] : [item.environment],
+        ),
+      ),
+    ];
+    const environment =
+      configuredEnvironments.length === 0
+        ? "unavailable"
+        : configuredEnvironments.length === 1
+          ? (configuredEnvironments[0] ?? "unavailable")
+          : "mixed";
+    const blockedReadiness = enabledReadiness.filter((item) => !item.ready);
+    const errorCategory = policy.channels.every((channel) => !channel.enabled)
+      ? "no_enabled_channel"
+      : environment === "mixed"
+        ? "mixed_environment"
+        : blockedReadiness.length === 0 && enabledReadiness.length > 0
+          ? "none"
+          : blockedReadiness.every(
+                (item) => item.missingCredentialKeys[0] === "providerConfig",
+              )
+            ? "provider_unconfigured"
+            : "credentials_incomplete";
+    return {
+      environment,
+      readiness: errorCategory === "none" ? "ready" : "blocked",
+      errorCategory,
     };
   }
 
@@ -616,6 +665,12 @@ export class PaymentProviderConfigService {
         method: "qr_code",
         ready: config !== null && missingQrCredentialKeys.length === 0,
         missingCredentialKeys: missingQrCredentialKeys,
+        environment: config
+          ? this.paymentProviderEnvironment(
+              providerCode,
+              config.publicConfigJson,
+            )
+          : null,
       });
 
       const missingPaymentCodeCredentialKeys = config
@@ -627,6 +682,12 @@ export class PaymentProviderConfigService {
         method: "payment_code",
         ready: config !== null && missingPaymentCodeCredentialKeys.length === 0,
         missingCredentialKeys: missingPaymentCodeCredentialKeys,
+        environment: config
+          ? this.paymentProviderEnvironment(
+              providerCode,
+              config.publicConfigJson,
+            )
+          : null,
       });
     }
     return readiness;
@@ -661,6 +722,12 @@ export class PaymentProviderConfigService {
     if (config.providerCode === "alipay") {
       requirePublicString("gatewayUrl");
       requirePublicString("keyType");
+      if (
+        this.paymentProviderEnvironment("alipay", config.publicConfigJson) ===
+        null
+      ) {
+        missing.push("effectiveProviderEnvironment");
+      }
       requireSensitiveString("privateKeyPem");
       requireSensitiveString("appCertPem");
       requireSensitiveString("alipayPublicCertPem");
@@ -711,6 +778,15 @@ export class PaymentProviderConfigService {
 
   private hasNonBlankString(value: unknown): value is string {
     return typeof value === "string" && value.trim().length > 0;
+  }
+
+  private paymentProviderEnvironment(
+    providerCode: "alipay" | "wechat_pay",
+    publicConfigJson: Record<string, unknown>,
+  ): "sandbox" | "production" | null {
+    if (providerCode === "wechat_pay") return "production";
+    const result = alipayEffectiveEnvironmentSchema.safeParse(publicConfigJson);
+    return result.success ? result.data.mode : null;
   }
 
   async listProductionPilotPaymentEvidenceForMachine(

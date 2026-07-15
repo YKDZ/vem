@@ -81,6 +81,911 @@ function Normalize-Sha256 {
   return $normalized
 }
 
+function Assert-NoPlatformPaymentSecretBytes {
+  param(
+    [byte[]]$Bytes,
+    [string]$Label
+  )
+
+  $maxInputBytes = 256MB
+  $maxExpandedBytes = 16MB
+  if ($Bytes.Length -gt $maxInputBytes) {
+    throw "artifact exceeds bounded platform private-key scan budget: $Label"
+  }
+  $scan = {
+    param([byte[]]$Bytes, [string]$Label, [int]$Depth, [hashtable]$State)
+
+    if ($Depth -gt 3 -or $Bytes.Length -gt $maxInputBytes) {
+      throw "artifact exceeds bounded platform private-key scan budget: $Label"
+    }
+    if ($Depth -gt 0) {
+      $State.DecodedBytes = [long]$State.DecodedBytes + $Bytes.Length
+      if ($State.DecodedBytes -gt $maxExpandedBytes) {
+        throw "artifact exceeds bounded platform private-key scan budget: $Label"
+      }
+    }
+    $texts = @(
+      [Text.Encoding]::UTF8.GetString($Bytes),
+      [Text.Encoding]::Unicode.GetString($Bytes)
+    )
+    foreach ($text in $texts) {
+      if ($text -match '(?im)(?:^|[,\x7b;\r\n])\s*["'']?(?:privateKeyPem|appCertPem|alipayPublicCertPem|alipayRootCertPem|apiV[23]Key|merchantApiCertPem|merchantApiKeyPem|platformCertificatePem|platformPublicKeyPem|paymentProviderCredentials)["'']?\s*[:=]') {
+        throw "artifact contains provider credential field: $Label"
+      }
+      if ($text -match 'BEGIN\s+(?:(?:RSA|EC)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY') {
+        throw "artifact contains platform private-key material: $Label"
+      }
+    }
+
+    $readDerElement = {
+      param([int]$Offset, [int]$Limit)
+      if ($Offset + 2 -gt $Limit) { return $null }
+      $tag = $Bytes[$Offset]
+      if (($tag -band 0x1f) -eq 0x1f) { return $null }
+      $firstLength = $Bytes[$Offset + 1]
+      $headerBytes = 2
+      [long]$length = $firstLength
+      if (($firstLength -band 0x80) -ne 0) {
+        $lengthBytes = $firstLength -band 0x7f
+        if (
+          $lengthBytes -eq 0 -or
+          $lengthBytes -gt 4 -or
+          $Offset + 2 + $lengthBytes -gt $Limit -or
+          $Bytes[$Offset + 2] -eq 0
+        ) {
+          return $null
+        }
+        $length = 0
+        for ($index = 0; $index -lt $lengthBytes; $index += 1) {
+          $length = $length * 256 + $Bytes[$Offset + 2 + $index]
+        }
+        if ($length -lt 128) { return $null }
+        $headerBytes += $lengthBytes
+      }
+      [long]$contentStart = $Offset + $headerBytes
+      [long]$end = $contentStart + $length
+      if ($end -gt $Limit -or $end -gt [int]::MaxValue) { return $null }
+      return [pscustomobject]@{
+        tag = $tag
+        contentStart = [int]$contentStart
+        end = [int]$end
+        next = [int]$end
+      }
+    }
+    $isValidDerOid = {
+      param([int]$Start, [int]$End)
+      if ($Start -ge $End) { return $false }
+      $atSubidentifierStart = $true
+      for ($index = $Start; $index -lt $End; $index += 1) {
+        if ($atSubidentifierStart -and $Bytes[$index] -eq 0x80) { return $false }
+        $atSubidentifierStart = ($Bytes[$index] -band 0x80) -eq 0
+      }
+      return $atSubidentifierStart
+    }
+    $isEncryptedPrivateKeyInfo = {
+      $outer = & $readDerElement 0 $Bytes.Length
+      if ($null -eq $outer -or $outer.tag -ne 0x30 -or $outer.end -ne $Bytes.Length) {
+        return $false
+      }
+      $algorithm = & $readDerElement $outer.contentStart $outer.end
+      if ($null -eq $algorithm -or $algorithm.tag -ne 0x30) { return $false }
+      $oid = & $readDerElement $algorithm.contentStart $algorithm.end
+      if (
+        $null -eq $oid -or
+        $oid.tag -ne 0x06 -or
+        -not (& $isValidDerOid $oid.contentStart $oid.end)
+      ) {
+        return $false
+      }
+      if ($oid.next -lt $algorithm.end) {
+        $parameters = & $readDerElement $oid.next $algorithm.end
+        if ($null -eq $parameters -or $parameters.next -ne $algorithm.end) {
+          return $false
+        }
+      } elseif ($oid.next -ne $algorithm.end) {
+        return $false
+      }
+      $encryptedData = & $readDerElement $algorithm.next $outer.end
+      return (
+        $null -ne $encryptedData -and
+        $encryptedData.tag -eq 0x04 -and
+        $encryptedData.end -gt $encryptedData.contentStart -and
+        $encryptedData.next -eq $outer.end
+      )
+    }
+    if (& $isEncryptedPrivateKeyInfo) {
+      throw "artifact contains platform private-key material: $Label"
+    }
+
+    $privateBagOidValues = @(
+      '2A864886F70D010C0A0101',
+      '2A864886F70D010C0A0102'
+    )
+    $berState = @{
+      Visited = 0
+      InspectedBytes = 0L
+      IndefiniteSeen = $false
+      UnexpectedEoc = $false
+      BudgetExceeded = $false
+      RecognizedContainer = $false
+    }
+    $readBerHeader = {
+      param([int]$Offset, [int]$Limit)
+      if ($Offset + 2 -gt $Limit) { return $null }
+      $tag = $Bytes[$Offset]
+      if (($tag -band 0x1f) -eq 0x1f) { return $null }
+      $firstLength = $Bytes[$Offset + 1]
+      if ($firstLength -eq 0x80) {
+        return [pscustomobject]@{
+          tag = $tag
+          constructed = ($tag -band 0x20) -ne 0
+          indefinite = $true
+          headerBytes = 2
+          contentStart = $Offset + 2
+        }
+      }
+      $headerBytes = 2
+      [long]$length = $firstLength
+      if (($firstLength -band 0x80) -ne 0) {
+        $lengthBytes = $firstLength -band 0x7f
+        if (
+          $lengthBytes -eq 0 -or
+          $lengthBytes -gt 4 -or
+          $Offset + 2 + $lengthBytes -gt $Limit -or
+          $Bytes[$Offset + 2] -eq 0
+        ) {
+          return $null
+        }
+        $length = 0
+        for ($index = 0; $index -lt $lengthBytes; $index += 1) {
+          $length = $length * 256 + $Bytes[$Offset + 2 + $index]
+        }
+        if ($length -lt 128) { return $null }
+        $headerBytes += $lengthBytes
+      }
+      [long]$contentStart = $Offset + $headerBytes
+      [long]$end = $contentStart + $length
+      if ($end -gt $Limit -or $end -gt [int]::MaxValue) { return $null }
+      return [pscustomobject]@{
+        tag = $tag
+        constructed = ($tag -band 0x20) -ne 0
+        indefinite = $false
+        headerBytes = $headerBytes
+        contentStart = [int]$contentStart
+        end = [int]$end
+        next = [int]$end
+      }
+    }
+    $invalidBerResult = {
+      param([int]$Next)
+      return [pscustomobject]@{
+        valid = $false
+        found = $false
+        next = $Next
+        eoc = $false
+      }
+    }
+    $berRoot = & $readBerHeader 0 $Bytes.Length
+    $berState.RecognizedContainer =
+      $null -ne $berRoot -and
+      $berRoot.tag -eq 0x30 -and
+      $berRoot.constructed -and
+      ($berRoot.indefinite -or $berRoot.end -eq $Bytes.Length)
+    $walkStructuredBer = $null
+    $walkStructuredBer = {
+      param([int]$Start, [int]$End, [int]$BerDepth, [bool]$ExpectEoc = $false)
+      if ($BerDepth -gt 16) {
+        $berState.BudgetExceeded = $true
+        return & $invalidBerResult $Start
+      }
+      $offset = $Start
+      while ($offset -lt $End) {
+        if (
+          $offset + 2 -le $End -and
+          $Bytes[$offset] -eq 0 -and
+          $Bytes[$offset + 1] -eq 0
+        ) {
+          if ($ExpectEoc) {
+            return [pscustomobject]@{
+              valid = $true
+              found = $false
+              next = $offset + 2
+              eoc = $true
+            }
+          }
+          $berState.UnexpectedEoc = $true
+          return & $invalidBerResult $offset
+        }
+        $berState.Visited = [int]$berState.Visited + 1
+        if ($berState.Visited -gt 4096) {
+          $berState.BudgetExceeded = $true
+          return & $invalidBerResult $offset
+        }
+        $element = & $readBerHeader $offset $End
+        if ($null -eq $element) {
+          return & $invalidBerResult $offset
+        }
+        $berState.InspectedBytes =
+          [long]$berState.InspectedBytes + $element.headerBytes
+        if ($berState.InspectedBytes -gt $maxExpandedBytes) {
+          $berState.BudgetExceeded = $true
+          return & $invalidBerResult $offset
+        }
+        if ($element.indefinite) {
+          $berState.IndefiniteSeen = $true
+          if (-not $element.constructed) {
+            return & $invalidBerResult $offset
+          }
+          $nested =
+            & $walkStructuredBer $element.contentStart $End ($BerDepth + 1) $true
+          if ($nested.found) { return $nested }
+          if (-not $nested.valid -or -not $nested.eoc) {
+            return & $invalidBerResult $offset
+          }
+          $offset = $nested.next
+          continue
+        }
+        if (-not $element.constructed) {
+          $berState.InspectedBytes =
+            [long]$berState.InspectedBytes + $element.end - $element.contentStart
+          if ($berState.InspectedBytes -gt $maxExpandedBytes) {
+            $berState.BudgetExceeded = $true
+            return & $invalidBerResult $offset
+          }
+        }
+        if (
+          $element.tag -eq 0x06 -and
+          (& $isValidDerOid $element.contentStart $element.end)
+        ) {
+          [byte[]]$oidValue = $Bytes[$element.contentStart..($element.end - 1)]
+          if ($privateBagOidValues -contains [Convert]::ToHexString($oidValue)) {
+            return [pscustomobject]@{
+              valid = $true
+              found = $true
+              next = $element.next
+              eoc = $false
+            }
+          }
+        }
+        if ($element.constructed) {
+          $nested =
+            & $walkStructuredBer $element.contentStart $element.end ($BerDepth + 1)
+          if ($nested.found) { return $nested }
+          if (-not $nested.valid) { return $nested }
+        } elseif (
+          $element.tag -eq 0x04 -and
+          $element.end - $element.contentStart -ge 2 -and
+          $Bytes[$element.contentStart] -eq 0x30
+        ) {
+          $nested =
+            & $walkStructuredBer $element.contentStart $element.end ($BerDepth + 1)
+          if ($nested.found) { return $nested }
+        }
+        $offset = $element.next
+      }
+      if ($ExpectEoc) { return & $invalidBerResult $offset }
+      return [pscustomobject]@{
+        valid = $offset -eq $End
+        found = $false
+        next = $offset
+        eoc = $false
+      }
+    }
+    $privateBagScan = & $walkStructuredBer 0 $Bytes.Length 0
+    if ($berState.BudgetExceeded -and $berState.RecognizedContainer) {
+      throw "artifact exceeds bounded platform private-key scan budget: $Label"
+    }
+    if ($privateBagScan.found) {
+      throw "artifact contains platform private-key material: $Label"
+    }
+    if (
+      -not $privateBagScan.valid -and
+      $berState.RecognizedContainer -and
+      ($berState.IndefiniteSeen -or $berState.UnexpectedEoc)
+    ) {
+      throw "artifact contains an invalid BER structure: $Label"
+    }
+
+    $privateKeyDetected = $false
+    foreach ($kind in @('pkcs8', 'pkcs1')) {
+      $rsa = [Security.Cryptography.RSA]::Create()
+      try {
+        $read = 0
+        if ($kind -eq 'pkcs8') {
+          $rsa.ImportPkcs8PrivateKey($Bytes, [ref]$read)
+        } else {
+          $rsa.ImportRSAPrivateKey($Bytes, [ref]$read)
+        }
+        if ($read -eq $Bytes.Length) { $privateKeyDetected = $true }
+      } catch {
+        # Not this DER private-key encoding.
+      } finally {
+        $rsa.Dispose()
+      }
+    }
+    $ec = [Security.Cryptography.ECDsa]::Create()
+    try {
+      $read = 0
+      $ec.ImportECPrivateKey($Bytes, [ref]$read)
+      if ($read -eq $Bytes.Length) { $privateKeyDetected = $true }
+    } catch {
+      # Not an EC private-key encoding.
+    } finally {
+      $ec.Dispose()
+    }
+    if ($privateKeyDetected) {
+      throw "artifact contains platform private-key material: $Label"
+    }
+
+    $invalidArchive = { throw "artifact contains an invalid archive structure: $Label" }
+    $startsWithLocalHeader =
+      $Bytes.Length -ge 4 -and
+      [BitConverter]::ToUInt32($Bytes, 0) -eq 0x04034b50
+    $findPriorZipSignature = {
+      param([uint32]$Signature, [int]$Before)
+      $signatureSearchFrom = $Before
+      while ($signatureSearchFrom -ge 0) {
+        $signatureOffset =
+          [Array]::LastIndexOf($Bytes, [byte]0x50, $signatureSearchFrom)
+        if ($signatureOffset -lt 0) { return -1 }
+        if (
+          $signatureOffset + 4 -le $Bytes.Length -and
+          [BitConverter]::ToUInt32($Bytes, $signatureOffset) -eq $Signature
+        ) {
+          return $signatureOffset
+        }
+        $signatureSearchFrom = $signatureOffset - 1
+      }
+      return -1
+    }
+    $hasPlausibleLocalBefore = {
+      param([int]$CentralOffset)
+      $localSearchFrom = $CentralOffset - 1
+      for ($checked = 0; $checked -le 256; $checked += 1) {
+        $localOffset =
+          & $findPriorZipSignature 0x04034b50 $localSearchFrom
+        if ($localOffset -lt 0) { return $false }
+        $localSearchFrom = $localOffset - 1
+        if ($localOffset + 30 -gt $CentralOffset) { continue }
+        $localNameLength = [BitConverter]::ToUInt16($Bytes, $localOffset + 26)
+        $localExtraLength = [BitConverter]::ToUInt16($Bytes, $localOffset + 28)
+        if (
+          $localOffset + 30 + $localNameLength + $localExtraLength -le
+          $CentralOffset
+        ) {
+          return $true
+        }
+      }
+      return $true
+    }
+    $findPhysicalZipShape = {
+      param([int]$CentralPhysicalEnd)
+      $centralSearchFrom = $CentralPhysicalEnd - 1
+      $completeBest = $null
+      $partialBest = $null
+      $lastCentralStart = -1
+      for ($checked = 0; $checked -le 257; $checked += 1) {
+        $centralStart =
+          & $findPriorZipSignature 0x02014b50 $centralSearchFrom
+        if ($centralStart -lt 0) {
+          if ($null -ne $completeBest) { return $completeBest }
+          return $partialBest
+        }
+        $lastCentralStart = $centralStart
+        $centralSearchFrom = $centralStart - 1
+        if ($centralStart + 46 -gt $CentralPhysicalEnd) { continue }
+
+        $centralOffset = [long]$centralStart
+        $physicalEntries = 0
+        while (
+          $centralOffset + 46 -le $CentralPhysicalEnd -and
+          [BitConverter]::ToUInt32($Bytes, [int]$centralOffset) -eq 0x02014b50 -and
+          $physicalEntries -le 256
+        ) {
+          $nameLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 28)
+          $extraLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 30)
+          $commentLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 32)
+          $nextOffset =
+            $centralOffset + 46 + $nameLength + $extraLength + $commentLength
+          if ($nextOffset -gt $CentralPhysicalEnd) { break }
+          $centralOffset = $nextOffset
+          $physicalEntries += 1
+        }
+        if (
+          $physicalEntries -gt 0 -and
+          (& $hasPlausibleLocalBefore $centralStart)
+        ) {
+          $shape = [pscustomobject]@{
+            centralStart = $centralStart
+            centralEnd = $centralOffset
+            entryCount = $physicalEntries
+            ambiguous = $physicalEntries -gt 256
+          }
+          if ($centralOffset -eq $CentralPhysicalEnd) {
+            $completeBest = $shape
+          } else {
+            $partialBest = $shape
+          }
+        }
+      }
+      $best = if ($null -ne $completeBest) { $completeBest } else { $partialBest }
+      if ($null -ne $best) { $best.ambiguous = $true }
+      if ($null -ne $best) { return $best }
+      if (
+        $lastCentralStart -ge 0 -and
+        (& $hasPlausibleLocalBefore $lastCentralStart)
+      ) {
+        return [pscustomobject]@{
+          centralStart = $lastCentralStart
+          centralEnd = -1L
+          entryCount = -1
+          ambiguous = $true
+        }
+      }
+      return $null
+    }
+    $findRecognizableZipContainer = {
+      $searchFrom = $Bytes.Length - 4
+      while ($searchFrom -ge 0) {
+        $candidate = [Array]::LastIndexOf($Bytes, [byte]0x50, $searchFrom)
+        if ($candidate -lt 0) { return $null }
+        $searchFrom = $candidate - 1
+        if (
+          $candidate + 22 -gt $Bytes.Length -or
+          [BitConverter]::ToUInt32($Bytes, $candidate) -ne 0x06054b50
+        ) {
+          continue
+        }
+        $archiveEnd =
+          $candidate + 22 + [BitConverter]::ToUInt16($Bytes, $candidate + 20)
+        if ($archiveEnd -gt $Bytes.Length) { continue }
+        $detectedDisk = [BitConverter]::ToUInt16($Bytes, $candidate + 4)
+        $detectedCentralDisk = [BitConverter]::ToUInt16($Bytes, $candidate + 6)
+        $detectedDiskEntries = [BitConverter]::ToUInt16($Bytes, $candidate + 8)
+        $detectedEntries = [BitConverter]::ToUInt16($Bytes, $candidate + 10)
+        $detectedCentralSize = [BitConverter]::ToUInt32($Bytes, $candidate + 12)
+        $detectedCentralStart = [BitConverter]::ToUInt32($Bytes, $candidate + 16)
+        $detectedCentralPhysicalEnd = [long]$candidate
+        $shape =
+          & $findPhysicalZipShape ([int]$detectedCentralPhysicalEnd)
+        if ($null -eq $shape) { continue }
+
+        $finiteCentralMetadata =
+          $detectedCentralSize -ne 0xffffffff -and
+          $detectedCentralStart -ne 0xffffffff
+        $detectedPrefixBias = if ($finiteCentralMetadata) {
+          [long]$candidate - $detectedCentralSize - $detectedCentralStart
+        } else {
+          -1L
+        }
+        $metadataCentralAbsoluteStart = if ($detectedPrefixBias -ge 0) {
+          $detectedPrefixBias + $detectedCentralStart
+        } else {
+          -1L
+        }
+        return [pscustomobject]@{
+          archiveEnd = $archiveEnd
+          invalidMetadata =
+            $shape.ambiguous -or
+            $detectedDisk -ne 0 -or
+            $detectedCentralDisk -ne 0 -or
+            $detectedDiskEntries -ne $detectedEntries -or
+            $detectedEntries -eq 0xffff -or
+            -not $finiteCentralMetadata -or
+            $metadataCentralAbsoluteStart -ne $shape.centralStart -or
+            $shape.centralEnd -ne $detectedCentralPhysicalEnd -or
+            $shape.entryCount -ne $detectedEntries
+        }
+      }
+      return $null
+    }
+    $recognizableZipContainer = & $findRecognizableZipContainer
+    if (
+      $null -ne $recognizableZipContainer -and
+      (
+        $recognizableZipContainer.invalidMetadata -or
+        -not $startsWithLocalHeader -or
+        $recognizableZipContainer.archiveEnd -ne $Bytes.Length
+      )
+    ) {
+      & $invalidArchive
+    }
+
+    if ($startsWithLocalHeader) {
+      $assertExtraFields = {
+        param([long]$Start, [long]$Length)
+        $extraOffset = $Start
+        $extraEnd = $Start + $Length
+        while ($extraOffset -lt $extraEnd) {
+          if ($extraOffset + 4 -gt $extraEnd) { & $invalidArchive }
+          $extraId = [BitConverter]::ToUInt16($Bytes, [int]$extraOffset)
+          $extraSize = [BitConverter]::ToUInt16($Bytes, [int]$extraOffset + 2)
+          $extraOffset += 4
+          if ($extraId -eq 0x0001 -or $extraOffset + $extraSize -gt $extraEnd) {
+            & $invalidArchive
+          }
+          $extraOffset += $extraSize
+        }
+      }
+      $bytesEqual = {
+        param([long]$Left, [long]$Right, [long]$Length)
+        for ($byteIndex = 0; $byteIndex -lt $Length; $byteIndex += 1) {
+          if ($Bytes[$Left + $byteIndex] -ne $Bytes[$Right + $byteIndex]) { return $false }
+        }
+        return $true
+      }
+      $endOffset = -1
+      $minimumEndOffset = [Math]::Max(0, $Bytes.Length - 65557)
+      for ($offset = $Bytes.Length - 22; $offset -ge $minimumEndOffset; $offset -= 1) {
+        if (
+          [BitConverter]::ToUInt32($Bytes, $offset) -eq 0x06054b50 -and
+          $offset + 22 + [BitConverter]::ToUInt16($Bytes, $offset + 20) -eq $Bytes.Length
+        ) {
+          $endOffset = $offset
+          break
+        }
+      }
+      if ($endOffset -lt 0) { & $invalidArchive }
+
+      $diskNumber = [BitConverter]::ToUInt16($Bytes, $endOffset + 4)
+      $centralDisk = [BitConverter]::ToUInt16($Bytes, $endOffset + 6)
+      $diskEntryCount = [BitConverter]::ToUInt16($Bytes, $endOffset + 8)
+      $entryCount = [BitConverter]::ToUInt16($Bytes, $endOffset + 10)
+      $centralSize = [BitConverter]::ToUInt32($Bytes, $endOffset + 12)
+      $centralStart = [BitConverter]::ToUInt32($Bytes, $endOffset + 16)
+      if (
+        $diskNumber -ne 0 -or
+        $centralDisk -ne 0 -or
+        $diskEntryCount -ne $entryCount -or
+        $entryCount -eq 0xffff -or
+        $centralSize -eq 0xffffffff -or
+        $centralStart -eq 0xffffffff -or
+        [long]$centralStart + $centralSize -ne $endOffset
+      ) {
+        & $invalidArchive
+      }
+      if ($entryCount -gt 256) {
+        throw "artifact exceeds bounded platform private-key scan budget: $Label"
+      }
+      for ($commentOffset = $endOffset + 22; $commentOffset + 4 -le $Bytes.Length; $commentOffset += 1) {
+        if ([BitConverter]::ToUInt32($Bytes, $commentOffset) -eq 0x04034b50) {
+          & $invalidArchive
+        }
+      }
+
+      $centralEntries = @{}
+      $centralOffset = [long]$centralStart
+      for ($index = 0; $index -lt $entryCount; $index += 1) {
+        if (
+          $centralOffset + 46 -gt $endOffset -or
+          [BitConverter]::ToUInt32($Bytes, [int]$centralOffset) -ne 0x02014b50
+        ) {
+          & $invalidArchive
+        }
+        $flags = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 8)
+        $method = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 10)
+        $crc = [BitConverter]::ToUInt32($Bytes, [int]$centralOffset + 16)
+        $compressedSize = [BitConverter]::ToUInt32($Bytes, [int]$centralOffset + 20)
+        $uncompressedSize = [BitConverter]::ToUInt32($Bytes, [int]$centralOffset + 24)
+        $nameLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 28)
+        $extraLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 30)
+        $commentLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 32)
+        $entryDisk = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 34)
+        $localOffset = [BitConverter]::ToUInt32($Bytes, [int]$centralOffset + 42)
+        $centralEnd = $centralOffset + 46 + $nameLength + $extraLength + $commentLength
+        $localKey = $localOffset.ToString([Globalization.CultureInfo]::InvariantCulture)
+        if (
+          $centralEnd -gt $endOffset -or
+          $entryDisk -ne 0 -or
+          $compressedSize -eq 0xffffffff -or
+          $uncompressedSize -eq 0xffffffff -or
+          $localOffset -eq 0xffffffff -or
+          $localOffset -ge $centralStart -or
+          $centralEntries.ContainsKey($localKey) -or
+          $method -notin @(0, 8)
+        ) {
+          & $invalidArchive
+        }
+        if (($flags -band 0x41) -ne 0) {
+          throw "artifact contains an encrypted archive entry: $Label"
+        }
+        if (($flags -band 0x08) -ne 0) {
+          throw "artifact uses an unsupported archive form for bounded scanning: $Label"
+        }
+        & $assertExtraFields ($centralOffset + 46 + $nameLength) $extraLength
+        $centralEntries[$localKey] = [pscustomobject]@{
+          flags = $flags
+          method = $method
+          crc = $crc
+          compressedSize = $compressedSize
+          uncompressedSize = $uncompressedSize
+          nameOffset = $centralOffset + 46
+          nameLength = $nameLength
+        }
+        $centralOffset = $centralEnd
+      }
+      if ($centralOffset -ne $endOffset) { & $invalidArchive }
+
+      $localOffset = 0L
+      $localEntryCount = 0
+      $declaredExpanded = 0L
+      $validatedEntries = [Collections.Generic.List[object]]::new()
+      while ($localOffset -lt $centralStart) {
+        if (
+          $localOffset + 30 -gt $centralStart -or
+          [BitConverter]::ToUInt32($Bytes, [int]$localOffset) -ne 0x04034b50
+        ) {
+          & $invalidArchive
+        }
+        $localKey = $localOffset.ToString([Globalization.CultureInfo]::InvariantCulture)
+        if (-not $centralEntries.ContainsKey($localKey)) { & $invalidArchive }
+        $central = $centralEntries[$localKey]
+        $localFlags = [BitConverter]::ToUInt16($Bytes, [int]$localOffset + 6)
+        $localMethod = [BitConverter]::ToUInt16($Bytes, [int]$localOffset + 8)
+        $localCrc = [BitConverter]::ToUInt32($Bytes, [int]$localOffset + 14)
+        $localCompressedSize = [BitConverter]::ToUInt32($Bytes, [int]$localOffset + 18)
+        $localUncompressedSize = [BitConverter]::ToUInt32($Bytes, [int]$localOffset + 22)
+        $localNameLength = [BitConverter]::ToUInt16($Bytes, [int]$localOffset + 26)
+        $localExtraLength = [BitConverter]::ToUInt16($Bytes, [int]$localOffset + 28)
+        $dataStart = $localOffset + 30 + $localNameLength + $localExtraLength
+        $dataEnd = $dataStart + $localCompressedSize
+        if (
+          $dataStart -gt $centralStart -or
+          $dataEnd -gt $centralStart -or
+          $localCompressedSize -eq 0xffffffff -or
+          $localUncompressedSize -eq 0xffffffff -or
+          $localFlags -ne $central.flags -or
+          $localMethod -ne $central.method -or
+          $localCrc -ne $central.crc -or
+          $localCompressedSize -ne $central.compressedSize -or
+          $localUncompressedSize -ne $central.uncompressedSize -or
+          $localNameLength -ne $central.nameLength -or
+          -not (& $bytesEqual ($localOffset + 30) $central.nameOffset $localNameLength)
+        ) {
+          & $invalidArchive
+        }
+        if (($localFlags -band 0x41) -ne 0) {
+          throw "artifact contains an encrypted archive entry: $Label"
+        }
+        if (($localFlags -band 0x08) -ne 0) {
+          throw "artifact uses an unsupported archive form for bounded scanning: $Label"
+        }
+        & $assertExtraFields ($localOffset + 30 + $localNameLength) $localExtraLength
+        $declaredExpanded += $localUncompressedSize
+        if (
+          $localUncompressedSize -gt $maxExpandedBytes -or
+          $declaredExpanded -gt $maxExpandedBytes -or
+          ($localCompressedSize -gt 0 -and ($localUncompressedSize / $localCompressedSize) -gt 200)
+        ) {
+          throw "artifact exceeds bounded platform private-key scan budget: $Label"
+        }
+        $validatedEntries.Add([pscustomobject]@{
+          method = $localMethod
+          crc = $localCrc
+          compressedSize = $localCompressedSize
+          uncompressedSize = $localUncompressedSize
+          dataStart = $dataStart
+          name = [Text.Encoding]::UTF8.GetString(
+            $Bytes,
+            [int]$central.nameOffset,
+            [int]$central.nameLength
+          )
+        })
+        $centralEntries.Remove($localKey)
+        $localEntryCount += 1
+        $localOffset = $dataEnd
+      }
+      if (
+        $localOffset -ne $centralStart -or
+        $localEntryCount -ne $entryCount -or
+        $centralEntries.Count -ne 0
+      ) {
+        & $invalidArchive
+      }
+      Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+      if ($null -eq ('Vem.Security.ExactDeflateInputStream' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+
+namespace Vem.Security {
+  public sealed class ExactDeflateInputStream : Stream {
+    private readonly Stream inner;
+
+    public ExactDeflateInputStream(Stream inner) {
+      if (inner == null) throw new ArgumentNullException("inner");
+      this.inner = inner;
+    }
+
+    public long BytesRead { get; private set; }
+    public override bool CanRead { get { return true; } }
+    public override bool CanSeek { get { return false; } }
+    public override bool CanWrite { get { return false; } }
+    public override long Length { get { return inner.Length; } }
+    public override long Position {
+      get { return BytesRead; }
+      set { throw new NotSupportedException(); }
+    }
+
+    public override int Read(byte[] buffer, int offset, int count) {
+      if (count <= 0) return 0;
+      var read = inner.Read(buffer, offset, 1);
+      BytesRead += read;
+      return read;
+    }
+
+    public override int ReadByte() {
+      var value = inner.ReadByte();
+      if (value >= 0) BytesRead += 1;
+      return value;
+    }
+
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) {
+      throw new NotSupportedException();
+    }
+    public override void SetLength(long value) {
+      throw new NotSupportedException();
+    }
+    public override void Write(byte[] buffer, int offset, int count) {
+      throw new NotSupportedException();
+    }
+  }
+ }
+'@ -ErrorAction Stop
+      }
+      $crcTable = [uint32[]]::new(256)
+      for ($crcTableIndex = 0; $crcTableIndex -lt $crcTable.Length; $crcTableIndex += 1) {
+        $crcTableValue = [uint32]$crcTableIndex
+        for ($crcTableBit = 0; $crcTableBit -lt 8; $crcTableBit += 1) {
+          if (($crcTableValue -band 1) -ne 0) {
+            $crcTableValue = [uint32](
+              ($crcTableValue -shr 1) -bxor [uint32]3988292384
+            )
+          } else {
+            $crcTableValue = [uint32]($crcTableValue -shr 1)
+          }
+        }
+        $crcTable[$crcTableIndex] = $crcTableValue
+      }
+      $updateCrc32 = {
+        param([uint32]$Crc, [byte[]]$Buffer, [int]$Count)
+        $current = $Crc
+        for ($crcIndex = 0; $crcIndex -lt $Count; $crcIndex += 1) {
+          $tableIndex = [int](($current -bxor [uint32]$Buffer[$crcIndex]) -band 0xff)
+          $current = [uint32](($current -shr 8) -bxor $crcTable[$tableIndex])
+        }
+        return $current
+      }
+      foreach ($entry in $validatedEntries) {
+        $rawStream = [IO.MemoryStream]::new(
+          $Bytes,
+          [int]$entry.dataStart,
+          [int]$entry.compressedSize,
+          $false,
+          $true
+        )
+        $decodedStream = $rawStream
+        $exactDeflateInput = $null
+        $entryBytes = [IO.MemoryStream]::new()
+        try {
+          if ($entry.method -eq 8) {
+            $exactDeflateInput = [Vem.Security.ExactDeflateInputStream]::new(
+              $rawStream
+            )
+            $decodedStream = [IO.Compression.DeflateStream]::new(
+              $exactDeflateInput,
+              [IO.Compression.CompressionMode]::Decompress,
+              $true
+            )
+          }
+          $buffer = [byte[]]::new(64KB)
+          $actualLength = 0L
+          $actualCrc = [uint32]::MaxValue
+          while (($read = $decodedStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $actualLength += $read
+            if (
+              $actualLength -gt $maxExpandedBytes -or
+              ([long]$State.DecodedBytes + $actualLength) -gt $maxExpandedBytes
+            ) {
+              throw "artifact exceeds bounded platform private-key scan budget: $Label/$($entry.name)"
+            }
+            $actualCrc = & $updateCrc32 $actualCrc $buffer $read
+            $entryBytes.Write($buffer, 0, $read)
+          }
+          if (
+            $entry.method -eq 8 -and
+            $exactDeflateInput.BytesRead -ne $entry.compressedSize
+          ) {
+            & $invalidArchive
+          }
+          $actualCrc = [uint32]($actualCrc -bxor [uint32]::MaxValue)
+          if (
+            $actualLength -ne $entry.uncompressedSize -or
+            $actualCrc -ne $entry.crc
+          ) {
+            & $invalidArchive
+          }
+          if (
+            $entry.compressedSize -gt 0 -and
+            ($actualLength / $entry.compressedSize) -gt 200
+          ) {
+            throw "artifact exceeds bounded platform private-key scan budget: $Label/$($entry.name)"
+          }
+          & $scan $entryBytes.ToArray() "$Label/$($entry.name)" ($Depth + 1) $State
+        } catch {
+          if ($_.Exception.Message -match 'platform private-key|bounded platform private-key') { throw }
+          throw "artifact archive cannot be scanned safely: $Label"
+        } finally {
+          if ($decodedStream -ne $rawStream) { $decodedStream.Dispose() }
+          if ($null -ne $exactDeflateInput) { $exactDeflateInput.Dispose() }
+          $entryBytes.Dispose()
+          $rawStream.Dispose()
+        }
+      }
+    }
+
+    foreach ($text in $texts) {
+      foreach ($match in [regex]::Matches($text, '(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')) {
+        if ($match.Value.Length -gt 2MB) { continue }
+        try {
+          $decoded = [Convert]::FromBase64String($match.Value)
+        } catch {
+          continue
+        }
+        if ($decoded.Length -ge 24 -and $decoded.Length -le 1MB) {
+          & $scan $decoded "$Label (base64)" ($Depth + 1) $State
+        }
+      }
+    }
+  }
+  & $scan $Bytes $Label 0 @{ DecodedBytes = [long]0 }
+}
+
+function Assert-NoPlatformPaymentSecrets {
+  param(
+    [object]$Value,
+    [string]$Path = "manifest"
+  )
+
+  if ($null -eq $Value) { return }
+  if ($Value -is [string]) {
+    Assert-NoPlatformPaymentSecretBytes -Bytes ([Text.Encoding]::UTF8.GetBytes($Value)) -Label $Path
+    return
+  }
+  if ($Value -is [byte[]]) {
+    Assert-NoPlatformPaymentSecretBytes -Bytes $Value -Label $Path
+    return
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [pscustomobject]) {
+    $index = 0
+    foreach ($item in $Value) {
+      Assert-NoPlatformPaymentSecrets -Value $item -Path "$Path[$index]"
+      $index += 1
+    }
+    return
+  }
+  foreach ($property in @($Value.PSObject.Properties)) {
+    if ($property.Name -match '^(?:privateKeyPem|appCertPem|alipayPublicCertPem|alipayRootCertPem|apiV[23]Key|merchantApiCertPem|merchantApiKeyPem|platformCertificatePem|platformPublicKeyPem|paymentProviderCredentials)$') {
+      throw "$Path.$($property.Name) is platform-only payment secret material"
+    }
+    Assert-NoPlatformPaymentSecrets -Value $property.Value -Path "$Path.$($property.Name)"
+  }
+}
+
+function Assert-NoPlatformPaymentSecretFile {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "artifact not found: $Path"
+  }
+  $file = Get-Item -LiteralPath $Path
+  if ($file.Length -gt 256MB) {
+    throw "artifact exceeds bounded platform private-key scan budget: $Path"
+  }
+  Assert-NoPlatformPaymentSecretBytes -Bytes ([IO.File]::ReadAllBytes($Path)) -Label $Path
+}
+
 function Get-DefaultTargetPath {
   param([string]$Component)
 
@@ -619,6 +1524,7 @@ function Install-Component {
   }
 
   try {
+    Assert-NoPlatformPaymentSecretFile -Path $Spec.artifactPath
     Assert-Sha256 -Path $Spec.artifactPath -ExpectedSha256 $Spec.sha256 | Out-Null
     if (-not (Test-Path -LiteralPath $Spec.targetPath -PathType Leaf)) {
       throw "target executable not found: $($Spec.targetPath)"
@@ -628,6 +1534,7 @@ function Install-Component {
 
     for ($index = 0; $index -lt @($Spec.sidecars).Count; $index += 1) {
       $sidecar = @($Spec.sidecars)[$index]
+      Assert-NoPlatformPaymentSecretFile -Path $sidecar.artifactPath
       Assert-Sha256 -Path $sidecar.artifactPath -ExpectedSha256 $sidecar.sha256 | Out-Null
       if (-not (Test-Path -LiteralPath $sidecar.targetPath -PathType Leaf)) {
         throw "target sidecar not found: $($sidecar.targetPath)"
@@ -707,7 +1614,9 @@ Assert-Administrator
 $manifestUpdateId = "direct-input"
 $manifestForEvidence = $null
 if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
+  Assert-NoPlatformPaymentSecretFile -Path $ManifestPath
   $manifestForEvidence = Read-JsonFile -Path $ManifestPath
+  Assert-NoPlatformPaymentSecrets -Value $manifestForEvidence -Path manifest
   if ([string]::IsNullOrWhiteSpace([string]$manifestForEvidence.updateId)) {
     throw "manifest updateId is required"
   }

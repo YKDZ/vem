@@ -53,6 +53,7 @@ import {
   machineClaimCodeStates,
   machineProvisioningProfileSchema,
   machinePlanogramVersionSnapshotSchema,
+  machinePaymentOptionsResponseSchema,
   machineSaleViewItemSchema,
   machineSlotStatuses,
   formatMachineSlotCoordinate,
@@ -1012,6 +1013,27 @@ describe("shared API contract", () => {
           },
         }),
       ).toThrow();
+
+      for (const publicConfigJson of [
+        {
+          mode: "production",
+          gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+        },
+        {
+          mode: "sandbox",
+          gatewayUrl: "https://openapi.alipay.com/gateway.do",
+        },
+      ]) {
+        expect(() =>
+          upsertPaymentProviderConfigSchema.parse({
+            providerCode: "alipay",
+            publicConfigJson,
+            sensitiveConfigJson: {
+              privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+            },
+          }),
+        ).toThrow(/gateway/i);
+      }
 
       expect(() =>
         upsertPaymentProviderConfigSchema.parse({
@@ -2192,6 +2214,27 @@ describe("shared API contract", () => {
     };
 
     expect(machineProvisioningProfileSchema.parse(profile)).toEqual(profile);
+    for (const contaminated of [
+      { ...profile, privateKeyPem: "platform-private-key" },
+      {
+        ...profile,
+        credentials: {
+          ...profile.credentials,
+          appCertPem: "platform-app-certificate",
+        },
+      },
+      {
+        ...profile,
+        paymentCapability: {
+          ...profile.paymentCapability,
+          paymentProviderCredentials: { privateKeyPem: "platform-private-key" },
+        },
+      },
+    ]) {
+      expect(() =>
+        machineProvisioningProfileSchema.parse(contaminated),
+      ).toThrow();
+    }
     expect(() =>
       machineProvisioningProfileSchema.parse({
         ...profile,
@@ -3142,11 +3185,33 @@ describe("shared API contract", () => {
   });
 
   describe("payment ops schemas", () => {
+    it("keeps the customer payment-options contract environment-neutral", () => {
+      const result = machinePaymentOptionsResponseSchema.parse({
+        options: [],
+        defaultOptionKey: null,
+        defaultProviderCode: null,
+        providerEnvironment: {
+          environment: "sandbox",
+          readiness: "ready",
+          errorCategory: "none",
+        },
+        serverTime: "2026-05-06T10:00:00.000Z",
+      });
+
+      expect(result).not.toHaveProperty("providerEnvironment");
+      expect(JSON.stringify(result)).not.toMatch(/sandbox|production/i);
+    });
+
     it("paymentOpsReadinessSchema parses ready status with all checks", () => {
       const result = paymentOpsReadinessSchema.parse({
         status: "ready",
         checkedAt: "2026-05-06T10:00:00.000Z",
         environment: "production",
+        providerEnvironment: {
+          environment: "production",
+          readiness: "ready",
+          errorCategory: "none",
+        },
         checks: [
           {
             code: "mock_provider_disabled",
@@ -3158,6 +3223,7 @@ describe("shared API contract", () => {
         ],
       });
       expect(result.status).toBe("ready");
+      expect(result.providerEnvironment.environment).toBe("production");
       expect(result.checks).toHaveLength(1);
     });
 

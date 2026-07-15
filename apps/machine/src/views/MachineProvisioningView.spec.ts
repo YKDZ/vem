@@ -37,6 +37,13 @@ vi.mock("vue-router", () => ({
 vi.mock("@/layouts/KioskLayout.vue", () => ({
   default: { template: "<main><slot /></main>" },
 }));
+vi.mock("@/components/VisionCameraMaintenancePanel.vue", () => ({
+  default: {
+    props: ["maintenanceAuthorized", "mode"],
+    template:
+      "<div data-test='vision-camera-maintenance-stub'>VisionCameraMaintenancePanel</div>",
+  },
+}));
 vi.mock("@/daemon/client", () => ({
   DaemonUnavailableError: DaemonUnavailableErrorMock,
   daemonClient: {

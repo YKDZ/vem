@@ -50,6 +50,16 @@ import { projectOrderStatus } from "../orders/order-state-projection";
 import { RefundsService } from "../refunds/refunds.service";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
+type FailedLineRefundDecision =
+  | { kind: "none" }
+  | { kind: "full"; orderId: string; metadata: Record<string, unknown> }
+  | {
+      kind: "partial";
+      orderId: string;
+      orderItemIds: string[];
+      amountCents: number;
+      metadata: Record<string, unknown>;
+    };
 
 function isUniqueViolation(error: unknown): boolean {
   return (
@@ -426,6 +436,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         );
         const allCommandsFailedBeforeDelivery = sentLikeCommands.length === 0;
         const refundDecision = await this.db.transaction(async (tx) => {
+          await this.lockOrderForTerminalMutation(tx, orderId);
           const sentLineIds = sentLikeCommands
             .map((command) => command?.orderItemId)
             .filter((id): id is string => typeof id === "string");
@@ -480,6 +491,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
                 metadata,
               },
             );
+            await this.stageFailedLineRefund(tx, decision);
 
             await this.notificationsService.createDispenseFailedNotification(
               tx,
@@ -495,7 +507,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           return decision;
         });
 
-        await this.requestRefundForFailedLines(refundDecision);
+        if (refundDecision.kind !== "none") {
+          await this.refundsService.dispatchPendingRefunds();
+        }
         return commandResults;
       }
 
@@ -732,10 +746,11 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     }
 
     if (input.result === "dispensed") {
-      return await this.resolveCommandAsDispensed(command, input.note);
+      return await this.resolveCommandAsDispensed(command);
     }
 
     const failureContext = await this.db.transaction(async (tx) => {
+      await this.lockOrderForTerminalMutation(tx, command.orderId);
       const [updated] = await tx
         .update(vendingCommands)
         .set({
@@ -789,6 +804,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             slotSalesState: compensation.slotSalesState,
           },
         });
+      if (input.requestRefund !== false) {
+        await this.stageFailedLineRefund(tx, refundDecision);
+      }
 
       await this.notificationsService.createDispenseFailedNotification(tx, {
         orderId: command.orderId,
@@ -808,7 +826,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (failureContext && input.requestRefund !== false) {
-      await this.requestRefundForFailedLines(failureContext.refundDecision);
+      await this.refundsService.dispatchPendingRefunds();
     }
 
     return { commandId: command.id, status: "failed" as const };
@@ -980,7 +998,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       payloadJson: Record<string, unknown>;
       orderNo: string;
     },
-    note?: string,
     options: {
       movementId?: string;
       source?: string;
@@ -1050,16 +1067,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       );
     }
 
-    await this.db
-      .update(vendingCommands)
-      .set({
-        status: "succeeded",
-        resultAt: new Date(),
-        lastError: note ?? null,
-        updatedAt: new Date(),
-      })
-      .where(eq(vendingCommands.id, command.id));
-
     return {
       commandId: command.id,
       status: "succeeded" as const,
@@ -1127,6 +1134,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       >;
     },
   ): Promise<boolean> {
+    await this.lockOrderForTerminalMutation(tx, input.command.orderId);
     const [updated] = await tx
       .update(vendingCommands)
       .set({
@@ -1275,21 +1283,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     if (!machine) return;
 
     const resultContext = await this.db.transaction(async (tx) => {
-      const inserted = await tx
-        .insert(machineEvents)
-        .values({
-          machineId: machine.id,
-          eventType: "dispense_result",
-          payloadJson: payload,
-          mqttTopic: topic,
-          messageId,
-        })
-        .onConflictDoNothing()
-        .returning({ id: machineEvents.id });
-      if (inserted.length === 0) {
-        return null;
-      }
-
       const [command] = await tx
         .select({
           id: vendingCommands.id,
@@ -1312,17 +1305,35 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           ),
         );
       if (!command) {
+        await this.insertDispenseResultInboxEvent(tx, {
+          machineId: machine.id,
+          payload,
+          topic,
+          messageId,
+        });
         return null;
       }
       if (
         command.orderIsDrill ||
         isProtectedFulfillmentDrillPayload(command.payloadJson)
       ) {
+        await this.insertDispenseResultInboxEvent(tx, {
+          machineId: machine.id,
+          payload,
+          topic,
+          messageId,
+        });
         return null;
       }
 
       if (payload.success) {
-        if (command.status === "succeeded" || command.status === "failed") {
+        if (command.status === "failed") {
+          await this.insertDispenseResultInboxEvent(tx, {
+            machineId: machine.id,
+            payload,
+            topic,
+            messageId,
+          });
           return null;
         }
         return {
@@ -1335,9 +1346,31 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         };
       }
 
-      if (command.status === "succeeded" || command.status === "failed") {
+      if (command.status === "succeeded") {
+        await this.insertDispenseResultInboxEvent(tx, {
+          machineId: machine.id,
+          payload,
+          topic,
+          messageId,
+        });
         return null;
       }
+      if (command.status === "failed") {
+        await this.insertDispenseResultInboxEvent(tx, {
+          machineId: machine.id,
+          payload,
+          topic,
+          messageId,
+        });
+        return { kind: "refund_recovery" as const };
+      }
+
+      await this.insertDispenseResultInboxEvent(tx, {
+        machineId: machine.id,
+        payload,
+        topic,
+        messageId,
+      });
 
       if (payload.errorCode === "UNKNOWN") {
         const changed = await this.markDispenseResultUnknown(tx, {
@@ -1353,7 +1386,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           : null;
       }
 
-      await tx
+      await this.lockOrderForTerminalMutation(tx, command.orderId);
+      const [updated] = await tx
         .update(vendingCommands)
         .set({
           status: "failed",
@@ -1361,7 +1395,20 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           lastError: payload.message,
           updatedAt: new Date(),
         })
-        .where(eq(vendingCommands.id, command.id));
+        .where(
+          and(
+            eq(vendingCommands.id, command.id),
+            inArray(vendingCommands.status, [
+              "pending",
+              "sent",
+              "acknowledged",
+              "result_unknown",
+              "timeout",
+            ]),
+          ),
+        )
+        .returning({ id: vendingCommands.id });
+      if (!updated) return null;
 
       const compensation =
         await this.inventoryService.releaseAffectedReservationForDispenseFailure(
@@ -1389,6 +1436,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             slotSalesState: compensation.slotSalesState,
           },
         });
+      await this.stageFailedLineRefund(tx, refundDecision);
 
       await this.notificationsService.createDispenseFailedNotification(tx, {
         orderId: command.orderId,
@@ -1422,20 +1470,76 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (resultContext?.kind === "success") {
-      await this.resolveCommandAsDispensed(
+      const successResult = await this.resolveCommandAsDispensed(
         resultContext.command,
-        payload.message,
         {
           movementId: `mqtt-dispense:${payload.commandNo}`,
           source: "vending_command",
           occurredAt: payload.reportedAt,
         },
       );
+      if (!("stockMovementStatus" in successResult)) {
+        await this.refundsService.dispatchPendingRefunds();
+      }
+      // Success projection is itself idempotent (movementId + command CAS).
+      // Persist the inbox receipt only after it commits, so a crash or
+      // transient failure is resumed by the same messageId instead of being
+      // permanently hidden behind the inbox unique key.
+      await this.db
+        .insert(machineEvents)
+        .values({
+          machineId: machine.id,
+          eventType: "dispense_result",
+          payloadJson: payload,
+          mqttTopic: topic,
+          messageId,
+        })
+        .onConflictDoNothing();
       return;
     }
 
-    if (resultContext?.kind === "failure") {
-      await this.requestRefundForFailedLines(resultContext.refundDecision);
+    if (
+      (resultContext?.kind === "failure" &&
+        resultContext.refundDecision.kind !== "none") ||
+      resultContext?.kind === "refund_recovery"
+    ) {
+      await this.refundsService.dispatchPendingRefunds();
+    }
+  }
+
+  private async insertDispenseResultInboxEvent(
+    tx: DrizzleTransaction,
+    input: {
+      machineId: string;
+      payload: z.infer<typeof dispenseResultPayloadSchema>;
+      topic: string;
+      messageId: string;
+    },
+  ): Promise<void> {
+    await tx
+      .insert(machineEvents)
+      .values({
+        machineId: input.machineId,
+        eventType: "dispense_result",
+        payloadJson: input.payload,
+        mqttTopic: input.topic,
+        messageId: input.messageId,
+      })
+      .onConflictDoNothing();
+  }
+
+  private async lockOrderForTerminalMutation(
+    tx: DrizzleTransaction,
+    orderId: string,
+  ): Promise<void> {
+    const locked = await tx.execute(sql`
+      select id
+      from orders
+      where id = ${orderId}
+      for update
+    `);
+    if ((locked.rowCount ?? 0) !== 1) {
+      throw new NotFoundException("Order not found");
     }
   }
 
@@ -1448,17 +1552,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       reason: string;
       metadata: Record<string, unknown>;
     },
-  ): Promise<
-    | { kind: "none" }
-    | { kind: "full"; orderId: string; metadata: Record<string, unknown> }
-    | {
-        kind: "partial";
-        orderId: string;
-        orderItemIds: string[];
-        amountCents: number;
-        metadata: Record<string, unknown>;
-      }
-  > {
+  ): Promise<FailedLineRefundDecision> {
     const failedLines = await tx
       .select({ id: orderItems.id })
       .from(orderItems)
@@ -1595,32 +1689,22 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
   }
 
-  private async requestRefundForFailedLines(
-    decision:
-      | { kind: "none" }
-      | { kind: "full"; orderId: string; metadata: Record<string, unknown> }
-      | {
-          kind: "partial";
-          orderId: string;
-          orderItemIds: string[];
-          amountCents: number;
-          metadata: Record<string, unknown>;
-        },
+  private async stageFailedLineRefund(
+    tx: DrizzleTransaction,
+    decision: FailedLineRefundDecision,
   ): Promise<void> {
     if (decision.kind === "full") {
-      await this.refundsService.requestFullRefund({
+      await this.refundsService.stageAutomaticFullRefund(tx, {
         orderId: decision.orderId,
-        reason: "auto_dispense_failed",
         metadata: decision.metadata,
       });
       return;
     }
     if (decision.kind === "partial") {
-      await this.refundsService.requestPartialRefund({
+      await this.refundsService.stageAutomaticPartialRefund(tx, {
         orderId: decision.orderId,
         orderItemIds: decision.orderItemIds,
         amountCents: decision.amountCents,
-        reason: "auto_partial_dispense_failed",
         metadata: decision.metadata,
       });
     }

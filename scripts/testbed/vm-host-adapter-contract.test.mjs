@@ -232,11 +232,12 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
     audioCapture:
       operation === "capture-default-audio"
         ? {
-            schemaVersion: "vm-default-audio-capture-request/v1",
+            schemaVersion: "vm-selected-audio-capture-request/v2",
             activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
-            nativeCue: {
-              source: "tauri_native_audio",
-              command: "play_machine_audio",
+            selectedEndpointId: "wasapi:endpoint-speaker",
+            daemonCalibration: {
+              source: "vending_daemon_ipc",
+              command: "audio_output_calibration",
               challenge: "b".repeat(64),
             },
             threshold: {
@@ -475,6 +476,12 @@ function reportFor(request, overrides = {}) {
               digest: `sha256:${"c".repeat(64)}`,
               fileName: `${"c".repeat(64)}.wav`,
             },
+            {
+              role: "daemon-audio-calibration-response",
+              identity: `factory-evidence://sha256/${"d".repeat(64)}`,
+              digest: `sha256:${"d".repeat(64)}`,
+              fileName: `${"d".repeat(64)}.json`,
+            },
           ]
         : [];
   const isV2 = Object.hasOwn(request, "serialSession");
@@ -632,7 +639,7 @@ function reportFor(request, overrides = {}) {
     defaultAudioCapture:
       request.operation === "capture-default-audio"
         ? {
-            schemaVersion: "vm-default-audio-capture-result/v1",
+            schemaVersion: "vm-selected-audio-capture-result/v2",
             runId: request.runId,
             lifecycleReference: request.lifecycleReference,
             captureOperationReference: request.operationReference,
@@ -640,13 +647,19 @@ function reportFor(request, overrides = {}) {
             endpoint: {
               status: "selected",
               identity: "guest-audio://runtime-testbed-001",
+              stableEndpointId: request.audioCapture.selectedEndpointId,
             },
-            nativeCue: {
-              status: "emitted",
-              source: "tauri_native_audio",
-              command: "play_machine_audio",
-              challenge: request.audioCapture.nativeCue.challenge,
-              emittedAt: "2026-07-11T00:00:00.500Z",
+            daemonCalibration: {
+              status: "completed",
+              source: "vending_daemon_ipc",
+              command: "audio_output_calibration",
+              challenge: request.audioCapture.daemonCalibration.challenge,
+              endpointId: request.audioCapture.selectedEndpointId,
+              responseArtifact: evidence[1].identity,
+              responseDigest: evidence[1].digest,
+              responseFileName: evidence[1].fileName,
+              startedAt: "2026-07-11T00:00:00.250Z",
+              completedAt: "2026-07-11T00:00:00.750Z",
             },
             capture: {
               source: "contract-test-generated-wav",
@@ -1851,7 +1864,7 @@ describe("VM Host Adapter contract", () => {
       );
   });
 
-  it("rejects default-audio evidence without an active kiosk binding, selected endpoint, native cue, or synchronized non-silent capture", () => {
+  it("rejects selected-audio evidence without kiosk binding, daemon calibration, or synchronized non-silent capture", () => {
     const request = createVmHostAdapterRequest(
       requestFor("capture-default-audio"),
     );
@@ -1878,8 +1891,8 @@ describe("VM Host Adapter contract", () => {
       {
         defaultAudioCapture: {
           ...report.defaultAudioCapture,
-          nativeCue: {
-            ...report.defaultAudioCapture.nativeCue,
+          daemonCalibration: {
+            ...report.defaultAudioCapture.daemonCalibration,
             command: "browser_audio_play",
           },
         },
@@ -1905,9 +1918,9 @@ describe("VM Host Adapter contract", () => {
       {
         defaultAudioCapture: {
           ...report.defaultAudioCapture,
-          nativeCue: {
-            ...report.defaultAudioCapture.nativeCue,
-            emittedAt: "2026-07-11T00:00:02.000Z",
+          daemonCalibration: {
+            ...report.defaultAudioCapture.daemonCalibration,
+            completedAt: "2026-07-11T00:00:02.000Z",
           },
         },
       },
@@ -2571,6 +2584,57 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("carries production CLI daemon calibration response into selected-endpoint PCM evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-audio-cli-"));
+    const out = join(root, "audio.json");
+    const responseOut = join(root, "daemon-audio-response.json");
+    execFileSync(
+      process.execPath,
+      [
+        CLIENT,
+        "--operation",
+        "capture-default-audio",
+        "--run-id",
+        "RUN-12-CONTRACT",
+        "--target-identity",
+        "vm-target://runtime-testbed",
+        "--approved-runtime-base",
+        `factory-cas://sha256/${HASH}`,
+        "--active-kiosk-session-user",
+        "VEMKiosk",
+        "--active-kiosk-session-id",
+        "3",
+        "--selected-audio-endpoint-id",
+        "wasapi:endpoint-speaker",
+        "--daemon-calibration-response-out",
+        responseOut,
+        "--out",
+        out,
+      ],
+      {
+        env: {
+          ...process.env,
+          RUNNER_TEMP: root,
+          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+          VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence"),
+        },
+      },
+    );
+    const report = JSON.parse(readFileSync(out, "utf8"));
+    const response = JSON.parse(readFileSync(responseOut, "utf8"));
+    assert.equal(
+      report.defaultAudioCapture.endpoint.stableEndpointId,
+      "wasapi:endpoint-speaker",
+    );
+    assert.equal(response.endpointId, "wasapi:endpoint-speaker");
+    assert.equal(
+      response.challenge,
+      report.defaultAudioCapture.daemonCalibration.challenge,
+    );
+    assert.match(response.testEvidenceToken, /^[0-9a-f-]{36}$/);
+    assert.equal(report.evidence.length, 2);
+  });
+
   it("runs validated recovery cleanup after an ordinary adapter failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-failure-"));
     const cleanupFile = join(root, "cleanup.txt");
@@ -2898,6 +2962,12 @@ describe("VM Host Adapter contract", () => {
         orderId: "order-001",
         paymentId: "payment-001",
         vendingCommandId: "vending-command-001",
+        recovery: {
+          runtimeReady: "passed",
+          hardwareOnline: true,
+          scannerOnline: true,
+          ready: true,
+        },
       },
       {
         failureMode: "missing-device",
@@ -2908,6 +2978,12 @@ describe("VM Host Adapter contract", () => {
         orderId: "order-001",
         paymentId: "payment-001",
         vendingCommandId: "vending-command-001",
+        recovery: {
+          runtimeReady: "passed",
+          hardwareOnline: true,
+          scannerOnline: true,
+          ready: true,
+        },
       },
     ]);
     assert.doesNotMatch(
@@ -3032,7 +3108,7 @@ describe("VM Host Adapter contract", () => {
         validateSerialConformanceReport(forged, {
           expectedRunnerPublicKey: report.runnerEvidence.publicKey,
         }),
-      /runner collect operation evidence (does not bind|signature is invalid)/,
+      /runner serial conformance evidence does not bind the report/,
     );
   });
 

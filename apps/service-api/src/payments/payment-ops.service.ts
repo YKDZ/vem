@@ -26,6 +26,7 @@ import {
   sql,
   type DrizzleClient,
 } from "@vem/db";
+import { alipayEffectiveEnvironmentSchema } from "@vem/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
@@ -67,7 +68,7 @@ type EnabledChannelProviderSetup = {
   method: "qr_code" | "payment_code";
   ready: boolean;
   missingCredentialKeys: string[];
-  environment: "sandbox" | "production" | null;
+  environments: Array<"sandbox" | "production">;
 };
 
 type HeartbeatSaleReadinessMethod = {
@@ -260,10 +261,47 @@ export class PaymentOpsService {
     const criticalFailed = checks.some(
       (check) => check.severity === "critical" && !check.passed,
     );
+    const environmentCheck = checks.find(
+      (check) => check.code === "provider_environment.production_ready",
+    );
+    const sandboxProviders = Array.isArray(
+      environmentCheck?.evidence["sandboxProviders"],
+    )
+      ? environmentCheck.evidence["sandboxProviders"]
+      : [];
+    const productionProviders = Array.isArray(
+      environmentCheck?.evidence["productionProviders"],
+    )
+      ? environmentCheck.evidence["productionProviders"]
+      : [];
+    const hasSandboxProvider = sandboxProviders.length > 0;
+    const hasProductionProvider = productionProviders.length > 0;
+    const providerEnvironment =
+      hasSandboxProvider && hasProductionProvider
+        ? "mixed"
+        : hasSandboxProvider
+          ? "sandbox"
+          : hasProductionProvider
+            ? "production"
+            : "unavailable";
     return {
       status: criticalFailed ? "blocked" : "ready",
       checkedAt: new Date().toISOString(),
       environment: this.config.nodeEnv,
+      providerEnvironment: {
+        environment: providerEnvironment,
+        readiness:
+          providerEnvironment === "sandbox" ||
+          providerEnvironment === "production"
+            ? "ready"
+            : "blocked",
+        errorCategory:
+          providerEnvironment === "mixed"
+            ? "mixed_environment"
+            : providerEnvironment === "unavailable"
+              ? "provider_unconfigured"
+              : "none",
+      },
       checks,
     };
   }
@@ -841,11 +879,11 @@ export class PaymentOpsService {
     const readyEnabledChannels = enabledChannelReadiness.filter(
       (channel) => channel.ready,
     );
-    const sandboxChannelRows = readyEnabledChannels.filter(
-      (channel) => channel.environment === "sandbox",
+    const sandboxChannelRows = enabledChannelReadiness.filter((channel) =>
+      channel.environments.includes("sandbox"),
     );
-    const productionChannelRows = readyEnabledChannels.filter(
-      (channel) => channel.environment === "production",
+    const productionChannelRows = enabledChannelReadiness.filter((channel) =>
+      channel.environments.includes("production"),
     );
     const sandboxProviders = [
       ...new Set(sandboxChannelRows.map((row) => row.providerCode)),
@@ -987,10 +1025,7 @@ export class PaymentOpsService {
   ): EnabledChannelProviderSetup {
     const [method, providerCode] = parsePaymentChannelKey(channelKey);
     const candidates = inspections.filter(
-      (row) =>
-        row.providerCode === providerCode &&
-        row.providerStatus === "enabled" &&
-        row.configStatus === "enabled",
+      (row) => row.providerCode === providerCode,
     );
     if (candidates.length === 0) {
       return {
@@ -999,36 +1034,72 @@ export class PaymentOpsService {
         method,
         ready: false,
         missingCredentialKeys: ["providerConfig"],
-        environment: null,
+        environments: [],
       };
     }
 
-    const candidateResults = candidates.map((candidate) => ({
+    const globalCandidates = candidates.filter(
+      (candidate) => candidate.machineId === null,
+    );
+    const relevantMachineIds = [
+      ...new Set(
+        candidates.flatMap((candidate) =>
+          candidate.machineId === null ? [] : [candidate.machineId],
+        ),
+      ),
+    ];
+    const effectiveCandidates = [
+      ...globalCandidates,
+      ...relevantMachineIds.flatMap((machineId) =>
+        candidates.filter((candidate) => candidate.machineId === machineId),
+      ),
+    ];
+    const candidateResults = effectiveCandidates.map((candidate) => ({
       candidate,
       missingCredentialKeys: this.missingProviderConfigKeys(candidate, method),
     }));
-    const ready = candidateResults.find(
+    const readyResults = candidateResults.filter(
       (result) => result.missingCredentialKeys.length === 0,
     );
-    const bestAttempt = candidateResults.reduce((best, current) =>
-      current.missingCredentialKeys.length < best.missingCredentialKeys.length
-        ? current
-        : best,
+    const blockedResults = candidateResults.filter(
+      (result) => result.missingCredentialKeys.length > 0,
     );
+    const bestAttempt = blockedResults.reduce<
+      (typeof blockedResults)[number] | undefined
+    >(
+      (best, current) =>
+        !best ||
+        current.missingCredentialKeys.length < best.missingCredentialKeys.length
+          ? current
+          : best,
+      undefined,
+    );
+    const ready =
+      candidateResults.length > 0 &&
+      readyResults.length === candidateResults.length;
+    const environments = [
+      ...new Set(
+        readyResults.flatMap((result) => {
+          const environment = this.providerEnvironment(
+            providerCode,
+            result.candidate.publicConfig,
+          );
+          return environment === null ? [] : [environment];
+        }),
+      ),
+    ];
 
     return {
       channelKey,
       providerCode,
       method,
-      ready: ready !== undefined,
+      ready,
       missingCredentialKeys: ready
         ? []
-        : bestAttempt.missingCredentialKeys.length > 0
+        : bestAttempt && bestAttempt.missingCredentialKeys.length > 0
           ? bestAttempt.missingCredentialKeys
           : ["providerConfig"],
-      environment: ready
-        ? this.providerEnvironment(providerCode, ready.candidate.publicConfig)
-        : null,
+      environments,
     };
   }
 
@@ -1050,6 +1121,11 @@ export class PaymentOpsService {
     if (row.providerCode === "alipay") {
       if (!hasNonEmptyString(row.publicConfig, "gatewayUrl")) {
         missing.push("gatewayUrl");
+      }
+      if (
+        !alipayEffectiveEnvironmentSchema.safeParse(row.publicConfig).success
+      ) {
+        missing.push("effectiveProviderEnvironment");
       }
       if (!hasNonEmptyString(row.publicConfig, "keyType")) {
         missing.push("keyType");
@@ -1101,9 +1177,10 @@ export class PaymentOpsService {
   private providerEnvironment(
     providerCode: "alipay" | "wechat_pay",
     publicConfig: Record<string, unknown>,
-  ): "sandbox" | "production" {
+  ): "sandbox" | "production" | null {
     if (providerCode === "wechat_pay") return "production";
-    return publicConfig["mode"] === "production" ? "production" : "sandbox";
+    const result = alipayEffectiveEnvironmentSchema.safeParse(publicConfig);
+    return result.success ? result.data.mode : null;
   }
 
   private async checkNotifyUrls(

@@ -13,6 +13,10 @@ use vending_core::{
     hardware::{DispenseCommandPayload, EnvironmentControlCommandPayload},
     mqtt::sign_envelope,
 };
+use vending_daemon::state::{
+    store::{MachinePlanogramInput, MachinePlanogramSlotInput, StockMovementInput},
+    LocalStateStore, OrderSessionUpsert,
+};
 
 fn mqtt_config(mqtt_url: String, serial_path: Option<String>) -> serde_json::Value {
     serde_json::json!({
@@ -55,6 +59,75 @@ fn dispense_command(command_no: &str) -> DispenseCommandPayload {
         quantity: 1,
         timeout_seconds: 2,
     }
+}
+
+async fn prepare_dispense_state(daemon: &DaemonHarness, command: &DispenseCommandPayload) {
+    let state = LocalStateStore::open(&daemon.state_db_path())
+        .await
+        .expect("open daemon state");
+    state
+        .apply_planogram(MachinePlanogramInput {
+            planogram_version: "PLAN-MQTT-FAULT".to_string(),
+            source: "integration_test".to_string(),
+            applied_by: None,
+            slots: vec![MachinePlanogramSlotInput {
+                slot_id: "550e8400-e29b-41d4-a716-446655442001".to_string(),
+                slot_code: "A1".to_string(),
+                layer_no: 1,
+                cell_no: 1,
+                capacity: 8,
+                par_level: 6,
+                inventory_id: "550e8400-e29b-41d4-a716-446655442002".to_string(),
+                variant_id: "550e8400-e29b-41d4-a716-446655442003".to_string(),
+                product_id: "550e8400-e29b-41d4-a716-446655442004".to_string(),
+                product_name: "water".to_string(),
+                product_description: None,
+                cover_image_url: None,
+                try_on_silhouette_url: None,
+                category_id: None,
+                category_name: None,
+                sku: "WATER-001".to_string(),
+                size: Some("550ml".to_string()),
+                color: None,
+                price_cents: 200,
+                product_sort_order: 1,
+                target_gender: None,
+            }],
+        })
+        .await
+        .expect("seed planogram");
+    state
+        .record_stock_movement(StockMovementInput {
+            movement_id: format!("COUNT-BEFORE-{}", command.command_no),
+            planogram_version: "PLAN-MQTT-FAULT".to_string(),
+            slot_id: "550e8400-e29b-41d4-a716-446655442001".to_string(),
+            movement_type: "stock_count_correction".to_string(),
+            quantity: 4,
+            source: "integration_test".to_string(),
+            attributed_to: Some("integration-test".to_string()),
+        })
+        .await
+        .expect("seed counted stock");
+    state
+        .upsert_order_session(OrderSessionUpsert {
+            order_no: &command.order_no,
+            payment_method: "payment_code",
+            payment_provider: Some("alipay"),
+            items_json: serde_json::json!([{ "slotCode": "A1", "quantity": 1 }]),
+            status: "dispensing",
+            next_action: "dispensing",
+            payment_attempt_json: None,
+            recovery_strategy: "local",
+            last_backend_status_json: Some(serde_json::json!({
+                "orderNo": command.order_no,
+                "orderStatus": "dispensing",
+                "nextAction": "dispensing",
+                "vending": { "commandNo": command.command_no, "status": "dispensing" }
+            })),
+            last_error: None,
+        })
+        .await
+        .expect("seed dispensing order");
 }
 
 #[tokio::test]
@@ -159,7 +232,9 @@ async fn mqtt_command_flow_survives_without_ui_and_dedupes_replay() {
 
     let (publisher, publisher_loop) = broker.client("publisher");
     let _publisher_task = spawn_event_loop(publisher_loop);
-    let payload = serde_json::to_value(dispense_command("CMD-MQTT-1")).unwrap();
+    let command = dispense_command("CMD-MQTT-1");
+    prepare_dispense_state(&daemon, &command).await;
+    let payload = serde_json::to_value(command).unwrap();
     let envelope = sign_envelope(
         "MACHINE-MQTT",
         sensitive::TEST_MQTT_SIGNING_SECRET,

@@ -1,13 +1,18 @@
 export type MaintenanceSessionRouteClient = {
   hasMaintenanceSessionForRoute(route: "maintenance" | "bring-up"): boolean;
   clearMaintenanceSession(): void;
+  revokeMaintenanceSessionRoute(
+    route: "maintenance" | "bring-up",
+  ): Promise<void>;
 };
 
 type RouteIdentity = {
   name: unknown;
 };
 
-function isProtectedMaintenanceRoute(route: RouteIdentity): boolean {
+function isProtectedMaintenanceRoute(
+  route: RouteIdentity,
+): route is { name: "maintenance" | "bring-up" } {
   return route.name === "maintenance" || route.name === "bring-up";
 }
 
@@ -17,11 +22,11 @@ function isProtectedMaintenanceRoute(route: RouteIdentity): boolean {
  * navigation drops the local bearer. The daemon still enforces its own
  * in-memory expiry and scope checks.
  */
-export function reconcileMaintenanceSessionRoute(
+export async function reconcileMaintenanceSessionRoute(
   to: RouteIdentity,
   from: RouteIdentity,
   client: MaintenanceSessionRouteClient,
-): void {
+): Promise<void> {
   if (to.name === "bring-up") {
     if (!client.hasMaintenanceSessionForRoute("bring-up")) {
       client.clearMaintenanceSession();
@@ -37,6 +42,13 @@ export function reconcileMaintenanceSessionRoute(
   }
 
   if (isProtectedMaintenanceRoute(from)) {
-    client.clearMaintenanceSession();
+    try {
+      await client.revokeMaintenanceSessionRoute(from.name);
+    } catch {
+      // Revocation is best effort for navigation availability; the daemon
+      // still enforces expiry and the client method clears the local bearer
+      // in its finally block.
+      client.clearMaintenanceSession();
+    }
   }
 }

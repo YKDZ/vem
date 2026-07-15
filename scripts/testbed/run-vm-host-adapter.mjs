@@ -150,14 +150,15 @@ function audioCaptureForOperation(operation) {
   if (!Number.isInteger(sessionId) || sessionId < 1)
     throw new Error("--active-kiosk-session-id must be a positive integer");
   return {
-    schemaVersion: "vm-default-audio-capture-request/v1",
+    schemaVersion: "vm-selected-audio-capture-request/v2",
     activeKioskSession: {
       sessionUser: readOption("--active-kiosk-session-user"),
       sessionId,
     },
-    nativeCue: {
-      source: "tauri_native_audio",
-      command: "play_machine_audio",
+    selectedEndpointId: readOption("--selected-audio-endpoint-id"),
+    daemonCalibration: {
+      source: "vending_daemon_ipc",
+      command: "audio_output_calibration",
       challenge: randomBytes(32).toString("hex"),
     },
     threshold: {
@@ -431,6 +432,23 @@ async function main() {
         throw new Error(
           "adapter report does not bind admitted Factory provenance",
         );
+      if (operation === "capture-default-audio") {
+        const calibrationEvidence = report.evidence.find(
+          (entry) => entry.role === "daemon-audio-calibration-response",
+        );
+        if (!calibrationEvidence)
+          throw new Error("daemon calibration response evidence is missing");
+        const source = join(
+          dirname(out),
+          "evidence",
+          runId,
+          nonce,
+          calibrationEvidence.fileName,
+        );
+        const responseOut = readOption("--daemon-calibration-response-out");
+        mkdirSync(dirname(responseOut), { recursive: true });
+        writeFileSync(responseOut, readFileSync(source), { mode: 0o600 });
+      }
       writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, {
         mode: 0o600,
       });

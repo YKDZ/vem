@@ -9,6 +9,7 @@ import type {
   WifiNetwork,
 } from "@/daemon/schemas";
 
+import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePanel.vue";
 import { DaemonUnavailableError, daemonClient } from "@/daemon/client";
 import {
   networkSettingsResponseSchema,
@@ -726,6 +727,12 @@ onUnmounted(() => {
             </button>
           </form>
 
+          <VisionCameraMaintenancePanel
+            v-else-if="currentTask?.kind === 'run_hardware_acceptance'"
+            :maintenance-authorized="maintenanceSessionAuthorized"
+            mode="bring-up"
+          />
+
           <button
             v-else-if="currentTask"
             class="kiosk-touch-target primary-action"
@@ -738,7 +745,7 @@ onUnmounted(() => {
                 ? "重新读取运行档案"
                 : currentTask.intent === "retry_maintenance_tunnel"
                   ? "重试维护隧道"
-                : "前往维护控制台继续"
+                  : "前往维护控制台继续"
             }}
           </button>
 

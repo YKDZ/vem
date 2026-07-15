@@ -1530,17 +1530,23 @@ function assertAudioCaptureRequest(value, path, issues) {
   if (
     !assertExactKeys(
       value,
-      ["schemaVersion", "activeKioskSession", "nativeCue", "threshold"],
+      [
+        "schemaVersion",
+        "activeKioskSession",
+        "selectedEndpointId",
+        "daemonCalibration",
+        "threshold",
+      ],
       path,
       issues,
     )
   )
     return;
-  if (value.schemaVersion !== "vm-default-audio-capture-request/v1")
+  if (value.schemaVersion !== "vm-selected-audio-capture-request/v2")
     issue(
       issues,
       `${path}.schemaVersion`,
-      "must be vm-default-audio-capture-request/v1",
+      "must be vm-selected-audio-capture-request/v2",
     );
   assertActiveKioskSession(
     value.activeKioskSession,
@@ -1549,34 +1555,45 @@ function assertAudioCaptureRequest(value, path, issues) {
   );
   if (
     assertExactKeys(
-      value.nativeCue,
+      value.daemonCalibration,
       ["source", "command", "challenge"],
-      `${path}.nativeCue`,
+      `${path}.daemonCalibration`,
       issues,
     )
   ) {
-    if (value.nativeCue.source !== "tauri_native_audio")
+    if (value.daemonCalibration.source !== "vending_daemon_ipc")
       issue(
         issues,
-        `${path}.nativeCue.source`,
-        "must require the Tauri native audio path",
+        `${path}.daemonCalibration.source`,
+        "must require the daemon IPC audio path",
       );
-    if (value.nativeCue.command !== "play_machine_audio")
+    if (value.daemonCalibration.command !== "audio_output_calibration")
       issue(
         issues,
-        `${path}.nativeCue.command`,
-        "must use the existing native audio command",
+        `${path}.daemonCalibration.command`,
+        "must use the daemon calibration command",
       );
     if (
-      typeof value.nativeCue.challenge !== "string" ||
-      !/^[a-f0-9]{32,128}$/.test(value.nativeCue.challenge)
+      typeof value.daemonCalibration.challenge !== "string" ||
+      !/^[a-f0-9]{32,128}$/.test(value.daemonCalibration.challenge)
     )
       issue(
         issues,
-        `${path}.nativeCue.challenge`,
+        `${path}.daemonCalibration.challenge`,
         "must be a high-entropy cue challenge",
       );
   }
+  if (
+    typeof value.selectedEndpointId !== "string" ||
+    value.selectedEndpointId.length < 1 ||
+    value.selectedEndpointId.length > 512 ||
+    /[\u0000-\u001f\u007f]/u.test(value.selectedEndpointId)
+  )
+    issue(
+      issues,
+      `${path}.selectedEndpointId`,
+      "must name the daemon-selected stable endpoint",
+    );
   if (
     assertExactKeys(
       value.threshold,
@@ -1628,7 +1645,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
         "captureOperationReference",
         "activeKioskSession",
         "endpoint",
-        "nativeCue",
+        "daemonCalibration",
         "capture",
       ],
       path,
@@ -1636,11 +1653,11 @@ function assertAudioCaptureResult(value, request, report, issues) {
     )
   )
     return;
-  if (value.schemaVersion !== "vm-default-audio-capture-result/v1")
+  if (value.schemaVersion !== "vm-selected-audio-capture-result/v2")
     issue(
       issues,
       `${path}.schemaVersion`,
-      "must be vm-default-audio-capture-result/v1",
+      "must be vm-selected-audio-capture-result/v2",
     );
   if (value.runId !== request.runId)
     issue(issues, `${path}.runId`, "must bind the adapter run identity");
@@ -1673,7 +1690,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
   if (
     assertExactKeys(
       value.endpoint,
-      ["status", "identity"],
+      ["status", "identity", "stableEndpointId"],
       `${path}.endpoint`,
       issues,
     )
@@ -1682,44 +1699,98 @@ function assertAudioCaptureResult(value, request, report, issues) {
       issue(
         issues,
         `${path}.endpoint.status`,
-        "must attest the selected Windows default render endpoint",
+        "must attest the selected stable Windows render endpoint",
       );
     if (value.endpoint.identity !== report.guest?.defaultAudioIdentity)
       issue(
         issues,
         `${path}.endpoint.identity`,
-        "must bind the observed default audio endpoint",
+        "must bind the observed selected audio endpoint",
+      );
+    if (
+      value.endpoint.stableEndpointId !==
+      request.audioCapture?.selectedEndpointId
+    )
+      issue(
+        issues,
+        `${path}.endpoint.stableEndpointId`,
+        "must bind the daemon-selected stable endpoint",
       );
   }
   if (
     assertExactKeys(
-      value.nativeCue,
-      ["status", "source", "command", "challenge", "emittedAt"],
-      `${path}.nativeCue`,
+      value.daemonCalibration,
+      [
+        "status",
+        "source",
+        "command",
+        "challenge",
+        "endpointId",
+        "responseArtifact",
+        "responseDigest",
+        "responseFileName",
+        "startedAt",
+        "completedAt",
+      ],
+      `${path}.daemonCalibration`,
       issues,
     )
   ) {
-    if (value.nativeCue.status !== "emitted")
+    if (value.daemonCalibration.status !== "completed")
       issue(
         issues,
-        `${path}.nativeCue.status`,
-        "must attest a native cue emitted from the kiosk session",
+        `${path}.daemonCalibration.status`,
+        "must attest a completed daemon calibration",
       );
     if (
-      value.nativeCue.source !== request.audioCapture?.nativeCue?.source ||
-      value.nativeCue.command !== request.audioCapture?.nativeCue?.command ||
-      value.nativeCue.challenge !== request.audioCapture?.nativeCue?.challenge
+      value.daemonCalibration.source !==
+        request.audioCapture?.daemonCalibration?.source ||
+      value.daemonCalibration.command !==
+        request.audioCapture?.daemonCalibration?.command ||
+      value.daemonCalibration.challenge !==
+        request.audioCapture?.daemonCalibration?.challenge ||
+      value.daemonCalibration.endpointId !==
+        request.audioCapture?.selectedEndpointId
     )
       issue(
         issues,
-        `${path}.nativeCue`,
-        "must match the requested Tauri native audio cue",
+        `${path}.daemonCalibration`,
+        "must match the requested daemon calibration",
       );
     assertTimestamp(
-      value.nativeCue.emittedAt,
-      `${path}.nativeCue.emittedAt`,
+      value.daemonCalibration.startedAt,
+      `${path}.daemonCalibration.startedAt`,
       issues,
     );
+    assertTimestamp(
+      value.daemonCalibration.completedAt,
+      `${path}.daemonCalibration.completedAt`,
+      issues,
+    );
+    if (
+      !EVIDENCE_IDENTITY.test(value.daemonCalibration.responseArtifact ?? "") ||
+      !SHA256_DIGEST.test(value.daemonCalibration.responseDigest ?? "") ||
+      value.daemonCalibration.responseArtifact !==
+        `factory-evidence://${value.daemonCalibration.responseDigest?.replace(":", "/")}`
+    )
+      issue(
+        issues,
+        `${path}.daemonCalibration.responseArtifact`,
+        "must bind the separately persisted raw daemon response",
+      );
+    const responseEvidence = report.evidence?.find(
+      (entry) => entry?.role === "daemon-audio-calibration-response",
+    );
+    if (
+      value.daemonCalibration.responseArtifact !== responseEvidence?.identity ||
+      value.daemonCalibration.responseDigest !== responseEvidence?.digest ||
+      value.daemonCalibration.responseFileName !== responseEvidence?.fileName
+    )
+      issue(
+        issues,
+        `${path}.daemonCalibration`,
+        "must reference the runner-exported raw daemon response evidence",
+      );
   }
   if (
     !assertExactKeys(
@@ -1829,18 +1900,24 @@ function assertAudioCaptureResult(value, request, report, issues) {
     issues,
   );
   const started = Date.parse(value.capture.startedAt);
-  const emitted = Date.parse(value.nativeCue?.emittedAt);
+  const calibrationStarted = Date.parse(value.daemonCalibration?.startedAt);
+  const calibrationCompleted = Date.parse(value.daemonCalibration?.completedAt);
   const completed = Date.parse(value.capture.completedAt);
   if (
     Number.isFinite(started) &&
-    Number.isFinite(emitted) &&
+    Number.isFinite(calibrationStarted) &&
+    Number.isFinite(calibrationCompleted) &&
     Number.isFinite(completed) &&
-    !(started <= emitted && emitted <= completed)
+    !(
+      started <= calibrationStarted &&
+      calibrationStarted <= calibrationCompleted &&
+      calibrationCompleted <= completed
+    )
   )
     issue(
       issues,
       path,
-      "must capture the Tauri cue within one synchronized PCM interval",
+      "must capture the completed daemon calibration within one synchronized PCM interval",
     );
 }
 
@@ -3074,12 +3151,17 @@ export function validateVmHostAdapterReport(input, requestInput) {
       const path = `report.evidence[${index}]`;
       const entryKeys =
         entry?.role === "display-capture" ||
-        entry?.role === "default-audio-capture"
+        entry?.role === "default-audio-capture" ||
+        entry?.role === "daemon-audio-calibration-response"
           ? ["role", "identity", "digest", "fileName"]
           : ["role", "identity", "digest"];
       if (!assertExactKeys(entry, entryKeys, path, issues)) return;
       if (
-        !new Set(["display-capture", "default-audio-capture"]).has(entry.role)
+        !new Set([
+          "display-capture",
+          "default-audio-capture",
+          "daemon-audio-calibration-response",
+        ]).has(entry.role)
       )
         issue(issues, `${path}.role`, "must be a supported evidence role");
       const identity =
@@ -3101,10 +3183,16 @@ export function validateVmHostAdapterReport(input, requestInput) {
         issue(issues, path, "identity and digest must name the same evidence");
       if (
         entry.role === "display-capture" ||
-        entry.role === "default-audio-capture"
+        entry.role === "default-audio-capture" ||
+        entry.role === "daemon-audio-calibration-response"
       ) {
         const expectedFileName = `${entry.digest?.slice(7)}.`;
-        const extension = entry.role === "display-capture" ? "png" : "wav";
+        const extension =
+          entry.role === "display-capture"
+            ? "png"
+            : entry.role === "default-audio-capture"
+              ? "wav"
+              : "json";
         if (
           typeof entry.fileName !== "string" ||
           !new RegExp(`^[a-f0-9]{64}\\.${extension}$`).test(entry.fileName) ||
@@ -3118,18 +3206,18 @@ export function validateVmHostAdapterReport(input, requestInput) {
       }
     });
     assertUniqueRoles(report.evidence, "report.evidence", issues);
-    const expectedEvidenceRole =
+    const expectedEvidenceRoles =
       request.operation === "capture-display"
-        ? "display-capture"
+        ? ["display-capture"]
         : request.operation === "capture-default-audio"
-          ? "default-audio-capture"
+          ? ["default-audio-capture", "daemon-audio-calibration-response"]
           : null;
     if (
-      expectedEvidenceRole &&
+      expectedEvidenceRoles &&
       report.result === "succeeded" &&
       (!sameValues(
         report.evidence.map((entry) => entry?.role),
-        [expectedEvidenceRole],
+        expectedEvidenceRoles,
       ) ||
         !sameValues(report.completedOperations, [request.operation]))
     )
@@ -3138,7 +3226,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "report.evidence",
         "must be produced only by its completed capture operation",
       );
-    if (!expectedEvidenceRole && report.evidence.length !== 0)
+    if (!expectedEvidenceRoles && report.evidence.length !== 0)
       issue(
         issues,
         "report.evidence",
@@ -3292,7 +3380,11 @@ export function validateVmHostAdapterReport(input, requestInput) {
       role: entry.role,
       identity: entry.identity,
       digest: entry.digest,
-      ...(["display-capture", "default-audio-capture"].includes(entry.role)
+      ...([
+        "display-capture",
+        "default-audio-capture",
+        "daemon-audio-calibration-response",
+      ].includes(entry.role)
         ? { fileName: entry.fileName }
         : {}),
     })),
@@ -3539,6 +3631,63 @@ function assertScannerCodeNotPersisted(directory, scannerCode) {
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
+}
+
+function inspectExportedDaemonCalibrationResponse({
+  directory,
+  evidence,
+  calibration,
+  request,
+}) {
+  if (!evidence || evidence.role !== "daemon-audio-calibration-response")
+    throw new Error("daemon calibration response evidence is missing");
+  const path = join(directory, evidence.fileName);
+  const bytes = readFileSync(path);
+  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  if (
+    digest !== evidence.digest ||
+    evidence.identity !== `factory-evidence://${digest.replace(":", "/")}` ||
+    calibration.responseArtifact !== evidence.identity ||
+    calibration.responseDigest !== evidence.digest ||
+    calibration.responseFileName !== evidence.fileName
+  )
+    throw new Error("daemon calibration response digest binding is invalid");
+  const response = JSON.parse(bytes.toString("utf8"));
+  const responseKeys = [
+    "challenge",
+    "configGeneration",
+    "configRevision",
+    "endpointId",
+    "observationGeneration",
+    "observationRevision",
+    "proposedSettingsDigest",
+    "testEvidenceExpiresAt",
+    "testEvidenceToken",
+  ];
+  const evidenceExpiresAt = Date.parse(response.testEvidenceExpiresAt);
+  const calibrationCompletedAt = Date.parse(calibration.completedAt);
+  if (
+    JSON.stringify(Object.keys(response).sort()) !==
+      JSON.stringify(responseKeys) ||
+    response.endpointId !== request.audioCapture.selectedEndpointId ||
+    response.challenge !== request.audioCapture.daemonCalibration.challenge ||
+    typeof response.testEvidenceToken !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      response.testEvidenceToken,
+    ) ||
+    !Number.isFinite(evidenceExpiresAt) ||
+    !Number.isFinite(calibrationCompletedAt) ||
+    evidenceExpiresAt <= calibrationCompletedAt ||
+    !SHA256_DIGEST.test(response.observationRevision ?? "") ||
+    !Number.isInteger(response.observationGeneration) ||
+    response.observationGeneration < 0 ||
+    !SHA256_DIGEST.test(response.configRevision ?? "") ||
+    !Number.isInteger(response.configGeneration) ||
+    response.configGeneration < 0 ||
+    !SHA256_DIGEST.test(response.proposedSettingsDigest ?? "")
+  )
+    throw new Error("raw daemon calibration response is invalid");
+  return response;
 }
 
 function processGroupExists(child) {
@@ -3962,6 +4111,17 @@ export async function runVmHostAdapter({
           evidence,
           capture: outcome.report.defaultAudioCapture.capture,
         });
+      if (request.operation === "capture-default-audio") {
+        const calibrationEvidence = outcome.report.evidence.find(
+          (entry) => entry.role === "daemon-audio-calibration-response",
+        );
+        inspectExportedDaemonCalibrationResponse({
+          directory: scopedEvidenceDirectory,
+          evidence: calibrationEvidence,
+          calibration: outcome.report.defaultAudioCapture.daemonCalibration,
+          request,
+        });
+      }
     } catch {
       outcome = {
         ...outcome,

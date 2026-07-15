@@ -119,6 +119,8 @@ describe("Factory Personalization Media v1", () => {
   it("rejects unknown fields, case variants of forbidden material, and arbitrary profiles", () => {
     for (const candidate of [
       productionMedia({ unexpected: true }),
+      productionMedia({ privateKeyPem: "platform-payment-private-key" }),
+      productionMedia({ appCertPem: "platform-payment-app-certificate" }),
       productionMedia({ wireGuardPrivateKey: "not-allowed" }),
       productionMedia({
         credentials: {

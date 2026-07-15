@@ -246,15 +246,6 @@ pub struct PlayMachineAudioRequest {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[cfg_attr(not(windows), allow(dead_code))]
 #[serde(rename_all = "camelCase")]
-pub struct MachineAudioOutputCandidate {
-    pub endpoint_id: String,
-    pub friendly_name: String,
-    pub is_default: bool,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[cfg_attr(not(windows), allow(dead_code))]
-#[serde(rename_all = "camelCase")]
 pub struct MachineAudioCompletedEvent {
     pub request_id: String,
 }
@@ -453,19 +444,6 @@ pub fn stop_machine_audio(state: tauri::State<'_, MachineAudioState>) -> Result<
     Ok(())
 }
 
-#[tauri::command]
-pub fn list_machine_audio_outputs() -> Result<Vec<MachineAudioOutputCandidate>, String> {
-    #[cfg(not(windows))]
-    {
-        Ok(Vec::new())
-    }
-
-    #[cfg(windows)]
-    {
-        list_windows_audio_outputs()
-    }
-}
-
 fn default_volume() -> f32 {
     1.0
 }
@@ -501,43 +479,6 @@ fn open_requested_output_sink(output_device_id: Option<&str>) -> Result<MixerDev
         }
         None => Err("configured audio output binding is required".to_string()),
     }
-}
-
-#[cfg(windows)]
-fn list_windows_audio_outputs() -> Result<Vec<MachineAudioOutputCandidate>, String> {
-    let host = rodio::cpal::default_host();
-    let default_output_id = host
-        .default_output_device()
-        .and_then(|device| device.id().ok().map(|id| id.1));
-    let mut outputs = host
-        .output_devices()
-        .map_err(|error| format!("enumerate audio outputs failed: {error}"))?
-        .map(|device| {
-            let endpoint_id = device
-                .id()
-                .map_err(|error| format!("read audio output identity failed: {error}"))?
-                .1;
-            let friendly_name = device
-                .description()
-                .map(|description| description.name().to_string())
-                .map_err(|error| format!("read audio output name failed: {error}"))?;
-            Ok(MachineAudioOutputCandidate {
-                is_default: default_output_id
-                    .as_deref()
-                    .is_some_and(|default_id| default_id == endpoint_id),
-                endpoint_id,
-                friendly_name,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    outputs.sort_by(|left, right| {
-        right
-            .is_default
-            .cmp(&left.is_default)
-            .then_with(|| left.friendly_name.cmp(&right.friendly_name))
-            .then_with(|| left.endpoint_id.cmp(&right.endpoint_id))
-    });
-    Ok(outputs)
 }
 
 #[cfg(windows)]

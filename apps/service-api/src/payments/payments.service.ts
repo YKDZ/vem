@@ -1238,16 +1238,22 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       ...(existingRow?.publicConfigJson ?? {}),
       ...(input.publicConfigJson ?? {}),
     };
-    const nextPublicConfig = (() => {
-      try {
-        return this.normalizeProviderPublicConfig(
-          input.providerCode,
-          basePublicConfig,
-        );
-      } catch {
-        return basePublicConfig;
-      }
-    })();
+    const publicConfigPatch = input.publicConfigJson;
+    if (
+      input.providerCode === "alipay" &&
+      (publicConfigPatch?.mode === "sandbox" ||
+        publicConfigPatch?.mode === "production") &&
+      !Object.prototype.hasOwnProperty.call(publicConfigPatch, "gatewayUrl")
+    ) {
+      basePublicConfig["gatewayUrl"] =
+        publicConfigPatch.mode === "sandbox"
+          ? "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
+          : "https://openapi.alipay.com/gateway.do";
+    }
+    const nextPublicConfig = this.normalizeProviderPublicConfig(
+      input.providerCode,
+      basePublicConfig,
+    );
 
     this.assertProviderConfigComplete({
       providerCode: input.providerCode,

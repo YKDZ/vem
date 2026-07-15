@@ -14,6 +14,11 @@ function makeReadiness(
     status: "ready",
     checkedAt: new Date().toISOString(),
     environment: "development",
+    providerEnvironment: {
+      environment: "unavailable",
+      readiness: "blocked",
+      errorCategory: "provider_unconfigured",
+    },
     checks: [],
     ...overrides,
   };

@@ -1,10 +1,21 @@
 import {
+  type DaemonIpcAudioOutputBindingSnapshot,
+  type DaemonIpcAudioOutputConfirmRequest,
+  type DaemonIpcAudioOutputTestRequest,
+  type DaemonIpcAudioOutputTestResponse,
+  daemonIpcAudioOutputBindingSnapshotSchema,
+  daemonIpcAudioOutputConfirmRequestSchema,
+  daemonIpcAudioOutputTestRequestSchema,
+  daemonIpcAudioOutputTestResponseSchema,
   isManagedMediaReference,
   stockMaintenanceBatchResponseSchema,
   stockMaintenanceTaskSchema,
   type StockMaintenanceBatchRequest,
   type StockMaintenanceBatchResponse,
   type StockMaintenanceTask,
+  type VisionCameraMaintenanceConfirmRequest,
+  type VisionCameraMaintenanceRole,
+  type VisionCameraMaintenanceTestRequest,
 } from "@vem/shared";
 
 import { managedMediaDiagnosticKey } from "@/catalog/managed-media";
@@ -19,12 +30,14 @@ import {
   configSummaryFromRuntimeConfigurationSummary,
   daemonEventSchema,
   hardwareSelfCheckSchema,
+  manualDispenseDiagnosticResultSchema,
   deviceBindingActivationSchema,
   deviceBindingSnapshotSchema,
   deviceBindingTestResultSchema,
   environmentControlResultSchema,
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
+  paymentProviderEnvironmentDiagnosticSchema,
   machineSaleReadinessSchema,
   naturalContextSnapshotSchema,
   networkSettingsResponseSchema,
@@ -49,6 +62,7 @@ import {
   type DeviceBindingTestResult,
   type EnvironmentControlResult,
   type MachineSaleReadiness,
+  type PaymentProviderEnvironmentDiagnostic,
   type NaturalContextSnapshot,
   type MaintenanceEnrollmentStatus,
   type MaintenanceSession,
@@ -61,7 +75,13 @@ import {
   type TransactionSnapshot,
   type UnknownDaemonEvent,
   type VisionStatus,
+  type VisionCameraMaintenanceConfirmResponse,
+  type VisionCameraMaintenanceContract,
+  type VisionCameraMaintenanceTestResponse,
   type WifiScanResponse,
+  visionCameraMaintenanceConfirmResponseProxySchema,
+  visionCameraMaintenanceContractResponseSchema,
+  visionCameraMaintenanceTestResponseProxySchema,
 } from "./schemas";
 
 function normalizeSaleViewManagedMedia(payload: unknown): {
@@ -138,6 +158,8 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   retry401?: boolean;
+  maintenanceSessionOverride?: MaintenanceSession | null;
+  signal?: AbortSignal;
 };
 
 type Subscription = {
@@ -200,6 +222,7 @@ async function readDaemonResponseText(
   return { exceeded: false, text: new TextDecoder().decode(body) };
 }
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const MAINTENANCE_REVOKE_TIMEOUT_MS = 2_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -231,7 +254,10 @@ export class DaemonApiClient {
     options: RequestOptions = {},
   ): Promise<unknown> {
     const connection = await this.initialize();
-    const maintenanceSession = this.currentMaintenanceSession;
+    const maintenanceSession =
+      options.maintenanceSessionOverride === undefined
+        ? this.currentMaintenanceSession
+        : options.maintenanceSessionOverride;
     const response = await fetch(`${connection.baseUrl}${path}`, {
       method: options.method ?? "GET",
       headers: {
@@ -243,6 +269,7 @@ export class DaemonApiClient {
       },
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal,
     }).catch((error: unknown) => {
       throw new DaemonUnavailableError("daemon request failed", error);
     });
@@ -272,7 +299,7 @@ export class DaemonApiClient {
       if (response.status === 403 && maintenanceSession) {
         // The daemon owns session state. A restart or scope denial must not
         // leave a stale browser-side capability displayed as authorized.
-        this.clearMaintenanceSession();
+        this.clearMaintenanceSessionForId(maintenanceSession.sessionId);
       }
       if (body.exceeded) {
         throw new DaemonUnavailableError(
@@ -334,6 +361,48 @@ export class DaemonApiClient {
     return parsed;
   }
 
+  private async requestBlob(
+    path: string,
+    options: Omit<RequestOptions, "body"> = {},
+  ): Promise<Blob> {
+    const connection = await this.initialize();
+    const maintenanceSession = this.currentMaintenanceSession;
+    const response = await fetch(`${connection.baseUrl}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        Authorization: `Bearer ${connection.token}`,
+        ...(maintenanceSession
+          ? { "x-vem-maintenance-session": maintenanceSession.sessionId }
+          : {}),
+      },
+    }).catch((error: unknown) => {
+      throw new DaemonUnavailableError("daemon request failed", error);
+    });
+
+    if (response.status === 401 && options.retry401 !== false) {
+      this.clearMaintenanceSession();
+      await this.initialize(true);
+      return this.requestBlob(path, { ...options, retry401: false });
+    }
+
+    if (!response.ok) {
+      const body = await readDaemonResponseText(response).catch(() => ({
+        exceeded: false as const,
+        text: "",
+      }));
+      throw new DaemonUnavailableError(
+        `${path} returned HTTP ${response.status}`,
+        undefined,
+        {
+          statusCode: response.status,
+          responseBody: body.exceeded ? undefined : body.text,
+        },
+      );
+    }
+
+    return response.blob();
+  }
+
   async initialize(force = false): Promise<DaemonConnectionInfo> {
     if (!this.connection || force) {
       this.connection = await getDaemonConnectionInfo();
@@ -350,7 +419,7 @@ export class DaemonApiClient {
       this.maintenanceSession &&
       Date.parse(this.maintenanceSession.expiresAt) <= Date.now()
     ) {
-      this.clearMaintenanceSession();
+      return null;
     }
     return this.maintenanceSession;
   }
@@ -433,11 +502,32 @@ export class DaemonApiClient {
     );
   }
 
-  async saveMachineAudioSettings(body: unknown): Promise<ConfigSummary> {
+  async getAudioOutputBinding(): Promise<DaemonIpcAudioOutputBindingSnapshot> {
+    return daemonIpcAudioOutputBindingSnapshotSchema.parse(
+      await this.request("/v1/audio-output-binding"),
+    );
+  }
+
+  async testAudioOutput(
+    body: DaemonIpcAudioOutputTestRequest,
+  ): Promise<DaemonIpcAudioOutputTestResponse> {
+    const request = daemonIpcAudioOutputTestRequestSchema.parse(body);
+    return daemonIpcAudioOutputTestResponseSchema.parse(
+      await this.request("/v1/audio-output-binding/test", {
+        method: "POST",
+        body: request,
+      }),
+    );
+  }
+
+  async confirmAudioOutput(
+    body: DaemonIpcAudioOutputConfirmRequest,
+  ): Promise<ConfigSummary> {
+    const request = daemonIpcAudioOutputConfirmRequestSchema.parse(body);
     return configSummaryFromRuntimeConfigurationSummary(
-      await this.request("/v1/config/audio-settings", {
-        method: "PUT",
-        body,
+      await this.request("/v1/audio-output-binding/confirm", {
+        method: "POST",
+        body: request,
       }),
     );
   }
@@ -493,6 +583,36 @@ export class DaemonApiClient {
     }
   }
 
+  async revokeMaintenanceSessionRoute(
+    route: MaintenanceSessionRouteScope,
+  ): Promise<void> {
+    const session = this.maintenanceSession;
+    if (this.maintenanceSessionRouteScope !== route || !session) {
+      return;
+    }
+    await this.revokeCapturedMaintenanceSession(session);
+  }
+
+  private async revokeCapturedMaintenanceSession(
+    session: MaintenanceSession,
+  ): Promise<void> {
+    const abort = new AbortController();
+    const timeout = globalThis.setTimeout(() => {
+      abort.abort();
+    }, MAINTENANCE_REVOKE_TIMEOUT_MS);
+    try {
+      await this.request("/v1/maintenance/sessions/revoke", {
+        method: "POST",
+        retry401: false,
+        maintenanceSessionOverride: session,
+        signal: abort.signal,
+      });
+    } finally {
+      globalThis.clearTimeout(timeout);
+      this.clearMaintenanceSessionForId(session.sessionId);
+    }
+  }
+
   onMaintenanceSessionInvalidated(listener: () => void): () => void {
     this.maintenanceSessionInvalidationListeners.add(listener);
     return () => {
@@ -514,6 +634,12 @@ export class DaemonApiClient {
     }
   }
 
+  private clearMaintenanceSessionForId(sessionId: string): void {
+    if (this.maintenanceSession?.sessionId === sessionId) {
+      this.clearMaintenanceSession();
+    }
+  }
+
   private scheduleMaintenanceSessionExpiry(): void {
     if (this.maintenanceSessionExpiryTimer !== null) {
       globalThis.clearTimeout(this.maintenanceSessionExpiryTimer);
@@ -523,14 +649,22 @@ export class DaemonApiClient {
     if (!session) return;
     const remainingMs = Date.parse(session.expiresAt) - Date.now();
     if (remainingMs <= 0) {
-      this.clearMaintenanceSession();
+      void this.revokeCapturedMaintenanceSession(session).catch(
+        () => undefined,
+      );
       return;
     }
     this.maintenanceSessionExpiryTimer = globalThis.setTimeout(
       () => {
         this.maintenanceSessionExpiryTimer = null;
-        if (this.currentMaintenanceSession === null) return;
-        this.scheduleMaintenanceSessionExpiry();
+        if (this.maintenanceSession?.sessionId !== session.sessionId) return;
+        if (Date.parse(session.expiresAt) > Date.now()) {
+          this.scheduleMaintenanceSessionExpiry();
+          return;
+        }
+        void this.revokeCapturedMaintenanceSession(session).catch(() => {
+          // The revoke method clears this exact local session in finally.
+        });
       },
       Math.min(remainingMs, MAX_TIMEOUT_MS),
     );
@@ -603,6 +737,12 @@ export class DaemonApiClient {
     );
   }
 
+  async getPaymentEnvironmentDiagnostic(): Promise<PaymentProviderEnvironmentDiagnostic> {
+    return paymentProviderEnvironmentDiagnosticSchema.parse(
+      await this.request("/v1/maintenance/payment-environment"),
+    );
+  }
+
   async createOrder(body: unknown): Promise<TransactionSnapshot> {
     return transactionSnapshotSchema.parse(
       await this.request("/v1/intents/create-order", {
@@ -648,6 +788,55 @@ export class DaemonApiClient {
     return visionStatusSchema.parse(await this.request("/v1/vision/status"));
   }
 
+  async getVisionCameraMaintenanceContract(): Promise<VisionCameraMaintenanceContract> {
+    return visionCameraMaintenanceContractResponseSchema.parse(
+      await this.request("/v1/vision/camera-maintenance"),
+    );
+  }
+
+  async refreshVisionCameraMaintenanceContract(): Promise<VisionCameraMaintenanceContract> {
+    return visionCameraMaintenanceContractResponseSchema.parse(
+      await this.request("/v1/vision/camera-maintenance/refresh", {
+        method: "POST",
+      }),
+    );
+  }
+
+  async getVisionCameraMaintenancePreviewBlob(
+    candidateId: string,
+  ): Promise<Blob> {
+    return this.requestBlob(
+      `/v1/vision/camera-maintenance/candidates/${encodeURIComponent(candidateId)}/preview.jpg`,
+    );
+  }
+
+  async testVisionCameraRole(
+    role: VisionCameraMaintenanceRole,
+    request: VisionCameraMaintenanceTestRequest,
+  ): Promise<VisionCameraMaintenanceTestResponse> {
+    return visionCameraMaintenanceTestResponseProxySchema.parse(
+      await this.request(`/v1/vision/camera-maintenance/roles/${role}/test`, {
+        method: "POST",
+        body: request,
+      }),
+    );
+  }
+
+  async confirmVisionCameraRole(
+    role: VisionCameraMaintenanceRole,
+    request: VisionCameraMaintenanceConfirmRequest,
+  ): Promise<VisionCameraMaintenanceConfirmResponse> {
+    return visionCameraMaintenanceConfirmResponseProxySchema.parse(
+      await this.request(
+        `/v1/vision/camera-maintenance/roles/${role}/confirm`,
+        {
+          method: "POST",
+          body: request,
+        },
+      ),
+    );
+  }
+
   async getNaturalContext(): Promise<NaturalContextSnapshot> {
     return naturalContextSnapshotSchema.parse(
       await this.request("/v1/natural-context"),
@@ -663,6 +852,15 @@ export class DaemonApiClient {
   async runHardwareSelfCheck(): Promise<HardwareSelfCheck> {
     return hardwareSelfCheckSchema.parse(
       await this.request("/v1/hardware/self-check", { method: "POST" }),
+    );
+  }
+
+  async runManualDispenseDiagnostic(body: unknown) {
+    return manualDispenseDiagnosticResultSchema.parse(
+      await this.request("/v1/maintenance/manual-dispense-diagnostic", {
+        method: "POST",
+        body,
+      }),
     );
   }
 
