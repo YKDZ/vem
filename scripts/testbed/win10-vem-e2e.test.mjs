@@ -1725,8 +1725,8 @@ describe("win10-vem-e2e reset planning", () => {
       'Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim"',
       provisioningStart,
     );
-    const restart = script.indexOf(
-      "$recoveredIpc = Restart-DaemonIpcAfterProvisioning ",
+    const convergence = script.indexOf(
+      "$recoveredIpc = Wait-DaemonIpcAfterProvisioning ",
       provisioningStart,
     );
     const claimHttpCatch = script.indexOf("} catch {", claim);
@@ -1747,11 +1747,11 @@ describe("win10-vem-e2e reset planning", () => {
     assert.ok(daemonIpcWait < configRead);
     assert.ok(configRead < claim);
     assert.ok(claim < claimHttpCatch);
-    assert.ok(claimHttpCatch < restart);
-    assert.match(script, /restartAttempted = \$true/);
+    assert.ok(claimHttpCatch < convergence);
+    assert.match(script, /runtimeReconfigureObserved = \$true/);
     assert.match(
       script,
-      /recoveredAfterRestart = \[bool\]\$recoveredIpc\.recovered/,
+      /recoveredAfterReconfigure = \[bool\]\$recoveredIpc\.recovered/,
     );
     assert.match(script, /recoveryFailure = \$_\.Exception\.Message/);
     assert.match(script, /claimStatus = "provisioned"/);
@@ -1875,21 +1875,17 @@ try {
     assert.match(result.failure, /last service start error.*SCM access denied/);
   });
 
-  it("restarts the daemon service before accepting post-claim IPC recovery", () => {
+  it("waits for the daemon-owned post-claim reconfigure without restarting SCM", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
       machineCode: "VEM-TESTBED-WINVM-01",
     });
     const result = runPowerShellSemanticHarness(
-      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Restart-DaemonIpcAfterProvisioning")}`,
+      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioning")}`,
       `
 $calls = [System.Collections.Generic.List[string]]::new()
 $calls.Add("claim")
-function Restart-Service {
-  param([string]$Name, [switch]$Force, $ErrorAction)
-  $calls.Add("restart-service")
-}
 function Get-Service {
   param([string]$Name, $ErrorAction)
   $calls.Add("get-service")
@@ -1904,15 +1900,22 @@ function Read-JsonFile {
 function Get-IpcBaseUrl { param($Ready) "http://127.0.0.1:7891" }
 function Invoke-IpcJson {
   param([string]$Method, [string]$Uri, $Headers, $Body = $null, [int]$TimeoutSec = 20)
-  $calls.Add("health:$TimeoutSec")
-  [pscustomobject]@{ status = "ok" }
+  if ($Uri.EndsWith("/healthz")) {
+    $calls.Add("health:$TimeoutSec")
+    return [pscustomobject]@{ status = "ok" }
+  }
+  $calls.Add("config:$TimeoutSec")
+  if (($calls | Where-Object { $_ -like "config:*" }).Count -eq 1) {
+    return [pscustomobject]@{ machineCode = "OLD-MACHINE"; provisioned = $false }
+  }
+  [pscustomobject]@{ machineCode = "VEM-TESTBED-WINVM-01"; provisioned = $true }
 }
 function Start-Sleep {
   param([int]$Milliseconds)
   $calls.Add("sleep:$Milliseconds")
 }
 
-$daemonIpc = Restart-DaemonIpcAfterProvisioning "C:\\daemon-ready.json"
+$daemonIpc = Wait-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" "VEM-TESTBED-WINVM-01" 3 1
 @{
   calls = @($calls)
   recovered = $daemonIpc.recovered
@@ -1924,45 +1927,50 @@ $daemonIpc = Restart-DaemonIpcAfterProvisioning "C:\\daemon-ready.json"
 
     assert.deepEqual(result.calls, [
       "claim",
-      "restart-service",
       "get-service",
       "read-ready",
       "health:2",
+      "config:2",
+      "sleep:1",
+      "get-service",
+      "read-ready",
+      "health:2",
+      "config:2",
     ]);
     assert.equal(result.recovered, true);
-    assert.equal(result.attempts, 1);
+    assert.equal(result.attempts, 2);
     assert.equal(
       result.recoveryEvidence,
-      "scm_restart_completed_then_ipc_healthy",
+      "daemon_runtime_reconfigure_completed_then_ipc_healthy",
     );
+    assert.doesNotMatch(script, /Restart-Service -Name "VemVendingDaemon"/);
   });
 
-  it("fails post-claim recovery when the SCM restart fails", () => {
+  it("fails post-claim convergence when the daemon never exposes the claimed config", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
       machineCode: "VEM-TESTBED-WINVM-01",
     });
     const result = runPowerShellSemanticHarness(
-      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Restart-DaemonIpcAfterProvisioning")}`,
+      `${extractPowerShellFunction(script, "Wait-DaemonIpc")}\n${extractPowerShellFunction(script, "Wait-DaemonIpcAfterProvisioning")}`,
       `
 $calls = [System.Collections.Generic.List[string]]::new()
 $calls.Add("claim")
-function Restart-Service {
-  param([string]$Name, [switch]$Force, $ErrorAction)
-  $calls.Add("restart-service")
-  throw "SCM restart denied"
-}
-function Get-Service { throw "not reached" }
+function Get-Service { [pscustomobject]@{ Status = "Running" } }
 function Start-Service { throw "not reached" }
-function Read-JsonFile { throw "not reached" }
-function Get-IpcBaseUrl { throw "not reached" }
-function Invoke-IpcJson { throw "not reached" }
-function Start-Sleep { throw "not reached" }
+function Read-JsonFile { [pscustomobject]@{ ipcToken = "token"; healthzUrl = "http://127.0.0.1:7891/healthz" } }
+function Get-IpcBaseUrl { "http://127.0.0.1:7891" }
+function Invoke-IpcJson {
+  param([string]$Method, [string]$Uri)
+  if ($Uri.EndsWith("/healthz")) { return [pscustomobject]@{ status = "ok" } }
+  [pscustomobject]@{ machineCode = "OLD-MACHINE"; provisioned = $false }
+}
+function Start-Sleep { param([int]$Milliseconds) $calls.Add("sleep:$Milliseconds") }
 
 $failure = $null
 try {
-  Restart-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" | Out-Null
+  Wait-DaemonIpcAfterProvisioning "C:\\daemon-ready.json" "VEM-TESTBED-WINVM-01" 2 1 | Out-Null
 } catch {
   $failure = $_.Exception.Message
 }
@@ -1970,8 +1978,9 @@ try {
 `,
     );
 
-    assert.deepEqual(result.calls, ["claim", "restart-service"]);
-    assert.match(result.failure, /Restart-Service.*SCM restart denied/);
+    assert.deepEqual(result.calls, ["claim", "sleep:1"]);
+    assert.match(result.failure, /claimed daemon config did not converge/);
+    assert.match(result.failure, /OLD-MACHINE/);
   });
 
   it("emits provision diagnostics for missing ready file and token failures", () => {

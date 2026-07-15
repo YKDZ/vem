@@ -4358,23 +4358,42 @@ function Wait-DaemonIpc(
   throw "daemon IPC did not become available after $MaxAttempts attempts: $lastError$serviceStartDiagnostic"
 }
 
-function Restart-DaemonIpcAfterProvisioning([string]$ReadyFilePath) {
-  try {
-    Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
-  } catch {
-    throw "Restart-Service VemVendingDaemon failed: $($_.Exception.Message)"
+function Wait-DaemonIpcAfterProvisioning(
+  [string]$ReadyFilePath,
+  [string]$ExpectedMachineCode,
+  [int]$MaxAttempts = 60,
+  [int]$RetryDelayMilliseconds = 1000
+) {
+  $lastError = $null
+  $lastObservedMachineCode = $null
+  for ($attempt = 0; $attempt -lt $MaxAttempts; $attempt++) {
+    try {
+      $currentIpc = Wait-DaemonIpc $ReadyFilePath 1 0
+      $config = Invoke-IpcJson "GET" "$($currentIpc.baseUrl)/v1/config" $currentIpc.headers -TimeoutSec 2
+      $lastObservedMachineCode = [string]$config.machineCode
+      if (-not [bool]$config.provisioned) {
+        throw "daemon config is not provisioned"
+      }
+      if ($lastObservedMachineCode -ne $ExpectedMachineCode) {
+        throw "daemon config machineCode is $lastObservedMachineCode"
+      }
+      return [ordered]@{
+        ready = $currentIpc.ready
+        baseUrl = $currentIpc.baseUrl
+        headers = $currentIpc.headers
+        attempts = $attempt + 1
+        observedHealth = [bool]$currentIpc.observedHealth
+        recovered = $true
+        recoveryEvidence = "daemon_runtime_reconfigure_completed_then_ipc_healthy"
+      }
+    } catch {
+      $lastError = $_.Exception.Message
+      if ($attempt -lt ($MaxAttempts - 1)) {
+        Start-Sleep -Milliseconds $RetryDelayMilliseconds
+      }
+    }
   }
-
-  $currentIpc = Wait-DaemonIpc $ReadyFilePath
-  return [ordered]@{
-    ready = $currentIpc.ready
-    baseUrl = $currentIpc.baseUrl
-    headers = $currentIpc.headers
-    attempts = $currentIpc.attempts
-    observedHealth = [bool]$currentIpc.observedHealth
-    recovered = $true
-    recoveryEvidence = "scm_restart_completed_then_ipc_healthy"
-  }
+  throw "claimed daemon config did not converge after $MaxAttempts attempts; expected machineCode $ExpectedMachineCode; last observed machineCode $lastObservedMachineCode; last error: $lastError"
 }
 
 function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
@@ -4500,9 +4519,9 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     }
     claimResult = [ordered]@{
       restartRequested = $null
-      restartAttempted = $false
-      observedHealthAfterRestart = $null
-      recoveredAfterRestart = $null
+      runtimeReconfigureObserved = $false
+      observedHealthAfterReconfigure = $null
+      recoveredAfterReconfigure = $null
       recoveryAttempts = $null
       recoveryEvidence = $null
       recoveryFailure = $null
@@ -4570,18 +4589,18 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     }
 
     if ([bool]$evidence.claimResult.restartRequested) {
-      $evidence.claimResult.restartAttempted = $true
       try {
-        $recoveredIpc = Restart-DaemonIpcAfterProvisioning ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+        $recoveredIpc = Wait-DaemonIpcAfterProvisioning ${psString(bringUpPlan.arguments.DaemonReadyFile)} $evidence.machineCode
         $ready = $recoveredIpc.ready
         $baseUrl = $recoveredIpc.baseUrl
         $headers = $recoveredIpc.headers
-        $evidence.claimResult.observedHealthAfterRestart = [bool]$recoveredIpc.observedHealth
-        $evidence.claimResult.recoveredAfterRestart = [bool]$recoveredIpc.recovered
+        $evidence.claimResult.runtimeReconfigureObserved = $true
+        $evidence.claimResult.observedHealthAfterReconfigure = [bool]$recoveredIpc.observedHealth
+        $evidence.claimResult.recoveredAfterReconfigure = [bool]$recoveredIpc.recovered
         $evidence.claimResult.recoveryAttempts = [int]$recoveredIpc.attempts
         $evidence.claimResult.recoveryEvidence = [string]$recoveredIpc.recoveryEvidence
       } catch {
-        $evidence.claimResult.recoveredAfterRestart = $false
+        $evidence.claimResult.recoveredAfterReconfigure = $false
         $evidence.claimResult.recoveryFailure = $_.Exception.Message
         throw
       }
