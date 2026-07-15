@@ -55,6 +55,10 @@ wiremock = "0.6"
 tower = "0.5"
 
 [target.'cfg(windows)'.dependencies]
+rodio = { version = "0.22.2", default-features = false, features = [
+  "playback",
+  "wav",
+] }
 windows-service = "0.7"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",

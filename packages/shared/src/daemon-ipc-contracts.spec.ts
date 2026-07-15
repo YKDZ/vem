@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import {
+  daemonIpcAudioOutputBindingSnapshotSchema,
+  daemonIpcAudioOutputConfirmRequestSchema,
+  daemonIpcAudioOutputTestRequestSchema,
   daemonIpcCheckoutFlowActionSchema,
   daemonIpcEventNotificationSchema,
   daemonIpcDeviceBindingSnapshotSchema,
@@ -202,6 +205,80 @@ describe("Daemon IPC Contract Area", () => {
       daemonIpcDeviceBindingTestResultSchema.parse({
         ...tested,
         testEvidenceToken: undefined,
+      }),
+    ).toThrow();
+  });
+
+  it("keeps stable audio endpoint identity distinct from friendly names", () => {
+    const snapshot = daemonIpcAudioOutputBindingSnapshotSchema.parse({
+      binding: null,
+      currentObservation: null,
+      observationRevision: `sha256:${"a".repeat(64)}`,
+      candidates: [
+        {
+          endpointId: "wasapi:endpoint-1",
+          friendlyName: "USB Speaker",
+          isDefault: true,
+        },
+        {
+          endpointId: "wasapi:endpoint-2",
+          friendlyName: "USB Speaker",
+          isDefault: false,
+        },
+      ],
+      ready: false,
+      code: "AUDIO_OUTPUT_BINDING_REQUIRED",
+      message: "binding required",
+    });
+
+    expect(snapshot.candidates.map(({ endpointId }) => endpointId)).toEqual([
+      "wasapi:endpoint-1",
+      "wasapi:endpoint-2",
+    ]);
+  });
+
+  it("accepts only native non-silent test evidence and daemon-confirmable hearing", () => {
+    const proposedSettings = {
+      endpointId: "wasapi:endpoint-1",
+      audioCueSettings: {
+        enabled: true,
+        categories: { presence: true, transaction: true },
+      },
+      machineAudioVolume: 0.7,
+    };
+    expect(
+      daemonIpcAudioOutputTestRequestSchema.parse({
+        ...proposedSettings,
+        nativePlaybackEvidence: {
+          driver: "native",
+          endpointId: "wasapi:endpoint-1",
+          sourceNonSilent: true,
+        },
+      }).nativePlaybackEvidence,
+    ).toMatchObject({ driver: "native", sourceNonSilent: true });
+    expect(() =>
+      daemonIpcAudioOutputTestRequestSchema.parse({
+        ...proposedSettings,
+        nativePlaybackEvidence: {
+          driver: "browser",
+          endpointId: "wasapi:endpoint-1",
+          sourceNonSilent: true,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      daemonIpcAudioOutputConfirmRequestSchema.parse({
+        ...proposedSettings,
+        testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+        heard: false,
+      }),
+    ).toThrow();
+    expect(() =>
+      daemonIpcAudioOutputConfirmRequestSchema.parse({
+        ...proposedSettings,
+        testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+        heard: true,
+        confirmedAt: "2026-07-15T00:00:00Z",
       }),
     ).toThrow();
   });

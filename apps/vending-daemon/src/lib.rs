@@ -1,3 +1,4 @@
+pub mod audio_output;
 pub mod backend;
 pub mod bring_up;
 pub mod config;

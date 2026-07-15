@@ -39,6 +39,7 @@ const machineAudioOutputBindingSchema = z
     endpointId: z.string().trim().min(1),
     friendlyName: z.string().trim().min(1).nullable().default(null),
     confirmedHeardAt: z.iso.datetime(),
+    confirmedObservationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
   .nullable()
   .default(null);

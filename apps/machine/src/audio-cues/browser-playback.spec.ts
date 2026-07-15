@@ -514,6 +514,8 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
             endpointId: "{0.0.0.00000000}.bound-speaker",
             friendlyName: "Near-field speaker",
             confirmedHeardAt: "2026-07-15T06:00:00.000Z",
+            confirmedObservationRevision:
+              "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           },
         }),
       },
