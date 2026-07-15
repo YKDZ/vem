@@ -181,6 +181,7 @@ describe("Factory Image Acceptance workflow", () => {
       "MAINTENANCE_TARGET_MACHINE_ID",
       "VEM_MAINTENANCE_RELAY_INTERFACE",
       "MAINTENANCE_RELAY_PEER_ID",
+      "MAINTENANCE_RELAY_ENDPOINT",
       "MAINTENANCE_RELAY_PUBLIC_KEY",
       "MAINTENANCE_RELAY_TUNNEL_ADDRESS",
       "Cleanup Ephemeral Services",
@@ -236,6 +237,15 @@ describe("Factory Image Acceptance workflow", () => {
       workflow,
       /MAINTENANCE_RELAY_ENDPOINT: 127\.0\.0\.1:51820/,
     );
+    assert.equal(
+      workflowDocument.jobs.accept.env.MAINTENANCE_RELAY_ENDPOINT,
+      "${{ vars.VEM_MAINTENANCE_RELAY_ENDPOINT }}",
+    );
+    const guard = stepBlock("Guard Exact Protected Runner Before Checkout");
+    assert.match(guard, /MAINTENANCE_RELAY_ENDPOINT/);
+    assert.match(guard, /BASH_REMATCH\[2\]/);
+    assert.match(guard, /<= 65535/);
+    assert.doesNotMatch(workflow, /session\.relay\.endpoint/);
     assert.match(
       workflow,
       /--maintenance-relay-peer-id\s+"\$MAINTENANCE_RELAY_PEER_ID"/,
