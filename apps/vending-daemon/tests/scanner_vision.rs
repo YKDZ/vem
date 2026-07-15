@@ -189,7 +189,7 @@ async fn scanner_open_failure_reports_offline() {
 }
 
 #[tokio::test]
-async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
+async fn serial_text_scanner_rejects_invalid_frame_then_submits_the_next_payment_code() {
     let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     let status_calls = Arc::new(AtomicUsize::new(0));
@@ -309,7 +309,7 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
 
     create_payment_code_order(&daemon).await;
     wait_for_scanner_code(&daemon, "SCANNER_READY").await;
-    pty.write(b"621234567890123456\r\n").await;
+    pty.write(b"\xff12\r\n621234567890123456\r\n").await;
 
     let tx = wait_for_transaction(&daemon, |tx| {
         tx["nextAction"] == "dispensing" && tx["paymentCodeAttempt"]["source"] == "serial_text"
@@ -320,6 +320,7 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
     assert_eq!(tx["paymentCodeAttempt"]["source"], "serial_text");
     assert_eq!(tx["paymentCodeAttempt"]["maskedAuthCode"], "6212****3456");
     assert!(!tx.to_string().contains("621234567890123456"));
+    assert_eq!(submit_calls.load(Ordering::SeqCst), 1);
 
     let platform_requests = server
         .received_requests()

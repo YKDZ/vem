@@ -754,7 +754,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(unix)]
-    async fn scanner_candidate_requires_and_accepts_a_delimited_protocol_frame() {
+    async fn scanner_candidate_rejects_invalid_bytes_then_accepts_the_next_frame() {
         use std::os::fd::{FromRawFd, IntoRawFd};
 
         use nix::fcntl::OFlag;
@@ -778,9 +778,9 @@ mod tests {
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             master
-                .write_all(b"6901234567892\r\n")
+                .write_all(b"\xff12\r\n6901234567892\r\n")
                 .await
-                .expect("write scanner frame");
+                .expect("write invalid and valid scanner frames");
             master.flush().await.expect("flush scanner frame");
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         });

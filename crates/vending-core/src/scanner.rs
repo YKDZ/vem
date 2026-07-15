@@ -44,7 +44,7 @@ pub struct PublicScannerEvent {
 pub struct ScannerFramer {
     suffix: ScannerFrameSuffix,
     frame: Vec<u8>,
-    overflowed: bool,
+    invalid_frame: bool,
     last_code: String,
     last_at_ms: u128,
 }
@@ -60,7 +60,7 @@ impl ScannerFramer {
         Self {
             suffix,
             frame: Vec::new(),
-            overflowed: false,
+            invalid_frame: false,
             last_code: String::new(),
             last_at_ms: 0,
         }
@@ -77,31 +77,31 @@ impl ScannerFramer {
                     self.flush(now_ms, &mut out);
                 }
                 ScannerFrameSuffix::Crlf if *byte == b'\r' => {}
-                ScannerFrameSuffix::None if byte.is_ascii_control() => {}
-                _ if !byte.is_ascii_control()
-                    && !self.overflowed
+                _ if is_allowed_payload_byte(*byte)
+                    && !self.invalid_frame
                     && self.frame.len() < SCANNER_MAX_FRAME_BYTES =>
                 {
                     self.frame.push(*byte)
                 }
-                _ if !byte.is_ascii_control() => self.overflowed = true,
-                _ => {}
+                _ => self.invalid_frame = true,
             }
         }
-        if matches!(self.suffix, ScannerFrameSuffix::None) && !self.frame.is_empty() {
+        if matches!(self.suffix, ScannerFrameSuffix::None) {
             self.flush(now_ms, &mut out);
         }
         out
     }
 
     fn flush(&mut self, now_ms: u128, out: &mut Vec<RawPaymentCode>) {
-        if self.overflowed {
+        if self.invalid_frame {
             self.frame.clear();
-            self.overflowed = false;
+            self.invalid_frame = false;
             return;
         }
-        let code = String::from_utf8_lossy(&self.frame).trim().to_string();
-        self.frame.clear();
+        let Ok(code) = String::from_utf8(std::mem::take(&mut self.frame)) else {
+            return;
+        };
+        let code = code.trim().to_string();
         if code.is_empty() {
             return;
         }
@@ -118,15 +118,27 @@ impl ScannerFramer {
     }
 }
 
+/// Scanner payloads are plain serial text: printable ASCII plus ordinary spaces.
+/// Delimiters are handled separately; controls and bytes at or above `0x80`
+/// poison the entire frame instead of being silently removed or lossily decoded.
+fn is_allowed_payload_byte(byte: u8) -> bool {
+    byte.is_ascii_graphic() || byte == b' '
+}
+
 pub fn mask_code(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return "****".to_string();
     }
-    if trimmed.len() <= 8 {
-        return format!("{}****", &trimmed[..trimmed.len().min(2)]);
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    if chars.len() <= 8 {
+        return format!("{}****", chars.iter().take(2).collect::<String>());
     }
-    format!("{}****{}", &trimmed[..4], &trimmed[trimmed.len() - 4..])
+    format!(
+        "{}****{}",
+        chars.iter().take(4).collect::<String>(),
+        chars[chars.len() - 4..].iter().collect::<String>()
+    )
 }
 
 #[cfg(test)]
