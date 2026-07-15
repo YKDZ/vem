@@ -17,7 +17,7 @@
 
 daemon、UI 和视觉分别独立更新。UI 更新只停止 `VEMMachineUI` 和 `machine.exe`，不得停止 daemon 服务。daemon 更新只重启 `VemVendingDaemon`，不得结束机器 UI。
 
-daemon 或 UI 的受控传输仍使用 `scripts/windows/deploy-windows-artifact.sh`；它只接受 `--kind daemon|ui`。Vision 不得通过该脚本传输，因为它会创建新的 zip，从而改变供应方 release bundle。
+将 daemon、UI 或 Vision 输入暂存到 Windows 主机的 `C:\VEM\updates\<update-id>`。daemon 和 UI 只能通过 `scripts/windows/apply-managed-update.ps1` 的 manifest 路径替换；该路径记录哈希、安装证据与自动回滚。受控 SSH 只用于紧急访问、传输和取证，不得直接替换运行中的可执行文件，也不得使用任意 SSH config 或 proxy 作为安装入口。Vision 保持供应方原始 immutable bundle，不得重新打包。
 
 Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式任务启动；更新只停止该任务和 VEM 记录的 Vision 子进程，不得停止 daemon 或机器 UI。
 

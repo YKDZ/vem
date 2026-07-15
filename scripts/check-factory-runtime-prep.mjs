@@ -570,6 +570,9 @@ addCheck(
     verifier.includes("wireGuardInterfaceAlias") &&
     verifier.includes("pubkeyAuthentication") &&
     verifier.includes("authorizedKeysFile") &&
+    verifier.includes("authorizedKeysCommand") &&
+    verifier.includes("authorizedKeysCommandUser") &&
+    verifier.includes('"nobody"') &&
     verifier.includes("trustedUserCaKeys") &&
     verifier.includes(
       "Factory verifier rejects wildcard SSH listener or firewall interface scope",

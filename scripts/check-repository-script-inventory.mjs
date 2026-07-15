@@ -534,12 +534,6 @@ const DEFAULT_INVENTORY = [
     workflows: ["managed update"],
   },
   {
-    path: "scripts/windows/deploy-windows-artifact.sh",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["managed update"],
-  },
-  {
     path: "scripts/windows/install-vision-release.ps1",
     owner: "field-operations",
     category: "public runbook operation",
@@ -793,7 +787,6 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
       "scripts/check-machine-vision-deployment.mjs",
       "scripts/factory/experimental-vision-candidate.mjs",
       "scripts/windows/apply-managed-update.ps1",
-      "scripts/windows/deploy-windows-artifact.sh",
       "scripts/windows/install-vision-release.ps1",
       "scripts/windows/setup-scheduled-tasks.ps1",
       "scripts/windows/test-vision-candidate.ps1",

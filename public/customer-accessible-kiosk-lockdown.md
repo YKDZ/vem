@@ -24,7 +24,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 生产机器只有一条 Controlled Maintenance Ingress：WireGuard pull-reconciling Maintenance Relay。Relay 使用受限凭据拉取版本化期望状态、以 `wg syncconf` 收敛 WireGuard peer，并以 nftables 的来源、目标、协议和端口元组收敛数据面。WireGuard 仅提供到机器维护地址的受控网络路径；它本身不授予 SSH 访问。
 
-维护会话必须是 OIDC-authenticated maintenance session。控制平面将 OIDC 身份与指定的来源 peer、目标机器、角色和会话期限绑定，然后签发短时 SSH certificate-only 凭据。Windows `sshd` 只信任 profile-bound CA，禁用密码和键盘交互认证，且不接受 `authorized_keys`。维护账号是唯一允许的 SSH 主体；自助机账号始终被拒绝。
+维护会话必须是 OIDC-authenticated maintenance session。控制平面将 OIDC 身份与指定的来源 peer、目标机器、角色和会话期限绑定，然后签发短时 SSH certificate-only 凭据。Windows `sshd` 只信任 profile-bound CA，禁用密码和键盘交互认证，并显式设定 `AuthorizedKeysFile none`、`AuthorizedKeysCommand none` 和 `AuthorizedKeysCommandUser nobody`，从而拒绝普通 key 或 key command 路径。维护账号是唯一允许的 SSH 主体；自助机账号始终被拒绝。
 
 只有在维护账号可恢复、Relay 已报告目标 peer 收敛、并且 runner 与 maintainer 的来源地址已明确后，才配置该入口。三个 allowlist 都没有默认值，必须传入显式 host 来源；IPv4 使用单个 host 地址或 `/32`，IPv6 使用单个 host 地址或 `/128`：
 
@@ -33,7 +33,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File C:\VEM\repo\scripts\windows\setup-scheduled-tasks.ps1 `
   -ConfigureControlledMaintenanceIngress `
   -FactoryProfile production `
-  -MaintenanceIngressSourceAllowlist "10.77.20.2/32" `
+  -MaintenanceIngressSourceAllowlist "10.77.20.2/32","10.77.20.3/32" `
   -MaintenanceRunnerSourceAllowlist "10.77.20.2/32" `
   -MaintenanceMaintainerSourceAllowlist "10.77.20.3/32" `
   -MaintenanceWireGuardInterfaceAlias "VEM-Maintenance" `
@@ -115,7 +115,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -DesktopShellUnavailable `
   -DebugRoutesUnavailable `
   -MaintenanceRecoveryConfirmed `
-  -MaintenanceIngressSourceAllowlist "10.77.20.2/32" `
+  -MaintenanceWireGuardInterfaceAlias "VEM-Maintenance" `
+  -MaintenanceWireGuardListenAddress "10.77.0.10" `
+  -MaintenanceIngressSourceAllowlist "10.77.20.2/32","10.77.20.3/32" `
   -MaintenanceIngressConfirmed `
   -NegativeKioskSshEvidence "ssh VEMKiosk@<machine-wireguard-address> rejected with DenyUsers/auth failure at <time>"
 ```

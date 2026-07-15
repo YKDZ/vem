@@ -352,6 +352,8 @@ function Test-SshdConfiguration {
     listenAddress = [string]$values.listenaddress
     trustedUserCaKeys = [string]$values.trustedusercakeys
     authorizedKeysFile = [string]$values.authorizedkeysfile
+    authorizedKeysCommand = [string]$values.authorizedkeyscommand
+    authorizedKeysCommandUser = [string]$values.authorizedkeyscommanduser
     passwordAuthentication = [string]$values.passwordauthentication
     kbdInteractiveAuthentication = [string]$values.kbdinteractiveauthentication
     authenticationMethods = [string]$values.authenticationmethods
@@ -457,6 +459,8 @@ function Ensure-SshdConfigDenyKioskUser {
     "KbdInteractiveAuthentication no",
     "AuthenticationMethods publickey",
     "AuthorizedKeysFile none",
+    "AuthorizedKeysCommand none",
+    "AuthorizedKeysCommandUser nobody",
     "AllowUsers $($MaintenanceUser.ToLowerInvariant())",
     "DenyUsers $($KioskUser.ToLowerInvariant())",
     "PermitEmptyPasswords no",
@@ -476,6 +480,8 @@ function Ensure-SshdConfigDenyKioskUser {
     "kbdinteractiveauthentication",
     "challengeresponseauthentication",
     "authenticationmethods",
+    "authorizedkeyscommand",
+    "authorizedkeyscommanduser",
     "allowusers",
     "denyusers",
     "permitemptypasswords"
@@ -690,8 +696,14 @@ function Ensure-ControlledMaintenanceIngress {
   if ($FactoryProfile -eq "testbed" -and $MaintenanceUser -cne "YKDZ") {
     throw "testbed profile permits only the YKDZ maintenance administrator"
   }
+  $validatedIngressSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $SourceAllowlist
   $roleSources = @($RunnerSourceAllowlist) + @($MaintainerSourceAllowlist)
   $validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $roleSources
+  $missingIngressSources = @($validatedSources | Where-Object { $_ -notin $validatedIngressSources })
+  $extraIngressSources = @($validatedIngressSources | Where-Object { $_ -notin $validatedSources })
+  if ($validatedIngressSources.Count -ne $validatedSources.Count -or $missingIngressSources.Count -gt 0 -or $extraIngressSources.Count -gt 0) {
+    throw "Controlled Maintenance Ingress source allowlist must exactly equal the combined runner and maintainer role pools"
+  }
 
   if (-not (Get-LocalUser -Name $MaintenanceUser -ErrorAction SilentlyContinue)) {
     throw "maintenance account not found: $MaintenanceUser. Configure it before enabling Controlled Maintenance Ingress."

@@ -671,7 +671,7 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
     winRmDenied = -not $kioskAdministrator -and -not $kioskInRemoteManagementUsers
     effectiveKioskRemoteAdministrationDenied = $kioskRemoteAccessDenied
   }
-  $passwordFallback = -not ($sshdEffectiveConfig.passwordAuthentication -and $sshdEffectiveConfig.keyboardInteractiveAuthentication -and $sshdEffectiveConfig.authenticationMethods -and $sshdEffectiveConfig.authorizedKeysFile)
+  $passwordFallback = -not ($sshdEffectiveConfig.passwordAuthentication -and $sshdEffectiveConfig.keyboardInteractiveAuthentication -and $sshdEffectiveConfig.authenticationMethods -and $sshdEffectiveConfig.authorizedKeysFile -and $sshdEffectiveConfig.authorizedKeysCommand -and $sshdEffectiveConfig.authorizedKeysCommandUser)
   $passwordAuthentication = [ordered]@{
     sshdPasswordAuthentication = $sshdEffectiveConfig.passwordAuthentication
     sshdKeyboardInteractiveAuthentication = $sshdEffectiveConfig.keyboardInteractiveAuthentication
@@ -889,6 +889,10 @@ function Get-SshdEffectiveConfigEvidence {
     authenticationMethods = [string]$values.authenticationmethods -ceq "publickey"
     authorizedKeysFileValue = [string]$values.authorizedkeysfile
     authorizedKeysFile = [string]$values.authorizedkeysfile -ceq "none"
+    authorizedKeysCommandValue = [string]$values.authorizedkeyscommand
+    authorizedKeysCommand = [string]$values.authorizedkeyscommand -ceq "none"
+    authorizedKeysCommandUserValue = [string]$values.authorizedkeyscommanduser
+    authorizedKeysCommandUser = [string]$values.authorizedkeyscommanduser -ceq "nobody"
     allowUsersValue = $allowUsers
     allowUsers = $allowUsers -ceq $MaintenanceUser.ToLowerInvariant()
     denyUsersValue = $denyUsers
@@ -1644,6 +1648,8 @@ if ($null -ne $manifest) {
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.keyboardInteractiveAuthentication -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authenticationMethods -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authorizedKeysFile -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authorizedKeysCommand -or
+      -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.authorizedKeysCommandUser -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.allowUsers -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.denyUsers -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.sshdEffectiveConfig.systemEntrypoint) {

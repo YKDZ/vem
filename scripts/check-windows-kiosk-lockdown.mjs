@@ -551,6 +551,9 @@ addCheck(
     verifier.includes("passwordauthentication") &&
     verifier.includes("kbdinteractiveauthentication") &&
     verifier.includes("authorizedkeysfile") &&
+    verifier.includes("authorizedkeyscommand") &&
+    verifier.includes("authorizedkeyscommanduser") &&
+    verifier.includes('"nobody"') &&
     verifier.includes("wireGuardListenAddressEvidence") &&
     verifier.includes("sshdEffectiveConfig") &&
     verifier.includes("wireGuardInterfaceAlias") &&
@@ -587,6 +590,12 @@ addCheck(
     runbook.includes("受控维护入口") &&
     runbook.includes("-ConfigureControlledMaintenanceIngress") &&
     runbook.includes("-MaintenanceIngressSourceAllowlist") &&
+    runbook.includes("-MaintenanceRunnerSourceAllowlist") &&
+    runbook.includes("-MaintenanceMaintainerSourceAllowlist") &&
+    runbook.includes("-MaintenanceWireGuardInterfaceAlias") &&
+    runbook.includes("-MaintenanceWireGuardListenAddress") &&
+    runbook.includes("AuthorizedKeysCommand none") &&
+    runbook.includes("AuthorizedKeysCommandUser nobody") &&
     runbook.includes("-EnableMaintenanceDebugTask") &&
     runbook.includes("-MaintenanceIngressConfirmed") &&
     runbook.includes("-NegativeKioskSshEvidence") &&

@@ -187,6 +187,8 @@ function Get-ControlledMaintenanceIngressSshdState {
     keyboardInteractiveAuthentication = [string]$values.kbdinteractiveauthentication -ceq "no"
     authenticationMethods = [string]$values.authenticationmethods -ceq "publickey"
     authorizedKeysFile = [string]$values.authorizedkeysfile -ceq "none"
+    authorizedKeysCommand = [string]$values.authorizedkeyscommand -ceq "none"
+    authorizedKeysCommandUser = [string]$values.authorizedkeyscommanduser -ceq "nobody"
   }
 }
 
@@ -502,8 +504,10 @@ if (-not [bool]$sshdEffectiveConfig.syntaxValid -or
     -not [bool]$sshdEffectiveConfig.passwordAuthentication -or
     -not [bool]$sshdEffectiveConfig.keyboardInteractiveAuthentication -or
     -not [bool]$sshdEffectiveConfig.authenticationMethods -or
-    -not [bool]$sshdEffectiveConfig.authorizedKeysFile) {
-  Add-Failure $failures "effective sshd configuration must require the declared TrustedUserCAKeys certificate policy, publickey authentication, disabled password/keyboard-interactive authentication, and AuthorizedKeysFile none on the WireGuard listener"
+    -not [bool]$sshdEffectiveConfig.authorizedKeysFile -or
+    -not [bool]$sshdEffectiveConfig.authorizedKeysCommand -or
+    -not [bool]$sshdEffectiveConfig.authorizedKeysCommandUser) {
+  Add-Failure $failures "effective sshd configuration must require the declared TrustedUserCAKeys certificate policy, publickey authentication, disabled password/keyboard-interactive authentication, and no authorized-key file or command bypass on the WireGuard listener"
 }
 
 $sshdService = Get-ServiceStateOrNull -Name "sshd"

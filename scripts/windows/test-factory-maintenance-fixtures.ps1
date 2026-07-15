@@ -182,6 +182,19 @@ try {
   } -Pattern "conflicting earlier sshd directive" -Message "conflicting earlier sshd policy must be rejected"
 
   @(
+    "AuthorizedKeysCommand C:\\ProgramData\\ssh\\lookup-authorized-key.cmd",
+    "AuthorizedKeysCommandUser Administrator"
+  ) | Set-Content -LiteralPath $sshdConfig -Encoding ASCII
+  Assert-ThrowsLike -Action {
+    Ensure-SshdConfigDenyKioskUser `
+      -ConfigPath $sshdConfig `
+      -KioskUser "VEMKiosk" `
+      -MaintenanceUser "Admin" `
+      -CaPath "C:\\ProgramData\\VEM\\factory\\maintenance-ca.pub" `
+      -ListenAddress "10.77.0.10"
+  } -Pattern "conflicting earlier sshd directive" -Message "preconfigured authorized-key command must not bypass certificate-only SSH"
+
+  @(
     "# stock OpenSSH config",
     "AuthorizedKeysFile .ssh/authorized_keys",
     "Subsystem sftp internal-sftp",
@@ -198,6 +211,8 @@ try {
   $enabledSshd = @($managedSshd | Where-Object { $_ -match "^\s*[^#\s]" })
   Assert-Fixture ($enabledSshd[0] -ceq "ListenAddress 10.77.0.10") "ListenAddress must be the first effective managed directive"
   Assert-Fixture (@($enabledSshd | Where-Object { $_ -ceq "AuthorizedKeysFile none" }).Count -eq 1) "all raw authorized-key files must be disabled"
+  Assert-Fixture (@($enabledSshd | Where-Object { $_ -ceq "AuthorizedKeysCommand none" }).Count -eq 1) "all authorized-key commands must be disabled"
+  Assert-Fixture (@($enabledSshd | Where-Object { $_ -ceq "AuthorizedKeysCommandUser nobody" }).Count -eq 1) "authorized-key commands must use the inert nobody identity"
   Assert-Fixture (@($enabledSshd | Where-Object { $_ -ceq "AllowUsers admin" }).Count -eq 1) "AllowUsers must use lowercase Windows account matching"
   Assert-Fixture (@($enabledSshd | Where-Object { $_ -match "(?i)^Match\s" }).Count -eq 0) "terminal Match blocks must not survive canonical rewrite"
   Assert-Fixture (@($enabledSshd | Where-Object { $_ -match "administrators_authorized_keys" }).Count -eq 0) "administrators_authorized_keys must be disabled"
@@ -223,6 +238,8 @@ try {
     Assert-Fixture ($effective.syntaxValid) "real sshd -t must accept the canonical config"
     Assert-Fixture ($effective.listenAddress -ceq "10.77.0.10:22") "real sshd -T must report only the tunnel listener"
     Assert-Fixture ($effective.authorizedKeysFile -ceq "none") "real sshd -T must disable raw authorized keys"
+    Assert-Fixture ($effective.authorizedKeysCommand -ceq "none") "real sshd -T must disable authorized-key commands"
+    Assert-Fixture ($effective.authorizedKeysCommandUser -ceq "nobody") "real sshd -T must retain the inert authorized-key command user"
     Assert-Fixture ($effective.passwordAuthentication -ceq "no") "real sshd -T must disable passwords"
     Assert-Fixture ($effective.kbdInteractiveAuthentication -ceq "no") "real sshd -T must disable keyboard-interactive auth"
     Assert-Fixture ($effective.authenticationMethods -ceq "publickey") "real sshd -T must require publickey authentication"

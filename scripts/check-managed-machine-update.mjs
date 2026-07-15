@@ -12,6 +12,7 @@ function readText(path) {
 
 const scriptPath = "scripts/windows/apply-managed-update.ps1";
 const runbookPath = "public/managed-machine-update.md";
+const retiredDirectDeployPath = "scripts/windows/deploy-windows-artifact.sh";
 
 const script = readText(scriptPath);
 const runbook = readText(runbookPath);
@@ -302,6 +303,17 @@ addCheck(
     runbook.includes("证据") &&
     runbook.includes("紧急"),
   `${runbookPath} should document local managed update usage and keep SSH as emergency access`,
+);
+
+addCheck(
+  "managed-update-has-no-direct-ssh-replace-entrypoint",
+  !existsSync(retiredDirectDeployPath) &&
+    !runbook.includes("deploy-windows-artifact.sh") &&
+    runbook.includes("apply-managed-update.ps1") &&
+    runbook.includes("清单") &&
+    runbook.includes("证据") &&
+    runbook.includes("回滚"),
+  `${retiredDirectDeployPath} must not remain a supported SSH/proxy direct-replacement path; ${scriptPath} manifest, evidence, and rollback are canonical`,
 );
 
 const failures = checks.filter((check) => !check.passed);
