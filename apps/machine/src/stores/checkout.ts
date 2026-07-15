@@ -257,6 +257,7 @@ export const useCheckoutStore = defineStore("checkout", {
     checkoutAttemptIdempotencyKey: null as string | null,
     dismissedTerminalOrderNos: readDismissedTerminalOrderNos(),
     lastTransactionRestored: false,
+    transactionRecoveryOrderNo: null as string | null,
   }),
   getters: {
     quantity: (): number => 1,
@@ -269,6 +270,15 @@ export const useCheckoutStore = defineStore("checkout", {
         loading: state.loading,
         readiness: customerCheckoutReadinessContext(),
       }),
+    customerCheckoutRecovery: (
+      state,
+    ): {
+      active: boolean;
+      orderCredential: string | null;
+    } => ({
+      active: state.transactionRecoveryOrderNo !== null,
+      orderCredential: state.transactionRecoveryOrderNo,
+    }),
     canCreateOrder: (state): boolean => {
       const selectedItem = latestSaleViewItem(state.selectedItem);
       return Boolean(
@@ -302,8 +312,10 @@ export const useCheckoutStore = defineStore("checkout", {
       this.nowMs = nowMs;
     },
     selectItem(item: CheckoutSelectedItem): void {
+      if (this.customerCheckoutView.stage !== "none") return;
       this.selectedItem = item;
       this.transaction = null;
+      this.transactionRecoveryOrderNo = null;
       this.error = null;
       this.checkoutAttemptIdempotencyKey =
         createCheckoutAttemptIdempotencyKey();
@@ -318,6 +330,7 @@ export const useCheckoutStore = defineStore("checkout", {
       this.paymentCodeMessage = null;
       this.paymentCodeLastMasked = null;
       this.checkoutAttemptIdempotencyKey = null;
+      this.transactionRecoveryOrderNo = null;
       this.nowMs = Date.now();
     },
     shouldIgnoreTransaction(snapshot: TransactionSnapshot | null): boolean {
@@ -358,6 +371,7 @@ export const useCheckoutStore = defineStore("checkout", {
       }
 
       this.transaction = snapshot;
+      this.transactionRecoveryOrderNo = null;
 
       const attempt = snapshot.paymentCodeAttempt;
       this.paymentCodeMessage =
@@ -464,6 +478,20 @@ export const useCheckoutStore = defineStore("checkout", {
       this.error = null;
       try {
         const snapshot = await daemonClient.getCurrentTransaction();
+        const currentView = this.customerCheckoutView;
+        if (
+          currentView.stage !== "none" &&
+          snapshot.orderNo !== currentView.orderCredential
+        ) {
+          if (
+            currentView.stage === "payment" ||
+            currentView.stage === "dispensing"
+          ) {
+            this.transactionRecoveryOrderNo = currentView.orderCredential;
+          }
+          this.error = "正在恢复当前交易，请稍候";
+          return null;
+        }
         if (this.shouldIgnoreTransaction(snapshot)) {
           this.applyTransaction(snapshot);
           return null;
@@ -472,6 +500,10 @@ export const useCheckoutStore = defineStore("checkout", {
         return snapshot;
       } catch (error) {
         this.error = errorString(error);
+        const view = this.customerCheckoutView;
+        if (view.stage === "payment" || view.stage === "dispensing") {
+          this.transactionRecoveryOrderNo = view.orderCredential;
+        }
         return null;
       } finally {
         this.loading = false;

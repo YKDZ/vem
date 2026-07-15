@@ -11,6 +11,7 @@ type ScenarioName =
   | "maintenance"
   | "offline"
   | "payment"
+  | "paymentRecovery"
   | "dispensing"
   | "result"
   | "provisioning"
@@ -287,6 +288,7 @@ function transactionSnapshot(
 }
 
 let scenario: ScenarioName = "catalog";
+let transactionReadCount = 0;
 let stockAttestationSubmitted = false;
 const protectedBringUpRequests: Array<{
   maintenanceSession: string | undefined;
@@ -370,7 +372,7 @@ function currentFixtures(): Record<string, unknown> {
     };
   }
 
-  if (scenario === "payment") {
+  if (scenario === "payment" || scenario === "paymentRecovery") {
     return {
       health: healthSnapshot(),
       ready: readySnapshot({ suggestedRoute: "payment" }),
@@ -747,6 +749,15 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   if (url.pathname === "/v1/transactions/current") {
+    transactionReadCount += 1;
+    if (scenario === "paymentRecovery" && transactionReadCount > 1) {
+      respondJson(
+        res,
+        { code: "daemon_unavailable", message: "daemon IPC disconnected" },
+        503,
+      );
+      return;
+    }
     expectNoSecretFields(fixtures.transaction);
     respondJson(res, fixtures.transaction);
     return;
@@ -928,6 +939,42 @@ test("restores active payment transaction", async ({ page }) => {
   });
   await expect(page.getByText("应付金额")).toBeVisible();
   await expect(page.getByText("¥59.00")).toBeVisible();
+  await expect(page.getByRole("img", { name: "支付二维码" })).toBeVisible();
+});
+
+test("active payment projection rejects a generic return-home navigation", async ({
+  page,
+}) => {
+  scenario = "payment";
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.evaluate(() => {
+    window.location.hash = "#/catalog";
+  });
+
+  await expect(page).toHaveURL(/#\/payment$/);
+  await expect(page.getByRole("img", { name: "支付二维码" })).toBeVisible();
+});
+
+test("temporary IPC loss overlays and then restores the same payment transaction", async ({
+  page,
+}) => {
+  transactionReadCount = 0;
+  scenario = "paymentRecovery";
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "订单支付" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByRole("status")).toContainText("正在恢复本次交易");
+  await expect(page.getByText("ORD-001")).toBeVisible();
+
+  scenario = "payment";
+  await expect(page.getByRole("status")).toHaveCount(0, { timeout: 8_000 });
+  await expect(page).toHaveURL(/#\/payment$/);
   await expect(page.getByRole("img", { name: "支付二维码" })).toBeVisible();
 });
 

@@ -1117,6 +1117,160 @@ describe("checkout store", () => {
     });
   });
 
+  it("does not let a new catalog selection clear a daemon-owned active transaction", () => {
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    store.selectItem(makeCatalogItem({ catalogKey: "product:OTHER" }));
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("keeps the last daemon transaction projection under recovery when IPC refresh fails", async () => {
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("daemon IPC disconnected"),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+    expect(store.customerCheckoutRecovery).toEqual({
+      active: true,
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("does not abandon an active transaction when reconnect temporarily returns no current transaction", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        orderId: null,
+        orderNo: null,
+        paymentId: null,
+        paymentNo: null,
+        paymentMethod: null,
+        paymentProvider: null,
+        paymentUrl: null,
+        paymentStatus: null,
+        orderStatus: null,
+        totalAmountCents: null,
+        nextAction: null,
+        expiresAt: null,
+      }),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+    expect(store.customerCheckoutRecovery.active).toBe(true);
+  });
+
+  it("rejects a different transaction identity while recovering the active one", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({ orderNo: "ORD-UNRELATED" }),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+    expect(store.customerCheckoutRecovery).toEqual({
+      active: true,
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("clears recovery only after the daemon restores the same transaction identity and advances it", async () => {
+    getCurrentTransactionMock
+      .mockRejectedValueOnce(new Error("daemon IPC disconnected"))
+      .mockResolvedValueOnce(
+        makeTransactionSnapshot({
+          paymentStatus: "succeeded",
+          orderStatus: "dispensing",
+          nextAction: "dispensing",
+          vending: {
+            commandId: null,
+            commandNo: "CMD-RECONNECTED",
+            status: "sent",
+            lastError: null,
+          },
+        }),
+      );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.refreshCurrentTransaction();
+    expect(store.customerCheckoutRecovery.active).toBe(true);
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutRecovery).toEqual({
+      active: false,
+      orderCredential: null,
+    });
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "dispensing",
+      orderCredential: "ORD-001",
+    });
+  });
+
+  it("keeps a terminal projection until the customer explicitly dismisses it", async () => {
+    const terminal = makeTransactionSnapshot({
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
+      nextAction: "success",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-TERMINAL",
+        status: "succeeded",
+        lastError: null,
+      },
+    });
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        orderId: null,
+        orderNo: null,
+        paymentId: null,
+        paymentNo: null,
+        paymentMethod: null,
+        paymentProvider: null,
+        paymentUrl: null,
+        paymentStatus: null,
+        orderStatus: null,
+        totalAmountCents: null,
+        nextAction: null,
+        expiresAt: null,
+      }),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(terminal);
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "result",
+      orderCredential: "ORD-001",
+      result: { kind: "success" },
+    });
+    store.dismissCurrentTerminalTransaction();
+    expect(store.customerCheckoutView.stage).toBe("none");
+  });
+
   it("preserves result_unknown vending status from daemon manual handling transaction", async () => {
     getCurrentTransactionMock.mockResolvedValue(
       makeTransactionSnapshot({
