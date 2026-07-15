@@ -555,6 +555,16 @@ function verifierOutput(input, name) {
   return join(input.evidence.root, "verifier", name);
 }
 
+export function overlayMaintenanceEndpoint(reports) {
+  const endpoint = reports.overlay?.guest?.maintenanceEndpoint;
+  if (!endpoint) {
+    throw new Error(
+      "disposable overlay did not publish a maintenance endpoint",
+    );
+  }
+  return endpoint;
+}
+
 function commonVerifierArgs(
   input,
   endpoint,
@@ -1024,7 +1034,7 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
         "ephemeral platform evidence is unavailable before Machine Claim",
       );
     }
-    const endpoint = reports.cleanInstall.guest.maintenanceEndpoint;
+    const endpoint = overlayMaintenanceEndpoint(reports);
     const claim = buildFactoryMachineClaimInvocation(
       input,
       endpoint,

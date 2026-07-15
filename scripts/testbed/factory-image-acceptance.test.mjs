@@ -21,6 +21,7 @@ import {
   buildFactoryMachineClaimInvocation,
   buildFactoryRuntimeAcceptanceInvocation,
   materializeFactoryDisplayEvidence,
+  overlayMaintenanceEndpoint,
   prepareSanitizedFactoryAcceptanceUpload,
   runAdmittedFactoryImageAcceptanceLifecycle,
   sanitizeFactoryAcceptanceEvidence,
@@ -336,6 +337,21 @@ describe("Factory Image Acceptance lifecycle", () => {
     });
     assert.equal(evidence.token, undefined);
     assert.equal(evidence.path, "[REDACTED]");
+  });
+
+  it("uses the disposable overlay endpoint after base capture", () => {
+    const cleanInstall = {
+      guest: { maintenanceEndpoint: { host: "192.0.2.41" } },
+    };
+    const overlay = { guest: { maintenanceEndpoint: { host: "192.0.2.42" } } };
+    assert.strictEqual(
+      overlayMaintenanceEndpoint({ cleanInstall, overlay }),
+      overlay.guest.maintenanceEndpoint,
+    );
+    assert.throws(
+      () => overlayMaintenanceEndpoint({ cleanInstall }),
+      /disposable overlay did not publish a maintenance endpoint/,
+    );
   });
 
   it("writes sanitized JSON copies into a dedicated upload boundary", () => {

@@ -48,6 +48,7 @@ jobs:
       EPHEMERAL_API_READY_URL: http://127.0.0.1:26850/api
       EPHEMERAL_MQTT_LOCAL_URL: mqtt://127.0.0.1:18884
       VEM_FACTORY_PLATFORM_INGRESS_HOST: ${{ vars.VEM_FACTORY_PLATFORM_INGRESS_HOST }}
+      VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE: ${{ vars.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE }}
       MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
       MAINTENANCE_ALLOW_INSECURE_HTTP: ${{ vars.VEM_MAINTENANCE_ALLOW_INSECURE_HTTP }}
       MAINTENANCE_RELAY_ENDPOINT: ${{ vars.VEM_MAINTENANCE_RELAY_ENDPOINT }}
@@ -91,6 +92,7 @@ jobs:
             VEM_VM_HOST_EXPECTED_ADAPTER_SHA256 \
             VEM_FACTORY_EXPECTED_TESTBED_USER \
             VEM_FACTORY_PLATFORM_INGRESS_HOST \
+            VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE \
             MAINTENANCE_RELAY_ENDPOINT; do
             test -n "${!name:-}" || { echo "missing protected factory host variable: $name" >&2; exit 1; }
           done
@@ -394,6 +396,10 @@ jobs:
             },
             endpoint: {
               expectedTestbedUser: process.env.VEM_FACTORY_EXPECTED_TESTBED_USER,
+              bootstrap: {
+                transport: "testbed-runner-direct",
+                runnerSourceAllowlist: [process.env.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE],
+              },
               maintenanceRelaySession,
             },
             ephemeralPlatform: {
