@@ -626,7 +626,7 @@ describe("PaymentProviderConfigService", () => {
       expect(sandboxResult.options[0]?.providerCode).toBe("alipay");
     });
 
-    it("fails closed instead of publishing sandbox options from a production API", async () => {
+    it("keeps sandbox candidates when the Docker API runtime uses NODE_ENV=production", async () => {
       const service = makeListOptionsService(
         [
           [
@@ -657,9 +657,14 @@ describe("PaymentProviderConfigService", () => {
       await expect(
         service.listMachinePaymentOptionsForMachine("machine-1"),
       ).resolves.toMatchObject({
-        options: [],
-        defaultOptionKey: null,
-        defaultProviderCode: null,
+        options: [
+          expect.objectContaining({
+            optionKey: "qr_code:alipay",
+            providerCode: "alipay",
+          }),
+        ],
+        defaultOptionKey: "qr_code:alipay",
+        defaultProviderCode: "alipay",
       });
     });
 

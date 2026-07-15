@@ -38,6 +38,10 @@ const paymentSecretGuardBlock = functionBlock(
   script,
   "Assert-NoPlatformPaymentSecrets",
 );
+const paymentSecretBytesGuardBlock = functionBlock(
+  script,
+  "Assert-NoPlatformPaymentSecretBytes",
+);
 const paymentSecretFileGuardBlock = functionBlock(
   script,
   "Assert-NoPlatformPaymentSecretFile",
@@ -53,12 +57,18 @@ addCheck(
   "rejects-platform-payment-secret-bytes-from-artifacts",
   paymentSecretFileGuardBlock.includes("ReadAllBytes") &&
     paymentSecretFileGuardBlock.includes(
+      "Assert-NoPlatformPaymentSecretBytes",
+    ) &&
+    paymentSecretBytesGuardBlock.includes(
       "BEGIN\\s+(?:(?:RSA|EC)\\s+|ENCRYPTED\\s+)?PRIVATE\\s+KEY",
     ) &&
-    paymentSecretFileGuardBlock.includes("ImportPkcs8PrivateKey") &&
-    paymentSecretFileGuardBlock.includes("ZipArchive") &&
-    paymentSecretFileGuardBlock.includes("FromBase64String") &&
-    !paymentSecretFileGuardBlock.includes("BEGIN\\s+CERTIFICATE") &&
+    paymentSecretBytesGuardBlock.includes("ImportPkcs8PrivateKey") &&
+    paymentSecretBytesGuardBlock.includes("06092A864886F70D01050D") &&
+    paymentSecretBytesGuardBlock.includes("encrypted archive entry") &&
+    paymentSecretBytesGuardBlock.includes("ZipArchive") &&
+    paymentSecretBytesGuardBlock.includes("FromBase64String") &&
+    paymentSecretBytesGuardBlock.includes("DecodedBytes") &&
+    !paymentSecretBytesGuardBlock.includes("BEGIN\\s+CERTIFICATE") &&
     installBlock.includes(
       "Assert-NoPlatformPaymentSecretFile -Path $Spec.artifactPath",
     ) &&
@@ -72,9 +82,9 @@ addCheck(
   "rejects-platform-payment-secrets-from-delivery-manifest",
   paymentSecretGuardBlock.includes("privateKeyPem") &&
     paymentSecretGuardBlock.includes("appCertPem") &&
-    paymentSecretGuardBlock.includes(
-      "BEGIN\\s+(?:(?:RSA|EC)\\s+|ENCRYPTED\\s+)?PRIVATE\\s+KEY",
-    ) &&
+    paymentSecretGuardBlock.includes("Assert-NoPlatformPaymentSecretBytes") &&
+    paymentSecretGuardBlock.includes("UTF8.GetBytes") &&
+    script.includes("Assert-NoPlatformPaymentSecretFile -Path $ManifestPath") &&
     script.includes(
       "Assert-NoPlatformPaymentSecrets -Value $manifestForEvidence -Path manifest",
     ),

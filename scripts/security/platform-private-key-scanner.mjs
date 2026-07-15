@@ -17,6 +17,7 @@ const pkcs12PrivateBagOids = [
   Buffer.from("060b2a864886f70d010c0a0101", "hex"),
   Buffer.from("060b2a864886f70d010c0a0102", "hex"),
 ];
+const pbes2OidValue = Buffer.from("2a864886f70d01050d", "hex");
 
 function containsBytes(haystack, needle) {
   return haystack.indexOf(needle) >= 0;
@@ -35,6 +36,54 @@ function isDerPrivateKey(bytes) {
     }
   }
   return false;
+}
+
+function readDerElement(bytes, offset) {
+  if (offset + 2 > bytes.length) return null;
+  const tag = bytes[offset];
+  const firstLength = bytes[offset + 1];
+  let headerBytes = 2;
+  let length = firstLength;
+  if ((firstLength & 0x80) !== 0) {
+    const lengthBytes = firstLength & 0x7f;
+    if (
+      lengthBytes === 0 ||
+      lengthBytes > 4 ||
+      offset + 2 + lengthBytes > bytes.length
+    ) {
+      return null;
+    }
+    length = 0;
+    for (let index = 0; index < lengthBytes; index += 1) {
+      length = length * 256 + bytes[offset + 2 + index];
+    }
+    headerBytes += lengthBytes;
+  }
+  const contentStart = offset + headerBytes;
+  const end = contentStart + length;
+  if (end > bytes.length) return null;
+  return { tag, contentStart, end, next: end };
+}
+
+function isPasswordEncryptedPkcs8(bytes) {
+  const outer = readDerElement(bytes, 0);
+  if (!outer || outer.tag !== 0x30 || outer.end !== bytes.length) return false;
+  const algorithm = readDerElement(bytes, outer.contentStart);
+  if (!algorithm || algorithm.tag !== 0x30) return false;
+  const oid = readDerElement(bytes, algorithm.contentStart);
+  if (
+    !oid ||
+    oid.tag !== 0x06 ||
+    !bytes.subarray(oid.contentStart, oid.end).equals(pbes2OidValue)
+  ) {
+    return false;
+  }
+  const encryptedData = readDerElement(bytes, algorithm.next);
+  return (
+    encryptedData?.tag === 0x04 &&
+    encryptedData.next === outer.end &&
+    encryptedData.end > encryptedData.contentStart
+  );
 }
 
 function textRepresentations(bytes) {
@@ -98,6 +147,7 @@ function scanZipEntries(bytes, label, state, depth) {
       ) {
         throw new Error(`${label} contains an invalid archive directory`);
       }
+      const flags = bytes.readUInt16LE(centralOffset + 8);
       const method = bytes.readUInt16LE(centralOffset + 10);
       const compressedSize = bytes.readUInt32LE(centralOffset + 20);
       const uncompressedSize = bytes.readUInt32LE(centralOffset + 24);
@@ -117,6 +167,10 @@ function scanZipEntries(bytes, label, state, depth) {
         bytes.readUInt32LE(localOffset) !== 0x04034b50
       ) {
         throw new Error(`${label} contains an invalid archive entry`);
+      }
+      const localFlags = bytes.readUInt16LE(localOffset + 6);
+      if (((flags | localFlags) & 0x41) !== 0) {
+        throw new Error(`${label} contains an encrypted archive entry`);
       }
       const localNameLength = bytes.readUInt16LE(localOffset + 26);
       const localExtraLength = bytes.readUInt16LE(localOffset + 28);
@@ -154,6 +208,9 @@ function scanZipEntries(bytes, label, state, depth) {
     const uncompressedSize = bytes.readUInt32LE(offset + 22);
     const nameLength = bytes.readUInt16LE(offset + 26);
     const extraLength = bytes.readUInt16LE(offset + 28);
+    if ((flags & 0x41) !== 0) {
+      throw new Error(`${label} contains an encrypted archive entry`);
+    }
     if ((flags & 0x08) !== 0) {
       throw new Error(
         `${label} uses an unsupported archive form for bounded scanning`,
@@ -183,6 +240,7 @@ function scanBytes(bytes, label, state, depth) {
   }
   if (
     isDerPrivateKey(bytes) ||
+    isPasswordEncryptedPkcs8(bytes) ||
     pkcs12PrivateBagOids.some((oid) => containsBytes(bytes, oid))
   ) {
     throw new Error(`${label} contains platform private-key material`);

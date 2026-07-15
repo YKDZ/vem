@@ -81,54 +81,28 @@ function Normalize-Sha256 {
   return $normalized
 }
 
-function Assert-NoPlatformPaymentSecrets {
+function Assert-NoPlatformPaymentSecretBytes {
   param(
-    [object]$Value,
-    [string]$Path = "manifest"
+    [byte[]]$Bytes,
+    [string]$Label
   )
 
-  if ($null -eq $Value) { return }
-  if ($Value -is [string]) {
-    if (
-      $Value -match 'BEGIN\s+(?:(?:RSA|EC)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY'
-    ) {
-      throw "$Path contains platform private-key material"
-    }
-    return
-  }
-  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [pscustomobject]) {
-    $index = 0
-    foreach ($item in $Value) {
-      Assert-NoPlatformPaymentSecrets -Value $item -Path "$Path[$index]"
-      $index += 1
-    }
-    return
-  }
-  foreach ($property in @($Value.PSObject.Properties)) {
-    if ($property.Name -match '^(?:privateKeyPem|appCertPem|alipayPublicCertPem|alipayRootCertPem|apiV[23]Key|merchantApiCertPem|merchantApiKeyPem|platformCertificatePem|platformPublicKeyPem|paymentProviderCredentials)$') {
-      throw "$Path.$($property.Name) is platform-only payment secret material"
-    }
-    Assert-NoPlatformPaymentSecrets -Value $property.Value -Path "$Path.$($property.Name)"
-  }
-}
-
-function Assert-NoPlatformPaymentSecretFile {
-  param([string]$Path)
-
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    throw "artifact not found: $Path"
-  }
-  $file = Get-Item -LiteralPath $Path
   $maxInputBytes = 256MB
   $maxExpandedBytes = 16MB
-  if ($file.Length -gt $maxInputBytes) {
-    throw "artifact exceeds bounded platform private-key scan budget: $Path"
+  if ($Bytes.Length -gt $maxInputBytes) {
+    throw "artifact exceeds bounded platform private-key scan budget: $Label"
   }
   $scan = {
-    param([byte[]]$Bytes, [string]$Label, [int]$Depth)
+    param([byte[]]$Bytes, [string]$Label, [int]$Depth, [hashtable]$State)
 
     if ($Depth -gt 3 -or $Bytes.Length -gt $maxInputBytes) {
       throw "artifact exceeds bounded platform private-key scan budget: $Label"
+    }
+    if ($Depth -gt 0) {
+      $State.DecodedBytes = [long]$State.DecodedBytes + $Bytes.Length
+      if ($State.DecodedBytes -gt $maxExpandedBytes) {
+        throw "artifact exceeds bounded platform private-key scan budget: $Label"
+      }
     }
     $texts = @(
       [Text.Encoding]::UTF8.GetString($Bytes),
@@ -183,6 +157,42 @@ function Assert-NoPlatformPaymentSecretFile {
     }
 
     if ($Bytes.Length -ge 4 -and [BitConverter]::ToUInt32($Bytes, 0) -eq 0x04034b50) {
+      $endOffset = -1
+      $minimumEndOffset = [Math]::Max(0, $Bytes.Length - 65557)
+      for ($offset = $Bytes.Length - 22; $offset -ge $minimumEndOffset; $offset -= 1) {
+        if ([BitConverter]::ToUInt32($Bytes, $offset) -eq 0x06054b50) {
+          $endOffset = $offset
+          break
+        }
+      }
+      if ($endOffset -ge 0) {
+        $entryCount = [BitConverter]::ToUInt16($Bytes, $endOffset + 10)
+        $centralOffset = [BitConverter]::ToUInt32($Bytes, $endOffset + 16)
+        for ($index = 0; $index -lt $entryCount; $index += 1) {
+          if (
+            $centralOffset + 46 -gt $Bytes.Length -or
+            [BitConverter]::ToUInt32($Bytes, $centralOffset) -ne 0x02014b50
+          ) {
+            throw "artifact archive cannot be scanned safely: $Label"
+          }
+          $flags = [BitConverter]::ToUInt16($Bytes, $centralOffset + 8)
+          $localOffset = [BitConverter]::ToUInt32($Bytes, $centralOffset + 42)
+          if (
+            $localOffset + 30 -gt $Bytes.Length -or
+            [BitConverter]::ToUInt32($Bytes, $localOffset) -ne 0x04034b50
+          ) {
+            throw "artifact archive cannot be scanned safely: $Label"
+          }
+          $localFlags = [BitConverter]::ToUInt16($Bytes, $localOffset + 6)
+          if ((($flags -bor $localFlags) -band 0x41) -ne 0) {
+            throw "artifact contains an encrypted archive entry: $Label"
+          }
+          $nameLength = [BitConverter]::ToUInt16($Bytes, $centralOffset + 28)
+          $extraLength = [BitConverter]::ToUInt16($Bytes, $centralOffset + 30)
+          $commentLength = [BitConverter]::ToUInt16($Bytes, $centralOffset + 32)
+          $centralOffset += 46 + $nameLength + $extraLength + $commentLength
+        }
+      }
       Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
       $archiveStream = [IO.MemoryStream]::new($Bytes, $false)
       try {
@@ -209,7 +219,7 @@ function Assert-NoPlatformPaymentSecretFile {
             $entryBytes = [IO.MemoryStream]::new()
             try {
               $entryStream.CopyTo($entryBytes)
-              & $scan $entryBytes.ToArray() "$Label/$($entry.FullName)" ($Depth + 1)
+              & $scan $entryBytes.ToArray() "$Label/$($entry.FullName)" ($Depth + 1) $State
             } finally {
               $entryBytes.Dispose()
               $entryStream.Dispose()
@@ -236,13 +246,57 @@ function Assert-NoPlatformPaymentSecretFile {
             continue
           }
           if ($decoded.Length -ge 24 -and $decoded.Length -le 1MB) {
-            & $scan $decoded "$Label (base64)" ($Depth + 1)
+            & $scan $decoded "$Label (base64)" ($Depth + 1) $State
           }
         }
       }
     }
   }
-  & $scan ([IO.File]::ReadAllBytes($Path)) $Path 0
+  & $scan $Bytes $Label 0 @{ DecodedBytes = [long]0 }
+}
+
+function Assert-NoPlatformPaymentSecrets {
+  param(
+    [object]$Value,
+    [string]$Path = "manifest"
+  )
+
+  if ($null -eq $Value) { return }
+  if ($Value -is [string]) {
+    Assert-NoPlatformPaymentSecretBytes -Bytes ([Text.Encoding]::UTF8.GetBytes($Value)) -Label $Path
+    return
+  }
+  if ($Value -is [byte[]]) {
+    Assert-NoPlatformPaymentSecretBytes -Bytes $Value -Label $Path
+    return
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [pscustomobject]) {
+    $index = 0
+    foreach ($item in $Value) {
+      Assert-NoPlatformPaymentSecrets -Value $item -Path "$Path[$index]"
+      $index += 1
+    }
+    return
+  }
+  foreach ($property in @($Value.PSObject.Properties)) {
+    if ($property.Name -match '^(?:privateKeyPem|appCertPem|alipayPublicCertPem|alipayRootCertPem|apiV[23]Key|merchantApiCertPem|merchantApiKeyPem|platformCertificatePem|platformPublicKeyPem|paymentProviderCredentials)$') {
+      throw "$Path.$($property.Name) is platform-only payment secret material"
+    }
+    Assert-NoPlatformPaymentSecrets -Value $property.Value -Path "$Path.$($property.Name)"
+  }
+}
+
+function Assert-NoPlatformPaymentSecretFile {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "artifact not found: $Path"
+  }
+  $file = Get-Item -LiteralPath $Path
+  if ($file.Length -gt 256MB) {
+    throw "artifact exceeds bounded platform private-key scan budget: $Path"
+  }
+  Assert-NoPlatformPaymentSecretBytes -Bytes ([IO.File]::ReadAllBytes($Path)) -Label $Path
 }
 
 function Get-DefaultTargetPath {
@@ -873,6 +927,7 @@ Assert-Administrator
 $manifestUpdateId = "direct-input"
 $manifestForEvidence = $null
 if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
+  Assert-NoPlatformPaymentSecretFile -Path $ManifestPath
   $manifestForEvidence = Read-JsonFile -Path $ManifestPath
   Assert-NoPlatformPaymentSecrets -Value $manifestForEvidence -Path manifest
   if ([string]::IsNullOrWhiteSpace([string]$manifestForEvidence.updateId)) {

@@ -424,21 +424,10 @@ export class PaymentProviderConfigService {
     const readinessByChannel = new Map(
       providerReadiness.map((readiness) => [readiness.channelKey, readiness]),
     );
-    const enabledReadiness = policy.channels
-      .filter((channel) => channel.enabled)
-      .map((channel) => readinessByChannel.get(channel.channelKey));
-    const productionEnvironmentReady =
-      this.appConfig.nodeEnv !== "production" ||
-      (enabledReadiness.length > 0 &&
-        enabledReadiness.every(
-          (readiness) =>
-            readiness?.ready === true && readiness.environment === "production",
-        ));
     const options: Omit<MachinePaymentOption, "recommended">[] = [];
 
     for (const channel of policy.channels) {
       if (!channel.enabled) continue;
-      if (!productionEnvironmentReady) continue;
       const readiness = readinessByChannel.get(channel.channelKey);
       if (!readiness?.ready) continue;
       const metadata = this.machinePaymentOptionMetadata(channel.channelKey);
