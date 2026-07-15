@@ -3429,6 +3429,8 @@ export function evaluateSimulatedHardwareSerialEvidence({
   const session = serialConformance?.reports?.start?.serialSession;
   const collect = serialConformance?.reports?.collect;
   const records = collect?.serialEvidence?.records;
+  const firstStop = serialConformance?.reports?.firstStop;
+  const repeatedStop = serialConformance?.reports?.repeatedStop;
 
   if (
     facts?.phase !== "complete" ||
@@ -3545,6 +3547,59 @@ export function evaluateSimulatedHardwareSerialEvidence({
       serialAcceptanceDiagnostic(
         "guest_serial_frame_evidence_required",
         "Acceptance requires guest-captured scanner and lower-controller frames bound to this sale; software injection or missing frames are rejected.",
+      ),
+    );
+  }
+  const expectedFailureDiagnostics = new Map([
+    ["malformed-frame", "serial_malformed_frame"],
+    ["device-disconnected", "serial_device_disconnected"],
+    ["scanner-timeout", "serial_scanner_timeout"],
+    ["dispense-failed", "serial_dispense_failed"],
+    ["swapped-roles", "serial_swapped_roles"],
+    ["missing-device", "serial_missing_device"],
+  ]);
+  const failureMatrix = serialConformance?.failureMatrix;
+  const failureByMode = new Map(
+    Array.isArray(failureMatrix)
+      ? failureMatrix.map((entry) => [entry?.failureMode, entry])
+      : [],
+  );
+  const lifecycleMatchesSession = (report) =>
+    report?.result === "succeeded" &&
+    report?.serialSession?.serialSessionId === session?.serialSessionId &&
+    report?.serialSession?.deviceMappingDigest ===
+      session?.deviceMappingDigest &&
+    report?.serialSession?.simulatorCleanup?.survivingProcessCount === 0;
+  const failureMatrixComplete =
+    Array.isArray(failureMatrix) &&
+    failureMatrix.length === expectedFailureDiagnostics.size &&
+    failureByMode.size === expectedFailureDiagnostics.size &&
+    [...expectedFailureDiagnostics].every(([failureMode, diagnosticCode]) => {
+      const failure = failureByMode.get(failureMode);
+      const recoveryRequired =
+        failureMode === "swapped-roles" || failureMode === "missing-device";
+      return (
+        failure?.result === "observed_failure" &&
+        failure?.adapterResult === "succeeded" &&
+        failure?.diagnosticCode === diagnosticCode &&
+        (!recoveryRequired ||
+          (failure?.recovery?.runtimeReady === "passed" &&
+            failure?.recovery?.hardwareOnline === true &&
+            failure?.recovery?.scannerOnline === true &&
+            failure?.recovery?.ready === true))
+      );
+    });
+  if (
+    !lifecycleMatchesSession(firstStop) ||
+    !lifecycleMatchesSession(repeatedStop) ||
+    repeatedStop?.serialSession?.simulatorCleanup?.idempotencyVerified !==
+      true ||
+    !failureMatrixComplete
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "guest_serial_lifecycle_evidence_required",
+        "Acceptance requires idempotent serial-session cleanup and the complete observed failure matrix before hardware readiness can be asserted.",
       ),
     );
   }
