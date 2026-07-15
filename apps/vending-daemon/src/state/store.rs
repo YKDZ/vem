@@ -8375,6 +8375,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manual_dispense_migration_upgrades_both_v12_and_issue15_v15_databases() {
+        for prior_version in [12_i64, 15_i64] {
+            let temp = TempDir::new().expect("temp");
+            let path = temp.path().join(format!("state-v{prior_version}.db"));
+            let store = LocalStateStore::open(&path)
+                .await
+                .expect("seed current database");
+            sqlx::query("DROP TABLE manual_dispense_diagnostics")
+                .execute(store.pool())
+                .await
+                .unwrap();
+            if prior_version == 12 {
+                sqlx::query("PRAGMA foreign_keys=OFF")
+                    .execute(store.pool())
+                    .await
+                    .unwrap();
+                for table in [
+                    "stock_maintenance_task_tombstones",
+                    "stock_maintenance_batches",
+                    "stock_maintenance_task_identities",
+                ] {
+                    sqlx::query(&format!("DROP TABLE {table}"))
+                        .execute(store.pool())
+                        .await
+                        .unwrap();
+                }
+                sqlx::query("PRAGMA foreign_keys=ON")
+                    .execute(store.pool())
+                    .await
+                    .unwrap();
+            }
+            store
+                .put_metadata("schema_version", &prior_version)
+                .await
+                .unwrap();
+            drop(store);
+
+            let upgraded = LocalStateStore::open(&path)
+                .await
+                .expect("upgrade database");
+            let tables: Vec<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('manual_dispense_diagnostics','stock_maintenance_batches','stock_maintenance_task_identities','stock_maintenance_task_tombstones') ORDER BY name",
+            ).fetch_all(upgraded.pool()).await.unwrap();
+            assert_eq!(tables.len(), 4, "upgrade from v{prior_version}");
+            assert_eq!(
+                upgraded
+                    .get_metadata::<i64>("schema_version")
+                    .await
+                    .unwrap(),
+                Some(16)
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn manual_dispense_diagnostic_is_a_separate_audit_ledger() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))

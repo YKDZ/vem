@@ -670,7 +670,7 @@ it("runs one protected manual dispense diagnostic and requires explicit stock re
     );
     expect(host.textContent).toContain("请立即执行库存核对");
   });
-  expect(recordStockMovementMock).not.toHaveBeenCalled();
+  expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
 });
 
 it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {

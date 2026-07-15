@@ -343,6 +343,35 @@ describe("Customer Checkout View Projection", () => {
     expect(JSON.stringify(view)).not.toContain("请尽快取走商品");
   });
 
+  it("keeps F1 pickup closure on the customer dispensing surface until F2 success", () => {
+    const transaction = dispensingTransaction();
+    transaction.vending = {
+      ...transaction.vending!,
+      status: "acknowledged",
+      pickupReminder: {
+        stage: "pickup_completed",
+        level: "info",
+        message: "raw controller closure message",
+        warningNo: null,
+        reportedAt: "2026-06-11T06:16:41.000Z",
+      },
+    };
+    const view = projectCustomerCheckoutView({
+      transaction,
+      nowMs: new Date("2026-06-11T06:16:42.000Z").getTime(),
+      dismissedTerminalOrderNos: [],
+      restored: true,
+    });
+    expect(view).toMatchObject({
+      stage: "dispensing",
+      routeTarget: { path: "/dispensing" },
+      dispensing: { pickupReminder: { stage: "pickup_completed" } },
+    });
+    expect(JSON.stringify(view)).not.toContain(
+      "raw controller closure message",
+    );
+  });
+
   it("does not project reset completion as a customer pickup reminder", () => {
     const resetCompletedReminderSnapshot = {
       ...dispensingTransaction(),
