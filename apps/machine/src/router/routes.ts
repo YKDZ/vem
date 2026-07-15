@@ -72,13 +72,11 @@ export const machineRoutes: RouteRecordRaw[] = [
   {
     path: "/maintenance",
     name: "maintenance",
-    meta: { touchKeyboard: "allowed" },
     component: async () => import("@/views/MaintenanceView.vue"),
   },
   {
     path: "/bring-up",
     name: "bring-up",
-    meta: { touchKeyboard: "allowed" },
     component: async () => import("@/views/MachineProvisioningView.vue"),
   },
   {

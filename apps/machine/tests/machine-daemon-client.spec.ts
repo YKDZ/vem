@@ -1008,6 +1008,87 @@ test("provisioning UI sends a PIN-gated typed claim without echoing the code", a
   ]);
 });
 
+test("app-owned touch keyboard enters and submits Bring-Up forms without a physical keyboard", async ({
+  page,
+}) => {
+  scenario = "provisioning";
+  protectedBringUpRequests.length = 0;
+  await page.goto("/#/bring-up");
+
+  await page.getByLabel("维护 PIN").tap();
+  const keyboard = page.locator('[data-test="protected-touch-keyboard"]');
+  await expect(keyboard).toBeVisible();
+  await page.locator('[data-key="2"]').tap();
+  await page.locator('[data-key="4"]').tap();
+  await page.locator('[data-key="6"]').tap();
+  await page.locator('[data-key="8"]').tap();
+  await page.locator('[data-test="touch-keyboard-submit"]').tap();
+  await expect(page.getByLabel("领取码")).toBeVisible();
+  await expect(keyboard).toBeHidden();
+
+  await page.getByLabel("领取码").tap();
+  await page.locator('[data-test="touch-keyboard-shift"]').tap();
+  await page.locator('[data-key="a"]').tap();
+  await page.locator('[data-key="b"]').tap();
+  await page.getByRole("button", { name: "123", exact: true }).tap();
+  await page.locator('[data-key="1"]').tap();
+  await page.locator('[data-test="touch-keyboard-backspace"]').tap();
+  await page.locator('[data-key="2"]').tap();
+  await page.locator('[data-test="touch-keyboard-submit"]').tap();
+
+  await expect(page.getByText("本机服务暂不可用，请稍后重试")).toBeVisible();
+  expect(protectedBringUpRequests).toEqual([
+    {
+      maintenanceSession: "e2e-maintenance-session",
+      body: {
+        contractVersion: 1,
+        taskId: "bring_up.claim_machine",
+        taskVersion: 1,
+        kind: "claim_machine",
+        intent: "claim_machine",
+        mutation: { type: "claim_machine", claimCode: "AB2" },
+      },
+    },
+  ]);
+});
+
+test("touch keyboard stays closed before Maintenance authorization and clears on customer routing", async ({
+  page,
+}) => {
+  scenario = "catalog";
+  await page.addInitScript(() => {
+    window.localStorage.setItem("vem.machine.uiDebug.enabled", "1");
+    window.localStorage.setItem("vem.machine.uiDebug.scenario", "blocked");
+  });
+  await page.goto("/#/maintenance");
+  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
+  const keyboard = page.locator('[data-test="protected-touch-keyboard"]');
+  const pin = page.getByLabel("维护 PIN");
+
+  await pin.tap();
+  await expect(keyboard).toBeHidden();
+  await pin.fill("2468");
+  await page.getByRole("button", { name: "验证并解锁" }).click();
+  const quantity = page.getByLabel("数量", { exact: true });
+  await expect(quantity).toBeEnabled();
+  await quantity.tap();
+  await expect(keyboard).toBeVisible();
+
+  await page.evaluate(() => {
+    window.location.hash = "#/payment";
+  });
+  await expect(page).toHaveURL(/#\/payment$/);
+  await expect(keyboard).toBeHidden();
+
+  await page.evaluate(() => {
+    const input = document.createElement("input");
+    input.id = "customer-route-probe";
+    document.body.append(input);
+    input.focus();
+  });
+  await expect(keyboard).toBeHidden();
+});
+
 test("record-stock UI PIN-gates and keeps the typed cursor pending for Platform acknowledgement", async ({
   page,
 }) => {

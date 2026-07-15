@@ -361,6 +361,19 @@ export function installUiDebugDaemon(): void {
   client.getHealth = async () => currentScenario().health;
   client.getReady = async () => currentScenario().ready;
   client.getBringUp = async () => currentBringUp();
+  client.beginMaintenanceSession = async (
+    pin: string,
+    requestedScopes: string[] = [],
+  ) => {
+    if (pin !== "2468") {
+      throw new Error("维护 PIN 验证失败");
+    }
+    return {
+      sessionId: "ui-debug-maintenance-session",
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      scopes: Array.from(new Set(["maintenance.mutate", ...requestedScopes])),
+    };
+  };
   client.applyNetworkSettings = async () => applyUiDebugNetworkSettings();
   client.getConfig = async () => currentScenario().config;
   client.saveConfig = async (body: unknown) => ({

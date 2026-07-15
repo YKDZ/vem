@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 mod native_audio;
-mod native_touch_keyboard;
 use native_audio::{play_machine_audio, stop_machine_audio, MachineAudioState};
-use native_touch_keyboard::{hide_touch_keyboard, show_touch_keyboard};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,8 +126,6 @@ pub fn run() {
             get_daemon_connection,
             play_machine_audio,
             stop_machine_audio,
-            show_touch_keyboard,
-            hide_touch_keyboard,
             return_to_desktop
         ])
         .run(tauri::generate_context!())

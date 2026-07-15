@@ -33,8 +33,3 @@ rodio = { version = "0.22.2", default-features = false, features = [
   "vorbis",
   "flac",
 ] }
-windows = { version = "0.61", features = [
-  "UI_ViewManagement",
-  "Win32_Foundation",
-  "Win32_UI_WindowsAndMessaging",
-] }
