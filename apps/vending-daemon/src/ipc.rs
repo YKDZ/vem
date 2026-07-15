@@ -1785,7 +1785,8 @@ struct PaymentEnvironmentGate {
 
 impl PaymentEnvironmentGate {
     fn allows(&self, option: &BackendPaymentOption) -> bool {
-        let explicit_mock = option.provider_code == "mock" && option.method == "mock";
+        let explicit_mock = option.provider_code == "mock"
+            && matches!(option.method.as_str(), "mock" | "payment_code");
         let real_provider = option.provider_code != "mock" && option.method != "mock";
         let real_provider_ready = real_provider
             && self.diagnostic.readiness == "ready"
@@ -14555,22 +14556,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn testbed_keeps_explicit_mock_option_when_real_provider_is_unavailable() {
+    async fn testbed_keeps_published_mock_options_when_real_provider_is_unavailable() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "options": [{
-                    "optionKey": "mock:mock",
-                    "providerCode": "mock",
-                    "method": "mock",
-                    "displayName": "模拟支付",
-                    "description": "测试平台显式模拟支付",
-                    "icon": "mock",
-                    "disabled": false,
-                    "disabledReason": null,
-                    "recommended": true
-                }],
+                "options": [
+                    {
+                        "optionKey": "mock:mock",
+                        "providerCode": "mock",
+                        "method": "mock",
+                        "displayName": "模拟支付",
+                        "description": "测试平台显式模拟支付",
+                        "icon": "mock",
+                        "disabled": false,
+                        "disabledReason": null,
+                        "recommended": true
+                    },
+                    {
+                        "optionKey": "payment_code:mock",
+                        "providerCode": "mock",
+                        "method": "payment_code",
+                        "displayName": "模拟付款码",
+                        "description": "测试平台显式模拟付款码",
+                        "icon": "mock",
+                        "disabled": false,
+                        "disabledReason": null,
+                        "recommended": false
+                    }
+                ],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
                 "serverTime": "2026-06-08T16:30:00.000Z"
@@ -14599,7 +14613,15 @@ mod tests {
         let testbed_app = build_router(testbed.clone());
         let testbed_options =
             get_ipc_json(&testbed_app, "/v1/payment-options", Some("token-testbed")).await;
-        assert_eq!(testbed_options["options"][0]["optionKey"], "mock:mock");
+        assert_eq!(
+            testbed_options["options"]
+                .as_array()
+                .expect("testbed options")
+                .iter()
+                .filter_map(|option| option["optionKey"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["mock:mock", "payment_code:mock"]
+        );
         assert_eq!(testbed_options["defaultOptionKey"], "mock:mock");
         let testbed_readiness = machine_sale_readiness_snapshot(&testbed)
             .await
@@ -14609,8 +14631,13 @@ mod tests {
             true
         );
         assert_eq!(
-            testbed_readiness["components"]["paymentOptions"]["methods"][0]["optionKey"],
-            "mock:mock"
+            testbed_readiness["components"]["paymentOptions"]["methods"]
+                .as_array()
+                .expect("testbed readiness methods")
+                .iter()
+                .filter_map(|option| option["optionKey"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["mock:mock", "payment_code:mock"]
         );
 
         let production_dir = tempdir().expect("production tmp");
