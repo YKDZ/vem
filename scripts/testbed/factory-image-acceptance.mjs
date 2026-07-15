@@ -19,6 +19,7 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
+import { validateFactoryMaintenanceRelayAttestation } from "./factory-maintenance-relay-attestation.mjs";
 import {
   createVmHostAdapterRequest,
   runVmHostAdapter,
@@ -129,6 +130,7 @@ export function validateFactoryImageAcceptanceInput(input) {
       "endpoint",
       "ephemeralPlatform",
       "ssh",
+      "maintenanceRelayAttestation",
       "evidence",
     ],
     "factory image acceptance input",
@@ -142,6 +144,7 @@ export function validateFactoryImageAcceptanceInput(input) {
   if (!/^[A-Z0-9][A-Z0-9-]{2,63}$/.test(nonEmpty(input.runId, "runId"))) {
     throw new Error("runId must be an uppercase logical run identity");
   }
+  validateFactoryMaintenanceRelayAttestation(input.maintenanceRelayAttestation);
   if (
     !/^vm-target:\/\/[a-z0-9][a-z0-9.-]{0,127}$/.test(
       nonEmpty(input.targetIdentity, "targetIdentity"),
