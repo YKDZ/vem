@@ -566,6 +566,8 @@ pub struct FactoryRuntimeManifest {
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalBringUpSettings {
+    #[serde(default, skip_serializing)]
+    pub environment: Option<serde_json::Value>,
     #[serde(default)]
     pub provisioning_endpoint_override: Option<String>,
     #[serde(default)]
