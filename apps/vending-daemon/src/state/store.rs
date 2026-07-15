@@ -16,8 +16,8 @@ use vending_core::domain::{
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
-    MIGRATION_V15, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
-    MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V15, MIGRATION_V16, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
+    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -258,6 +258,20 @@ pub struct OrderSessionUpsert<'a> {
     pub recovery_strategy: &'a str,
     pub last_backend_status_json: Option<serde_json::Value>,
     pub last_error: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualDispenseDiagnostic {
+    pub diagnostic_id: String,
+    pub operator_id: String,
+    pub session_correlation_id: String,
+    pub controller: serde_json::Value,
+    pub command: serde_json::Value,
+    pub started_at: String,
+    pub completed_at: String,
+    pub raw_result: serde_json::Value,
+    pub normalized_result: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -833,6 +847,12 @@ impl LocalStateStore {
         }
         self.backfill_current_stock_maintenance_task_identities()
             .await?;
+        if current_version < 16 {
+            sqlx::query(MIGRATION_V16)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
         Ok(())
     }
@@ -850,6 +870,30 @@ impl LocalStateStore {
                     .await?;
             }
         }
+        Ok(())
+    }
+
+    pub async fn record_manual_dispense_diagnostic(
+        &self,
+        record: &ManualDispenseDiagnostic,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO manual_dispense_diagnostics(
+                diagnostic_id,operator_id,session_correlation_id,controller_json,command_json,
+                started_at,completed_at,raw_result_json,normalized_result_json
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        )
+        .bind(&record.diagnostic_id)
+        .bind(&record.operator_id)
+        .bind(&record.session_correlation_id)
+        .bind(record.controller.to_string())
+        .bind(record.command.to_string())
+        .bind(&record.started_at)
+        .bind(&record.completed_at)
+        .bind(record.raw_result.to_string())
+        .bind(record.normalized_result.to_string())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -8113,6 +8157,47 @@ mod tests {
             .expect("schema version")
             .unwrap();
         assert_eq!(schema_version, Some(SCHEMA_VERSION));
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_diagnostic_is_a_separate_audit_ledger() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let record = ManualDispenseDiagnostic {
+            diagnostic_id: "manual-1".to_string(),
+            operator_id: "operator-1".to_string(),
+            session_correlation_id: "session-hash".to_string(),
+            controller: json!({"adapter":"serial","portPath":"COM5"}),
+            command: json!({"slotCode":"A1","quantity":1}),
+            started_at: "2026-07-15T00:00:00.000Z".to_string(),
+            completed_at: "2026-07-15T00:00:01.000Z".to_string(),
+            raw_result: json!({"success":true,"message":"controller completed"}),
+            normalized_result: json!({"outcome":"completed"}),
+        };
+        store
+            .record_manual_dispense_diagnostic(&record)
+            .await
+            .expect("record diagnostic");
+
+        let audit_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM manual_dispense_diagnostics WHERE diagnostic_id='manual-1'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("audit row");
+        let order_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM order_sessions")
+            .fetch_one(store.pool())
+            .await
+            .expect("no order");
+        let movement_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM stock_movements")
+            .fetch_one(store.pool())
+            .await
+            .expect("no stock movement");
+        assert_eq!(audit_count.0, 1);
+        assert_eq!(order_count.0, 0);
+        assert_eq!(movement_count.0, 0);
     }
 
     #[tokio::test]

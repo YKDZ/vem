@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -378,6 +378,25 @@ CREATE INDEX IF NOT EXISTS idx_stock_maintenance_task_tombstones_expires
   ON stock_maintenance_task_tombstones(expires_at);
 
 PRAGMA foreign_keys = ON;
+"#;
+
+// Manual dispense is deliberately a diagnostic ledger, not a sale or stock
+// ledger.  Reconciliation remains the only way to turn an observed removal
+// into a stock fact.
+pub const MIGRATION_V16: &str = r#"
+CREATE TABLE IF NOT EXISTS manual_dispense_diagnostics (
+  diagnostic_id TEXT PRIMARY KEY,
+  operator_id TEXT NOT NULL,
+  session_correlation_id TEXT NOT NULL,
+  controller_json TEXT NOT NULL,
+  command_json TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  raw_result_json TEXT NOT NULL,
+  normalized_result_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_manual_dispense_diagnostics_time
+  ON manual_dispense_diagnostics(completed_at);
 "#;
 
 pub const MIGRATION_V4: &str = r#"
