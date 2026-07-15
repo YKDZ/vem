@@ -285,6 +285,7 @@ function provisionedConfigSummary(): ConfigSummary {
       visionWsUrl: "ws://secret-vision.example/ws",
       visionRequestTimeoutMs: 8000,
       machineAudioVolume: 0.7,
+      machineAudioOutputBinding: null,
       audioCueSettings: {
         enabled: false,
         categories: {

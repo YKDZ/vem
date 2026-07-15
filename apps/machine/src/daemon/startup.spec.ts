@@ -44,6 +44,7 @@ describe("routeForStartup", () => {
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
       machineAudioVolume: 0.7,
+      machineAudioOutputBinding: null,
       audioCueSettings: {
         enabled: false,
         categories: {

@@ -144,6 +144,9 @@ export const machineConfigSchema = z
 export type HardwareAdapter = z.infer<typeof hardwareAdapterSchema>;
 export type ScannerAdapter = z.infer<typeof scannerAdapterSchema>;
 export type AudioCueSettings = z.infer<typeof audioCueSettingsSchema>;
+export type MachineAudioOutputBinding = z.infer<
+  typeof machineAudioOutputBindingSchema
+>;
 export type MachineConfig = z.infer<typeof machineConfigSchema>;
 
 export const machineConfigDefaults: MachineConfig = machineConfigSchema.parse(
