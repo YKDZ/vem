@@ -1,4 +1,12 @@
 import {
+  type DaemonIpcAudioOutputBindingSnapshot,
+  type DaemonIpcAudioOutputConfirmRequest,
+  type DaemonIpcAudioOutputTestRequest,
+  type DaemonIpcAudioOutputTestResponse,
+  daemonIpcAudioOutputBindingSnapshotSchema,
+  daemonIpcAudioOutputConfirmRequestSchema,
+  daemonIpcAudioOutputTestRequestSchema,
+  daemonIpcAudioOutputTestResponseSchema,
   isManagedMediaReference,
   stockMaintenanceBatchResponseSchema,
   stockMaintenanceTaskSchema,
@@ -433,11 +441,32 @@ export class DaemonApiClient {
     );
   }
 
-  async saveMachineAudioSettings(body: unknown): Promise<ConfigSummary> {
+  async getAudioOutputBinding(): Promise<DaemonIpcAudioOutputBindingSnapshot> {
+    return daemonIpcAudioOutputBindingSnapshotSchema.parse(
+      await this.request("/v1/audio-output-binding"),
+    );
+  }
+
+  async testAudioOutput(
+    body: DaemonIpcAudioOutputTestRequest,
+  ): Promise<DaemonIpcAudioOutputTestResponse> {
+    const request = daemonIpcAudioOutputTestRequestSchema.parse(body);
+    return daemonIpcAudioOutputTestResponseSchema.parse(
+      await this.request("/v1/audio-output-binding/test", {
+        method: "POST",
+        body: request,
+      }),
+    );
+  }
+
+  async confirmAudioOutput(
+    body: DaemonIpcAudioOutputConfirmRequest,
+  ): Promise<ConfigSummary> {
+    const request = daemonIpcAudioOutputConfirmRequestSchema.parse(body);
     return configSummaryFromRuntimeConfigurationSummary(
-      await this.request("/v1/config/audio-settings", {
-        method: "PUT",
-        body,
+      await this.request("/v1/audio-output-binding/confirm", {
+        method: "POST",
+        body: request,
       }),
     );
   }

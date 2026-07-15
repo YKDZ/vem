@@ -245,6 +245,8 @@ async fn run_console_cycle(
         runtime_tx: tx_raw.clone(),
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
+        audio_output_platform: Arc::new(crate::audio_output::WindowsAudioOutputPlatform),
+        audio_output_test_evidence: Arc::new(ipc::AudioOutputTestEvidenceStore::default()),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
         sale_binding_gate: Arc::new(ipc::SaleBindingOperationGate::default()),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),

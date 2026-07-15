@@ -229,6 +229,8 @@ pub struct MachineAudioOutputBinding {
     #[serde(default)]
     pub friendly_name: Option<String>,
     pub confirmed_heard_at: String,
+    #[serde(default)]
+    pub confirmed_observation_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -924,6 +926,11 @@ fn normalize_machine_audio_output_binding(
     let Some(mut binding) = binding else {
         return Ok(None);
     };
+    if binding.confirmed_observation_revision.trim().is_empty() {
+        // Bindings written before daemon-owned observation evidence existed
+        // are not confirmed bindings and must be calibrated again.
+        return Ok(None);
+    }
     binding.endpoint_id =
         normalize_required_string(binding.endpoint_id, "machineAudioOutputBinding.endpointId")?;
     binding.friendly_name = normalize_optional_string(binding.friendly_name);
@@ -931,6 +938,27 @@ fn normalize_machine_audio_output_binding(
         &binding.confirmed_heard_at,
         "machineAudioOutputBinding.confirmedHeardAt invalid",
     )?;
+    binding.confirmed_observation_revision = normalize_required_string(
+        binding.confirmed_observation_revision,
+        "machineAudioOutputBinding.confirmedObservationRevision",
+    )?;
+    let revision_digest = binding
+        .confirmed_observation_revision
+        .strip_prefix("sha256:")
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            "machineAudioOutputBinding.confirmedObservationRevision must be a sha256 revision"
+                .to_string()
+        })?;
+    if revision_digest
+        .bytes()
+        .any(|byte| byte.is_ascii_uppercase())
+    {
+        return Err(
+            "machineAudioOutputBinding.confirmedObservationRevision must use lowercase hex"
+                .to_string(),
+        );
+    }
     Ok(Some(binding))
 }
 
@@ -5102,6 +5130,33 @@ mod tests {
         assert_eq!(saved["machineAudioVolume"], 0.35);
     }
 
+    #[test]
+    fn legacy_audio_output_binding_without_observation_evidence_requires_recalibration() {
+        let binding = MachineAudioOutputBinding {
+            endpoint_id: "wasapi:endpoint-1".to_string(),
+            friendly_name: Some("USB Speaker".to_string()),
+            confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+            confirmed_observation_revision: String::new(),
+        };
+
+        assert_eq!(
+            normalize_machine_audio_output_binding(Some(binding)).expect("legacy migration"),
+            None
+        );
+    }
+
+    #[test]
+    fn audio_output_binding_rejects_forged_observation_revision() {
+        let binding = MachineAudioOutputBinding {
+            endpoint_id: "wasapi:endpoint-1".to_string(),
+            friendly_name: Some("USB Speaker".to_string()),
+            confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+            confirmed_observation_revision: "ui-forged".to_string(),
+        };
+
+        assert!(normalize_machine_audio_output_binding(Some(binding)).is_err());
+    }
+
     #[tokio::test]
     async fn save_machine_audio_settings_update_persists_binding_cues_and_volume() {
         let temp = TempDir::new().expect("temp");
@@ -5119,6 +5174,7 @@ mod tests {
                 endpoint_id: "{0.0.0.00000000}.{field-speaker-1}".to_string(),
                 friendly_name: Some("现场喇叭".to_string()),
                 confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+                confirmed_observation_revision: format!("sha256:{}", "a".repeat(64)),
             },
             audio_cue_settings: AudioCueSettings {
                 enabled: true,
@@ -5170,6 +5226,10 @@ mod tests {
         assert_eq!(
             saved["machineAudioOutputBinding"]["confirmedHeardAt"],
             "2026-07-15T10:00:00.000Z"
+        );
+        assert_eq!(
+            saved["machineAudioOutputBinding"]["confirmedObservationRevision"],
+            format!("sha256:{}", "a".repeat(64))
         );
         assert_eq!(saved["audioCueSettings"]["enabled"], true);
         assert_eq!(saved["audioCueSettings"]["categories"]["presence"], false);

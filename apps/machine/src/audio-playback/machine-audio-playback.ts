@@ -143,6 +143,22 @@ export function createMachineAudioPlayback(
     });
     if (
       requireNativeOutputBinding &&
+      shouldPreferNative &&
+      nativeDriver === null
+    ) {
+      activePlayback = null;
+      recordDiagnostic({
+        requestId,
+        status: "failed",
+        sourceUrl,
+        driver: "native",
+        message:
+          "native playback unavailable for confirmed audio output binding",
+      });
+      return false;
+    }
+    if (
+      requireNativeOutputBinding &&
       driver.name === "native" &&
       (!outputDeviceId || outputDeviceId.trim().length === 0)
     ) {

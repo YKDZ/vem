@@ -3,7 +3,7 @@ use std::path::Path;
 
 mod native_audio;
 use native_audio::{
-    list_machine_audio_outputs, play_machine_audio, stop_machine_audio, MachineAudioState,
+    play_machine_audio, stop_machine_audio, test_machine_audio_output, MachineAudioState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -126,8 +126,8 @@ pub fn run() {
         .manage(MachineAudioState::default())
         .invoke_handler(tauri::generate_handler![
             get_daemon_connection,
-            list_machine_audio_outputs,
             play_machine_audio,
+            test_machine_audio_output,
             stop_machine_audio,
             return_to_desktop
         ])
