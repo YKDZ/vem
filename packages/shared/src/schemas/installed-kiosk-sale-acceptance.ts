@@ -45,7 +45,7 @@ const installedKioskSaleCorrelationSchema = z.object({
   transactionIds: z.array(z.string().min(1)),
   vendingCommandIds: z.array(z.string().min(1)),
   stockMovementIds: z.array(z.string().min(1)),
-  paymentUrls: z.array(z.string().url()),
+  paymentUrls: z.array(z.url()),
 });
 
 export const installedKioskSaleAcceptanceFactsSchema = z.object({
