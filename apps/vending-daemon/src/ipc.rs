@@ -7292,12 +7292,13 @@ async fn manual_dispense_diagnostic(
         "reportedAt": result.reported_at,
     });
     let terminal_status = normalized["outcome"].as_str().unwrap_or("result_unknown");
+    let raw_result = bounded_manual_dispense_raw_result(&result);
     let record = match ctx
         .state
         .finish_manual_dispense_diagnostic(
             &diagnostic_id,
             terminal_status,
-            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+            raw_result,
             normalized.clone(),
         )
         .await
@@ -7329,6 +7330,21 @@ async fn manual_dispense_diagnostic(
         "replayed": false,
     }))
     .into_response()
+}
+
+fn bounded_manual_dispense_raw_result(
+    result: &vending_core::hardware::DispenseResultPayload,
+) -> serde_json::Value {
+    fn bounded(value: &str, max_chars: usize) -> String {
+        value.chars().take(max_chars).collect()
+    }
+    serde_json::json!({
+        "commandNo": bounded(&result.command_no, 128),
+        "success": result.success,
+        "errorCode": result.error_code.as_deref().map(|value| bounded(value, 128)),
+        "message": bounded(&result.message, 1024),
+        "reportedAt": bounded(&result.reported_at, 64),
+    })
 }
 
 fn hardware_fault_injection_enabled() -> bool {
@@ -15781,6 +15797,43 @@ mod tests {
         allow: bool,
     }
 
+    #[derive(Default)]
+    struct CountingManualDispenseAdapter {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl vending_core::hardware::HardwareAdapter for CountingManualDispenseAdapter {
+        fn adapter_name(&self) -> &str {
+            "serial"
+        }
+        async fn self_check(&self) -> vending_core::hardware::HardwareStatus {
+            vending_core::hardware::HardwareStatus {
+                adapter: "serial".to_string(),
+                online: true,
+                message: "resolved controller ready".to_string(),
+                port_path: Some("COM5".to_string()),
+                resolution_source: Some("stable_device_binding".to_string()),
+                bound_usb_identity: None,
+                candidates: vec![],
+            }
+        }
+        async fn dispense(
+            &self,
+            command: vending_core::hardware::DispenseCommandPayload,
+        ) -> vending_core::hardware::DispenseResultPayload {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            vending_core::hardware::DispenseResultPayload {
+                command_no: command.command_no,
+                success: true,
+                error_code: None,
+                message: "controller completed".to_string(),
+                reported_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
     #[async_trait]
     impl MaintenanceAuthorization for TestMaintenanceAuthorization {
         fn as_any(&self) -> &dyn StdAny {
@@ -16052,6 +16105,108 @@ mod tests {
             })
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_endpoint_uses_two_tokens_and_executes_one_isolated_command() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx =
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let authority = Arc::new(DaemonMaintenanceAuthorization::new(
+            ctx.config_store.clone(),
+        ));
+        let session = authority
+            .issue_verified(
+                "operator-9".to_string(),
+                vec![MAINTENANCE_SCOPE_MANUAL_DISPENSE.to_string()],
+            )
+            .await
+            .unwrap();
+        ctx.maintenance_authorization = authority;
+        ctx.config_store
+            .save_local_device_binding(
+                crate::device_binding::LocalDeviceRole::LowerController,
+                crate::device_binding::LocalSerialRoleBinding {
+                    identity: crate::device_binding::StableSerialDeviceIdentity {
+                        identity_key: "container:controller-1".to_string(),
+                        instance_id: None,
+                        container_id: Some("controller-1".to_string()),
+                        hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                        serial_number: Some("SERIAL-1".to_string()),
+                    },
+                    confirmed_at: crate::state::store::now_iso(),
+                    confirmed_by: "operator-9".to_string(),
+                    test_evidence_code: "passed".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let adapter = Arc::new(CountingManualDispenseAdapter::default());
+        ctx.hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let state = ctx.state.clone();
+        let app = build_router(ctx);
+        let request = |idempotency_key: &str| {
+            Request::builder().method(Method::POST)
+            .uri("/v1/maintenance/manual-dispense-diagnostic")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header("x-vem-maintenance-session", &session.session_id)
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(json!({
+                "idempotencyKey":idempotency_key,"slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5
+            }).to_string())).unwrap()
+        };
+        let (first, concurrent) = tokio::join!(
+            app.clone().oneshot(request("field-click-1")),
+            app.clone().oneshot(request("field-click-1")),
+        );
+        let first = first.unwrap();
+        let concurrent = concurrent.unwrap();
+        assert!([first.status(), concurrent.status()].contains(&StatusCode::OK));
+        assert!([first.status(), concurrent.status()].contains(&StatusCode::CONFLICT));
+        let replay = app.clone().oneshot(request("field-click-1")).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        for table in [
+            "order_sessions",
+            "command_log",
+            "stock_movements",
+            "outbox_events",
+        ] {
+            let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(state.pool())
+                .await
+                .unwrap();
+            assert_eq!(count.0, 0, "business table {table} must remain untouched");
+        }
+        let evidence = state
+            .manual_dispense_diagnostic(first_manual_dispense_id(state.pool()).await.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.reconciliation_status, "open");
+        assert!(evidence.controller.get("stableIdentity").is_some());
+
+        sqlx::query("DROP TABLE manual_dispense_diagnostics")
+            .execute(state.pool())
+            .await
+            .unwrap();
+        let failed_reservation = app
+            .clone()
+            .oneshot(request("field-click-db-failure"))
+            .await
+            .unwrap();
+        assert_eq!(
+            failed_reservation.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(adapter.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    async fn first_manual_dispense_id(pool: &sqlx::SqlitePool) -> String {
+        sqlx::query_scalar("SELECT diagnostic_id FROM manual_dispense_diagnostics LIMIT 1")
+            .fetch_one(pool)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

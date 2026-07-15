@@ -671,6 +671,16 @@ export const hardwareSelfCheckSchema = z.object({
   configUpdated: z.boolean().default(false),
 });
 
+export const manualDispenseDiagnosticResultSchema = z.object({
+  diagnosticId: z.string().min(1),
+  outcome: z.enum(["completed", "failed", "result_unknown"]),
+  errorCode: z.string().nullable().optional(),
+  reportedAt: z.string().optional(),
+  stockReconciliationRequired: z.literal(true),
+  reconciliationStatus: z.literal("open"),
+  replayed: z.boolean(),
+});
+
 export const environmentControlResultSchema =
   environmentControlResultPayloadSchema;
 
@@ -760,6 +770,9 @@ export type NaturalContextSnapshot = z.infer<
   typeof naturalContextSnapshotSchema
 >;
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
+export type ManualDispenseDiagnosticResult = z.infer<
+  typeof manualDispenseDiagnosticResultSchema
+>;
 export type EnvironmentControlResult = z.infer<
   typeof environmentControlResultSchema
 >;
