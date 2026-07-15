@@ -65,6 +65,18 @@ function Normalize-WindowsPath([object]$Value) {
   return ([string]$Value).Trim().Replace("/", "\").TrimEnd("\").ToLowerInvariant()
 }
 
+function Normalize-CdpEndpoint([object]$Value) {
+  $candidate = ([string]$Value).Trim()
+  if ($candidate -cnotmatch '^http://(?<host>127\.0\.0\.1|(?i:localhost)):(?<port>[0-9]{1,5})/?$') {
+    throw "CDP endpoint must be an exact loopback HTTP endpoint"
+  }
+  $port = [int]$Matches.port
+  if ($port -lt 1 -or $port -gt 65535) {
+    throw "CDP endpoint port must be between 1 and 65535"
+  }
+  return "http://127.0.0.1:$port"
+}
+
 function Test-TauriHashRouteUrl([object]$Value) {
   try {
     $uri = [System.Uri]::new([string]$Value)
@@ -85,6 +97,87 @@ function Get-SingleComponent([object]$Components, [string]$Label) {
     throw "$Label must contain exactly one ui component"
   }
   return $matches[0]
+}
+
+function Assert-ComponentSourceBindings([object]$ManifestComponents, [object]$BoundComponents) {
+  $manifestItems = @($ManifestComponents)
+  $boundItems = @($BoundComponents)
+  if ($manifestItems.Count -ne $boundItems.Count) {
+    throw "managed-update source binding component count does not match manifest"
+  }
+  foreach ($manifestComponent in $manifestItems) {
+    $matches = @($boundItems | Where-Object {
+        [string]$_.component -ceq [string]$manifestComponent.component -and
+        (Normalize-WindowsPath $_.targetPath) -ceq (Normalize-WindowsPath $manifestComponent.targetPath)
+      })
+    if ($matches.Count -ne 1) {
+      throw "managed-update source binding must uniquely identify every manifest component"
+    }
+    $boundComponent = $matches[0]
+    if ((Normalize-Sha256 $boundComponent.sha256 "source-bound component") -cne (Normalize-Sha256 $manifestComponent.sha256 "manifest component")) {
+      throw "managed-update source binding component hash does not match manifest"
+    }
+    $manifestSidecars = if ($null -eq $manifestComponent.sidecars) { @() } else { @($manifestComponent.sidecars) }
+    $boundSidecars = if ($null -eq $boundComponent.sidecars) { @() } else { @($boundComponent.sidecars) }
+    if ($manifestSidecars.Count -ne $boundSidecars.Count) {
+      throw "managed-update source binding sidecar count does not match manifest"
+    }
+    foreach ($manifestSidecar in $manifestSidecars) {
+      $sidecarMatches = @($boundSidecars | Where-Object {
+          (Normalize-WindowsPath $_.targetPath) -ceq (Normalize-WindowsPath $manifestSidecar.targetPath)
+        })
+      if (
+        $sidecarMatches.Count -ne 1 -or
+        (Normalize-Sha256 $sidecarMatches[0].sha256 "source-bound sidecar") -cne (Normalize-Sha256 $manifestSidecar.sha256 "manifest sidecar")
+      ) {
+        throw "managed-update source binding sidecar does not match manifest"
+      }
+    }
+  }
+}
+
+function Assert-InstalledComponentBindings([object]$BoundComponents, [object]$InstalledComponents) {
+  $boundItems = @($BoundComponents)
+  $installedItems = @($InstalledComponents)
+  if ($boundItems.Count -ne $installedItems.Count) {
+    throw "managed-update installed component count does not match source binding"
+  }
+  foreach ($boundComponent in $boundItems) {
+    $matches = @($installedItems | Where-Object {
+        [string]$_.component -ceq [string]$boundComponent.component -and
+        (Normalize-WindowsPath $_.targetPath) -ceq (Normalize-WindowsPath $boundComponent.targetPath)
+      })
+    if ($matches.Count -ne 1) {
+      throw "managed-update evidence must uniquely identify every installed component"
+    }
+    $installedComponent = $matches[0]
+    $boundSha256 = Normalize-Sha256 $boundComponent.sha256 "source-bound component"
+    if (
+      -not [bool]$installedComponent.ok -or
+      (Normalize-Sha256 $installedComponent.expectedSha256 "installed component expected") -cne $boundSha256 -or
+      (Normalize-Sha256 $installedComponent.installedSha256 "installed component actual") -cne $boundSha256
+    ) {
+      throw "managed-update installed component hash does not match source binding"
+    }
+    $boundSidecars = if ($null -eq $boundComponent.sidecars) { @() } else { @($boundComponent.sidecars) }
+    $installedSidecars = if ($null -eq $installedComponent.sidecars) { @() } else { @($installedComponent.sidecars) }
+    if ($boundSidecars.Count -ne $installedSidecars.Count) {
+      throw "managed-update installed sidecar count does not match source binding"
+    }
+    foreach ($boundSidecar in $boundSidecars) {
+      $sidecarMatches = @($installedSidecars | Where-Object {
+          (Normalize-WindowsPath $_.targetPath) -ceq (Normalize-WindowsPath $boundSidecar.targetPath)
+        })
+      $boundSidecarSha256 = Normalize-Sha256 $boundSidecar.sha256 "source-bound sidecar"
+      if (
+        $sidecarMatches.Count -ne 1 -or
+        (Normalize-Sha256 $sidecarMatches[0].expectedSha256 "installed sidecar expected") -cne $boundSidecarSha256 -or
+        (Normalize-Sha256 $sidecarMatches[0].installedSha256 "installed sidecar actual") -cne $boundSidecarSha256
+      ) {
+        throw "managed-update installed sidecar hash does not match source binding"
+      }
+    }
+  }
 }
 
 function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost) {
@@ -115,6 +208,8 @@ function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost) {
   $listener = $Fixture.liveRuntime.cdpListener
   $target = $Fixture.liveRuntime.cdpTarget
   $kiosk = $runtime.kioskRuntime
+  $cdpEndpoint = Normalize-CdpEndpoint $Fixture.liveRuntime.cdpEndpoint
+  $cdpPort = ([System.Uri]$cdpEndpoint).Port
   if (
     [string]$machine.sessionUser -cne "VEMKiosk" -or
     [int]$machine.processId -le 0 -or
@@ -126,7 +221,9 @@ function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost) {
     -not [bool]$listener.bound -or
     [int]$listener.processId -le 0 -or
     [int]$listener.sessionId -ne [int]$machine.sessionId -or
-    [int]$listener.machineAncestorProcessId -ne [int]$machine.processId
+    [int]$listener.machineAncestorProcessId -ne [int]$machine.processId -or
+    [string]$listener.localAddress -cne "127.0.0.1" -or
+    [int]$listener.localPort -ne $cdpPort
   ) {
     throw "live CDP listener must be in the kiosk session and descend from machine.exe"
   }
@@ -151,10 +248,22 @@ function Assert-AcceptanceFixture([object]$Fixture, [string]$ExpectedHost) {
   $delivery = $Fixture.delivery
   $manifest = $delivery.manifest
   $managedUpdate = $delivery.evidence
+  $manifestSha256 = Normalize-Sha256 $delivery.manifestSha256 "deployed managed-update manifest"
   $sourceCommit = ([string]$manifest.sourceCommit).Trim().ToLowerInvariant()
   if ($sourceCommit -notmatch "^[0-9a-f]{40}$") {
     throw "managed-update manifest must bind a full Git sourceCommit"
   }
+  $sourceBinding = $managedUpdate.sourceBinding
+  if (
+    [string]$sourceBinding.schemaVersion -cne "managed-update-source-binding/v1" -or
+    (Normalize-Sha256 $sourceBinding.manifestSha256 "managed-update evidence manifest") -cne $manifestSha256 -or
+    ([string]$sourceBinding.sourceCommit).Trim().ToLowerInvariant() -cne $sourceCommit -or
+    [string]$sourceBinding.updateId -cne [string]$manifest.updateId
+  ) {
+    throw "managed-update evidence source binding does not match the deployed manifest"
+  }
+  Assert-ComponentSourceBindings $manifest.components $sourceBinding.components
+  Assert-InstalledComponentBindings $sourceBinding.components $managedUpdate.components
   if (
     [string]::IsNullOrWhiteSpace([string]$manifest.updateId) -or
     [string]$managedUpdate.updateId -cne [string]$manifest.updateId -or
@@ -209,6 +318,7 @@ if ([string]::IsNullOrWhiteSpace($ManagedUpdateManifestPath)) {
 if ([string]::IsNullOrWhiteSpace($ManagedUpdateEvidencePath)) {
   throw "-ManagedUpdateEvidencePath is required"
 }
+$normalizedCdpEndpoint = Normalize-CdpEndpoint $CdpEndpoint
 if ($env:OS -ne "Windows_NT") {
   throw "interactive touch-keyboard acceptance must run on Windows"
 }
@@ -248,13 +358,16 @@ for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth += 1) {
   $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
 }
 $listenerSocket = @(
-  Get-NetTCPConnection -LocalPort ([System.Uri]$CdpEndpoint).Port -State Listen |
-    Where-Object { [int]$_.OwningProcess -eq [int]$listenerCim.ProcessId }
+  Get-NetTCPConnection -LocalPort ([System.Uri]$normalizedCdpEndpoint).Port -State Listen |
+    Where-Object {
+      [int]$_.OwningProcess -eq [int]$listenerCim.ProcessId -and
+      [string]$_.LocalAddress -ceq "127.0.0.1"
+    }
 )
 if ($listenerSocket.Count -eq 0) {
   throw "authoritative CDP listener PID is not listening on the configured endpoint"
 }
-$targets = @(Invoke-RestMethod -Uri "$($CdpEndpoint.TrimEnd('/'))/json" -TimeoutSec 5)
+$targets = @(Invoke-RestMethod -Uri "$normalizedCdpEndpoint/json" -TimeoutSec 5)
 $target = @($targets | Where-Object { [string]$_.id -ceq [string]$authoritativeKiosk.cdpTargetId })
 if ($target.Count -ne 1) {
   throw "authoritative CDP target is not present on the live listener"
@@ -268,6 +381,7 @@ $fixture = [ordered]@{
     sha256 = $artifactHash
   }
   liveRuntime = [ordered]@{
+    cdpEndpoint = $normalizedCdpEndpoint
     machineProcess = [ordered]@{
       processId = [int]$machineProcess.Id
       sessionId = [int]$machineProcess.SessionId
@@ -278,6 +392,8 @@ $fixture = [ordered]@{
       sessionId = [int]$listenerCim.SessionId
       machineAncestorProcessId = if ($bound) { [int]$machineProcess.Id } else { $null }
       bound = $bound
+      localAddress = [string]$listenerSocket[0].LocalAddress
+      localPort = [int]$listenerSocket[0].LocalPort
     }
     cdpTarget = [ordered]@{
       id = [string]$target[0].id
@@ -287,6 +403,7 @@ $fixture = [ordered]@{
   runtimeAcceptance = $runtimeAcceptance
   delivery = [ordered]@{
     manifestPath = $ManagedUpdateManifestPath
+    manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ManagedUpdateManifestPath).Hash.ToLowerInvariant()
     evidencePath = $ManagedUpdateEvidencePath
     manifest = $manifest
     evidence = $managedUpdateEvidence

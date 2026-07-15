@@ -516,6 +516,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/windows/accept-protected-touch-keyboard.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/windows/protected-touch-keyboard-acceptance.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/windows/apply-managed-update.ps1",
     owner: "field-operations",
     category: "public runbook operation",

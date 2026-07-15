@@ -30,6 +30,7 @@ Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式
 ```json
 {
   "updateId": "2026-06-27-local",
+  "sourceCommit": "replace-with-full-40-hex-git-commit",
   "components": [
     {
       "component": "daemon",
@@ -54,7 +55,7 @@ Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式
 }
 ```
 
-`updateId` 为必填，并会复制到证据 JSON。`components` 至少必须包含一个组件；空数组会被拒绝。`sidecars` 只在 UI 清单模式中支持；省略它时旧的单文件 UI 清单保持兼容。更新器会在停止 UI 前验证并备份 UI 主程序和 sidecar，然后一次停止、整组替换、一次启动。
+`updateId` 与完整 40 位十六进制 `sourceCommit` 均为清单模式必填。`components` 至少必须包含一个组件；空数组会被拒绝。`sidecars` 只在 UI 清单模式中支持；省略它时旧的单文件 UI 清单保持兼容。更新器会在停止 UI 前验证并备份 UI 主程序和 sidecar，然后一次停止、整组替换、一次启动。
 
 在 Windows 主机上使用管理员 PowerShell 运行：
 
@@ -74,7 +75,7 @@ Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式
   -EvidencePath C:\VEM\updates\evidence-ui-update.json
 ```
 
-如果直接输入时提供 `-TargetPath`，它必须匹配该组件的固定目标路径。
+如果直接输入时提供 `-TargetPath`，它必须匹配该组件的固定目标路径。直接输入模式保留给兼容和紧急恢复，无法生成可用于生产验收的不可变来源绑定；生产交付和验收必须使用清单模式。
 
 ## UI 启动模式
 
@@ -91,10 +92,13 @@ Vision 是独立本地能力。它通过既有 `VEM\StartVisionServer` 交互式
 
 - 请求的组件、产物路径、目标路径和预期 sha256
 - 清单 `updateId`
+- `managed-update-source-binding/v1` 来源绑定，其中包含清单原始字节的 `manifestSha256`、完整 `sourceCommit`、`updateId`，以及规范化后的所有组件和 sidecar 哈希
 - 旧可执行文件和 UI sidecar 的备份路径
 - 主程序和 sidecar 的已安装哈希
 - 更新后健康检查结果
 - 适用时的 rollbackAttempted、rollbackOk 和回滚健康详情
+
+来源绑定在替换开始前由同一份已解析清单生成。后续验收会把当前部署清单的字节哈希、来源提交、更新 ID、组件哈希，与更新证据和运行时报告中的已部署 UI 哈希双向比对；部署后改写清单，即使替换成另一个格式合法的提交号，也会使验收失败。
 
 daemon 健康通过 daemon ready 文件检查。`healthzUrl` 和 `readyzUrl` 都必须携带 ready 文件令牌并返回 HTTP 成功。证据会记录 `healthzOk`、`readyzOk`、daemon `status`、ready `mode`、ready `status` 和 `blockingCodes`。更新验收不要要求 `canSell=true`，因为真实机器可能正处于维护窗口或硬件未接入状态。
 
