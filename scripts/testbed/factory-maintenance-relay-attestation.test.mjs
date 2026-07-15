@@ -12,18 +12,19 @@ import {
 const relayKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
 function proof() {
+  const now = Date.now();
   return {
     schemaVersion: "factory-maintenance-relay-attestation/v1",
     kind: "factory-maintenance-relay-attestation",
     source: "runner-wireguard",
-    startedAt: "2026-07-15T08:00:00.000Z",
-    completedAt: "2026-07-15T08:00:10.000Z",
+    startedAt: new Date(now - 10_000).toISOString(),
+    completedAt: new Date(now).toISOString(),
     session: {
       id: "550e8400-e29b-41d4-a716-446655440001",
       kind: "ci",
       status: "active",
-      issuedAt: "2026-07-15T07:59:00.000Z",
-      expiresAt: "2026-07-15T10:30:00.000Z",
+      issuedAt: new Date(now - 60_000).toISOString(),
+      expiresAt: new Date(now + 3 * 60 * 60_000).toISOString(),
       sourcePeer: {
         id: "550e8400-e29b-41d4-a716-446655440002",
         role: "runner",
@@ -49,7 +50,7 @@ function proof() {
         publicKey: relayKey,
         endpoint: "relay.example.test:51820",
         allowedIps: ["10.91.16.10/32"],
-        latestHandshakeEpochSeconds: 1_784_102_405,
+        latestHandshakeEpochSeconds: Math.floor((now - 5_000) / 1000),
       },
       route: {
         destination: "10.91.16.10/32",
@@ -82,7 +83,7 @@ describe("Factory maintenance relay attestation", () => {
     );
   });
 
-  it("collects the relay route as the session relay /32 from runner-owned observations", () => {
+  it("collects the bootstrap relay route before the Factory target is installed", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-relay-attestation-"));
     const previousPath = process.env.PATH;
     const previousInterface = process.env.VEM_MAINTENANCE_RELAY_INTERFACE;
@@ -102,9 +103,11 @@ describe("Factory maintenance relay attestation", () => {
         "#!/bin/sh\nprintf '%s\\n' '10.91.16.10 dev wg-factory src 10.91.2.10 uid 1000'\n",
         { mode: 0o755 },
       );
-      writeFileSync(join(root, "ping"), "#!/bin/sh\nexit 0\n", {
-        mode: 0o755,
-      });
+      writeFileSync(
+        join(root, "ping"),
+        '#!/bin/sh\n[ "$*" = "-c 1 -W 5 10.91.0.1" ]\n',
+        { mode: 0o755 },
+      );
       process.env.PATH = `${root}:${previousPath}`;
       process.env.VEM_MAINTENANCE_RELAY_INTERFACE = "wg-factory";
 
@@ -138,6 +141,13 @@ describe("Factory maintenance relay attestation", () => {
       "a handshake epoch of one",
       (value) => {
         value.runner.relayPeer.latestHandshakeEpochSeconds = 1;
+      },
+    ],
+    [
+      "a handshake older than the bounded rekey window",
+      (value) => {
+        value.runner.relayPeer.latestHandshakeEpochSeconds =
+          Math.ceil(Date.parse(value.completedAt) / 1000) - 181;
       },
     ],
     [

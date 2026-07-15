@@ -202,7 +202,7 @@ describe("Factory Image Acceptance workflow", () => {
     assert.match(workflow, /-p 18884:1883/);
     assert.doesNotMatch(workflow, /192\.168\.2\.23/);
     assert.match(workflow, /Create Maintenance Relay Session/);
-    assert.match(workflow, /Prove Relay WireGuard SSH Data Plane/);
+    assert.match(workflow, /Prove Relay WireGuard Bootstrap Route/);
     assert.match(workflow, /maintenance-automation\/exchange/);
     assert.match(workflow, /maintenance-automation\/session/);
     assert.match(workflow, /factory-maintenance-relay-attestation\.mjs/);
