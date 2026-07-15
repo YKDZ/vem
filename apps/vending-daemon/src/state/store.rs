@@ -886,35 +886,6 @@ impl LocalStateStore {
         Ok(())
     }
 
-    pub async fn record_manual_dispense_diagnostic(
-        &self,
-        record: &ManualDispenseDiagnostic,
-    ) -> Result<(), StoreError> {
-        sqlx::query(
-            "INSERT INTO manual_dispense_diagnostics(
-                diagnostic_id,idempotency_key,status,operator_id,session_correlation_id,
-                controller_json,command_json,started_at,completed_at,raw_result_json,
-                normalized_result_json,reconciliation_status,expires_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-        )
-        .bind(&record.diagnostic_id)
-        .bind(&record.idempotency_key)
-        .bind(&record.status)
-        .bind(&record.operator_id)
-        .bind(&record.session_correlation_id)
-        .bind(record.controller.to_string())
-        .bind(record.command.to_string())
-        .bind(&record.started_at)
-        .bind(&record.completed_at)
-        .bind(record.raw_result.as_ref().map(ToString::to_string))
-        .bind(record.normalized_result.as_ref().map(ToString::to_string))
-        .bind(&record.reconciliation_status)
-        .bind(&record.expires_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
     pub async fn reserve_manual_dispense_diagnostic(
         &self,
         record: &ManualDispenseDiagnostic,
@@ -979,6 +950,33 @@ impl LocalStateStore {
         self.manual_dispense_diagnostic(id)
             .await?
             .ok_or(StoreError::Sqlx(sqlx::Error::RowNotFound))
+    }
+
+    pub async fn mark_pending_manual_dispense_result_unknown(
+        &self,
+        id: &str,
+    ) -> Result<ManualDispenseDiagnostic, StoreError> {
+        let completed_at = now_iso();
+        let normalized = serde_json::json!({
+            "outcome": "result_unknown",
+            "reason": "pending diagnostic recovered without a durable terminal controller result",
+        });
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        sqlx::query(
+            "UPDATE manual_dispense_diagnostics SET status='result_unknown',completed_at=?2,
+             normalized_result_json=?3
+             WHERE diagnostic_id=?1 AND status='pending'",
+        )
+        .bind(id)
+        .bind(completed_at)
+        .bind(normalized.to_string())
+        .execute(tx.as_mut())
+        .await?;
+        let record = manual_dispense_by_id_in_tx(&mut tx, id)
+            .await?
+            .ok_or(StoreError::Sqlx(sqlx::Error::RowNotFound))?;
+        tx.commit().await?;
+        Ok(record)
     }
 
     pub async fn manual_dispense_diagnostic(
@@ -8435,25 +8433,38 @@ mod tests {
         let store = LocalStateStore::open(&temp.path().join("state.db"))
             .await
             .expect("open");
-        let record = ManualDispenseDiagnostic {
+        let pending = ManualDispenseDiagnostic {
             diagnostic_id: "manual-1".to_string(),
             idempotency_key: "operator-request-1".to_string(),
-            status: "completed".to_string(),
+            status: "pending".to_string(),
             operator_id: "operator-1".to_string(),
             session_correlation_id: "session-hash".to_string(),
             controller: json!({"adapter":"serial","portPath":"COM5"}),
             command: json!({"slotCode":"A1","quantity":1}),
             started_at: "2026-07-15T00:00:00.000Z".to_string(),
-            completed_at: Some("2026-07-15T00:00:01.000Z".to_string()),
-            raw_result: Some(json!({"success":true,"message":"controller completed"})),
-            normalized_result: Some(json!({"outcome":"completed"})),
+            completed_at: None,
+            raw_result: None,
+            normalized_result: None,
             reconciliation_status: "open".to_string(),
             expires_at: "2026-10-15T00:00:00.000Z".to_string(),
         };
-        store
-            .record_manual_dispense_diagnostic(&record)
+        let reservation = store
+            .reserve_manual_dispense_diagnostic(&pending)
             .await
-            .expect("record diagnostic");
+            .expect("reserve diagnostic");
+        assert!(matches!(
+            reservation,
+            ManualDispenseReservation::Reserved(_)
+        ));
+        store
+            .finish_manual_dispense_diagnostic(
+                "manual-1",
+                "completed",
+                json!({"success":true,"message":"controller completed"}),
+                json!({"outcome":"completed"}),
+            )
+            .await
+            .expect("finish diagnostic");
 
         let audit_count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM manual_dispense_diagnostics WHERE diagnostic_id='manual-1'",
@@ -8516,6 +8527,30 @@ mod tests {
         assert_eq!(existing.diagnostic_id, "manual-pending-1");
         assert_eq!(existing.status, "pending");
         assert_eq!(existing.reconciliation_status, "open");
+        let recovered = reopened
+            .mark_pending_manual_dispense_result_unknown(&existing.diagnostic_id)
+            .await
+            .expect("persist unknown outcome before replaying");
+        assert_eq!(recovered.status, "result_unknown");
+        assert!(recovered.completed_at.is_some());
+        assert_eq!(
+            recovered
+                .normalized_result
+                .as_ref()
+                .and_then(|value| value["outcome"].as_str()),
+            Some("result_unknown")
+        );
+        let replay = reopened
+            .reserve_manual_dispense_diagnostic(&ManualDispenseDiagnostic {
+                diagnostic_id: "manual-pending-3".to_string(),
+                ..recovered.clone()
+            })
+            .await
+            .expect("replay recovered diagnostic");
+        let ManualDispenseReservation::Existing(replayed) = replay else {
+            panic!("must replay recovered diagnostic")
+        };
+        assert_eq!(replayed.status, "result_unknown");
         let business_outbox: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM outbox_events")
             .fetch_one(reopened.pool())
             .await
