@@ -10200,10 +10200,12 @@ mod tests {
             seed_old_maintenance_history(&store, &base, task_id, status, predecessor, with_outbox)
                 .await;
         }
-        sqlx::query("DELETE FROM stock_movement_sync WHERE movement_id LIKE 'protected-zero-sync-outbox:%'")
-            .execute(store.pool())
-            .await
-            .expect("simulate legacy zero-sync outbox");
+        sqlx::query(
+            "DELETE FROM stock_movement_sync WHERE movement_id LIKE 'protected-zero-sync-outbox:%'",
+        )
+        .execute(store.pool())
+        .await
+        .expect("simulate legacy zero-sync outbox");
 
         let mut metadata_identity = base.clone();
         metadata_identity.task_id = "protected-by-metadata".to_string();
