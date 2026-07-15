@@ -62,6 +62,17 @@ export class MachineOrdersController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
+  @Get("payment-environment-diagnostic")
+  async getPaymentEnvironmentDiagnostic(
+    @CurrentMachine() machine: AuthenticatedMachine,
+  ) {
+    return await this.ordersService.getMachinePaymentEnvironmentDiagnostic(
+      machine.id,
+    );
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
   @Post()
   async createMachineOrder(
     @CurrentMachine() machine: AuthenticatedMachine,

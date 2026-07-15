@@ -792,6 +792,33 @@ async fn require_non_bring_up_maintenance_authorization(
     Ok(())
 }
 
+async fn require_maintenance_diagnostic_authorization(
+    ctx: &IpcContext,
+    headers: &HeaderMap,
+) -> Result<(), axum::response::Response> {
+    let session_id = headers
+        .get("x-vem-maintenance-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    ctx.maintenance_authorization
+        .authorize_non_bring_up_mutation(&MaintenanceAuthorizationContext {
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|message| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(ErrorMessage {
+                    code: "protected_maintenance_authorization_denied",
+                    message,
+                }),
+            )
+                .into_response()
+        })
+}
+
 async fn require_reclaim_maintenance_authorization(
     ctx: &IpcContext,
     headers: &HeaderMap,
@@ -1107,6 +1134,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
             post(create_factory_bootstrap_maintenance_session),
         )
         .route("/v1/maintenance/desktop-exit", post(authorize_desktop_exit))
+        .route(
+            "/v1/maintenance/payment-environment",
+            get(payment_environment_diagnostic),
+        )
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
         .route("/v1/sale-readiness", get(sale_readiness))
@@ -1702,8 +1733,6 @@ struct BackendPaymentOptionsResponse {
     options: Vec<BackendPaymentOption>,
     default_option_key: Option<String>,
     default_provider_code: Option<String>,
-    #[serde(default)]
-    provider_environment: BackendPaymentProviderEnvironment,
     server_time: String,
 }
 
@@ -1723,6 +1752,62 @@ impl Default for BackendPaymentProviderEnvironment {
             error_category: "provider_unconfigured".to_string(),
         }
     }
+}
+
+impl BackendPaymentProviderEnvironment {
+    fn is_valid(&self) -> bool {
+        matches!(
+            self.environment.as_str(),
+            "sandbox" | "production" | "mixed" | "unavailable"
+        ) && matches!(self.readiness.as_str(), "ready" | "blocked")
+            && matches!(
+                self.error_category.as_str(),
+                "none"
+                    | "no_enabled_channel"
+                    | "provider_unconfigured"
+                    | "credentials_incomplete"
+                    | "mixed_environment"
+            )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FactoryPaymentEnvironmentPolicy {
+    Production,
+    Testbed,
+    Unavailable,
+}
+
+async fn payment_environment_allowed(ctx: &IpcContext) -> bool {
+    let policy = match ctx.config_store.load_factory_manifest().await {
+        Ok(Some(manifest)) => match manifest.environment {
+            crate::config::FactoryProfile::Production => {
+                FactoryPaymentEnvironmentPolicy::Production
+            }
+            crate::config::FactoryProfile::Testbed => FactoryPaymentEnvironmentPolicy::Testbed,
+        },
+        Ok(None) | Err(_) => FactoryPaymentEnvironmentPolicy::Unavailable,
+    };
+    let diagnostic = ctx
+        .ui
+        .backend
+        .get_payment_environment_diagnostic()
+        .await
+        .ok()
+        .and_then(|payload| {
+            serde_json::from_value::<BackendPaymentProviderEnvironment>(payload).ok()
+        })
+        .filter(BackendPaymentProviderEnvironment::is_valid)
+        .unwrap_or_default();
+    let ready = diagnostic.readiness == "ready"
+        && diagnostic.error_category == "none"
+        && matches!(diagnostic.environment.as_str(), "sandbox" | "production");
+    ready
+        && match policy {
+            FactoryPaymentEnvironmentPolicy::Production => diagnostic.environment == "production",
+            FactoryPaymentEnvironmentPolicy::Testbed => true,
+            FactoryPaymentEnvironmentPolicy::Unavailable => false,
+        }
 }
 
 #[derive(serde::Deserialize)]
@@ -4411,38 +4496,14 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     let scanner_ready = scanner_readiness.ready;
 
     let payment_capability = load_machine_payment_capability(ctx).await;
-    let production_payment_environment_required = ctx
-        .config_store
-        .load_factory_manifest()
-        .await
-        .ok()
-        .flatten()
-        .is_some_and(|manifest| {
-            matches!(
-                manifest.environment,
-                crate::config::FactoryProfile::Production
-            )
-        });
+    let payment_environment_allowed = payment_environment_allowed(ctx).await;
     let payment_probe = ctx.ui.backend.get_payment_options().await;
     let platform_ready = payment_probe.is_ok();
     let mut payment_methods = Vec::new();
     let mut payment_options_error = None;
-    let mut payment_environment = BackendPaymentProviderEnvironment::default();
-    let mut payment_environment_diagnostic_ready = false;
-    let mut payment_environment_allowed = false;
     if let Ok(payload) = payment_probe.as_ref() {
         match strict_payment_options(payload) {
             Ok(response) => {
-                payment_environment = response.provider_environment;
-                payment_environment_diagnostic_ready = payment_environment.readiness == "ready"
-                    && payment_environment.error_category == "none"
-                    && matches!(
-                        payment_environment.environment.as_str(),
-                        "sandbox" | "production"
-                    );
-                payment_environment_allowed = payment_environment_diagnostic_ready
-                    && (!production_payment_environment_required
-                        || payment_environment.environment == "production");
                 for option in response.options {
                     if !payment_environment_allowed {
                         continue;
@@ -4494,16 +4555,7 @@ pub(crate) async fn machine_sale_readiness_snapshot(
         blocking_codes.push("NO_PAYMENT_OPTIONS");
     }
     if !payment_environment_allowed {
-        blocking_codes.push(
-            if production_payment_environment_required
-                && payment_environment_diagnostic_ready
-                && payment_environment.environment != "production"
-            {
-                "PAYMENT_ENVIRONMENT_NOT_PRODUCTION"
-            } else {
-                "PAYMENT_ENVIRONMENT_NOT_READY"
-            },
-        );
+        blocking_codes.push("PAYMENT_ENVIRONMENT_NOT_READY");
     }
     if !sync_ready {
         blocking_codes.push("SYNC_UNHEALTHY");
@@ -4588,7 +4640,6 @@ pub(crate) async fn machine_sale_readiness_snapshot(
                 "code": if payment_options_ready { "PAYMENT_OPTIONS_READY" } else { "NO_PAYMENT_OPTIONS" },
                 "message": if payment_options_ready { "payment option available".to_string() } else { payment_options_error.unwrap_or_else(|| "no ready payment option".to_string()) },
                 "methods": payment_methods,
-                "providerEnvironment": payment_environment,
             }),
             "scannerCapability": readiness_component(
                 scanner_ready,
@@ -4869,22 +4920,6 @@ fn strict_payment_options(
         .map_err(|error| format!("payment options schema invalid: {error}"))?;
     if response.server_time.trim().is_empty() {
         return Err("payment options serverTime is required".to_string());
-    }
-    if !matches!(
-        response.provider_environment.environment.as_str(),
-        "sandbox" | "production" | "mixed" | "unavailable"
-    ) || !matches!(
-        response.provider_environment.readiness.as_str(),
-        "ready" | "blocked"
-    ) || !matches!(
-        response.provider_environment.error_category.as_str(),
-        "none"
-            | "no_enabled_channel"
-            | "provider_unconfigured"
-            | "credentials_incomplete"
-            | "mixed_environment"
-    ) {
-        return Err("payment provider environment diagnostic is invalid".to_string());
     }
     if let Some(default_option_key) = response.default_option_key.as_deref() {
         if default_option_key.trim().is_empty() {
@@ -5690,39 +5725,20 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
 
     match ctx.ui.backend.get_payment_options().await {
         Ok(mut payload) => {
-            let provider_environment = match strict_payment_options(&payload) {
-                Ok(response) => response.provider_environment,
-                Err(error) => {
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        Json(ErrorMessage {
-                            code: "payment_options_invalid",
-                            message: error,
-                        }),
-                    )
-                        .into_response();
-                }
-            };
-            let production_profile = ctx
-                .config_store
-                .load_factory_manifest()
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|manifest| {
-                    matches!(
-                        manifest.environment,
-                        crate::config::FactoryProfile::Production
-                    )
-                });
-            let diagnostic_ready = provider_environment.readiness == "ready"
-                && provider_environment.error_category == "none"
-                && matches!(
-                    provider_environment.environment.as_str(),
-                    "sandbox" | "production"
-                );
-            let provider_environment_allowed = diagnostic_ready
-                && (!production_profile || provider_environment.environment == "production");
+            if let Err(error) = strict_payment_options(&payload) {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorMessage {
+                        code: "payment_options_invalid",
+                        message: error,
+                    }),
+                )
+                    .into_response();
+            }
+            if let Some(object) = payload.as_object_mut() {
+                object.remove("providerEnvironment");
+            }
+            let provider_environment_allowed = payment_environment_allowed(&ctx).await;
             let platform_default_option_key = payload
                 .get("defaultOptionKey")
                 .and_then(|value| value.as_str())
@@ -5797,6 +5813,47 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             StatusCode::BAD_REQUEST,
             Json(ErrorMessage {
                 code: "payment_options_failed",
+                message: error,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn payment_environment_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    if let Err(response) = require_maintenance_diagnostic_authorization(&ctx, &headers).await {
+        return response;
+    }
+    match ctx.ui.backend.get_payment_environment_diagnostic().await {
+        Ok(payload) => match serde_json::from_value::<BackendPaymentProviderEnvironment>(payload) {
+            Ok(diagnostic) if diagnostic.is_valid() => Json(diagnostic).into_response(),
+            Ok(_) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorMessage {
+                    code: "payment_environment_diagnostic_invalid",
+                    message: "payment provider environment diagnostic is invalid".to_string(),
+                }),
+            )
+                .into_response(),
+            Err(error) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorMessage {
+                    code: "payment_environment_diagnostic_invalid",
+                    message: format!("payment provider environment diagnostic is invalid: {error}"),
+                }),
+            )
+                .into_response(),
+        },
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage {
+                code: "payment_environment_diagnostic_unavailable",
                 message: error,
             }),
         )
@@ -7627,6 +7684,19 @@ mod tests {
             updated_at: crate::state::store::now_iso(),
         }
     }
+
+    async fn mount_default_payment_environment(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "production",
+                "readiness": "ready",
+                "errorCategory": "none"
+            })))
+            .with_priority(100)
+            .mount(server)
+            .await;
+    }
     use wiremock::{
         matchers::{body_partial_json, method, path},
         Mock, MockServer, ResponseTemplate,
@@ -8100,6 +8170,7 @@ mod tests {
     #[tokio::test]
     async fn dispense_confirmation_proxies_authenticated_backend_response() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path(
                 "/machine-stock-movements/dispense-confirmation",
@@ -8182,6 +8253,7 @@ mod tests {
     #[tokio::test]
     async fn dispense_confirmation_failure_does_not_expose_backend_credential() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path(
                 "/machine-stock-movements/dispense-confirmation",
@@ -8479,6 +8551,7 @@ mod tests {
 
     async fn ready_payment_options_server() -> MockServer {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -8495,11 +8568,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-08T16:30:00.000Z"
             })))
             .mount(&server)
@@ -9654,6 +9722,7 @@ mod tests {
 
     async fn claim_with_profile(profile: serde_json::Value) -> (StatusCode, serde_json::Value) {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(profile))
@@ -9717,6 +9786,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_claim_applies_profile_to_public_config_without_returning_secrets() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .and(body_partial_json(json!({
@@ -9861,6 +9931,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_claim_writes_profile_cache_layer_for_effective_runtime_config() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -11239,6 +11310,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_claim_does_not_apply_planogram_and_keeps_readiness_blocked() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -11339,6 +11411,7 @@ mod tests {
     #[tokio::test]
     async fn same_device_reclaim_keeps_intact_local_stock_ledger_trusted() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
 
         let temp_dir = tempdir().expect("tmp");
         write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
@@ -11482,6 +11555,7 @@ mod tests {
     #[tokio::test]
     async fn ledger_missing_reclaim_keeps_newly_applied_slots_blocked_until_counted() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -11620,6 +11694,7 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_returns_safe_diagnostic_without_echoing_sensitive_inputs() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!({
@@ -11657,6 +11732,7 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_treats_service_unauthorized_as_invalid_claim() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(401).set_body_json(json!({
@@ -11693,6 +11769,7 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_treats_missing_claim_endpoint_as_backend_unavailable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(404).set_body_json(json!({
@@ -11723,6 +11800,7 @@ mod tests {
     #[tokio::test]
     async fn failed_claim_preserves_safe_backend_claim_code_without_echoing_payload() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(409).set_body_json(json!({
@@ -11837,6 +11915,7 @@ mod tests {
     #[tokio::test]
     async fn successful_claim_requests_runtime_reconfiguration() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -12310,6 +12389,7 @@ mod tests {
     #[tokio::test]
     async fn claim_rejects_a_response_for_a_different_factory_profile() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let mut profile = valid_provisioning_profile();
         profile["provisioningProfile"] = json!("testbed");
         Mock::given(method("POST"))
@@ -12341,6 +12421,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_claim_records_metadata_and_public_profile_diagnostics() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -12413,6 +12494,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_provisioning_profile_is_rejected_before_persistence() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let mut profile = valid_provisioning_profile();
         profile["metadata"]["profileVersion"] = json!(2);
         Mock::given(method("POST"))
@@ -12468,6 +12550,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_profile_with_mock_payment_capability_is_rejected() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let mut profile = valid_provisioning_profile();
         profile["paymentCapability"]["mockEnabled"] = json!(true);
         Mock::given(method("POST"))
@@ -12568,6 +12651,7 @@ mod tests {
     async fn provisioning_persistence_failure_is_not_reported_as_invalid_profile_or_partial_secrets(
     ) {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -12661,17 +12745,13 @@ mod tests {
         );
 
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "options": [],
                 "defaultOptionKey": null,
                 "defaultProviderCode": null,
-                "providerEnvironment": {
-                    "environment": "unavailable",
-                    "readiness": "blocked",
-                    "errorCategory": "provider_unconfigured"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13123,6 +13203,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_catalog_keeps_cached_items_when_backend_fails() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machines/MACHINE-1/catalog"))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
@@ -13163,6 +13244,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_catalog_updates_source_on_success() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machines/MACHINE-1/catalog"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13200,6 +13282,7 @@ mod tests {
     #[tokio::test]
     async fn sync_planogram_applies_published_version_and_acknowledges_platform() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let slot_id = "550e8400-e29b-41d4-a716-446655440091";
         let inventory_id = "550e8400-e29b-41d4-a716-446655440092";
         let planogram = one_slot_planogram("PLAN-SYNC-ACK", slot_id, inventory_id);
@@ -13279,6 +13362,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_rejects_malformed_payment_options() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13292,11 +13376,6 @@ mod tests {
                 }],
                 "defaultOptionKey": null,
                 "defaultProviderCode": null,
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13356,6 +13435,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_are_filtered_by_persisted_machine_payment_capability() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13396,11 +13476,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13447,6 +13522,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_use_profile_cache_capability_when_legacy_config_is_stale() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with({
@@ -13485,11 +13561,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13557,6 +13628,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_uses_machine_payment_capability_before_scanner_readiness() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13586,11 +13658,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13637,6 +13704,7 @@ mod tests {
     #[tokio::test]
     async fn unavailable_vision_does_not_block_sale_readiness_or_payment_options() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13666,11 +13734,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13795,6 +13858,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_disable_stale_ready_payment_code_and_default_to_qr() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13824,11 +13888,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13884,6 +13943,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_preserve_available_platform_default_and_safe_scanner_reason() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -13913,11 +13973,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -13971,6 +14026,7 @@ mod tests {
     #[tokio::test]
     async fn payment_options_disable_unhealthy_scanner_payment_code_without_hiding_qr() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14000,11 +14056,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -14052,6 +14103,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_treats_stale_ready_scanner_as_payment_code_unavailable_only() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14081,11 +14133,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -14188,6 +14235,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_rechecks_readiness_before_backend_call() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14204,11 +14252,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -14274,6 +14317,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_rejects_multi_quantity_for_v1_lower_controller_protocol() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14290,11 +14334,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -14393,6 +14432,7 @@ mod tests {
     #[tokio::test]
     async fn production_factory_profile_blocks_sandbox_payment_but_testbed_accepts_it() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14409,12 +14449,18 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "sandbox",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path(
+                "/machine-orders/payment-environment-diagnostic",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "sandbox",
+                "readiness": "ready",
+                "errorCategory": "none"
             })))
             .mount(&server)
             .await;
@@ -14433,12 +14479,11 @@ mod tests {
         assert!(production_readiness["blockingCodes"]
             .as_array()
             .expect("production blockers")
-            .contains(&json!("PAYMENT_ENVIRONMENT_NOT_PRODUCTION")));
-        assert_eq!(
-            production_readiness["components"]["paymentOptions"]["providerEnvironment"]
-                ["environment"],
-            "sandbox"
-        );
+            .contains(&json!("PAYMENT_ENVIRONMENT_NOT_READY")));
+        assert!(production_readiness["components"]["paymentOptions"]
+            .get("providerEnvironment")
+            .is_none());
+        assert!(!production_readiness.to_string().contains("sandbox"));
 
         let testbed_dir = tempdir().expect("testbed tmp");
         let testbed = test_ipc_context(
@@ -14468,12 +14513,65 @@ mod tests {
         assert!(!testbed_readiness["blockingCodes"]
             .as_array()
             .expect("testbed blockers")
-            .contains(&json!("PAYMENT_ENVIRONMENT_NOT_PRODUCTION")));
+            .contains(&json!("PAYMENT_ENVIRONMENT_NOT_READY")));
+    }
+
+    #[tokio::test]
+    async fn missing_factory_profile_fails_closed_instead_of_becoming_testbed() {
+        let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "qr_code:alipay",
+                    "providerCode": "alipay",
+                    "method": "qr_code",
+                    "displayName": "支付宝扫码",
+                    "description": "请使用支付宝扫描屏幕二维码",
+                    "icon": "alipay",
+                    "disabled": false,
+                    "disabledReason": null,
+                    "recommended": true
+                }],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "production",
+                "readiness": "ready",
+                "errorCategory": "none"
+            })))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        tokio::fs::remove_file(ctx.config_store.factory_manifest_path())
+            .await
+            .expect("remove factory profile");
+        let app = build_router(ctx);
+
+        let response = get_ipc_json(&app, "/v1/payment-options", Some("token-1")).await;
+        assert_eq!(response["options"], json!([]));
+        assert_eq!(response["defaultOptionKey"], serde_json::Value::Null);
+        assert!(!response.to_string().contains("production"));
     }
 
     #[tokio::test]
     async fn sale_readiness_enforces_production_dispense_path_for_production_machine() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -14490,11 +14588,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-08T16:30:00.000Z"
             })))
             .mount(&server)
@@ -15016,6 +15109,7 @@ mod tests {
     async fn preclaim_network_probe_keeps_bring_up_network_required_when_platform_api_is_unhealthy()
     {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(path("/api/health"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -15182,6 +15276,65 @@ mod tests {
     async fn mark_claim_task_available(ctx: &IpcContext) {
         *ctx.ui.status_cache.network.write().await =
             Some(completed_preclaim_network_response("field-network"));
+    }
+
+    #[tokio::test]
+    async fn payment_environment_diagnostic_requires_a_protected_maintenance_session() {
+        let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "environment": "sandbox",
+                "readiness": "ready",
+                "errorCategory": "none"
+            })))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: true });
+        let app = build_router(ctx);
+
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/maintenance/payment-environment")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let allowed = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/maintenance/payment-environment")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .header("x-vem-maintenance-session", "protected-session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(allowed.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let diagnostic: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(diagnostic["environment"], "sandbox");
+        assert!(diagnostic.get("privateKeyPem").is_none());
     }
 
     #[tokio::test]
@@ -15717,6 +15870,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_claim_rejects_client_selected_identity_rotation() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -15748,6 +15902,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_legacy_and_typed_claims_share_one_cursor_mutation() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
@@ -16108,6 +16263,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_rechecks_local_slot_saleability() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -16124,11 +16280,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16240,6 +16391,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_rejects_unready_selected_payment_code_when_scanner_unavailable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -16269,11 +16421,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16410,6 +16557,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_allows_ready_qr_code_when_scanner_unavailable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -16439,11 +16587,6 @@ mod tests {
                 ],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16540,6 +16683,7 @@ mod tests {
     #[tokio::test]
     async fn dev_submit_payment_code_rechecks_scanner_before_backend_submit() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -16556,11 +16700,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "payment_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16686,6 +16825,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_allows_ready_mock_when_scanner_unavailable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -16702,11 +16842,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16802,6 +16937,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_sends_verified_planogram_slot_context_to_platform() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -16818,11 +16954,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -16915,6 +17046,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_intent_surfaces_platform_refusal_without_mutating_local_stock() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -16931,11 +17063,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -17145,6 +17272,7 @@ mod tests {
     #[tokio::test]
     async fn first_planogram_application_requires_stock_count_before_slot_is_sale_ready() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -17161,11 +17289,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -17249,6 +17372,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_reports_frozen_slots_while_other_slots_remain_saleable() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -17265,11 +17389,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -17963,6 +18082,7 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_reports_blocked_after_lock_clear_when_production_path_is_blocked() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -17979,11 +18099,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:alipay",
                 "defaultProviderCode": "alipay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-26T08:00:00.000Z"
             })))
             .mount(&server)
@@ -18288,6 +18403,7 @@ mod tests {
     #[tokio::test]
     async fn sale_view_and_readiness_report_stock_ledger_loss_blocker() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -18304,11 +18420,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -18390,6 +18501,7 @@ mod tests {
     async fn physical_stock_attestation_endpoint_keeps_production_cursor_pending_until_platform_acknowledgement(
     ) {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
         let movement_id = format!("ATT-PROD-001:{slot_id}");
@@ -18409,11 +18521,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "qr_code:wechat_pay",
                 "defaultProviderCode": "wechat_pay",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -18799,6 +18906,7 @@ mod tests {
     #[tokio::test]
     async fn sale_readiness_reports_outbox_capacity_pressure_without_losing_stock_facts() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -18815,11 +18923,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)
@@ -18925,6 +19028,7 @@ mod tests {
     #[tokio::test]
     async fn disk_pressure_blocks_readiness_without_losing_stock_facts() {
         let server = MockServer::start().await;
+        mount_default_payment_environment(&server).await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -18941,11 +19045,6 @@ mod tests {
                 }],
                 "defaultOptionKey": "mock:mock",
                 "defaultProviderCode": "mock",
-                "providerEnvironment": {
-                    "environment": "production",
-                    "readiness": "ready",
-                    "errorCategory": "none"
-                },
                 "serverTime": "2026-06-04T00:00:00Z"
             })))
             .mount(&server)

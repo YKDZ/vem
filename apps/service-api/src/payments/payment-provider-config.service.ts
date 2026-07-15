@@ -2,6 +2,7 @@ import type {
   PaymentChannelKey,
   MachinePaymentOption,
   MachinePaymentOptionsResponse,
+  PaymentProviderEnvironmentDiagnostic,
 } from "@vem/shared";
 
 import {
@@ -22,6 +23,7 @@ import {
   type DrizzleClient,
 } from "@vem/db";
 import {
+  alipayEffectiveEnvironmentSchema,
   supportedPaymentChannelKeys,
   type MachinePaymentProviderCode,
   type PaymentChannelPolicyResponse,
@@ -424,14 +426,19 @@ export class PaymentProviderConfigService {
     );
     const enabledReadiness = policy.channels
       .filter((channel) => channel.enabled)
-      .flatMap((channel) => {
-        const readiness = readinessByChannel.get(channel.channelKey);
-        return readiness ? [readiness] : [];
-      });
+      .map((channel) => readinessByChannel.get(channel.channelKey));
+    const productionEnvironmentReady =
+      this.appConfig.nodeEnv !== "production" ||
+      (enabledReadiness.length > 0 &&
+        enabledReadiness.every(
+          (readiness) =>
+            readiness?.ready === true && readiness.environment === "production",
+        ));
     const options: Omit<MachinePaymentOption, "recommended">[] = [];
 
     for (const channel of policy.channels) {
       if (!channel.enabled) continue;
+      if (!productionEnvironmentReady) continue;
       const readiness = readinessByChannel.get(channel.channelKey);
       if (!readiness?.ready) continue;
       const metadata = this.machinePaymentOptionMetadata(channel.channelKey);
@@ -450,7 +457,7 @@ export class PaymentProviderConfigService {
 
     // Add mock option if available (dev/test environments)
     const mockAvailable = await this.isMockOptionAvailable();
-    if (mockAvailable) {
+    if (mockAvailable && this.appConfig.nodeEnv !== "production") {
       options.push({
         optionKey: "payment_code:mock",
         providerCode: "mock",
@@ -481,34 +488,6 @@ export class PaymentProviderConfigService {
     const defaultProviderCode =
       options.find((option) => option.optionKey === defaultOptionKey)
         ?.providerCode ?? null;
-    const configuredEnvironments = [
-      ...new Set(
-        enabledReadiness.flatMap((item) =>
-          item.environment === null ? [] : [item.environment],
-        ),
-      ),
-    ];
-    const providerEnvironment =
-      configuredEnvironments.length === 0
-        ? "unavailable"
-        : configuredEnvironments.length === 1
-          ? (configuredEnvironments[0] ?? "unavailable")
-          : "mixed";
-    const blockedReadiness = enabledReadiness.filter((item) => !item.ready);
-    const providerEnvironmentError = policy.channels.every(
-      (channel) => !channel.enabled,
-    )
-      ? "no_enabled_channel"
-      : providerEnvironment === "mixed"
-        ? "mixed_environment"
-        : blockedReadiness.length === 0 && options.length > 0
-          ? "none"
-          : blockedReadiness.every(
-                (item) => item.missingCredentialKeys[0] === "providerConfig",
-              )
-            ? "provider_unconfigured"
-            : "credentials_incomplete";
-
     return {
       options: options.map((option) => ({
         ...option,
@@ -516,12 +495,54 @@ export class PaymentProviderConfigService {
       })),
       defaultOptionKey,
       defaultProviderCode,
-      providerEnvironment: {
-        environment: providerEnvironment,
-        readiness: providerEnvironmentError === "none" ? "ready" : "blocked",
-        errorCategory: providerEnvironmentError,
-      },
       serverTime: new Date().toISOString(),
+    };
+  }
+
+  async getPaymentProviderEnvironmentDiagnosticForMachine(
+    machineId: string,
+  ): Promise<PaymentProviderEnvironmentDiagnostic> {
+    const policy = await this.getPaymentChannelPolicy();
+    const readiness =
+      await this.listPaymentChannelProviderReadinessForMachine(machineId);
+    const readinessByChannel = new Map(
+      readiness.map((item) => [item.channelKey, item]),
+    );
+    const enabledReadiness = policy.channels
+      .filter((channel) => channel.enabled)
+      .flatMap((channel) => {
+        const item = readinessByChannel.get(channel.channelKey);
+        return item ? [item] : [];
+      });
+    const configuredEnvironments = [
+      ...new Set(
+        enabledReadiness.flatMap((item) =>
+          item.environment === null ? [] : [item.environment],
+        ),
+      ),
+    ];
+    const environment =
+      configuredEnvironments.length === 0
+        ? "unavailable"
+        : configuredEnvironments.length === 1
+          ? (configuredEnvironments[0] ?? "unavailable")
+          : "mixed";
+    const blockedReadiness = enabledReadiness.filter((item) => !item.ready);
+    const errorCategory = policy.channels.every((channel) => !channel.enabled)
+      ? "no_enabled_channel"
+      : environment === "mixed"
+        ? "mixed_environment"
+        : blockedReadiness.length === 0 && enabledReadiness.length > 0
+          ? "none"
+          : blockedReadiness.every(
+                (item) => item.missingCredentialKeys[0] === "providerConfig",
+              )
+            ? "provider_unconfigured"
+            : "credentials_incomplete";
+    return {
+      environment,
+      readiness: errorCategory === "none" ? "ready" : "blocked",
+      errorCategory,
     };
   }
 
@@ -712,6 +733,12 @@ export class PaymentProviderConfigService {
     if (config.providerCode === "alipay") {
       requirePublicString("gatewayUrl");
       requirePublicString("keyType");
+      if (
+        this.paymentProviderEnvironment("alipay", config.publicConfigJson) ===
+        null
+      ) {
+        missing.push("effectiveProviderEnvironment");
+      }
       requireSensitiveString("privateKeyPem");
       requireSensitiveString("appCertPem");
       requireSensitiveString("alipayPublicCertPem");
@@ -769,8 +796,8 @@ export class PaymentProviderConfigService {
     publicConfigJson: Record<string, unknown>,
   ): "sandbox" | "production" | null {
     if (providerCode === "wechat_pay") return "production";
-    const mode = publicConfigJson["mode"];
-    return mode === "sandbox" || mode === "production" ? mode : null;
+    const result = alipayEffectiveEnvironmentSchema.safeParse(publicConfigJson);
+    return result.success ? result.data.mode : null;
   }
 
   async listProductionPilotPaymentEvidenceForMachine(

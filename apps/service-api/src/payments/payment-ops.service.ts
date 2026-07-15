@@ -26,6 +26,7 @@ import {
   sql,
   type DrizzleClient,
 } from "@vem/db";
+import { alipayEffectiveEnvironmentSchema } from "@vem/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
@@ -1088,6 +1089,11 @@ export class PaymentOpsService {
       if (!hasNonEmptyString(row.publicConfig, "gatewayUrl")) {
         missing.push("gatewayUrl");
       }
+      if (
+        !alipayEffectiveEnvironmentSchema.safeParse(row.publicConfig).success
+      ) {
+        missing.push("effectiveProviderEnvironment");
+      }
       if (!hasNonEmptyString(row.publicConfig, "keyType")) {
         missing.push("keyType");
       }
@@ -1138,9 +1144,10 @@ export class PaymentOpsService {
   private providerEnvironment(
     providerCode: "alipay" | "wechat_pay",
     publicConfig: Record<string, unknown>,
-  ): "sandbox" | "production" {
+  ): "sandbox" | "production" | null {
     if (providerCode === "wechat_pay") return "production";
-    return publicConfig["mode"] === "production" ? "production" : "sandbox";
+    const result = alipayEffectiveEnvironmentSchema.safeParse(publicConfig);
+    return result.success ? result.data.mode : null;
   }
 
   private async checkNotifyUrls(

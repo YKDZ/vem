@@ -85,11 +85,6 @@ function makeProviderConfigs(): PaymentProviderConfigService {
         },
       ],
       defaultProviderCode: "alipay",
-      providerEnvironment: {
-        environment: "production",
-        readiness: "ready",
-        errorCategory: "none",
-      },
       serverTime: new Date().toISOString(),
     }),
     listPaymentChannelProviderReadinessForMachine: vi.fn().mockResolvedValue(
@@ -373,7 +368,8 @@ describe("PaymentOpsService.getReadiness", () => {
                     merchantNo: "MERCHANT001",
                     appId: "APP001",
                     publicConfigJson: {
-                      gatewayUrl: "https://openapi.alipay.com",
+                      mode: "production",
+                      gatewayUrl: "https://openapi.alipay.com/gateway.do",
                       keyType: "PKCS8",
                     },
                     configEncryptedJson: {
@@ -452,7 +448,8 @@ describe("PaymentOpsService.getReadiness", () => {
                     merchantNo: "MERCHANT001",
                     appId: "APP001",
                     publicConfigJson: {
-                      gatewayUrl: "https://openapi.alipay.com",
+                      mode: "production",
+                      gatewayUrl: "https://openapi.alipay.com/gateway.do",
                       keyType: "PKCS8",
                     },
                     configEncryptedJson: {
@@ -1022,11 +1019,6 @@ describe("PaymentOpsService.getMachinePreflight", () => {
       options: [],
       defaultOptionKey: null,
       defaultProviderCode: null,
-      providerEnvironment: {
-        environment: "unavailable",
-        readiness: "blocked",
-        errorCategory: "provider_unconfigured",
-      },
       serverTime: new Date().toISOString(),
     });
 
@@ -1085,11 +1077,6 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "payment_code:alipay",
         defaultProviderCode: "alipay",
-        providerEnvironment: {
-          environment: "production",
-          readiness: "ready",
-          errorCategory: "none",
-        },
         serverTime: new Date().toISOString(),
       });
 
@@ -1172,11 +1159,6 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "payment_code:alipay",
         defaultProviderCode: "alipay",
-        providerEnvironment: {
-          environment: "production",
-          readiness: "ready",
-          errorCategory: "none",
-        },
         serverTime: new Date().toISOString(),
       });
 
@@ -1265,11 +1247,6 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "payment_code:alipay",
         defaultProviderCode: "alipay",
-        providerEnvironment: {
-          environment: "production",
-          readiness: "ready",
-          errorCategory: "none",
-        },
         serverTime: new Date().toISOString(),
       });
 
@@ -1389,11 +1366,6 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "payment_code:alipay",
         defaultProviderCode: "alipay",
-        providerEnvironment: {
-          environment: "production",
-          readiness: "ready",
-          errorCategory: "none",
-        },
         serverTime: new Date().toISOString(),
       });
 
@@ -1474,11 +1446,6 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         ],
         defaultOptionKey: "qr_code:alipay",
         defaultProviderCode: "alipay",
-        providerEnvironment: {
-          environment: "production",
-          readiness: "ready",
-          errorCategory: "none",
-        },
         serverTime: new Date().toISOString(),
       });
       vi.mocked(

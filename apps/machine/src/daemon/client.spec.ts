@@ -339,6 +339,66 @@ describe("DaemonApiClient", () => {
     expect(daemonClient.currentMaintenanceSession).toBeNull();
   });
 
+  it("reads payment environment only with a live maintenance bearer and clears it on 403", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessionId: "diagnostic-session",
+            expiresAt: "2030-01-01T00:00:00.000Z",
+            scopes: ["maintenance.mutate"],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            environment: "sandbox",
+            readiness: "ready",
+            errorCategory: "none",
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: "protected_maintenance_authorization_denied",
+          }),
+          { status: 403 },
+        ),
+      );
+
+    await daemonClient.beginMaintenanceSession("2468");
+    await expect(
+      daemonClient.getPaymentEnvironmentDiagnostic(),
+    ).resolves.toEqual({
+      environment: "sandbox",
+      readiness: "ready",
+      errorCategory: "none",
+    });
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:7891/v1/maintenance/payment-environment",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-vem-maintenance-session": "diagnostic-session",
+        }),
+      }),
+    );
+    await expect(
+      daemonClient.getPaymentEnvironmentDiagnostic(),
+    ).rejects.toThrow("HTTP 403");
+    expect(daemonClient.currentMaintenanceSession).toBeNull();
+  });
+
   it("passes the daemon-issued reclaim capability inside the typed bring-up mutation", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",
