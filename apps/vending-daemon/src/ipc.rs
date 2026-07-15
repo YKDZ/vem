@@ -1316,21 +1316,20 @@ async fn claim_machine(
     let maintenance_identity = profile.maintenance.clone();
     match ctx.config_store.apply_provisioning_profile(profile).await {
         Ok(config) => {
-            if let Err(error) = ctx
+            if ctx
                 .config_store
                 .apply_maintenance_profile(
                     &maintenance_identity,
                     payload.rotate_maintenance_identity,
                 )
                 .await
+                .is_err()
             {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorMessage {
                         code: "maintenance_tunnel_apply_failed",
-                        message: format!(
-                            "machine maintenance tunnel configuration failed: {error}"
-                        ),
+                        message: "machine maintenance tunnel configuration failed".to_string(),
                     }),
                 )
                     .into_response();

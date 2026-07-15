@@ -559,13 +559,12 @@ async fn harden_sensitive_file_permissions(path: &Path) -> Result<(), String> {
 
     #[cfg(windows)]
     {
+        use crate::secret::WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS;
+
         let mut command = tokio::process::Command::new("icacls");
         command
             .arg(path)
-            .arg("/inheritance:r")
-            .arg("/grant:r")
-            .arg("Administrators:F")
-            .arg("SYSTEM:F");
+            .args(WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS);
         for principal in ready_file_reader_principals() {
             command.arg(format!("{principal}:R"));
         }
