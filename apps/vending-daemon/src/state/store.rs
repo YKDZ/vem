@@ -5010,9 +5010,6 @@ impl LocalStateStore {
             .bind(format!("{}:%", task_id))
             .fetch_one(tx.as_mut())
             .await?;
-            if sync_counts.0 == 0 || sync_counts.1 != 0 {
-                continue;
-            }
             let upload_outbox: Option<(i64,)> = sqlx::query_as(
                 "SELECT 1 FROM outbox_events
                  WHERE kind='stock_movement_upload' AND id LIKE ?1 LIMIT 1",
@@ -5020,6 +5017,16 @@ impl LocalStateStore {
             .bind(format!("stock-movement:{}:%", task_id))
             .fetch_optional(tx.as_mut())
             .await?;
+            if sync_counts.0 == 0 {
+                if upload_outbox.is_some() {
+                    continue;
+                }
+                task_ids_to_prune.push(task_id);
+                continue;
+            }
+            if sync_counts.1 != 0 {
+                continue;
+            }
             if upload_outbox.is_some() {
                 continue;
             }
@@ -10187,11 +10194,16 @@ mod tests {
             ("protected-rejected", "rejected", None, false),
             ("protected-reconciliation", "reconciliation", None, false),
             ("protected-outbox", "accepted", None, true),
+            ("protected-zero-sync-outbox", "accepted", None, true),
             ("prune-terminal", "accepted", None, false),
         ] {
             seed_old_maintenance_history(&store, &base, task_id, status, predecessor, with_outbox)
                 .await;
         }
+        sqlx::query("DELETE FROM stock_movement_sync WHERE movement_id LIKE 'protected-zero-sync-outbox:%'")
+            .execute(store.pool())
+            .await
+            .expect("simulate legacy zero-sync outbox");
 
         let mut metadata_identity = base.clone();
         metadata_identity.task_id = "protected-by-metadata".to_string();
@@ -10238,6 +10250,7 @@ mod tests {
             "protected-rejected",
             "protected-reconciliation",
             "protected-outbox",
+            "protected-zero-sync-outbox",
         ] {
             let counts: (i64, i64) = sqlx::query_as(
                 "SELECT
@@ -10259,6 +10272,110 @@ mod tests {
         .await
         .expect("pruned history counts");
         assert_eq!(pruned, (0, 0));
+    }
+
+    #[tokio::test]
+    async fn maintenance_task_prune_reaps_legacy_zero_sync_history_without_outbox() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        let current = store.stock_maintenance_task().await.expect("current task");
+        let base = store
+            .stock_maintenance_task_identity_by_id(&current.task_id)
+            .await
+            .expect("load identity")
+            .expect("identity");
+        seed_old_maintenance_history(&store, &base, "legacy-zero-sync", "accepted", None, false)
+            .await;
+        sqlx::query("DELETE FROM stock_movement_sync WHERE movement_id LIKE 'legacy-zero-sync:%'")
+            .execute(store.pool())
+            .await
+            .expect("simulate legacy cleared sync");
+
+        store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune");
+
+        let counts: (i64, i64, i64) = sqlx::query_as(
+            "SELECT
+               (SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id='legacy-zero-sync'),
+               (SELECT COUNT(1) FROM stock_maintenance_batches WHERE task_id='legacy-zero-sync'),
+               (SELECT COUNT(1) FROM stock_maintenance_task_tombstones WHERE task_id='legacy-zero-sync')",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("legacy zero-sync counts");
+        assert_eq!(counts, (0, 0, 1));
+
+        let retry = StockMaintenanceBatchInput {
+            task_id: "legacy-zero-sync".to_string(),
+            mode: current.mode.clone(),
+            slots: current
+                .slots
+                .iter()
+                .map(|slot| StockMaintenanceBatchSlotInput {
+                    slot_code: slot.slot_code.clone(),
+                    quantity: Some(slot.current_quantity),
+                    addition: None,
+                })
+                .collect(),
+        };
+        let error = store
+            .submit_stock_maintenance_batch(
+                retry,
+                "late-operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect_err("pruned zero-sync history must fail closed");
+        assert!(error.to_string().contains("expired"));
+    }
+
+    #[tokio::test]
+    async fn maintenance_task_prune_reaps_abandoned_identity_without_batch_or_sync() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        let current = store.stock_maintenance_task().await.expect("current task");
+        let base = store
+            .stock_maintenance_task_identity_by_id(&current.task_id)
+            .await
+            .expect("load identity")
+            .expect("identity");
+        let mut abandoned = base.clone();
+        abandoned.task_id = "abandoned-zero-sync".to_string();
+        store
+            .remember_stock_maintenance_task_identity(&abandoned)
+            .await
+            .expect("remember abandoned identity");
+        sqlx::query(
+            "UPDATE stock_maintenance_task_identities
+             SET created_at='2026-05-01T00:00:00.000Z' WHERE task_id='abandoned-zero-sync'",
+        )
+        .execute(store.pool())
+        .await
+        .expect("age abandoned identity");
+
+        store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune");
+
+        let counts: (i64, i64) = sqlx::query_as(
+            "SELECT
+               (SELECT COUNT(1) FROM stock_maintenance_task_identities WHERE task_id='abandoned-zero-sync'),
+               (SELECT COUNT(1) FROM stock_maintenance_task_tombstones WHERE task_id='abandoned-zero-sync')",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("abandoned counts");
+        assert_eq!(counts, (0, 1));
     }
 
     #[tokio::test]
