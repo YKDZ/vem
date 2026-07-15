@@ -1,12 +1,30 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 
 import { verifyWindowsNativeAudioEvidence } from "./windows-native-audio-evidence.mjs";
 
 function fixture() {
   const hash = "a".repeat(64);
+  const daemonCalibrationResponse = {
+    endpointId: "wasapi:endpoint-speaker",
+    testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+    testEvidenceExpiresAt: "2026-07-13T00:05:00.000Z",
+    observationRevision: `sha256:${"c".repeat(64)}`,
+    observationGeneration: 7,
+    configRevision: `sha256:${"d".repeat(64)}`,
+    configGeneration: 11,
+    proposedSettingsDigest: `sha256:${"e".repeat(64)}`,
+    challenge: "b".repeat(64),
+  };
+  const daemonCalibrationResponseBytes = `${JSON.stringify(daemonCalibrationResponse)}\n`;
+  const responseHash = createHash("sha256")
+    .update(daemonCalibrationResponseBytes)
+    .digest("hex");
   return {
     runId: "RUN-17-AUDIO",
+    daemonCalibrationResponse,
+    daemonCalibrationResponseBytes,
     runtimeReport: {
       runtimeAcceptanceReport: {
         result: { runtimeReady: { status: "passed" } },
@@ -23,15 +41,23 @@ function fixture() {
         audioCapture: {
           activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
           selectedEndpointId: "wasapi:endpoint-speaker",
-          nativeCue: {
-            source: "vending_daemon",
+          daemonCalibration: {
+            source: "vending_daemon_ipc",
             command: "audio_output_calibration",
             challenge: "b".repeat(64),
           },
         },
       },
       guest: { defaultAudioIdentity: "guest-audio://runtime" },
-      evidence: [{ identity: `factory-evidence://sha256/${hash}` }],
+      evidence: [
+        { identity: `factory-evidence://sha256/${hash}` },
+        {
+          role: "daemon-audio-calibration-response",
+          identity: `factory-evidence://sha256/${responseHash}`,
+          digest: `sha256:${responseHash}`,
+          fileName: `${responseHash}.json`,
+        },
+      ],
       defaultAudioCapture: {
         runId: "RUN-17-AUDIO",
         lifecycleReference: "vm-lifecycle://run-17-audio.runtime",
@@ -41,17 +67,17 @@ function fixture() {
           identity: "guest-audio://runtime",
           stableEndpointId: "wasapi:endpoint-speaker",
         },
-        nativeCue: {
-          status: "emitted",
-          source: "vending_daemon",
+        daemonCalibration: {
+          status: "completed",
+          source: "vending_daemon_ipc",
           command: "audio_output_calibration",
           challenge: "b".repeat(64),
           endpointId: "wasapi:endpoint-speaker",
-          testEvidenceToken: "opaque-single-use-evidence-token",
-          observationRevision: `sha256:${"c".repeat(64)}`,
-          configRevision: `sha256:${"d".repeat(64)}`,
-          proposedSettingsDigest: `sha256:${"e".repeat(64)}`,
-          emittedAt: "2026-07-13T00:00:01.000Z",
+          responseArtifact: `factory-evidence://sha256/${responseHash}`,
+          responseDigest: `sha256:${responseHash}`,
+          responseFileName: `${responseHash}.json`,
+          startedAt: "2026-07-13T00:00:00.500Z",
+          completedAt: "2026-07-13T00:00:01.500Z",
         },
         capture: {
           artifact: `factory-evidence://sha256/${hash}`,
@@ -90,14 +116,12 @@ describe("Windows native audio evidence", () => {
     input.adapterReport.defaultAudioCapture.endpoint.status = "missing";
     input.adapterReport.defaultAudioCapture.endpoint.stableEndpointId =
       "wasapi:other";
-    input.adapterReport.defaultAudioCapture.nativeCue.source =
+    input.adapterReport.defaultAudioCapture.daemonCalibration.source =
       "tauri_native_audio";
-    input.adapterReport.defaultAudioCapture.nativeCue.command =
+    input.adapterReport.defaultAudioCapture.daemonCalibration.command =
       "play_machine_audio";
-    input.adapterReport.defaultAudioCapture.nativeCue.testEvidenceToken = "";
-    input.adapterReport.defaultAudioCapture.nativeCue.challenge = "c".repeat(
-      64,
-    );
+    input.daemonCalibrationResponse.testEvidenceToken = "";
+    input.daemonCalibrationResponse.challenge = "c".repeat(64);
     input.adapterReport.defaultAudioCapture.capture.nonSilentFrameCount = 0;
     input.adapterReport.defaultAudioCapture.capture.completedAt =
       "2026-07-13T00:00:00.500Z";
@@ -122,13 +146,13 @@ describe("Windows native audio evidence", () => {
     const input = fixture();
     delete input.adapterReport.request.audioCapture.selectedEndpointId;
     delete input.adapterReport.defaultAudioCapture.endpoint.stableEndpointId;
-    input.adapterReport.request.audioCapture.nativeCue.source =
+    input.adapterReport.request.audioCapture.daemonCalibration.source =
       "tauri_native_audio";
-    input.adapterReport.request.audioCapture.nativeCue.command =
+    input.adapterReport.request.audioCapture.daemonCalibration.command =
       "play_machine_audio";
-    input.adapterReport.defaultAudioCapture.nativeCue.source =
+    input.adapterReport.defaultAudioCapture.daemonCalibration.source =
       "tauri_native_audio";
-    input.adapterReport.defaultAudioCapture.nativeCue.command =
+    input.adapterReport.defaultAudioCapture.daemonCalibration.command =
       "play_machine_audio";
 
     const result = verifyWindowsNativeAudioEvidence(input);

@@ -1,7 +1,5 @@
 use std::sync::Arc;
 #[cfg(windows)]
-use std::sync::Mutex;
-#[cfg(windows)]
 use std::{num::NonZeroU16, num::NonZeroU32};
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +9,7 @@ use sha2::{Digest, Sha256};
 use rodio::{
     buffer::SamplesBuffer,
     cpal::traits::{DeviceTrait, HostTrait},
-    DeviceSinkBuilder, MixerDeviceSink, Player,
+    DeviceSinkBuilder, Player,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,11 +32,13 @@ pub struct NativeAudioPlaybackEvidence {
     pub source_non_silent: bool,
 }
 
+#[async_trait::async_trait]
 pub trait AudioOutputPlayback: Send + Sync {
-    fn play_calibration(
+    async fn play_calibration(
         &self,
         endpoint_id: &str,
         volume: f32,
+        cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<NativeAudioPlaybackEvidence, String>;
 }
 
@@ -65,16 +65,7 @@ fn fixed_audio_calibration_samples() -> Vec<f32> {
 }
 
 #[derive(Default)]
-pub struct WindowsAudioOutputPlayback {
-    #[cfg(windows)]
-    active: Mutex<Option<ActiveAudioOutputPlayback>>,
-}
-
-#[cfg(windows)]
-struct ActiveAudioOutputPlayback {
-    _sink: MixerDeviceSink,
-    player: Player,
-}
+pub struct WindowsAudioOutputPlayback;
 
 impl std::fmt::Debug for WindowsAudioOutputPlayback {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -84,31 +75,35 @@ impl std::fmt::Debug for WindowsAudioOutputPlayback {
     }
 }
 
+#[async_trait::async_trait]
 impl AudioOutputPlayback for WindowsAudioOutputPlayback {
-    fn play_calibration(
+    async fn play_calibration(
         &self,
         endpoint_id: &str,
         volume: f32,
+        cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<NativeAudioPlaybackEvidence, String> {
         #[cfg(not(windows))]
         {
-            let _ = (endpoint_id, volume);
+            let _ = (endpoint_id, volume, cancellation);
             Err("native audio output playback is only supported on Windows".to_string())
         }
 
         #[cfg(windows)]
         {
-            self.play_windows_calibration(endpoint_id, volume)
+            self.play_windows_calibration(endpoint_id, volume, cancellation)
+                .await
         }
     }
 }
 
 #[cfg(windows)]
 impl WindowsAudioOutputPlayback {
-    fn play_windows_calibration(
+    async fn play_windows_calibration(
         &self,
         endpoint_id: &str,
         volume: f32,
+        cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<NativeAudioPlaybackEvidence, String> {
         let endpoint_id = endpoint_id.trim();
         if endpoint_id.is_empty() {
@@ -141,17 +136,26 @@ impl WindowsAudioOutputPlayback {
             NonZeroU32::new(CALIBRATION_SAMPLE_RATE).expect("calibration sample rate"),
             samples,
         ));
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| "audio output playback state is unavailable".to_string())?;
-        if let Some(previous) = active.take() {
-            previous.player.stop();
+        let completion_deadline = tokio::time::sleep(std::time::Duration::from_secs(5));
+        tokio::pin!(completion_deadline);
+        loop {
+            if player.empty() {
+                break;
+            }
+            tokio::select! {
+                _ = cancellation.cancelled() => {
+                    player.stop();
+                    return Err("audio output calibration was cancelled before playback completed".to_string());
+                }
+                _ = &mut completion_deadline => {
+                    player.stop();
+                    return Err("audio output calibration did not complete before its deadline".to_string());
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            }
         }
-        *active = Some(ActiveAudioOutputPlayback {
-            _sink: sink,
-            player,
-        });
+        drop(player);
+        drop(sink);
         Ok(NativeAudioPlaybackEvidence {
             endpoint_id: endpoint_id.to_string(),
             source_non_silent,

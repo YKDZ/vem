@@ -1,7 +1,10 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -1545,6 +1548,7 @@ pub struct ConfigStore {
     secrets: Arc<dyn SecretStore>,
     maintenance: Arc<crate::maintenance::MaintenanceEnrollment>,
     local_settings_mutation_lock: tokio::sync::Mutex<()>,
+    effective_config_generation: AtomicU64,
 }
 
 impl ConfigStore {
@@ -1747,6 +1751,7 @@ impl ConfigStore {
             secrets,
             maintenance,
             local_settings_mutation_lock: tokio::sync::Mutex::new(()),
+            effective_config_generation: AtomicU64::new(0),
         }
     }
 
@@ -2219,10 +2224,16 @@ impl ConfigStore {
             .clear_all()
             .await
             .map_err(|error| format!("clear decommissioned machine secrets failed: {error}"))?;
-        match fs::remove_file(self.provisioning_profile_cache_summary_path()).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("remove provisioning profile failed: {error}")),
+        {
+            let _mutation = self.local_settings_mutation_lock.lock().await;
+            match fs::remove_file(self.provisioning_profile_cache_summary_path()).await {
+                Ok(()) => {
+                    self.effective_config_generation
+                        .fetch_add(1, Ordering::AcqRel);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("remove provisioning profile failed: {error}")),
+            }
         }
         self.save_public_config(default_public_config()).await?;
         self.state
@@ -2368,6 +2379,17 @@ impl ConfigStore {
         Ok(public)
     }
 
+    pub async fn load_effective_public_config_snapshot(
+        &self,
+    ) -> Result<(MachinePublicConfig, u64), String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
+        let (public, _, _, _) = self.load_layered_runtime_config_parts().await?;
+        Ok((
+            public,
+            self.effective_config_generation.load(Ordering::Acquire),
+        ))
+    }
+
     async fn persist_snapshot(&self, public: &MachinePublicConfig) -> Result<(), String> {
         let secret_status = self.secrets.status().await?;
 
@@ -2431,18 +2453,19 @@ impl ConfigStore {
         config: MachinePublicConfig,
     ) -> Result<MachinePublicRuntimeConfig, String> {
         let normalized = normalize_public_config(config)?;
-        self.write_local_runtime_settings_from_public_config(&normalized)
+        let mutation = self.local_settings_mutation_lock.lock().await;
+        self.write_local_runtime_settings_from_public_config_unlocked(&normalized)
             .await?;
         self.write_public_config_file(&normalized).await?;
+        drop(mutation);
         self.persist_snapshot(&normalized).await?;
         self.public_runtime_config(normalized).await
     }
 
-    async fn write_local_runtime_settings_from_public_config(
+    async fn write_local_runtime_settings_from_public_config_unlocked(
         &self,
         public: &MachinePublicConfig,
     ) -> Result<(), String> {
-        let _mutation = self.local_settings_mutation_lock.lock().await;
         let mut settings = self
             .load_local_bring_up_settings()
             .await?
@@ -2488,6 +2511,7 @@ impl ConfigStore {
         &self,
         summary: &ProvisioningProfileCacheSummary,
     ) -> Result<(), String> {
+        let _mutation = self.local_settings_mutation_lock.lock().await;
         let summary = normalize_provisioning_profile_cache_summary(summary.clone())?;
         let path = self.provisioning_profile_cache_summary_path();
         if let Some(parent) = path.parent() {
@@ -2500,6 +2524,8 @@ impl ConfigStore {
         fs::write(path, payload)
             .await
             .map_err(|error| format!("write provisioning profile cache failed: {error}"))?;
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -2647,6 +2673,8 @@ impl ConfigStore {
             let _ = fs::remove_file(&staging_path).await;
             return Err(error);
         }
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -2722,7 +2750,32 @@ impl ConfigStore {
         &self,
         request: MachineAudioSettingsUpdateRequest,
     ) -> Result<RuntimeConfigurationSummary, String> {
+        let mutation = self.local_settings_mutation_lock.lock().await;
+        self.save_machine_audio_settings_update_unlocked(request, mutation)
+            .await
+    }
+
+    pub async fn save_machine_audio_settings_update_if_generation(
+        &self,
+        request: MachineAudioSettingsUpdateRequest,
+        expected_generation: u64,
+    ) -> Result<RuntimeConfigurationSummary, String> {
         let _mutation = self.local_settings_mutation_lock.lock().await;
+        let current_generation = self.effective_config_generation.load(Ordering::Acquire);
+        if current_generation != expected_generation {
+            return Err(format!(
+                "effective configuration generation changed: expected {expected_generation}, current {current_generation}"
+            ));
+        }
+        self.save_machine_audio_settings_update_unlocked(request, _mutation)
+            .await
+    }
+
+    async fn save_machine_audio_settings_update_unlocked(
+        &self,
+        request: MachineAudioSettingsUpdateRequest,
+        mutation: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<RuntimeConfigurationSummary, String> {
         let mut settings = self
             .load_local_bring_up_settings()
             .await?
@@ -2732,7 +2785,7 @@ impl ConfigStore {
         settings.machine_audio_volume = Some(request.machine_audio_volume);
         self.write_local_bring_up_settings_unlocked(&settings)
             .await?;
-        drop(_mutation);
+        drop(mutation);
         self.load_runtime_configuration_summary().await
     }
 
@@ -5304,6 +5357,89 @@ mod tests {
         );
         assert_eq!(saved.scanner_binding, Some(scanner_binding));
         assert_eq!(saved.machine_audio_volume, Some(0.42));
+    }
+
+    #[tokio::test]
+    async fn machine_audio_settings_cas_rejects_network_aba_and_device_writer_races() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir,
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        store
+            .save_local_bring_up_network_profile("network-r1")
+            .await
+            .expect("seed network r1");
+        let (_, before_aba) = store
+            .load_effective_public_config_snapshot()
+            .await
+            .expect("snapshot before ABA");
+        store
+            .save_local_bring_up_network_profile("network-r2")
+            .await
+            .expect("write network r2");
+        store
+            .save_local_bring_up_network_profile("network-r1")
+            .await
+            .expect("restore network r1");
+        let audio_request = || MachineAudioSettingsUpdateRequest {
+            machine_audio_output_binding: MachineAudioOutputBinding {
+                endpoint_id: "wasapi:endpoint-1".to_string(),
+                friendly_name: Some("Near-field speaker".to_string()),
+                confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+                confirmed_observation_revision: format!("sha256:{}", "a".repeat(64)),
+            },
+            audio_cue_settings: AudioCueSettings::default(),
+            machine_audio_volume: 0.42,
+        };
+        let aba = store
+            .save_machine_audio_settings_update_if_generation(audio_request(), before_aba)
+            .await
+            .expect_err("R1-R2-R1 must advance generation");
+        assert!(aba.contains("generation changed"));
+
+        let (_, before_device_write) = store
+            .load_effective_public_config_snapshot()
+            .await
+            .expect("snapshot before device write");
+        let scanner_binding = crate::device_binding::LocalSerialRoleBinding {
+            identity: crate::device_binding::StableSerialDeviceIdentity {
+                identity_key: "container:11111111-2222-3333-4444-555555555555".to_string(),
+                instance_id: Some("USB\\SCANNER-1".to_string()),
+                container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                serial_number: Some("SCANNER-1".to_string()),
+            },
+            confirmed_at: "2026-07-15T10:00:00.000Z".to_string(),
+            confirmed_by: "operator-console".to_string(),
+            test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
+        };
+        store
+            .save_local_device_binding(
+                crate::device_binding::LocalDeviceRole::Scanner,
+                scanner_binding.clone(),
+            )
+            .await
+            .expect("save concurrent scanner binding");
+        let device_race = store
+            .save_machine_audio_settings_update_if_generation(audio_request(), before_device_write)
+            .await
+            .expect_err("device writer must invalidate audio CAS");
+        assert!(device_race.contains("generation changed"));
+
+        let saved = store
+            .load_local_bring_up_settings()
+            .await
+            .expect("load settings")
+            .expect("settings exist");
+        assert_eq!(saved.network_profile.as_deref(), Some("network-r1"));
+        assert_eq!(saved.scanner_binding, Some(scanner_binding));
+        assert!(saved.machine_audio_output_binding.is_none());
     }
 
     #[test]

@@ -296,16 +296,27 @@ export const daemonIpcAudioOutputTestRequestSchema = z
     endpointId: z.string().trim().min(1).max(512),
     audioCueSettings: daemonIpcAudioCueSettingsSchema,
     machineAudioVolume: z.number().positive().max(1),
+    challenge: z
+      .string()
+      .regex(/^[a-f0-9]{32,128}$/)
+      .optional(),
   })
   .strict();
 
 export const daemonIpcAudioOutputTestResponseSchema = z
   .object({
+    endpointId: z.string().trim().min(1).max(512),
     testEvidenceToken: z.uuid(),
     testEvidenceExpiresAt: z.iso.datetime({ offset: true }),
     observationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    observationGeneration: z.number().int().nonnegative(),
     configRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    configGeneration: z.number().int().nonnegative(),
     proposedSettingsDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    challenge: z
+      .string()
+      .regex(/^[a-f0-9]{32,128}$/)
+      .optional(),
   })
   .strict();
 

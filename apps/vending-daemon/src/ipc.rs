@@ -94,6 +94,7 @@ struct TestAudioOutputRequest {
     endpoint_id: String,
     audio_cue_settings: crate::config::AudioCueSettings,
     machine_audio_volume: f64,
+    challenge: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -109,11 +110,16 @@ struct ConfirmAudioOutputRequest {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AudioOutputTestResponse {
+    endpoint_id: String,
     test_evidence_token: String,
     test_evidence_expires_at: String,
     observation_revision: String,
+    observation_generation: u64,
     config_revision: String,
+    config_generation: u64,
     proposed_settings_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    challenge: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,7 +127,9 @@ struct AudioOutputTestEvidence {
     session_generation: String,
     endpoint_id: String,
     observation_revision: String,
+    observation_generation: u64,
     effective_config_revision: String,
+    effective_config_generation: u64,
     proposed_settings_digest: String,
     expires_at: Instant,
 }
@@ -155,7 +163,9 @@ impl AudioOutputTestEvidenceStore {
         session_generation: String,
         endpoint_id: String,
         observation_revision: String,
+        observation_generation: u64,
         effective_config_revision: String,
+        effective_config_generation: u64,
         proposed_settings_digest: String,
     ) -> (String, String) {
         let token = uuid::Uuid::new_v4().to_string();
@@ -166,7 +176,9 @@ impl AudioOutputTestEvidenceStore {
                 session_generation,
                 endpoint_id,
                 observation_revision,
+                observation_generation,
                 effective_config_revision,
+                effective_config_generation,
                 proposed_settings_digest,
                 expires_at,
             },
@@ -183,9 +195,11 @@ impl AudioOutputTestEvidenceStore {
         session_generation: &str,
         endpoint_id: &str,
         observation_revision: &str,
+        observation_generation: u64,
         effective_config_revision: &str,
+        effective_config_generation: u64,
         proposed_settings_digest: &str,
-    ) -> Result<(), (&'static str, String)> {
+    ) -> Result<AudioOutputTestEvidence, (&'static str, String)> {
         let mut entries = self.entries.lock().await;
         entries.retain(|_, evidence| evidence.expires_at > Instant::now());
         let Some(evidence) = entries.remove(token) else {
@@ -212,10 +226,24 @@ impl AudioOutputTestEvidenceStore {
                 "audio output observation changed after test playback; test again".to_string(),
             ));
         }
+        if evidence.observation_generation != observation_generation {
+            return Err((
+                "audio_output_test_evidence_observation_changed",
+                "audio output observation generation changed after test playback; test again"
+                    .to_string(),
+            ));
+        }
         if evidence.effective_config_revision != effective_config_revision {
             return Err((
                 "audio_output_test_evidence_effective_config_changed",
                 "effective daemon configuration changed after test playback; test again"
+                    .to_string(),
+            ));
+        }
+        if evidence.effective_config_generation != effective_config_generation {
+            return Err((
+                "audio_output_test_evidence_effective_config_changed",
+                "effective daemon configuration generation changed after test playback; test again"
                     .to_string(),
             ));
         }
@@ -225,7 +253,39 @@ impl AudioOutputTestEvidenceStore {
                 "audio settings changed after test playback; test again".to_string(),
             ));
         }
-        Ok(())
+        Ok(evidence)
+    }
+
+    async fn restore(&self, token: String, evidence: AudioOutputTestEvidence) {
+        if evidence.expires_at <= Instant::now() {
+            return;
+        }
+        self.entries.lock().await.entry(token).or_insert(evidence);
+    }
+}
+
+#[derive(Debug, Default)]
+struct AudioOutputObservationGenerationState {
+    revision: Option<String>,
+    generation: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AudioOutputObservationGenerationTracker {
+    state: std::sync::Mutex<AudioOutputObservationGenerationState>,
+}
+
+impl AudioOutputObservationGenerationTracker {
+    fn observe(&self, revision: &str) -> Result<u64, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "audio output observation generation is unavailable".to_string())?;
+        if state.revision.as_deref() != Some(revision) {
+            state.generation = state.generation.saturating_add(1);
+            state.revision = Some(revision.to_string());
+        }
+        Ok(state.generation)
     }
 }
 
@@ -934,6 +994,7 @@ pub struct IpcContext {
     pub audio_output_platform: crate::audio_output::SharedAudioOutputPlatform,
     pub audio_output_playback: crate::audio_output::SharedAudioOutputPlayback,
     pub(crate) audio_output_calibration_lock: Arc<Mutex<()>>,
+    pub(crate) audio_output_observation_generation: Arc<AudioOutputObservationGenerationTracker>,
     pub(crate) audio_output_test_evidence: Arc<AudioOutputTestEvidenceStore>,
     pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
     pub(crate) sale_binding_gate: Arc<SaleBindingOperationGate>,
@@ -1996,11 +2057,15 @@ async fn audio_output_binding_snapshot(
     let candidates = match ctx.audio_output_platform.enumerate() {
         Ok(candidates) => crate::audio_output::normalized_audio_output_observations(candidates),
         Err(message) => {
+            let unavailable_revision = crate::audio_output::audio_output_observation_revision(&[])
+                .unwrap_or_else(|_| "sha256:unavailable".to_string());
+            let _ = ctx
+                .audio_output_observation_generation
+                .observe(&unavailable_revision);
             return Json(AudioOutputBindingSnapshot {
                 binding,
                 current_observation: None,
-                observation_revision: crate::audio_output::audio_output_observation_revision(&[])
-                    .unwrap_or_else(|_| "sha256:unavailable".to_string()),
+                observation_revision: unavailable_revision,
                 candidates: Vec::new(),
                 ready: false,
                 code: "AUDIO_OUTPUT_ENUMERATION_UNAVAILABLE",
@@ -2023,6 +2088,19 @@ async fn audio_output_binding_snapshot(
                     .into_response();
             }
         };
+    if let Err(message) = ctx
+        .audio_output_observation_generation
+        .observe(&observation_revision)
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorMessage {
+                code: "audio_output_observation_invalid",
+                message,
+            }),
+        )
+            .into_response();
+    }
     let current_observation = binding.as_ref().and_then(|binding| {
         candidates
             .iter()
@@ -2086,7 +2164,7 @@ fn audio_output_effective_config_revision(
 fn current_audio_output_candidate(
     ctx: &IpcContext,
     endpoint_id: &str,
-) -> Result<(crate::audio_output::AudioOutputObservation, String), (&'static str, String)> {
+) -> Result<(crate::audio_output::AudioOutputObservation, String, u64), (&'static str, String)> {
     let candidates = ctx.audio_output_platform.enumerate().map_err(|message| {
         (
             "audio_output_enumeration_unavailable",
@@ -2095,6 +2173,10 @@ fn current_audio_output_candidate(
     })?;
     let candidates = crate::audio_output::normalized_audio_output_observations(candidates);
     let revision = crate::audio_output::audio_output_observation_revision(&candidates)
+        .map_err(|message| ("audio_output_observation_invalid", message))?;
+    let generation = ctx
+        .audio_output_observation_generation
+        .observe(&revision)
         .map_err(|message| ("audio_output_observation_invalid", message))?;
     let candidate = candidates
         .into_iter()
@@ -2105,7 +2187,7 @@ fn current_audio_output_candidate(
                 "selected native audio output is not currently observed".to_string(),
             )
         })?;
-    Ok((candidate, revision))
+    Ok((candidate, revision, generation))
 }
 
 async fn test_audio_output(
@@ -2136,20 +2218,29 @@ async fn test_audio_output(
         }
     };
     let endpoint_id = request.endpoint_id.trim();
-    if endpoint_id.is_empty() || request.machine_audio_volume <= 0.0 {
+    let challenge_valid = request.challenge.as_deref().is_none_or(|challenge| {
+        (32..=128).contains(&challenge.len())
+            && challenge
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if endpoint_id.is_empty() || request.machine_audio_volume <= 0.0 || !challenge_valid {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorMessage {
                 code: "audio_output_native_test_invalid",
-                message: "a selected endpoint and audible calibration volume are required"
-                    .to_string(),
+                message: "a selected endpoint, audible calibration volume, and optional lowercase hexadecimal challenge are required".to_string(),
             }),
         )
             .into_response();
     }
-    let effective_config_revision = match ctx.config_store.load_effective_public_config().await {
-        Ok(config) => match audio_output_effective_config_revision(&config) {
-            Ok(revision) => revision,
+    let (effective_config_revision, effective_config_generation) = match ctx
+        .config_store
+        .load_effective_public_config_snapshot()
+        .await
+    {
+        Ok((config, generation)) => match audio_output_effective_config_revision(&config) {
+            Ok(revision) => (revision, generation),
             Err(message) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -2172,16 +2263,17 @@ async fn test_audio_output(
                 .into_response();
         }
     };
-    let (_, observation_revision) = match current_audio_output_candidate(&ctx, endpoint_id) {
-        Ok(value) => value,
-        Err((code, message)) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ErrorMessage { code, message }),
-            )
-                .into_response();
-        }
-    };
+    let (_, observation_revision, observation_generation) =
+        match current_audio_output_candidate(&ctx, endpoint_id) {
+            Ok(value) => value,
+            Err((code, message)) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ErrorMessage { code, message }),
+                )
+                    .into_response();
+            }
+        };
     let proposed_settings_digest = match audio_output_proposed_settings_digest(
         endpoint_id,
         &request.audio_cue_settings,
@@ -2199,10 +2291,30 @@ async fn test_audio_output(
                 .into_response();
         }
     };
-    let playback_evidence = match ctx
-        .audio_output_playback
-        .play_calibration(endpoint_id, request.machine_audio_volume as f32)
-    {
+    let playback = ctx.audio_output_playback.play_calibration(
+        endpoint_id,
+        request.machine_audio_volume as f32,
+        ctx.background_shutdown.clone(),
+    );
+    tokio::pin!(playback);
+    let mut observation_poll = tokio::time::interval(Duration::from_millis(25));
+    observation_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut observation_changed_during_playback = false;
+    let playback_result = loop {
+        tokio::select! {
+            result = &mut playback => break result,
+            _ = observation_poll.tick() => {
+                match current_audio_output_candidate(&ctx, endpoint_id) {
+                    Ok((_, _, generation)) if generation != observation_generation => {
+                        observation_changed_during_playback = true;
+                    }
+                    Err(_) => observation_changed_during_playback = true,
+                    _ => {}
+                }
+            }
+        }
+    };
+    let playback_evidence = match playback_result {
         Ok(evidence) if evidence.endpoint_id == endpoint_id && evidence.source_non_silent => {
             evidence
         }
@@ -2228,12 +2340,13 @@ async fn test_audio_output(
                 .into_response();
         }
     };
-    let current_effective_config_revision = match ctx
+    let (current_effective_config_revision, current_effective_config_generation) = match ctx
         .config_store
-        .load_effective_public_config()
+        .load_effective_public_config_snapshot()
         .await
-        .and_then(|config| audio_output_effective_config_revision(&config))
-    {
+        .and_then(|(config, generation)| {
+            audio_output_effective_config_revision(&config).map(|revision| (revision, generation))
+        }) {
         Ok(revision) => revision,
         Err(message) => {
             return (
@@ -2246,7 +2359,9 @@ async fn test_audio_output(
                 .into_response();
         }
     };
-    if current_effective_config_revision != effective_config_revision {
+    if current_effective_config_revision != effective_config_revision
+        || current_effective_config_generation != effective_config_generation
+    {
         return (
             StatusCode::CONFLICT,
             Json(ErrorMessage {
@@ -2257,7 +2372,7 @@ async fn test_audio_output(
         )
             .into_response();
     }
-    let (_, current_observation_revision) =
+    let (_, current_observation_revision, current_observation_generation) =
         match current_audio_output_candidate(&ctx, &playback_evidence.endpoint_id) {
             Ok(value) => value,
             Err((code, message)) => {
@@ -2268,7 +2383,10 @@ async fn test_audio_output(
                     .into_response();
             }
         };
-    if current_observation_revision != observation_revision {
+    if observation_changed_during_playback
+        || current_observation_revision != observation_revision
+        || current_observation_generation != observation_generation
+    {
         return (
             StatusCode::CONFLICT,
             Json(ErrorMessage {
@@ -2285,16 +2403,22 @@ async fn test_audio_output(
             maintenance_session_generation(&headers).to_string(),
             endpoint_id.to_string(),
             observation_revision.clone(),
+            observation_generation,
             effective_config_revision.clone(),
+            effective_config_generation,
             proposed_settings_digest.clone(),
         )
         .await;
     Json(AudioOutputTestResponse {
+        endpoint_id: endpoint_id.to_string(),
         test_evidence_token,
         test_evidence_expires_at,
         observation_revision,
+        observation_generation,
         config_revision: effective_config_revision,
+        config_generation: effective_config_generation,
         proposed_settings_digest,
+        challenge: request.challenge,
     })
     .into_response()
 }
@@ -2367,13 +2491,14 @@ async fn confirm_audio_output(
         }
     }
     let endpoint_id = request.endpoint_id.trim();
-    let (candidate, observation_revision) = match current_audio_output_candidate(&ctx, endpoint_id)
-    {
-        Ok(value) => value,
-        Err((code, message)) => {
-            return (StatusCode::CONFLICT, Json(ErrorMessage { code, message })).into_response();
-        }
-    };
+    let (candidate, observation_revision, observation_generation) =
+        match current_audio_output_candidate(&ctx, endpoint_id) {
+            Ok(value) => value,
+            Err((code, message)) => {
+                return (StatusCode::CONFLICT, Json(ErrorMessage { code, message }))
+                    .into_response();
+            }
+        };
     let proposed_settings_digest = match audio_output_proposed_settings_digest(
         endpoint_id,
         &request.audio_cue_settings,
@@ -2391,12 +2516,13 @@ async fn confirm_audio_output(
                 .into_response();
         }
     };
-    let effective_config_revision = match ctx
+    let (effective_config_revision, effective_config_generation) = match ctx
         .config_store
-        .load_effective_public_config()
+        .load_effective_public_config_snapshot()
         .await
-        .and_then(|config| audio_output_effective_config_revision(&config))
-    {
+        .and_then(|(config, generation)| {
+            audio_output_effective_config_revision(&config).map(|revision| (revision, generation))
+        }) {
         Ok(revision) => revision,
         Err(message) => {
             return (
@@ -2409,20 +2535,25 @@ async fn confirm_audio_output(
                 .into_response();
         }
     };
-    if let Err((code, message)) = ctx
+    let consumed_evidence = match ctx
         .audio_output_test_evidence
         .consume(
             request.test_evidence_token.trim(),
             maintenance_session_generation(&headers),
             endpoint_id,
             &observation_revision,
+            observation_generation,
             &effective_config_revision,
+            effective_config_generation,
             &proposed_settings_digest,
         )
         .await
     {
-        return (StatusCode::CONFLICT, Json(ErrorMessage { code, message })).into_response();
-    }
+        Ok(evidence) => evidence,
+        Err((code, message)) => {
+            return (StatusCode::CONFLICT, Json(ErrorMessage { code, message })).into_response();
+        }
+    };
     let payload = crate::config::MachineAudioSettingsUpdateRequest {
         machine_audio_output_binding: crate::config::MachineAudioOutputBinding {
             endpoint_id: endpoint_id.to_string(),
@@ -2435,18 +2566,38 @@ async fn confirm_audio_output(
     };
     match ctx
         .config_store
-        .save_machine_audio_settings_update(payload)
+        .save_machine_audio_settings_update_if_generation(payload, effective_config_generation)
         .await
     {
         Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
-        Err(message) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorMessage {
-                code: "audio_output_binding_persist_failed",
-                message,
-            }),
-        )
-            .into_response(),
+        Err(message) => {
+            let generation_changed =
+                message.starts_with("effective configuration generation changed:");
+            if !generation_changed {
+                ctx.audio_output_test_evidence
+                    .restore(
+                        request.test_evidence_token.trim().to_string(),
+                        consumed_evidence,
+                    )
+                    .await;
+            }
+            (
+                if generation_changed {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                },
+                Json(ErrorMessage {
+                    code: if generation_changed {
+                        "audio_output_effective_config_changed"
+                    } else {
+                        "audio_output_binding_persist_failed"
+                    },
+                    message,
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -6943,11 +7094,13 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl crate::audio_output::AudioOutputPlayback for FixedAudioOutputPlayback {
-        fn play_calibration(
+        async fn play_calibration(
             &self,
             endpoint_id: &str,
             _volume: f32,
+            _cancellation: CancellationToken,
         ) -> Result<crate::audio_output::NativeAudioPlaybackEvidence, String> {
             self.calls
                 .lock()
@@ -6963,11 +7116,13 @@ mod tests {
         replacement: Vec<crate::audio_output::AudioOutputObservation>,
     }
 
+    #[async_trait::async_trait]
     impl crate::audio_output::AudioOutputPlayback for MutatingAudioOutputPlayback {
-        fn play_calibration(
+        async fn play_calibration(
             &self,
             endpoint_id: &str,
             _volume: f32,
+            _cancellation: CancellationToken,
         ) -> Result<crate::audio_output::NativeAudioPlaybackEvidence, String> {
             self.platform.replace(self.replacement.clone());
             Ok(crate::audio_output::NativeAudioPlaybackEvidence {
@@ -6980,7 +7135,8 @@ mod tests {
     #[derive(Debug, Default)]
     struct BlockingFirstAudioOutputPlayback {
         calls: AtomicUsize,
-        released: (std::sync::Mutex<bool>, std::sync::Condvar),
+        released: AtomicBool,
+        completion: tokio::sync::Notify,
     }
 
     impl BlockingFirstAudioOutputPlayback {
@@ -6989,23 +7145,27 @@ mod tests {
         }
 
         fn release(&self) {
-            let (released, condition) = &self.released;
-            *released.lock().expect("calibration release") = true;
-            condition.notify_all();
+            self.released.store(true, Ordering::Release);
+            self.completion.notify_waiters();
         }
     }
 
+    #[async_trait::async_trait]
     impl crate::audio_output::AudioOutputPlayback for BlockingFirstAudioOutputPlayback {
-        fn play_calibration(
+        async fn play_calibration(
             &self,
             endpoint_id: &str,
             _volume: f32,
+            cancellation: CancellationToken,
         ) -> Result<crate::audio_output::NativeAudioPlaybackEvidence, String> {
             if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
-                let (released, condition) = &self.released;
-                let mut released = released.lock().expect("calibration release");
-                while !*released {
-                    released = condition.wait(released).expect("calibration release wait");
+                while !self.released.load(Ordering::Acquire) {
+                    tokio::select! {
+                        _ = self.completion.notified() => {}
+                        _ = cancellation.cancelled() => {
+                            return Err("audio output calibration was cancelled before playback completed".to_string());
+                        }
+                    }
                 }
             }
             Ok(crate::audio_output::NativeAudioPlaybackEvidence {
@@ -7644,6 +7804,9 @@ mod tests {
                 crate::audio_output::WindowsAudioOutputPlayback::default(),
             ),
             audio_output_calibration_lock: Arc::new(Mutex::new(())),
+            audio_output_observation_generation: Arc::new(
+                AudioOutputObservationGenerationTracker::default(),
+            ),
             audio_output_test_evidence: Arc::new(AudioOutputTestEvidenceStore::default()),
             device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
             sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
@@ -9836,6 +9999,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audio_output_test_rejects_an_invalid_evidence_challenge_before_playback() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        let playback = Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+        ctx.audio_output_playback = playback.clone();
+        let app = build_router(ctx);
+
+        let response = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": true }
+                },
+                "machineAudioVolume": 0.42,
+                "challenge": "not-a-trusted-runner-challenge"
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_native_test_invalid");
+        assert!(body.get("testEvidenceToken").is_none());
+        assert!(playback.calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn audio_output_test_does_not_sign_playback_errors_or_silent_results() {
         for (result, expected_code) in [
             (
@@ -10082,6 +10292,130 @@ mod tests {
         assert!(body.get("testEvidenceToken").is_none());
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_output_test_does_not_sign_when_endpoint_observation_changes_before_completion() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let initial_observation = crate::audio_output::AudioOutputObservation {
+            endpoint_id: "endpoint-speaker".to_string(),
+            friendly_name: "Near-field speaker".to_string(),
+            is_default: true,
+        };
+        let platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            initial_observation.clone()
+        ]));
+        ctx.audio_output_platform = platform.clone();
+        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
+        ctx.audio_output_playback = playback.clone();
+        let app = build_router(ctx);
+        let request_app = app.clone();
+        let request = tokio::spawn(async move {
+            post_json_with_maintenance(
+                &request_app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            )
+            .await
+        });
+        while playback.call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        platform.replace(vec![crate::audio_output::AudioOutputObservation {
+            endpoint_id: "endpoint-speaker".to_string(),
+            friendly_name: "Near-field speaker re-enumerated".to_string(),
+            is_default: false,
+        }]);
+        let observed_intermediate = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/audio-output-binding")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .expect("observation request"),
+            )
+            .await
+            .expect("observe intermediate endpoint generation");
+        assert_eq!(observed_intermediate.status(), StatusCode::OK);
+        platform.replace(vec![initial_observation]);
+        playback.release();
+
+        let response = request.await.expect("calibration request");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_observation_changed");
+        assert!(body.get("testEvidenceToken").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_output_test_cancels_inflight_playback_on_daemon_shutdown_without_signing() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
+        ctx.audio_output_playback = playback.clone();
+        let shutdown = ctx.background_shutdown.clone();
+        let app = build_router(ctx);
+        let request = tokio::spawn(async move {
+            post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            )
+            .await
+        });
+        while playback.call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        shutdown.cancel();
+
+        let response = request.await.expect("calibration request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_native_playback_failed");
+        assert!(body.get("testEvidenceToken").is_none());
+    }
+
     #[tokio::test]
     async fn audio_output_confirmation_requires_one_native_test_and_explicit_human_hearing() {
         let temp_dir = tempdir().expect("tmp");
@@ -10298,7 +10632,14 @@ mod tests {
 
     #[tokio::test]
     async fn audio_output_confirmation_rejects_observation_and_config_changes_after_test() {
-        for changed in ["observation", "proposed_config", "effective_config"] {
+        for changed in [
+            "observation",
+            "observation_aba",
+            "proposed_config",
+            "effective_config",
+            "effective_config_aba",
+            "device_writer",
+        ] {
             let temp_dir = tempdir().expect("tmp");
             let mut ctx = test_ipc_context(
                 temp_dir.path(),
@@ -10318,6 +10659,12 @@ mod tests {
             ctx.audio_output_playback =
                 Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
             let config_store = ctx.config_store.clone();
+            if changed == "effective_config_aba" {
+                config_store
+                    .save_local_bring_up_network_profile("network-r1")
+                    .await
+                    .expect("seed network profile");
+            }
             let app = build_router(ctx);
             let settings = json!({
                 "audioCueSettings": {
@@ -10350,6 +10697,30 @@ mod tests {
                     is_default: false,
                 }]);
             }
+            if changed == "observation_aba" {
+                platform.replace(vec![crate::audio_output::AudioOutputObservation {
+                    endpoint_id: "endpoint-speaker".to_string(),
+                    friendly_name: "Intermediate speaker observation".to_string(),
+                    is_default: false,
+                }]);
+                let observed = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri("/v1/audio-output-binding")
+                            .header(AUTHORIZATION, "Bearer token-1")
+                            .body(axum::body::Body::empty())
+                            .expect("observation request"),
+                    )
+                    .await
+                    .expect("observe intermediate generation");
+                assert_eq!(observed.status(), StatusCode::OK);
+                platform.replace(vec![crate::audio_output::AudioOutputObservation {
+                    endpoint_id: "endpoint-speaker".to_string(),
+                    friendly_name: "Near-field speaker".to_string(),
+                    is_default: true,
+                }]);
+            }
             if changed == "effective_config" {
                 let mut current = config_store
                     .load_effective_public_config()
@@ -10360,6 +10731,39 @@ mod tests {
                     .save_public_config(current)
                     .await
                     .expect("change effective config");
+            }
+            if changed == "effective_config_aba" {
+                config_store
+                    .save_local_bring_up_network_profile("network-r2")
+                    .await
+                    .expect("write network r2");
+                config_store
+                    .save_local_bring_up_network_profile("network-r1")
+                    .await
+                    .expect("restore network r1");
+            }
+            if changed == "device_writer" {
+                config_store
+                    .save_local_device_binding(
+                        crate::device_binding::LocalDeviceRole::Scanner,
+                        crate::device_binding::LocalSerialRoleBinding {
+                            identity: crate::device_binding::StableSerialDeviceIdentity {
+                                identity_key: "container:11111111-2222-3333-4444-555555555555"
+                                    .to_string(),
+                                instance_id: Some("USB\\SCANNER-1".to_string()),
+                                container_id: Some(
+                                    "11111111-2222-3333-4444-555555555555".to_string(),
+                                ),
+                                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                                serial_number: Some("SCANNER-1".to_string()),
+                            },
+                            confirmed_at: "2026-07-15T10:00:00.000Z".to_string(),
+                            confirmed_by: "operator-console".to_string(),
+                            test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
+                        },
+                    )
+                    .await
+                    .expect("save scanner binding");
             }
             let confirmed = post_json_with_maintenance(
                 &app,
@@ -10383,9 +10787,11 @@ mod tests {
             assert_eq!(
                 body["code"],
                 match changed {
-                    "observation" => "audio_output_test_evidence_observation_changed",
+                    "observation" | "observation_aba" => {
+                        "audio_output_test_evidence_observation_changed"
+                    }
                     "proposed_config" => "audio_output_test_evidence_config_changed",
-                    "effective_config" => {
+                    "effective_config" | "effective_config_aba" | "device_writer" => {
                         "audio_output_test_evidence_effective_config_changed"
                     }
                     _ => unreachable!(),
@@ -10575,7 +10981,15 @@ mod tests {
                 "audio_output_test_evidence_observation_changed",
             ),
             (
+                "observation_generation",
+                "audio_output_test_evidence_observation_changed",
+            ),
+            (
                 "effective_config",
+                "audio_output_test_evidence_effective_config_changed",
+            ),
+            (
+                "effective_config_generation",
                 "audio_output_test_evidence_effective_config_changed",
             ),
             (
@@ -10589,7 +11003,9 @@ mod tests {
                     "session-a".to_string(),
                     "endpoint-a".to_string(),
                     "observation-a".to_string(),
+                    7,
                     "effective-config-a".to_string(),
+                    11,
                     "proposed-config-a".to_string(),
                 )
                 .await;
@@ -10611,10 +11027,20 @@ mod tests {
                     } else {
                         "observation-a"
                     },
+                    if changed == "observation_generation" {
+                        8
+                    } else {
+                        7
+                    },
                     if changed == "effective_config" {
                         "effective-config-b"
                     } else {
                         "effective-config-a"
+                    },
+                    if changed == "effective_config_generation" {
+                        12
+                    } else {
+                        11
                     },
                     if changed == "proposed_config" {
                         "proposed-config-b"
@@ -10633,7 +11059,9 @@ mod tests {
                 "session-a".to_string(),
                 "endpoint-a".to_string(),
                 "observation-a".to_string(),
+                7,
                 "effective-config-a".to_string(),
+                11,
                 "proposed-config-a".to_string(),
             )
             .await;
@@ -10644,7 +11072,9 @@ mod tests {
                 "session-a",
                 "endpoint-a",
                 "observation-a",
+                7,
                 "effective-config-a",
+                11,
                 "proposed-config-a",
             )
             .await

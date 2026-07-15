@@ -1491,6 +1491,9 @@ mod tests {
                 crate::audio_output::WindowsAudioOutputPlayback::default(),
             ),
             audio_output_calibration_lock: Arc::new(tokio::sync::Mutex::new(())),
+            audio_output_observation_generation: Arc::new(
+                crate::ipc::AudioOutputObservationGenerationTracker::default(),
+            ),
             audio_output_test_evidence: Arc::new(
                 crate::ipc::AudioOutputTestEvidenceStore::default(),
             ),

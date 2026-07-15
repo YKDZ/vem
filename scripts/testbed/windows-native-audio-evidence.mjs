@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -15,6 +16,8 @@ export function verifyWindowsNativeAudioEvidence({
   runId,
   runtimeReport,
   adapterReport,
+  daemonCalibrationResponse,
+  daemonCalibrationResponseBytes,
 }) {
   const diagnostics = [];
   const runtime = getRuntimeAcceptanceReport(runtimeReport);
@@ -35,7 +38,12 @@ export function verifyWindowsNativeAudioEvidence({
       adapterReport?.request?.operationReference
   )
     diagnostics.push(diagnostic("audio_capture_semantic_binding_mismatch"));
-  if (audio?.nativeCue?.challenge !== requestedAudio?.nativeCue?.challenge)
+  const calibration = audio?.daemonCalibration;
+  if (
+    calibration?.challenge !== requestedAudio?.daemonCalibration?.challenge ||
+    daemonCalibrationResponse?.challenge !==
+      requestedAudio?.daemonCalibration?.challenge
+  )
     diagnostics.push(diagnostic("audio_capture_challenge_mismatch"));
   if (
     !kiosk ||
@@ -62,23 +70,68 @@ export function verifyWindowsNativeAudioEvidence({
     typeof selectedEndpointId === "string" &&
     selectedEndpointId.length > 0 &&
     (audio?.endpoint?.stableEndpointId !== selectedEndpointId ||
-      audio?.nativeCue?.endpointId !== selectedEndpointId)
+      calibration?.endpointId !== selectedEndpointId ||
+      daemonCalibrationResponse?.endpointId !== selectedEndpointId)
   )
     diagnostics.push(diagnostic("selected_audio_endpoint_mismatch"));
   const digestPattern = /^sha256:[0-9a-f]{64}$/;
+  const tokenPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const daemonResponseKeys = [
+    "challenge",
+    "configGeneration",
+    "configRevision",
+    "endpointId",
+    "observationGeneration",
+    "observationRevision",
+    "proposedSettingsDigest",
+    "testEvidenceExpiresAt",
+    "testEvidenceToken",
+  ];
+  const evidenceExpiresAt = Date.parse(
+    daemonCalibrationResponse?.testEvidenceExpiresAt,
+  );
+  const calibrationCompletedAt = Date.parse(calibration?.completedAt);
   if (
-    requestedAudio?.nativeCue?.source !== "vending_daemon" ||
-    requestedAudio?.nativeCue?.command !== "audio_output_calibration" ||
-    audio?.nativeCue?.status !== "emitted" ||
-    audio?.nativeCue?.source !== "vending_daemon" ||
-    audio?.nativeCue?.command !== "audio_output_calibration" ||
-    typeof audio?.nativeCue?.testEvidenceToken !== "string" ||
-    audio.nativeCue.testEvidenceToken.length === 0 ||
-    !digestPattern.test(audio?.nativeCue?.observationRevision ?? "") ||
-    !digestPattern.test(audio?.nativeCue?.configRevision ?? "") ||
-    !digestPattern.test(audio?.nativeCue?.proposedSettingsDigest ?? "")
+    requestedAudio?.daemonCalibration?.source !== "vending_daemon_ipc" ||
+    requestedAudio?.daemonCalibration?.command !== "audio_output_calibration" ||
+    calibration?.status !== "completed" ||
+    calibration?.source !== "vending_daemon_ipc" ||
+    calibration?.command !== "audio_output_calibration" ||
+    JSON.stringify(Object.keys(daemonCalibrationResponse ?? {}).sort()) !==
+      JSON.stringify(daemonResponseKeys) ||
+    !tokenPattern.test(daemonCalibrationResponse?.testEvidenceToken ?? "") ||
+    !Number.isFinite(evidenceExpiresAt) ||
+    !Number.isFinite(calibrationCompletedAt) ||
+    evidenceExpiresAt <= calibrationCompletedAt ||
+    !digestPattern.test(daemonCalibrationResponse?.observationRevision ?? "") ||
+    !Number.isInteger(daemonCalibrationResponse?.observationGeneration) ||
+    daemonCalibrationResponse.observationGeneration < 0 ||
+    !digestPattern.test(daemonCalibrationResponse?.configRevision ?? "") ||
+    !Number.isInteger(daemonCalibrationResponse?.configGeneration) ||
+    daemonCalibrationResponse.configGeneration < 0 ||
+    !digestPattern.test(daemonCalibrationResponse?.proposedSettingsDigest ?? "")
   )
     diagnostics.push(diagnostic("daemon_audio_calibration_evidence_missing"));
+  const calibrationEvidence = adapterReport?.evidence?.find(
+    (entry) => entry?.role === "daemon-audio-calibration-response",
+  );
+  if (
+    calibration?.responseArtifact !== calibrationEvidence?.identity ||
+    calibration?.responseDigest !== calibrationEvidence?.digest ||
+    calibration?.responseFileName !== calibrationEvidence?.fileName
+  )
+    diagnostics.push(diagnostic("daemon_audio_calibration_reference_mismatch"));
+  const responseDigest =
+    typeof daemonCalibrationResponseBytes === "string"
+      ? `sha256:${createHash("sha256").update(daemonCalibrationResponseBytes).digest("hex")}`
+      : null;
+  if (
+    responseDigest !== calibrationEvidence?.digest ||
+    calibrationEvidence?.identity !==
+      `factory-evidence://${responseDigest?.replace(":", "/")}`
+  )
+    diagnostics.push(diagnostic("daemon_audio_calibration_digest_mismatch"));
   const capture = audio?.capture;
   if (
     !capture ||
@@ -91,13 +144,18 @@ export function verifyWindowsNativeAudioEvidence({
   )
     diagnostics.push(diagnostic("default_audio_capture_silent_or_invalid"));
   const captureStartedAt = Date.parse(capture?.startedAt);
-  const cueEmittedAt = Date.parse(audio?.nativeCue?.emittedAt);
+  const calibrationStartedAt = Date.parse(calibration?.startedAt);
   const captureCompletedAt = Date.parse(capture?.completedAt);
   if (
     !Number.isFinite(captureStartedAt) ||
-    !Number.isFinite(cueEmittedAt) ||
+    !Number.isFinite(calibrationStartedAt) ||
+    !Number.isFinite(calibrationCompletedAt) ||
     !Number.isFinite(captureCompletedAt) ||
-    !(captureStartedAt <= cueEmittedAt && cueEmittedAt <= captureCompletedAt)
+    !(
+      captureStartedAt <= calibrationStartedAt &&
+      calibrationStartedAt <= calibrationCompletedAt &&
+      calibrationCompletedAt <= captureCompletedAt
+    )
   )
     diagnostics.push(diagnostic("default_audio_capture_not_synchronized"));
   return {
@@ -144,6 +202,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       adapterReport: JSON.parse(
         readFileSync(option("--adapter-report"), "utf8"),
       ),
+      ...(() => {
+        const daemonCalibrationResponseBytes = readFileSync(
+          option("--daemon-calibration-response"),
+          "utf8",
+        );
+        return {
+          daemonCalibrationResponseBytes,
+          daemonCalibrationResponse: JSON.parse(daemonCalibrationResponseBytes),
+        };
+      })(),
     });
     const out = option("--out");
     mkdirSync(dirname(out), { recursive: true });
