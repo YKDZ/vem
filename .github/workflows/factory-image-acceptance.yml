@@ -36,6 +36,9 @@ jobs:
     runs-on: [self-hosted, Linux, X64, vem-factory]
     environment: vem-factory-production
     timeout-minutes: 180
+    permissions:
+      contents: read
+      id-token: write
     env:
       VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: ${{ needs.trust-gate.outputs.approved }}
       VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: '["self-hosted","Linux","X64","vem-factory"]'
@@ -45,12 +48,13 @@ jobs:
       EPHEMERAL_API_READY_URL: http://127.0.0.1:26850/api
       EPHEMERAL_MQTT_LOCAL_URL: mqtt://127.0.0.1:18884
       VEM_FACTORY_PLATFORM_INGRESS_HOST: ${{ vars.VEM_FACTORY_PLATFORM_INGRESS_HOST }}
+      MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
+      MAINTENANCE_ALLOW_INSECURE_HTTP: ${{ vars.VEM_MAINTENANCE_ALLOW_INSECURE_HTTP }}
+      MAINTENANCE_RUNNER_PEER_ID: ${{ vars.VEM_MAINTENANCE_RUNNER_PEER_ID }}
+      MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
+      VEM_MAINTENANCE_RELAY_INTERFACE: ${{ vars.VEM_MAINTENANCE_RELAY_INTERFACE }}
       MACHINE_CLAIM_CODE_TTL_SECONDS: "7200"
       PAYMENT_MOCK_ENABLED: "true"
-      MAINTENANCE_RELAY_PEER_ID: 550e8400-e29b-41d4-a716-446655440010
-      MAINTENANCE_RELAY_ENDPOINT: 127.0.0.1:51820
-      MAINTENANCE_RELAY_PUBLIC_KEY: AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
-      MAINTENANCE_RELAY_TUNNEL_ADDRESS: 10.91.0.1
     steps:
       - name: Guard Exact Protected Runner Before Checkout
         shell: bash
@@ -83,7 +87,6 @@ jobs:
             VEM_FACTORY_ACCEPTANCE_SSH_IDENTITY_PATH \
             VEM_FACTORY_ACCEPTANCE_SSH_CERTIFICATE_PATH \
             VEM_FACTORY_EXPECTED_TESTBED_USER \
-            VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON \
             VEM_FACTORY_PLATFORM_INGRESS_HOST; do
             test -n "${!name:-}" || { echo "missing protected factory host variable: $name" >&2; exit 1; }
           done
@@ -122,6 +125,77 @@ jobs:
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Create Maintenance Relay Session
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in MAINTENANCE_CONTROL_PLANE_URL MAINTENANCE_RUNNER_PEER_ID MAINTENANCE_TARGET_MACHINE_ID; do test -n "${!name:-}"; done
+          node -e 'for (const name of ["MAINTENANCE_RUNNER_PEER_ID", "MAINTENANCE_TARGET_MACHINE_ID"]) if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(process.env[name] || "")) throw new Error(`${name} must be UUID`); const url = new URL(process.env.MAINTENANCE_CONTROL_PLANE_URL); const insecureAllowed = process.env.MAINTENANCE_ALLOW_INSECURE_HTTP === "true"; if (!(["https:", ...(insecureAllowed ? ["http:"] : [])].includes(url.protocol)) || url.username || url.password || url.search || url.hash) throw new Error("MAINTENANCE_CONTROL_PLANE_URL must be credential-free HTTPS unless insecure HTTP is explicitly enabled");'
+          control_plane="${MAINTENANCE_CONTROL_PLANE_URL%/}"
+          oidc="$RUNNER_TEMP/factory-maintenance-oidc.json"
+          exchange="$RUNNER_TEMP/factory-maintenance-exchange.json"
+          created="$RUNNER_TEMP/factory-maintenance-session-created.json"
+          session="$RUNNER_TEMP/factory-maintenance-session.json"
+          { printf 'url = "%s&audience=vem-maintenance"\n' "$ACTIONS_ID_TOKEN_REQUEST_URL"; printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"; } | curl --config - --fail-with-body --silent --show-error --output "$oidc"
+          node - "$oidc" "$exchange.request" <<'NODE'
+          const fs = require("node:fs");
+          const token = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).value;
+          if (typeof token !== "string" || token.split(".").length !== 3) throw new Error("OIDC endpoint returned no JWT");
+          fs.writeFileSync(process.argv[3], JSON.stringify({ idToken: token, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, sha: process.env.GITHUB_SHA, sourcePeerId: process.env.MAINTENANCE_RUNNER_PEER_ID, targetMachineId: process.env.MAINTENANCE_TARGET_MACHINE_ID, reason: "Run Factory Image Acceptance" }), { mode: 0o600 });
+          NODE
+          curl --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$exchange.request" --output "$exchange" "$control_plane/maintenance-automation/exchange"
+          node - "$exchange" "$RUNNER_TEMP/factory-maintenance-token" <<'NODE'
+          const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data;
+          if (typeof value?.accessToken !== "string" || value.actor?.runId !== process.env.GITHUB_RUN_ID || value.actor?.runAttempt !== process.env.GITHUB_RUN_ATTEMPT) throw new Error("maintenance automation exchange invalid");
+          fs.writeFileSync(process.argv[3], value.accessToken, { mode: 0o600 });
+          NODE
+          IFS= read -r token < "$RUNNER_TEMP/factory-maintenance-token"
+          { printf 'header = "Authorization: Bearer %s"\n' "$token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --output "$created" "$control_plane/maintenance-automation/session"
+          for attempt in $(seq 1 60); do
+            { printf 'header = "Authorization: Bearer %s"\n' "$token"; printf 'request = "GET"\n'; } | curl --config - --fail-with-body --silent --show-error --output "$session" "$control_plane/maintenance-automation/session"
+            node - "$session" <<'NODE' && break
+          const fs = require("node:fs");
+          const session = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data;
+          process.exit(session?.relayConvergence?.state === "applied" ? 0 : 1);
+          NODE
+            test "$attempt" -lt 60 || { echo "maintenance Relay session did not converge" >&2; exit 1; }
+            sleep 2
+          done
+          node - "$created" "$session" <<'NODE'
+          const fs = require("node:fs"); const created = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data; const session = JSON.parse(fs.readFileSync(process.argv[3], "utf8")).data;
+          if (session?.id !== created?.id || session?.kind !== "ci" || session?.status !== "active" || session?.sourcePeer?.id !== process.env.MAINTENANCE_RUNNER_PEER_ID || session?.targetMachine?.id !== process.env.MAINTENANCE_TARGET_MACHINE_ID || session?.relayPeer?.role !== "relay" || session?.relayConvergence?.state !== "applied" || Date.parse(session?.expiresAt) <= Date.now()) throw new Error("maintenance session control-plane binding invalid");
+          const normalized = {
+            id: session.id,
+            kind: session.kind,
+            status: session.status,
+            issuedAt: session.issuedAt,
+            expiresAt: session.expiresAt,
+            sourcePeer: session.sourcePeer,
+            targetMachine: {
+              id: session.targetMachine.id,
+              maintenancePeerId: session.targetMachine.maintenancePeerId,
+              tunnelAddress: session.targetMachine.tunnelAddress,
+            },
+            relay: session.relayPeer,
+            relayConvergence: { state: session.relayConvergence.state },
+          };
+          fs.writeFileSync(process.argv[3], JSON.stringify(normalized), { mode: 0o600 });
+          NODE
+          node - "$session" <<'NODE' >> "$GITHUB_ENV"
+          const fs = require("node:fs"); const session = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          process.stdout.write(`MAINTENANCE_RELAY_PEER_ID=${session.relay.id}\nMAINTENANCE_RELAY_PUBLIC_KEY=${session.relay.publicKey}\nMAINTENANCE_RELAY_TUNNEL_ADDRESS=${session.relay.tunnelAddress}\n`);
+          NODE
+          printf 'VEM_FACTORY_MAINTENANCE_SESSION_PATH=%s\n' "$session" >> "$GITHUB_ENV"
+
+      - name: Prove Relay WireGuard SSH Data Plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/factory-maintenance-relay-attestation.json"
+          node scripts/testbed/factory-maintenance-relay-attestation.mjs --session "$VEM_FACTORY_MAINTENANCE_SESSION_PATH" --out "$proof"
+          printf 'VEM_FACTORY_MAINTENANCE_RELAY_ATTESTATION_PATH=%s\n' "$proof" >> "$GITHUB_ENV"
 
       - name: Start Ephemeral Postgres And MQTT
         run: |
@@ -214,12 +288,16 @@ jobs:
           const manifestHash = String(build.manifestIdentity).replace(/^sha256:/, "");
           const manifestPath = path.join(process.env.VEM_FACTORY_MANIFEST_STORE, "sha256", `${manifestHash}.json`);
           const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-          let maintenanceRelaySession;
-          try {
-            maintenanceRelaySession = JSON.parse(process.env.VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON);
-          } catch {
-            throw new Error("protected Factory maintenance Relay session proof must be JSON");
-          }
+          const controlPlaneSession = JSON.parse(fs.readFileSync(process.env.VEM_FACTORY_MAINTENANCE_SESSION_PATH, "utf8"));
+          const maintenanceRelaySession = {
+            sessionId: controlPlaneSession.id,
+            relayPeer: {
+              publicKey: controlPlaneSession.relay.publicKey,
+              tunnelAddress: controlPlaneSession.relay.tunnelAddress,
+            },
+            sourceTunnelAddress: controlPlaneSession.sourcePeer.tunnelAddress,
+            endpointTunnelAddress: controlPlaneSession.targetMachine.tunnelAddress,
+          };
           const runId = process.env.RUN_ID;
           const evidenceRoot = path.join(process.env.GITHUB_WORKSPACE, "artifacts", "factory-image-acceptance");
           const machineCode = `VEM-TESTBED-FACTORY-${runId}`;
@@ -264,6 +342,7 @@ jobs:
               identityPath: process.env.VEM_FACTORY_ACCEPTANCE_SSH_IDENTITY_PATH,
               certificatePath: process.env.VEM_FACTORY_ACCEPTANCE_SSH_CERTIFICATE_PATH,
             },
+            maintenanceRelayAttestation: JSON.parse(fs.readFileSync(process.env.VEM_FACTORY_MAINTENANCE_RELAY_ATTESTATION_PATH, "utf8")),
             evidence: {
               root: evidenceRoot,
               lifecycleReport: path.join(evidenceRoot, "lifecycle", "report.json"),
@@ -336,6 +415,7 @@ jobs:
             echo "refusing to clean an invalid VEM_FACTORY_WORK_ROOT" >&2
             failed=1
           fi
+          rm -rf "$RUNNER_TEMP/vem-factory-mosquitto" "$RUNNER_TEMP/factory-image-acceptance-input.json" "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR" "$RUNNER_TEMP/factory-maintenance-oidc.json" "$RUNNER_TEMP/factory-maintenance-exchange.json" "$RUNNER_TEMP/factory-maintenance-exchange.json.request" "$RUNNER_TEMP/factory-maintenance-token" "$RUNNER_TEMP/factory-maintenance-session-created.json" "$RUNNER_TEMP/factory-maintenance-session.json" "$RUNNER_TEMP/factory-maintenance-relay-attestation.json"
           exit "$failed"
 
       - name: Upload Sanitized Factory Acceptance Evidence

@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
+import { validateFactoryMaintenanceRelayAttestation } from "./factory-maintenance-relay-attestation.mjs";
 import {
   createVmHostAdapterRequest,
   runVmHostAdapter,
@@ -167,6 +168,7 @@ export function validateFactoryImageAcceptanceInput(input) {
       "endpoint",
       "ephemeralPlatform",
       "ssh",
+      "maintenanceRelayAttestation",
       "evidence",
     ],
     "factory image acceptance input",
@@ -180,6 +182,7 @@ export function validateFactoryImageAcceptanceInput(input) {
   if (!/^[A-Z0-9][A-Z0-9-]{2,63}$/.test(nonEmpty(input.runId, "runId"))) {
     throw new Error("runId must be an uppercase logical run identity");
   }
+  validateFactoryMaintenanceRelayAttestation(input.maintenanceRelayAttestation);
   if (
     !/^vm-target:\/\/[a-z0-9][a-z0-9.-]{0,127}$/.test(
       nonEmpty(input.targetIdentity, "targetIdentity"),
@@ -246,6 +249,22 @@ export function validateFactoryImageAcceptanceInput(input) {
     input.endpoint.maintenanceRelaySession,
     "endpoint.maintenanceRelaySession",
   );
+  const attestedSession = input.maintenanceRelayAttestation.session;
+  if (
+    input.endpoint.maintenanceRelaySession.sessionId !== attestedSession.id ||
+    input.endpoint.maintenanceRelaySession.relayPeer.publicKey !==
+      attestedSession.relay.publicKey ||
+    input.endpoint.maintenanceRelaySession.relayPeer.tunnelAddress !==
+      attestedSession.relay.tunnelAddress ||
+    input.endpoint.maintenanceRelaySession.sourceTunnelAddress !==
+      attestedSession.sourcePeer.tunnelAddress ||
+    input.endpoint.maintenanceRelaySession.endpointTunnelAddress !==
+      attestedSession.targetMachine.tunnelAddress
+  ) {
+    throw new Error(
+      "adapter endpoint session must match the runner-owned Relay attestation",
+    );
+  }
   exactKeys(
     input.ephemeralPlatform,
     ["evidencePath", "platformTarget", "machineCode"],
