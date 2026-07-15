@@ -1135,6 +1135,7 @@ async function main() {
               scannerCode,
               workDirectory,
               environment,
+              ...maintenanceEndpointContext,
             })
           ).map((entry) =>
             entry.failureMode === "swapped-roles" ||
