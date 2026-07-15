@@ -88,28 +88,6 @@ const latestVisionDiagnosticPayloadText = computed(() => {
   }
   return serializeDiagnosticPayload(visionStore.latestDiagnosticPayload);
 });
-const audioCueSettingsRows = computed(() => [
-  {
-    label: "全局音频提示",
-    value: machineStore.config.audioCueSettings.enabled ? "已启用" : "已停用",
-  },
-  {
-    label: "来人音频提示",
-    value: machineStore.config.audioCueSettings.categories.presence
-      ? "已启用"
-      : "已停用",
-  },
-  {
-    label: "交易音频提示",
-    value: machineStore.config.audioCueSettings.categories.transaction
-      ? "已启用"
-      : "已停用",
-  },
-  {
-    label: "机器音频音量",
-    value: `${machineAudioVolumePercent(machineStore.config.machineAudioVolume)}%`,
-  },
-]);
 const latestAudioCueDiagnosticRows = computed(() => {
   const diagnostic = audioCueStore.latestPlaybackDiagnostic;
   if (!diagnostic) return [];
@@ -408,16 +386,14 @@ onMounted(async () => {
       });
   }
 
-  if (runtimeFlags.advancedMaintenanceConfig) {
-    try {
-      if (!machineStore.configLoaded) {
-        await machineStore.loadConfig();
-      }
-      syncFormFromStore();
-      ensureMachineAudioTestPlayback();
-    } catch {
-      // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
+  try {
+    if (!machineStore.configLoaded) {
+      await machineStore.loadConfig();
     }
+    syncFormFromStore();
+    ensureMachineAudioTestPlayback();
+  } catch {
+    // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
   }
   await Promise.allSettled([
     refreshStockMaintenanceView(),
@@ -462,6 +438,11 @@ const wholeMachineLockMaintenance = reactive({
 });
 
 const desktopMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
+});
+
+const audioConfigMaintenance = reactive({
   loading: false,
   message: null as string | null,
 });
@@ -570,7 +551,7 @@ function stopMachineAudioTestPlayback(): void {
 }
 
 function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
-  const volume = machineStore.config.machineAudioVolume;
+  const volume = currentFormMachineAudioVolume();
   if (
     activeMachineAudioPlayback &&
     activeMachineAudioPlaybackVolume === volume
@@ -600,11 +581,43 @@ function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
   return activeMachineAudioPlayback;
 }
 
+function currentFormMachineAudioVolume(): number {
+  return Math.min(1, Math.max(0, Number(form.machineAudioVolumePercent) / 100));
+}
+
 function refreshMachineAudioTestPlaybackDiagnostic(): void {
   if (!activeMachineAudioPlayback) return;
   machineAudioTestPlayback.driver = activeMachineAudioPlayback.currentDriver();
   machineAudioTestPlayback.diagnostic =
     activeMachineAudioPlayback.latestDiagnostic();
+}
+
+async function saveAudioConfiguration(): Promise<void> {
+  audioConfigMaintenance.loading = true;
+  audioConfigMaintenance.message = null;
+  machineStore.error = null;
+  try {
+    const normalized = normalizeMachineConfig({
+      ...machineStore.config,
+      machineAudioVolume: currentFormMachineAudioVolume(),
+      audioCueSettings: form.audioCueSettings,
+      machineSecret: null,
+      mqttSigningSecret: null,
+      mqttPassword: null,
+    });
+    await machineStore.saveConfig(normalized);
+    syncFormFromStore();
+    activeMachineAudioPlayback?.stop();
+    activeMachineAudioPlayback = null;
+    activeMachineAudioPlaybackVolume = null;
+    ensureMachineAudioTestPlayback();
+    audioConfigMaintenance.message = "音频设置已保存。";
+  } catch (error) {
+    audioConfigMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    audioConfigMaintenance.loading = false;
+  }
 }
 
 async function startTryOnPreviewDiagnostic(): Promise<void> {
@@ -999,16 +1012,6 @@ async function returnToDesktop(): Promise<void> {
   }
 }
 
-async function openProtectedBringUpConsole(): Promise<void> {
-  if (!showAdvancedDebugConfig.value) {
-    return;
-  }
-  await router.replace({
-    path: "/bring-up",
-    query: { source: "protected-maintenance" },
-  });
-}
-
 async function exportLogs(): Promise<void> {
   diagnostics.logsMessage = null;
   try {
@@ -1212,14 +1215,6 @@ async function submitStockMovement(): Promise<void> {
               @click="returnToDesktop"
             >
               回到 Windows 桌面
-            </button>
-            <button
-              v-if="showAdvancedDebugConfig"
-              class="kiosk-touch-target rounded-2xl border border-amber-200/30 px-4 py-3 font-bold text-amber-100"
-              type="button"
-              @click="openProtectedBringUpConsole"
-            >
-              首次部署控制台
             </button>
             <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
@@ -1476,21 +1471,113 @@ async function submitStockMovement(): Promise<void> {
 
         <section class="mt-5 border-t border-white/10 pt-4 text-left">
           <h3 class="text-sm font-semibold text-slate-200">音频提示设置</h3>
-          <p class="mt-1 text-sm text-slate-300">
-            机器音频提示分类是本地顾客体验设置。
-          </p>
-          <dl class="mt-3 grid gap-3 md:grid-cols-3">
-            <div
-              v-for="row in audioCueSettingsRows"
-              :key="row.label"
-              class="rounded-xl bg-slate-950/35 p-3"
+          <fieldset class="mt-3 grid gap-3 text-left md:grid-cols-3">
+            <label class="flex items-center gap-3">
+              <input
+                v-model="form.audioCueSettings.enabled"
+                class="size-5 accent-cyan-300"
+                type="checkbox"
+              />
+              <span class="text-sm font-semibold text-slate-200"
+                >启用机器音频</span
+              >
+            </label>
+            <label class="flex items-center gap-3">
+              <input
+                v-model="form.audioCueSettings.categories.presence"
+                class="size-5 accent-cyan-300"
+                type="checkbox"
+              />
+              <span class="text-sm font-semibold text-slate-200"
+                >来人提示</span
+              >
+            </label>
+            <label class="flex items-center gap-3">
+              <input
+                v-model="form.audioCueSettings.categories.transaction"
+                class="size-5 accent-cyan-300"
+                type="checkbox"
+              />
+              <span class="text-sm font-semibold text-slate-200"
+                >交易提示</span
+              >
+            </label>
+          </fieldset>
+          <div class="mt-4 grid gap-4 md:grid-cols-[1fr_auto]">
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >机器音频音量</span
+              >
+              <div class="flex items-center gap-3">
+                <input
+                  v-model.number="form.machineAudioVolumePercent"
+                  class="kiosk-touch-target w-32 rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-cyan-300"
+                  data-test="machine-audio-volume-percent"
+                  max="100"
+                  min="0"
+                  step="1"
+                  type="number"
+                />
+                <span class="text-sm font-bold text-slate-200">%</span>
+              </div>
+            </label>
+            <button
+              class="kiosk-touch-target self-end rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+              type="button"
+              :disabled="audioConfigMaintenance.loading"
+              @click="saveAudioConfiguration"
             >
-              <dt class="text-xs font-semibold text-slate-400">机器音频提示</dt>
-              <dd class="mt-1 font-bold text-white">
-                {{ row.label }} · {{ row.value }}
-              </dd>
+              保存音频设置
+            </button>
+          </div>
+          <section
+            class="mt-4 grid gap-4 rounded-2xl border border-cyan-200/20 bg-cyan-500/10 p-4 text-left"
+            data-test="machine-audio-test-playback"
+          >
+            <div class="flex flex-wrap gap-3">
+              <button
+                class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                type="button"
+                :disabled="machineAudioTestPlayback.loading"
+                @click="playMachineAudioTestPlayback"
+              >
+                播放测试音频
+              </button>
+              <button
+                class="kiosk-touch-target rounded-2xl border border-cyan-100/40 px-4 py-3 font-bold text-cyan-50 disabled:opacity-50"
+                type="button"
+                @click="stopMachineAudioTestPlayback"
+              >
+                停止播放
+              </button>
             </div>
-          </dl>
+            <dl class="grid gap-3 md:grid-cols-2">
+              <div
+                v-for="row in latestMachineAudioTestPlaybackRows"
+                :key="row.label"
+                class="rounded-xl bg-slate-950/35 p-3"
+              >
+                <dt class="text-xs font-semibold text-cyan-100/70">
+                  {{ row.label }}
+                </dt>
+                <dd class="mt-1 font-bold break-all text-white">
+                  {{ row.value }}
+                </dd>
+              </div>
+            </dl>
+            <p
+              v-if="
+                machineAudioTestPlayback.message ||
+                audioConfigMaintenance.message
+              "
+              class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
+            >
+              {{
+                machineAudioTestPlayback.message ??
+                audioConfigMaintenance.message
+              }}
+            </p>
+          </section>
         </section>
 
         <section
