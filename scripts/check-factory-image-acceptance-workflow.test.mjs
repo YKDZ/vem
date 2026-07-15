@@ -22,7 +22,16 @@ function stepBlock(stepName) {
 
 describe("Factory Image Acceptance workflow", () => {
   it("reads token files without requiring a trailing newline", () => {
-    assert.doesNotMatch(workflow, /IFS= read -r \w+ < "\$[^\"]*token[^\"]*"/);
+    assert.doesNotMatch(workflow, /\bread\b[^\n]*token/);
+    assert.equal(
+      workflow.match(/token="\$\(<"\$automation_token"\)"/g)?.length,
+      1,
+    );
+    assert.equal(
+      workflow.match(/automation_token="\$\(<"\$automation_token_path"\)"/g)
+        ?.length,
+      1,
+    );
   });
 
   it("requires the real platform-neutral Factory lifecycle orchestrator", () => {

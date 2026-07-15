@@ -27,9 +27,16 @@ function stepBlock(workflow, stepName) {
 
 describe("VM runtime acceptance workflow maintenance relay path", () => {
   it("reads token files without requiring a trailing newline", () => {
-    assert.doesNotMatch(
-      readWorkflow(),
-      /IFS= read -r \w+ < "\$[^\"]*token[^\"]*"/,
+    const workflow = readWorkflow();
+    assert.doesNotMatch(workflow, /\bread\b[^\n]*token/);
+    assert.equal(
+      workflow.match(/id_token="\$\(<"\$oidc_token_path"\)"/g)?.length,
+      1,
+    );
+    assert.equal(
+      workflow.match(/automation_token="\$\(<"\$automation_token_path"\)"/g)
+        ?.length,
+      5,
     );
   });
 
