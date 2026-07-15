@@ -16,8 +16,9 @@ use vending_core::domain::{
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
-    MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4,
-    MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V2, MIGRATION_V3,
+    MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
+    SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -881,6 +882,21 @@ impl LocalStateStore {
                     .map_err(StoreError::Sqlx)?;
             }
         }
+        if current_version < 18 {
+            let columns: Vec<(String,)> =
+                sqlx::query_as("SELECT name FROM pragma_table_info('command_log')")
+                    .fetch_all(&self.pool)
+                    .await?;
+            if !columns
+                .iter()
+                .any(|(name,)| name == "side_effects_committed_at")
+            {
+                sqlx::query(MIGRATION_V18)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(StoreError::Sqlx)?;
+            }
+        }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
         Ok(())
     }
@@ -1428,6 +1444,20 @@ impl LocalStateStore {
         rows.into_iter().map(to_command_record).collect()
     }
 
+    pub async fn list_journaled_commands_pending_side_effects(
+        &self,
+    ) -> Result<Vec<CommandLogRecord>, StoreError> {
+        let rows: Vec<CommandRecordRow> = sqlx::query_as(
+            "SELECT command_no, order_no, command_payload_json, status, ack_at, dispensing_started_at, result_payload_json, error_code, error_message, updated_at, expires_at
+             FROM command_log
+             WHERE result_payload_json IS NOT NULL AND side_effects_committed_at IS NULL
+             ORDER BY updated_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(to_command_record).collect()
+    }
+
     pub async fn prune_command_log(&self) -> Result<(u64, u64), StoreError> {
         let deleted_expired = sqlx::query("DELETE FROM command_log WHERE expires_at < ?1")
             .bind(now_iso())
@@ -1682,6 +1712,7 @@ impl LocalStateStore {
                 ));
             }
             insert_outbox_in_tx(&mut tx, result_event).await?;
+            mark_command_side_effects_committed_in_tx(&mut tx, &command.command_no).await?;
             tx.commit().await?;
             return Ok(outbox_existed.is_none());
         };
@@ -1721,6 +1752,7 @@ impl LocalStateStore {
         .bind(now_iso())
         .execute(tx.as_mut())
         .await?;
+        mark_command_side_effects_committed_in_tx(&mut tx, &command.command_no).await?;
         tx.commit().await?;
         Ok(outbox_existed.is_none()
             || (result.success && movement_existed.is_none())
@@ -5274,6 +5306,7 @@ impl LocalStateStore {
         };
 
         let mut tx = self.pool.begin().await?;
+        let mut manual_diagnostics_reconciled = false;
         let sync_result = sqlx::query(
             "UPDATE stock_movement_sync
              SET status = ?2,
@@ -5304,6 +5337,35 @@ impl LocalStateStore {
         {
             apply_sale_safety_blocker_in_tx(&mut tx, blocker).await?;
         }
+        if status == "accepted" && response.receipt.is_some() {
+            let counted_slot: Option<(String, i64, i64)> = sqlx::query_as(
+                "SELECT s.slot_code,s.layer_no,s.cell_no
+                 FROM stock_movements m
+                 JOIN machine_planogram_slots s
+                   ON s.planogram_version=m.planogram_version AND s.slot_id=m.slot_id
+                 WHERE m.movement_id=?1 AND m.movement_type='stock_count_correction'",
+            )
+            .bind(movement_id)
+            .fetch_optional(tx.as_mut())
+            .await?;
+            if let Some((slot_code, layer_no, cell_no)) = counted_slot {
+                manual_diagnostics_reconciled = sqlx::query(
+                    "UPDATE manual_dispense_diagnostics
+                     SET reconciliation_status='reconciled'
+                     WHERE reconciliation_status='open'
+                       AND json_extract(command_json,'$.slotCode')=?1
+                       AND json_extract(command_json,'$.layerNo')=?2
+                       AND json_extract(command_json,'$.cellNo')=?3",
+                )
+                .bind(slot_code)
+                .bind(layer_no)
+                .bind(cell_no)
+                .execute(tx.as_mut())
+                .await?
+                .rows_affected()
+                    > 0;
+            }
+        }
         sqlx::query("DELETE FROM outbox_events WHERE id = ?1")
             .bind(&event.id)
             .execute(tx.as_mut())
@@ -5311,6 +5373,9 @@ impl LocalStateStore {
         tx.commit().await?;
         self.finalize_pending_physical_stock_attestation_if_accepted()
             .await?;
+        if manual_diagnostics_reconciled {
+            self.prune_manual_dispense_diagnostics().await?;
+        }
         Ok(())
     }
 
@@ -6684,6 +6749,18 @@ async fn apply_dispense_success_to_local_stock_in_tx(
     )
     .await?;
     upsert_sale_view_projection_in_tx(tx, &planogram_version, &slot_id).await?;
+    Ok(())
+}
+
+async fn mark_command_side_effects_committed_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    command_no: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("UPDATE command_log SET side_effects_committed_at=?2 WHERE command_no=?1")
+        .bind(command_no)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?;
     Ok(())
 }
 
@@ -9128,6 +9205,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reconciled.reconciliation_status, "reconciled");
+    }
+
+    #[tokio::test]
+    async fn accepted_explicit_stock_count_reconciles_open_manual_dispense_for_the_same_slot() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .reserve_manual_dispense_diagnostic(&ManualDispenseDiagnostic {
+                diagnostic_id: "manual-auto-reconcile-1".to_string(),
+                idempotency_key: "manual-auto-reconcile-key-1".to_string(),
+                request_fingerprint: "sha256:manual-auto-reconcile-1".to_string(),
+                status: "result_unknown".to_string(),
+                operator_id: "operator-1".to_string(),
+                session_correlation_id: "session-1".to_string(),
+                controller: json!({}),
+                command: json!({"slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
+                started_at: now_iso(),
+                completed_at: Some(now_iso()),
+                raw_result: None,
+                normalized_result: None,
+                reconciliation_status: "open".to_string(),
+                expires_at: "2027-07-15T00:00:00Z".to_string(),
+            })
+            .await
+            .expect("diagnostic");
+        store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: "COUNT-AUTO-MANUAL-RECONCILE".to_string(),
+                    planogram_version: "PLAN-FAILURE".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "stock_count_correction".to_string(),
+                    quantity: 4,
+                    source: "local_maintenance".to_string(),
+                    attributed_to: Some("operator-1".to_string()),
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("count");
+        let event = store
+            .outbox_record("stock-movement:COUNT-AUTO-MANUAL-RECONCILE")
+            .await
+            .expect("outbox")
+            .expect("count upload");
+        store
+            .record_stock_movement_upload_response(
+                &event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: "COUNT-AUTO-MANUAL-RECONCILE".to_string(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some(now_iso()),
+                    receipt: Some(json!({"rawMovementId":"platform-count-auto-1"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            )
+            .await
+            .expect("accepted count");
+
+        assert_eq!(
+            store
+                .manual_dispense_diagnostic("manual-auto-reconcile-1")
+                .await
+                .expect("diagnostic")
+                .expect("record")
+                .reconciliation_status,
+            "reconciled"
+        );
     }
 
     #[tokio::test]

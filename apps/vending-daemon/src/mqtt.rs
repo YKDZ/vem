@@ -338,6 +338,55 @@ impl MqttSyncRuntime {
             .await
     }
 
+    pub async fn recover_journaled_dispense_side_effects(&self) -> Result<usize, String> {
+        let commands = self
+            .state
+            .list_journaled_commands_pending_side_effects()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut recovered = 0_usize;
+        for record in commands {
+            let Some(result) = record.result_payload else {
+                continue;
+            };
+            let mut result_event =
+                crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
+            result_event.payload_json = self.sign_outbox_payload(
+                format!("result:{}", record.command_payload.command_no),
+                result_event.payload_json,
+            )?;
+            match self
+                .state
+                .commit_journaled_dispense_side_effects(
+                    &record.command_payload,
+                    &result,
+                    &result_event,
+                )
+                .await
+            {
+                Ok(changed) => {
+                    recovered += usize::from(changed);
+                }
+                Err(error) => {
+                    self.state
+                        .append_health_event(&vending_core::health::ComponentHealth {
+                            component: "dispense_recovery".to_string(),
+                            level: vending_core::health::HealthLevel::Degraded,
+                            code: "DISPENSE_RESULT_RECOVERY_DEFERRED".to_string(),
+                            message: format!(
+                                "terminal dispense {} is journaled but side effects remain recoverable: {error}",
+                                record.command_no
+                            ),
+                            updated_at: crate::state::store::now_iso(),
+                        })
+                        .await
+                        .map_err(|store_error| store_error.to_string())?;
+                }
+            }
+        }
+        Ok(recovered)
+    }
+
     async fn recover_stale_active_dispense_commands_at(
         &self,
         now: DateTime<Utc>,
@@ -369,11 +418,7 @@ impl MqttSyncRuntime {
 
             let result_recorded = self
                 .state
-                .record_command_result_and_enqueue_tx(
-                    &record.command_payload,
-                    &result,
-                    &result_event,
-                )
+                .record_command_result_journal(&record.command_payload, &result)
                 .await
                 .map_err(|error| error.to_string())?;
             if !result_recorded {
@@ -381,7 +426,11 @@ impl MqttSyncRuntime {
             }
 
             self.state
-                .apply_dispense_result_to_order_session(&record.command_payload, &result)
+                .commit_journaled_dispense_side_effects(
+                    &record.command_payload,
+                    &result,
+                    &result_event,
+                )
                 .await
                 .map_err(|error| error.to_string())?;
             self.state
@@ -1106,6 +1155,7 @@ impl MqttSyncRuntime {
                 .subscribe(secure_decommission_ack_topic.clone(), QoS::AtLeastOnce)
                 .await;
         }
+        let _ = self.recover_journaled_dispense_side_effects().await;
         let _ = self.recover_stale_active_dispense_commands().await;
         // The bounded AsyncClient queue is drained only by event_loop.poll().
         // Never await an initial backlog here, before this loop can poll it.
@@ -1673,6 +1723,124 @@ mod tests {
             event.topic.as_deref() == Some("vem/machines/M1/events/dispense-result")
         }));
         assert!(adapter.operations.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_repairs_a_reopened_terminal_journal_after_its_slot_returns() {
+        let temp = tempfile::tempdir().expect("temp");
+        let database = temp.path().join("state.db");
+        let state = crate::state::LocalStateStore::open(&database)
+            .await
+            .expect("state");
+        let command = dispense_command_payload("CMD-STARTUP-JOURNAL", 5);
+        state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: &command.order_no,
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: serde_json::json!([{ "slotCode": "A1", "quantity": 1 }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(serde_json::json!({
+                    "orderNo": command.order_no,
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": { "commandNo": command.command_no, "status": "dispensing" }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("order");
+        let result = vending_core::hardware::DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "F2 reset completed".to_string(),
+            reported_at: crate::state::store::now_iso(),
+        };
+        state
+            .record_command_result_journal(&command, &result)
+            .await
+            .expect("journal");
+        drop(state);
+
+        let reopened = crate::state::LocalStateStore::open(&database)
+            .await
+            .expect("reopen");
+        let adapter = Arc::new(RecordingEnvironmentAdapter::default());
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            reopened.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        assert_eq!(
+            runtime
+                .recover_journaled_dispense_side_effects()
+                .await
+                .expect("defer missing slot"),
+            0
+        );
+        let deferred: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM health_events WHERE code='DISPENSE_RESULT_RECOVERY_DEFERRED'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .expect("deferred diagnostic");
+        assert_eq!(deferred.0, 1);
+        assert!(reopened
+            .outbox_record("M1:result:CMD-STARTUP-JOURNAL")
+            .await
+            .expect("outbox")
+            .is_none());
+
+        seed_single_slot_planogram(&reopened).await;
+        reopened
+            .record_stock_movement(crate::state::store::StockMovementInput {
+                movement_id: "COUNT-STARTUP-JOURNAL".to_string(),
+                planogram_version: "PLAN-MQTT".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655441001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        assert_eq!(
+            runtime
+                .recover_journaled_dispense_side_effects()
+                .await
+                .expect("repair"),
+            1
+        );
+        assert_eq!(
+            reopened.sale_view(None).await.unwrap().items[0].physical_stock,
+            3
+        );
+        let outbox = reopened
+            .outbox_record("M1:result:CMD-STARTUP-JOURNAL")
+            .await
+            .expect("outbox")
+            .expect("signed result outbox");
+        let envelope: vending_core::mqtt::MqttEnvelope =
+            serde_json::from_value(outbox.payload_json).expect("signed envelope");
+        assert_eq!(envelope.message_id, "result:CMD-STARTUP-JOURNAL");
+        assert!(adapter.operations.lock().await.is_empty());
+        assert_eq!(
+            runtime
+                .recover_journaled_dispense_side_effects()
+                .await
+                .expect("idempotent startup"),
+            0
+        );
     }
 
     #[tokio::test]
