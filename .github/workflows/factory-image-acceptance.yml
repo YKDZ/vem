@@ -83,6 +83,7 @@ jobs:
             VEM_FACTORY_ACCEPTANCE_SSH_IDENTITY_PATH \
             VEM_FACTORY_ACCEPTANCE_SSH_CERTIFICATE_PATH \
             VEM_FACTORY_EXPECTED_TESTBED_USER \
+            VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON \
             VEM_FACTORY_PLATFORM_INGRESS_HOST; do
             test -n "${!name:-}" || { echo "missing protected factory host variable: $name" >&2; exit 1; }
           done
@@ -213,6 +214,12 @@ jobs:
           const manifestHash = String(build.manifestIdentity).replace(/^sha256:/, "");
           const manifestPath = path.join(process.env.VEM_FACTORY_MANIFEST_STORE, "sha256", `${manifestHash}.json`);
           const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+          let maintenanceRelaySession;
+          try {
+            maintenanceRelaySession = JSON.parse(process.env.VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON);
+          } catch {
+            throw new Error("protected Factory maintenance Relay session proof must be JSON");
+          }
           const runId = process.env.RUN_ID;
           const evidenceRoot = path.join(process.env.GITHUB_WORKSPACE, "artifacts", "factory-image-acceptance");
           const machineCode = `VEM-TESTBED-FACTORY-${runId}`;
@@ -244,7 +251,10 @@ jobs:
               udfWriterPath: process.env.VEM_FACTORY_UDF_WRITER_HOST_PATH,
               wimlibPath: process.env.VEM_FACTORY_WIMLIB_HOST_PATH,
             },
-            endpoint: { expectedTestbedUser: process.env.VEM_FACTORY_EXPECTED_TESTBED_USER },
+            endpoint: {
+              expectedTestbedUser: process.env.VEM_FACTORY_EXPECTED_TESTBED_USER,
+              maintenanceRelaySession,
+            },
             ephemeralPlatform: {
               evidencePath: process.env.VEM_FACTORY_EPHEMERAL_PLATFORM_EVIDENCE,
               platformTarget: `factory-ephemeral-${runId.toLowerCase()}`,

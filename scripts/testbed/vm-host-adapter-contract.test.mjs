@@ -509,6 +509,7 @@ function reportFor(request, overrides = {}) {
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
+      maintenanceRelaySession: request.maintenanceRelaySession ?? null,
       ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result: "succeeded",
@@ -534,9 +535,22 @@ function reportFor(request, overrides = {}) {
       maintenanceEndpointIdentity: "guest-maintenance://runtime-testbed-001",
       maintenanceEndpoint: {
         protocol: "ssh",
-        host: "10.91.2.10",
+        host:
+          request.maintenanceRelaySession?.endpointTunnelAddress ??
+          "10.91.2.10",
         port: 22,
         reachability: "discovered",
+        ...(request.maintenanceRelaySession
+          ? {
+              relayProof: {
+                ...request.maintenanceRelaySession,
+                relayPeer: { ...request.maintenanceRelaySession.relayPeer },
+                endpointAllowedIp: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
+                endpointRoute: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
+                handshakeUnixSeconds: 1_784_160_000,
+              },
+            }
+          : {}),
       },
       deviceMappings:
         request.requestedCapabilities.includes("serial:lower-controller") ||
@@ -1589,6 +1603,36 @@ describe("VM Host Adapter contract", () => {
     assert.throws(
       () => validateVmHostAdapterReport(wrongPort, request),
       /maintenanceEndpoint\.port must be the SSH port 22/,
+    );
+  });
+
+  it("rejects a fresh handshake from a non-session Relay peer", () => {
+    const maintenanceRelaySession = {
+      sessionId: "550e8400-e29b-41d4-a716-446655440000",
+      relayPeer: {
+        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        tunnelAddress: "10.91.0.1",
+      },
+      sourceTunnelAddress: "10.91.2.10",
+      endpointTunnelAddress: "10.91.16.10",
+    };
+    const request = createVmHostAdapterRequest(
+      requestFor("restore-approved-base", { maintenanceRelaySession }),
+    );
+    const report = reportFor(request);
+    report.guest.maintenanceEndpoint.relayProof = {
+      ...maintenanceRelaySession,
+      relayPeer: {
+        ...maintenanceRelaySession.relayPeer,
+        publicKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      },
+      endpointAllowedIp: "10.91.16.10/32",
+      endpointRoute: "10.91.16.10/32",
+      handshakeUnixSeconds: 1_784_160_000,
+    };
+    assert.throws(
+      () => validateVmHostAdapterReport(report, request),
+      /relayProof\.relayPeer does not match maintenance session/,
     );
   });
 

@@ -311,6 +311,18 @@ function serialSessionForOperation(operation, scannerCode) {
   };
 }
 
+function maintenanceRelaySessionFromOptions() {
+  const raw = readOption("--maintenance-relay-session-json", {
+    optional: true,
+  });
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("--maintenance-relay-session-json must be valid JSON");
+  }
+}
+
 async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
   if (!["clean-install", "capture-approved-base"].includes(operation))
     return null;
@@ -375,6 +387,7 @@ async function main() {
   const audioCapture = audioCaptureForOperation(operation);
   const scannerCode = protectedScannerCode(operation);
   const serialSession = serialSessionForOperation(operation, scannerCode);
+  const maintenanceRelaySession = maintenanceRelaySessionFromOptions();
   if (serialSession?.scannerInjection?.operationNonce === null)
     serialSession.scannerInjection.operationNonce = nonce;
   const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
@@ -397,6 +410,7 @@ async function main() {
     audioCapture,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
+    maintenanceRelaySession,
     serialSession,
   });
   mkdirSync(dirname(out), { recursive: true });

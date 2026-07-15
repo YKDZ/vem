@@ -86,6 +86,7 @@ describe("Factory Image Acceptance workflow", () => {
       "MAINTENANCE_RELAY_PEER_ID",
       "MAINTENANCE_RELAY_PUBLIC_KEY",
       "MAINTENANCE_RELAY_TUNNEL_ADDRESS",
+      "VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON",
       "Cleanup Ephemeral Services",
     ]) {
       assert.match(workflow, new RegExp(required));
@@ -148,6 +149,11 @@ describe("Factory Image Acceptance workflow", () => {
       workflow,
       /--maintenance-relay-tunnel-address\s+"\$MAINTENANCE_RELAY_TUNNEL_ADDRESS"/,
     );
+    assert.match(
+      workflow,
+      /maintenanceRelaySession = JSON\.parse\(process\.env\.VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON\)/,
+    );
+    assert.match(workflow, /maintenanceRelaySession,/);
   });
 
   it("separates runner-local Service API MQTT from machine-facing endpoints", () => {

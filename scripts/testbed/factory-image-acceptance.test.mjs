@@ -51,7 +51,18 @@ function typedInput(root) {
       udfWriterPath: "/runner/factory/genisoimage",
       wimlibPath: "/runner/factory/wimlib-imagex",
     },
-    endpoint: { expectedTestbedUser: "YKDZ" },
+    endpoint: {
+      expectedTestbedUser: "YKDZ",
+      maintenanceRelaySession: {
+        sessionId: "550e8400-e29b-41d4-a716-446655440000",
+        relayPeer: {
+          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          tunnelAddress: "10.91.0.1",
+        },
+        sourceTunnelAddress: "10.91.2.10",
+        endpointTunnelAddress: "10.91.16.10",
+      },
+    },
     ephemeralPlatform: {
       evidencePath: join(root, "ephemeral-platform.json"),
       platformTarget: "ephemeral-run-15",
@@ -105,9 +116,18 @@ describe("Factory Image Acceptance lifecycle", () => {
     const input = typedInput(root);
     const endpoint = {
       protocol: "ssh",
-      host: "10.91.2.10",
+      host: "10.91.16.10",
       port: 22,
       reachability: "discovered",
+      relayProof: {
+        ...input.endpoint.maintenanceRelaySession,
+        relayPeer: {
+          ...input.endpoint.maintenanceRelaySession.relayPeer,
+        },
+        endpointAllowedIp: "10.91.16.10/32",
+        endpointRoute: "10.91.16.10/32",
+        handshakeUnixSeconds: 1_784_160_000,
+      },
     };
     const sshKnownHostsPath = join(root, "lifecycle-known-hosts");
     const preclaimInvocation = buildFactoryPreclaimVerifyInvocation(
@@ -163,7 +183,7 @@ describe("Factory Image Acceptance lifecycle", () => {
           preclaimInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.2.10",
+      "10.91.16.10",
     );
     assert.equal(
       JSON.parse(
@@ -171,7 +191,7 @@ describe("Factory Image Acceptance lifecycle", () => {
           claimInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.2.10",
+      "10.91.16.10",
     );
     assert.equal(
       JSON.parse(
@@ -179,7 +199,25 @@ describe("Factory Image Acceptance lifecycle", () => {
           runtimeInvocation.indexOf("--factory-guest-endpoint-json") + 1
         ],
       ).host,
-      "10.91.2.10",
+      "10.91.16.10",
+    );
+    assert.throws(
+      () =>
+        buildFactoryPreclaimVerifyInvocation(
+          input,
+          {
+            ...endpoint,
+            relayProof: {
+              ...endpoint.relayProof,
+              relayPeer: {
+                ...endpoint.relayProof.relayPeer,
+                publicKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+              },
+            },
+          },
+          sshKnownHostsPath,
+        ),
+      /exact maintenance-session Relay peer/,
     );
     assert.throws(
       () => validateFactoryImageAcceptanceInput({}),

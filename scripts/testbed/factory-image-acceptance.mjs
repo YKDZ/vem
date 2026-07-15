@@ -17,6 +17,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
@@ -38,6 +39,9 @@ const SENSITIVE_KEY =
   /claim[-_]?code|token|secret|password|passwd|credential|api[-_]?key|private[-_]?key/i;
 const ABSOLUTE_HOST_PATH =
   /(?:^|[^a-z0-9-])\/(?:mnt|home|tmp|var|opt|users|runner|workspace|workspaces)(?:\/|$)|(?:^|[^a-z0-9-])[a-z]:[\\/]|\\\\/i;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const WIREGUARD_PUBLIC_KEY = /^[A-Za-z0-9+/]{43}=$/;
 
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -117,6 +121,37 @@ function factoryEvidenceIdentity(value, label) {
   ) {
     throw new Error(`${label} must be a Factory evidence identity`);
   }
+  return value;
+}
+
+function maintenanceRelaySession(value, label) {
+  exactKeys(
+    value,
+    ["sessionId", "relayPeer", "sourceTunnelAddress", "endpointTunnelAddress"],
+    label,
+  );
+  if (typeof value.sessionId !== "string" || !UUID.test(value.sessionId))
+    throw new Error(`${label}.sessionId must be a maintenance session UUID`);
+  exactKeys(
+    value.relayPeer,
+    ["publicKey", "tunnelAddress"],
+    `${label}.relayPeer`,
+  );
+  if (
+    !WIREGUARD_PUBLIC_KEY.test(
+      nonEmpty(value.relayPeer.publicKey, `${label}.relayPeer.publicKey`),
+    )
+  )
+    throw new Error(
+      `${label}.relayPeer.publicKey must be a WireGuard public key`,
+    );
+  if (isIP(value.relayPeer.tunnelAddress) !== 4)
+    throw new Error(
+      `${label}.relayPeer.tunnelAddress must be an IPv4 tunnel address`,
+    );
+  for (const key of ["sourceTunnelAddress", "endpointTunnelAddress"])
+    if (isIP(value[key]) !== 4)
+      throw new Error(`${label}.${key} must be an IPv4 tunnel address`);
   return value;
 }
 
@@ -201,8 +236,16 @@ export function validateFactoryImageAcceptanceInput(input) {
   ]) {
     absolutePath(input.factory[key], `factory.${key}`);
   }
-  exactKeys(input.endpoint, ["expectedTestbedUser"], "endpoint");
+  exactKeys(
+    input.endpoint,
+    ["expectedTestbedUser", "maintenanceRelaySession"],
+    "endpoint",
+  );
   nonEmpty(input.endpoint.expectedTestbedUser, "endpoint.expectedTestbedUser");
+  maintenanceRelaySession(
+    input.endpoint.maintenanceRelaySession,
+    "endpoint.maintenanceRelaySession",
+  );
   exactKeys(
     input.ephemeralPlatform,
     ["evidencePath", "platformTarget", "machineCode"],
@@ -353,6 +396,7 @@ function adapterRequest(
     audioCapture: null,
     assets,
     requestedCapabilities: capabilities,
+    maintenanceRelaySession: input.endpoint.maintenanceRelaySession,
     serialSession: null,
   });
 }
@@ -384,7 +428,7 @@ async function admitFactoryInput(input) {
   });
 }
 
-function endpointArgument(endpoint) {
+function endpointArgument(endpoint, expectedRelaySession) {
   if (
     endpoint?.protocol !== "ssh" ||
     typeof endpoint.host !== "string" ||
@@ -396,6 +440,25 @@ function endpointArgument(endpoint) {
   ) {
     throw new Error(
       "adapter must return a discovered authenticated SSH guest endpoint",
+    );
+  }
+  const proof = endpoint.relayProof;
+  if (
+    !proof ||
+    JSON.stringify({
+      sessionId: proof.sessionId,
+      relayPeer: proof.relayPeer,
+      sourceTunnelAddress: proof.sourceTunnelAddress,
+      endpointTunnelAddress: proof.endpointTunnelAddress,
+    }) !== JSON.stringify(expectedRelaySession) ||
+    endpoint.host !== expectedRelaySession.endpointTunnelAddress ||
+    proof.endpointAllowedIp !== `${endpoint.host}/32` ||
+    proof.endpointRoute !== `${endpoint.host}/32` ||
+    !Number.isInteger(proof.handshakeUnixSeconds) ||
+    proof.handshakeUnixSeconds < 1
+  ) {
+    throw new Error(
+      "adapter endpoint must prove the exact maintenance-session Relay peer and endpoint /32 route",
     );
   }
   return JSON.stringify(endpoint);
@@ -422,7 +485,7 @@ function commonVerifierArgs(
     "--certificate",
     input.ssh.certificatePath,
     "--factory-guest-endpoint-json",
-    endpointArgument(endpoint),
+    endpointArgument(endpoint, input.endpoint.maintenanceRelaySession),
   ];
   if (sshKnownHostsPath) {
     args.push("--ssh-known-hosts-path", sshKnownHostsPath);

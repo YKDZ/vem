@@ -32,6 +32,9 @@ const LOGICAL_IDENTITY =
   /^[a-z][a-z0-9-]{0,31}:\/\/[a-z0-9][a-z0-9._:@-]{0,191}$/;
 const SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const WIREGUARD_PUBLIC_KEY = /^[A-Za-z0-9+/]{43}=$/;
 const AUDIO_ENCODING = new Set([
   "pcm_u8",
   "pcm_s16le",
@@ -2064,11 +2067,120 @@ function assertDisplayCaptureResult(value, request, report, issues) {
     );
 }
 
-function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
+function assertMaintenanceRelaySession(session, path, issues) {
+  if (
+    !assertExactKeys(
+      session,
+      [
+        "sessionId",
+        "relayPeer",
+        "sourceTunnelAddress",
+        "endpointTunnelAddress",
+      ],
+      path,
+      issues,
+    )
+  )
+    return;
+  if (typeof session.sessionId !== "string" || !UUID.test(session.sessionId))
+    issue(issues, `${path}.sessionId`, "must be a maintenance session UUID");
+  if (
+    assertExactKeys(
+      session.relayPeer,
+      ["publicKey", "tunnelAddress"],
+      `${path}.relayPeer`,
+      issues,
+    )
+  ) {
+    if (
+      typeof session.relayPeer.publicKey !== "string" ||
+      !WIREGUARD_PUBLIC_KEY.test(session.relayPeer.publicKey)
+    )
+      issue(
+        issues,
+        `${path}.relayPeer.publicKey`,
+        "must be a canonical WireGuard public key",
+      );
+    if (isIP(session.relayPeer.tunnelAddress) !== 4)
+      issue(
+        issues,
+        `${path}.relayPeer.tunnelAddress`,
+        "must be an IPv4 Relay tunnel address",
+      );
+  }
+  for (const key of ["sourceTunnelAddress", "endpointTunnelAddress"])
+    if (isIP(session[key]) !== 4)
+      issue(issues, `${path}.${key}`, "must be an IPv4 tunnel address");
+}
+
+function assertMaintenanceRelayProof(proof, session, endpoint, path, issues) {
+  if (
+    !assertExactKeys(
+      proof,
+      [
+        "sessionId",
+        "relayPeer",
+        "sourceTunnelAddress",
+        "endpointTunnelAddress",
+        "endpointAllowedIp",
+        "endpointRoute",
+        "handshakeUnixSeconds",
+      ],
+      path,
+      issues,
+    )
+  )
+    return;
+  assertMaintenanceRelaySession(
+    {
+      sessionId: proof.sessionId,
+      relayPeer: proof.relayPeer,
+      sourceTunnelAddress: proof.sourceTunnelAddress,
+      endpointTunnelAddress: proof.endpointTunnelAddress,
+    },
+    path,
+    issues,
+  );
+  for (const key of [
+    "sessionId",
+    "relayPeer",
+    "sourceTunnelAddress",
+    "endpointTunnelAddress",
+  ])
+    if (JSON.stringify(proof[key]) !== JSON.stringify(session[key]))
+      issue(issues, `${path}.${key}`, "does not match maintenance session");
+  const endpointCidr = `${session.endpointTunnelAddress}/32`;
+  if (endpoint.host !== session.endpointTunnelAddress)
+    issue(
+      issues,
+      `${path}.endpointTunnelAddress`,
+      "does not bind the discovered endpoint host",
+    );
+  for (const key of ["endpointAllowedIp", "endpointRoute"])
+    if (proof[key] !== endpointCidr)
+      issue(issues, `${path}.${key}`, "must bind the endpoint /32 route");
+  if (
+    !Number.isInteger(proof.handshakeUnixSeconds) ||
+    proof.handshakeUnixSeconds < 1
+  )
+    issue(
+      issues,
+      `${path}.handshakeUnixSeconds`,
+      "must prove a WireGuard handshake timestamp",
+    );
+}
+
+function assertGuestMaintenanceEndpoint(endpoint, session, path, issues) {
   if (
     !assertExactKeys(
       endpoint,
-      ["protocol", "host", "port", "reachability"],
+      [
+        "protocol",
+        "host",
+        "port",
+        "reachability",
+        ...(session ? ["relayProof"] : []),
+      ],
       path,
       issues,
     )
@@ -2104,6 +2216,14 @@ function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
       issues,
       `${path}.reachability`,
       "must be a supported reachability state",
+    );
+  if (session)
+    assertMaintenanceRelayProof(
+      endpoint.relayProof,
+      session,
+      endpoint,
+      `${path}.relayProof`,
+      issues,
     );
 }
 
@@ -2176,6 +2296,7 @@ function requestEcho(request) {
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     requestedCapabilities: [...request.requestedCapabilities],
+    maintenanceRelaySession: request.maintenanceRelaySession,
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
@@ -2201,6 +2322,7 @@ function reconstructRequest(request) {
       digest: asset?.digest,
     })),
     requestedCapabilities: [...(request.requestedCapabilities ?? [])],
+    maintenanceRelaySession: request.maintenanceRelaySession ?? null,
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
@@ -2221,6 +2343,8 @@ function lifecycleSourceAsset(request) {
 
 export function validateVmHostAdapterRequest(input) {
   const request = structuredClone(input);
+  if (!("maintenanceRelaySession" in request))
+    request.maintenanceRelaySession = null;
   const issues = [];
   assertExactKeys(
     request,
@@ -2240,6 +2364,7 @@ export function validateVmHostAdapterRequest(input) {
       "audioCapture",
       "assets",
       "requestedCapabilities",
+      "maintenanceRelaySession",
       ...(isV2Request(request) ? ["serialSession"] : []),
     ],
     "request",
@@ -2311,6 +2436,12 @@ export function validateVmHostAdapterRequest(input) {
   }
   if (isV2Request(request) || isSerialSessionOperation(request.operation))
     assertSerialSessionRequest(request.serialSession, request, issues);
+  if (request.maintenanceRelaySession !== null)
+    assertMaintenanceRelaySession(
+      request.maintenanceRelaySession,
+      "request.maintenanceRelaySession",
+      issues,
+    );
   if (assertExactKeys(request.target, ["identity"], "request.target", issues)) {
     if (
       typeof request.target.identity !== "string" ||
@@ -2623,6 +2754,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "displayCapture",
         "audioCapture",
         "requestedCapabilities",
+        "maintenanceRelaySession",
         ...(isV2Request(request) ? ["serialSession"] : []),
       ],
       "report.request",
@@ -2816,6 +2948,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
     );
     assertGuestMaintenanceEndpoint(
       report.guest.maintenanceEndpoint,
+      request.maintenanceRelaySession,
       "report.guest.maintenanceEndpoint",
       issues,
     );
@@ -3086,6 +3219,16 @@ export function validateVmHostAdapterReport(input, requestInput) {
         host: report.guest.maintenanceEndpoint.host,
         port: report.guest.maintenanceEndpoint.port,
         reachability: report.guest.maintenanceEndpoint.reachability,
+        ...(request.maintenanceRelaySession
+          ? {
+              relayProof: {
+                ...report.guest.maintenanceEndpoint.relayProof,
+                relayPeer: {
+                  ...report.guest.maintenanceEndpoint.relayProof.relayPeer,
+                },
+              },
+            }
+          : {}),
       },
       deviceMappings: report.guest.deviceMappings.map((mapping) => ({
         role: mapping.role,

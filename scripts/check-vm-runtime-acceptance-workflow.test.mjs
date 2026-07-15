@@ -134,6 +134,10 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       restoreBlock,
       /--approved-runtime-base\s+"\$VEM_VM_HOST_APPROVED_BASE_ID"/,
     );
+    assert.match(
+      restoreBlock,
+      /--maintenance-relay-session-json\s+"\$VEM_MAINTENANCE_RELAY_SESSION_JSON"/,
+    );
     assert.doesNotMatch(restoreBlock, /scripts\/testbed\/vm-host-adapter\.mjs/);
     assert.doesNotMatch(
       restoreBlock,
@@ -154,6 +158,11 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(endpoint, /vm-host-adapter-report\.json/);
     assert.match(endpoint, /endpoint\.reachability !== "discovered"/);
+    assert.match(endpoint, /maintenance-session Relay-bound guest endpoint/);
+    assert.match(
+      endpoint,
+      /proof\?\.endpointAllowedIp !== `\$\{endpoint\.host\}\/32`/,
+    );
     assert.match(
       endpoint,
       /VM_GUEST_MAINTENANCE_ENDPOINT_JSON=\$\{JSON\.stringify\(endpoint\)\}/,
@@ -177,6 +186,13 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       relayDataPlane,
       /sudo wg show "\$VEM_MAINTENANCE_RELAY_INTERFACE" latest-handshakes/,
     );
+    assert.match(
+      relayDataPlane,
+      /sudo wg show "\$VEM_MAINTENANCE_RELAY_INTERFACE" allowed-ips/,
+    );
+    assert.match(relayDataPlane, /peer === session\.relayPeer\.publicKey/);
+    assert.match(relayDataPlane, /session\.endpointTunnelAddress\}\/32/);
+    assert.doesNotMatch(relayDataPlane, /timestamps\.some/);
     assert.match(relayDataPlane, /Relay WireGuard SSH data-plane proof failed/);
     assert.match(relayDataPlane, /wireguard-ssh-data-plane\.json/);
 
