@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  sign,
+  verify,
+} from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
@@ -26,6 +33,86 @@ function assertConformance(condition, message) {
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function deriveSerialOperationReportDigest(report) {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(report))
+    .digest("hex")}`;
+}
+
+function runnerChallenge() {
+  return `serial-runner-challenge://sha256-${randomBytes(32).toString("hex")}`;
+}
+
+function createRunnerEvidence() {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  return {
+    privateKey,
+    publicKey: `ed25519-public-key:base64:${publicKey
+      .export({ type: "spki", format: "der" })
+      .toString("base64")}`,
+    operations: {},
+  };
+}
+
+function commitRunnerOperation(evidence, stage, report) {
+  const reportDigest = deriveSerialOperationReportDigest(report);
+  evidence.operations[stage] = {
+    operationReference: report.request.operationReference,
+    reportDigest,
+    signature: `ed25519-signature:base64:${sign(
+      null,
+      Buffer.from(reportDigest),
+      evidence.privateKey,
+    ).toString("base64")}`,
+  };
+  return reportDigest;
+}
+
+function validateRunnerOperationEvidence(evidence, stage, report) {
+  const receipt = evidence?.operations?.[stage];
+  assertConformance(
+    receipt &&
+      typeof receipt === "object" &&
+      typeof receipt.operationReference === "string" &&
+      typeof receipt.reportDigest === "string" &&
+      typeof receipt.signature === "string",
+    `runner ${stage} operation evidence is required`,
+  );
+  assertConformance(
+    receipt.operationReference === report.request.operationReference &&
+      receipt.reportDigest === deriveSerialOperationReportDigest(report),
+    `runner ${stage} operation evidence does not bind its validated report`,
+  );
+  const keyPrefix = "ed25519-public-key:base64:";
+  const signaturePrefix = "ed25519-signature:base64:";
+  assertConformance(
+    typeof evidence.publicKey === "string" &&
+      evidence.publicKey.startsWith(keyPrefix) &&
+      receipt.signature.startsWith(signaturePrefix),
+    "runner operation evidence must use an Ed25519 public key and signature",
+  );
+  let valid = false;
+  try {
+    valid = verify(
+      null,
+      Buffer.from(receipt.reportDigest),
+      createPublicKey({
+        key: Buffer.from(evidence.publicKey.slice(keyPrefix.length), "base64"),
+        format: "der",
+        type: "spki",
+      }),
+      Buffer.from(receipt.signature.slice(signaturePrefix.length), "base64"),
+    );
+  } catch {
+    valid = false;
+  }
+  assertConformance(
+    valid,
+    `runner ${stage} operation evidence signature is invalid`,
+  );
+  return receipt;
 }
 
 export function validateSerialConformanceReport(input) {
@@ -79,6 +166,21 @@ export function validateSerialConformanceReport(input) {
   const start = validatedReports.start;
   const inject = validatedReports.inject;
   const collect = validatedReports.collect;
+  const startReceipt = validateRunnerOperationEvidence(
+    conformance.runnerEvidence,
+    "start",
+    start,
+  );
+  const injectReceipt = validateRunnerOperationEvidence(
+    conformance.runnerEvidence,
+    "inject",
+    inject,
+  );
+  validateRunnerOperationEvidence(
+    conformance.runnerEvidence,
+    "collect",
+    collect,
+  );
   assertConformance(
     start.result === "succeeded" &&
       inject.result === "succeeded" &&
@@ -133,6 +235,14 @@ export function validateSerialConformanceReport(input) {
     collect.request.serialSession.scannerInjection?.operationNonce ===
       inject.request.operationNonce,
     "serial evidence collection must bind the validated scanner injection",
+  );
+  assertConformance(
+    sameJson(collect.request.serialSession.operationEvidence, {
+      runnerChallenge: conformance.runnerEvidence.runnerChallenge,
+      startReportDigest: startReceipt.reportDigest,
+      injectReportDigest: injectReceipt.reportDigest,
+    }),
+    "serial evidence collection must use runner-held start and inject commitments",
   );
   const injectedSale = inject.request.serialSession.saleBindings?.[0];
   const collectedSale = collect.request.serialSession.saleBindings?.[0];
@@ -220,9 +330,18 @@ function requestFor({
   scannerDescriptor,
   saleCorrelationId,
   saleBinding,
+  operationEvidence = null,
   idempotencyCheck = false,
 }) {
   const operationNonce = nonce();
+  const serialOperationEvidence =
+    operation === "collect-serial-evidence" && operationEvidence === null
+      ? {
+          runnerChallenge: runnerChallenge(),
+          startReportDigest: `sha256:${randomBytes(32).toString("hex")}`,
+          injectReportDigest: `sha256:${randomBytes(32).toString("hex")}`,
+        }
+      : operationEvidence;
   const request = {
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-request/v2",
@@ -283,6 +402,7 @@ function requestFor({
           scannerInjection: null,
           saleCorrelationIds: [saleCorrelationId],
           saleBindings: [],
+          operationEvidence: null,
           idempotencyCheck: false,
         }
       : {
@@ -299,6 +419,7 @@ function requestFor({
                 : null,
           saleCorrelationIds: [saleCorrelationId],
           saleBindings: saleBinding ? [saleBinding] : [],
+          operationEvidence: serialOperationEvidence,
           idempotencyCheck,
         };
   return createVmHostAdapterRequest(request);
@@ -336,6 +457,8 @@ async function main() {
   let preparedSale;
   let completedSale;
   let primaryError;
+  const runnerEvidence = createRunnerEvidence();
+  const serialRunnerChallenge = runnerChallenge();
   try {
     startRequest = requestFor({
       operation: "start-serial-session",
@@ -351,6 +474,11 @@ async function main() {
       workDirectory,
       environment,
     });
+    const startReportDigest = commitRunnerOperation(
+      runnerEvidence,
+      "start",
+      start,
+    );
     session = start.serialSession;
     preparedSale = contractTest
       ? {
@@ -378,6 +506,11 @@ async function main() {
       environment,
       scannerCode,
     });
+    const injectReportDigest = commitRunnerOperation(
+      runnerEvidence,
+      "inject",
+      inject,
+    );
     completedSale = contractTest
       ? {
           ...preparedSale,
@@ -404,12 +537,18 @@ async function main() {
       },
       saleCorrelationId,
       saleBinding: completedSale,
+      operationEvidence: {
+        runnerChallenge: serialRunnerChallenge,
+        startReportDigest,
+        injectReportDigest,
+      },
     });
     collect = await runVmHostAdapter({
       request: collectRequest,
       workDirectory,
       environment,
     });
+    commitRunnerOperation(runnerEvidence, "collect", collect);
     firstStop = await runVmHostAdapter({
       request: requestFor({
         operation: "stop-serial-session",
@@ -503,6 +642,11 @@ async function main() {
             start: startRequest,
             inject: injectRequest,
             collect: collectRequest,
+          },
+          runnerEvidence: {
+            publicKey: runnerEvidence.publicKey,
+            runnerChallenge: serialRunnerChallenge,
+            operations: runnerEvidence.operations,
           },
           session:
             session === undefined

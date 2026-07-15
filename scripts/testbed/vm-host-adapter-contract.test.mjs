@@ -29,6 +29,7 @@ import {
 import {
   assertBlockedSaleEvidence,
   observedMappingFailureCase,
+  validateSerialConformanceReport,
 } from "./vm-host-adapter-serial-conformance.mjs";
 
 const HASH = "a".repeat(64);
@@ -310,6 +311,14 @@ function serialSessionRequest(operation, overrides = {}) {
                 vendingCommandId: "vending-command-001",
               },
             ],
+      operationEvidence:
+        operation === "collect-serial-evidence"
+          ? {
+              runnerChallenge: `serial-runner-challenge://sha256-${"c".repeat(64)}`,
+              startReportDigest: `sha256:${"d".repeat(64)}`,
+              injectReportDigest: `sha256:${"e".repeat(64)}`,
+            }
+          : null,
       idempotencyCheck: false,
     },
     ...overrides,
@@ -735,6 +744,7 @@ function reportFor(request, overrides = {}) {
                       request.serialSession.sessionBindingToken,
                     deviceMappingDigest:
                       request.serialSession.deviceMappingDigest,
+                    operationEvidence: request.serialSession.operationEvidence,
                     records,
                     captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
                       request,
@@ -2845,6 +2855,99 @@ describe("VM Host Adapter contract", () => {
       JSON.stringify(report),
       new RegExp(PROTECTED_SCANNER_INPUT),
     );
+
+    const forged = structuredClone(report);
+    const collectRequest = forged.requests.collect;
+    const forgedNonce = "op-abcdefabcdefabcdefabcdefabcdefab";
+    const forgedStartReference = `vm-operation://${forgedNonce}`;
+    const forgedBinding = deriveSerialSessionBinding({
+      runId: "RUN-ATTACKER",
+      lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
+      targetIdentity: "vm-target://attacker",
+      startOperationReference: forgedStartReference,
+    });
+    const forgedSale = {
+      saleCorrelationId: "sale-correlation://sale-attacker",
+      orderId: "order-attacker",
+      paymentId: "payment-attacker",
+      vendingCommandId: "vending-command-attacker",
+    };
+    const forgedOperationEvidence = {
+      runnerChallenge: `serial-runner-challenge://sha256-${"b".repeat(64)}`,
+      startReportDigest: `sha256:${"c".repeat(64)}`,
+      injectReportDigest: `sha256:${"d".repeat(64)}`,
+    };
+    Object.assign(collectRequest, {
+      runId: "RUN-ATTACKER",
+      operationNonce: forgedNonce,
+      operationReference: forgedStartReference,
+      lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
+      target: { identity: "vm-target://attacker" },
+      serialSession: {
+        ...collectRequest.serialSession,
+        ...forgedBinding,
+        startOperationReference: forgedStartReference,
+        scannerInjection: {
+          ...collectRequest.serialSession.scannerInjection,
+          operationNonce: "op-fedcba9876543210",
+        },
+        saleCorrelationIds: [forgedSale.saleCorrelationId],
+        saleBindings: [forgedSale],
+        operationEvidence: forgedOperationEvidence,
+      },
+    });
+    const collectReport = forged.reports.collect;
+    Object.assign(collectReport.request, {
+      runId: collectRequest.runId,
+      operationNonce: collectRequest.operationNonce,
+      operationReference: collectRequest.operationReference,
+      lifecycleReference: collectRequest.lifecycleReference,
+      targetIdentity: collectRequest.target.identity,
+      serialSession: collectRequest.serialSession,
+    });
+    collectReport.observed.targetBinding.targetIdentity =
+      collectRequest.target.identity;
+    Object.assign(collectReport.serialSession, {
+      ...forgedBinding,
+      startOperationReference: forgedStartReference,
+    });
+    const records = collectReport.serialEvidence.records.map((record) => ({
+      ...record,
+      operationNonce:
+        record.role === "scanner"
+          ? collectRequest.serialSession.scannerInjection.operationNonce
+          : collectRequest.operationNonce,
+      sessionBindingToken: forgedBinding.sessionBindingToken,
+      saleCorrelationId:
+        record.saleCorrelationId === null ? null : forgedSale.saleCorrelationId,
+      saleBinding: record.saleBinding === null ? null : forgedSale,
+    }));
+    let previousCaptureBindingDigest = null;
+    for (const record of records) {
+      record.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+        request: collectRequest,
+        record,
+        previousCaptureBindingDigest,
+      });
+      previousCaptureBindingDigest = record.captureBindingDigest;
+    }
+    Object.assign(collectReport.serialEvidence, {
+      serialSessionId: forgedBinding.serialSessionId,
+      sessionBindingToken: forgedBinding.sessionBindingToken,
+      operationEvidence: forgedOperationEvidence,
+      records,
+      captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
+        request: collectRequest,
+        records,
+      }),
+    });
+    assert.doesNotThrow(() =>
+      validateVmHostAdapterReport(collectReport, collectRequest),
+    );
+    assert.throws(
+      () => validateSerialConformanceReport(forged),
+      /runner collect operation evidence (does not bind|signature is invalid)/,
+    );
   });
 
   it("requires swapped and missing serial mappings to block a new sale before business IDs exist", () => {
@@ -3079,6 +3182,14 @@ describe("VM Host Adapter contract", () => {
       ),
     );
     const report = JSON.parse(readFileSync(out, "utf8"));
+    assert.match(
+      report.runnerEvidence?.publicKey ?? "",
+      /^ed25519-public-key:base64:/,
+    );
+    assert.deepEqual(
+      Object.keys(report.runnerEvidence?.operations ?? {}).sort(),
+      ["inject", "start"],
+    );
     assert.equal(report.reports.recoveryStop.serialSession.state, "stopped");
     assert.equal(
       report.reports.recoveryStop.serialSession.simulatorCleanup

@@ -591,6 +591,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
                     serialSessionId: serialRequest.serialSessionId,
                     sessionBindingToken: serialRequest.sessionBindingToken,
                     deviceMappingDigest: serialRequest.deviceMappingDigest,
+                    operationEvidence: serialRequest.operationEvidence,
                     records,
                     captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
                       request,

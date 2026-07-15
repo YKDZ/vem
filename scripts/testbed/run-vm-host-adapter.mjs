@@ -296,6 +296,7 @@ function serialSessionForOperation(operation, scannerCode) {
       : sessionBindingFromOptions()),
     deviceRoles: ["lower-controller", "scanner"],
     scannerInjection: scannerInjectionFromOptions(operation, scannerCode),
+    operationEvidence: null,
     saleCorrelationIds: readOptions("--sale-correlation-id"),
     saleBindings: isStart
       ? []

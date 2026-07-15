@@ -344,6 +344,7 @@ export function deriveSerialFrameCaptureBindingDigest({
     serialSessionId: request?.serialSession?.serialSessionId ?? null,
     sessionBindingToken: request?.serialSession?.sessionBindingToken ?? null,
     deviceMappingDigest: request?.serialSession?.deviceMappingDigest ?? null,
+    operationEvidence: request?.serialSession?.operationEvidence ?? null,
     saleCorrelationId: record?.saleCorrelationId ?? null,
     orderId: sale?.orderId ?? null,
     paymentId: sale?.paymentId ?? null,
@@ -372,6 +373,7 @@ export function deriveSerialEvidenceCaptureChainDigest({ request, records }) {
     serialSessionId: request?.serialSession?.serialSessionId ?? null,
     sessionBindingToken: request?.serialSession?.sessionBindingToken ?? null,
     deviceMappingDigest: request?.serialSession?.deviceMappingDigest ?? null,
+    operationEvidence: request?.serialSession?.operationEvidence ?? null,
     captureBindingDigests: Array.isArray(records)
       ? records.map((record) => record?.captureBindingDigest ?? null)
       : null,
@@ -504,6 +506,7 @@ function assertSerialSessionRequest(session, request, issues) {
         "scannerInjection",
         "saleCorrelationIds",
         "saleBindings",
+        "operationEvidence",
         "idempotencyCheck",
       ],
       "request.serialSession",
@@ -590,6 +593,45 @@ function assertSerialSessionRequest(session, request, issues) {
       issues,
       "request.serialSession.scannerInjection",
       "must be null for this operation",
+    );
+  if (request.operation === "collect-serial-evidence") {
+    const evidence = session.operationEvidence;
+    if (
+      !assertExactKeys(
+        evidence,
+        ["runnerChallenge", "startReportDigest", "injectReportDigest"],
+        "request.serialSession.operationEvidence",
+        issues,
+      )
+    ) {
+      // Exact-key diagnostics are sufficient when this object is malformed.
+    } else {
+      if (
+        !/^serial-runner-challenge:\/\/sha256-[a-f0-9]{64}$/.test(
+          evidence.runnerChallenge ?? "",
+        )
+      )
+        issue(
+          issues,
+          "request.serialSession.operationEvidence.runnerChallenge",
+          "must be a runner-created serial challenge",
+        );
+      for (const key of ["startReportDigest", "injectReportDigest"])
+        if (!SHA256_DIGEST.test(evidence[key] ?? ""))
+          issue(
+            issues,
+            `request.serialSession.operationEvidence.${key}`,
+            "must reference previously committed operation evidence",
+          );
+    }
+  } else if (
+    !["cleanup", "cancel"].includes(request.operation) &&
+    session.operationEvidence !== null
+  )
+    issue(
+      issues,
+      "request.serialSession.operationEvidence",
+      "must be null outside serial evidence collection",
     );
   if (!Array.isArray(session.saleCorrelationIds))
     issue(
@@ -988,6 +1030,7 @@ function assertSerialEvidence(report, request, issues) {
         "serialSessionId",
         "sessionBindingToken",
         "deviceMappingDigest",
+        "operationEvidence",
         "records",
         "captureChainDigest",
       ],
@@ -1007,6 +1050,15 @@ function assertSerialEvidence(report, request, issues) {
         `report.serialEvidence.${key}`,
         "must bind the requested serial session",
       );
+  if (
+    JSON.stringify(evidence.operationEvidence) !==
+    JSON.stringify(request.serialSession.operationEvidence)
+  )
+    issue(
+      issues,
+      "report.serialEvidence.operationEvidence",
+      "must retain the runner-held operation evidence references",
+    );
   if (!Array.isArray(evidence.records)) {
     issue(issues, "report.serialEvidence.records", "must be an array");
     return;
@@ -3328,6 +3380,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
                     report.serialEvidence.sessionBindingToken,
                   deviceMappingDigest:
                     report.serialEvidence.deviceMappingDigest,
+                  operationEvidence: report.serialEvidence.operationEvidence,
                   captureChainDigest: report.serialEvidence.captureChainDigest,
                   records: report.serialEvidence.records.map((record) => ({
                     role: record.role,
@@ -3720,6 +3773,7 @@ function serialSessionForRecovery(request) {
     scannerInjection: null,
     saleCorrelationIds: [...request.serialSession.saleCorrelationIds],
     saleBindings: structuredClone(request.serialSession.saleBindings),
+    operationEvidence: null,
     idempotencyCheck: false,
   };
 }
