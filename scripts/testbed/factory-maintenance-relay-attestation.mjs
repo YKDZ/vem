@@ -305,7 +305,6 @@ export function collectFactoryMaintenanceRelayAttestation(session) {
   const interfaceName = process.env.VEM_MAINTENANCE_RELAY_INTERFACE;
   if (!INTERFACE.test(String(interfaceName ?? "")))
     throw new Error("VEM_MAINTENANCE_RELAY_INTERFACE is required");
-  run("ping", ["-c", "1", "-W", "5", session.targetMachine.tunnelAddress]);
   const dump = parseDump(
     run("sudo", ["wg", "show", interfaceName, "dump"]),
     relay.publicKey,
