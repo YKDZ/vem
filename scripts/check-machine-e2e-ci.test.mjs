@@ -43,7 +43,7 @@ describe("Machine UI daemon E2E CI contract", () => {
       /machine-e2e-tests:([\s\S]*?)(?=\n  [a-z0-9-]+:|$)/,
     )?.[1];
     assert.ok(machineJob, "Machine E2E workflow job is missing");
-    assert.match(machineJob, /needs: \[changes, static\]/);
+    assert.match(machineJob, /needs: changes/);
     const install = machineJob.indexOf("pnpm install --frozen-lockfile");
     const runJob = machineJob.indexOf(
       "node tools/check-ci.mjs --job machine-e2e",
@@ -53,5 +53,53 @@ describe("Machine UI daemon E2E CI contract", () => {
       install < runJob,
       "the one Machine E2E toolchain must run after a clean dependency install",
     );
+  });
+
+  it("starts independent feedback jobs after change detection rather than Static Checks", () => {
+    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+
+    for (const jobName of [
+      "unit-tests",
+      "machine-e2e-tests",
+      "e2e-tests",
+      "admin-contract-e2e-tests",
+    ]) {
+      const job = workflow.match(
+        new RegExp(`${jobName}:([\\s\\S]*?)(?=\\n  [a-z0-9-]+:|$)`),
+      )?.[1];
+      assert.ok(job, `${jobName} workflow job is missing`);
+      assert.match(job, /needs: changes/);
+      assert.doesNotMatch(job, /static/);
+    }
+  });
+
+  it("records queue, run, and cache timing after every CI job completes", () => {
+    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+    const timingJob = workflow.match(
+      /timing-summary:([\s\S]*?)(?=\n  [a-z0-9-]+:|$)/,
+    )?.[1];
+    assert.ok(timingJob, "CI timing summary job is missing");
+    assert.match(timingJob, /name: CI Timing Summary/);
+    assert.match(timingJob, /if: always\(\)/);
+    assert.match(timingJob, /github\.rest\.actions\.listJobsForWorkflowRun/);
+    assert.match(timingJob, /queueMilliseconds/);
+    assert.match(timingJob, /runMilliseconds/);
+    assert.match(timingJob, /Cache step timing/);
+    assert.match(timingJob, /ci-timing-summary\.json/);
+    assert.match(timingJob, /actions\/upload-artifact@v4/);
+
+    for (const jobName of [
+      "changes",
+      "static",
+      "unit-tests",
+      "machine-e2e-tests",
+      "e2e-tests",
+      "admin-contract-e2e-tests",
+    ]) {
+      assert.match(timingJob, new RegExp(`- ${jobName}`));
+    }
+
+    assert.match(workflow, /actions: read/);
+    assert.match(workflow, /Setup Node\.js and restore pnpm cache/);
   });
 });

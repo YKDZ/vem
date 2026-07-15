@@ -17,6 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
@@ -73,7 +74,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - name: Setup Node.js
+      - name: Setup Node.js and restore pnpm cache
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -154,7 +155,7 @@ jobs:
 
   unit-tests:
     name: Unit Tests
-    needs: [changes, static]
+    needs: changes
     if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -164,7 +165,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - name: Setup Node.js
+      - name: Setup Node.js and restore pnpm cache
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -265,7 +266,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - name: Setup Node.js
+      - name: Setup Node.js and restore pnpm cache
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -297,7 +298,7 @@ jobs:
 
   machine-e2e-tests:
     name: Machine UI Daemon E2E
-    needs: [changes, static]
+    needs: changes
     if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -308,7 +309,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - name: Setup Node.js
+      - name: Setup Node.js and restore pnpm cache
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -365,7 +366,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - name: Setup Node.js
+      - name: Setup Node.js and restore pnpm cache
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -405,7 +406,7 @@ jobs:
 
   e2e-tests:
     name: E2E Tests
-    needs: [changes, static]
+    needs: changes
     if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -417,7 +418,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - name: Setup Node.js
+      - name: Setup Node.js and restore pnpm cache
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -458,7 +459,7 @@ jobs:
 
   admin-contract-e2e-tests:
     name: Admin Contract E2E
-    needs: [changes, static]
+    needs: changes
     if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -471,7 +472,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - name: Setup Node.js
+      - name: Setup Node.js and restore pnpm cache
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -552,7 +553,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
-      - name: Setup Node.js
+      - name: Setup Node.js and restore pnpm cache
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -602,3 +603,130 @@ jobs:
 
       - name: Test Windows OOBE registry preservation
         run: node --test scripts/check-windows-oobe-registry.test.mjs
+
+  timing-summary:
+    name: CI Timing Summary
+    needs:
+      - changes
+      - static
+      - unit-tests
+      - maintenance-relay-privileged
+      - windows-dpapi-tests
+      - windows-vision-release-installer
+      - machine-e2e-tests
+      - machine-runtime-screenshots
+      - e2e-tests
+      - admin-contract-e2e-tests
+      - rust-tests
+      - windows-service-check
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize job queue, run, and cache timing
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId,
+                per_page: 100,
+              },
+            );
+
+            const millisecondsBetween = (start, end) => {
+              if (!start || !end) return null;
+              return Date.parse(end) - Date.parse(start);
+            };
+            const formatDuration = (milliseconds) => {
+              if (milliseconds === null || milliseconds < 0) return "-";
+              const totalSeconds = Math.round(milliseconds / 1000);
+              const minutes = Math.floor(totalSeconds / 60);
+              const seconds = totalSeconds % 60;
+              return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+            };
+            const jobTimings = jobs.map((job) => ({
+              name: job.name,
+              conclusion: job.conclusion ?? job.status,
+              queueMilliseconds: millisecondsBetween(job.created_at, job.started_at),
+              runMilliseconds: millisecondsBetween(job.started_at, job.completed_at),
+              cacheSteps: (job.steps ?? [])
+                .filter((step) => /cache/i.test(step.name))
+                .map((step) => ({
+                  name: step.name,
+                  conclusion: step.conclusion ?? step.status,
+                  runMilliseconds: millisecondsBetween(step.started_at, step.completed_at),
+                })),
+            }));
+            const completedAt = jobs
+              .map((job) => job.completed_at)
+              .filter(Boolean)
+              .sort()
+              .at(-1);
+            const createdAt = jobs
+              .map((job) => job.created_at)
+              .filter(Boolean)
+              .sort()
+              .at(0);
+            const cacheSteps = jobTimings.flatMap((job) =>
+              job.cacheSteps.map((step) => ({ job: job.name, ...step })),
+            );
+
+            await core.summary
+              .addHeading("CI timing summary")
+              .addRaw(
+                `Observed workflow elapsed time: ${formatDuration(millisecondsBetween(createdAt, completedAt))}.`,
+              )
+              .addTable([
+                [
+                  { data: "Job", header: true },
+                  { data: "Conclusion", header: true },
+                  { data: "Queue", header: true },
+                  { data: "Run", header: true },
+                ],
+                ...jobTimings.map((job) => [
+                  job.name,
+                  job.conclusion,
+                  formatDuration(job.queueMilliseconds),
+                  formatDuration(job.runMilliseconds),
+                ]),
+              ])
+              .addHeading("Cache step timing")
+              .addTable([
+                [
+                  { data: "Job", header: true },
+                  { data: "Cache step", header: true },
+                  { data: "Conclusion", header: true },
+                  { data: "Run", header: true },
+                ],
+                ...cacheSteps.map((step) => [
+                  step.job,
+                  step.name,
+                  step.conclusion,
+                  formatDuration(step.runMilliseconds),
+                ]),
+              ])
+              .write();
+
+            require("node:fs").writeFileSync(
+              "ci-timing-summary.json",
+              JSON.stringify(
+                {
+                  workflowElapsedMilliseconds: millisecondsBetween(createdAt, completedAt),
+                  jobs: jobTimings,
+                },
+                null,
+                2,
+              ),
+            );
+
+      - name: Upload CI timing summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-timing-summary
+          path: ci-timing-summary.json
+          if-no-files-found: error
+          retention-days: 14
