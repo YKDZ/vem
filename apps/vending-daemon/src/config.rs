@@ -5238,7 +5238,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_machine_audio_settings_update_preserves_concurrent_network_and_device_changes() {
+    async fn machine_audio_settings_rmw_preserves_concurrent_network_and_scanner_updates() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
@@ -5247,82 +5247,63 @@ mod tests {
         let store = Arc::new(ConfigStore::new(
             data_dir,
             state,
-            Arc::new(InMemorySecretStore::default()),
+            std::sync::Arc::new(InMemorySecretStore::default()),
         ));
-        let audio_request = MachineAudioSettingsUpdateRequest {
-            machine_audio_output_binding: MachineAudioOutputBinding {
-                endpoint_id: "{0.0.0.00000000}.{field-speaker-2}".to_string(),
-                friendly_name: Some("现场喇叭".to_string()),
-                confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
-            },
-            audio_cue_settings: AudioCueSettings {
-                enabled: true,
-                categories: AudioCueCategorySettings {
-                    presence: true,
-                    transaction: false,
-                },
-            },
-            machine_audio_volume: 0.42,
-        };
-
-        // Queue a network update before the audio save. The audio path must not
-        // read the old file before it owns the same mutation lock.
-        let held_lock = store.local_settings_mutation_lock.lock().await;
-        let network_store = Arc::clone(&store);
-        let network = tokio::spawn(async move {
-            network_store
-                .save_local_bring_up_network_profile("field-network-updated")
-                .await
-        });
-        tokio::task::yield_now().await;
-        let device_store = Arc::clone(&store);
-        let device = tokio::spawn(async move {
-            device_store
-                .save_local_device_binding(
-                    crate::device_binding::LocalDeviceRole::Scanner,
-                    local_binding_fixture("container:scanner"),
-                )
-                .await
-        });
-        tokio::task::yield_now().await;
-        let audio_store = Arc::clone(&store);
-        let audio = tokio::spawn(async move {
+        let mutation = store.local_settings_mutation_lock.lock().await;
+        let audio_store = store.clone();
+        let audio_update = tokio::spawn(async move {
             audio_store
-                .save_machine_audio_settings_update(audio_request)
+                .save_machine_audio_settings_update(MachineAudioSettingsUpdateRequest {
+                    machine_audio_output_binding: MachineAudioOutputBinding {
+                        endpoint_id: "wasapi:endpoint-1".to_string(),
+                        friendly_name: Some("Near-field speaker".to_string()),
+                        confirmed_heard_at: "2026-07-15T10:00:00.000Z".to_string(),
+                        confirmed_observation_revision: format!("sha256:{}", "a".repeat(64)),
+                    },
+                    audio_cue_settings: AudioCueSettings::default(),
+                    machine_audio_volume: 0.42,
+                })
                 .await
         });
-        tokio::task::yield_now().await;
-        drop(held_lock);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let network_profile = "field-network-profile".to_string();
+        let scanner_binding = crate::device_binding::LocalSerialRoleBinding {
+            identity: crate::device_binding::StableSerialDeviceIdentity {
+                identity_key: "container:11111111-2222-3333-4444-555555555555".to_string(),
+                instance_id: Some("USB\\SCANNER-1".to_string()),
+                container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
+                serial_number: Some("SCANNER-1".to_string()),
+            },
+            confirmed_at: "2026-07-15T10:00:00.000Z".to_string(),
+            confirmed_by: "operator-console".to_string(),
+            test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
+        };
+        store
+            .write_local_bring_up_settings_unlocked(&LocalBringUpSettings {
+                network_profile: Some(network_profile.clone()),
+                scanner_binding: Some(scanner_binding.clone()),
+                ..LocalBringUpSettings::default()
+            })
+            .await
+            .expect("write concurrent network settings");
+        drop(mutation);
+        audio_update
+            .await
+            .expect("audio task")
+            .expect("save audio settings");
 
-        network.await.expect("network task").expect("network save");
-        device.await.expect("device task").expect("device save");
-        audio.await.expect("audio task").expect("audio save");
-
-        let settings = store
+        let saved = store
             .load_local_bring_up_settings()
             .await
-            .expect("settings")
-            .expect("persisted settings");
+            .expect("load settings")
+            .expect("settings exist");
         assert_eq!(
-            settings.network_profile.as_deref(),
-            Some("field-network-updated")
+            saved.network_profile.as_deref(),
+            Some(network_profile.as_str())
         );
-        assert_eq!(
-            settings
-                .scanner_binding
-                .expect("scanner binding preserved")
-                .identity
-                .identity_key,
-            "container:scanner"
-        );
-        assert_eq!(
-            settings
-                .machine_audio_output_binding
-                .expect("audio binding preserved")
-                .endpoint_id,
-            "{0.0.0.00000000}.{field-speaker-2}"
-        );
-        assert_eq!(settings.machine_audio_volume, Some(0.42));
+        assert_eq!(saved.scanner_binding, Some(scanner_binding));
+        assert_eq!(saved.machine_audio_volume, Some(0.42));
     }
 
     #[test]

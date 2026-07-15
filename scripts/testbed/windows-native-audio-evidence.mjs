@@ -20,6 +20,8 @@ export function verifyWindowsNativeAudioEvidence({
   const runtime = getRuntimeAcceptanceReport(runtimeReport);
   const kiosk = runtime?.kioskRuntime;
   const audio = adapterReport?.defaultAudioCapture;
+  const requestedAudio = adapterReport?.request?.audioCapture;
+  const selectedEndpointId = requestedAudio?.selectedEndpointId;
   if (runtime?.result?.runtimeReady?.status !== "passed")
     diagnostics.push(diagnostic("runtime_acceptance_not_ready"));
   if (adapterReport?.request?.runId !== runId)
@@ -33,10 +35,7 @@ export function verifyWindowsNativeAudioEvidence({
       adapterReport?.request?.operationReference
   )
     diagnostics.push(diagnostic("audio_capture_semantic_binding_mismatch"));
-  if (
-    audio?.nativeCue?.challenge !==
-    adapterReport?.request?.audioCapture?.nativeCue?.challenge
-  )
+  if (audio?.nativeCue?.challenge !== requestedAudio?.nativeCue?.challenge)
     diagnostics.push(diagnostic("audio_capture_challenge_mismatch"));
   if (
     !kiosk ||
@@ -53,16 +52,33 @@ export function verifyWindowsNativeAudioEvidence({
     })
   )
     diagnostics.push(diagnostic("audio_capture_session_mismatch"));
-  if (audio?.endpoint?.status !== "selected")
-    diagnostics.push(diagnostic("default_audio_endpoint_missing"));
-  if (audio?.endpoint?.identity !== adapterReport?.guest?.defaultAudioIdentity)
-    diagnostics.push(diagnostic("default_audio_endpoint_mismatch"));
   if (
-    audio?.nativeCue?.status !== "emitted" ||
-    audio.nativeCue.source !== "tauri_native_audio" ||
-    audio.nativeCue.command !== "play_machine_audio"
+    typeof selectedEndpointId !== "string" ||
+    selectedEndpointId.length === 0 ||
+    audio?.endpoint?.status !== "selected"
   )
-    diagnostics.push(diagnostic("tauri_native_audio_cue_missing"));
+    diagnostics.push(diagnostic("selected_audio_endpoint_missing"));
+  if (
+    typeof selectedEndpointId === "string" &&
+    selectedEndpointId.length > 0 &&
+    (audio?.endpoint?.stableEndpointId !== selectedEndpointId ||
+      audio?.nativeCue?.endpointId !== selectedEndpointId)
+  )
+    diagnostics.push(diagnostic("selected_audio_endpoint_mismatch"));
+  const digestPattern = /^sha256:[0-9a-f]{64}$/;
+  if (
+    requestedAudio?.nativeCue?.source !== "vending_daemon" ||
+    requestedAudio?.nativeCue?.command !== "audio_output_calibration" ||
+    audio?.nativeCue?.status !== "emitted" ||
+    audio?.nativeCue?.source !== "vending_daemon" ||
+    audio?.nativeCue?.command !== "audio_output_calibration" ||
+    typeof audio?.nativeCue?.testEvidenceToken !== "string" ||
+    audio.nativeCue.testEvidenceToken.length === 0 ||
+    !digestPattern.test(audio?.nativeCue?.observationRevision ?? "") ||
+    !digestPattern.test(audio?.nativeCue?.configRevision ?? "") ||
+    !digestPattern.test(audio?.nativeCue?.proposedSettingsDigest ?? "")
+  )
+    diagnostics.push(diagnostic("daemon_audio_calibration_evidence_missing"));
   const capture = audio?.capture;
   if (
     !capture ||
@@ -85,10 +101,15 @@ export function verifyWindowsNativeAudioEvidence({
   )
     diagnostics.push(diagnostic("default_audio_capture_not_synchronized"));
   return {
-    schemaVersion: "windows-native-audio-evidence/v1",
+    schemaVersion: "windows-native-audio-evidence/v2",
     runId,
     result: diagnostics.length === 0 ? "passed" : "failed",
-    physicalSpeakerAudibility: "not_asserted",
+    selectedEndpointId:
+      typeof selectedEndpointId === "string" && selectedEndpointId.length > 0
+        ? selectedEndpointId
+        : null,
+    automatedCaptureScope: "daemon_selected_endpoint_non_silent_pcm",
+    physicalSpeakerAudibility: "hitl_required",
     adapter: adapterReport?.adapter
       ? {
           identity: adapterReport.adapter.identity,

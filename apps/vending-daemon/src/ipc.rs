@@ -113,6 +113,7 @@ struct AudioOutputTestResponse {
     test_evidence_expires_at: String,
     observation_revision: String,
     config_revision: String,
+    proposed_settings_digest: String,
 }
 
 #[derive(Debug, Clone)]
@@ -120,7 +121,8 @@ struct AudioOutputTestEvidence {
     session_generation: String,
     endpoint_id: String,
     observation_revision: String,
-    config_revision: String,
+    effective_config_revision: String,
+    proposed_settings_digest: String,
     expires_at: Instant,
 }
 
@@ -153,7 +155,8 @@ impl AudioOutputTestEvidenceStore {
         session_generation: String,
         endpoint_id: String,
         observation_revision: String,
-        config_revision: String,
+        effective_config_revision: String,
+        proposed_settings_digest: String,
     ) -> (String, String) {
         let token = uuid::Uuid::new_v4().to_string();
         let expires_at = Instant::now() + self.ttl;
@@ -163,7 +166,8 @@ impl AudioOutputTestEvidenceStore {
                 session_generation,
                 endpoint_id,
                 observation_revision,
-                config_revision,
+                effective_config_revision,
+                proposed_settings_digest,
                 expires_at,
             },
         );
@@ -179,7 +183,8 @@ impl AudioOutputTestEvidenceStore {
         session_generation: &str,
         endpoint_id: &str,
         observation_revision: &str,
-        config_revision: &str,
+        effective_config_revision: &str,
+        proposed_settings_digest: &str,
     ) -> Result<(), (&'static str, String)> {
         let mut entries = self.entries.lock().await;
         entries.retain(|_, evidence| evidence.expires_at > Instant::now());
@@ -207,7 +212,14 @@ impl AudioOutputTestEvidenceStore {
                 "audio output observation changed after test playback; test again".to_string(),
             ));
         }
-        if evidence.config_revision != config_revision {
+        if evidence.effective_config_revision != effective_config_revision {
+            return Err((
+                "audio_output_test_evidence_effective_config_changed",
+                "effective daemon configuration changed after test playback; test again"
+                    .to_string(),
+            ));
+        }
+        if evidence.proposed_settings_digest != proposed_settings_digest {
             return Err((
                 "audio_output_test_evidence_config_changed",
                 "audio settings changed after test playback; test again".to_string(),
@@ -921,6 +933,7 @@ pub struct IpcContext {
     pub serial_device_platform: crate::device_binding::SharedSerialDevicePlatform,
     pub audio_output_platform: crate::audio_output::SharedAudioOutputPlatform,
     pub audio_output_playback: crate::audio_output::SharedAudioOutputPlayback,
+    pub(crate) audio_output_calibration_lock: Arc<Mutex<()>>,
     pub(crate) audio_output_test_evidence: Arc<AudioOutputTestEvidenceStore>,
     pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
     pub(crate) sale_binding_gate: Arc<SaleBindingOperationGate>,
@@ -2045,7 +2058,7 @@ async fn audio_output_binding_snapshot(
     .into_response()
 }
 
-fn audio_output_config_revision(
+fn audio_output_proposed_settings_digest(
     endpoint_id: &str,
     audio_cue_settings: &crate::config::AudioCueSettings,
     machine_audio_volume: f64,
@@ -2059,6 +2072,14 @@ fn audio_output_config_revision(
         "machineAudioVolume": machine_audio_volume,
     }))
     .map_err(|error| format!("serialize audio output config revision failed: {error}"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
+}
+
+fn audio_output_effective_config_revision(
+    config: &crate::config::MachinePublicConfig,
+) -> Result<String, String> {
+    let payload = serde_json::to_vec(config)
+        .map_err(|error| format!("serialize effective audio config revision failed: {error}"))?;
     Ok(format!("sha256:{:x}", Sha256::digest(payload)))
 }
 
@@ -2101,6 +2122,19 @@ async fn test_audio_output(
     {
         return response;
     }
+    let _calibration = match ctx.audio_output_calibration_lock.try_lock() {
+        Ok(lease) => lease,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "audio_output_calibration_in_progress",
+                    message: "another audio output calibration is already in progress".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
     let endpoint_id = request.endpoint_id.trim();
     if endpoint_id.is_empty() || request.machine_audio_volume <= 0.0 {
         return (
@@ -2113,6 +2147,31 @@ async fn test_audio_output(
         )
             .into_response();
     }
+    let effective_config_revision = match ctx.config_store.load_effective_public_config().await {
+        Ok(config) => match audio_output_effective_config_revision(&config) {
+            Ok(revision) => revision,
+            Err(message) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage {
+                        code: "audio_output_effective_config_revision_failed",
+                        message,
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "audio_output_config_unavailable",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
     let (_, observation_revision) = match current_audio_output_candidate(&ctx, endpoint_id) {
         Ok(value) => value,
         Err((code, message)) => {
@@ -2123,7 +2182,7 @@ async fn test_audio_output(
                 .into_response();
         }
     };
-    let config_revision = match audio_output_config_revision(
+    let proposed_settings_digest = match audio_output_proposed_settings_digest(
         endpoint_id,
         &request.audio_cue_settings,
         request.machine_audio_volume,
@@ -2169,6 +2228,35 @@ async fn test_audio_output(
                 .into_response();
         }
     };
+    let current_effective_config_revision = match ctx
+        .config_store
+        .load_effective_public_config()
+        .await
+        .and_then(|config| audio_output_effective_config_revision(&config))
+    {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "audio_output_effective_config_revision_failed",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
+    if current_effective_config_revision != effective_config_revision {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "audio_output_effective_config_changed",
+                message: "effective daemon configuration changed during calibration playback"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
     let (_, current_observation_revision) =
         match current_audio_output_candidate(&ctx, &playback_evidence.endpoint_id) {
             Ok(value) => value,
@@ -2197,14 +2285,16 @@ async fn test_audio_output(
             maintenance_session_generation(&headers).to_string(),
             endpoint_id.to_string(),
             observation_revision.clone(),
-            config_revision.clone(),
+            effective_config_revision.clone(),
+            proposed_settings_digest.clone(),
         )
         .await;
     Json(AudioOutputTestResponse {
         test_evidence_token,
         test_evidence_expires_at,
         observation_revision,
-        config_revision,
+        config_revision: effective_config_revision,
+        proposed_settings_digest,
     })
     .into_response()
 }
@@ -2237,6 +2327,45 @@ async fn confirm_audio_output(
         )
             .into_response();
     }
+    let _binding_lease = match ctx.sale_binding_gate.try_acquire_reconfigure() {
+        Ok(lease) => lease,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "audio_output_sale_start_in_progress",
+                    message: "a sale is starting; audio output binding remains unchanged"
+                        .to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match ctx.state.current_transaction_snapshot().await {
+        Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "audio_output_active_sale",
+                    message: "audio output binding cannot change during an active sale".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage {
+                    code: "audio_output_sale_state_unavailable",
+                    message: format!(
+                        "cannot prove that no sale is active; audio output binding remains unchanged: {error}"
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    }
     let endpoint_id = request.endpoint_id.trim();
     let (candidate, observation_revision) = match current_audio_output_candidate(&ctx, endpoint_id)
     {
@@ -2245,7 +2374,7 @@ async fn confirm_audio_output(
             return (StatusCode::CONFLICT, Json(ErrorMessage { code, message })).into_response();
         }
     };
-    let config_revision = match audio_output_config_revision(
+    let proposed_settings_digest = match audio_output_proposed_settings_digest(
         endpoint_id,
         &request.audio_cue_settings,
         request.machine_audio_volume,
@@ -2262,6 +2391,24 @@ async fn confirm_audio_output(
                 .into_response();
         }
     };
+    let effective_config_revision = match ctx
+        .config_store
+        .load_effective_public_config()
+        .await
+        .and_then(|config| audio_output_effective_config_revision(&config))
+    {
+        Ok(revision) => revision,
+        Err(message) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "audio_output_effective_config_revision_failed",
+                    message,
+                }),
+            )
+                .into_response();
+        }
+    };
     if let Err((code, message)) = ctx
         .audio_output_test_evidence
         .consume(
@@ -2269,7 +2416,8 @@ async fn confirm_audio_output(
             maintenance_session_generation(&headers),
             endpoint_id,
             &observation_revision,
-            &config_revision,
+            &effective_config_revision,
+            &proposed_settings_digest,
         )
         .await
     {
@@ -6828,6 +6976,44 @@ mod tests {
             })
         }
     }
+
+    #[derive(Debug, Default)]
+    struct BlockingFirstAudioOutputPlayback {
+        calls: AtomicUsize,
+        released: (std::sync::Mutex<bool>, std::sync::Condvar),
+    }
+
+    impl BlockingFirstAudioOutputPlayback {
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::Acquire)
+        }
+
+        fn release(&self) {
+            let (released, condition) = &self.released;
+            *released.lock().expect("calibration release") = true;
+            condition.notify_all();
+        }
+    }
+
+    impl crate::audio_output::AudioOutputPlayback for BlockingFirstAudioOutputPlayback {
+        fn play_calibration(
+            &self,
+            endpoint_id: &str,
+            _volume: f32,
+        ) -> Result<crate::audio_output::NativeAudioPlaybackEvidence, String> {
+            if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                let (released, condition) = &self.released;
+                let mut released = released.lock().expect("calibration release");
+                while !*released {
+                    released = condition.wait(released).expect("calibration release wait");
+                }
+            }
+            Ok(crate::audio_output::NativeAudioPlaybackEvidence {
+                endpoint_id: endpoint_id.to_string(),
+                source_non_silent: true,
+            })
+        }
+    }
     use crate::{
         config::{
             default_public_config, FactoryProfile, FactoryRuntimeManifest,
@@ -7457,6 +7643,7 @@ mod tests {
             audio_output_playback: Arc::new(
                 crate::audio_output::WindowsAudioOutputPlayback::default(),
             ),
+            audio_output_calibration_lock: Arc::new(Mutex::new(())),
             audio_output_test_evidence: Arc::new(AudioOutputTestEvidenceStore::default()),
             device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
             sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
@@ -9758,6 +9945,143 @@ mod tests {
         assert!(body.get("testEvidenceToken").is_none());
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_output_calibration_is_single_flight_across_different_endpoints() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-a".to_string(),
+                friendly_name: "Speaker A".to_string(),
+                is_default: true,
+            },
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-b".to_string(),
+                friendly_name: "Speaker B".to_string(),
+                is_default: false,
+            },
+        ]));
+        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
+        ctx.audio_output_playback = playback.clone();
+        let app = build_router(ctx);
+        let request = |endpoint_id: &str| {
+            json!({
+                "endpointId": endpoint_id,
+                "audioCueSettings": {
+                    "enabled": true,
+                    "categories": { "presence": true, "transaction": true }
+                },
+                "machineAudioVolume": 0.42
+            })
+        };
+        let first_app = app.clone();
+        let first = tokio::spawn(async move {
+            post_json_with_maintenance(
+                &first_app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                request("endpoint-a"),
+            )
+            .await
+        });
+        while playback.call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let competing = tokio::time::timeout(
+            Duration::from_secs(1),
+            post_json_with_maintenance(
+                &app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                request("endpoint-b"),
+            ),
+        )
+        .await
+        .expect("competing calibration response");
+        playback.release();
+        let first = first.await.expect("first calibration task");
+
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(competing.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(competing.into_body(), usize::MAX)
+            .await
+            .expect("competing response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_calibration_in_progress");
+        assert!(body.get("testEvidenceToken").is_none());
+        assert_eq!(playback.call_count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_output_test_does_not_sign_when_effective_config_changes_during_playback() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
+        ctx.audio_output_playback = playback.clone();
+        let config_store = ctx.config_store.clone();
+        let app = build_router(ctx);
+        let request_app = app.clone();
+        let request = tokio::spawn(async move {
+            post_json_with_maintenance(
+                &request_app,
+                "/v1/audio-output-binding/test",
+                "token-1",
+                json!({
+                    "endpointId": "endpoint-speaker",
+                    "audioCueSettings": {
+                        "enabled": true,
+                        "categories": { "presence": true, "transaction": true }
+                    },
+                    "machineAudioVolume": 0.42
+                }),
+            )
+            .await
+        });
+        while playback.call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let mut config = config_store
+            .load_effective_public_config()
+            .await
+            .expect("load effective config");
+        config.machine_audio_volume = 0.55;
+        config_store
+            .save_public_config(config)
+            .await
+            .expect("change effective config during playback");
+        playback.release();
+        let response = request.await.expect("calibration request");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_effective_config_changed");
+        assert!(body.get("testEvidenceToken").is_none());
+    }
+
     #[tokio::test]
     async fn audio_output_confirmation_requires_one_native_test_and_explicit_human_hearing() {
         let temp_dir = tempdir().expect("tmp");
@@ -9974,7 +10298,7 @@ mod tests {
 
     #[tokio::test]
     async fn audio_output_confirmation_rejects_observation_and_config_changes_after_test() {
-        for changed in ["observation", "config"] {
+        for changed in ["observation", "proposed_config", "effective_config"] {
             let temp_dir = tempdir().expect("tmp");
             let mut ctx = test_ipc_context(
                 temp_dir.path(),
@@ -9993,6 +10317,7 @@ mod tests {
             ctx.audio_output_platform = platform.clone();
             ctx.audio_output_playback =
                 Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+            let config_store = ctx.config_store.clone();
             let app = build_router(ctx);
             let settings = json!({
                 "audioCueSettings": {
@@ -10025,6 +10350,17 @@ mod tests {
                     is_default: false,
                 }]);
             }
+            if changed == "effective_config" {
+                let mut current = config_store
+                    .load_effective_public_config()
+                    .await
+                    .expect("load effective config");
+                current.machine_audio_volume = 0.55;
+                config_store
+                    .save_public_config(current)
+                    .await
+                    .expect("change effective config");
+            }
             let confirmed = post_json_with_maintenance(
                 &app,
                 "/v1/audio-output-binding/confirm",
@@ -10034,7 +10370,7 @@ mod tests {
                     "testEvidenceToken": tested["testEvidenceToken"].clone(),
                     "heard": true,
                     "audioCueSettings": settings["audioCueSettings"].clone(),
-                    "machineAudioVolume": if changed == "config" { 0.43 } else { 0.42 }
+                    "machineAudioVolume": if changed == "proposed_config" { 0.43 } else { 0.42 }
                 }),
             )
             .await;
@@ -10046,13 +10382,187 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
             assert_eq!(
                 body["code"],
-                if changed == "observation" {
-                    "audio_output_test_evidence_observation_changed"
-                } else {
-                    "audio_output_test_evidence_config_changed"
+                match changed {
+                    "observation" => "audio_output_test_evidence_observation_changed",
+                    "proposed_config" => "audio_output_test_evidence_config_changed",
+                    "effective_config" => {
+                        "audio_output_test_evidence_effective_config_changed"
+                    }
+                    _ => unreachable!(),
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn audio_output_confirmation_does_not_change_binding_during_an_active_sale() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        ctx.audio_output_playback =
+            Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+        let state = ctx.state.clone();
+        let config_store = ctx.config_store.clone();
+        let app = build_router(ctx);
+        let settings = json!({
+            "audioCueSettings": {
+                "enabled": true,
+                "categories": { "presence": true, "transaction": false }
+            },
+            "machineAudioVolume": 0.42
+        });
+        let tested = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "audioCueSettings": settings["audioCueSettings"].clone(),
+                "machineAudioVolume": settings["machineAudioVolume"].clone()
+            }),
+        )
+        .await;
+        assert_eq!(tested.status(), StatusCode::OK);
+        let body = body::to_bytes(tested.into_body(), usize::MAX)
+            .await
+            .expect("test response body");
+        let tested: serde_json::Value = serde_json::from_slice(&body).expect("test response json");
+        state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-ACTIVE-AUDIO",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "paid",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed active sale");
+
+        let confirmed = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            json!({
+                "endpointId": "endpoint-speaker",
+                "testEvidenceToken": tested["testEvidenceToken"].clone(),
+                "heard": true,
+                "audioCueSettings": settings["audioCueSettings"].clone(),
+                "machineAudioVolume": settings["machineAudioVolume"].clone()
+            }),
+        )
+        .await;
+
+        assert_eq!(confirmed.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(confirmed.into_body(), usize::MAX)
+            .await
+            .expect("confirm response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_active_sale");
+        let config = config_store
+            .load_effective_public_config()
+            .await
+            .expect("effective config");
+        assert!(config.machine_audio_output_binding.is_none());
+    }
+
+    #[tokio::test]
+    async fn audio_output_confirmation_loses_a_race_to_sale_start_without_consuming_evidence() {
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
+            crate::audio_output::AudioOutputObservation {
+                endpoint_id: "endpoint-speaker".to_string(),
+                friendly_name: "Near-field speaker".to_string(),
+                is_default: true,
+            },
+        ]));
+        ctx.audio_output_playback =
+            Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
+        let sale_binding_gate = ctx.sale_binding_gate.clone();
+        let config_store = ctx.config_store.clone();
+        let app = build_router(ctx);
+        let request = json!({
+            "endpointId": "endpoint-speaker",
+            "audioCueSettings": {
+                "enabled": true,
+                "categories": { "presence": true, "transaction": false }
+            },
+            "machineAudioVolume": 0.42
+        });
+        let tested = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/test",
+            "token-1",
+            request.clone(),
+        )
+        .await;
+        let body = body::to_bytes(tested.into_body(), usize::MAX)
+            .await
+            .expect("test response body");
+        let tested: serde_json::Value = serde_json::from_slice(&body).expect("test response json");
+        let sale_start = sale_binding_gate
+            .try_acquire_sale_start()
+            .expect("sale start lease");
+        let confirmation = json!({
+            "endpointId": request["endpointId"].clone(),
+            "testEvidenceToken": tested["testEvidenceToken"].clone(),
+            "heard": true,
+            "audioCueSettings": request["audioCueSettings"].clone(),
+            "machineAudioVolume": request["machineAudioVolume"].clone()
+        });
+
+        let blocked = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            confirmation.clone(),
+        )
+        .await;
+        assert_eq!(blocked.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(blocked.into_body(), usize::MAX)
+            .await
+            .expect("blocked response body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(body["code"], "audio_output_sale_start_in_progress");
+        assert!(config_store
+            .load_effective_public_config()
+            .await
+            .expect("effective config")
+            .machine_audio_output_binding
+            .is_none());
+
+        drop(sale_start);
+        let retried = post_json_with_maintenance(
+            &app,
+            "/v1/audio-output-binding/confirm",
+            "token-1",
+            confirmation,
+        )
+        .await;
+        assert_eq!(retried.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -10064,7 +10574,14 @@ mod tests {
                 "observation",
                 "audio_output_test_evidence_observation_changed",
             ),
-            ("config", "audio_output_test_evidence_config_changed"),
+            (
+                "effective_config",
+                "audio_output_test_evidence_effective_config_changed",
+            ),
+            (
+                "proposed_config",
+                "audio_output_test_evidence_config_changed",
+            ),
         ] {
             let store = AudioOutputTestEvidenceStore::default();
             let (token, _) = store
@@ -10072,7 +10589,8 @@ mod tests {
                     "session-a".to_string(),
                     "endpoint-a".to_string(),
                     "observation-a".to_string(),
-                    "config-a".to_string(),
+                    "effective-config-a".to_string(),
+                    "proposed-config-a".to_string(),
                 )
                 .await;
             let result = store
@@ -10093,10 +10611,15 @@ mod tests {
                     } else {
                         "observation-a"
                     },
-                    if changed == "config" {
-                        "config-b"
+                    if changed == "effective_config" {
+                        "effective-config-b"
                     } else {
-                        "config-a"
+                        "effective-config-a"
+                    },
+                    if changed == "proposed_config" {
+                        "proposed-config-b"
+                    } else {
+                        "proposed-config-a"
                     },
                 )
                 .await
@@ -10110,7 +10633,8 @@ mod tests {
                 "session-a".to_string(),
                 "endpoint-a".to_string(),
                 "observation-a".to_string(),
-                "config-a".to_string(),
+                "effective-config-a".to_string(),
+                "proposed-config-a".to_string(),
             )
             .await;
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -10120,7 +10644,8 @@ mod tests {
                 "session-a",
                 "endpoint-a",
                 "observation-a",
-                "config-a",
+                "effective-config-a",
+                "proposed-config-a",
             )
             .await
             .expect_err("expired evidence must fail closed");

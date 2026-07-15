@@ -305,6 +305,7 @@ export const daemonIpcAudioOutputTestResponseSchema = z
     testEvidenceExpiresAt: z.iso.datetime({ offset: true }),
     observationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     configRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    proposedSettingsDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
   .strict();
 
