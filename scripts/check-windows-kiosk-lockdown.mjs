@@ -541,6 +541,24 @@ addCheck(
 );
 
 addCheck(
+  "kiosk-verifier-proves-wireguard-scoped-certificate-only-ssh",
+  verifier.includes("MaintenanceWireGuardInterfaceAlias") &&
+    verifier.includes("MaintenanceWireGuardListenAddress") &&
+    verifier.includes("Get-WireGuardListenAddressEvidence") &&
+    verifier.includes("Get-ControlledMaintenanceIngressSshdState") &&
+    verifier.includes("trustedusercakeys") &&
+    verifier.includes("pubkeyauthentication") &&
+    verifier.includes("passwordauthentication") &&
+    verifier.includes("kbdinteractiveauthentication") &&
+    verifier.includes("authorizedkeysfile") &&
+    verifier.includes("wireGuardListenAddressEvidence") &&
+    verifier.includes("sshdEffectiveConfig") &&
+    verifier.includes("wireGuardInterfaceAlias") &&
+    verifier.includes("wireGuardListenAddress"),
+  `${verifierPath} should require a declared WireGuard listener/interface and record effective CA certificate-only sshd policy evidence`,
+);
+
+addCheck(
   "verifier-requires-default-maintenance-debug-task-disabled",
   verifier.includes("[switch]$MaintenanceDebugTaskExpected") &&
     verifier.includes(

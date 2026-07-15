@@ -1566,6 +1566,32 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("requires the discovered maintenance endpoint to be a concrete SSH tunnel address", () => {
+    const request = createVmHostAdapterRequest(requestFor());
+    const report = reportFor(request);
+
+    for (const host of [
+      "guest.testbed.internal",
+      "0.0.0.0",
+      "127.0.0.1",
+      "::",
+    ]) {
+      const invalid = structuredClone(report);
+      invalid.guest.maintenanceEndpoint.host = host;
+      assert.throws(
+        () => validateVmHostAdapterReport(invalid, request),
+        /maintenanceEndpoint\.host must be a concrete WireGuard tunnel IP address/,
+      );
+    }
+
+    const wrongPort = structuredClone(report);
+    wrongPort.guest.maintenanceEndpoint.port = 2222;
+    assert.throws(
+      () => validateVmHostAdapterReport(wrongPort, request),
+      /maintenanceEndpoint\.port must be the SSH port 22/,
+    );
+  });
+
   it("allows cleanup to attest removal after its guest endpoint is gone", () => {
     const request = createVmHostAdapterRequest(requestFor("cleanup"));
     const report = reportFor(request, {

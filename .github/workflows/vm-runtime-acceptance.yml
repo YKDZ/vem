@@ -509,6 +509,79 @@ jobs:
           printf 'VM_RUNTIME_SSH_KNOWN_HOSTS_PATH=%s\n' "$known_hosts_path" >> "$GITHUB_ENV"
           printf 'VM_RUNTIME_SSH_HOST_KEY_ALIAS=%s\n' "$host_key_alias" >> "$GITHUB_ENV"
 
+      - name: Prove Relay WireGuard SSH Data Plane
+        run: |
+          set -euo pipefail
+          artifact_dir="artifacts/vm-runtime-acceptance/${RUN_ID}"
+          mkdir -p "$artifact_dir"
+          endpoint_host="$(node -e 'process.stdout.write(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).host)')"
+          endpoint_port="$(node -e 'process.stdout.write(String(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).port))')"
+          route_json="$(ip -j route get "$endpoint_host" from "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP")"
+          node - "$route_json" <<'NODE'
+          const routes = JSON.parse(process.argv[2]);
+          const route = routes[0];
+          if (
+            !route ||
+            route.dev !== process.env.VEM_MAINTENANCE_RELAY_INTERFACE
+          ) {
+            throw new Error("Relay WireGuard SSH data-plane route is not bound to the declared interface and source address");
+          }
+          NODE
+          ssh_common=(
+            -b "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP"
+            -p "$endpoint_port"
+            -i "$MAINTENANCE_SSH_DIR/id_ed25519"
+            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
+            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH"
+            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS"
+            -o StrictHostKeyChecking=accept-new
+            -o IdentitiesOnly=yes
+            -o IdentityAgent=none
+            -o BatchMode=yes
+            -o PasswordAuthentication=no
+            -o KbdInteractiveAuthentication=no
+            -o PreferredAuthentications=publickey
+            -o ProxyCommand=none
+          )
+          target="${WINDOWS_SSH_USER}@${endpoint_host}"
+          proof_started_at="$(date +%s)"
+          ssh "${ssh_common[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -Command \"whoami | Out-Null\"" >/dev/null
+          handshake_observed=false
+          for attempt in $(seq 1 15); do
+            handshakes="$(sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" latest-handshakes)"
+            if node - "$handshakes" "$proof_started_at" <<'NODE'
+          const [lines, startedAt] = process.argv.slice(2);
+          const timestamps = lines
+            .trim()
+            .split(/\r?\n/)
+            .map((line) => Number(line.trim().split(/\s+/).at(-1)))
+            .filter(Number.isInteger);
+          if (!timestamps.some((timestamp) => timestamp >= Number(startedAt) - 5)) {
+            process.exit(1);
+          }
+          NODE
+            then
+              handshake_observed=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$handshake_observed" != true ]; then
+            echo "Relay WireGuard SSH data-plane proof failed: no fresh Relay handshake after certificate SSH." >&2
+            exit 1
+          fi
+          node - "$artifact_dir/wireguard-ssh-data-plane.json" <<'NODE'
+          const fs = require("node:fs");
+          fs.writeFileSync(process.argv[2], `${JSON.stringify({
+            schemaVersion: "vem-wireguard-ssh-data-plane/v1",
+            interface: process.env.VEM_MAINTENANCE_RELAY_INTERFACE,
+            sourceAddress: process.env.VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP,
+            routeBoundToWireGuard: true,
+            certificateSshAuthenticated: true,
+            freshRelayHandshakeObserved: true,
+          })}\n`, { mode: 0o600 });
+          NODE
+
       - name: Prepare Protected Simulated Scanner Code
         shell: bash
         run: |

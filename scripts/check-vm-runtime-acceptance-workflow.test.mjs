@@ -92,13 +92,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.doesNotMatch(serviceApi, /\n\s+PORT:\s+"26849"/);
   });
 
-  it("starts runner WireGuard before a platform-neutral adapter request and consumes only its discovered guest endpoint", () => {
+  it("proves certificate SSH uses the Relay-established WireGuard data plane before consuming the discovered guest endpoint", () => {
     const workflow = readWorkflow();
 
     for (const requiredText of [
       "VEM_MAINTENANCE_RELAY_INTERFACE",
       "VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP",
       "Start Runner Maintenance Relay WireGuard Peer",
+      "Prove Relay WireGuard SSH Data Plane",
       "command -v wg-quick",
       "sudo wg-quick up",
       "root-owned runner WireGuard config",
@@ -157,6 +158,27 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       endpoint,
       /VM_GUEST_MAINTENANCE_ENDPOINT_JSON=\$\{JSON\.stringify\(endpoint\)\}/,
     );
+
+    const relayDataPlane = stepBlock(
+      workflow,
+      "Prove Relay WireGuard SSH Data Plane",
+    );
+    assert.match(relayDataPlane, /ip -j route get/);
+    assert.match(
+      relayDataPlane,
+      /route\.dev !== process\.env\.VEM_MAINTENANCE_RELAY_INTERFACE/,
+    );
+    assert.match(relayDataPlane, /-b "\$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP"/);
+    assert.match(
+      relayDataPlane,
+      /CertificateFile=\$MAINTENANCE_SSH_DIR\/id_ed25519-cert\.pub/,
+    );
+    assert.match(
+      relayDataPlane,
+      /sudo wg show "\$VEM_MAINTENANCE_RELAY_INTERFACE" latest-handshakes/,
+    );
+    assert.match(relayDataPlane, /Relay WireGuard SSH data-plane proof failed/);
+    assert.match(relayDataPlane, /wireguard-ssh-data-plane\.json/);
 
     const sshTrust = stepBlock(
       workflow,

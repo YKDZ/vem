@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { inspectExportedDefaultAudioCapture } from "./default-audio-evidence.mjs";
@@ -2075,20 +2076,25 @@ function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
     return;
   if (endpoint.protocol !== "ssh")
     issue(issues, `${path}.protocol`, "must be ssh");
+  const addressFamily =
+    typeof endpoint.host === "string" ? isIP(endpoint.host) : 0;
+  const unspecifiedOrLoopback =
+    endpoint.host === "0.0.0.0" ||
+    endpoint.host === "::" ||
+    endpoint.host === "127.0.0.1" ||
+    endpoint.host === "::1";
   if (
-    typeof endpoint.host !== "string" ||
-    endpoint.host.length === 0 ||
-    endpoint.host.length > 253 ||
-    /[\\/\s]/.test(endpoint.host)
+    endpoint.reachability !== "unavailable" &&
+    (addressFamily === 0 || unspecifiedOrLoopback)
   )
-    issue(issues, `${path}.host`, "must be a discovered SSH host");
+    issue(
+      issues,
+      `${path}.host`,
+      "must be a concrete WireGuard tunnel IP address",
+    );
   else assertNoHostReference(endpoint.host, `${path}.host`, issues);
-  if (
-    !Number.isInteger(endpoint.port) ||
-    endpoint.port < 1 ||
-    endpoint.port > 65535
-  )
-    issue(issues, `${path}.port`, "must be a valid TCP port");
+  if (endpoint.port !== 22)
+    issue(issues, `${path}.port`, "must be the SSH port 22");
   if (
     !new Set(["discovered", "authenticated", "unavailable"]).has(
       endpoint.reachability,
