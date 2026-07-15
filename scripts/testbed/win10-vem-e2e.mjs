@@ -2512,6 +2512,100 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       saleFlowReport,
     ],
   );
+  const failureMatrixArtifacts = {
+    "malformed-frame": {
+      report: `${evidenceRoot}/failure-matrix/malformed-frame/serial-conformance-failure.json`,
+    },
+    "device-disconnected": {
+      report: `${evidenceRoot}/failure-matrix/device-disconnected/serial-conformance-failure.json`,
+    },
+    "swapped-roles": {
+      report: `${evidenceRoot}/failure-matrix/swapped-roles/serial-conformance-failure.json`,
+      salePrepare: `${evidenceRoot}/failure-matrix/swapped-roles/sale-prepare-response.json`,
+      runtimeRecovery: `${evidenceRoot}/failure-matrix/swapped-roles/runtime-recovery-response.json`,
+    },
+    "missing-device": {
+      report: `${evidenceRoot}/failure-matrix/missing-device/serial-conformance-failure.json`,
+      salePrepare: `${evidenceRoot}/failure-matrix/missing-device/sale-prepare-response.json`,
+      runtimeRecovery: `${evidenceRoot}/failure-matrix/missing-device/runtime-recovery-response.json`,
+    },
+    "scanner-timeout": {
+      report: `${evidenceRoot}/failure-matrix/scanner-timeout/serial-conformance-failure.json`,
+      salePrepare: `${evidenceRoot}/failure-matrix/scanner-timeout/sale-prepare-response.json`,
+    },
+    "dispense-failed": {
+      report: `${evidenceRoot}/failure-matrix/dispense-failed/serial-conformance-failure.json`,
+      saleComplete: `${evidenceRoot}/failure-matrix/dispense-failed/sale-complete-response.json`,
+    },
+  };
+  const failureMatrixCommands = {
+    "swapped-roles": {
+      salePrepareCommand: buildAcceptanceScriptCommand(
+        "simulated-hardware-sale-flow",
+        { ...options, runId, machineCode, platformTarget },
+        [
+          "--ephemeral-platform-evidence",
+          ephemeralPlatformEvidence,
+          "--sale-phase",
+          "prepare",
+          "--out",
+          failureMatrixArtifacts["swapped-roles"].salePrepare,
+        ],
+      ),
+      runtimeRecoveryCommand: buildAcceptanceScriptCommand(
+        "runtime-acceptance",
+        { ...options, runId, machineCode, platformTarget },
+        ["--out", failureMatrixArtifacts["swapped-roles"].runtimeRecovery],
+      ),
+    },
+    "missing-device": {
+      salePrepareCommand: buildAcceptanceScriptCommand(
+        "simulated-hardware-sale-flow",
+        { ...options, runId, machineCode, platformTarget },
+        [
+          "--ephemeral-platform-evidence",
+          ephemeralPlatformEvidence,
+          "--sale-phase",
+          "prepare",
+          "--out",
+          failureMatrixArtifacts["missing-device"].salePrepare,
+        ],
+      ),
+      runtimeRecoveryCommand: buildAcceptanceScriptCommand(
+        "runtime-acceptance",
+        { ...options, runId, machineCode, platformTarget },
+        ["--out", failureMatrixArtifacts["missing-device"].runtimeRecovery],
+      ),
+    },
+    "scanner-timeout": {
+      salePrepareCommand: buildAcceptanceScriptCommand(
+        "simulated-hardware-sale-flow",
+        { ...options, runId, machineCode, platformTarget },
+        [
+          "--ephemeral-platform-evidence",
+          ephemeralPlatformEvidence,
+          "--sale-phase",
+          "prepare",
+          "--out",
+          failureMatrixArtifacts["scanner-timeout"].salePrepare,
+        ],
+      ),
+    },
+    "dispense-failed": {
+      saleCompleteCommand: buildAcceptanceScriptCommand(
+        "simulated-hardware-sale-flow",
+        { ...options, runId, machineCode, platformTarget },
+        [
+          "--ephemeral-platform-evidence",
+          ephemeralPlatformEvidence,
+          "--sale-phase",
+          "complete",
+          "--out",
+          failureMatrixArtifacts["dispense-failed"].saleComplete,
+        ],
+      ),
+    },
+  };
   const saleCorrelationId = `sale-correlation://vm-runtime-${runId.toLowerCase()}`;
   const saleFlowCommand = [
     process.execPath,
@@ -2546,6 +2640,10 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     JSON.stringify(saleCompleteCommand),
     "--runtime-recovery-command-json",
     JSON.stringify(runtimeCommand),
+    "--failure-matrix-commands-json",
+    JSON.stringify(failureMatrixCommands),
+    "--failure-matrix-artifact-paths-json",
+    JSON.stringify(failureMatrixArtifacts),
     "--out",
     serialConformanceReport,
   ];
@@ -2599,6 +2697,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       runtimeAcceptance: runtimeAcceptanceReport,
       simulatedHardwareSaleFlow: saleFlowReport,
       serialConformance: serialConformanceReport,
+      failureMatrix: failureMatrixArtifacts,
     },
     serialRunnerExpectedPublicKey:
       options.expectedSerialRunnerPublicKey ?? null,
@@ -3475,15 +3574,62 @@ export function evaluateSimulatedHardwareSerialEvidence({
       const failure = failureByMode.get(failureMode);
       const recoveryRequired =
         failureMode === "swapped-roles" || failureMode === "missing-device";
+      const expectedOperation =
+        failureMode === "scanner-timeout"
+          ? "inject-scanner-code"
+          : failureMode === "swapped-roles" || failureMode === "missing-device"
+            ? "prepare-sale-with-faulted-mapping"
+            : "collect-serial-evidence";
+      const sourceSale =
+        failure?.source?.fault?.request?.serialSession?.saleBindings;
+      const hasCompletedSaleBinding =
+        Array.isArray(sourceSale) &&
+        sourceSale.length === 1 &&
+        sourceSale[0]?.orderId === sale?.orderId &&
+        sourceSale[0]?.paymentId === sale?.paymentId &&
+        sourceSale[0]?.vendingCommandId === sale?.vendingCommandId;
+      const hasFailureSaleBinding =
+        Array.isArray(sourceSale) &&
+        sourceSale.length === 1 &&
+        sourceSale[0]?.orderId === failure?.orderId &&
+        sourceSale[0]?.paymentId === failure?.paymentId &&
+        (failureMode === "scanner-timeout"
+          ? !Object.hasOwn(failure ?? {}, "vendingCommandId")
+          : sourceSale[0]?.vendingCommandId ===
+            (failure?.vendingCommandId ?? null));
+      const hasMappingRecoveryEvidence =
+        failure?.source?.start?.request?.operation === "start-serial-session" &&
+        ["start-serial-session", "collect-serial-evidence"].includes(
+          failure?.source?.fault?.request?.operation,
+        ) &&
+        failure?.daemonFailClosed?.commandExitStatus > 0 &&
+        failure?.daemonFailClosed?.simulatedHardwareReady === "failed" &&
+        failure?.daemonFailClosed?.daemonHealthObserved === true &&
+        failure?.daemonFailClosed?.hardwareOnline === false &&
+        failure?.daemonFailClosed?.readyzObserved === true &&
+        failure?.daemonFailClosed?.saleBindingCreated === false &&
+        Array.isArray(failure?.daemonFailClosed?.readinessBlockingCodes) &&
+        failure.daemonFailClosed.readinessBlockingCodes.length === 1 &&
+        failure.daemonFailClosed.readinessBlockingCodes[0] ===
+          "LOWER_CONTROLLER_UNAVAILABLE";
       return (
         failure?.result === "observed_failure" &&
         failure?.adapterResult === "succeeded" &&
+        failure?.operation === expectedOperation &&
         failure?.diagnosticCode === diagnosticCode &&
-        (!recoveryRequired ||
-          (failure?.recovery?.runtimeReady === "passed" &&
+        (recoveryRequired
+          ? hasMappingRecoveryEvidence &&
+            failure?.recovery?.runtimeReady === "passed" &&
             failure?.recovery?.hardwareOnline === true &&
             failure?.recovery?.scannerOnline === true &&
-            failure?.recovery?.ready === true))
+            failure?.recovery?.ready === true
+          : failureMode === "malformed-frame" ||
+              failureMode === "device-disconnected"
+            ? hasCompletedSaleBinding &&
+              failure?.orderId === sale?.orderId &&
+              failure?.paymentId === sale?.paymentId &&
+              failure?.vendingCommandId === sale?.vendingCommandId
+            : hasFailureSaleBinding)
       );
     });
   if (

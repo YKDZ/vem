@@ -17,7 +17,6 @@ import { describe, it } from "node:test";
 
 import {
   deriveSerialConformanceReportDigest,
-  isolatedCommandOutput,
   validateSerialConformanceReport,
 } from "./vm-host-adapter-serial-conformance.mjs";
 import {
@@ -497,13 +496,6 @@ describe("transient SSH operation retry", () => {
 });
 
 describe("simulated hardware serial acceptance evidence", () => {
-  it("isolates failed-dispense output from the successful sale report", () => {
-    assert.deepEqual(
-      isolatedCommandOutput(["node", "sale.mjs", "--out", "success.json"]),
-      ["node", "sale.mjs", "--out", "success.json.dispense-failed"],
-    );
-  });
-
   it("binds the completed sale to real Windows COM mappings and guest frames", () => {
     const evidence = evaluateSimulatedHardwareSerialEvidence(
       completedSerialSaleEvidence(),
@@ -784,6 +776,32 @@ describe("simulated hardware serial acceptance evidence", () => {
       );
     });
   }
+
+  it("rejects a runner-signed report with incomplete mapping recovery semantics", () => {
+    const input = completedSerialSaleEvidence();
+    const mappingFailure = input.serialConformance.failureMatrix.find(
+      (entry) => entry.failureMode === "missing-device",
+    );
+    delete mappingFailure.daemonFailClosed.saleBindingCreated;
+    resignSerialConformance(input.serialConformance);
+
+    assert.throws(
+      () =>
+        validateSerialConformanceReport(input.serialConformance, {
+          expectedRunnerPublicKey: input.expectedRunnerPublicKey,
+          expectedAdapterIdentity: input.expectedAdapterIdentity,
+        }),
+      /mapping failure is not fail-closed and recovered/,
+    );
+
+    const evidence = evaluateSimulatedHardwareSerialEvidence(input);
+    assert.equal(evidence.status, "failed");
+    assert.ok(
+      evidence.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_conformance_report_invalid",
+      ),
+    );
+  });
 });
 
 describe("factory acceptance cancellation cleanup", () => {
@@ -4689,6 +4707,67 @@ try {
       commandArg(saleStep.command, "--expected-runner-public-key"),
       "expected-serial-runner-public-key-required",
     );
+    const failureArtifacts = plan.artifacts.failureMatrix;
+    const failureCommands = JSON.parse(
+      commandArg(saleStep.command, "--failure-matrix-commands-json"),
+    );
+    assert.deepEqual(
+      JSON.parse(
+        commandArg(saleStep.command, "--failure-matrix-artifact-paths-json"),
+      ),
+      failureArtifacts,
+    );
+    const failureReports = Object.values(failureArtifacts).map(
+      (artifact) => artifact.report,
+    );
+    assert.equal(new Set(failureReports).size, 6);
+    assert.equal(
+      commandArg(
+        failureCommands["dispense-failed"].saleCompleteCommand,
+        "--out",
+      ),
+      failureArtifacts["dispense-failed"].saleComplete,
+    );
+    for (const failureMode of [
+      "swapped-roles",
+      "missing-device",
+      "scanner-timeout",
+    ])
+      assert.equal(
+        commandArg(failureCommands[failureMode].salePrepareCommand, "--out"),
+        failureArtifacts[failureMode].salePrepare,
+      );
+    for (const failureMode of ["swapped-roles", "missing-device"])
+      assert.equal(
+        commandArg(
+          failureCommands[failureMode].runtimeRecoveryCommand,
+          "--out",
+        ),
+        failureArtifacts[failureMode].runtimeRecovery,
+      );
+    assert.equal(
+      new Set([
+        ...failureReports,
+        ...Object.values(failureCommands).flatMap((commands) =>
+          Object.values(commands).map((command) =>
+            commandArg(command, "--out"),
+          ),
+        ),
+        commandArg(
+          JSON.parse(
+            commandArg(saleStep.command, "--sale-prepare-command-json"),
+          ),
+          "--out",
+        ),
+        commandArg(
+          JSON.parse(
+            commandArg(saleStep.command, "--sale-complete-command-json"),
+          ),
+          "--out",
+        ),
+      ]).size,
+      14,
+    );
 
     assert.throws(
       () =>
@@ -4871,6 +4950,21 @@ try {
       );
       assert.equal(
         commandArg(childCommand, "--ssh-host-key-alias"),
+        "vem-runtime-run-183",
+      );
+    }
+    for (const command of Object.values(
+      JSON.parse(
+        commandArg(saleStep.command, "--failure-matrix-commands-json"),
+      ),
+    ).flatMap((commands) => Object.values(commands))) {
+      assert.equal(commandArg(command, "--ssh-port"), "22022");
+      assert.equal(
+        commandArg(command, "--ssh-known-hosts-path"),
+        "/tmp/vem-runtime-known-hosts",
+      );
+      assert.equal(
+        commandArg(command, "--ssh-host-key-alias"),
         "vem-runtime-run-183",
       );
     }

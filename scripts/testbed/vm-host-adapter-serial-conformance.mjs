@@ -510,10 +510,12 @@ function validateFailureMatrix(
 
   for (const failureMode of ["malformed-frame", "device-disconnected"]) {
     const entry = byMode.get(failureMode);
+    const sourceSale = entry.source.fault.request.serialSession.saleBindings;
     assertConformance(
       entry.orderId === completedSale.orderId &&
         entry.paymentId === completedSale.paymentId &&
-        entry.vendingCommandId === completedSale.vendingCommandId,
+        entry.vendingCommandId === completedSale.vendingCommandId &&
+        sameJson(sourceSale, [completedSale]),
       `serial conformance ${failureMode} must bind the completed sale`,
     );
   }
@@ -603,6 +605,76 @@ function validateFailureMatrix(
         entry.recovery?.scannerOnline === true &&
         entry.recovery?.ready === true,
       `serial conformance ${failureMode} mapping failure is not fail-closed and recovered`,
+    );
+  }
+}
+
+function readFailureMatrixCommands(commandJson) {
+  let commands;
+  try {
+    commands = JSON.parse(commandJson);
+  } catch {
+    throw new Error("failure matrix commands must be a JSON object");
+  }
+  const required = {
+    "swapped-roles": ["salePrepareCommand", "runtimeRecoveryCommand"],
+    "missing-device": ["salePrepareCommand", "runtimeRecoveryCommand"],
+    "scanner-timeout": ["salePrepareCommand"],
+    "dispense-failed": ["saleCompleteCommand"],
+  };
+  for (const [failureMode, keys] of Object.entries(required)) {
+    const entry = commands?.[failureMode];
+    if (!entry || typeof entry !== "object")
+      throw new Error(`${failureMode} failure matrix commands are required`);
+    for (const key of keys)
+      if (typeof entry[key] !== "string")
+        throw new Error(`${failureMode} ${key} is required`);
+  }
+  return commands;
+}
+
+function readFailureMatrixArtifactPaths(pathJson) {
+  let paths;
+  try {
+    paths = JSON.parse(pathJson);
+  } catch {
+    throw new Error("failure matrix artifact paths must be a JSON object");
+  }
+  const failureModes = [
+    "malformed-frame",
+    "device-disconnected",
+    "scanner-timeout",
+    "dispense-failed",
+    "swapped-roles",
+    "missing-device",
+  ];
+  const reports = failureModes.map((failureMode) => {
+    const report = paths?.[failureMode]?.report;
+    if (typeof report !== "string" || report.trim().length === 0)
+      throw new Error(`${failureMode} failure matrix report path is required`);
+    return report;
+  });
+  if (new Set(reports).size !== reports.length)
+    throw new Error("failure matrix report paths must be unique");
+  return paths;
+}
+
+function writeFailureMatrixArtifacts(failureMatrix, paths) {
+  for (const entry of failureMatrix) {
+    const reportPath = paths[entry.failureMode].report;
+    mkdirSync(dirname(reportPath), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      reportPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: "vem-vm-host-adapter-serial-failure-report/v1",
+          failureMode: entry.failureMode,
+          failure: entry,
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
     );
   }
 }
@@ -821,6 +893,11 @@ async function main() {
   let repeatedStop;
   let recoveryStop;
   let failureMatrix;
+  const failureMatrixArtifactPaths = contractTest
+    ? null
+    : readFailureMatrixArtifactPaths(
+        readOption("--failure-matrix-artifact-paths-json"),
+      );
   let session;
   let startRequest;
   let injectRequest;
@@ -995,10 +1072,12 @@ async function main() {
           environment,
           salePrepareCommandJson: readOption("--sale-prepare-command-json"),
           saleCompleteCommandJson: readOption("--sale-complete-command-json"),
-          runtimeRecoveryCommandJson: readOption(
-            "--runtime-recovery-command-json",
+          failureCommands: readFailureMatrixCommands(
+            readOption("--failure-matrix-commands-json"),
           ),
         });
+    if (failureMatrixArtifactPaths)
+      writeFailureMatrixArtifacts(failureMatrix, failureMatrixArtifactPaths);
   } catch (error) {
     primaryError = error;
   } finally {
@@ -1115,7 +1194,7 @@ function runSaleCommand(commandJson, expectedPhase) {
 }
 
 function runFailedDispenseCommand(commandJson) {
-  const command = isolatedCommandOutput(JSON.parse(commandJson));
+  const command = JSON.parse(commandJson);
   if (!Array.isArray(command) || command.length < 2)
     throw new Error("failed-dispense sale command must be a JSON array");
   const result = spawnSync(command[0], command.slice(1), {
@@ -1142,16 +1221,6 @@ function runFailedDispenseCommand(commandJson) {
     paymentId: sale.paymentId,
     vendingCommandId: sale.vendingCommandId,
   };
-}
-
-export function isolatedCommandOutput(command) {
-  if (!Array.isArray(command)) return command;
-  const outIndex = command.lastIndexOf("--out");
-  if (outIndex < 0 || typeof command[outIndex + 1] !== "string")
-    throw new Error("sale command must declare --out for isolated evidence");
-  const isolated = [...command];
-  isolated[outIndex + 1] = `${isolated[outIndex + 1]}.dispense-failed`;
-  return isolated;
 }
 
 function adapterSessionEvidence(startReport) {
@@ -1424,7 +1493,7 @@ async function runProductionFailureMatrix(options) {
         null,
       );
       const failClosed = runBlockedSaleCommand(
-        options.salePrepareCommandJson,
+        options.failureCommands[failureMode].salePrepareCommand,
         failureMode,
         options.runId,
         start,
@@ -1440,7 +1509,7 @@ async function runProductionFailureMatrix(options) {
       if (mappingSession) {
         await stopFailureSession(options, mappingSession, null);
         recovery = runRuntimeRecoveryCommand(
-          options.runtimeRecoveryCommandJson,
+          options.failureCommands[failureMode].runtimeRecoveryCommand,
           failureMode,
         );
       }
@@ -1461,7 +1530,10 @@ async function runProductionFailureMatrix(options) {
       environment: options.environment,
     });
     scannerSession = start.serialSession;
-    pendingSale = runSaleCommand(options.salePrepareCommandJson, "prepare");
+    pendingSale = runSaleCommand(
+      options.failureCommands["scanner-timeout"].salePrepareCommand,
+      "prepare",
+    );
     const scannerTimeoutRequest = requestFor({
       operation: "inject-scanner-code",
       ...options,
@@ -1529,7 +1601,9 @@ async function runProductionFailureMatrix(options) {
       environment: options.environment,
       scannerCode: options.scannerCode,
     });
-    failedSale = runFailedDispenseCommand(options.saleCompleteCommandJson);
+    failedSale = runFailedDispenseCommand(
+      options.failureCommands["dispense-failed"].saleCompleteCommand,
+    );
     if (
       failedSale.orderId !== pendingSale.orderId ||
       failedSale.paymentId !== pendingSale.paymentId

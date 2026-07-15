@@ -3093,7 +3093,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.match(source, /paymentOption\?\.method === "payment_code"/);
     assert.match(source, /startSerialSession/);
-    assert.match(source, /runtimeRecoveryCommandJson/);
+    assert.match(source, /failureCommands/);
     assert.match(source, /did not restore healthy daemon runtime/);
     assert.match(source, /VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST/);
     assert.doesNotMatch(source, /hardware-mapping-fault-code/);
