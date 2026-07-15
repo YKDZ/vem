@@ -69,6 +69,7 @@ function snapshot(overrides = {}) {
       configureNetwork: true,
       claimMachine: false,
       retryClaim: false,
+      convergeMaintenanceTunnel: false,
       syncProfile: false,
       resolveTopology: false,
       runRuntimeAcceptance: false,
@@ -222,6 +223,54 @@ afterEach(() => {
 });
 
 describe("Bring-Up Console", () => {
+  it("retries the durable maintenance tunnel convergence task without re-claiming", async () => {
+    const convergenceTask = {
+      contractVersion: 1,
+      taskId: "bring_up.converge_maintenance_tunnel",
+      taskVersion: 1,
+      kind: "converge_maintenance_tunnel",
+      intent: "retry_maintenance_tunnel",
+      rotateMaintenanceIdentity: false,
+      projection: {
+        type: "maintenance_tunnel",
+        state: "convergence_required",
+      },
+    };
+    getBringUpMock.mockResolvedValue(
+      snapshot({
+        state: "maintenance_convergence_required",
+        allowedActions: {
+          configureNetwork: false,
+          claimMachine: false,
+          retryClaim: false,
+          convergeMaintenanceTunnel: true,
+          syncProfile: false,
+          resolveTopology: false,
+          runRuntimeAcceptance: false,
+          runHardwareAcceptance: false,
+          attestStock: false,
+          startSales: false,
+        },
+        currentTask: convergenceTask,
+      }),
+    );
+    executeBringUpTaskMock.mockResolvedValueOnce({
+      state: "handshake_verified",
+      firstHandshakeVerifiedAt: "2026-07-15T02:00:00Z",
+    });
+
+    const host = await mountView();
+    expect(host.textContent).toContain("恢复维护隧道");
+    buttonByText(host, "重试维护隧道").click();
+
+    await vi.waitFor(() => {
+      expect(executeBringUpTaskMock).toHaveBeenCalledWith(convergenceTask, {
+        type: "retry_maintenance_tunnel",
+      });
+    });
+    expect(executeBringUpTaskMock).toHaveBeenCalledTimes(1);
+  });
+
   it("requires a PIN-issued maintenance session before a cold-start network mutation", async () => {
     hasMaintenanceSessionForRouteMock.mockReturnValue(false);
     const host = await mountView();

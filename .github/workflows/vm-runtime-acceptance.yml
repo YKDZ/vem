@@ -590,12 +590,17 @@ jobs:
           const [path, sshStatus] = process.argv.slice(2);
           const evidence = JSON.parse(fs.readFileSync(path, "utf8"));
           if (
-            evidence.schemaVersion !== "vem-wireguard-localsystem-acceptance/v1" ||
+            evidence.schemaVersion !== "vem-wireguard-localsystem-acceptance/v2" ||
             evidence.ok !== true ||
             evidence.daemonService?.localSystem !== true ||
             evidence.tunnelService?.localSystem !== true ||
             evidence.configAclProtected !== true ||
             evidence.daemonRestartRead !== true ||
+            evidence.tunnelConnectedAfterRestart !== true ||
+            evidence.claimRetainedAfterRestart !== true ||
+            evidence.configReplayIdempotent !== true ||
+            typeof evidence.firstHandshakeVerifiedAt !== "string" ||
+            evidence.firstHandshakeVerifiedAt.length < 1 ||
             !Number.isInteger(evidence.handshakeUnixSeconds) ||
             evidence.handshakeUnixSeconds < 1
           ) throw new Error("Windows LocalSystem WireGuard acceptance evidence is incomplete");

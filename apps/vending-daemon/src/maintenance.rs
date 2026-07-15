@@ -85,6 +85,7 @@ fn resolve_pinned_wireguard_executable(executable: &str) -> Result<PathBuf, Stri
         Path::is_file,
     )
 }
+const WIREGUARD_HANDSHAKE_FRESH_SECONDS: i64 = 180;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaintenanceTunnelIdentity {
@@ -222,17 +223,6 @@ impl WireGuardEncryptedConfigStore for WindowsDpapiWireGuardConfigStore {
 
         #[cfg(windows)]
         {
-            let tunnel_name = tunnel_name.to_string();
-            let tunnel_name_for_protection = tunnel_name.clone();
-            let plaintext_config = plaintext_config.to_vec();
-            let encrypted = tokio::task::spawn_blocking(move || {
-                // WireGuard config has the same machine-scope lifecycle as every
-                // daemon secret: LocalMachine DPAPI, UI forbidden, SYSTEM/Admin ACL.
-                let _ = tunnel_name_for_protection;
-                crate::secret::protect_machine_local_bytes_blocking(&plaintext_config)
-            })
-            .await
-            .map_err(|error| format!("join WireGuard DPAPI protection failed: {error}"))??;
             let program_files = std::env::var_os("ProgramFiles")
                 .map(PathBuf::from)
                 .ok_or_else(|| "ProgramFiles is unavailable".to_string())?;
@@ -246,6 +236,29 @@ impl WireGuardEncryptedConfigStore for WindowsDpapiWireGuardConfigStore {
                     format!("create WireGuard configuration directory failed: {error}")
                 })?;
             let path = config_dir.join(format!("{tunnel_name}.conf.dpapi"));
+            if let Ok(existing) = tokio::fs::read(&path).await {
+                let existing_plaintext = tokio::task::spawn_blocking(move || {
+                    crate::secret::unprotect_machine_local_bytes_blocking(&existing)
+                })
+                .await
+                .map_err(|error| format!("join WireGuard DPAPI unprotect failed: {error}"))?;
+                if existing_plaintext.is_ok_and(|value| value == plaintext_config) {
+                    harden_machine_protected_file_permissions(&path)
+                        .await
+                        .map_err(|error| {
+                            format!("harden reused WireGuard configuration failed: {error}")
+                        })?;
+                    return Ok(path);
+                }
+            }
+            let plaintext_config = plaintext_config.to_vec();
+            let encrypted = tokio::task::spawn_blocking(move || {
+                // WireGuard config has the same machine-scope lifecycle as every
+                // daemon secret: LocalMachine DPAPI, UI forbidden, SYSTEM/Admin ACL.
+                crate::secret::protect_machine_local_bytes_blocking(&plaintext_config)
+            })
+            .await
+            .map_err(|error| format!("join WireGuard DPAPI protection failed: {error}"))??;
             let staging_path = config_dir.join(format!("{tunnel_name}.conf.dpapi.tmp"));
             if let Err(error) = persist_encrypted_config(&staging_path, &path, &encrypted).await {
                 let _ = tokio::fs::remove_file(&staging_path).await;
@@ -508,13 +521,19 @@ impl WindowsTunnelBackend for WindowsWireGuardTunnel {
             .filter_map(|timestamp| timestamp.parse::<i64>().ok())
             .next()
             .filter(|value| *value > 0);
+        let now = Utc::now().timestamp();
+        let connected = latest.is_some_and(|value| {
+            value <= now + 30 && value >= now - WIREGUARD_HANDSHAKE_FRESH_SECONDS
+        });
         Ok(HandshakeObservation {
-            verified: latest.is_some(),
+            verified: connected,
             last_handshake_at: latest.and_then(|value| {
                 chrono::DateTime::from_timestamp(value, 0).map(|date| date.to_rfc3339())
             }),
-            message: if latest.is_some() {
+            message: if connected {
                 "first WireGuard handshake observed".to_string()
+            } else if latest.is_some() {
+                "WireGuard handshake is stale".to_string()
             } else {
                 "first WireGuard handshake has not been observed".to_string()
             },
@@ -530,8 +549,11 @@ pub struct MaintenanceEnrollmentStatus {
     pub tunnel_address: Option<String>,
     pub endpoint: Option<String>,
     pub handshake_verified: bool,
+    pub tunnel_connected: bool,
+    pub first_handshake_verified_at: Option<String>,
     pub last_handshake_at: Option<String>,
     pub last_error: Option<String>,
+    pub alert_code: Option<String>,
     pub active_public_key: Option<String>,
     pub pending_public_key: Option<String>,
     pub reclaim_expires_at: Option<String>,
@@ -547,8 +569,11 @@ impl Default for MaintenanceEnrollmentStatus {
             tunnel_address: None,
             endpoint: None,
             handshake_verified: false,
+            tunnel_connected: false,
+            first_handshake_verified_at: None,
             last_handshake_at: None,
             last_error: None,
+            alert_code: None,
             active_public_key: None,
             pending_public_key: None,
             reclaim_expires_at: None,
@@ -562,6 +587,8 @@ impl Default for MaintenanceEnrollmentStatus {
 #[serde(rename_all = "camelCase")]
 struct PersistedMaintenanceLifecycle {
     active: Option<ProvisioningMaintenanceIdentity>,
+    #[serde(default)]
+    active_first_handshake_at: Option<String>,
     pending: Option<PersistedPendingMaintenanceIdentity>,
 }
 
@@ -572,6 +599,8 @@ struct PersistedPendingMaintenanceIdentity {
     identity: Option<ProvisioningMaintenanceIdentity>,
     reclaim_expires_at: Option<String>,
     handshake_verified: bool,
+    #[serde(default)]
+    first_handshake_at: Option<String>,
 }
 
 #[derive(Clone)]
@@ -671,6 +700,7 @@ impl MaintenanceEnrollment {
             identity: None,
             reclaim_expires_at: None,
             handshake_verified: false,
+            first_handshake_at: None,
         });
         self.save_lifecycle(&lifecycle).await?;
         let mut status = self.status.lock().await;
@@ -681,9 +711,12 @@ impl MaintenanceEnrollment {
         status.public_key = status.active_public_key.clone();
         status.pending_public_key = Some(public_key.clone());
         status.handshake_verified = false;
+        status.tunnel_connected = false;
+        status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
         status.last_handshake_at = None;
         status.state = "reclaim_request_pending".to_string();
         status.last_error = None;
+        status.alert_code = None;
         status.active_identity_retained = true;
         status.updated_at = Utc::now().to_rfc3339();
         Ok(public_key)
@@ -695,15 +728,26 @@ impl MaintenanceEnrollment {
     ) -> Result<MaintenanceEnrollmentStatus, String> {
         let public_key = self.ensure_public_key().await?;
         if public_key != identity.public_key {
-            return self
-                .fail("maintenance public key differs from claimed identity")
-                .await;
+            return Err("maintenance public key differs from claimed identity".to_string());
         }
         let private_key = self
             .secrets
             .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
             .await?
             .ok_or_else(|| "machine WireGuard private key is missing".to_string())?;
+        // Machine Claim owns the durable identity boundary. Persist the
+        // claim-bound tunnel intent before touching Windows service state so
+        // a temporary apply failure can be retried after this process exits.
+        let mut lifecycle = self.load_lifecycle().await?;
+        if lifecycle
+            .active
+            .as_ref()
+            .is_some_and(|active| active.public_key != identity.public_key)
+        {
+            lifecycle.active_first_handshake_at = None;
+        }
+        lifecycle.active = Some(identity.clone());
+        self.save_lifecycle(&lifecycle).await?;
         let observation = self
             .tunnel
             .apply(
@@ -722,9 +766,6 @@ impl MaintenanceEnrollment {
                 &identity.relay.public_key,
             )
             .await;
-        let mut lifecycle = self.load_lifecycle().await?;
-        lifecycle.active = Some(identity.clone());
-        self.save_lifecycle(&lifecycle).await?;
         let mut status = self.status.lock().await;
         status.state = "tunnel_applied".to_string();
         status.public_key = Some(public_key.clone());
@@ -735,22 +776,45 @@ impl MaintenanceEnrollment {
         status.pending_public_key = None;
         status.reclaim_expires_at = None;
         status.active_identity_retained = true;
+        status.alert_code = None;
         match observation {
             Ok(observation) => {
-                status.handshake_verified = observation.verified;
-                status.last_handshake_at = observation.last_handshake_at;
-                status.state = if observation.verified {
-                    "handshake_verified".to_string()
-                } else {
-                    "handshake_pending".to_string()
+                if observation.verified && lifecycle.active_first_handshake_at.is_none() {
+                    lifecycle.active_first_handshake_at = observation.last_handshake_at.clone();
+                    self.save_lifecycle(&lifecycle).await?;
+                }
+                status.handshake_verified = lifecycle.active_first_handshake_at.is_some();
+                status.tunnel_connected = observation.verified;
+                status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
+                status.last_handshake_at = observation
+                    .last_handshake_at
+                    .or_else(|| lifecycle.active_first_handshake_at.clone());
+                status.state = match (status.handshake_verified, status.tunnel_connected) {
+                    (true, true) => "handshake_verified".to_string(),
+                    (true, false) => "tunnel_degraded".to_string(),
+                    (false, _) => "handshake_pending".to_string(),
                 };
-                if !observation.verified {
+                if !status.tunnel_connected {
                     status.last_error = Some(observation.message);
+                    if status.handshake_verified {
+                        status.alert_code = Some("MAINTENANCE_TUNNEL_DEGRADED".to_string());
+                    }
                 }
             }
             Err(error) => {
-                status.state = "handshake_pending".to_string();
+                status.handshake_verified = lifecycle.active_first_handshake_at.is_some();
+                status.tunnel_connected = false;
+                status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
+                status.last_handshake_at = lifecycle.active_first_handshake_at.clone();
+                status.state = if status.handshake_verified {
+                    "tunnel_degraded".to_string()
+                } else {
+                    "handshake_pending".to_string()
+                };
                 status.last_error = Some(error);
+                if status.handshake_verified {
+                    status.alert_code = Some("MAINTENANCE_TUNNEL_DEGRADED".to_string());
+                }
             }
         }
         status.updated_at = Utc::now().to_rfc3339();
@@ -768,9 +832,7 @@ impl MaintenanceEnrollment {
             .ok_or_else(|| "pending machine WireGuard private key is missing".to_string())?;
         let pending_public_key = public_key_from_private_key(&private_key)?;
         if pending_public_key != identity.public_key {
-            return self
-                .fail("pending maintenance public key differs from claimed identity")
-                .await;
+            return Err("pending maintenance public key differs from claimed identity".to_string());
         }
         let reclaim_expires_at = identity
             .reclaim_expires_at
@@ -790,6 +852,7 @@ impl MaintenanceEnrollment {
         pending.identity = Some(identity.clone());
         pending.reclaim_expires_at = Some(reclaim_expires_at.clone());
         pending.handshake_verified = false;
+        pending.first_handshake_at = None;
         self.save_lifecycle(&lifecycle).await?;
 
         self.tunnel
@@ -817,16 +880,19 @@ impl MaintenanceEnrollment {
         status.reclaim_expires_at = Some(reclaim_expires_at.clone());
         status.active_identity_retained = true;
         status.handshake_verified = false;
+        status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
         status.last_handshake_at = None;
         status.last_error = None;
+        status.alert_code = None;
         match observation {
             Ok(observation) if observation.verified => {
                 status.state = "reclaim_handshake_verified".to_string();
                 status.handshake_verified = true;
-                status.last_handshake_at = observation.last_handshake_at;
+                status.last_handshake_at = observation.last_handshake_at.clone();
                 let mut lifecycle = lifecycle;
                 if let Some(pending) = lifecycle.pending.as_mut() {
                     pending.handshake_verified = true;
+                    pending.first_handshake_at = observation.last_handshake_at;
                 }
                 self.save_lifecycle(&lifecycle).await?;
             }
@@ -843,7 +909,18 @@ impl MaintenanceEnrollment {
     ) -> Result<Option<MaintenanceEnrollmentStatus>, String> {
         let lifecycle = self.load_lifecycle().await?;
         if let Some(active) = lifecycle.active.as_ref() {
-            self.apply_profile(active).await?;
+            if let Err(error) = self.apply_profile(active).await {
+                let status = self.status.lock().await.clone();
+                if status.active_identity_retained
+                    && matches!(
+                        status.state.as_str(),
+                        "tunnel_apply_pending" | "tunnel_degraded"
+                    )
+                {
+                    return Ok(Some(status));
+                }
+                return Err(error);
+            }
             if let Some(pending) = lifecycle
                 .pending
                 .as_ref()
@@ -857,6 +934,15 @@ impl MaintenanceEnrollment {
             return Ok(None);
         };
         self.apply_profile(cached_identity).await.map(Some)
+    }
+
+    pub async fn retry_active_convergence(&self) -> Result<MaintenanceEnrollmentStatus, String> {
+        let identity = self
+            .load_lifecycle()
+            .await?
+            .active
+            .ok_or_else(|| "claim-bound maintenance identity is unavailable".to_string())?;
+        self.apply_profile(&identity).await
     }
 
     pub async fn promote_reclaim(
@@ -896,6 +982,7 @@ impl MaintenanceEnrollment {
             .await?;
         identity.reclaim_expires_at = None;
         lifecycle.active = Some(identity.clone());
+        lifecycle.active_first_handshake_at = pending.first_handshake_at.clone();
         lifecycle.pending = None;
         self.save_lifecycle(&lifecycle).await?;
         self.tunnel
@@ -910,7 +997,11 @@ impl MaintenanceEnrollment {
         status.reclaim_expires_at = None;
         status.active_identity_retained = true;
         status.handshake_verified = true;
+        status.tunnel_connected = true;
+        status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
+        status.last_handshake_at = lifecycle.active_first_handshake_at.clone();
         status.last_error = None;
+        status.alert_code = None;
         status.updated_at = Utc::now().to_rfc3339();
         Ok(status.clone())
     }
@@ -942,17 +1033,43 @@ impl MaintenanceEnrollment {
         status.pending_public_key = None;
         status.reclaim_expires_at = None;
         status.active_identity_retained = true;
-        status.handshake_verified = false;
-        status.last_handshake_at = None;
+        status.handshake_verified = lifecycle.active_first_handshake_at.is_some();
+        status.tunnel_connected = false;
+        status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
+        status.last_handshake_at = lifecycle.active_first_handshake_at.clone();
         status.last_error = Some(reason.to_string());
+        status.alert_code = Some("MAINTENANCE_TUNNEL_DEGRADED".to_string());
         status.updated_at = Utc::now().to_rfc3339();
         Ok(status.clone())
     }
 
     async fn fail(&self, error: &str) -> Result<MaintenanceEnrollmentStatus, String> {
+        let lifecycle = self.load_lifecycle().await.unwrap_or_default();
         let mut status = self.status.lock().await;
-        status.state = "failed".to_string();
+        if let Some(identity) = lifecycle.active.as_ref() {
+            status.public_key = Some(identity.public_key.clone());
+            status.active_public_key = Some(identity.public_key.clone());
+            status.tunnel_address = Some(identity.address.clone());
+            status.endpoint = Some(identity.endpoint.clone());
+            status.active_identity_retained = true;
+        }
+        status.handshake_verified = lifecycle.active_first_handshake_at.is_some();
+        status.tunnel_connected = false;
+        status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
+        status.last_handshake_at = lifecycle.active_first_handshake_at;
+        status.state = if status.handshake_verified {
+            "tunnel_degraded".to_string()
+        } else if lifecycle.active.is_some() {
+            "tunnel_apply_pending".to_string()
+        } else {
+            "failed".to_string()
+        };
         status.last_error = Some(error.to_string());
+        status.alert_code = Some(if status.handshake_verified {
+            "MAINTENANCE_TUNNEL_DEGRADED".to_string()
+        } else {
+            "MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string()
+        });
         status.updated_at = Utc::now().to_rfc3339();
         Err(error.to_string())
     }
@@ -983,12 +1100,17 @@ impl MaintenanceEnrollment {
                             status.pending_public_key = None;
                             status.reclaim_expires_at = None;
                             status.active_identity_retained = true;
-                            status.handshake_verified = false;
-                            status.last_handshake_at = None;
+                            status.handshake_verified =
+                                lifecycle.active_first_handshake_at.is_some();
+                            status.tunnel_connected = false;
+                            status.first_handshake_verified_at =
+                                lifecycle.active_first_handshake_at.clone();
+                            status.last_handshake_at = lifecycle.active_first_handshake_at.clone();
                             status.last_error = Some(
                                 "pending reclaim handshake timed out; active identity retained"
                                     .to_string(),
                             );
+                            status.alert_code = Some("MAINTENANCE_TUNNEL_DEGRADED".to_string());
                             status.updated_at = Utc::now().to_rfc3339();
                             return status.clone();
                         }
@@ -1004,6 +1126,8 @@ impl MaintenanceEnrollment {
                             Ok(observation) if observation.verified => {
                                 if let Some(value) = lifecycle.pending.as_mut() {
                                     value.handshake_verified = true;
+                                    value.first_handshake_at =
+                                        observation.last_handshake_at.clone();
                                 }
                                 let _ = self.save_lifecycle(&lifecycle).await;
                                 let mut status = self.status.lock().await;
@@ -1031,35 +1155,74 @@ impl MaintenanceEnrollment {
                 }
             }
         }
-        let relay_public_key = {
-            let status = self.status.lock().await;
-            if status.state != "handshake_pending" {
-                return status.clone();
-            }
-            self.relay_public_key.lock().await.clone()
+        let Ok(mut lifecycle) = self.load_lifecycle().await else {
+            return self.status.lock().await.clone();
         };
-        let Some(relay_public_key) = relay_public_key else {
+        let Some(identity) = lifecycle.active.clone() else {
             return self.status.lock().await.clone();
         };
         let observation = self
             .tunnel
-            .observe_handshake(MaintenanceTunnelIdentity::Active, &relay_public_key)
+            .observe_handshake(
+                MaintenanceTunnelIdentity::Active,
+                &identity.relay.public_key,
+            )
             .await;
+        if let Ok(observation) = observation.as_ref() {
+            if observation.verified && lifecycle.active_first_handshake_at.is_none() {
+                lifecycle.active_first_handshake_at = observation.last_handshake_at.clone();
+                let _ = self.save_lifecycle(&lifecycle).await;
+            }
+        }
         let mut status = self.status.lock().await;
+        status.public_key = Some(identity.public_key.clone());
+        status.active_public_key = Some(identity.public_key);
+        status.tunnel_address = Some(identity.address);
+        status.endpoint = Some(identity.endpoint);
+        status.active_identity_retained = true;
+        status.handshake_verified = lifecycle.active_first_handshake_at.is_some();
+        status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
+        status.alert_code = None;
         match observation {
             Ok(observation) if observation.verified => {
                 status.state = "handshake_verified".to_string();
-                status.handshake_verified = true;
+                status.tunnel_connected = true;
                 status.last_handshake_at = observation.last_handshake_at;
                 status.last_error = None;
                 status.updated_at = Utc::now().to_rfc3339();
             }
             Ok(observation) => {
+                status.tunnel_connected = false;
+                status.state = if status.handshake_verified {
+                    "tunnel_degraded".to_string()
+                } else {
+                    "handshake_pending".to_string()
+                };
+                status.last_handshake_at = observation
+                    .last_handshake_at
+                    .or_else(|| lifecycle.active_first_handshake_at.clone());
                 status.last_error = Some(observation.message);
+                status.alert_code = Some(if status.handshake_verified {
+                    "MAINTENANCE_TUNNEL_DEGRADED".to_string()
+                } else {
+                    "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED".to_string()
+                });
                 status.updated_at = Utc::now().to_rfc3339();
             }
             Err(error) => {
+                status.tunnel_connected = false;
+                status.state = if status.handshake_verified {
+                    "tunnel_degraded".to_string()
+                } else {
+                    "handshake_pending".to_string()
+                };
+                status.last_handshake_at = lifecycle.active_first_handshake_at;
                 status.last_error = Some(error);
+                status.alert_code = Some(if status.handshake_verified {
+                    "MAINTENANCE_TUNNEL_DEGRADED".to_string()
+                } else {
+                    "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED".to_string()
+                });
                 status.updated_at = Utc::now().to_rfc3339();
             }
         }
@@ -1102,8 +1265,11 @@ impl MaintenanceEnrollment {
         status.tunnel_address = None;
         status.endpoint = None;
         status.handshake_verified = false;
+        status.tunnel_connected = false;
+        status.first_handshake_verified_at = None;
         status.last_handshake_at = None;
         status.last_error = None;
+        status.alert_code = None;
         status.active_public_key = None;
         status.pending_public_key = None;
         status.reclaim_expires_at = None;
@@ -1224,6 +1390,16 @@ mod tests {
         observations: AtomicUsize,
     }
 
+    #[derive(Default)]
+    struct RecoverableApplyTunnel {
+        fail_apply: AtomicBool,
+        applies: AtomicUsize,
+    }
+
+    struct FixedConnectivityTunnel {
+        connected: AtomicBool,
+    }
+
     struct FakeEncryptedConfigStore {
         path: PathBuf,
         writes: Mutex<Vec<(String, Vec<u8>)>>,
@@ -1281,6 +1457,62 @@ mod tests {
                 verified: observation > 0,
                 last_handshake_at: (observation > 0).then(|| "2026-07-10T00:00:00Z".to_string()),
                 message: "first WireGuard handshake has not been observed".to_string(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl WindowsTunnelBackend for RecoverableApplyTunnel {
+        async fn apply(
+            &self,
+            _identity: MaintenanceTunnelIdentity,
+            _config: WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            self.applies.fetch_add(1, Ordering::SeqCst);
+            if self.fail_apply.load(Ordering::SeqCst) {
+                Err("injected tunnel apply failure".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn observe_handshake(
+            &self,
+            _identity: MaintenanceTunnelIdentity,
+            _public_key: &str,
+        ) -> Result<HandshakeObservation, String> {
+            Ok(HandshakeObservation {
+                verified: true,
+                last_handshake_at: Some("2026-07-15T00:00:00Z".to_string()),
+                message: "handshake observed".to_string(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl WindowsTunnelBackend for FixedConnectivityTunnel {
+        async fn apply(
+            &self,
+            _identity: MaintenanceTunnelIdentity,
+            _config: WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn observe_handshake(
+            &self,
+            _identity: MaintenanceTunnelIdentity,
+            _public_key: &str,
+        ) -> Result<HandshakeObservation, String> {
+            let connected = self.connected.load(Ordering::SeqCst);
+            Ok(HandshakeObservation {
+                verified: connected,
+                last_handshake_at: connected.then(|| "2026-07-15T01:00:00Z".to_string()),
+                message: if connected {
+                    "handshake observed".to_string()
+                } else {
+                    "WireGuard handshake is stale".to_string()
+                },
             })
         }
     }
@@ -1575,11 +1807,12 @@ mod tests {
             path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
             writes: Mutex::new(Vec::new()),
         });
+        let fresh_handshake = Utc::now().timestamp();
         let commands = Arc::new(FakeCommandRunner {
             calls: Mutex::new(Vec::new()),
-            results: Mutex::new(VecDeque::from([CommandOutput::with_stdout(
-                "unrelated-peer\t1780000000\nAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\t1780000001\n",
-            )])),
+            results: Mutex::new(VecDeque::from([CommandOutput::with_stdout(&format!(
+                "unrelated-peer\t{fresh_handshake}\nAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\t{fresh_handshake}\n",
+            ))])),
         });
         let tunnel = WindowsWireGuardTunnel::with_dependencies(config_store, commands.clone());
 
@@ -1603,6 +1836,34 @@ mod tests {
                 ]
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn stale_handshake_is_retained_as_evidence_but_reports_disconnected() {
+        let config_store = Arc::new(FakeEncryptedConfigStore {
+            path: PathBuf::from("VEM-Maintenance.conf.dpapi"),
+            writes: Mutex::new(Vec::new()),
+        });
+        let stale_handshake = Utc::now().timestamp() - 600;
+        let commands = Arc::new(FakeCommandRunner {
+            calls: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::from([CommandOutput::with_stdout(&format!(
+                "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\t{stale_handshake}\n",
+            ))])),
+        });
+        let tunnel = WindowsWireGuardTunnel::with_dependencies(config_store, commands);
+
+        let observation = tunnel
+            .observe_handshake(
+                MaintenanceTunnelIdentity::Active,
+                "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+            )
+            .await
+            .expect("observe stale handshake");
+
+        assert!(!observation.verified);
+        assert!(observation.last_handshake_at.is_some());
+        assert_eq!(observation.message, "WireGuard handshake is stale");
     }
 
     #[tokio::test]
@@ -1667,6 +1928,74 @@ mod tests {
         );
 
         assert_eq!(first.expect("first key"), second.expect("second key"));
+    }
+
+    #[tokio::test]
+    async fn claimed_identity_survives_tunnel_apply_failure_and_restart_retry() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let tunnel = Arc::new(RecoverableApplyTunnel::default());
+        tunnel.fail_apply.store(true, Ordering::SeqCst);
+        let claimed = MaintenanceEnrollment::new(secrets.clone(), tunnel.clone());
+        let public_key = claimed.ensure_public_key().await.expect("public key");
+
+        let error = claimed
+            .apply_profile(&identity(public_key.clone()))
+            .await
+            .expect_err("first tunnel application fails");
+        assert_eq!(error, "injected tunnel apply failure");
+
+        let restarted = MaintenanceEnrollment::new(secrets, tunnel.clone());
+        let pending = restarted
+            .recover(None)
+            .await
+            .expect("tunnel outage must not refuse daemon restart")
+            .expect("claim-bound identity retained before tunnel apply");
+        assert_eq!(pending.state, "tunnel_apply_pending");
+        assert_eq!(pending.public_key.as_deref(), Some(public_key.as_str()));
+
+        tunnel.fail_apply.store(false, Ordering::SeqCst);
+        let recovered = restarted
+            .retry_active_convergence()
+            .await
+            .expect("restart convergence retry");
+        assert_eq!(recovered.state, "handshake_verified");
+        assert_eq!(recovered.public_key.as_deref(), Some(public_key.as_str()));
+        assert_eq!(tunnel.applies.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn first_handshake_evidence_survives_restart_and_later_outage_is_degraded() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let tunnel = Arc::new(FixedConnectivityTunnel {
+            connected: AtomicBool::new(true),
+        });
+        let commissioned = MaintenanceEnrollment::new(secrets.clone(), tunnel.clone());
+        let public_key = commissioned.ensure_public_key().await.expect("public key");
+        let verified = commissioned
+            .apply_profile(&identity(public_key))
+            .await
+            .expect("first handshake");
+        assert_eq!(verified.state, "handshake_verified");
+        assert!(verified.handshake_verified);
+
+        tunnel.connected.store(false, Ordering::SeqCst);
+        let restarted = MaintenanceEnrollment::new(secrets, tunnel);
+        let degraded = restarted
+            .recover(None)
+            .await
+            .expect("restart recovery")
+            .expect("persisted identity");
+
+        assert_eq!(degraded.state, "tunnel_degraded");
+        assert!(degraded.handshake_verified);
+        assert_eq!(
+            degraded.last_handshake_at.as_deref(),
+            Some("2026-07-15T01:00:00Z")
+        );
+        assert_eq!(
+            degraded.last_error.as_deref(),
+            Some("WireGuard handshake is stale")
+        );
     }
 
     #[tokio::test]

@@ -73,6 +73,7 @@ const currentTaskNeedsMaintenanceSession = computed(() =>
     "configure_network",
     "claim_machine",
     "reclaim_machine",
+    "converge_maintenance_tunnel",
     "attest_stock",
     "resolve_topology",
     "run_hardware_acceptance",
@@ -158,6 +159,7 @@ function taskLabel(
     configure_network: "配置现场网络",
     claim_machine: "领取机器",
     reclaim_machine: "重新领取机器",
+    converge_maintenance_tunnel: "恢复维护隧道",
     sync_profile: "同步运行档案",
     resolve_topology: "处理货道拓扑",
     run_hardware_acceptance: "完成本机验收",
@@ -495,6 +497,21 @@ async function submitCurrentTask(): Promise<void> {
       type: "refresh_profile",
     });
     await refreshBringUp();
+    return;
+  }
+  if (currentTask.value.intent === "retry_maintenance_tunnel") {
+    submitting.value = true;
+    try {
+      await daemonClient.executeBringUpTask(currentTask.value, {
+        type: "retry_maintenance_tunnel",
+      });
+      statusMessage.value = "维护隧道已重新应用，正在确认首次握手。";
+    } catch {
+      statusMessage.value = "机器领取已保留；维护隧道仍未就绪，请稍后重试。";
+    } finally {
+      submitting.value = false;
+    }
+    await refreshBringUp();
   }
 }
 
@@ -719,6 +736,8 @@ onUnmounted(() => {
             {{
               currentTask.intent === "refresh_profile"
                 ? "重新读取运行档案"
+                : currentTask.intent === "retry_maintenance_tunnel"
+                  ? "重试维护隧道"
                 : "前往维护控制台继续"
             }}
           </button>

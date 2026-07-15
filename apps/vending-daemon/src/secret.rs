@@ -553,7 +553,7 @@ async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(windows)]
 async fn unprotect_secret_blob(blob: Vec<u8>) -> Result<String, String> {
-    let plain = tokio::task::spawn_blocking(move || unprotect_secret_blob_blocking(&blob))
+    let plain = tokio::task::spawn_blocking(move || unprotect_machine_local_bytes_blocking(&blob))
         .await
         .map_err(|error| format!("join DPAPI unprotect failed: {error}"))??;
     String::from_utf8(plain).map_err(|error| format!("decode DPAPI secret failed: {error}"))
@@ -603,7 +603,7 @@ pub(crate) fn protect_machine_local_bytes_blocking(value: &[u8]) -> Result<Vec<u
 }
 
 #[cfg(windows)]
-fn unprotect_secret_blob_blocking(blob: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn unprotect_machine_local_bytes_blocking(blob: &[u8]) -> Result<Vec<u8>, String> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},

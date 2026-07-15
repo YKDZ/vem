@@ -10,6 +10,7 @@ pub enum BringUpState {
     ClaimRequired,
     ReclaimRequired,
     // Claiming is intentionally absent until claim attempts have a durable async tracker.
+    MaintenanceConvergenceRequired,
     ProfileApplied,
     TopologyMismatch,
     HardwareAcceptanceRequired,
@@ -37,6 +38,7 @@ pub enum BringUpTaskKind {
     ConfigureNetwork,
     ClaimMachine,
     ReclaimMachine,
+    ConvergeMaintenanceTunnel,
     SyncProfile,
     ResolveTopology,
     RunHardwareAcceptance,
@@ -51,6 +53,7 @@ pub enum BringUpTaskIntent {
     RefreshNetwork,
     ClaimMachine,
     ReclaimMachine,
+    RetryMaintenanceTunnel,
     RefreshProfile,
     OpenMaintenance,
     RecordStock,
@@ -85,6 +88,9 @@ pub enum BringUpTaskProjection {
     },
     ClaimCode {
         rotate_maintenance_identity: bool,
+    },
+    MaintenanceTunnel {
+        state: String,
     },
     ProfileSync,
     TopologyResolution {
@@ -155,6 +161,7 @@ pub struct BringUpAllowedActions {
     pub configure_network: bool,
     pub claim_machine: bool,
     pub retry_claim: bool,
+    pub converge_maintenance_tunnel: bool,
     pub sync_profile: bool,
     pub resolve_topology: bool,
     pub run_runtime_acceptance: bool,
@@ -202,6 +209,10 @@ pub struct BringUpEvaluationInput {
     /// intentionally separate from profile-cache presence: a cache is normal
     /// after a successful claim and must not manufacture a reclaim cursor.
     pub reclaim_requested: bool,
+    pub maintenance_commissioning_required: bool,
+    pub maintenance_first_handshake_verified: bool,
+    pub maintenance_state: Option<String>,
+    pub maintenance_message: Option<String>,
     pub updated_at: String,
 }
 
@@ -259,6 +270,18 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
             "machine must be claimed before runtime profile can be applied",
         ));
         BringUpState::ClaimRequired
+    } else if input.maintenance_commissioning_required
+        && !input.maintenance_first_handshake_verified
+    {
+        blocking_reasons.push(reason(
+            "MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED",
+            "maintenance_tunnel",
+            input
+                .maintenance_message
+                .as_deref()
+                .unwrap_or("the first production WireGuard handshake has not completed"),
+        ));
+        BringUpState::MaintenanceConvergenceRequired
     } else if input.topology_ready == Some(false) {
         blocking_reasons.push(reason(
             input
@@ -334,6 +357,7 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
             state,
             BringUpState::ClaimRequired | BringUpState::ReclaimRequired
         ),
+        converge_maintenance_tunnel: state == BringUpState::MaintenanceConvergenceRequired,
         sync_profile: matches!(
             state,
             BringUpState::PlatformReachable | BringUpState::ProfileApplied
@@ -350,7 +374,11 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
         start_sales: state == BringUpState::SellReady,
     };
 
-    let current_task = task_for_state(&state, input.reclaim_required || input.reclaim_requested);
+    let current_task = task_for_state(
+        &state,
+        input.reclaim_required || input.reclaim_requested,
+        input.maintenance_state.as_deref(),
+    );
     let progress = progress_for_state(&state, &input, provisioned);
 
     BringUpSnapshot {
@@ -366,7 +394,11 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
     }
 }
 
-fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringUpTask> {
+fn task_for_state(
+    state: &BringUpState,
+    reclaim_required: bool,
+    maintenance_state: Option<&str>,
+) -> Option<BringUpTask> {
     let (kind, intent) = match state {
         BringUpState::NetworkRequired => (
             BringUpTaskKind::ConfigureNetwork,
@@ -379,6 +411,10 @@ fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringU
         BringUpState::ReclaimRequired => (
             BringUpTaskKind::ReclaimMachine,
             BringUpTaskIntent::ReclaimMachine,
+        ),
+        BringUpState::MaintenanceConvergenceRequired => (
+            BringUpTaskKind::ConvergeMaintenanceTunnel,
+            BringUpTaskIntent::RetryMaintenanceTunnel,
         ),
         BringUpState::ClaimRequired if reclaim_required => (
             BringUpTaskKind::ReclaimMachine,
@@ -405,7 +441,7 @@ fn task_for_state(state: &BringUpState, reclaim_required: bool) -> Option<BringU
             return None;
         }
     };
-    let projection = task_projection(&kind, reclaim_required);
+    let projection = task_projection(&kind, reclaim_required, maintenance_state);
     Some(BringUpTask {
         contract_version: 1,
         task_id: task_id(&kind).to_string(),
@@ -435,6 +471,7 @@ fn task_id(kind: &BringUpTaskKind) -> &'static str {
         BringUpTaskKind::ConfigureNetwork => "bring_up.configure_network",
         BringUpTaskKind::ClaimMachine => "bring_up.claim_machine",
         BringUpTaskKind::ReclaimMachine => "bring_up.reclaim_machine",
+        BringUpTaskKind::ConvergeMaintenanceTunnel => "bring_up.converge_maintenance_tunnel",
         BringUpTaskKind::SyncProfile => "bring_up.sync_profile",
         BringUpTaskKind::ResolveTopology => "bring_up.resolve_topology",
         BringUpTaskKind::RunHardwareAcceptance => "bring_up.hardware_acceptance",
@@ -443,7 +480,11 @@ fn task_id(kind: &BringUpTaskKind) -> &'static str {
     }
 }
 
-fn task_projection(kind: &BringUpTaskKind, reclaim_required: bool) -> BringUpTaskProjection {
+fn task_projection(
+    kind: &BringUpTaskKind,
+    reclaim_required: bool,
+    maintenance_state: Option<&str>,
+) -> BringUpTaskProjection {
     match kind {
         BringUpTaskKind::ConfigureNetwork => BringUpTaskProjection::NetworkSettings {
             supports_hidden_network: true,
@@ -454,6 +495,11 @@ fn task_projection(kind: &BringUpTaskKind, reclaim_required: bool) -> BringUpTas
                 rotate_maintenance_identity: reclaim_required,
             }
         }
+        BringUpTaskKind::ConvergeMaintenanceTunnel => BringUpTaskProjection::MaintenanceTunnel {
+            state: maintenance_state
+                .unwrap_or("convergence_required")
+                .to_string(),
+        },
         BringUpTaskKind::SyncProfile => BringUpTaskProjection::ProfileSync,
         BringUpTaskKind::ResolveTopology => BringUpTaskProjection::TopologyResolution {
             component: "topology".to_string(),
@@ -477,7 +523,8 @@ fn progress_for_state(
         BringUpState::NetworkRequired => Some(0),
         BringUpState::PlatformReachable
         | BringUpState::ClaimRequired
-        | BringUpState::ReclaimRequired => Some(1),
+        | BringUpState::ReclaimRequired
+        | BringUpState::MaintenanceConvergenceRequired => Some(1),
         BringUpState::ProfileApplied | BringUpState::TopologyMismatch => Some(2),
         BringUpState::HardwareAcceptanceRequired => Some(3),
         BringUpState::StockAttestationRequired => Some(4),
@@ -916,6 +963,38 @@ mod tests {
         assert_eq!(snapshot.state, BringUpState::SellReady);
         assert_eq!(snapshot.readiness_level, BringUpReadinessLevel::SellReady);
         assert!(snapshot.allowed_actions.start_sales);
+    }
+
+    #[test]
+    fn production_claim_blocks_on_resumable_first_wireguard_handshake() {
+        let snapshot = evaluate_bring_up(BringUpEvaluationInput {
+            config: Some(production_config()),
+            hardware_mode: BringUpHardwareMode::Production,
+            platform_reachable: true,
+            maintenance_commissioning_required: true,
+            maintenance_first_handshake_verified: false,
+            maintenance_state: Some("tunnel_apply_pending".to_string()),
+            maintenance_message: Some("WireGuard service is temporarily unavailable".to_string()),
+            updated_at: "2026-07-15T00:00:00Z".to_string(),
+            ..BringUpEvaluationInput::default()
+        });
+
+        assert_eq!(snapshot.state, BringUpState::MaintenanceConvergenceRequired);
+        assert_eq!(
+            snapshot.current_task.as_ref().map(|task| &task.kind),
+            Some(&BringUpTaskKind::ConvergeMaintenanceTunnel)
+        );
+        assert!(snapshot.allowed_actions.converge_maintenance_tunnel);
+        assert_eq!(
+            snapshot.current_task.as_ref().map(|task| &task.projection),
+            Some(&BringUpTaskProjection::MaintenanceTunnel {
+                state: "tunnel_apply_pending".to_string(),
+            })
+        );
+        assert_eq!(
+            snapshot.blocking_reasons[0].code,
+            "MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED"
+        );
     }
 
     #[test]

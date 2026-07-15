@@ -51,7 +51,14 @@ function Wait-ClaimHandshake([string]$ReadyPath, [string]$ExpectedPublicKey, [da
   do {
     try {
       $status = Get-MaintenanceStatus $ReadyPath
-      if ($status.handshakeVerified -eq $true -and [string]$status.state -eq "handshake_verified" -and [string]$status.publicKey -eq $ExpectedPublicKey -and -not [string]::IsNullOrWhiteSpace([string]$status.lastHandshakeAt)) { return $status }
+      if (
+        $status.handshakeVerified -eq $true -and
+        $status.tunnelConnected -eq $true -and
+        [string]$status.state -eq "handshake_verified" -and
+        [string]$status.publicKey -eq $ExpectedPublicKey -and
+        -not [string]::IsNullOrWhiteSpace([string]$status.firstHandshakeVerifiedAt) -and
+        -not [string]::IsNullOrWhiteSpace([string]$status.lastHandshakeAt)
+      ) { return $status }
     } catch {}
     Start-Sleep -Seconds 1
   } while ([DateTime]::UtcNow -lt $Deadline)
@@ -80,9 +87,10 @@ function Write-Evidence([object]$Value) {
 }
 
 $evidence = [ordered]@{
-  schemaVersion="vem-wireguard-localsystem-acceptance/v1"; kind="wireguard-localsystem-acceptance"; ok=$false
+  schemaVersion="vem-wireguard-localsystem-acceptance/v2"; kind="wireguard-localsystem-acceptance"; ok=$false
   daemonService=$null; tunnelService=$null; configAclProtected=$false; configDigestBefore=$null; configDigestAfter=$null
-  claimPublicKey=$null; handshakePublicKey=$null; handshakeUnixSeconds=$null; daemonRestartRead=$false; failure=""
+  claimPublicKey=$null; firstHandshakeVerifiedAt=$null; tunnelConnectedAfterRestart=$false; claimRetainedAfterRestart=$false
+  handshakePublicKey=$null; handshakeUnixSeconds=$null; daemonRestartRead=$false; configReplayIdempotent=$false; failure=""
 }
 try {
   $evidence.daemonService = Get-LocalSystemServiceEvidence $DaemonServiceName
@@ -90,14 +98,19 @@ try {
   $evidence.configDigestBefore = Assert-SecretConfigAcl $ConfigPath
   $evidence.configAclProtected = $true
   $before = Get-MaintenanceStatus $ReadyFilePath
-  if ($before.handshakeVerified -ne $true -or [string]$before.state -ne "handshake_verified" -or [string]::IsNullOrWhiteSpace([string]$before.publicKey)) { throw "claim-to-handshake precondition is not verified" }
+  if ($before.handshakeVerified -ne $true -or $before.tunnelConnected -ne $true -or [string]$before.state -ne "handshake_verified" -or [string]::IsNullOrWhiteSpace([string]$before.publicKey) -or [string]::IsNullOrWhiteSpace([string]$before.firstHandshakeVerifiedAt)) { throw "claim-to-handshake precondition is not verified" }
   $evidence.claimPublicKey = [string]$before.publicKey
+  $evidence.firstHandshakeVerifiedAt = [string]$before.firstHandshakeVerifiedAt
   Restart-Service -Name $TunnelServiceName -Force -ErrorAction Stop
   Restart-Service -Name $DaemonServiceName -Force -ErrorAction Stop
   $after = Wait-ClaimHandshake $ReadyFilePath $evidence.claimPublicKey ([DateTime]::UtcNow.AddSeconds($TimeoutSeconds))
   $evidence.daemonRestartRead = $true
+  $evidence.tunnelConnectedAfterRestart = $after.tunnelConnected -eq $true
+  $evidence.claimRetainedAfterRestart = [string]$after.publicKey -ceq $evidence.claimPublicKey -and [string]$after.firstHandshakeVerifiedAt -ceq $evidence.firstHandshakeVerifiedAt
+  if (-not $evidence.claimRetainedAfterRestart) { throw "LocalSystem restart lost the claim-bound identity or first-handshake evidence" }
   $evidence.configDigestAfter = Assert-SecretConfigAcl $ConfigPath
   if ($evidence.configDigestAfter -cne $evidence.configDigestBefore) { throw "LocalSystem restart changed the protected WireGuard configuration bytes" }
+  $evidence.configReplayIdempotent = $true
   $handshake = Get-WireGuardHandshake $TunnelName $ExpectedRelayPublicKey
   $evidence.handshakePublicKey = $handshake.publicKey
   $evidence.handshakeUnixSeconds = $handshake.unixSeconds

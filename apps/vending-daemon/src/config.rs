@@ -1918,6 +1918,12 @@ impl ConfigStore {
         self.maintenance.status().await
     }
 
+    pub async fn retry_maintenance_convergence(
+        &self,
+    ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
+        self.maintenance.retry_active_convergence().await
+    }
+
     /// Records a reclaim authorization issued by protected maintenance.  The
     /// durable flag is the source of the Bring-Up cursor; a provisioning
     /// profile cache is only historical profile evidence and is never used as

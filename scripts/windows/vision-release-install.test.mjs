@@ -624,6 +624,10 @@ describe("Vision release installer fixtures", () => {
       );
       assert.match(source, /\/v1\/maintenance\/status/);
       assert.match(source, /handshakeVerified -eq \$true/);
+      assert.match(source, /tunnelConnected -eq \$true/);
+      assert.match(source, /firstHandshakeVerifiedAt/);
+      assert.match(source, /claimRetainedAfterRestart/);
+      assert.match(source, /configReplayIdempotent/);
       assert.match(source, /& \$wg show \$Name latest-handshakes/);
       assert.doesNotMatch(
         source,

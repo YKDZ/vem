@@ -135,6 +135,7 @@ function currentBringUp(): BringUpSnapshot {
       configureNetwork: true,
       claimMachine: false,
       retryClaim: true,
+      convergeMaintenanceTunnel: false,
       syncProfile: true,
       resolveTopology: true,
       runRuntimeAcceptance: true,

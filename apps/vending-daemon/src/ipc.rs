@@ -107,6 +107,7 @@ enum BringUpTaskMutation {
     RecordStock {
         attestation: PhysicalStockAttestationInput,
     },
+    RetryMaintenanceTunnel,
     RefreshProfile,
 }
 
@@ -1313,6 +1314,63 @@ fn disk_pressure_component(
     }
 }
 
+async fn production_maintenance_status(
+    ctx: &IpcContext,
+) -> Option<crate::maintenance::MaintenanceEnrollmentStatus> {
+    let claimed = ctx
+        .config_store
+        .load_effective_public_config()
+        .await
+        .ok()
+        .and_then(|config| config.machine_code)
+        .is_some_and(|code| !code.trim().is_empty());
+    let production = ctx
+        .config_store
+        .provisioning_profile_name()
+        .await
+        .is_ok_and(|profile| profile == "production");
+    if !claimed || !production {
+        return None;
+    }
+    let status = ctx.config_store.maintenance_status().await;
+    status.active_identity_retained.then_some(status)
+}
+
+fn maintenance_health_component(
+    status: &crate::maintenance::MaintenanceEnrollmentStatus,
+) -> vending_core::health::ComponentHealth {
+    let first_handshake_verified = status.first_handshake_verified_at.is_some();
+    let (level, code, fallback_message) = if !first_handshake_verified {
+        (
+            vending_core::health::HealthLevel::Error,
+            "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED",
+            "maintenance tunnel has not completed its first handshake",
+        )
+    } else if !status.tunnel_connected {
+        (
+            vending_core::health::HealthLevel::Degraded,
+            "MAINTENANCE_TUNNEL_DEGRADED",
+            "maintenance tunnel is disconnected after commissioning",
+        )
+    } else {
+        (
+            vending_core::health::HealthLevel::Ok,
+            "MAINTENANCE_TUNNEL_READY",
+            "maintenance tunnel connected",
+        )
+    };
+    vending_core::health::ComponentHealth {
+        component: "maintenance_tunnel".to_string(),
+        level,
+        code: code.to_string(),
+        message: status
+            .last_error
+            .clone()
+            .unwrap_or_else(|| fallback_message.to_string()),
+        updated_at: crate::state::store::now_iso(),
+    }
+}
+
 async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
     let agg = crate::health::HealthAggregator::new(ctx.state.clone());
     let mut snapshot = agg.health_snapshot().await;
@@ -1385,6 +1443,16 @@ async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
             .components
             .push(disk_pressure_component(&disk_pressure));
     }
+    if let Some(maintenance) = production_maintenance_status(&ctx).await {
+        let component = maintenance_health_component(&maintenance);
+        if !matches!(component.level, vending_core::health::HealthLevel::Ok) {
+            snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
+            if snapshot.operator_reason.is_empty() {
+                snapshot.operator_reason = component.code.clone();
+            }
+        }
+        snapshot.components.push(component);
+    }
     Json(snapshot)
 }
 
@@ -1438,6 +1506,25 @@ async fn readyz(State(ctx): State<IpcContext>) -> impl IntoResponse {
             "disk",
             disk_pressure.message,
         );
+    }
+    if let Some(maintenance) = production_maintenance_status(&ctx).await {
+        let component = maintenance_health_component(&maintenance);
+        if maintenance.first_handshake_verified_at.is_none() {
+            block_ready_snapshot(
+                &mut ready,
+                &component.code,
+                &component.component,
+                component.message,
+            );
+        } else if !maintenance.tunnel_connected {
+            ready
+                .degraded_reasons
+                .push(vending_core::health::ReadyReason {
+                    code: component.code,
+                    component: component.component,
+                    message: component.message,
+                });
+        }
     }
     Json(ready)
 }
@@ -1561,12 +1648,19 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
     let topology_ready = topology.as_ref().map(|topology| topology.ready);
     let topology_code = topology.as_ref().map(|topology| topology.code.clone());
     let topology_message = topology.as_ref().map(|topology| topology.message.clone());
-    let sale_readiness = machine_sale_readiness_snapshot(&ctx).await.ok();
+    let sale_readiness = machine_sale_readiness_snapshot(ctx).await.ok();
     let hardware = ctx.ui.status_cache.hardware.read().await.clone();
     let network_status = ctx.ui.status_cache.network.read().await.clone();
     let network_bootstrap_reached_platform = network_status
         .as_ref()
         .is_some_and(crate::network::is_ready_for_machine_claim);
+    let maintenance = ctx.config_store.maintenance_status().await;
+    let maintenance_commissioning_required = maintenance.active_identity_retained
+        && ctx
+            .config_store
+            .provisioning_profile_name()
+            .await
+            .is_ok_and(|profile| profile == "production");
     let snapshot = crate::bring_up::evaluate_bring_up(crate::bring_up::BringUpEvaluationInput {
         config,
         config_error,
@@ -1608,6 +1702,10 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
             .unwrap_or(false),
         reclaim_required,
         reclaim_requested,
+        maintenance_commissioning_required,
+        maintenance_first_handshake_verified: maintenance.first_handshake_verified_at.is_some(),
+        maintenance_state: Some(maintenance.state),
+        maintenance_message: maintenance.last_error,
         updated_at: crate::state::store::now_iso(),
     });
     let mut snapshot = snapshot;
@@ -1805,6 +1903,32 @@ async fn execute_bring_up_task(
             )
             .await
             .into_response()
+        }
+        (
+            crate::bring_up::BringUpTaskKind::ConvergeMaintenanceTunnel,
+            BringUpTaskMutation::RetryMaintenanceTunnel,
+        ) => {
+            if let Err(response) = require_non_bring_up_maintenance_authorization(
+                &ctx,
+                &headers,
+                "bring_up.maintenance_tunnel",
+            )
+            .await
+            {
+                return response;
+            }
+            match ctx.config_store.retry_maintenance_convergence().await {
+                Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+                Err(_) => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ErrorMessage {
+                        code: "maintenance_tunnel_convergence_pending",
+                        message: "machine claim is retained; retry maintenance tunnel convergence"
+                            .to_string(),
+                    }),
+                )
+                    .into_response(),
+            }
         }
         (crate::bring_up::BringUpTaskKind::SyncProfile, BringUpTaskMutation::RefreshProfile) => {
             (StatusCode::OK, Json(snapshot)).into_response()
@@ -2311,21 +2435,14 @@ async fn claim_machine_mutation(
     let maintenance_identity = profile.maintenance.clone();
     match ctx.config_store.apply_provisioning_profile(profile).await {
         Ok(config) => {
-            if ctx
+            // The Platform claim and its credentials are already durable at
+            // this point. A transient Windows tunnel failure must not turn a
+            // consumed claim code back into a failed claim; Bring-Up keeps a
+            // resumable convergence cursor instead.
+            let _maintenance_convergence = ctx
                 .config_store
                 .apply_maintenance_profile(&maintenance_identity, rotate_maintenance_identity)
-                .await
-                .is_err()
-            {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorMessage {
-                        code: "maintenance_tunnel_apply_failed",
-                        message: "machine maintenance tunnel configuration failed".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
+                .await;
             if rotate_maintenance_identity {
                 let reconcile_context = ctx.clone();
                 let background_shutdown = ctx.background_shutdown.clone();
@@ -3132,6 +3249,17 @@ pub(crate) async fn machine_sale_readiness_snapshot(
         .and_then(|config| config.machine_code.clone())
         .filter(|code| !code.trim().is_empty());
     let machine_auth_ready = machine_code.is_some();
+    let maintenance = ctx.config_store.maintenance_status().await;
+    let maintenance_commissioning_required = machine_auth_ready
+        && maintenance.active_identity_retained
+        && ctx
+            .config_store
+            .provisioning_profile_name()
+            .await
+            .is_ok_and(|profile| profile == "production");
+    let maintenance_first_handshake_ready = maintenance.first_handshake_verified_at.is_some();
+    let maintenance_sale_ready =
+        !maintenance_commissioning_required || maintenance_first_handshake_ready;
 
     let sale_view = ctx.state.sale_view(machine_code).await?;
     let active_planogram_ready = sale_view.planogram_version.is_some();
@@ -3247,6 +3375,9 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     if !machine_auth_ready {
         blocking_codes.push("MACHINE_AUTH_MISSING");
     }
+    if !maintenance_sale_ready {
+        blocking_codes.push("MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED");
+    }
     if !active_planogram_ready {
         blocking_codes.push("ACTIVE_PLANOGRAM_MISSING");
     }
@@ -3276,6 +3407,7 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     }
     let can_start_network_authorized_sale = platform_ready
         && machine_auth_ready
+        && maintenance_sale_ready
         && active_planogram_ready
         && payment_options_ready
         && sync_ready
@@ -3299,6 +3431,29 @@ pub(crate) async fn machine_sale_readiness_snapshot(
                 if machine_auth_ready { "MACHINE_AUTH_READY" } else { "MACHINE_AUTH_MISSING" },
                 if machine_auth_ready { "machine code configured" } else { "machine code missing" },
             ),
+            "maintenanceTunnel": serde_json::json!({
+                "ready": maintenance_sale_ready,
+                "commissioningRequired": maintenance_commissioning_required,
+                "firstHandshakeVerified": maintenance_first_handshake_ready,
+                "firstHandshakeVerifiedAt": maintenance.first_handshake_verified_at,
+                "connected": maintenance.tunnel_connected,
+                "state": maintenance.state,
+                "code": if !maintenance_sale_ready {
+                    "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"
+                } else if maintenance.alert_code.is_some() {
+                    "MAINTENANCE_TUNNEL_DEGRADED"
+                } else {
+                    "MAINTENANCE_TUNNEL_READY"
+                },
+                "message": maintenance.last_error.unwrap_or_else(|| {
+                    if maintenance.tunnel_connected {
+                        "maintenance tunnel connected".to_string()
+                    } else {
+                        "maintenance tunnel has durable commissioning evidence".to_string()
+                    }
+                }),
+                "alertCode": maintenance.alert_code,
+            }),
             "activePlanogram": readiness_component(
                 active_planogram_ready,
                 if active_planogram_ready { "ACTIVE_PLANOGRAM_READY" } else { "ACTIVE_PLANOGRAM_MISSING" },
@@ -5055,7 +5210,10 @@ mod tests {
             HardwareSlotTopologyIdentity, RuntimeHardwareMode,
         },
         secret::{InMemorySecretStore, SecretStore},
-        state::{store::OutboxInput, LocalStateStore},
+        state::{
+            store::{OrderSessionUpsert, OutboxInput},
+            LocalStateStore,
+        },
         transaction::TransactionStateMachine,
     };
     use axum::{
@@ -5064,7 +5222,7 @@ mod tests {
     };
     use serde_json::json;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
     use tempfile::tempdir;
@@ -5073,6 +5231,44 @@ mod tests {
 
     static FAULT_INJECTION_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     const TEST_MAINTENANCE_PIN_VERIFIER: &str = r#"{"version":1,"algorithm":"pbkdf2_hmac_sha256","iterations":120000,"salt":"ABEiM0RVZneImaq7zN3u/w==","digest":"jEOlq6tvHWcnp7Q9bZdfXkpFrllYswV3vYr250nTqJ0="}"#;
+
+    struct SwitchableMaintenanceTunnel {
+        apply_available: AtomicBool,
+        connected: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::maintenance::WindowsTunnelBackend for SwitchableMaintenanceTunnel {
+        async fn apply(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+            _config: crate::maintenance::WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            if self.apply_available.load(Ordering::SeqCst) {
+                self.connected.store(true, Ordering::SeqCst);
+                Ok(())
+            } else {
+                Err("injected WireGuard service outage".to_string())
+            }
+        }
+
+        async fn observe_handshake(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+            _public_key: &str,
+        ) -> Result<crate::maintenance::HandshakeObservation, String> {
+            let connected = self.connected.load(Ordering::SeqCst);
+            Ok(crate::maintenance::HandshakeObservation {
+                verified: connected,
+                last_handshake_at: connected.then(|| "2026-07-15T02:00:00Z".to_string()),
+                message: if connected {
+                    "handshake observed".to_string()
+                } else {
+                    "first WireGuard handshake has not been observed".to_string()
+                },
+            })
+        }
+    }
 
     struct EnvGuard {
         name: &'static str,
@@ -5242,6 +5438,23 @@ mod tests {
         machine_code: Option<String>,
         backend_base_url: &str,
     ) -> IpcContext {
+        test_ipc_context_with_tunnel(
+            data_dir,
+            token,
+            machine_code,
+            backend_base_url,
+            Arc::new(crate::maintenance::WindowsWireGuardTunnel::default()),
+        )
+        .await
+    }
+
+    async fn test_ipc_context_with_tunnel(
+        data_dir: &std::path::Path,
+        token: impl Into<String>,
+        machine_code: Option<String>,
+        backend_base_url: &str,
+        tunnel: Arc<dyn crate::maintenance::WindowsTunnelBackend>,
+    ) -> IpcContext {
         let data_dir =
             if data_dir.file_name().and_then(|name| name.to_str()) == Some("vending-daemon") {
                 data_dir.to_path_buf()
@@ -5267,10 +5480,11 @@ mod tests {
             .await
             .expect("seed maintenance PIN");
         let secrets: Arc<dyn crate::secret::SecretStore> = secrets;
-        let config_store = Arc::new(crate::config::ConfigStore::new(
+        let config_store = Arc::new(crate::config::ConfigStore::new_with_tunnel(
             data_dir.clone(),
             state.clone(),
             secrets,
+            tunnel,
         ));
         let factory_manifest_path = config_store.factory_manifest_path();
         if !tokio::fs::try_exists(&factory_manifest_path)
@@ -6564,10 +6778,11 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .all(|code| !code
-                .as_str()
-                .unwrap_or_default()
-                .contains("MAINTENANCE_HANDSHAKE")));
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+        assert_eq!(
+            readiness["components"]["maintenanceTunnel"]["commissioningRequired"],
+            true
+        );
 
         let maintenance = get_ipc_json(&app, "/v1/maintenance/status", Some("token-1")).await;
         assert_eq!(maintenance["state"], "handshake_pending");
@@ -7119,6 +7334,137 @@ mod tests {
         assert_eq!(event["type"], "runtime_reconfigure_requested");
         assert_eq!(event["reason"], "machine_provisioned");
         assert_eq!(event["machineCode"], "M001");
+    }
+
+    #[tokio::test]
+    async fn claim_remains_successful_when_wireguard_apply_fails_then_bring_up_retries() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+        let tunnel = Arc::new(SwitchableMaintenanceTunnel {
+            apply_available: AtomicBool::new(false),
+            connected: AtomicBool::new(false),
+        });
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context_with_tunnel(
+            temp_dir.path(),
+            "token-1",
+            None,
+            &server.uri(),
+            tunnel.clone(),
+        )
+        .await;
+        let app = build_router(ctx.clone());
+
+        let response = post_json_with_maintenance(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let claim: serde_json::Value = serde_json::from_slice(
+            &body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("claim body"),
+        )
+        .expect("claim json");
+        assert_eq!(claim["status"], "provisioned");
+        assert_eq!(claim["machineCode"], "M001");
+
+        let pending = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(pending["state"], "maintenance_convergence_required");
+        assert_eq!(
+            pending["currentTask"]["taskId"],
+            "bring_up.converge_maintenance_tunnel"
+        );
+        assert_eq!(
+            ctx.config_store
+                .runtime_secrets()
+                .await
+                .expect("durable credentials")
+                .machine_secret
+                .as_deref(),
+            Some("vms_local-machine-shared-secret-change-before-prod")
+        );
+
+        tunnel.apply_available.store(true, Ordering::SeqCst);
+        let retry = post_json_with_maintenance(
+            &app,
+            "/v1/bring-up/tasks/execute",
+            "token-1",
+            json!({
+                "contractVersion": 1,
+                "taskId": "bring_up.converge_maintenance_tunnel",
+                "taskVersion": 1,
+                "kind": "converge_maintenance_tunnel",
+                "intent": "retry_maintenance_tunnel",
+                "mutation": { "type": "retry_maintenance_tunnel" }
+            }),
+        )
+        .await;
+        assert_eq!(retry.status(), StatusCode::OK);
+        let status = get_ipc_json(&app, "/v1/maintenance/status", Some("token-1")).await;
+        assert_eq!(status["state"], "handshake_verified");
+        assert_eq!(status["firstHandshakeVerifiedAt"], "2026-07-15T02:00:00Z");
+
+        mark_runtime_sale_ready(&ctx).await;
+        ctx.state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-IN-FLIGHT",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "query_backend",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed active transaction");
+        let ready_before_outage = get_ipc_json(&app, "/readyz", None).await;
+        assert_eq!(ready_before_outage["canSell"], true);
+
+        tunnel.connected.store(false, Ordering::SeqCst);
+        let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert_eq!(readiness["components"]["maintenanceTunnel"]["ready"], true);
+        assert_eq!(
+            readiness["components"]["maintenanceTunnel"]["connected"],
+            false
+        );
+        assert_eq!(
+            readiness["components"]["maintenanceTunnel"]["alertCode"],
+            "MAINTENANCE_TUNNEL_DEGRADED"
+        );
+        assert!(!readiness["blockingCodes"]
+            .as_array()
+            .expect("sale readiness blockers")
+            .iter()
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+
+        let ready_during_outage = get_ipc_json(&app, "/readyz", None).await;
+        assert_eq!(ready_during_outage["canSell"], true);
+        assert_eq!(ready_during_outage["suggestedRoute"], "catalog");
+        assert!(ready_during_outage["degradedReasons"]
+            .as_array()
+            .expect("degraded reasons")
+            .iter()
+            .any(|reason| reason["code"] == "MAINTENANCE_TUNNEL_DEGRADED"));
+
+        let health = get_ipc_json(&app, "/healthz", None).await;
+        assert_eq!(health["status"], "degraded");
+        assert_eq!(health["currentTransaction"]["orderNo"], "ORDER-IN-FLIGHT");
+        assert!(health["components"]
+            .as_array()
+            .expect("health components")
+            .iter()
+            .any(|component| component["code"] == "MAINTENANCE_TUNNEL_DEGRADED"));
     }
 
     #[tokio::test]
