@@ -10,10 +10,13 @@ import {
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
+  paymentProviderEnvironmentDiagnosticSchema,
   machineSaleViewSnapshotSchema,
   parseDaemonIpcTransactionSnapshotBoundary,
 } from "@vem/shared";
 import { z } from "zod";
+
+export { paymentProviderEnvironmentDiagnosticSchema };
 
 const usbIdentitySchema = z.object({
   vendorId: z.string(),
@@ -761,6 +764,9 @@ export type EnvironmentControlResult = z.infer<
   typeof environmentControlResultSchema
 >;
 export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
+export type PaymentProviderEnvironmentDiagnostic = z.infer<
+  typeof paymentProviderEnvironmentDiagnosticSchema
+>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
 export type SaleViewMediaDiagnostic = {
   reference: string | null;

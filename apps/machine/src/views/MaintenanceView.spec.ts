@@ -24,6 +24,7 @@ const {
   getRemoteOpsStatusMock,
   getStockMaintenanceTaskMock,
   submitStockMaintenanceBatchMock,
+  getPaymentEnvironmentDiagnosticMock,
   clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
   getConfigMock,
@@ -56,6 +57,7 @@ const {
   getRemoteOpsStatusMock: vi.fn(),
   getStockMaintenanceTaskMock: vi.fn(),
   submitStockMaintenanceBatchMock: vi.fn(),
+  getPaymentEnvironmentDiagnosticMock: vi.fn(),
   clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
   getConfigMock: vi.fn(),
@@ -105,6 +107,7 @@ vi.mock("@/daemon/client", async (importOriginal) => {
       getRemoteOpsStatus: getRemoteOpsStatusMock,
       getStockMaintenanceTask: getStockMaintenanceTaskMock,
       submitStockMaintenanceBatch: submitStockMaintenanceBatchMock,
+      getPaymentEnvironmentDiagnostic: getPaymentEnvironmentDiagnosticMock,
       clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
       runHardwareSelfCheck: runHardwareSelfCheckMock,
       getConfig: getConfigMock,
@@ -484,6 +487,11 @@ beforeEach(() => {
     task: { ...stockMaintenanceTaskFixture(), status: "pending" },
     duplicate: false,
   });
+  getPaymentEnvironmentDiagnosticMock.mockResolvedValue({
+    environment: "sandbox",
+    readiness: "ready",
+    errorCategory: "none",
+  });
   clearWholeMachineMaintenanceLockMock.mockResolvedValue({ cleared: true });
   runHardwareSelfCheckMock.mockResolvedValue({
     online: true,
@@ -618,6 +626,20 @@ it("verifies the PIN through daemon IPC before enabling protected maintenance ac
   expect(clearMaintenanceSessionMock).not.toHaveBeenCalled();
 });
 
+it("shows only the secret-free payment environment diagnostic after maintenance authorization", async () => {
+  const host = await mountView();
+
+  expect(host.textContent).not.toContain("支付环境");
+  await unlockMaintenance(host);
+  await vi.waitFor(() => {
+    expect(getPaymentEnvironmentDiagnosticMock).toHaveBeenCalled();
+    expect(host.textContent).toContain("支付环境");
+    expect(host.textContent).toContain("沙箱");
+    expect(host.textContent).toContain("已就绪");
+  });
+  expect(host.textContent).not.toMatch(/privateKeyPem|certificate|密钥|证书/);
+});
+
 it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {
   const host = await mountView();
   await unlockMaintenance(host);
@@ -626,6 +648,7 @@ it("returns the rendered maintenance session to read-only when the daemon invali
   await nextTick();
 
   expect(host.textContent).toContain("只读");
+  expect(host.textContent).not.toContain("支付环境");
   expect(host.textContent).toContain("守护进程连接已更新");
   expect(clearMaintenanceSessionMock).toHaveBeenCalled();
 });

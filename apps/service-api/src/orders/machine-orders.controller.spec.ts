@@ -3,6 +3,34 @@ import { describe, expect, it, vi } from "vitest";
 import { MachineOrdersController } from "./machine-orders.controller";
 
 describe("MachineOrdersController", () => {
+  it("returns payment environment only through the machine diagnostic endpoint", async () => {
+    const ordersService = {
+      listMachinePaymentOptions: vi.fn(),
+      getMachinePaymentEnvironmentDiagnostic: vi.fn().mockResolvedValue({
+        environment: "sandbox",
+        readiness: "ready",
+        errorCategory: "none",
+      }),
+    };
+    const controller = new MachineOrdersController(
+      ordersService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      controller.getPaymentEnvironmentDiagnostic({ id: "machine-1" } as never),
+    ).resolves.toEqual({
+      environment: "sandbox",
+      readiness: "ready",
+      errorCategory: "none",
+    });
+    expect(
+      ordersService.getMachinePaymentEnvironmentDiagnostic,
+    ).toHaveBeenCalledWith("machine-1");
+  });
+
   it("submits payment code with authenticated machine code and remote ip", async () => {
     const ordersService = {
       listMachinePaymentOptions: vi.fn(),

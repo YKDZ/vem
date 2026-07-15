@@ -642,6 +642,16 @@ async fn mock_payment_code_options(server: &MockServer) {
         })))
         .mount(server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/machine-orders/payment-environment-diagnostic"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "environment": "production",
+            "readiness": "ready",
+            "errorCategory": "none"
+        })))
+        .mount(server)
+        .await;
 }
 
 async fn mock_stock_movement_acceptance(server: &MockServer) {

@@ -583,6 +583,18 @@ export const machinePaymentOptionSchema = z.object({
   disabledReason: z.string().max(128).nullable().default(null),
 });
 
+export const paymentProviderEnvironmentDiagnosticSchema = z.strictObject({
+  environment: z.enum(["sandbox", "production", "mixed", "unavailable"]),
+  readiness: z.enum(["ready", "blocked"]),
+  errorCategory: z.enum([
+    "none",
+    "no_enabled_channel",
+    "provider_unconfigured",
+    "credentials_incomplete",
+    "mixed_environment",
+  ]),
+});
+
 export const machinePaymentOptionsResponseSchema = z.object({
   options: z.array(machinePaymentOptionSchema),
   defaultOptionKey: machinePaymentOptionKeySchema.nullable(),
@@ -600,6 +612,9 @@ export type MachinePaymentOptionKey = z.infer<
   typeof machinePaymentOptionKeySchema
 >;
 export type MachinePaymentOption = z.infer<typeof machinePaymentOptionSchema>;
+export type PaymentProviderEnvironmentDiagnostic = z.infer<
+  typeof paymentProviderEnvironmentDiagnosticSchema
+>;
 export type MachinePaymentOptionsResponse = z.infer<
   typeof machinePaymentOptionsResponseSchema
 >;

@@ -89,6 +89,28 @@ describe("AlipayProvider", () => {
     );
   });
 
+  it("rejects a provider mode whose gateway would initialize the opposite SDK endpoint", async () => {
+    const { factory } = makeSdk();
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.createPaymentIntent({
+        config: makeRuntimeConfig({
+          publicConfigJson: {
+            ...makeRuntimeConfig().publicConfigJson,
+            mode: "production",
+            gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+          },
+        }),
+        paymentNo: "PAY202605060001",
+        orderNo: "ORD202605060001",
+        amountCents: 999,
+        expiresAt: new Date("2026-05-06T12:15:00.000Z"),
+      }),
+    ).rejects.toThrow(/gateway/i);
+    expect(factory.create).not.toHaveBeenCalled();
+  });
+
   it("precreates an order-code QR and does not invent providerTradeNo", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec).mockResolvedValueOnce({

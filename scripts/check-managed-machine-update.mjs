@@ -34,11 +34,78 @@ const daemonHealthBlock = functionBlock(script, "Test-DaemonHealth");
 const uiHealthBlock = functionBlock(script, "Test-UiHealth");
 const stopBlock = functionBlock(script, "Stop-ComponentForReplace");
 const sourceBindingBlock = functionBlock(script, "New-ManifestSourceBinding");
+const paymentSecretGuardBlock = functionBlock(
+  script,
+  "Assert-NoPlatformPaymentSecrets",
+);
+const paymentSecretBytesGuardBlock = functionBlock(
+  script,
+  "Assert-NoPlatformPaymentSecretBytes",
+);
+const paymentSecretFileGuardBlock = functionBlock(
+  script,
+  "Assert-NoPlatformPaymentSecretFile",
+);
 
 addCheck(
   "script-exists",
   script.length > 0,
   `${scriptPath} should provide the Windows managed update entrypoint`,
+);
+
+addCheck(
+  "rejects-platform-payment-secret-bytes-from-artifacts",
+  paymentSecretFileGuardBlock.includes("ReadAllBytes") &&
+    paymentSecretFileGuardBlock.includes(
+      "Assert-NoPlatformPaymentSecretBytes",
+    ) &&
+    paymentSecretBytesGuardBlock.includes(
+      "BEGIN\\s+(?:(?:RSA|EC)\\s+|ENCRYPTED\\s+)?PRIVATE\\s+KEY",
+    ) &&
+    paymentSecretBytesGuardBlock.includes("ImportPkcs8PrivateKey") &&
+    paymentSecretBytesGuardBlock.includes("$isEncryptedPrivateKeyInfo") &&
+    paymentSecretBytesGuardBlock.includes("$walkStructuredBer") &&
+    paymentSecretBytesGuardBlock.includes("IndefiniteSeen") &&
+    paymentSecretBytesGuardBlock.includes("UnexpectedEoc") &&
+    paymentSecretBytesGuardBlock.includes("provider credential field") &&
+    !paymentSecretBytesGuardBlock.includes("06092A864886F70D01050D") &&
+    paymentSecretBytesGuardBlock.includes("encrypted archive entry") &&
+    paymentSecretBytesGuardBlock.includes("invalid archive structure") &&
+    paymentSecretBytesGuardBlock.includes("findRecognizableZipContainer") &&
+    paymentSecretBytesGuardBlock.includes("LastIndexOf") &&
+    paymentSecretBytesGuardBlock.includes("centralEntries") &&
+    paymentSecretBytesGuardBlock.includes("localEntryCount") &&
+    paymentSecretBytesGuardBlock.includes("validatedEntries") &&
+    paymentSecretBytesGuardBlock.includes("DeflateStream") &&
+    paymentSecretBytesGuardBlock.includes("ExactDeflateInputStream") &&
+    paymentSecretBytesGuardBlock.includes("BytesRead") &&
+    paymentSecretBytesGuardBlock.includes("actualLength") &&
+    paymentSecretBytesGuardBlock.includes("actualCrc") &&
+    !paymentSecretBytesGuardBlock.includes("ZipArchive") &&
+    !paymentSecretBytesGuardBlock.includes("$entry.Open()") &&
+    paymentSecretBytesGuardBlock.includes("FromBase64String") &&
+    paymentSecretBytesGuardBlock.includes("DecodedBytes") &&
+    !paymentSecretBytesGuardBlock.includes("BEGIN\\s+CERTIFICATE") &&
+    installBlock.includes(
+      "Assert-NoPlatformPaymentSecretFile -Path $Spec.artifactPath",
+    ) &&
+    installBlock.includes(
+      "Assert-NoPlatformPaymentSecretFile -Path $sidecar.artifactPath",
+    ),
+  `${scriptPath} must boundedly scan every staged delivery artifact for private-key material without rejecting ordinary public certificates`,
+);
+
+addCheck(
+  "rejects-platform-payment-secrets-from-delivery-manifest",
+  paymentSecretGuardBlock.includes("privateKeyPem") &&
+    paymentSecretGuardBlock.includes("appCertPem") &&
+    paymentSecretGuardBlock.includes("Assert-NoPlatformPaymentSecretBytes") &&
+    paymentSecretGuardBlock.includes("UTF8.GetBytes") &&
+    script.includes("Assert-NoPlatformPaymentSecretFile -Path $ManifestPath") &&
+    script.includes(
+      "Assert-NoPlatformPaymentSecrets -Value $manifestForEvidence -Path manifest",
+    ),
+  `${scriptPath} must reject platform provider credential fields and private keys before materializing a managed update`,
 );
 
 addCheck(
