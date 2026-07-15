@@ -144,6 +144,7 @@ test("Factory OOBE cleanup resumes after the bootstrap account was removed", () 
   const fixturePath = join(root, "fixture.ps1");
   const bootstrapStatusPath = join(root, "oobe-bootstrap-status.json");
   const cleanupStatusPath = join(root, "oobe-cleanup-status.json");
+  const kioskAutologonStatePath = join(root, "oobe-kiosk-autologon-password");
   try {
     writeFileSync(
       bootstrapStatusPath,
@@ -161,6 +162,7 @@ test("Factory OOBE cleanup resumes after the bootstrap account was removed", () 
         phase: "ready",
       }),
     );
+    writeFileSync(kioskAutologonStatePath, "fixture-kiosk-password");
     const escapedRoot = root.replaceAll("'", "''");
     const completion = factoryOobeCompletionScript().replace(
       "$factoryRoot = 'C:\\ProgramData\\VEM\\factory'",
@@ -189,6 +191,8 @@ if ($script:Winlogon.AutoAdminLogon -cne '1') { throw 'AutoAdminLogon was not re
 if ($script:Winlogon.ForceAutoLogon -cne '1') { throw 'ForceAutoLogon was not restored' }
 if ($script:Winlogon.DefaultUserName -cne 'VEMKiosk') { throw 'DefaultUserName was not restored' }
 if ($script:Winlogon.DefaultDomainName -cne 'VEM-TESTBED') { throw 'DefaultDomainName was not restored' }
+if ($script:Winlogon.DefaultPassword -cne 'fixture-kiosk-password') { throw 'DefaultPassword was not restored from the persisted handoff' }
+if (Test-Path -LiteralPath '${kioskAutologonStatePath.replaceAll("'", "''")}') { throw 'kiosk autologon handoff was not consumed' }
 $cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
 if ($cleanupStatus.phase -cne 'complete') { throw 'cleanup did not reach the complete phase' }
 `,
