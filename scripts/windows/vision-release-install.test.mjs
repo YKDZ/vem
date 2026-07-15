@@ -963,12 +963,14 @@ describe("Vision release installer fixtures", () => {
   boundedIt(
     "resolves Windows ACL owners through a strongly typed account",
     () => {
-      const source = readFileSync(fixture, "utf8");
-      assert.match(
-        source,
-        /\[Security\.Principal\.NTAccount\]::new\(\[string\]\$acl\.Owner\)\)\.Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/,
-      );
-      assert.doesNotMatch(source, /\$acl\.Owner\.Translate\(/);
+      for (const path of [fixture, windowsHarness]) {
+        const source = readFileSync(path, "utf8");
+        assert.match(
+          source,
+          /\[Security\.Principal\.NTAccount\]::new\(\[string\]\$acl\.Owner\)\)\.Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/,
+        );
+        assert.doesNotMatch(source, /\$acl\.Owner\.Translate\(/);
+      }
     },
   );
 
