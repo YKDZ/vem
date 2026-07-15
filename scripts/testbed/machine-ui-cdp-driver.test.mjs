@@ -7,29 +7,62 @@ import {
   CdpClient,
   activateVisibleSelector,
   captureScreenshot,
+  bindMachineUiRuntimeEvidence,
   discoverMachineUiTarget,
+  inspectWindowsMachineUiRuntime,
+  normalizeMachineRoute,
   openMachineUiCdpSidecar,
   rewriteWebSocketDebuggerUrl,
   runVisibleMachineSaleScenario,
 } from "./machine-ui-cdp-driver.mjs";
 
-const BINDING = {
+const ATTESTATION = {
   targetId: "machine-target",
-  processId: "machine.exe:4242",
-  sessionId: "windows-session:1",
+  machine: {
+    processId: 4242,
+    executablePath: "C:\\VEM\\bringup\\machine.exe",
+    sessionId: 1,
+    user: "VEMKiosk",
+  },
 };
 
+const OBSERVED_RUNTIME = {
+  machine: {
+    processId: 4242,
+    executablePath: "C:\\VEM\\bringup\\machine.exe",
+    sessionId: 1,
+    user: "VEMKiosk",
+  },
+  cdpListener: {
+    processId: 5151,
+    executablePath:
+      "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\msedgewebview2.exe",
+    sessionId: 1,
+    user: "VEMKiosk",
+    machineAncestorProcessId: 4242,
+    localAddress: "127.0.0.1",
+    localPort: 9222,
+  },
+};
+
+function acceptanceAdapter(overrides = {}) {
+  return overrides;
+}
+
+async function fakeWindowsCommandRunner() {
+  return OBSERVED_RUNTIME;
+}
+
 describe("machine-ui-cdp-driver", () => {
-  it("binds discovery to the caller-observed target, process, and session", async () => {
+  it("discovers the one expected strict CDP target", async () => {
     await withFakeHttpTargets(
       [target("machine-target", "#/sale")],
       async (endpoint) => {
         const selected = await discoverMachineUiTarget({
           endpoint,
-          expectedTargetBinding: BINDING,
+          expectedTargetId: ATTESTATION.targetId,
         });
         assert.equal(selected.id, "machine-target");
-        assert.deepEqual(selected.binding, BINDING);
       },
     );
   });
@@ -44,26 +77,26 @@ describe("machine-ui-cdp-driver", () => {
           webSocketDebuggerUrl: "ws://127.0.0.1/devtools/page/devtools",
         },
       ],
-      BINDING,
+      ATTESTATION.targetId,
       /exactly one strict tauri target; found 0/,
     ],
     [
       "multiple strict targets",
       [target("machine-target", "#/sale"), target("stale", "#/checkout")],
-      BINDING,
+      ATTESTATION.targetId,
       /exactly one strict tauri target; found 2/,
     ],
     [
       "a stale target id",
       [target("stale", "#/sale")],
-      BINDING,
+      ATTESTATION.targetId,
       /target binding is stale/,
     ],
     [
       "an incomplete external binding",
       [target("machine-target", "#/sale")],
-      { targetId: "machine-target", processId: "machine.exe:4242" },
-      /expectedTargetBinding\.sessionId is required/,
+      "",
+      /expectedTargetId is required/,
     ],
   ]) {
     it(`rejects ${name}`, async () => {
@@ -71,13 +104,88 @@ describe("machine-ui-cdp-driver", () => {
         await assert.rejects(
           discoverMachineUiTarget({
             endpoint,
-            expectedTargetBinding: binding,
+            expectedTargetId: binding,
           }),
           pattern,
         );
       });
     });
   }
+
+  it("derives Windows process facts remotely and binds them to the live CDP target", async () => {
+    let invocation;
+    const observed = await inspectWindowsMachineUiRuntime({
+      remote: "YKDZ@win10.test",
+      expectedMachinePath: ATTESTATION.machine.executablePath,
+      commandRunner: async (input) => {
+        invocation = input;
+        return OBSERVED_RUNTIME;
+      },
+    });
+    const evidence = bindMachineUiRuntimeEvidence({
+      expectedRuntimeAttestation: ATTESTATION,
+      observedRuntime: observed,
+      target: target("machine-target", "#/checkout?b=2&a=1"),
+    });
+
+    assert.equal(invocation.remote, "YKDZ@win10.test");
+    assert.match(invocation.script, /Get-NetTCPConnection/);
+    assert.match(invocation.script, /Win32_Process/);
+    assert.match(invocation.script, /GetOwner/);
+    assert.equal(evidence.observed.machine.processId, 4242);
+    assert.equal(evidence.observed.cdpTarget.route, "#/checkout?a=1&b=2");
+  });
+
+  for (const [name, mutate, pattern] of [
+    [
+      "a caller PID that does not match the remotely observed process",
+      (attestation) => {
+        attestation.machine.processId = 99;
+      },
+      /machine process processId mismatch/,
+    ],
+    [
+      "a listener outside the machine session",
+      (_attestation, observed) => {
+        observed.cdpListener.sessionId = 2;
+      },
+      /listener session does not match/,
+    ],
+    [
+      "a CDP target that differs from the expected target",
+      (attestation) => {
+        attestation.targetId = "other-target";
+      },
+      /CDP target id mismatch/,
+    ],
+  ]) {
+    it(`rejects ${name}`, () => {
+      const attestation = structuredClone(ATTESTATION);
+      const observed = structuredClone(OBSERVED_RUNTIME);
+      mutate(attestation, observed);
+      assert.throws(
+        () =>
+          bindMachineUiRuntimeEvidence({
+            expectedRuntimeAttestation: attestation,
+            observedRuntime: observed,
+            target: target("machine-target", "#/checkout"),
+          }),
+        pattern,
+      );
+    });
+  }
+
+  it("normalizes hashes, paths, and query order before route checks", () => {
+    assert.equal(
+      normalizeMachineRoute("#/maintenance?z=3&a=1"),
+      "#/maintenance?a=1&z=3",
+    );
+    assert.equal(normalizeMachineRoute("#/products/../catalog"), "#/catalog");
+    assert.equal(
+      normalizeMachineRoute("#/MAINTENANCE%2Flogs"),
+      "#/maintenance/logs",
+    );
+  });
 
   it("rewrites ws/wss debugger URLs, including an IPv6 forward", () => {
     assert.equal(
@@ -316,7 +424,7 @@ describe("machine-ui-cdp-driver", () => {
   it("requires a named nonempty sale sequence with customer routes and actions", async () => {
     const common = {
       endpoint: "http://127.0.0.1:1",
-      expectedTargetBinding: BINDING,
+      expectedRuntimeAttestation: ATTESTATION,
       expectedInitialRoute: "#/sale",
     };
     await assert.rejects(
@@ -335,9 +443,9 @@ describe("machine-ui-cdp-driver", () => {
       runVisibleMachineSaleScenario({
         ...common,
         sequenceName: "sale",
-        steps: [{ type: "observation", name: "look", run() {} }],
+        steps: [{ type: "observation", name: "look" }],
       }),
-      /at least one customer activation/,
+      /unsupported step type observation/,
     );
     await assert.rejects(
       runVisibleMachineSaleScenario({
@@ -405,17 +513,19 @@ describe("machine-ui-cdp-driver", () => {
         );
         const result = await runVisibleMachineSaleScenario({
           endpoint,
-          expectedTargetBinding: BINDING,
+          tunnelOptions: { remote: "test@win10.test" },
+          expectedRuntimeAttestation: ATTESTATION,
           expectedInitialRoute: "#/sale",
           sequenceName: "single-product-sale",
           webSocketFactory: factory,
+          remoteCommandRunner: fakeWindowsCommandRunner,
           continuousCapture: false,
           screenshotCheckpoints: true,
-          adapter: {
+          adapter: acceptanceAdapter({
             async screenshotSink({ sha256 }) {
               return { ref: `evidence/${sha256}.png` };
             },
-          },
+          }),
           steps: [
             {
               type: "customer-activation",
@@ -464,49 +574,47 @@ describe("machine-ui-cdp-driver", () => {
     await withFakeHttpTargets(
       [target("machine-target", "#/sale")],
       async (endpoint) => {
-        let routeListener;
-        let subscribed = false;
-        const { factory, sockets } = createFakeWebSocketFactory((message) => {
-          if (message.method === "Runtime.evaluate") {
-            if (message.params.expression.includes("querySelector")) {
-              return cdpValue(
-                {
-                  selector: "#buy",
-                  actionable: true,
-                  bounds: { x: 0, y: 0, width: 10, height: 10 },
-                  center: { x: 5, y: 5 },
-                },
-                message.id,
-              );
+        const { factory, sockets } = createFakeWebSocketFactory(
+          (message, socket) => {
+            if (message.method === "Runtime.evaluate") {
+              if (message.params.expression.includes("querySelector")) {
+                return cdpValue(
+                  {
+                    selector: "#buy",
+                    actionable: true,
+                    bounds: { x: 0, y: 0, width: 10, height: 10 },
+                    center: { x: 5, y: 5 },
+                  },
+                  message.id,
+                );
+              }
+              return cdpValue(identity("#/sale"), message.id);
             }
-            return cdpValue(identity("#/sale"), message.id);
-          }
-          if (
-            message.method === "Input.dispatchTouchEvent" &&
-            message.params.type === "touchStart"
-          ) {
-            assert.equal(subscribed, true);
-            routeListener(identity("#/maintenance"));
-          }
-          return { id: message.id, result: {} };
-        });
+            if (
+              message.method === "Input.dispatchTouchEvent" &&
+              message.params.type === "touchStart"
+            ) {
+              socket.emitMessage({
+                method: "Page.navigatedWithinDocument",
+                params: {
+                  url: "http://tauri.localhost/#/maintenance?mode=operator",
+                },
+              });
+            }
+            return { id: message.id, result: {} };
+          },
+        );
         await assert.rejects(
           runVisibleMachineSaleScenario({
             endpoint,
-            expectedTargetBinding: BINDING,
+            tunnelOptions: { remote: "test@win10.test" },
+            expectedRuntimeAttestation: ATTESTATION,
             expectedInitialRoute: "#/sale",
             sequenceName: "forbidden-route",
             webSocketFactory: factory,
+            remoteCommandRunner: fakeWindowsCommandRunner,
             continuousCapture: false,
-            adapter: {
-              subscribeRouteChanges(listener) {
-                subscribed = true;
-                routeListener = listener;
-                return () => {
-                  subscribed = false;
-                };
-              },
-            },
+            adapter: acceptanceAdapter(),
             steps: [
               {
                 type: "customer-activation",
@@ -519,7 +627,36 @@ describe("machine-ui-cdp-driver", () => {
           }),
           /route capture failed: forbidden customer route observed: #\/maintenance/,
         );
-        assert.equal(subscribed, false);
+      },
+    );
+  });
+
+  it("rejects the actual catalog Home route before a customer action", async () => {
+    await withFakeHttpTargets(
+      [target("machine-target", "#/catalog")],
+      async (endpoint) => {
+        await assert.rejects(
+          runVisibleMachineSaleScenario({
+            endpoint,
+            tunnelOptions: { remote: "test@win10.test" },
+            expectedRuntimeAttestation: ATTESTATION,
+            expectedInitialRoute: "#/catalog",
+            sequenceName: "catalog-is-not-an-acceptance-state",
+            forbiddenRoutes: [],
+            adapter: acceptanceAdapter(),
+            remoteCommandRunner: fakeWindowsCommandRunner,
+            steps: [
+              {
+                type: "customer-activation",
+                name: "buy",
+                selector: "#buy",
+                routeBefore: "#/catalog",
+                routeAfter: "#/checkout",
+              },
+            ],
+          }),
+          /forbidden customer route observed: #\/catalog/,
+        );
       },
     );
   });
@@ -542,20 +679,16 @@ describe("machine-ui-cdp-driver", () => {
         await assert.rejects(
           runVisibleMachineSaleScenario({
             endpoint,
-            expectedTargetBinding: BINDING,
+            tunnelOptions: { remote: "test@win10.test" },
+            expectedRuntimeAttestation: ATTESTATION,
             expectedInitialRoute: "#/sale",
             sequenceName: "capture-failure",
             webSocketFactory: factory,
             continuousCapture: true,
             continuousCaptureIntervalMs: 1,
+            adapter: acceptanceAdapter(),
+            remoteCommandRunner: fakeWindowsCommandRunner,
             steps: [
-              {
-                type: "infrastructure",
-                name: "let-capture-run",
-                async run() {
-                  await new Promise((resolve) => setTimeout(resolve, 10));
-                },
-              },
               {
                 type: "customer-activation",
                 name: "buy",
@@ -565,7 +698,7 @@ describe("machine-ui-cdp-driver", () => {
               },
             ],
           }),
-          /continuous capture failed: CDP Runtime\.evaluate failed: capture broke/,
+          /capture broke/,
         );
         assert.equal(sockets[0].closeCalls, 1);
         assert.equal(sockets[0].readyState, 3);

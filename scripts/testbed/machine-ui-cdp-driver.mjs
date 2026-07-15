@@ -11,10 +11,15 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_ROUTE_POLL_MS = 100;
 const MAX_URL_LENGTH = 2_048;
 const MAX_LABEL_LENGTH = 160;
+const MAX_SELECTOR_LENGTH = 512;
+const MAX_TARGET_ID_LENGTH = 512;
+const MAX_REMOTE_OUTPUT_BYTES = 64 * 1024;
+const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 const FORBIDDEN_CUSTOMER_ROUTES = [
-  /^#\/home(?:\/|$)/i,
-  /^#\/maintenance(?:\/|$)/i,
-  /^#\/offline(?:\/|$)/i,
+  "/catalog",
+  "/maintenance",
+  "/offline",
+  "/bring-up",
 ];
 
 export function isStrictTauriHashRouteUrl(value) {
@@ -23,8 +28,10 @@ export function isStrictTauriHashRouteUrl(value) {
     return (
       url.protocol === "http:" &&
       url.hostname === STRICT_TAURI_HOST &&
+      url.port === "" &&
       url.pathname === "/" &&
-      url.hash.startsWith("#/")
+      url.search === "" &&
+      normalizeMachineRoute(url.hash).startsWith("#/")
     );
   } catch {
     return false;
@@ -32,8 +39,10 @@ export function isStrictTauriHashRouteUrl(value) {
 }
 
 export function matchesRoute(value, expected) {
-  const route = String(value ?? "");
-  if (typeof expected === "string") return route === expected;
+  const route = normalizeMachineRoute(value);
+  if (typeof expected === "string") {
+    return route === normalizeMachineRoute(expected);
+  }
   if (expected instanceof RegExp) {
     expected.lastIndex = 0;
     return expected.test(route);
@@ -43,22 +52,101 @@ export function matchesRoute(value, expected) {
 }
 
 export function routeFromTauriUrl(value) {
-  return new URL(String(value)).hash;
+  const url = new URL(String(value));
+  if (!isStrictTauriHashRouteUrl(url.toString())) {
+    throw new Error(`not a strict tauri route URL: ${url}`);
+  }
+  return normalizeMachineRoute(url.hash);
 }
 
-export function validateExpectedTargetBinding(binding) {
-  if (!binding || typeof binding !== "object") {
-    throw new Error("expectedTargetBinding is required");
+export function normalizeMachineRoute(value) {
+  let raw = String(value ?? "").trim();
+  if (raw.startsWith("http:") || raw.startsWith("https:")) {
+    const url = new URL(raw);
+    if (
+      url.protocol !== "http:" ||
+      url.hostname !== STRICT_TAURI_HOST ||
+      url.port !== "" ||
+      url.pathname !== "/" ||
+      url.search !== ""
+    ) {
+      throw new Error(`not a strict tauri route URL: ${url}`);
+    }
+    raw = url.hash;
   }
-  for (const field of ["targetId", "processId", "sessionId"]) {
-    if (typeof binding[field] !== "string" || binding[field].trim() === "") {
-      throw new Error(`expectedTargetBinding.${field} is required`);
+  if (!raw.startsWith("#/")) {
+    throw new Error(`invalid machine route: ${raw}`);
+  }
+  const parsed = new URL(raw.slice(1), "http://machine-route.invalid");
+  if (parsed.origin !== "http://machine-route.invalid") {
+    throw new Error(`invalid machine route: ${raw}`);
+  }
+  const decodedPath = decodeURIComponent(parsed.pathname).replaceAll("\\", "/");
+  const segments = [];
+  for (const segment of decodedPath.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length === 0)
+        throw new Error(`invalid machine route: ${raw}`);
+      segments.pop();
+      continue;
+    }
+    if (/\0/.test(segment)) throw new Error(`invalid machine route: ${raw}`);
+    segments.push(segment.toLowerCase());
+  }
+  const query = new URLSearchParams(parsed.search);
+  const entries = [...query.entries()].sort(
+    ([leftKey, leftValue], [rightKey, rightValue]) =>
+      leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue),
+  );
+  const normalizedQuery = new URLSearchParams(entries).toString();
+  const route = `#/${segments.join("/")}${normalizedQuery ? `?${normalizedQuery}` : ""}`;
+  if (route.length > MAX_URL_LENGTH) {
+    throw new Error("machine route exceeds maximum length");
+  }
+  return route;
+}
+
+export function validateExpectedRuntimeAttestation(attestation) {
+  if (!attestation || typeof attestation !== "object") {
+    throw new Error("expectedRuntimeAttestation is required");
+  }
+  if (
+    typeof attestation.targetId !== "string" ||
+    attestation.targetId.trim() === ""
+  ) {
+    throw new Error("expectedRuntimeAttestation.targetId is required");
+  }
+  const machine = attestation.machine;
+  if (!machine || typeof machine !== "object") {
+    throw new Error("expectedRuntimeAttestation.machine is required");
+  }
+  for (const field of ["processId", "sessionId"]) {
+    if (!Number.isSafeInteger(machine[field]) || machine[field] <= 0) {
+      throw new Error(
+        `expectedRuntimeAttestation.machine.${field} must be a positive integer`,
+      );
+    }
+  }
+  for (const field of ["executablePath", "user"]) {
+    if (typeof machine[field] !== "string" || machine[field].trim() === "") {
+      throw new Error(
+        `expectedRuntimeAttestation.machine.${field} is required`,
+      );
     }
   }
   return {
-    targetId: binding.targetId.trim(),
-    processId: binding.processId.trim(),
-    sessionId: binding.sessionId.trim(),
+    targetId: boundedRequiredString(
+      attestation.targetId,
+      "expectedRuntimeAttestation.targetId",
+      MAX_TARGET_ID_LENGTH,
+    ),
+    machine: {
+      processId: machine.processId,
+      sessionId: machine.sessionId,
+      executablePath: normalizeWindowsPath(machine.executablePath),
+      user: normalizeWindowsUser(machine.user),
+    },
   };
 }
 
@@ -81,13 +169,15 @@ export function rewriteWebSocketDebuggerUrl(
 
 export async function discoverMachineUiTarget({
   endpoint,
-  expectedTargetBinding,
+  expectedTargetId,
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
   if (!endpoint) throw new Error("endpoint is required");
   if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
-  const binding = validateExpectedTargetBinding(expectedTargetBinding);
+  if (typeof expectedTargetId !== "string" || expectedTargetId.trim() === "") {
+    throw new Error("expectedTargetId is required");
+  }
   const jsonEndpoint = new URL("/json", normalizeEndpoint(endpoint));
   const response = await withTimeout(
     fetchImpl(jsonEndpoint),
@@ -115,9 +205,9 @@ export async function discoverMachineUiTarget({
     );
   }
   const target = candidates[0];
-  if (target.id !== binding.targetId) {
+  if (target.id !== expectedTargetId) {
     throw new Error(
-      `CDP target binding is stale: expected ${binding.targetId}, found ${String(target.id)}`,
+      `CDP target binding is stale: expected ${expectedTargetId}, found ${String(target.id)}`,
     );
   }
   if (typeof target.webSocketDebuggerUrl !== "string") {
@@ -126,8 +216,169 @@ export async function discoverMachineUiTarget({
   return {
     ...target,
     route: routeFromTauriUrl(target.url),
-    binding,
   };
+}
+
+export async function inspectWindowsMachineUiRuntime({
+  remote,
+  sshPort,
+  identityFile,
+  certificateFile,
+  sshArgs = [],
+  remoteCdpPort = DEFAULT_REMOTE_CDP_PORT,
+  expectedMachinePath,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  commandRunner = runWindowsPowerShellOverSsh,
+} = {}) {
+  if (typeof remote !== "string" || remote.trim() === "") {
+    throw new Error("remote is required for Windows runtime inspection");
+  }
+  if (!Number.isSafeInteger(remoteCdpPort) || remoteCdpPort <= 0) {
+    throw new Error("remoteCdpPort must be a positive integer");
+  }
+  const machinePath = normalizeWindowsPath(expectedMachinePath);
+  if (typeof commandRunner !== "function") {
+    throw new Error("Windows runtime commandRunner must be a function");
+  }
+  const raw = await commandRunner({
+    remote: remote.trim(),
+    sshPort,
+    identityFile,
+    certificateFile,
+    sshArgs,
+    timeoutMs,
+    script: buildWindowsMachineUiInspectionScript({
+      machinePath,
+      remoteCdpPort,
+    }),
+  });
+  return normalizeWindowsRuntimeObservation(raw, { remoteCdpPort });
+}
+
+export function bindMachineUiRuntimeEvidence({
+  expectedRuntimeAttestation,
+  observedRuntime,
+  target,
+} = {}) {
+  const expected = validateExpectedRuntimeAttestation(
+    expectedRuntimeAttestation,
+  );
+  const observed = normalizeWindowsRuntimeObservation(observedRuntime);
+  if (!target || typeof target !== "object") {
+    throw new Error("live CDP target is required");
+  }
+  const targetId = boundedRequiredString(
+    target.id,
+    "live CDP target id",
+    MAX_TARGET_ID_LENGTH,
+  );
+  const targetUrl = boundedRequiredString(
+    target.url,
+    "live CDP target URL",
+    MAX_URL_LENGTH,
+  );
+  const route = routeFromTauriUrl(targetUrl);
+  const canonicalTargetUrl = new URL(targetUrl);
+  canonicalTargetUrl.hash = route;
+  const expectedMachine = expected.machine;
+  const actualMachine = observed.machine;
+  for (const field of ["processId", "sessionId", "executablePath", "user"]) {
+    if (actualMachine[field] !== expectedMachine[field]) {
+      throw new Error(
+        `Windows machine process ${field} mismatch: expected ${String(expectedMachine[field])}, observed ${String(actualMachine[field])}`,
+      );
+    }
+  }
+  if (targetId !== expected.targetId) {
+    throw new Error(
+      `CDP target id mismatch: expected ${expected.targetId}, observed ${targetId}`,
+    );
+  }
+  if (
+    observed.cdpListener.machineAncestorProcessId !== actualMachine.processId
+  ) {
+    throw new Error(
+      "CDP listener is not descended from the observed machine process",
+    );
+  }
+  if (observed.cdpListener.sessionId !== actualMachine.sessionId) {
+    throw new Error(
+      "CDP listener session does not match the observed machine process",
+    );
+  }
+  if (observed.cdpListener.user !== actualMachine.user) {
+    throw new Error(
+      "CDP listener user does not match the observed machine process",
+    );
+  }
+  return {
+    expected,
+    observed: {
+      machine: actualMachine,
+      cdpListener: observed.cdpListener,
+      cdpTarget: { id: targetId, url: canonicalTargetUrl.toString(), route },
+    },
+  };
+}
+
+export function buildWindowsMachineUiInspectionScript({
+  machinePath,
+  remoteCdpPort,
+} = {}) {
+  const normalizedMachinePath = normalizeWindowsPath(machinePath);
+  if (!Number.isSafeInteger(remoteCdpPort) || remoteCdpPort <= 0) {
+    throw new Error("remoteCdpPort must be a positive integer");
+  }
+  const encodedMachinePath = Buffer.from(
+    normalizedMachinePath,
+    "utf8",
+  ).toString("base64");
+  return `
+$ErrorActionPreference = 'Stop'
+$machinePath = [System.IO.Path]::GetFullPath([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedMachinePath}')))
+$machine = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object {
+  $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath)
+})
+if ($machine.Count -ne 1) { throw "expected exactly one machine.exe at $machinePath, found $($machine.Count)" }
+$machineCim = $machine[0]
+$machineProcess = Get-Process -Id ([int]$machineCim.ProcessId) -ErrorAction Stop
+$machineOwner = Invoke-CimMethod -InputObject $machineCim -MethodName GetOwner -ErrorAction Stop
+$listeners = @(Get-NetTCPConnection -LocalPort ${remoteCdpPort} -State Listen -ErrorAction Stop | Where-Object {
+  [string]$_.LocalAddress -ceq '127.0.0.1'
+})
+if ($listeners.Count -ne 1) { throw "expected exactly one loopback CDP listener on port ${remoteCdpPort}, found $($listeners.Count)" }
+$listenerCim = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$listeners[0].OwningProcess)" -ErrorAction Stop
+$listenerProcess = Get-Process -Id ([int]$listenerCim.ProcessId) -ErrorAction Stop
+$listenerOwner = Invoke-CimMethod -InputObject $listenerCim -MethodName GetOwner -ErrorAction Stop
+$cursor = $listenerCim
+$ancestor = $null
+for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth += 1) {
+  if ([int]$cursor.ProcessId -eq [int]$machineCim.ProcessId) { $ancestor = [int]$machineCim.ProcessId; break }
+  $parentId = [int]$cursor.ParentProcessId
+  if ($parentId -le 0 -or $parentId -eq [int]$cursor.ProcessId) { break }
+  $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+}
+if ($null -eq $ancestor) { throw 'CDP listener is not descended from machine.exe' }
+if ([int]$listenerProcess.SessionId -ne [int]$machineProcess.SessionId) { throw 'CDP listener session differs from machine.exe' }
+if ([string]$listenerOwner.User -cne [string]$machineOwner.User) { throw 'CDP listener user differs from machine.exe' }
+[ordered]@{
+  machine = [ordered]@{
+    processId = [int]$machineProcess.Id
+    executablePath = [System.IO.Path]::GetFullPath($machineCim.ExecutablePath)
+    sessionId = [int]$machineProcess.SessionId
+    user = [string]$machineOwner.User
+  }
+  cdpListener = [ordered]@{
+    processId = [int]$listenerProcess.Id
+    executablePath = [System.IO.Path]::GetFullPath($listenerCim.ExecutablePath)
+    sessionId = [int]$listenerProcess.SessionId
+    user = [string]$listenerOwner.User
+    machineAncestorProcessId = $ancestor
+    localAddress = [string]$listeners[0].LocalAddress
+    localPort = [int]$listeners[0].LocalPort
+  }
+} | ConvertTo-Json -Compress -Depth 4
+`.trim();
 }
 
 export async function openMachineUiCdpSidecar({
@@ -256,17 +507,32 @@ export class CdpClient {
 
   async connect({ timeoutMs = this.defaultTimeoutMs } = {}) {
     if (this.socket) return this;
-    const socket = this.webSocketFactory(this.webSocketUrl);
+    let socket;
+    try {
+      socket = this.webSocketFactory(this.webSocketUrl);
+    } catch (error) {
+      throw new Error(
+        `CDP WebSocket creation failed: ${boundedString(error.message, 512)}`,
+        {
+          cause: error,
+        },
+      );
+    }
     requireBrowserWebSocket(socket);
     this.socket = socket;
     socket.addEventListener("message", (event) => this.#handleMessage(event));
     socket.addEventListener("close", () => this.#handleClose());
     socket.addEventListener("error", (event) => this.#handleError(event));
     if (socket.readyState === 1) return this;
-    await waitForSocketEvent(socket, "open", {
-      timeoutMs,
-      errorLabel: "CDP WebSocket failed to open",
-    });
+    try {
+      await waitForSocketEvent(socket, "open", {
+        timeoutMs,
+        errorLabel: "CDP WebSocket failed to open",
+      });
+    } catch (error) {
+      await this.close({ timeoutMs }).catch(() => {});
+      throw error;
+    }
     return this;
   }
 
@@ -399,6 +665,12 @@ export class CdpClient {
         ? event
         : new Error(event?.message ?? "CDP WebSocket error");
     this.#rejectPending(error);
+    if (!this.closed) {
+      this.closed = true;
+      if (this.socket?.readyState === 0 || this.socket?.readyState === 1) {
+        this.socket.close();
+      }
+    }
   }
 
   #rejectPending(error) {
@@ -469,10 +741,14 @@ export async function captureDomIdentity(client, options = {}) {
 }
 
 export async function captureScreenshot(client, options = {}) {
+  const format = options.format ?? "png";
+  if (format !== "png" && format !== "jpeg") {
+    throw new Error("screenshot format must be png or jpeg");
+  }
   const result = await client.send(
     "Page.captureScreenshot",
     {
-      format: options.format ?? "png",
+      format,
       fromSurface: options.fromSurface ?? true,
       captureBeyondViewport: options.captureBeyondViewport ?? false,
     },
@@ -481,14 +757,29 @@ export async function captureScreenshot(client, options = {}) {
   if (typeof result.data !== "string") {
     throw new Error("Page.captureScreenshot returned no image data");
   }
+  if (result.data.length > Math.ceil((MAX_SCREENSHOT_BYTES * 4) / 3) + 4) {
+    throw new Error("Page.captureScreenshot exceeded the maximum size");
+  }
+  if (
+    result.data.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(result.data)
+  ) {
+    throw new Error("Page.captureScreenshot returned invalid base64");
+  }
   const bytes = Buffer.from(result.data, "base64");
+  if (bytes.length > MAX_SCREENSHOT_BYTES) {
+    throw new Error("Page.captureScreenshot exceeded the maximum size");
+  }
+  if (bytes.toString("base64") !== result.data) {
+    throw new Error("Page.captureScreenshot returned noncanonical base64");
+  }
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   let ref = null;
   if (options.screenshotSink) {
     const sinkResult = await options.screenshotSink({
       bytes,
       sha256,
-      format: options.format ?? "png",
+      format,
       label: options.label ?? "screenshot",
     });
     ref = typeof sinkResult === "string" ? sinkResult : sinkResult?.ref;
@@ -499,7 +790,7 @@ export async function captureScreenshot(client, options = {}) {
   return {
     sha256,
     byteLength: bytes.length,
-    format: options.format ?? "png",
+    format,
     ref,
   };
 }
@@ -522,6 +813,9 @@ export async function captureCheckpoint(client, label, options = {}) {
 export async function probeSelectorBounds(client, selector, options = {}) {
   if (typeof selector !== "string" || selector.trim() === "") {
     throw new Error("selector is required");
+  }
+  if (selector.length > MAX_SELECTOR_LENGTH) {
+    throw new Error("selector exceeds maximum length");
   }
   return evaluateExpression(
     client,
@@ -701,7 +995,8 @@ export async function runVisibleMachineSaleScenario(options = {}) {
     tunnelOptions = {},
     fetchImpl,
     webSocketFactory,
-    expectedTargetBinding,
+    remoteCommandRunner,
+    expectedRuntimeAttestation,
     expectedInitialRoute,
     sequenceName,
     steps,
@@ -712,11 +1007,12 @@ export async function runVisibleMachineSaleScenario(options = {}) {
     continuousCapture = true,
     continuousCaptureIntervalMs = 500,
     screenshotCheckpoints = false,
-    forbiddenRoutes = FORBIDDEN_CUSTOMER_ROUTES,
     clock,
   } = options;
   const sequence = validateScenarioSequence({ sequenceName, steps });
-  const binding = validateExpectedTargetBinding(expectedTargetBinding);
+  const expectedRuntime = validateExpectedRuntimeAttestation(
+    expectedRuntimeAttestation,
+  );
   if (expectedInitialRoute == null) {
     throw new Error("expectedInitialRoute is required");
   }
@@ -724,7 +1020,7 @@ export async function runVisibleMachineSaleScenario(options = {}) {
   const sidecar = await openMachineUiCdpSidecar({ endpoint, ...tunnelOptions });
   let client;
   let capture;
-  let unsubscribeAdapterRoutes;
+  let unsubscribeCdpRoutes;
   let scenarioError;
   let scenarioResult;
   const evidence = [];
@@ -732,7 +1028,7 @@ export async function runVisibleMachineSaleScenario(options = {}) {
   let fatalError = null;
   const record = (entry) => {
     const item = {
-      ...entry,
+      ...boundEvidenceEntry(entry),
       capturedAt: entry.capturedAt ?? nowIso(clock),
       ordinal: ordinal++,
     };
@@ -742,7 +1038,7 @@ export async function runVisibleMachineSaleScenario(options = {}) {
   const classifyRouteEvent = (event, source = "adapter") => {
     try {
       const identity = boundIdentity(event?.identity ?? event);
-      assertAllowedRoute(identity.route, forbiddenRoutes);
+      assertAllowedRoute(identity.route, FORBIDDEN_CUSTOMER_ROUTES);
       record({ type: "route-changed", source, identity });
     } catch (error) {
       fatalError = new Error(`route capture failed: ${error.message}`, {
@@ -756,18 +1052,35 @@ export async function runVisibleMachineSaleScenario(options = {}) {
   };
 
   try {
+    const observedRuntime = await inspectWindowsMachineUiRuntime({
+      remote: tunnelOptions.remote,
+      sshPort: tunnelOptions.sshPort,
+      identityFile: tunnelOptions.identityFile,
+      certificateFile: tunnelOptions.certificateFile,
+      sshArgs: tunnelOptions.sshArgs,
+      remoteCdpPort: tunnelOptions.remoteCdpPort ?? DEFAULT_REMOTE_CDP_PORT,
+      expectedMachinePath: expectedRuntime.machine.executablePath,
+      timeoutMs,
+      commandRunner: remoteCommandRunner ?? runWindowsPowerShellOverSsh,
+    });
     const target = await discoverMachineUiTarget({
       endpoint: sidecar.endpoint,
-      expectedTargetBinding: binding,
+      expectedTargetId: expectedRuntime.targetId,
       fetchImpl,
       timeoutMs,
     });
+    const runtimeEvidence = bindMachineUiRuntimeEvidence({
+      expectedRuntimeAttestation: expectedRuntime,
+      observedRuntime,
+      target,
+    });
+    record({ type: "runtime-attestation", attestation: runtimeEvidence });
     if (!matchesRoute(target.route, expectedInitialRoute)) {
       throw new Error(
         `initial CDP target route mismatch: expected ${formatExpectedRoute(expectedInitialRoute)}, got ${target.route}`,
       );
     }
-    assertAllowedRoute(target.route, forbiddenRoutes);
+    assertAllowedRoute(target.route, FORBIDDEN_CUSTOMER_ROUTES);
     const webSocketUrl = rewriteWebSocketDebuggerUrl(
       target.webSocketDebuggerUrl,
       sidecar.endpoint,
@@ -792,21 +1105,7 @@ export async function runVisibleMachineSaleScenario(options = {}) {
       offWithinDocument();
       offFrameNavigated();
     };
-    unsubscribeAdapterRoutes = offCdpRoutes;
-    if (adapter.subscribeRouteChanges) {
-      const offAdapter = adapter.subscribeRouteChanges((event) =>
-        classifyRouteEvent(event, "adapter"),
-      );
-      if (typeof offAdapter !== "function") {
-        throw new Error(
-          "subscribeRouteChanges must return an unsubscribe function",
-        );
-      }
-      unsubscribeAdapterRoutes = () => {
-        offAdapter();
-        offCdpRoutes();
-      };
-    }
+    unsubscribeCdpRoutes = offCdpRoutes;
 
     await enablePageRuntime(client);
     assertHealthy();
@@ -815,7 +1114,7 @@ export async function runVisibleMachineSaleScenario(options = {}) {
           intervalMs: continuousCaptureIntervalMs,
           screenshot: screenshotCheckpoints,
           screenshotSink: adapter.screenshotSink,
-          forbiddenRoutes,
+          forbiddenRoutes: FORBIDDEN_CUSTOMER_ROUTES,
           timeoutMs,
           clock,
           startOrdinal: 1_000_000,
@@ -828,7 +1127,7 @@ export async function runVisibleMachineSaleScenario(options = {}) {
       screenshotSink: adapter.screenshotSink,
       clock,
     });
-    assertAllowedRoute(initial.identity.route, forbiddenRoutes);
+    assertAllowedRoute(initial.identity.route, FORBIDDEN_CUSTOMER_ROUTES);
     assertRouteIdentity(initial.identity, expectedInitialRoute, "initial");
     record(initial);
 
@@ -838,10 +1137,15 @@ export async function runVisibleMachineSaleScenario(options = {}) {
         const before = await waitForRoute(client, step.routeBefore, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
           pollMs: routePollMs,
-          forbiddenRoutes,
+          forbiddenRoutes: FORBIDDEN_CUSTOMER_ROUTES,
           assertHealthy,
         });
         assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
+        record({
+          type: "checkpoint",
+          label: `${step.name}:before`,
+          identity: before,
+        });
         const activation = await activateVisibleSelector(
           client,
           step.selector,
@@ -864,18 +1168,15 @@ export async function runVisibleMachineSaleScenario(options = {}) {
         const after = await waitForRoute(client, step.routeAfter, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
           pollMs: routePollMs,
-          forbiddenRoutes,
+          forbiddenRoutes: FORBIDDEN_CUSTOMER_ROUTES,
           assertHealthy,
         });
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
-      } else {
-        await step.run({
-          client,
-          step,
-          record,
-          expectedTargetBinding: binding,
+        record({
+          type: "checkpoint",
+          label: `${step.name}:after`,
+          identity: after,
         });
-        assertHealthy();
       }
       const checkpoint = await captureCheckpoint(client, step.name, {
         timeoutMs: step.timeoutMs ?? timeoutMs,
@@ -883,7 +1184,7 @@ export async function runVisibleMachineSaleScenario(options = {}) {
         screenshotSink: adapter.screenshotSink,
         clock,
       });
-      assertAllowedRoute(checkpoint.identity.route, forbiddenRoutes);
+      assertAllowedRoute(checkpoint.identity.route, FORBIDDEN_CUSTOMER_ROUTES);
       record(checkpoint);
     }
 
@@ -893,19 +1194,19 @@ export async function runVisibleMachineSaleScenario(options = {}) {
       screenshotSink: adapter.screenshotSink,
       clock,
     });
-    assertAllowedRoute(final.identity.route, forbiddenRoutes);
+    assertAllowedRoute(final.identity.route, FORBIDDEN_CUSTOMER_ROUTES);
     record(final);
     assertHealthy();
     const continuous = capture ? await capture.stop() : [];
     capture = null;
     scenarioResult = {
-      schemaVersion: "machine-ui-cdp-sale-scenario/v2",
+      schemaVersion: "machine-ui-cdp-sale-scenario/v3",
       status: "passed",
       sequenceName: boundedString(sequenceName, MAX_LABEL_LENGTH),
       target: {
         id: target.id,
         route: target.route,
-        binding,
+        attestation: runtimeEvidence,
       },
       evidence: sortChronologically([...evidence, ...continuous]),
     };
@@ -913,7 +1214,7 @@ export async function runVisibleMachineSaleScenario(options = {}) {
     scenarioError = error;
   } finally {
     const cleanup = await Promise.allSettled([
-      Promise.resolve().then(() => unsubscribeAdapterRoutes?.()),
+      Promise.resolve().then(() => unsubscribeCdpRoutes?.()),
       capture?.stop() ?? Promise.resolve(),
       client?.close() ?? Promise.resolve(),
       sidecar.close(),
@@ -934,6 +1235,9 @@ function validateScenarioSequence({ sequenceName, steps }) {
   if (typeof sequenceName !== "string" || sequenceName.trim() === "") {
     throw new Error("sequenceName is required");
   }
+  if (sequenceName.length > MAX_LABEL_LENGTH) {
+    throw new Error("sequenceName exceeds maximum length");
+  }
   if (!Array.isArray(steps) || steps.length === 0) {
     throw new Error("scenario requires a nonempty step sequence");
   }
@@ -945,6 +1249,11 @@ function validateScenarioSequence({ sequenceName, steps }) {
     if (typeof step.name !== "string" || step.name.trim() === "") {
       throw new Error(`scenario step ${index + 1} requires a name`);
     }
+    if (step.name.length > MAX_LABEL_LENGTH) {
+      throw new Error(
+        `${step.name.slice(0, MAX_LABEL_LENGTH)} step name exceeds maximum length`,
+      );
+    }
     if (step.type === "customer-activation") {
       customerActivations += 1;
       for (const field of ["selector", "routeBefore", "routeAfter"]) {
@@ -952,14 +1261,17 @@ function validateScenarioSequence({ sequenceName, steps }) {
           throw new Error(`${step.name} customer activation requires ${field}`);
         }
       }
+      if (step.selector.length > MAX_SELECTOR_LENGTH) {
+        throw new Error(
+          `${step.name} customer activation selector exceeds maximum length`,
+        );
+      }
+      normalizeMachineRoute(step.routeBefore);
+      normalizeMachineRoute(step.routeAfter);
       if (step.run || step.action) {
         throw new Error(
           `${step.name} customer activation cannot use a custom action`,
         );
-      }
-    } else if (step.type === "observation" || step.type === "infrastructure") {
-      if (typeof step.run !== "function") {
-        throw new Error(`${step.name} ${step.type} step requires run`);
       }
     } else {
       throw new Error(
@@ -977,11 +1289,20 @@ function assertAllowedRoute(
   route,
   forbiddenRoutes = FORBIDDEN_CUSTOMER_ROUTES,
 ) {
-  if (typeof route !== "string" || !route.startsWith("#/")) {
-    throw new Error(`invalid machine route: ${String(route)}`);
-  }
-  if (forbiddenRoutes.some((candidate) => matchesRoute(route, candidate))) {
-    throw new Error(`forbidden customer route observed: ${route}`);
+  const normalized = normalizeMachineRoute(route);
+  const path = routePath(normalized);
+  if (
+    forbiddenRoutes.some((candidate) => {
+      if (typeof candidate === "string") {
+        const forbiddenPath = candidate.startsWith("#")
+          ? routePath(normalizeMachineRoute(candidate))
+          : normalizeForbiddenRoutePath(candidate);
+        return path === forbiddenPath || path.startsWith(`${forbiddenPath}/`);
+      }
+      return matchesRoute(normalized, candidate);
+    })
+  ) {
+    throw new Error(`forbidden customer route observed: ${normalized}`);
   }
 }
 
@@ -1000,8 +1321,8 @@ function boundIdentity(identity) {
   }
   return {
     url: boundedString(url.toString(), MAX_URL_LENGTH),
-    route: url.hash,
-    pathname: boundedString(identity.pathname ?? url.pathname, 256),
+    route: normalizeMachineRoute(url.hash),
+    pathname: boundedString(url.pathname, 256),
     title: boundedString(identity.title ?? "", MAX_LABEL_LENGTH),
     readyState: boundedString(identity.readyState ?? "unknown", 32),
     activeElement:
@@ -1025,6 +1346,133 @@ function sortChronologically(items) {
     );
     return time || Number(left.ordinal ?? 0) - Number(right.ordinal ?? 0);
   });
+}
+
+function routePath(route) {
+  return new URL(
+    normalizeMachineRoute(route).slice(1),
+    "http://machine-route.invalid",
+  ).pathname;
+}
+
+function normalizeForbiddenRoutePath(value) {
+  const path = String(value ?? "")
+    .trim()
+    .replaceAll("\\", "/")
+    .toLowerCase();
+  if (!path.startsWith("/")) {
+    throw new Error(`invalid forbidden route path: ${String(value)}`);
+  }
+  return routePath(`#${path}`);
+}
+
+function boundEvidenceEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    throw new Error("evidence entry must be an object");
+  }
+  if (entry.type === "checkpoint") {
+    return {
+      type: "checkpoint",
+      label: boundedRequiredString(
+        entry.label,
+        "checkpoint label",
+        MAX_LABEL_LENGTH,
+      ),
+      identity: boundIdentity(entry.identity),
+      screenshot:
+        entry.screenshot == null ? null : boundScreenshot(entry.screenshot),
+    };
+  }
+  if (entry.type === "customer-activation") {
+    return {
+      type: "customer-activation",
+      label: boundedRequiredString(
+        entry.label,
+        "activation label",
+        MAX_LABEL_LENGTH,
+      ),
+      selector: boundedRequiredString(
+        entry.selector,
+        "activation selector",
+        MAX_SELECTOR_LENGTH,
+      ),
+      input: boundPhysicalInput(entry.input),
+      routeBefore: normalizeMachineRoute(entry.routeBefore),
+    };
+  }
+  if (entry.type === "route-changed") {
+    if (entry.source !== "cdp")
+      throw new Error("route evidence source must be CDP");
+    return {
+      type: "route-changed",
+      source: "cdp",
+      identity: boundIdentity(entry.identity),
+    };
+  }
+  if (entry.type === "runtime-attestation") {
+    return {
+      type: "runtime-attestation",
+      attestation: bindMachineUiRuntimeEvidence({
+        expectedRuntimeAttestation: entry.attestation?.expected,
+        observedRuntime: entry.attestation?.observed,
+        target: entry.attestation?.observed?.cdpTarget,
+      }),
+    };
+  }
+  throw new Error(`unsupported evidence entry type ${String(entry.type)}`);
+}
+
+function boundScreenshot(screenshot) {
+  if (!screenshot || typeof screenshot !== "object") {
+    throw new Error("screenshot evidence must be an object");
+  }
+  if (!/^[a-f0-9]{64}$/.test(screenshot.sha256)) {
+    throw new Error("screenshot evidence requires a SHA-256 digest");
+  }
+  if (
+    !Number.isSafeInteger(screenshot.byteLength) ||
+    screenshot.byteLength < 0 ||
+    screenshot.byteLength > MAX_SCREENSHOT_BYTES
+  ) {
+    throw new Error("screenshot evidence exceeds the maximum size");
+  }
+  const ref =
+    screenshot.ref == null
+      ? null
+      : boundedRequiredString(screenshot.ref, "screenshot ref", 1_024);
+  return {
+    sha256: screenshot.sha256,
+    byteLength: screenshot.byteLength,
+    format: screenshot.format === "jpeg" ? "jpeg" : "png",
+    ref,
+  };
+}
+
+function boundPhysicalInput(input) {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    !String(input.method).startsWith("Input.")
+  ) {
+    throw new Error("activation requires physical CDP Input evidence");
+  }
+  if (input.kind !== "touch" && input.kind !== "mouse") {
+    throw new Error("activation input kind is invalid");
+  }
+  for (const field of ["x", "y"]) {
+    if (!Number.isFinite(input[field]) || Math.abs(input[field]) > 100_000) {
+      throw new Error(`activation input ${field} is invalid`);
+    }
+  }
+  if (input.released !== true)
+    throw new Error("activation input was not released");
+  return {
+    method: input.method,
+    kind: input.kind,
+    x: input.x,
+    y: input.y,
+    released: true,
+  };
 }
 
 function normalizeEndpoint(endpoint) {
@@ -1226,10 +1674,198 @@ function formatExpectedRoute(expected) {
   return JSON.stringify(expected);
 }
 
+function normalizeWindowsRuntimeObservation(
+  observation,
+  { remoteCdpPort } = {},
+) {
+  if (!observation || typeof observation !== "object") {
+    throw new Error("Windows runtime inspection returned no object");
+  }
+  const machine = normalizeWindowsProcessObservation(
+    observation.machine,
+    "machine",
+  );
+  const cdpListener = normalizeWindowsProcessObservation(
+    observation.cdpListener,
+    "cdpListener",
+  );
+  if (
+    !Number.isSafeInteger(observation.cdpListener.machineAncestorProcessId) ||
+    observation.cdpListener.machineAncestorProcessId <= 0
+  ) {
+    throw new Error(
+      "Windows runtime inspection requires cdpListener.machineAncestorProcessId",
+    );
+  }
+  if (observation.cdpListener.localAddress !== "127.0.0.1") {
+    throw new Error(
+      "Windows runtime inspection requires a loopback CDP listener",
+    );
+  }
+  if (
+    !Number.isSafeInteger(observation.cdpListener.localPort) ||
+    observation.cdpListener.localPort <= 0
+  ) {
+    throw new Error(
+      "Windows runtime inspection requires cdpListener.localPort",
+    );
+  }
+  if (
+    remoteCdpPort != null &&
+    observation.cdpListener.localPort !== remoteCdpPort
+  ) {
+    throw new Error(
+      `Windows runtime inspection CDP port mismatch: expected ${remoteCdpPort}, observed ${observation.cdpListener.localPort}`,
+    );
+  }
+  return {
+    machine,
+    cdpListener: {
+      ...cdpListener,
+      machineAncestorProcessId:
+        observation.cdpListener.machineAncestorProcessId,
+      localAddress: observation.cdpListener.localAddress,
+      localPort: observation.cdpListener.localPort,
+    },
+  };
+}
+
+function normalizeWindowsProcessObservation(process, label) {
+  if (!process || typeof process !== "object") {
+    throw new Error(`Windows runtime inspection requires ${label}`);
+  }
+  for (const field of ["processId", "sessionId"]) {
+    if (!Number.isSafeInteger(process[field]) || process[field] <= 0) {
+      throw new Error(`Windows runtime inspection requires ${label}.${field}`);
+    }
+  }
+  return {
+    processId: process.processId,
+    executablePath: normalizeWindowsPath(process.executablePath),
+    sessionId: process.sessionId,
+    user: normalizeWindowsUser(process.user),
+  };
+}
+
+function normalizeWindowsPath(value) {
+  const path = String(value ?? "")
+    .trim()
+    .replaceAll("/", "\\");
+  if (!/^[A-Za-z]:\\/.test(path) || /[\0\r\n]/.test(path)) {
+    throw new Error("Windows executable path must be an absolute drive path");
+  }
+  const segments = [];
+  for (const segment of path.slice(3).split("\\")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length === 0) {
+        throw new Error("Windows executable path escapes its drive root");
+      }
+      segments.pop();
+    } else {
+      segments.push(segment.toLowerCase());
+    }
+  }
+  if (segments.length === 0)
+    throw new Error("Windows executable path is incomplete");
+  return `${path.slice(0, 2).toLowerCase()}\\${segments.join("\\")}`;
+}
+
+function normalizeWindowsUser(value) {
+  const user = String(value ?? "").trim();
+  if (user === "" || /[\0\r\n]/.test(user)) {
+    throw new Error("Windows process user is required");
+  }
+  return user.toLowerCase();
+}
+
+function boundedRequiredString(value, label, maxLength) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${label} is required`);
+  }
+  const normalized = value.trim();
+  if (normalized.length > maxLength)
+    throw new Error(`${label} exceeds maximum length`);
+  return normalized;
+}
+
+async function runWindowsPowerShellOverSsh({
+  remote,
+  sshPort,
+  identityFile,
+  certificateFile,
+  sshArgs = [],
+  timeoutMs,
+  script,
+}) {
+  const args = [
+    "-o",
+    "BatchMode=yes",
+    ...(sshPort ? ["-p", String(sshPort)] : []),
+    ...(identityFile ? ["-i", identityFile] : []),
+    ...(certificateFile ? ["-o", `CertificateFile=${certificateFile}`] : []),
+    ...sshArgs,
+    remote,
+    "powershell.exe",
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    script,
+  ];
+  const child = spawn("ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let outputError = null;
+  const append = (current, chunk, label) => {
+    const next = `${current}${String(chunk)}`;
+    if (Buffer.byteLength(next, "utf8") > MAX_REMOTE_OUTPUT_BYTES) {
+      outputError ??= new Error(
+        `Windows runtime inspection ${label} exceeded maximum output`,
+      );
+      child.kill("SIGTERM");
+      return current;
+    }
+    return next;
+  };
+  child.stdout.on("data", (chunk) => {
+    stdout = append(stdout, chunk, "stdout");
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr = append(stderr, chunk, "stderr");
+  });
+  const result = await withTimeout(
+    new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    }),
+    timeoutMs,
+    "Windows runtime inspection",
+    () => child.kill("SIGTERM"),
+  );
+  if (outputError) throw outputError;
+  if (result.code !== 0) {
+    throw new Error(
+      `Windows runtime inspection failed (code=${String(result.code)}, signal=${String(result.signal)}): ${boundedString(stderr.trim() || stdout.trim(), 4_096)}`,
+    );
+  }
+  try {
+    return JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(
+      `Windows runtime inspection returned invalid JSON: ${boundedString(error.message, 512)}`,
+      { cause: error },
+    );
+  }
+}
+
 const defaultProcessAdapter = { spawn };
 
 function parseCliArgs(argv) {
-  const options = { steps: [], expectedTargetBinding: {} };
+  const options = {
+    steps: [],
+    expectedRuntimeAttestation: { machine: {} },
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const next = () => {
@@ -1247,12 +1883,22 @@ function parseCliArgs(argv) {
     } else if (arg === "--certificate") {
       options.tunnelOptions ??= {};
       options.tunnelOptions.certificateFile = next();
+    } else if (arg === "--ssh-port") {
+      options.tunnelOptions ??= {};
+      options.tunnelOptions.sshPort = Number(next());
+    } else if (arg === "--remote-cdp-port") {
+      options.tunnelOptions ??= {};
+      options.tunnelOptions.remoteCdpPort = Number(next());
     } else if (arg === "--target-id") {
-      options.expectedTargetBinding.targetId = next();
-    } else if (arg === "--process-id") {
-      options.expectedTargetBinding.processId = next();
-    } else if (arg === "--session-id") {
-      options.expectedTargetBinding.sessionId = next();
+      options.expectedRuntimeAttestation.targetId = next();
+    } else if (arg === "--machine-process-id") {
+      options.expectedRuntimeAttestation.machine.processId = Number(next());
+    } else if (arg === "--machine-session-id") {
+      options.expectedRuntimeAttestation.machine.sessionId = Number(next());
+    } else if (arg === "--machine-path") {
+      options.expectedRuntimeAttestation.machine.executablePath = next();
+    } else if (arg === "--machine-user") {
+      options.expectedRuntimeAttestation.machine.user = next();
     } else if (arg === "--sequence") options.sequenceName = next();
     else if (arg === "--initial-route") options.expectedInitialRoute = next();
     else if (arg === "--mouse") options.inputKind = "mouse";
