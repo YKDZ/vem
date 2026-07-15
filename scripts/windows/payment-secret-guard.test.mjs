@@ -29,6 +29,7 @@ function storedZip(
   localExtra = Buffer.alloc(0),
   centralExtra = localExtra,
   archiveComment = Buffer.alloc(0),
+  checksum = method === 0 ? crc32(content) : 0,
 ) {
   const fileName = Buffer.from(name);
   const local = Buffer.alloc(30);
@@ -36,6 +37,7 @@ function storedZip(
   local.writeUInt16LE(20, 4);
   local.writeUInt16LE(flags, 6);
   local.writeUInt16LE(method, 8);
+  local.writeUInt32LE(checksum, 14);
   local.writeUInt32LE(content.length, 18);
   local.writeUInt32LE(declaredSize, 22);
   local.writeUInt16LE(fileName.length, 26);
@@ -46,6 +48,7 @@ function storedZip(
   central.writeUInt16LE(20, 6);
   central.writeUInt16LE(flags, 8);
   central.writeUInt16LE(method, 10);
+  central.writeUInt32LE(checksum, 16);
   central.writeUInt32LE(content.length, 20);
   central.writeUInt32LE(declaredSize, 24);
   central.writeUInt16LE(fileName.length, 28);
@@ -70,6 +73,38 @@ function storedZip(
     end,
     archiveComment,
   ]);
+}
+
+function deflatedZip(name, content, declaredSize = content.length) {
+  return storedZip(
+    name,
+    deflateRawSync(content),
+    declaredSize,
+    0,
+    8,
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+    crc32(content),
+  );
+}
+
+function centralEntryOnAnotherDisk() {
+  const archive = Buffer.from(storedZip("runtime.txt", Buffer.from("safe")));
+  const endOffset = archive.length - 22;
+  const centralStart = archive.readUInt32LE(endOffset + 16);
+  archive.writeUInt16LE(1, centralStart + 34);
+  return archive;
+}
+
+function deflatedZipWithWrongChecksum(name, content) {
+  const archive = Buffer.from(deflatedZip(name, content));
+  const endOffset = archive.length - 22;
+  const centralStart = archive.readUInt32LE(endOffset + 16);
+  const wrongChecksum = (crc32(content) ^ 0xffffffff) >>> 0;
+  archive.writeUInt32LE(wrongChecksum, 14);
+  archive.writeUInt32LE(wrongChecksum, centralStart + 16);
+  return archive;
 }
 
 function crc32(content) {
@@ -306,7 +341,7 @@ describe("managed-update payment secret guard", () => {
     const plain = Buffer.from("valid deflate runtime payload");
     const valid = await runGuards(
       { updateId: "field-valid-deflate", components: [] },
-      storedZip("runtime.txt", deflateRawSync(plain), plain.length, 0, 8),
+      deflatedZip("runtime.txt", plain),
     );
     assert.equal(valid.status, 0, valid.stderr);
 
@@ -322,6 +357,58 @@ describe("managed-update payment secret guard", () => {
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /invalid archive|unsupported archive/i);
     }
+  });
+
+  it("rejects dishonest deflate lengths and actual decoded budget overflow", async () => {
+    const dishonest = await runGuards(
+      { updateId: "field-dishonest-small", components: [] },
+      deflatedZip(
+        "dishonest-small.bin",
+        Buffer.from("neutral runtime payload with a hidden tail"),
+        1,
+      ),
+    );
+    assert.notEqual(dishonest.status, 0);
+    assert.match(
+      dishonest.stderr,
+      /invalid archive|scan budget|cannot be scanned safely/i,
+    );
+
+    const wrongChecksum = await runGuards(
+      { updateId: "field-wrong-checksum", components: [] },
+      deflatedZipWithWrongChecksum(
+        "wrong-checksum.bin",
+        Buffer.from("neutral runtime payload"),
+      ),
+    );
+    assert.notEqual(wrongChecksum.status, 0);
+    assert.match(
+      wrongChecksum.stderr,
+      /invalid archive|cannot be scanned safely/i,
+    );
+
+    const overflow = await runGuards(
+      { updateId: "field-actual-overflow", components: [] },
+      deflatedZip(
+        "actual-overflow.bin",
+        Buffer.alloc(16 * 1024 * 1024 + 1, 0x61),
+        1,
+      ),
+    );
+    assert.notEqual(overflow.status, 0);
+    assert.match(
+      overflow.stderr,
+      /invalid archive|scan budget|cannot be scanned safely/i,
+    );
+  });
+
+  it("rejects a central entry assigned to another disk", async () => {
+    const result = await runGuards(
+      { updateId: "field-multi-disk-entry", components: [] },
+      centralEntryOnAnotherDisk(),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid archive|unsupported archive/i);
   });
 
   it("rejects a readable deflate ZIP container with a nonzero local-header offset", async () => {

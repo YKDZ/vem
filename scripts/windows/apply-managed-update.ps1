@@ -351,6 +351,8 @@ function Assert-NoPlatformPaymentSecretBytes {
 
       $localOffset = 0L
       $localEntryCount = 0
+      $declaredExpanded = 0L
+      $validatedEntries = [Collections.Generic.List[object]]::new()
       while ($localOffset -lt $centralStart) {
         if (
           $localOffset + 30 -gt $centralStart -or
@@ -392,6 +394,26 @@ function Assert-NoPlatformPaymentSecretBytes {
           throw "artifact uses an unsupported archive form for bounded scanning: $Label"
         }
         & $assertExtraFields ($localOffset + 30 + $localNameLength) $localExtraLength
+        $declaredExpanded += $localUncompressedSize
+        if (
+          $localUncompressedSize -gt $maxExpandedBytes -or
+          $declaredExpanded -gt $maxExpandedBytes -or
+          ($localCompressedSize -gt 0 -and ($localUncompressedSize / $localCompressedSize) -gt 200)
+        ) {
+          throw "artifact exceeds bounded platform private-key scan budget: $Label"
+        }
+        $validatedEntries.Add([pscustomobject]@{
+          method = $localMethod
+          crc = $localCrc
+          compressedSize = $localCompressedSize
+          uncompressedSize = $localUncompressedSize
+          dataStart = $dataStart
+          name = [Text.Encoding]::UTF8.GetString(
+            $Bytes,
+            [int]$central.nameOffset,
+            [int]$central.nameLength
+          )
+        })
         $centralEntries.Remove($localKey)
         $localEntryCount += 1
         $localOffset = $dataEnd
@@ -404,45 +426,83 @@ function Assert-NoPlatformPaymentSecretBytes {
         & $invalidArchive
       }
       Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
-      $archiveStream = [IO.MemoryStream]::new($Bytes, $false)
-      try {
-        $archive = [IO.Compression.ZipArchive]::new(
-          $archiveStream,
-          [IO.Compression.ZipArchiveMode]::Read,
-          $false
-        )
-        try {
-          if ($archive.Entries.Count -gt 256) {
-            throw "artifact exceeds bounded platform private-key scan budget: $Label"
+      $crcTable = [uint32[]]::new(256)
+      for ($crcTableIndex = 0; $crcTableIndex -lt $crcTable.Length; $crcTableIndex += 1) {
+        $crcTableValue = [uint32]$crcTableIndex
+        for ($crcTableBit = 0; $crcTableBit -lt 8; $crcTableBit += 1) {
+          if (($crcTableValue -band 1) -ne 0) {
+            $crcTableValue = [uint32](
+              ($crcTableValue -shr 1) -bxor [uint32]3988292384
+            )
+          } else {
+            $crcTableValue = [uint32]($crcTableValue -shr 1)
           }
-          $expanded = 0L
-          foreach ($entry in $archive.Entries) {
-            $expanded += $entry.Length
-            if (
-              $entry.Length -gt $maxExpandedBytes -or
-              $expanded -gt $maxExpandedBytes -or
-              ($entry.CompressedLength -gt 0 -and ($entry.Length / $entry.CompressedLength) -gt 200)
-            ) {
-              throw "artifact exceeds bounded platform private-key scan budget: $Label"
-            }
-            $entryStream = $entry.Open()
-            $entryBytes = [IO.MemoryStream]::new()
-            try {
-              $entryStream.CopyTo($entryBytes)
-              & $scan $entryBytes.ToArray() "$Label/$($entry.FullName)" ($Depth + 1) $State
-            } finally {
-              $entryBytes.Dispose()
-              $entryStream.Dispose()
-            }
-          }
-        } finally {
-          $archive.Dispose()
         }
-      } catch {
-        if ($_.Exception.Message -match 'platform private-key|bounded platform private-key') { throw }
-        throw "artifact archive cannot be scanned safely: $Label"
-      } finally {
-        $archiveStream.Dispose()
+        $crcTable[$crcTableIndex] = $crcTableValue
+      }
+      $updateCrc32 = {
+        param([uint32]$Crc, [byte[]]$Buffer, [int]$Count)
+        $current = $Crc
+        for ($crcIndex = 0; $crcIndex -lt $Count; $crcIndex += 1) {
+          $tableIndex = [int](($current -bxor [uint32]$Buffer[$crcIndex]) -band 0xff)
+          $current = [uint32](($current -shr 8) -bxor $crcTable[$tableIndex])
+        }
+        return $current
+      }
+      foreach ($entry in $validatedEntries) {
+        $rawStream = [IO.MemoryStream]::new(
+          $Bytes,
+          [int]$entry.dataStart,
+          [int]$entry.compressedSize,
+          $false,
+          $true
+        )
+        $decodedStream = $rawStream
+        $entryBytes = [IO.MemoryStream]::new()
+        try {
+          if ($entry.method -eq 8) {
+            $decodedStream = [IO.Compression.DeflateStream]::new(
+              $rawStream,
+              [IO.Compression.CompressionMode]::Decompress,
+              $true
+            )
+          }
+          $buffer = [byte[]]::new(64KB)
+          $actualLength = 0L
+          $actualCrc = [uint32]::MaxValue
+          while (($read = $decodedStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $actualLength += $read
+            if (
+              $actualLength -gt $maxExpandedBytes -or
+              ([long]$State.DecodedBytes + $actualLength) -gt $maxExpandedBytes
+            ) {
+              throw "artifact exceeds bounded platform private-key scan budget: $Label/$($entry.name)"
+            }
+            $actualCrc = & $updateCrc32 $actualCrc $buffer $read
+            $entryBytes.Write($buffer, 0, $read)
+          }
+          $actualCrc = [uint32]($actualCrc -bxor [uint32]::MaxValue)
+          if (
+            $actualLength -ne $entry.uncompressedSize -or
+            $actualCrc -ne $entry.crc
+          ) {
+            & $invalidArchive
+          }
+          if (
+            $entry.compressedSize -gt 0 -and
+            ($actualLength / $entry.compressedSize) -gt 200
+          ) {
+            throw "artifact exceeds bounded platform private-key scan budget: $Label/$($entry.name)"
+          }
+          & $scan $entryBytes.ToArray() "$Label/$($entry.name)" ($Depth + 1) $State
+        } catch {
+          if ($_.Exception.Message -match 'platform private-key|bounded platform private-key') { throw }
+          throw "artifact archive cannot be scanned safely: $Label"
+        } finally {
+          if ($decodedStream -ne $rawStream) { $decodedStream.Dispose() }
+          $entryBytes.Dispose()
+          $rawStream.Dispose()
+        }
       }
     }
 

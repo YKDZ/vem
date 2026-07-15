@@ -70,7 +70,12 @@ addCheck(
     paymentSecretBytesGuardBlock.includes("LastIndexOf") &&
     paymentSecretBytesGuardBlock.includes("centralEntries") &&
     paymentSecretBytesGuardBlock.includes("localEntryCount") &&
-    paymentSecretBytesGuardBlock.includes("ZipArchive") &&
+    paymentSecretBytesGuardBlock.includes("validatedEntries") &&
+    paymentSecretBytesGuardBlock.includes("DeflateStream") &&
+    paymentSecretBytesGuardBlock.includes("actualLength") &&
+    paymentSecretBytesGuardBlock.includes("actualCrc") &&
+    !paymentSecretBytesGuardBlock.includes("ZipArchive") &&
+    !paymentSecretBytesGuardBlock.includes("$entry.Open()") &&
     paymentSecretBytesGuardBlock.includes("FromBase64String") &&
     paymentSecretBytesGuardBlock.includes("DecodedBytes") &&
     !paymentSecretBytesGuardBlock.includes("BEGIN\\s+CERTIFICATE") &&

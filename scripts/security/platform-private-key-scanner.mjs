@@ -273,11 +273,13 @@ function scanZipEntries(bytes, label, state, depth) {
     const nameLength = bytes.readUInt16LE(centralOffset + 28);
     const extraLength = bytes.readUInt16LE(centralOffset + 30);
     const commentLength = bytes.readUInt16LE(centralOffset + 32);
+    const entryDisk = bytes.readUInt16LE(centralOffset + 34);
     const localOffset = bytes.readUInt32LE(centralOffset + 42);
     const centralEnd =
       centralOffset + 46 + nameLength + extraLength + commentLength;
     if (
       centralEnd > endOffset ||
+      entryDisk !== 0 ||
       compressedSize === 0xffffffff ||
       uncompressedSize === 0xffffffff ||
       localOffset === 0xffffffff ||
