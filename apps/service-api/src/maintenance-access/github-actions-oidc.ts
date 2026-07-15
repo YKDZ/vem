@@ -14,6 +14,8 @@ const githubActionsOidcHeaderSchema = z.strictObject({
   alg: z.literal("RS256"),
   kid: z.string().min(1).max(256),
   typ: z.literal("JWT").optional(),
+  x5t: z.string().min(1).max(256).optional(),
+  "x5t#S256": z.string().min(1).max(256).optional(),
 });
 
 const githubActionsOidcClaimsSchema = z
