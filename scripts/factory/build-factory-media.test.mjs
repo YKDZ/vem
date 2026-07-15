@@ -1061,12 +1061,13 @@ describe("real deterministic Factory ISO builder", () => {
       "HideLocalAccountScreen",
       "HideOnlineAccountScreens",
       "HideWirelessSetupInOOBE",
+      "SkipMachineOOBE",
+      "SkipUserOOBE",
     ]) {
       assert.match(bios, new RegExp(`<${setting}>true</${setting}>`));
     }
     assert.match(bios, /<UserAccounts>[\s\S]*?<Name>VEMOobeBootstrap<\/Name>/);
     assert.match(bios, /<Group>Users<\/Group>/);
-    assert.doesNotMatch(bios, /SkipMachineOOBE|SkipUserOOBE/);
     assert.doesNotMatch(bios, /<AutoLogon>|<FirstLogonCommands>/);
     assert.doesNotMatch(bios, /YKDZ/);
 
