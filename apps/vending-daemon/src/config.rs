@@ -1855,6 +1855,36 @@ impl ConfigStore {
         Ok(factory.environment.as_str().to_string())
     }
 
+    pub async fn production_claim_maintenance_identity(
+        &self,
+    ) -> Result<Option<ProvisioningMaintenanceIdentity>, String> {
+        let Some(factory) = self.load_factory_manifest().await? else {
+            return Ok(None);
+        };
+        if factory.environment != FactoryProfile::Production {
+            return Ok(None);
+        }
+        let Some(profile) = self.load_provisioning_profile_cache_summary().await? else {
+            if self.runtime_secrets().await?.machine_secret.is_some() {
+                return Err(
+                    "persisted production claim profile is missing for configured machine"
+                        .to_string(),
+                );
+            }
+            return Ok(None);
+        };
+        let production_claim = profile.provisioning_profile.as_deref() == Some("production")
+            || profile.maintenance.is_some();
+        if !production_claim {
+            return Ok(None);
+        }
+        let identity = profile.maintenance.ok_or_else(|| {
+            "persisted production claim is missing maintenance identity".to_string()
+        })?;
+        validate_maintenance_identity(&identity)?;
+        Ok(Some(identity))
+    }
+
     pub async fn apply_maintenance_profile(
         &self,
         identity: &ProvisioningMaintenanceIdentity,

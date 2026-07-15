@@ -1317,23 +1317,20 @@ fn disk_pressure_component(
 async fn production_maintenance_status(
     ctx: &IpcContext,
 ) -> Option<crate::maintenance::MaintenanceEnrollmentStatus> {
-    let claimed = ctx
+    match ctx
         .config_store
-        .load_effective_public_config()
+        .production_claim_maintenance_identity()
         .await
-        .ok()
-        .and_then(|config| config.machine_code)
-        .is_some_and(|code| !code.trim().is_empty());
-    let production = ctx
-        .config_store
-        .provisioning_profile_name()
-        .await
-        .is_ok_and(|profile| profile == "production");
-    if !claimed || !production {
-        return None;
+    {
+        Ok(None) => None,
+        Ok(Some(_)) => Some(ctx.config_store.maintenance_status().await),
+        Err(error) => Some(crate::maintenance::MaintenanceEnrollmentStatus {
+            state: "lifecycle_unavailable".to_string(),
+            last_error: Some(error),
+            alert_code: Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string()),
+            ..Default::default()
+        }),
     }
-    let status = ctx.config_store.maintenance_status().await;
-    status.active_identity_retained.then_some(status)
 }
 
 fn maintenance_health_component(
@@ -1654,13 +1651,9 @@ async fn bring_up_snapshot_for(ctx: &IpcContext) -> crate::bring_up::BringUpSnap
     let network_bootstrap_reached_platform = network_status
         .as_ref()
         .is_some_and(crate::network::is_ready_for_machine_claim);
-    let maintenance = ctx.config_store.maintenance_status().await;
-    let maintenance_commissioning_required = maintenance.active_identity_retained
-        && ctx
-            .config_store
-            .provisioning_profile_name()
-            .await
-            .is_ok_and(|profile| profile == "production");
+    let maintenance = production_maintenance_status(ctx).await;
+    let maintenance_commissioning_required = maintenance.is_some();
+    let maintenance = maintenance.unwrap_or_default();
     let snapshot = crate::bring_up::evaluate_bring_up(crate::bring_up::BringUpEvaluationInput {
         config,
         config_error,
@@ -3249,14 +3242,9 @@ pub(crate) async fn machine_sale_readiness_snapshot(
         .and_then(|config| config.machine_code.clone())
         .filter(|code| !code.trim().is_empty());
     let machine_auth_ready = machine_code.is_some();
-    let maintenance = ctx.config_store.maintenance_status().await;
-    let maintenance_commissioning_required = machine_auth_ready
-        && maintenance.active_identity_retained
-        && ctx
-            .config_store
-            .provisioning_profile_name()
-            .await
-            .is_ok_and(|profile| profile == "production");
+    let maintenance = production_maintenance_status(ctx).await;
+    let maintenance_commissioning_required = maintenance.is_some();
+    let maintenance = maintenance.unwrap_or_default();
     let maintenance_first_handshake_ready = maintenance.first_handshake_verified_at.is_some();
     let maintenance_sale_ready =
         !maintenance_commissioning_required || maintenance_first_handshake_ready;
@@ -7465,6 +7453,97 @@ mod tests {
             .expect("health components")
             .iter()
             .any(|component| component["code"] == "MAINTENANCE_TUNNEL_DEGRADED"));
+    }
+
+    #[tokio::test]
+    async fn persisted_production_claim_keeps_first_handshake_gate_when_lifecycle_is_missing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let initial =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+        let claim = post_json_with_maintenance(
+            &initial,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(claim.status(), StatusCode::OK);
+
+        // A fresh protected store models lifecycle loss/corruption while the
+        // durable claim profile remains on disk. The claim profile, not an
+        // in-memory lifecycle flag, remains the commissioning authority.
+        let restarted_ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("M001".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let restarted = build_router(restarted_ctx);
+        let bring_up = get_ipc_json(&restarted, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(bring_up["state"], "maintenance_convergence_required");
+        assert_eq!(
+            bring_up["currentTask"]["taskId"],
+            "bring_up.converge_maintenance_tunnel"
+        );
+        let sale = get_ipc_json(&restarted, "/v1/sale-readiness", Some("token-1")).await;
+        assert!(sale["blockingCodes"]
+            .as_array()
+            .expect("sale blockers")
+            .iter()
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+        let ready = get_ipc_json(&restarted, "/readyz", None).await;
+        assert!(ready["blockingCodes"]
+            .as_array()
+            .expect("ready blockers")
+            .iter()
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+    }
+
+    #[tokio::test]
+    async fn configured_production_machine_fails_closed_when_claim_profile_is_missing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        let profile_path = ctx.config_store.provisioning_profile_cache_summary_path();
+        let app = build_router(ctx);
+        let claim = post_json_with_maintenance(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(claim.status(), StatusCode::OK);
+        tokio::fs::remove_file(profile_path)
+            .await
+            .expect("remove persisted claim profile");
+
+        let bring_up = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        assert_eq!(bring_up["state"], "maintenance_convergence_required");
+        let sale = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert!(sale["blockingCodes"]
+            .as_array()
+            .expect("sale blockers")
+            .iter()
+            .any(|code| code == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
+        let health = get_ipc_json(&app, "/healthz", None).await;
+        assert!(health["components"]
+            .as_array()
+            .expect("health components")
+            .iter()
+            .any(|component| component["code"] == "MAINTENANCE_TUNNEL_FIRST_HANDSHAKE_REQUIRED"));
     }
 
     #[tokio::test]

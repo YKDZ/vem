@@ -590,6 +590,41 @@ struct PersistedMaintenanceLifecycle {
     #[serde(default)]
     active_first_handshake_at: Option<String>,
     pending: Option<PersistedPendingMaintenanceIdentity>,
+    #[serde(default)]
+    operation: Option<PersistedMaintenanceOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PersistedMaintenanceOperation {
+    PromoteReclaim {
+        identity: Box<ProvisioningMaintenanceIdentity>,
+        first_handshake_at: Option<String>,
+        stage: PromoteReclaimStage,
+    },
+    Decommission {
+        stage: DecommissionStage,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum PromoteReclaimStage {
+    Prepared,
+    LifecycleCommitted,
+    ActiveKeyCommitted,
+    PendingKeyCleared,
+    PendingTunnelRemoved,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DecommissionStage {
+    Prepared,
+    PendingTunnelRemoved,
+    ActiveTunnelRemoved,
+    PendingKeyCleared,
+    ActiveKeyCleared,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -607,6 +642,7 @@ struct PersistedPendingMaintenanceIdentity {
 pub struct MaintenanceEnrollment {
     secrets: Arc<dyn SecretStore>,
     tunnel: Arc<dyn WindowsTunnelBackend>,
+    lifecycle_ops: Arc<Mutex<()>>,
     key_generation: Arc<Mutex<()>>,
     status: Arc<Mutex<MaintenanceEnrollmentStatus>>,
     relay_public_key: Arc<Mutex<Option<String>>>,
@@ -617,6 +653,7 @@ impl MaintenanceEnrollment {
         Self {
             secrets,
             tunnel,
+            lifecycle_ops: Arc::new(Mutex::new(())),
             key_generation: Arc::new(Mutex::new(())),
             status: Arc::new(Mutex::new(MaintenanceEnrollmentStatus::default())),
             relay_public_key: Arc::new(Mutex::new(None)),
@@ -624,6 +661,11 @@ impl MaintenanceEnrollment {
     }
 
     pub async fn ensure_public_key(&self) -> Result<String, String> {
+        let _operation = self.lifecycle_ops.lock().await;
+        self.ensure_public_key_locked().await
+    }
+
+    async fn ensure_public_key_locked(&self) -> Result<String, String> {
         let _generation_guard = self.key_generation.lock().await;
         let private_key = match self
             .secrets
@@ -651,6 +693,16 @@ impl MaintenanceEnrollment {
     }
 
     pub async fn ensure_reclaim_public_key(
+        &self,
+        claim_code: &str,
+        active_identity: Option<&ProvisioningMaintenanceIdentity>,
+    ) -> Result<String, String> {
+        let _operation = self.lifecycle_ops.lock().await;
+        self.ensure_reclaim_public_key_locked(claim_code, active_identity)
+            .await
+    }
+
+    async fn ensure_reclaim_public_key_locked(
         &self,
         claim_code: &str,
         active_identity: Option<&ProvisioningMaintenanceIdentity>,
@@ -726,7 +778,15 @@ impl MaintenanceEnrollment {
         &self,
         identity: &ProvisioningMaintenanceIdentity,
     ) -> Result<MaintenanceEnrollmentStatus, String> {
-        let public_key = self.ensure_public_key().await?;
+        let _operation = self.lifecycle_ops.lock().await;
+        self.apply_profile_locked(identity).await
+    }
+
+    async fn apply_profile_locked(
+        &self,
+        identity: &ProvisioningMaintenanceIdentity,
+    ) -> Result<MaintenanceEnrollmentStatus, String> {
+        let public_key = self.ensure_public_key_locked().await?;
         if public_key != identity.public_key {
             return Err("maintenance public key differs from claimed identity".to_string());
         }
@@ -766,6 +826,16 @@ impl MaintenanceEnrollment {
                 &identity.relay.public_key,
             )
             .await;
+        let mut handshake_persistence_error = None;
+        if let Ok(observation) = observation.as_ref() {
+            if observation.verified && lifecycle.active_first_handshake_at.is_none() {
+                lifecycle.active_first_handshake_at = observation.last_handshake_at.clone();
+                if let Err(error) = self.save_lifecycle(&lifecycle).await {
+                    lifecycle.active_first_handshake_at = None;
+                    handshake_persistence_error = Some(error);
+                }
+            }
+        }
         let mut status = self.status.lock().await;
         status.state = "tunnel_applied".to_string();
         status.public_key = Some(public_key.clone());
@@ -779,10 +849,6 @@ impl MaintenanceEnrollment {
         status.alert_code = None;
         match observation {
             Ok(observation) => {
-                if observation.verified && lifecycle.active_first_handshake_at.is_none() {
-                    lifecycle.active_first_handshake_at = observation.last_handshake_at.clone();
-                    self.save_lifecycle(&lifecycle).await?;
-                }
                 status.handshake_verified = lifecycle.active_first_handshake_at.is_some();
                 status.tunnel_connected = observation.verified;
                 status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
@@ -794,6 +860,11 @@ impl MaintenanceEnrollment {
                     (true, false) => "tunnel_degraded".to_string(),
                     (false, _) => "handshake_pending".to_string(),
                 };
+                if let Some(error) = handshake_persistence_error.as_ref() {
+                    status.state = "handshake_evidence_persist_pending".to_string();
+                    status.last_error = Some(error.clone());
+                    status.alert_code = Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string());
+                }
                 if !status.tunnel_connected {
                     status.last_error = Some(observation.message);
                     if status.handshake_verified {
@@ -818,10 +889,23 @@ impl MaintenanceEnrollment {
             }
         }
         status.updated_at = Utc::now().to_rfc3339();
-        Ok(status.clone())
+        let snapshot = status.clone();
+        drop(status);
+        if let Some(error) = handshake_persistence_error {
+            return Err(error);
+        }
+        Ok(snapshot)
     }
 
     pub async fn apply_reclaim_profile(
+        &self,
+        identity: &ProvisioningMaintenanceIdentity,
+    ) -> Result<MaintenanceEnrollmentStatus, String> {
+        let _operation = self.lifecycle_ops.lock().await;
+        self.apply_reclaim_profile_locked(identity).await
+    }
+
+    async fn apply_reclaim_profile_locked(
         &self,
         identity: &ProvisioningMaintenanceIdentity,
     ) -> Result<MaintenanceEnrollmentStatus, String> {
@@ -886,15 +970,23 @@ impl MaintenanceEnrollment {
         status.alert_code = None;
         match observation {
             Ok(observation) if observation.verified => {
-                status.state = "reclaim_handshake_verified".to_string();
-                status.handshake_verified = true;
-                status.last_handshake_at = observation.last_handshake_at.clone();
                 let mut lifecycle = lifecycle;
                 if let Some(pending) = lifecycle.pending.as_mut() {
                     pending.handshake_verified = true;
-                    pending.first_handshake_at = observation.last_handshake_at;
+                    pending.first_handshake_at = observation.last_handshake_at.clone();
                 }
-                self.save_lifecycle(&lifecycle).await?;
+                if let Err(error) = self.save_lifecycle(&lifecycle).await {
+                    status.state = "reclaim_handshake_evidence_persist_pending".to_string();
+                    status.handshake_verified = false;
+                    status.last_handshake_at = None;
+                    status.last_error = Some(error.clone());
+                    status.alert_code = Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string());
+                    status.updated_at = Utc::now().to_rfc3339();
+                    return Err(error);
+                }
+                status.state = "reclaim_handshake_verified".to_string();
+                status.handshake_verified = true;
+                status.last_handshake_at = observation.last_handshake_at;
             }
             Ok(observation) => status.last_error = Some(observation.message),
             Err(error) => status.last_error = Some(error),
@@ -907,9 +999,28 @@ impl MaintenanceEnrollment {
         &self,
         cached_identity: Option<&ProvisioningMaintenanceIdentity>,
     ) -> Result<Option<MaintenanceEnrollmentStatus>, String> {
-        let lifecycle = self.load_lifecycle().await?;
+        let _operation = self.lifecycle_ops.lock().await;
+        self.recover_locked(cached_identity).await
+    }
+
+    async fn recover_locked(
+        &self,
+        cached_identity: Option<&ProvisioningMaintenanceIdentity>,
+    ) -> Result<Option<MaintenanceEnrollmentStatus>, String> {
+        let mut lifecycle = self.load_lifecycle().await?;
+        let completing_decommission = matches!(
+            lifecycle.operation,
+            Some(PersistedMaintenanceOperation::Decommission { .. })
+        );
+        if lifecycle.operation.is_some() {
+            self.resume_lifecycle_operation_locked().await?;
+            if completing_decommission {
+                return Ok(None);
+            }
+            lifecycle = self.load_lifecycle().await?;
+        }
         if let Some(active) = lifecycle.active.as_ref() {
-            if let Err(error) = self.apply_profile(active).await {
+            if let Err(error) = self.apply_profile_locked(active).await {
                 let status = self.status.lock().await.clone();
                 if status.active_identity_retained
                     && matches!(
@@ -926,26 +1037,35 @@ impl MaintenanceEnrollment {
                 .as_ref()
                 .and_then(|pending| pending.identity.as_ref())
             {
-                self.apply_reclaim_profile(pending).await?;
+                self.apply_reclaim_profile_locked(pending).await?;
             }
-            return Ok(Some(self.status().await));
+            return Ok(Some(self.status_locked().await));
         }
         let Some(cached_identity) = cached_identity else {
             return Ok(None);
         };
-        self.apply_profile(cached_identity).await.map(Some)
+        self.apply_profile_locked(cached_identity).await.map(Some)
     }
 
     pub async fn retry_active_convergence(&self) -> Result<MaintenanceEnrollmentStatus, String> {
+        let _operation = self.lifecycle_ops.lock().await;
         let identity = self
             .load_lifecycle()
             .await?
             .active
             .ok_or_else(|| "claim-bound maintenance identity is unavailable".to_string())?;
-        self.apply_profile(&identity).await
+        self.apply_profile_locked(&identity).await
     }
 
     pub async fn promote_reclaim(
+        &self,
+        public_key: &str,
+    ) -> Result<MaintenanceEnrollmentStatus, String> {
+        let _operation = self.lifecycle_ops.lock().await;
+        self.promote_reclaim_locked(public_key).await
+    }
+
+    async fn promote_reclaim_locked(
         &self,
         public_key: &str,
     ) -> Result<MaintenanceEnrollmentStatus, String> {
@@ -963,50 +1083,27 @@ impl MaintenanceEnrollment {
         if !pending.handshake_verified {
             return Err("pending maintenance handshake is not verified locally".to_string());
         }
-        let private_key = self
-            .secrets
-            .read_secret(MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT)
-            .await?
-            .ok_or_else(|| "pending machine WireGuard private key is missing".to_string())?;
-        self.tunnel
-            .apply(
-                MaintenanceTunnelIdentity::Active,
-                tunnel_config(private_key.clone(), &identity),
-            )
-            .await?;
-        self.secrets
-            .write_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT, &private_key)
-            .await?;
-        self.secrets
-            .write_secret(MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT, "")
-            .await?;
         identity.reclaim_expires_at = None;
-        lifecycle.active = Some(identity.clone());
-        lifecycle.active_first_handshake_at = pending.first_handshake_at.clone();
-        lifecycle.pending = None;
+        lifecycle.operation = Some(PersistedMaintenanceOperation::PromoteReclaim {
+            identity: Box::new(identity),
+            first_handshake_at: pending.first_handshake_at,
+            stage: PromoteReclaimStage::Prepared,
+        });
         self.save_lifecycle(&lifecycle).await?;
-        self.tunnel
-            .remove(MaintenanceTunnelIdentity::Pending)
-            .await?;
-
-        let mut status = self.status.lock().await;
-        status.state = "handshake_verified".to_string();
-        status.public_key = Some(identity.public_key.clone());
-        status.active_public_key = status.public_key.clone();
-        status.pending_public_key = None;
-        status.reclaim_expires_at = None;
-        status.active_identity_retained = true;
-        status.handshake_verified = true;
-        status.tunnel_connected = true;
-        status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
-        status.last_handshake_at = lifecycle.active_first_handshake_at.clone();
-        status.last_error = None;
-        status.alert_code = None;
-        status.updated_at = Utc::now().to_rfc3339();
-        Ok(status.clone())
+        self.resume_lifecycle_operation_locked().await?;
+        Ok(self.status_locked().await)
     }
 
     pub async fn reject_reclaim(
+        &self,
+        public_key: &str,
+        reason: &str,
+    ) -> Result<MaintenanceEnrollmentStatus, String> {
+        let _operation = self.lifecycle_ops.lock().await;
+        self.reject_reclaim_locked(public_key, reason).await
+    }
+
+    async fn reject_reclaim_locked(
         &self,
         public_key: &str,
         reason: &str,
@@ -1044,7 +1141,21 @@ impl MaintenanceEnrollment {
     }
 
     async fn fail(&self, error: &str) -> Result<MaintenanceEnrollmentStatus, String> {
-        let lifecycle = self.load_lifecycle().await.unwrap_or_default();
+        let lifecycle = match self.load_lifecycle().await {
+            Ok(lifecycle) => lifecycle,
+            Err(lifecycle_error) => {
+                let mut status = self.status.lock().await;
+                status.state = "lifecycle_unavailable".to_string();
+                status.handshake_verified = false;
+                status.tunnel_connected = false;
+                status.first_handshake_verified_at = None;
+                status.last_handshake_at = None;
+                status.last_error = Some(format!("{error}; {lifecycle_error}"));
+                status.alert_code = Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string());
+                status.updated_at = Utc::now().to_rfc3339();
+                return Err(error.to_string());
+            }
+        };
         let mut status = self.status.lock().await;
         if let Some(identity) = lifecycle.active.as_ref() {
             status.public_key = Some(identity.public_key.clone());
@@ -1075,6 +1186,37 @@ impl MaintenanceEnrollment {
     }
 
     pub async fn status(&self) -> MaintenanceEnrollmentStatus {
+        let _operation = self.lifecycle_ops.lock().await;
+        self.status_locked().await
+    }
+
+    async fn status_locked(&self) -> MaintenanceEnrollmentStatus {
+        match self.load_lifecycle().await {
+            Err(error) => {
+                let mut status = self.status.lock().await;
+                status.state = "lifecycle_unavailable".to_string();
+                status.handshake_verified = false;
+                status.tunnel_connected = false;
+                status.first_handshake_verified_at = None;
+                status.last_error = Some(error);
+                status.alert_code = Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string());
+                status.updated_at = Utc::now().to_rfc3339();
+                return status.clone();
+            }
+            Ok(lifecycle) if lifecycle.operation.is_some() => {
+                let mut status = self.status.lock().await;
+                status.state = "maintenance_recovery_pending".to_string();
+                status.handshake_verified = false;
+                status.tunnel_connected = false;
+                status.first_handshake_verified_at = None;
+                status.last_error =
+                    Some("maintenance identity transition requires recovery".to_string());
+                status.alert_code = Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string());
+                status.updated_at = Utc::now().to_rfc3339();
+                return status.clone();
+            }
+            Ok(_) => {}
+        }
         if let Ok(mut lifecycle) = self.load_lifecycle().await {
             if let Some(pending) = lifecycle.pending.clone() {
                 if let (Some(identity), Some(expires_at)) = (
@@ -1129,7 +1271,18 @@ impl MaintenanceEnrollment {
                                     value.first_handshake_at =
                                         observation.last_handshake_at.clone();
                                 }
-                                let _ = self.save_lifecycle(&lifecycle).await;
+                                if let Err(error) = self.save_lifecycle(&lifecycle).await {
+                                    let mut status = self.status.lock().await;
+                                    status.state =
+                                        "reclaim_handshake_evidence_persist_pending".to_string();
+                                    status.handshake_verified = false;
+                                    status.last_handshake_at = None;
+                                    status.last_error = Some(error);
+                                    status.alert_code =
+                                        Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string());
+                                    status.updated_at = Utc::now().to_rfc3339();
+                                    return status.clone();
+                                }
                                 let mut status = self.status.lock().await;
                                 status.state = "reclaim_handshake_verified".to_string();
                                 status.handshake_verified = true;
@@ -1171,7 +1324,24 @@ impl MaintenanceEnrollment {
         if let Ok(observation) = observation.as_ref() {
             if observation.verified && lifecycle.active_first_handshake_at.is_none() {
                 lifecycle.active_first_handshake_at = observation.last_handshake_at.clone();
-                let _ = self.save_lifecycle(&lifecycle).await;
+                if let Err(error) = self.save_lifecycle(&lifecycle).await {
+                    lifecycle.active_first_handshake_at = None;
+                    let mut status = self.status.lock().await;
+                    status.public_key = Some(identity.public_key.clone());
+                    status.active_public_key = Some(identity.public_key.clone());
+                    status.tunnel_address = Some(identity.address.clone());
+                    status.endpoint = Some(identity.endpoint.clone());
+                    status.active_identity_retained = true;
+                    status.handshake_verified = false;
+                    status.tunnel_connected = true;
+                    status.first_handshake_verified_at = None;
+                    status.last_handshake_at = observation.last_handshake_at.clone();
+                    status.state = "handshake_evidence_persist_pending".to_string();
+                    status.last_error = Some(error);
+                    status.alert_code = Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED".to_string());
+                    status.updated_at = Utc::now().to_rfc3339();
+                    return status.clone();
+                }
             }
         }
         let mut status = self.status.lock().await;
@@ -1180,6 +1350,15 @@ impl MaintenanceEnrollment {
         status.tunnel_address = Some(identity.address);
         status.endpoint = Some(identity.endpoint);
         status.active_identity_retained = true;
+        status.pending_public_key = lifecycle
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.identity.as_ref())
+            .map(|pending| pending.public_key.clone());
+        status.reclaim_expires_at = lifecycle
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.reclaim_expires_at.clone());
         status.handshake_verified = lifecycle.active_first_handshake_at.is_some();
         status.first_handshake_verified_at = lifecycle.active_first_handshake_at.clone();
         status.alert_code = None;
@@ -1230,35 +1409,17 @@ impl MaintenanceEnrollment {
     }
 
     pub async fn decommission(&self) -> Result<(), String> {
-        let lifecycle = self.load_lifecycle().await.unwrap_or_default();
-        if lifecycle.pending.is_some() {
-            self.tunnel
-                .remove(MaintenanceTunnelIdentity::Pending)
-                .await?;
-        }
-        if lifecycle.active.is_some()
-            || self
-                .secrets
-                .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
-                .await?
-                .is_some()
-        {
-            self.tunnel
-                .remove(MaintenanceTunnelIdentity::Active)
-                .await?;
-        }
-        for account in [
-            MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
-            MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
-            MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
-        ] {
-            self.secrets
-                .write_secret(account, "")
-                .await
-                .map_err(|error| {
-                    format!("clear decommissioned maintenance identity failed: {error}")
-                })?;
-        }
+        let _operation = self.lifecycle_ops.lock().await;
+        self.decommission_locked().await
+    }
+
+    async fn decommission_locked(&self) -> Result<(), String> {
+        let mut lifecycle = self.load_lifecycle().await?;
+        lifecycle.operation = Some(PersistedMaintenanceOperation::Decommission {
+            stage: DecommissionStage::Prepared,
+        });
+        self.save_lifecycle(&lifecycle).await?;
+        self.resume_lifecycle_operation_locked().await?;
         let mut status = self.status.lock().await;
         status.state = "decommissioned".to_string();
         status.public_key = None;
@@ -1277,6 +1438,155 @@ impl MaintenanceEnrollment {
         status.updated_at = Utc::now().to_rfc3339();
         *self.relay_public_key.lock().await = None;
         Ok(())
+    }
+
+    async fn resume_lifecycle_operation_locked(&self) -> Result<(), String> {
+        loop {
+            let mut lifecycle = self.load_lifecycle().await?;
+            let Some(operation) = lifecycle.operation.clone() else {
+                return Ok(());
+            };
+            match operation {
+                PersistedMaintenanceOperation::PromoteReclaim {
+                    identity,
+                    first_handshake_at,
+                    stage,
+                } => match stage {
+                    PromoteReclaimStage::Prepared => {
+                        let private_key = self
+                            .secrets
+                            .read_secret(MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT)
+                            .await?
+                            .ok_or_else(|| {
+                                "pending machine WireGuard private key is missing".to_string()
+                            })?;
+                        if public_key_from_private_key(&private_key)? != identity.public_key {
+                            return Err(
+                                "pending WireGuard key no longer matches promoted identity"
+                                    .to_string(),
+                            );
+                        }
+                        self.tunnel
+                            .apply(
+                                MaintenanceTunnelIdentity::Active,
+                                tunnel_config(private_key, &identity),
+                            )
+                            .await?;
+                        lifecycle.active = Some((*identity).clone());
+                        lifecycle.active_first_handshake_at = first_handshake_at.clone();
+                        lifecycle.operation = Some(PersistedMaintenanceOperation::PromoteReclaim {
+                            identity,
+                            first_handshake_at,
+                            stage: PromoteReclaimStage::LifecycleCommitted,
+                        });
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                    PromoteReclaimStage::LifecycleCommitted => {
+                        let private_key = self
+                            .secrets
+                            .read_secret(MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT)
+                            .await?
+                            .ok_or_else(|| {
+                                "pending machine WireGuard private key is missing".to_string()
+                            })?;
+                        self.secrets
+                            .write_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT, &private_key)
+                            .await?;
+                        lifecycle.operation = Some(PersistedMaintenanceOperation::PromoteReclaim {
+                            identity,
+                            first_handshake_at,
+                            stage: PromoteReclaimStage::ActiveKeyCommitted,
+                        });
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                    PromoteReclaimStage::ActiveKeyCommitted => {
+                        self.secrets
+                            .write_secret(MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT, "")
+                            .await?;
+                        lifecycle.operation = Some(PersistedMaintenanceOperation::PromoteReclaim {
+                            identity,
+                            first_handshake_at,
+                            stage: PromoteReclaimStage::PendingKeyCleared,
+                        });
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                    PromoteReclaimStage::PendingKeyCleared => {
+                        self.tunnel
+                            .remove(MaintenanceTunnelIdentity::Pending)
+                            .await?;
+                        lifecycle.operation = Some(PersistedMaintenanceOperation::PromoteReclaim {
+                            identity,
+                            first_handshake_at,
+                            stage: PromoteReclaimStage::PendingTunnelRemoved,
+                        });
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                    PromoteReclaimStage::PendingTunnelRemoved => {
+                        lifecycle.pending = None;
+                        lifecycle.operation = None;
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                },
+                PersistedMaintenanceOperation::Decommission { stage } => match stage {
+                    DecommissionStage::Prepared => {
+                        if lifecycle.pending.is_some() {
+                            self.tunnel
+                                .remove(MaintenanceTunnelIdentity::Pending)
+                                .await?;
+                        }
+                        lifecycle.operation = Some(PersistedMaintenanceOperation::Decommission {
+                            stage: DecommissionStage::PendingTunnelRemoved,
+                        });
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                    DecommissionStage::PendingTunnelRemoved => {
+                        if lifecycle.active.is_some()
+                            || self
+                                .secrets
+                                .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+                                .await?
+                                .is_some()
+                        {
+                            self.tunnel
+                                .remove(MaintenanceTunnelIdentity::Active)
+                                .await?;
+                        }
+                        lifecycle.operation = Some(PersistedMaintenanceOperation::Decommission {
+                            stage: DecommissionStage::ActiveTunnelRemoved,
+                        });
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                    DecommissionStage::ActiveTunnelRemoved => {
+                        self.secrets
+                            .write_secret(MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT, "")
+                            .await?;
+                        lifecycle.operation = Some(PersistedMaintenanceOperation::Decommission {
+                            stage: DecommissionStage::PendingKeyCleared,
+                        });
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                    DecommissionStage::PendingKeyCleared => {
+                        self.secrets
+                            .write_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT, "")
+                            .await?;
+                        lifecycle.operation = Some(PersistedMaintenanceOperation::Decommission {
+                            stage: DecommissionStage::ActiveKeyCleared,
+                        });
+                        self.save_lifecycle(&lifecycle).await?;
+                    }
+                    DecommissionStage::ActiveKeyCleared => {
+                        self.secrets
+                            .write_secret(MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT, "")
+                            .await
+                            .map_err(|error| {
+                                format!(
+                                    "clear decommissioned maintenance lifecycle failed: {error}"
+                                )
+                            })?;
+                    }
+                },
+            }
+        }
     }
 
     async fn load_lifecycle(&self) -> Result<PersistedMaintenanceLifecycle, String> {
@@ -1370,12 +1680,13 @@ mod tests {
         config::{
             MaintenanceRoleRoutes, ProvisioningMaintenanceIdentity, ProvisioningMaintenancePeer,
         },
-        secret::InMemorySecretStore,
+        secret::{InMemorySecretStore, SecretStoreStatus},
     };
     use std::{
         collections::VecDeque,
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    use tokio::sync::Notify;
 
     #[derive(Default)]
     struct FakeTunnel {
@@ -1398,6 +1709,162 @@ mod tests {
 
     struct FixedConnectivityTunnel {
         connected: AtomicBool,
+    }
+
+    struct LifecycleWriteFaultStore {
+        inner: InMemorySecretStore,
+        fail_lifecycle_writes: Arc<AtomicBool>,
+    }
+
+    struct SelectiveWriteFaultStore {
+        inner: InMemorySecretStore,
+        fail_read_account: Mutex<Option<String>>,
+        fail_account: Mutex<Option<String>>,
+        fail_empty_only: AtomicBool,
+        fail_once: AtomicBool,
+    }
+
+    impl SelectiveWriteFaultStore {
+        async fn inject_once(&self, account: &str, empty_only: bool) {
+            *self.fail_account.lock().await = Some(account.to_string());
+            self.fail_empty_only.store(empty_only, Ordering::SeqCst);
+            self.fail_once.store(true, Ordering::SeqCst);
+        }
+
+        async fn set_read_failure(&self, account: Option<&str>) {
+            *self.fail_read_account.lock().await = account.map(str::to_string);
+        }
+    }
+
+    #[async_trait]
+    impl SecretStore for SelectiveWriteFaultStore {
+        async fn read_secret(&self, account: &str) -> Result<Option<String>, String> {
+            if self
+                .fail_read_account
+                .lock()
+                .await
+                .as_deref()
+                .is_some_and(|candidate| candidate == account)
+            {
+                return Err(format!("injected read failure for {account}"));
+            }
+            self.inner.read_secret(account).await
+        }
+
+        async fn write_secret(&self, account: &str, value: &str) -> Result<(), String> {
+            let matches = self
+                .fail_account
+                .lock()
+                .await
+                .as_deref()
+                .is_some_and(|candidate| candidate == account)
+                && (!self.fail_empty_only.load(Ordering::SeqCst) || value.is_empty());
+            if matches && self.fail_once.swap(false, Ordering::SeqCst) {
+                return Err(format!("injected write failure for {account}"));
+            }
+            self.inner.write_secret(account, value).await
+        }
+
+        async fn clear_all(&self) -> Result<(), String> {
+            self.inner.clear_all().await
+        }
+
+        async fn status(&self) -> Result<SecretStoreStatus, String> {
+            self.inner.status().await
+        }
+    }
+
+    #[async_trait]
+    impl SecretStore for LifecycleWriteFaultStore {
+        async fn read_secret(&self, account: &str) -> Result<Option<String>, String> {
+            self.inner.read_secret(account).await
+        }
+
+        async fn write_secret(&self, account: &str, value: &str) -> Result<(), String> {
+            if account == MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT
+                && self.fail_lifecycle_writes.load(Ordering::SeqCst)
+            {
+                return Err("injected lifecycle write failure".to_string());
+            }
+            self.inner.write_secret(account, value).await
+        }
+
+        async fn clear_all(&self) -> Result<(), String> {
+            self.inner.clear_all().await
+        }
+
+        async fn status(&self) -> Result<SecretStoreStatus, String> {
+            self.inner.status().await
+        }
+    }
+
+    struct HandshakeTriggersStoreFailureTunnel {
+        fail_lifecycle_writes: Arc<AtomicBool>,
+        triggered: AtomicBool,
+        target: MaintenanceTunnelIdentity,
+    }
+
+    struct BlockingObservationTunnel {
+        block_observation: AtomicBool,
+        observation_started: Notify,
+        release_observation: Notify,
+    }
+
+    #[async_trait]
+    impl WindowsTunnelBackend for BlockingObservationTunnel {
+        async fn apply(
+            &self,
+            _identity: MaintenanceTunnelIdentity,
+            _config: WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn observe_handshake(
+            &self,
+            _identity: MaintenanceTunnelIdentity,
+            _public_key: &str,
+        ) -> Result<HandshakeObservation, String> {
+            if self.block_observation.load(Ordering::SeqCst) {
+                self.observation_started.notify_one();
+                self.release_observation.notified().await;
+            }
+            Ok(HandshakeObservation {
+                verified: true,
+                last_handshake_at: Some("2026-07-15T04:00:00Z".to_string()),
+                message: "handshake observed".to_string(),
+            })
+        }
+
+        async fn remove(&self, _identity: MaintenanceTunnelIdentity) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl WindowsTunnelBackend for HandshakeTriggersStoreFailureTunnel {
+        async fn apply(
+            &self,
+            _identity: MaintenanceTunnelIdentity,
+            _config: WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn observe_handshake(
+            &self,
+            identity: MaintenanceTunnelIdentity,
+            _public_key: &str,
+        ) -> Result<HandshakeObservation, String> {
+            if identity == self.target && !self.triggered.swap(true, Ordering::SeqCst) {
+                self.fail_lifecycle_writes.store(true, Ordering::SeqCst);
+            }
+            Ok(HandshakeObservation {
+                verified: true,
+                last_handshake_at: Some("2026-07-15T03:00:00Z".to_string()),
+                message: "handshake observed".to_string(),
+            })
+        }
     }
 
     struct FakeEncryptedConfigStore {
@@ -1964,6 +2431,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_handshake_does_not_open_readiness_until_evidence_is_durable() {
+        let fail_lifecycle_writes = Arc::new(AtomicBool::new(false));
+        let secrets: Arc<dyn SecretStore> = Arc::new(LifecycleWriteFaultStore {
+            inner: InMemorySecretStore::default(),
+            fail_lifecycle_writes: fail_lifecycle_writes.clone(),
+        });
+        let enrollment = MaintenanceEnrollment::new(
+            secrets,
+            Arc::new(HandshakeTriggersStoreFailureTunnel {
+                fail_lifecycle_writes: fail_lifecycle_writes.clone(),
+                triggered: AtomicBool::new(false),
+                target: MaintenanceTunnelIdentity::Active,
+            }),
+        );
+        let public_key = enrollment.ensure_public_key().await.expect("public key");
+
+        let error = enrollment
+            .apply_profile(&identity(public_key))
+            .await
+            .expect_err("handshake evidence persistence must be authoritative");
+        assert!(error.contains("store machine maintenance lifecycle failed"));
+        let blocked = enrollment.status().await;
+        assert!(!blocked.handshake_verified);
+        assert!(blocked.first_handshake_verified_at.is_none());
+        assert_eq!(blocked.state, "handshake_evidence_persist_pending");
+        assert_eq!(
+            blocked.alert_code.as_deref(),
+            Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED")
+        );
+
+        fail_lifecycle_writes.store(false, Ordering::SeqCst);
+        let recovered = enrollment.status().await;
+        assert!(recovered.handshake_verified);
+        assert_eq!(
+            recovered.first_handshake_verified_at.as_deref(),
+            Some("2026-07-15T03:00:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_handshake_is_not_promotable_until_evidence_is_durable() {
+        let fail_lifecycle_writes = Arc::new(AtomicBool::new(false));
+        let secrets: Arc<dyn SecretStore> = Arc::new(LifecycleWriteFaultStore {
+            inner: InMemorySecretStore::default(),
+            fail_lifecycle_writes: fail_lifecycle_writes.clone(),
+        });
+        let enrollment = MaintenanceEnrollment::new(
+            secrets,
+            Arc::new(HandshakeTriggersStoreFailureTunnel {
+                fail_lifecycle_writes: fail_lifecycle_writes.clone(),
+                triggered: AtomicBool::new(false),
+                target: MaintenanceTunnelIdentity::Pending,
+            }),
+        );
+        let active_public_key = enrollment.ensure_public_key().await.expect("active key");
+        let active_identity = identity(active_public_key);
+        enrollment
+            .apply_profile(&active_identity)
+            .await
+            .expect("active profile");
+        let pending_public_key = enrollment
+            .ensure_reclaim_public_key("ABCD-2345", Some(&active_identity))
+            .await
+            .expect("pending key");
+        let mut pending_identity = identity(pending_public_key);
+        pending_identity.tunnel_address = "10.91.16.11".to_string();
+        pending_identity.address = "10.91.16.11/32".to_string();
+        pending_identity.reclaim_expires_at = Some("2099-01-01T00:00:00Z".to_string());
+
+        let error = enrollment
+            .apply_reclaim_profile(&pending_identity)
+            .await
+            .expect_err("pending handshake evidence persistence must be authoritative");
+        assert!(error.contains("store machine maintenance lifecycle failed"));
+        let blocked = enrollment.status().await;
+        assert_eq!(blocked.state, "reclaim_handshake_evidence_persist_pending");
+        assert!(!blocked.handshake_verified);
+        assert_eq!(
+            blocked.alert_code.as_deref(),
+            Some("MAINTENANCE_TUNNEL_CONVERGENCE_REQUIRED")
+        );
+        let promotion_error = enrollment
+            .promote_reclaim(&pending_identity.public_key)
+            .await
+            .expect_err("unpersisted pending handshake must not be promotable");
+        assert!(promotion_error.contains("handshake is not verified"));
+
+        fail_lifecycle_writes.store(false, Ordering::SeqCst);
+        let recovered = enrollment.status().await;
+        assert_eq!(recovered.state, "reclaim_handshake_verified");
+        assert!(recovered.handshake_verified);
+    }
+
+    #[tokio::test]
     async fn first_handshake_evidence_survives_restart_and_later_outage_is_degraded() {
         let secrets = Arc::new(InMemorySecretStore::default());
         let tunnel = Arc::new(FixedConnectivityTunnel {
@@ -2191,5 +2752,253 @@ mod tests {
             .await
             .expect("pending key")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn interrupted_reclaim_promotion_recovers_without_pairing_old_identity_with_new_key() {
+        let secrets = Arc::new(SelectiveWriteFaultStore {
+            inner: InMemorySecretStore::default(),
+            fail_read_account: Mutex::new(None),
+            fail_account: Mutex::new(None),
+            fail_empty_only: AtomicBool::new(false),
+            fail_once: AtomicBool::new(false),
+        });
+        let tunnel = Arc::new(FakeTunnel::default());
+        let enrollment = MaintenanceEnrollment::new(secrets.clone(), tunnel.clone());
+        let active_public_key = enrollment.ensure_public_key().await.expect("active key");
+        let active_identity = identity(active_public_key.clone());
+        enrollment
+            .apply_profile(&active_identity)
+            .await
+            .expect("active profile");
+        let pending_public_key = enrollment
+            .ensure_reclaim_public_key("ABCD-2345", Some(&active_identity))
+            .await
+            .expect("pending key");
+        let mut pending_identity = identity(pending_public_key.clone());
+        pending_identity.address = "10.91.16.14/32".to_string();
+        pending_identity.reclaim_expires_at = Some("2099-01-01T00:00:00Z".to_string());
+        tunnel.pending_verified.store(true, Ordering::SeqCst);
+        enrollment
+            .apply_reclaim_profile(&pending_identity)
+            .await
+            .expect("pending profile");
+
+        secrets
+            .inject_once(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT, false)
+            .await;
+        enrollment
+            .promote_reclaim(&pending_public_key)
+            .await
+            .expect_err("active key switch is interrupted");
+        let recovery = enrollment.status().await;
+        assert_eq!(recovery.state, "maintenance_recovery_pending");
+        assert!(!recovery.handshake_verified);
+        let retained_key = secrets
+            .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+            .await
+            .expect("active key read")
+            .expect("active key retained");
+        assert_eq!(
+            public_key_from_private_key(&retained_key).expect("retained public key"),
+            active_public_key
+        );
+
+        let restarted = MaintenanceEnrollment::new(secrets.clone(), tunnel);
+        restarted
+            .recover(None)
+            .await
+            .expect("restart resumes promotion");
+        let promoted = restarted.status().await;
+        assert_eq!(
+            promoted.public_key.as_deref(),
+            Some(pending_public_key.as_str())
+        );
+        assert!(promoted.pending_public_key.is_none());
+        let promoted_key = secrets
+            .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+            .await
+            .expect("active key read")
+            .expect("promoted key");
+        assert_eq!(
+            public_key_from_private_key(&promoted_key).expect("promoted public key"),
+            pending_public_key
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_decommission_resumes_after_restart_without_resurrecting_identity() {
+        let secrets = Arc::new(SelectiveWriteFaultStore {
+            inner: InMemorySecretStore::default(),
+            fail_read_account: Mutex::new(None),
+            fail_account: Mutex::new(None),
+            fail_empty_only: AtomicBool::new(false),
+            fail_once: AtomicBool::new(false),
+        });
+        let tunnel = Arc::new(FakeTunnel::default());
+        let enrollment = MaintenanceEnrollment::new(secrets.clone(), tunnel.clone());
+        let public_key = enrollment.ensure_public_key().await.expect("active key");
+        let active_identity = identity(public_key);
+        enrollment
+            .apply_profile(&active_identity)
+            .await
+            .expect("active profile");
+
+        secrets
+            .inject_once(MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT, true)
+            .await;
+        enrollment
+            .decommission()
+            .await
+            .expect_err("final lifecycle clear is interrupted");
+        let recovery = enrollment.status().await;
+        assert_eq!(recovery.state, "maintenance_recovery_pending");
+        assert!(!recovery.handshake_verified);
+        assert!(secrets
+            .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+            .await
+            .expect("active key read")
+            .is_none());
+
+        let restarted = MaintenanceEnrollment::new(secrets.clone(), tunnel);
+        assert!(restarted
+            .recover(Some(&active_identity))
+            .await
+            .expect("restart resumes decommission")
+            .is_none());
+        assert!(secrets
+            .read_secret(MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT)
+            .await
+            .expect("lifecycle read")
+            .is_none());
+        assert_eq!(restarted.status().await.state, "not_enrolled");
+    }
+
+    #[tokio::test]
+    async fn concurrent_status_cannot_restore_lifecycle_after_decommission() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let tunnel = Arc::new(BlockingObservationTunnel {
+            block_observation: AtomicBool::new(false),
+            observation_started: Notify::new(),
+            release_observation: Notify::new(),
+        });
+        let enrollment = MaintenanceEnrollment::new(secrets.clone(), tunnel.clone());
+        let public_key = enrollment.ensure_public_key().await.expect("active key");
+        enrollment
+            .apply_profile(&identity(public_key))
+            .await
+            .expect("active profile");
+
+        tunnel.block_observation.store(true, Ordering::SeqCst);
+        let status_enrollment = enrollment.clone();
+        let status_task = tokio::spawn(async move { status_enrollment.status().await });
+        tunnel.observation_started.notified().await;
+        let decommission_enrollment = enrollment.clone();
+        let decommission_task =
+            tokio::spawn(async move { decommission_enrollment.decommission().await });
+        tokio::task::yield_now().await;
+        tunnel.release_observation.notify_one();
+
+        status_task.await.expect("status task");
+        decommission_task
+            .await
+            .expect("decommission task")
+            .expect("decommission");
+        assert_eq!(enrollment.status().await.state, "decommissioned");
+        assert!(secrets
+            .read_secret(MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT)
+            .await
+            .expect("lifecycle read")
+            .is_none());
+        assert!(secrets
+            .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+            .await
+            .expect("active key read")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_read_failure_closes_handshake_gate_until_store_recovers() {
+        let secrets = Arc::new(SelectiveWriteFaultStore {
+            inner: InMemorySecretStore::default(),
+            fail_read_account: Mutex::new(None),
+            fail_account: Mutex::new(None),
+            fail_empty_only: AtomicBool::new(false),
+            fail_once: AtomicBool::new(false),
+        });
+        let enrollment = MaintenanceEnrollment::new(
+            secrets.clone(),
+            Arc::new(FixedConnectivityTunnel {
+                connected: AtomicBool::new(true),
+            }),
+        );
+        let public_key = enrollment.ensure_public_key().await.expect("active key");
+        enrollment
+            .apply_profile(&identity(public_key))
+            .await
+            .expect("active profile");
+
+        secrets
+            .set_read_failure(Some(MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT))
+            .await;
+        let unavailable = enrollment.status().await;
+        assert_eq!(unavailable.state, "lifecycle_unavailable");
+        assert!(!unavailable.handshake_verified);
+        assert!(unavailable.first_handshake_verified_at.is_none());
+
+        secrets.set_read_failure(None).await;
+        let recovered = enrollment.status().await;
+        assert_eq!(recovered.state, "handshake_verified");
+        assert!(recovered.handshake_verified);
+    }
+
+    #[tokio::test]
+    async fn concurrent_status_retry_and_reclaim_preserve_one_pending_identity() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let tunnel = Arc::new(BlockingObservationTunnel {
+            block_observation: AtomicBool::new(false),
+            observation_started: Notify::new(),
+            release_observation: Notify::new(),
+        });
+        let enrollment = MaintenanceEnrollment::new(secrets, tunnel.clone());
+        let active_public_key = enrollment.ensure_public_key().await.expect("active key");
+        let active_identity = identity(active_public_key.clone());
+        enrollment
+            .apply_profile(&active_identity)
+            .await
+            .expect("active profile");
+
+        tunnel.block_observation.store(true, Ordering::SeqCst);
+        let status_enrollment = enrollment.clone();
+        let status_task = tokio::spawn(async move { status_enrollment.status().await });
+        tunnel.observation_started.notified().await;
+        let retry_enrollment = enrollment.clone();
+        let retry_task =
+            tokio::spawn(async move { retry_enrollment.retry_active_convergence().await });
+        let reclaim_enrollment = enrollment.clone();
+        let reclaim_identity = active_identity.clone();
+        let reclaim_task = tokio::spawn(async move {
+            reclaim_enrollment
+                .ensure_reclaim_public_key("ABCD-2345", Some(&reclaim_identity))
+                .await
+        });
+        tunnel.block_observation.store(false, Ordering::SeqCst);
+        tunnel.release_observation.notify_one();
+
+        status_task.await.expect("status task");
+        retry_task
+            .await
+            .expect("retry task")
+            .expect("retry convergence");
+        let pending_public_key = reclaim_task
+            .await
+            .expect("reclaim task")
+            .expect("pending key");
+        let replayed = enrollment
+            .ensure_reclaim_public_key("ABCD-2345", Some(&active_identity))
+            .await
+            .expect("replayed pending key");
+        assert_eq!(pending_public_key, replayed);
+        assert_ne!(pending_public_key, active_public_key);
     }
 }

@@ -263,13 +263,6 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
             "protected maintenance authorized this machine reclaim",
         ));
         BringUpState::ReclaimRequired
-    } else if !provisioned {
-        blocking_reasons.push(reason(
-            "CLAIM_REQUIRED",
-            "provisioning",
-            "machine must be claimed before runtime profile can be applied",
-        ));
-        BringUpState::ClaimRequired
     } else if input.maintenance_commissioning_required
         && !input.maintenance_first_handshake_verified
     {
@@ -282,6 +275,13 @@ pub fn evaluate_bring_up(input: BringUpEvaluationInput) -> BringUpSnapshot {
                 .unwrap_or("the first production WireGuard handshake has not completed"),
         ));
         BringUpState::MaintenanceConvergenceRequired
+    } else if !provisioned {
+        blocking_reasons.push(reason(
+            "CLAIM_REQUIRED",
+            "provisioning",
+            "machine must be claimed before runtime profile can be applied",
+        ));
+        BringUpState::ClaimRequired
     } else if input.topology_ready == Some(false) {
         blocking_reasons.push(reason(
             input
