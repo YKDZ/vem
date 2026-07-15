@@ -408,6 +408,8 @@ export function installUiDebugDaemon(): void {
         capacity: item.capacity,
         currentQuantity: item.physicalStock,
         submittedQuantity: null,
+        submittedAddition: null,
+        previewQuantity: null,
         syncStatus: "not_submitted",
         salesState: item.slotSalesState,
         reconciliationReason: null,

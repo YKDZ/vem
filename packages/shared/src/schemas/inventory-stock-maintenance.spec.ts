@@ -14,6 +14,8 @@ const slot = {
   capacity: 8,
   currentQuantity: 3,
   submittedQuantity: null,
+  submittedAddition: 2,
+  previewQuantity: 5,
   syncStatus: "accepted",
   salesState: "sale_ready",
   reconciliationReason: null,
@@ -32,6 +34,8 @@ describe("planogram-driven stock maintenance contract", () => {
       slotCode: "A1",
       productName: "矿泉水",
       currentQuantity: 3,
+      submittedAddition: 2,
+      previewQuantity: 5,
       syncStatus: "accepted",
     });
     expect(task).not.toHaveProperty("planogramVersion");

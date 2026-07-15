@@ -764,6 +764,8 @@ describe("DaemonApiClient", () => {
           capacity: 8,
           currentQuantity: 2,
           submittedQuantity: null,
+          submittedAddition: null,
+          previewQuantity: null,
           syncStatus: "not_submitted" as const,
           salesState: "sale_ready",
           reconciliationReason: null,

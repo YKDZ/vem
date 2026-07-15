@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -295,6 +295,23 @@ CREATE INDEX IF NOT EXISTS idx_stock_movement_sync_status
   ON stock_movement_sync(status, updated_at);
 
 PRAGMA foreign_keys = ON;
+"#;
+
+pub const MIGRATION_V13: &str = r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS stock_maintenance_batches (
+  task_id TEXT PRIMARY KEY,
+  mode TEXT NOT NULL CHECK (mode IN ('routine_refill')),
+  planogram_version TEXT NOT NULL,
+  planogram_revision TEXT NOT NULL,
+  slot_set_json TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_fingerprint TEXT NOT NULL,
+  operator_id TEXT NOT NULL,
+  capacity_snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 "#;
 
 pub const MIGRATION_V4: &str = r#"

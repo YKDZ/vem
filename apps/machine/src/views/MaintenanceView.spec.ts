@@ -181,6 +181,8 @@ function stockMaintenanceTaskFixture(
         capacity: 8,
         currentQuantity: 2,
         submittedQuantity: null,
+        submittedAddition: null,
+        previewQuantity: null,
         syncStatus: "not_submitted" as const,
         salesState: "sale_ready",
         reconciliationReason: null,
@@ -1803,6 +1805,77 @@ describe("MaintenanceView planogram-driven stock task", () => {
     expect(body).not.toHaveProperty("planogramVersion");
   });
 
+  it("recovers an immutable pending refill addition and its original preview", async () => {
+    const ready = stockMaintenanceTaskFixture();
+    const pending = {
+      ...ready,
+      status: "pending" as const,
+      slots: [
+        {
+          ...ready.slots[0],
+          currentQuantity: 4,
+          submittedAddition: 2,
+          previewQuantity: 4,
+          syncStatus: "pending" as const,
+        },
+      ],
+    };
+    getStockMaintenanceTaskMock.mockResolvedValueOnce(pending);
+    const host = await mountView();
+    await unlockMaintenance(host);
+
+    const addition = stockInputByLabel(host, "补货数量");
+    expect(addition.value).toBe("2");
+    expect(addition.disabled).toBe(true);
+    expect(host.textContent).toContain("补货后 4/8");
+    const submit = buttonByText(host, "确认补货");
+    expect(submit.disabled).toBe(false);
+    submit.click();
+    await vi.waitFor(() => {
+      expect(submitStockMaintenanceBatchMock).toHaveBeenCalledWith({
+        taskId: "stock-task-01",
+        mode: "routine_refill",
+        slots: [{ slotCode: "A1", addition: 2 }],
+      });
+    });
+  });
+
+  it("rejects a fractional refill without silently rewriting its value", async () => {
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const addition = stockInputByLabel(host, "补货数量");
+    addition.value = "1.5";
+    addition.dispatchEvent(new Event("input"));
+    await nextTick();
+
+    const button = Array.from(host.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "确认补货",
+    );
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    expect(button!.disabled).toBe(true);
+    expect(host.textContent).not.toContain("补货后 3.5/8");
+    button?.click();
+    expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "-1", "7", "NaN"])(
+    "rejects invalid refill input %j",
+    async (rawValue) => {
+      const host = await mountView();
+      await unlockMaintenance(host);
+      const addition = stockInputByLabel(host, "补货数量");
+      addition.value = rawValue;
+      addition.dispatchEvent(new Event("input"));
+      await nextTick();
+
+      const button = buttonByText(host, "确认补货");
+      expect(button.disabled).toBe(true);
+      expect(host.textContent).toContain("输入无效");
+      button.click();
+      expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("submits one complete final-quantity batch for initial stock", async () => {
     getStockMaintenanceTaskMock.mockResolvedValueOnce(
       stockMaintenanceTaskFixture("initial_count"),
@@ -1826,4 +1899,25 @@ describe("MaintenanceView planogram-driven stock task", () => {
       });
     });
   });
+
+  it.each(["", "-1", "1.5", "9", "NaN"])(
+    "rejects invalid final count input %j",
+    async (rawValue) => {
+      getStockMaintenanceTaskMock.mockResolvedValueOnce(
+        stockMaintenanceTaskFixture("initial_count"),
+      );
+      const host = await mountView();
+      await unlockMaintenance(host);
+      const quantity = stockInputByLabel(host, "实际数量");
+      quantity.value = rawValue;
+      quantity.dispatchEvent(new Event("input"));
+      await nextTick();
+
+      const button = buttonByText(host, "提交盘点");
+      expect(button.disabled).toBe(true);
+      expect(host.textContent).toContain("输入无效");
+      button.click();
+      expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -661,12 +661,30 @@ const stockMaintenance = reactive({
   loading: false,
   message: null as string | null,
   task: null as StockMaintenanceTask | null,
-  values: {} as Record<string, number>,
+  values: {} as Record<string, number | string>,
 });
 
 const stockTaskIsRefill = computed(
   () => stockMaintenance.task?.mode === "routine_refill",
 );
+function isValidStockInteger(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= 0
+  );
+}
+function refillValueFits(
+  slot: StockMaintenanceTask["slots"][number],
+  addition: unknown,
+): addition is number {
+  if (!isValidStockInteger(addition)) return false;
+  if (addition === slot.submittedAddition && slot.previewQuantity !== null) {
+    return slot.previewQuantity <= slot.capacity;
+  }
+  return slot.currentQuantity + addition <= slot.capacity;
+}
 const stockTaskCanSubmit = computed(() => {
   const task = stockMaintenance.task;
   if (!task) return false;
@@ -676,17 +694,17 @@ const stockTaskCanSubmit = computed(() => {
       addition: stockMaintenance.values[slot.slotCode] ?? 0,
     }));
     return (
-      additions.some(({ addition }) => addition > 0) &&
+      additions.some(
+        ({ addition }) => isValidStockInteger(addition) && addition > 0,
+      ) &&
       additions.every(({ slot, addition }) => {
-        return (
-          addition >= 0 && slot.currentQuantity + addition <= slot.capacity
-        );
+        return refillValueFits(slot, addition);
       })
     );
   }
   return task.slots.every((slot) => {
     const quantity = stockMaintenance.values[slot.slotCode];
-    return quantity !== undefined && quantity >= 0 && quantity <= slot.capacity;
+    return isValidStockInteger(quantity) && quantity <= slot.capacity;
   });
 });
 
@@ -1272,7 +1290,7 @@ async function refreshStockMaintenanceView(): Promise<void> {
       task.slots.map((slot) => [
         slot.slotCode,
         task.mode === "routine_refill"
-          ? 0
+          ? (slot.submittedAddition ?? 0)
           : (slot.submittedQuantity ?? slot.currentQuantity),
       ]),
     );
@@ -1297,15 +1315,29 @@ function stockSyncLabel(status: string): string {
   );
 }
 
-function resultingStock(slotCode: string, currentQuantity: number): number {
-  return stockTaskIsRefill.value
-    ? currentQuantity + Math.max(0, stockMaintenance.values[slotCode] ?? 0)
-    : Math.max(0, stockMaintenance.values[slotCode] ?? 0);
+function resultingStock(
+  slot: StockMaintenanceTask["slots"][number],
+): number | null {
+  const value = stockMaintenance.values[slot.slotCode];
+  if (!isValidStockInteger(value) || value > slot.capacity) return null;
+  if (stockTaskIsRefill.value) {
+    if (value === slot.submittedAddition && slot.previewQuantity !== null) {
+      return slot.previewQuantity;
+    }
+    return slot.currentQuantity + value <= slot.capacity
+      ? slot.currentQuantity + value
+      : null;
+  }
+  return value;
 }
 
 async function submitStockMaintenanceTask(): Promise<void> {
   const task = stockMaintenance.task;
   if (!task) return;
+  if (!stockTaskCanSubmit.value) {
+    stockMaintenance.message = "库存数量必须是容量范围内的非负整数。";
+    return;
+  }
   stockMaintenance.loading = true;
   stockMaintenance.message = null;
   try {
@@ -1317,10 +1349,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
             slots: task.slots
               .map((slot) => ({
                 slotCode: slot.slotCode,
-                addition: Math.max(
-                  0,
-                  Math.trunc(stockMaintenance.values[slot.slotCode] ?? 0),
-                ),
+                addition: stockMaintenance.values[slot.slotCode] as number,
               }))
               .filter((slot) => slot.addition > 0),
           })
@@ -1329,10 +1358,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
             mode: task.mode,
             slots: task.slots.map((slot) => ({
               slotCode: slot.slotCode,
-              quantity: Math.max(
-                0,
-                Math.trunc(stockMaintenance.values[slot.slotCode] ?? 0),
-              ),
+              quantity: stockMaintenance.values[slot.slotCode] as number,
             })),
           });
     stockMaintenance.task = response.task;
@@ -1679,8 +1705,12 @@ async function submitStockMaintenanceTask(): Promise<void> {
                     class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
                     :max="
                       stockTaskIsRefill
-                        ? slot.capacity - slot.currentQuantity
+                        ? (slot.submittedAddition ??
+                          slot.capacity - slot.currentQuantity)
                         : slot.capacity
+                    "
+                    :disabled="
+                      stockTaskIsRefill && slot.submittedAddition !== null
                     "
                     min="0"
                     step="1"
@@ -1688,9 +1718,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                   />
                   <span class="text-xs text-emerald-200">
                     {{ stockTaskIsRefill ? "补货后" : "提交后" }}
-                    {{ resultingStock(slot.slotCode, slot.currentQuantity) }}/{{
-                      slot.capacity
-                    }}
+                    {{ resultingStock(slot) ?? "输入无效" }}/{{ slot.capacity }}
                   </span>
                 </label>
               </article>
