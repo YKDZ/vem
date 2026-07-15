@@ -2602,6 +2602,8 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     },
     serialRunnerExpectedPublicKey:
       options.expectedSerialRunnerPublicKey ?? null,
+    expectedAdapterIdentity:
+      process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY ?? null,
     ci: {
       entrypoint:
         "node scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance",
@@ -3301,6 +3303,7 @@ export function evaluateSimulatedHardwareSerialEvidence({
   saleFlow,
   serialConformance,
   expectedRunnerPublicKey,
+  expectedAdapterIdentity,
 } = {}) {
   const diagnostics = [];
   const facts = saleFlow?.simulatedHardwareSaleFlow ?? saleFlow;
@@ -3310,6 +3313,7 @@ export function evaluateSimulatedHardwareSerialEvidence({
   try {
     validatedConformance = validateSerialConformanceReport(serialConformance, {
       expectedRunnerPublicKey,
+      expectedAdapterIdentity,
     });
   } catch {
     diagnostics.push(
@@ -3549,6 +3553,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     saleFlow: saleFlow?.parsed,
     serialConformance: saleFlow?.serialConformance,
     expectedRunnerPublicKey: plan.serialRunnerExpectedPublicKey,
+    expectedAdapterIdentity: plan.expectedAdapterIdentity,
   });
   const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
   const approvedPreclaimBaseEvaluation =

@@ -245,7 +245,7 @@ function validateRunnerOperationEvidence(
 
 export function validateSerialConformanceReport(
   input,
-  { expectedRunnerPublicKey } = {},
+  { expectedRunnerPublicKey, expectedAdapterIdentity } = {},
 ) {
   const conformance = structuredClone(input);
   assertConformance(
@@ -323,6 +323,26 @@ export function validateSerialConformanceReport(
   const collect = validatedReports.collect;
   const firstStop = validatedReports.firstStop;
   const repeatedStop = validatedReports.repeatedStop;
+  assertConformance(
+    typeof expectedAdapterIdentity === "string" &&
+      expectedAdapterIdentity.length > 0,
+    "expected adapter identity is required",
+  );
+  const lifecycleIdentity = (report) => ({
+    adapter: report.adapter,
+    vmIdentity: report.observed.vmIdentity,
+    targetBinding: report.observed.targetBinding,
+    baseIdentity: report.observed.baseIdentity,
+    overlayIdentity: report.observed.overlayIdentity,
+    factoryProvenanceDigest: report.observed.factoryProvenanceDigest,
+  });
+  assertConformance(
+    start.adapter.identity === expectedAdapterIdentity &&
+      [inject, collect, firstStop, repeatedStop].every((report) =>
+        sameJson(lifecycleIdentity(report), lifecycleIdentity(start)),
+      ),
+    "serial conformance reports must bind one trusted adapter and VM lifecycle",
+  );
   const startReceipt = validateRunnerOperationEvidence(
     conformance.runnerEvidence,
     "start",
@@ -420,7 +440,192 @@ export function validateSerialConformanceReport(
       typeof collectedSale.vendingCommandId === "string",
     "serial collection must complete the injected sale without relabeling it",
   );
+  validateFailureMatrix(
+    conformance.failureMatrix,
+    collectedSale,
+    lifecycleIdentity(start),
+  );
   return { ...conformance, reports: validatedReports };
+}
+
+function validateFailureMatrix(
+  failureMatrix,
+  completedSale,
+  expectedLifecycleIdentity,
+) {
+  const expected = new Map([
+    ["malformed-frame", ["collect-serial-evidence", "serial_malformed_frame"]],
+    [
+      "device-disconnected",
+      ["collect-serial-evidence", "serial_device_disconnected"],
+    ],
+    ["scanner-timeout", ["inject-scanner-code", "serial_scanner_timeout"]],
+    ["dispense-failed", ["collect-serial-evidence", "serial_dispense_failed"]],
+    [
+      "swapped-roles",
+      ["prepare-sale-with-faulted-mapping", "serial_swapped_roles"],
+    ],
+    [
+      "missing-device",
+      ["prepare-sale-with-faulted-mapping", "serial_missing_device"],
+    ],
+  ]);
+  assertConformance(
+    Array.isArray(failureMatrix) && failureMatrix.length === expected.size,
+    "serial conformance failure matrix is incomplete",
+  );
+  const byMode = new Map(
+    failureMatrix.map((entry) => [entry?.failureMode, entry]),
+  );
+  assertConformance(
+    byMode.size === expected.size,
+    "serial conformance failure matrix modes must be unique",
+  );
+  for (const [failureMode, [operation, diagnosticCode]] of expected) {
+    const entry = byMode.get(failureMode);
+    assertConformance(
+      entry?.operation === operation &&
+        entry.result === "observed_failure" &&
+        entry.adapterResult === "succeeded" &&
+        entry.diagnosticCode === diagnosticCode,
+      `serial conformance ${failureMode} failure evidence is invalid`,
+    );
+    validateFailureSource(
+      entry?.source?.fault,
+      `${failureMode} fault`,
+      expectedLifecycleIdentity,
+    );
+    assertConformance(
+      (failureMode === "swapped-roles" || failureMode === "missing-device"
+        ? ["start-serial-session", "collect-serial-evidence"].includes(
+            entry.source.fault.request.operation,
+          )
+        : entry.source.fault.request.operation === operation) &&
+        entry.source.fault.report.diagnostics?.some(
+          (diagnostic) => diagnostic?.code === diagnosticCode,
+        ),
+      `serial conformance ${failureMode} source does not prove the declared fault`,
+    );
+  }
+
+  for (const failureMode of ["malformed-frame", "device-disconnected"]) {
+    const entry = byMode.get(failureMode);
+    assertConformance(
+      entry.orderId === completedSale.orderId &&
+        entry.paymentId === completedSale.paymentId &&
+        entry.vendingCommandId === completedSale.vendingCommandId,
+      `serial conformance ${failureMode} must bind the completed sale`,
+    );
+  }
+  const scannerTimeout = byMode.get("scanner-timeout");
+  const dispenseFailed = byMode.get("dispense-failed");
+  const scannerSale =
+    scannerTimeout.source.fault.report.request.serialSession.saleBindings[0];
+  const dispenseSale =
+    dispenseFailed.source.fault.report.request.serialSession.saleBindings[0];
+  assertConformance(
+    typeof scannerTimeout.orderId === "string" &&
+      typeof scannerTimeout.paymentId === "string" &&
+      scannerTimeout.orderId === scannerSale?.orderId &&
+      scannerTimeout.paymentId === scannerSale?.paymentId &&
+      scannerTimeout.orderId === dispenseFailed.orderId &&
+      scannerTimeout.paymentId === dispenseFailed.paymentId &&
+      scannerTimeout.vendingCommandId == null &&
+      typeof dispenseFailed.vendingCommandId === "string" &&
+      dispenseFailed.orderId === dispenseSale?.orderId &&
+      dispenseFailed.paymentId === dispenseSale?.paymentId &&
+      dispenseFailed.vendingCommandId === dispenseSale?.vendingCommandId,
+    "serial conformance scanner timeout and failed dispense must bind one failed sale",
+  );
+
+  for (const failureMode of ["swapped-roles", "missing-device"]) {
+    const entry = byMode.get(failureMode);
+    const start = validateFailureSource(
+      entry?.source?.start,
+      `${failureMode} start`,
+      expectedLifecycleIdentity,
+    );
+    const fault = validateFailureSource(
+      entry.source.fault,
+      `${failureMode} fault session`,
+      expectedLifecycleIdentity,
+    );
+    const session = entry.startSerialSession;
+    const faultSession =
+      fault.request.operation === "start-serial-session"
+        ? fault.serialSession
+        : fault.request.serialSession;
+    const failClosed = entry.daemonFailClosed;
+    assertConformance(
+      !Object.hasOwn(entry, "orderId") &&
+        !Object.hasOwn(entry, "paymentId") &&
+        !Object.hasOwn(entry, "vendingCommandId") &&
+        sameJson(session, {
+          serialSessionId: start.serialSession?.serialSessionId,
+          startOperationReference: start.serialSession?.startOperationReference,
+          deviceMappingDigest: start.serialSession?.deviceMappingDigest,
+        }) &&
+        [
+          "serialSessionId",
+          "startOperationReference",
+          "deviceMappingDigest",
+        ].every((key) => faultSession?.[key] === session?.[key]) &&
+        failClosed?.commandExitStatus > 0 &&
+        failClosed.simulatedHardwareReady === "failed" &&
+        failClosed.daemonHealthObserved === true &&
+        failClosed.hardwareOnline === false &&
+        failClosed.readyzObserved === true &&
+        sameJson(failClosed.adapterSession, {
+          ...session,
+          faultStartedAt: failClosed.adapterSession?.faultStartedAt,
+        }) &&
+        typeof failClosed.adapterSession.faultStartedAt === "string" &&
+        sameJson(failClosed.readinessBlockingCodes, [
+          "LOWER_CONTROLLER_UNAVAILABLE",
+        ]) &&
+        sameJson(failClosed.responseBlockingCodes, [
+          "LOWER_CONTROLLER_UNAVAILABLE",
+        ]) &&
+        failClosed.transactionEntry?.endpoint === "/v1/intents/create-order" &&
+        failClosed.transactionEntry?.attempted === true &&
+        failClosed.transactionEntry?.rejected === true &&
+        failClosed.transactionEntry?.statusCode === 400 &&
+        failClosed.transactionEntry?.responseCode === "create_order_blocked" &&
+        sameJson(failClosed.transactionEntry?.readinessBlockingCodes, [
+          "LOWER_CONTROLLER_UNAVAILABLE",
+        ]) &&
+        failClosed.transactionEntry?.orderId === null &&
+        failClosed.transactionEntry?.paymentId === null &&
+        failClosed.transactionEntry?.vendingCommandId === null &&
+        failClosed.saleBindingCreated === false &&
+        entry.recovery?.runtimeReady === "passed" &&
+        entry.recovery?.hardwareOnline === true &&
+        entry.recovery?.scannerOnline === true &&
+        entry.recovery?.ready === true,
+      `serial conformance ${failureMode} mapping failure is not fail-closed and recovered`,
+    );
+  }
+}
+
+function validateFailureSource(source, label, expectedLifecycleIdentity) {
+  assertConformance(
+    source?.request && source?.report,
+    `serial conformance ${label} source is required`,
+  );
+  const report = validateVmHostAdapterReport(source.report, source.request);
+  const lifecycleIdentity = {
+    adapter: report.adapter,
+    vmIdentity: report.observed.vmIdentity,
+    targetBinding: report.observed.targetBinding,
+    baseIdentity: report.observed.baseIdentity,
+    overlayIdentity: report.observed.overlayIdentity,
+    factoryProvenanceDigest: report.observed.factoryProvenanceDigest,
+  };
+  assertConformance(
+    sameJson(lifecycleIdentity, expectedLifecycleIdentity),
+    `serial conformance ${label} source belongs to another VM lifecycle`,
+  );
+  return report;
 }
 
 function readOption(name, { optional = false } = {}) {
@@ -860,6 +1065,9 @@ async function main() {
     if (!primaryError)
       validateSerialConformanceReport(conformance, {
         expectedRunnerPublicKey: runnerEvidence.expectedRunnerPublicKey,
+        expectedAdapterIdentity: contractTest
+          ? start?.adapter?.identity
+          : process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY,
       });
   }
   if (primaryError) throw primaryError;
@@ -907,7 +1115,7 @@ function runSaleCommand(commandJson, expectedPhase) {
 }
 
 function runFailedDispenseCommand(commandJson) {
-  const command = JSON.parse(commandJson);
+  const command = isolatedCommandOutput(JSON.parse(commandJson));
   if (!Array.isArray(command) || command.length < 2)
     throw new Error("failed-dispense sale command must be a JSON array");
   const result = spawnSync(command[0], command.slice(1), {
@@ -934,6 +1142,16 @@ function runFailedDispenseCommand(commandJson) {
     paymentId: sale.paymentId,
     vendingCommandId: sale.vendingCommandId,
   };
+}
+
+export function isolatedCommandOutput(command) {
+  if (!Array.isArray(command)) return command;
+  const outIndex = command.lastIndexOf("--out");
+  if (outIndex < 0 || typeof command[outIndex + 1] !== "string")
+    throw new Error("sale command must declare --out for isolated evidence");
+  const isolated = [...command];
+  isolated[outIndex + 1] = `${isolated[outIndex + 1]}.dispense-failed`;
+  return isolated;
 }
 
 function adapterSessionEvidence(startReport) {
@@ -1121,6 +1339,7 @@ export function assertBlockedSaleEvidence({
 
 export function observedMappingFailureCase({
   failureMode,
+  startRequest,
   startReport,
   expectedDiagnosticCode,
   daemonFailClosed,
@@ -1161,6 +1380,10 @@ export function observedMappingFailureCase({
     },
     daemonFailClosed,
     recovery,
+    source: {
+      start: { request: startRequest, report: startReport },
+      fault: { request: startRequest, report: startReport },
+    },
   };
 }
 
@@ -1183,12 +1406,13 @@ async function runProductionFailureMatrix(options) {
         ...options.environment,
         VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
       };
+      const startRequest = requestFor({
+        operation: "start-serial-session",
+        ...options,
+        saleBinding: null,
+      });
       const start = await runVmHostAdapter({
-        request: requestFor({
-          operation: "start-serial-session",
-          ...options,
-          saleBinding: null,
-        }),
+        request: startRequest,
         workDirectory: options.workDirectory,
         environment: faultEnvironment,
       });
@@ -1207,6 +1431,7 @@ async function runProductionFailureMatrix(options) {
       );
       failureCase = {
         failureMode,
+        startRequest,
         startReport: start,
         expectedDiagnosticCode: diagnosticCode,
         daemonFailClosed: failClosed,
@@ -1237,14 +1462,15 @@ async function runProductionFailureMatrix(options) {
     });
     scannerSession = start.serialSession;
     pendingSale = runSaleCommand(options.salePrepareCommandJson, "prepare");
+    const scannerTimeoutRequest = requestFor({
+      operation: "inject-scanner-code",
+      ...options,
+      session: scannerSession,
+      scannerDescriptor: createScannerCodeDescriptor(options.scannerCode),
+      saleBinding: pendingSale,
+    });
     const scannerTimeout = await runVmHostAdapter({
-      request: requestFor({
-        operation: "inject-scanner-code",
-        ...options,
-        session: scannerSession,
-        scannerDescriptor: createScannerCodeDescriptor(options.scannerCode),
-        saleBinding: pendingSale,
-      }),
+      request: scannerTimeoutRequest,
       workDirectory: options.workDirectory,
       environment: {
         ...options.environment,
@@ -1265,6 +1491,9 @@ async function runProductionFailureMatrix(options) {
         report: scannerTimeout,
         saleBinding: pendingSale,
         diagnosticCode: scannerTimeoutCode,
+        source: {
+          fault: { request: scannerTimeoutRequest, report: scannerTimeout },
+        },
       }),
     );
   } finally {
@@ -1306,17 +1535,18 @@ async function runProductionFailureMatrix(options) {
       failedSale.paymentId !== pendingSale.paymentId
     )
       throw new Error("dispense-failed sale changed the pending business IDs");
+    const dispenseFailureRequest = requestFor({
+      operation: "collect-serial-evidence",
+      ...options,
+      session: dispenseSession,
+      scannerDescriptor: {
+        operationNonce: dispenseInject.request.operationNonce,
+        ...createScannerCodeDescriptor(options.scannerCode),
+      },
+      saleBinding: failedSale,
+    });
     const dispenseFailure = await runVmHostAdapter({
-      request: requestFor({
-        operation: "collect-serial-evidence",
-        ...options,
-        session: dispenseSession,
-        scannerDescriptor: {
-          operationNonce: dispenseInject.request.operationNonce,
-          ...createScannerCodeDescriptor(options.scannerCode),
-        },
-        saleBinding: failedSale,
-      }),
+      request: dispenseFailureRequest,
       workDirectory: options.workDirectory,
       environment: {
         ...options.environment,
@@ -1336,6 +1566,9 @@ async function runProductionFailureMatrix(options) {
         report: dispenseFailure,
         saleBinding: failedSale,
         diagnosticCode: dispenseFailureCode,
+        source: {
+          fault: { request: dispenseFailureRequest, report: dispenseFailure },
+        },
       }),
     );
   } finally {
@@ -1383,6 +1616,7 @@ function observedFailureCase({
   report,
   saleBinding,
   diagnosticCode,
+  source,
 }) {
   return {
     failureMode,
@@ -1395,6 +1629,62 @@ function observedFailureCase({
     ...(saleBinding.vendingCommandId
       ? { vendingCommandId: saleBinding.vendingCommandId }
       : {}),
+    source,
+  };
+}
+
+function contractMappingFailureCase({
+  failureMode,
+  startRequest,
+  startReport,
+  faultRequest,
+  faultReport,
+  adapterResult,
+  diagnosticCode,
+}) {
+  const startSerialSession = {
+    serialSessionId: startReport.serialSession.serialSessionId,
+    startOperationReference: startReport.serialSession.startOperationReference,
+    deviceMappingDigest: startReport.serialSession.deviceMappingDigest,
+  };
+  const blockingCodes = ["LOWER_CONTROLLER_UNAVAILABLE"];
+  return {
+    failureMode,
+    operation: "prepare-sale-with-faulted-mapping",
+    result: "observed_failure",
+    adapterResult,
+    diagnosticCode,
+    startSerialSession,
+    daemonFailClosed: {
+      commandExitStatus: 1,
+      simulatedHardwareReady: "failed",
+      daemonHealthObserved: true,
+      hardwareOnline: false,
+      scannerOnline: false,
+      readyzObserved: true,
+      adapterSession: {
+        ...startSerialSession,
+        faultStartedAt: startReport.timestamps.startedAt,
+      },
+      readinessBlockingCodes: blockingCodes,
+      responseBlockingCodes: blockingCodes,
+      transactionEntry: {
+        endpoint: "/v1/intents/create-order",
+        attempted: true,
+        rejected: true,
+        statusCode: 400,
+        responseCode: "create_order_blocked",
+        readinessBlockingCodes: blockingCodes,
+        orderId: null,
+        paymentId: null,
+        vendingCommandId: null,
+      },
+      saleBindingCreated: false,
+    },
+    source: {
+      start: { request: startRequest, report: startReport },
+      fault: { request: faultRequest, report: faultReport },
+    },
   };
 }
 
@@ -1456,33 +1746,40 @@ async function runFailureMatrix({
     }[failureMode];
     let session;
     try {
+      const startRequest = requestFor({
+        operation: "start-serial-session",
+        runId,
+        targetIdentity,
+        lifecycleReference,
+        approvedRuntimeBase,
+        saleCorrelationId,
+        saleBinding,
+      });
       const start = await runVmHostAdapter({
-        request: requestFor({
-          operation: "start-serial-session",
-          runId,
-          targetIdentity,
-          lifecycleReference,
-          approvedRuntimeBase,
-          saleCorrelationId,
-          saleBinding,
-        }),
+        request: startRequest,
         workDirectory,
-        environment,
+        environment: ["swapped-roles", "missing-device"].includes(failureMode)
+          ? {
+              ...environment,
+              VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
+            }
+          : environment,
       });
       session = start.serialSession;
       const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
+      const injectRequest = requestFor({
+        operation: "inject-scanner-code",
+        runId,
+        targetIdentity,
+        lifecycleReference,
+        approvedRuntimeBase,
+        session,
+        scannerDescriptor,
+        saleCorrelationId,
+        saleBinding,
+      });
       const inject = await runVmHostAdapter({
-        request: requestFor({
-          operation: "inject-scanner-code",
-          runId,
-          targetIdentity,
-          lifecycleReference,
-          approvedRuntimeBase,
-          session,
-          scannerDescriptor,
-          saleCorrelationId,
-          saleBinding,
-        }),
+        request: injectRequest,
         workDirectory,
         environment:
           failureMode === "scanner-timeout"
@@ -1493,24 +1790,28 @@ async function runFailureMatrix({
             : environment,
         scannerCode,
       });
+      const observationRequest =
+        failureMode === "scanner-timeout"
+          ? injectRequest
+          : requestFor({
+              operation: "collect-serial-evidence",
+              runId,
+              targetIdentity,
+              lifecycleReference,
+              approvedRuntimeBase,
+              session,
+              scannerDescriptor: {
+                operationNonce: inject.request.operationNonce,
+                ...scannerDescriptor,
+              },
+              saleCorrelationId,
+              saleBinding,
+            });
       const observation =
         failureMode === "scanner-timeout"
           ? inject
           : await runVmHostAdapter({
-              request: requestFor({
-                operation: "collect-serial-evidence",
-                runId,
-                targetIdentity,
-                lifecycleReference,
-                approvedRuntimeBase,
-                session,
-                scannerDescriptor: {
-                  operationNonce: inject.request.operationNonce,
-                  ...scannerDescriptor,
-                },
-                saleCorrelationId,
-                saleBinding,
-              }),
+              request: observationRequest,
               workDirectory,
               environment: {
                 ...environment,
@@ -1523,18 +1824,35 @@ async function runFailureMatrix({
         expectedCode,
         saleBinding,
       );
-      cases.push(
-        observedFailureCase({
-          failureMode,
-          operation:
-            failureMode === "scanner-timeout"
-              ? "inject-scanner-code"
-              : "collect-serial-evidence",
-          report: observation,
-          saleBinding,
-          diagnosticCode,
-        }),
+      const mappingFailure = ["swapped-roles", "missing-device"].includes(
+        failureMode,
       );
+      const failureCase = mappingFailure
+        ? contractMappingFailureCase({
+            failureMode,
+            startRequest,
+            startReport: start,
+            faultRequest: observationRequest,
+            faultReport: observation,
+            adapterResult: observation.result,
+            diagnosticCode,
+          })
+        : observedFailureCase({
+            failureMode,
+            operation:
+              failureMode === "scanner-timeout"
+                ? "inject-scanner-code"
+                : "collect-serial-evidence",
+            report: observation,
+            saleBinding,
+            diagnosticCode,
+            source: {
+              fault: { request: observationRequest, report: observation },
+            },
+          });
+      if (failureMode === "scanner-timeout")
+        delete failureCase.vendingCommandId;
+      cases.push(failureCase);
     } finally {
       if (session) {
         const stop = await stopFailureSession(
