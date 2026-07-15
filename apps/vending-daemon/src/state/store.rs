@@ -15,9 +15,9 @@ use vending_core::domain::{
 };
 
 use super::schema::{
-    MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V2,
-    MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
-    MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
+    MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
+    MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -500,6 +500,16 @@ struct StockMaintenanceTaskIdentitySlot {
     variant_id: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StockMaintenanceSlotDifference {
+    slot_code: String,
+    changes: Vec<String>,
+    old_slots: Vec<StockMaintenanceTaskIdentitySlot>,
+    current_slots: Vec<StockMaintenanceTaskIdentitySlot>,
+    current_planogram_version: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NormalizedStockMaintenanceRefillBatch {
@@ -805,6 +815,12 @@ impl LocalStateStore {
         }
         if current_version < 13 {
             sqlx::query(MIGRATION_V13)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 14 {
+            sqlx::query(MIGRATION_V14)
                 .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -2423,29 +2439,56 @@ impl LocalStateStore {
             })
     }
 
-    async fn validate_stock_maintenance_identity_in_tx(
+    async fn remember_stock_maintenance_task_identity(
+        &self,
+        identity: &StockMaintenanceTaskIdentity,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO stock_maintenance_task_identities(task_id,identity_json,created_at)
+             VALUES (?1,?2,?3) ON CONFLICT(task_id) DO NOTHING",
+        )
+        .bind(&identity.task_id)
+        .bind(serde_json::to_string(identity)?)
+        .bind(now_iso())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn stock_maintenance_task_identity_by_id(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<StockMaintenanceTaskIdentity>, StoreError> {
+        let stored: Option<(String,)> = sqlx::query_as(
+            "SELECT identity_json FROM stock_maintenance_task_identities WHERE task_id=?1",
+        )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        stored
+            .map(|(value,)| serde_json::from_str(&value).map_err(StoreError::Json))
+            .transpose()
+    }
+
+    async fn stock_maintenance_identity_differences_in_tx(
         tx: &mut Transaction<'static, Sqlite>,
         identity: &StockMaintenanceTaskIdentity,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<Vec<StockMaintenanceSlotDifference>, StoreError> {
         let active: Option<(String,)> = sqlx::query_as(
             "SELECT planogram_version FROM machine_planogram_versions WHERE active=1 LIMIT 1",
         )
         .fetch_optional(tx.as_mut())
         .await?;
-        if active.as_ref().map(|(version,)| version.as_str())
-            != Some(identity.planogram_version.as_str())
-        {
-            return Ok(false);
-        }
+        let active_version = active.map(|(version,)| version);
         let rows: Vec<(String, String, String, i64, String, String)> = sqlx::query_as(
             "SELECT slot_id,slot_code,sku,capacity,inventory_id,variant_id
              FROM machine_planogram_slots WHERE planogram_version=?1
              ORDER BY layer_no,cell_no,slot_id",
         )
-        .bind(&identity.planogram_version)
+        .bind(active_version.as_deref().unwrap_or_default())
         .fetch_all(tx.as_mut())
         .await?;
-        let slots = rows
+        let current_slots = rows
             .into_iter()
             .map(
                 |(slot_id, slot_code, sku, capacity, inventory_id, variant_id)| {
@@ -2460,54 +2503,154 @@ impl LocalStateStore {
                 },
             )
             .collect::<Vec<_>>();
-        let revision = stock_maintenance_planogram_revision(
-            &identity.planogram_version,
-            &identity.mode,
-            &slots,
-        )?;
-        if slots != identity.slots || revision != identity.planogram_revision {
-            return Ok(false);
+
+        let mut slot_codes = identity
+            .slots
+            .iter()
+            .chain(&current_slots)
+            .map(|slot| slot.slot_code.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        slot_codes.sort();
+        let mut differences = Vec::new();
+        for slot_code in slot_codes {
+            let old_slots = identity
+                .slots
+                .iter()
+                .filter(|slot| slot.slot_code == slot_code)
+                .cloned()
+                .collect::<Vec<_>>();
+            let matching_current_slots = current_slots
+                .iter()
+                .filter(|slot| slot.slot_code == slot_code)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut changes = Vec::new();
+            if old_slots.len() > 1 || matching_current_slots.len() > 1 {
+                changes.push("mapping_ambiguity".to_string());
+            } else {
+                match (old_slots.first(), matching_current_slots.first()) {
+                    (None, Some(_)) => changes.push("slot_added".to_string()),
+                    (Some(_), None) => changes.push("slot_removed".to_string()),
+                    (Some(old), Some(current)) => {
+                        if old.slot_id != current.slot_id {
+                            changes.push("slot_removed".to_string());
+                            changes.push("slot_added".to_string());
+                        }
+                        if old.inventory_id != current.inventory_id
+                            || old.variant_id != current.variant_id
+                        {
+                            changes.push("mapping_changed".to_string());
+                        }
+                        if old.sku != current.sku {
+                            changes.push("sku_changed".to_string());
+                        }
+                        if old.capacity != current.capacity {
+                            changes.push("capacity_changed".to_string());
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+            if !changes.is_empty() {
+                differences.push(StockMaintenanceSlotDifference {
+                    slot_code,
+                    changes,
+                    old_slots,
+                    current_slots: matching_current_slots,
+                    current_planogram_version: active_version.clone(),
+                });
+            }
         }
-        Ok(true)
+
+        let current_revision = active_version
+            .as_deref()
+            .map(|version| {
+                stock_maintenance_planogram_revision(version, &identity.mode, &current_slots)
+            })
+            .transpose()?;
+        if differences.is_empty()
+            && (active_version.as_deref() != Some(identity.planogram_version.as_str())
+                || current_revision.as_deref() != Some(identity.planogram_revision.as_str()))
+        {
+            differences.push(StockMaintenanceSlotDifference {
+                slot_code: "*".to_string(),
+                changes: vec![if active_version.as_deref()
+                    != Some(identity.planogram_version.as_str())
+                {
+                    "planogram_version_changed".to_string()
+                } else {
+                    "revision_mismatch".to_string()
+                }],
+                old_slots: Vec::new(),
+                current_slots: Vec::new(),
+                current_planogram_version: active_version,
+            });
+        }
+        Ok(differences)
     }
 
-    async fn freeze_stock_identity_slots_in_tx(
+    async fn freeze_stock_identity_differences_in_tx(
         tx: &mut Transaction<'static, Sqlite>,
-        slots: &[StockMaintenanceTaskIdentitySlot],
+        identity: &StockMaintenanceTaskIdentity,
+        differences: &[StockMaintenanceSlotDifference],
     ) -> Result<(), StoreError> {
-        for slot in slots {
-            let active: Option<(String, String)> = sqlx::query_as(
-                "SELECT s.planogram_version,s.slot_id FROM machine_planogram_slots s
-                 JOIN machine_planogram_versions v
-                   ON v.planogram_version=s.planogram_version AND v.active=1
-                 WHERE s.slot_code=?1",
-            )
-            .bind(&slot.slot_code)
-            .fetch_optional(tx.as_mut())
-            .await?;
-            let Some((planogram_version, slot_id)) = active else {
-                continue;
-            };
-            upsert_sale_safety_blocker_marker_in_tx(
-                tx,
-                &planogram_version,
-                &slot_id,
-                "needs_platform_review",
-                "stale_stock_maintenance_task",
-                "stock_maintenance_task",
-            )
-            .await?;
+        let mut frozen = HashSet::new();
+        for difference in differences {
             sqlx::query(
-                "UPDATE current_stock_projection
-                 SET saleable_stock=0,slot_sales_state='needs_platform_review',updated_at=?3
-                 WHERE planogram_version=?1 AND slot_id=?2",
+                "INSERT INTO health_events(
+                   id,component,level,code,message,context_json,occurred_at,recovered_at
+                 ) VALUES (?1,'inventory','error','stale_stock_maintenance_task_slot_diff',?2,?3,?4,NULL)",
             )
-            .bind(&planogram_version)
-            .bind(&slot_id)
+            .bind(Uuid::new_v4().to_string())
+            .bind(format!(
+                "stock maintenance task {} changed at slot {}: {}",
+                identity.task_id,
+                difference.slot_code,
+                difference.changes.join(",")
+            ))
+            .bind(
+                serde_json::json!({
+                    "taskId": identity.task_id,
+                    "mode": identity.mode,
+                    "planogramVersion": identity.planogram_version,
+                    "planogramRevision": identity.planogram_revision,
+                    "difference": difference,
+                })
+                .to_string(),
+            )
             .bind(now_iso())
             .execute(tx.as_mut())
             .await?;
-            upsert_sale_view_projection_in_tx(tx, &planogram_version, &slot_id).await?;
+            let Some(planogram_version) = difference.current_planogram_version.as_deref() else {
+                continue;
+            };
+            for slot in &difference.current_slots {
+                if !frozen.insert((planogram_version.to_string(), slot.slot_id.clone())) {
+                    continue;
+                }
+                upsert_sale_safety_blocker_marker_in_tx(
+                    tx,
+                    planogram_version,
+                    &slot.slot_id,
+                    "needs_platform_review",
+                    &difference.changes.join(","),
+                    "stock_maintenance_task",
+                )
+                .await?;
+                sqlx::query(
+                    "UPDATE current_stock_projection
+                     SET saleable_stock=0,slot_sales_state='needs_platform_review',updated_at=?3
+                     WHERE planogram_version=?1 AND slot_id=?2",
+                )
+                .bind(planogram_version)
+                .bind(&slot.slot_id)
+                .bind(now_iso())
+                .execute(tx.as_mut())
+                .await?;
+                upsert_sale_view_projection_in_tx(tx, planogram_version, &slot.slot_id).await?;
+            }
         }
         Ok(())
     }
@@ -2519,6 +2662,10 @@ impl LocalStateStore {
         let existing = self
             .get_metadata::<StockMaintenanceTaskIdentity>(STOCK_MAINTENANCE_REFILL_TASK_KEY)
             .await?;
+        if let Some(existing) = existing.as_ref() {
+            self.remember_stock_maintenance_task_identity(existing)
+                .await?;
+        }
         if let Some(existing) = existing.filter(|value| {
             value.planogram_version == planogram_version
                 && value.planogram_revision == snapshot.0
@@ -2548,6 +2695,8 @@ impl LocalStateStore {
         };
         self.put_metadata(STOCK_MAINTENANCE_REFILL_TASK_KEY, &identity)
             .await?;
+        self.remember_stock_maintenance_task_identity(&identity)
+            .await?;
         Ok(identity.task_id)
     }
 
@@ -2574,6 +2723,10 @@ impl LocalStateStore {
             let existing = self
                 .get_metadata::<StockMaintenanceTaskIdentity>(STOCK_MAINTENANCE_COUNT_TASK_KEY)
                 .await?;
+            if let Some(existing) = existing.as_ref() {
+                self.remember_stock_maintenance_task_identity(existing)
+                    .await?;
+            }
             if let Some(existing) = existing.filter(|value| {
                 value.planogram_version == planogram_version
                     && value.planogram_revision == snapshot.0
@@ -2593,6 +2746,8 @@ impl LocalStateStore {
             };
             self.put_metadata(STOCK_MAINTENANCE_COUNT_TASK_KEY, &identity)
                 .await?;
+            self.remember_stock_maintenance_task_identity(&identity)
+                .await?;
             return Ok(identity.task_id);
         };
         let terminal: (i64,) = sqlx::query_as(
@@ -2609,6 +2764,10 @@ impl LocalStateStore {
         let existing = self
             .get_metadata::<StockMaintenanceTaskIdentity>(STOCK_MAINTENANCE_COUNT_TASK_KEY)
             .await?;
+        if let Some(existing) = existing.as_ref() {
+            self.remember_stock_maintenance_task_identity(existing)
+                .await?;
+        }
         if let Some(existing) = existing.filter(|value| {
             value.planogram_version == planogram_version
                 && value.planogram_revision == snapshot.0
@@ -2628,6 +2787,8 @@ impl LocalStateStore {
             predecessor_task_id: Some(pending.input.attestation_id.clone()),
         };
         self.put_metadata(STOCK_MAINTENANCE_COUNT_TASK_KEY, &identity)
+            .await?;
+        self.remember_stock_maintenance_task_identity(&identity)
             .await?;
         Ok(identity.task_id)
     }
@@ -2655,7 +2816,14 @@ impl LocalStateStore {
                     duplicate: true,
                 });
             }
-            self.freeze_stale_stock_task_slots(&input.slots).await?;
+            if let Some(identity) = self
+                .stock_maintenance_task_identity_by_id(&input.task_id)
+                .await?
+            {
+                self.freeze_stale_stock_task_identity(&identity).await?;
+            } else {
+                self.freeze_stale_stock_task_slots(&input.slots).await?;
+            }
             return Err(StoreError::InvalidStockInput(
                 "stock maintenance task is stale; affected slots require reconciliation"
                     .to_string(),
@@ -2775,8 +2943,10 @@ impl LocalStateStore {
         let payload_json = serde_json::to_string(&normalized)?;
         let fingerprint = stock_maintenance_batch_fingerprint(&normalized)?;
         let mut tx = self.begin_immediate_write_transaction().await?;
-        if !Self::validate_stock_maintenance_identity_in_tx(&mut tx, identity).await? {
-            Self::freeze_stock_identity_slots_in_tx(&mut tx, &identity.slots).await?;
+        let differences =
+            Self::stock_maintenance_identity_differences_in_tx(&mut tx, identity).await?;
+        if !differences.is_empty() {
+            Self::freeze_stock_identity_differences_in_tx(&mut tx, identity, &differences).await?;
             tx.commit().await?;
             return Err(StoreError::InvalidStockInput(
                 "stock maintenance task is stale; affected slots require reconciliation"
@@ -3022,6 +3192,18 @@ impl LocalStateStore {
             .await?;
             upsert_sale_view_projection_in_tx(&mut tx, &planogram_version, &slot_id).await?;
         }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn freeze_stale_stock_task_identity(
+        &self,
+        identity: &StockMaintenanceTaskIdentity,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin_immediate_write_transaction().await?;
+        let differences =
+            Self::stock_maintenance_identity_differences_in_tx(&mut tx, identity).await?;
+        Self::freeze_stock_identity_differences_in_tx(&mut tx, identity, &differences).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -3609,8 +3791,11 @@ impl LocalStateStore {
 
         let mut tx = self.begin_immediate_write_transaction().await?;
         if let Some(identity) = expected_task_identity {
-            if !Self::validate_stock_maintenance_identity_in_tx(&mut tx, identity).await? {
-                Self::freeze_stock_identity_slots_in_tx(&mut tx, &identity.slots).await?;
+            let differences =
+                Self::stock_maintenance_identity_differences_in_tx(&mut tx, identity).await?;
+            if !differences.is_empty() {
+                Self::freeze_stock_identity_differences_in_tx(&mut tx, identity, &differences)
+                    .await?;
                 tx.commit().await?;
                 return Err(StoreError::InvalidStockInput(
                     "stock maintenance task is stale; affected slots require reconciliation"
@@ -6504,7 +6689,12 @@ mod tests {
             .await
             .expect("open");
         seed_two_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation(two_slot_attestation("ATT-READY", 2))
+            .await
+            .expect("sale-ready stock");
         let task = store.stock_maintenance_task().await.expect("old task");
+        assert_eq!(task.mode, "routine_refill");
 
         sqlx::query(
             "UPDATE machine_planogram_slots
@@ -6523,13 +6713,13 @@ mod tests {
                     slots: vec![
                         StockMaintenanceBatchSlotInput {
                             slot_code: "A1".to_string(),
-                            quantity: Some(3),
-                            addition: None,
+                            quantity: None,
+                            addition: Some(1),
                         },
                         StockMaintenanceBatchSlotInput {
                             slot_code: "A2".to_string(),
-                            quantity: Some(4),
-                            addition: None,
+                            quantity: None,
+                            addition: Some(1),
                         },
                     ],
                 },
@@ -6553,6 +6743,23 @@ mod tests {
                 .await
                 .expect("outbox count");
         assert_eq!((movement_count.0, outbox_count.0), (0, 0));
+        let sale_view = store.sale_view(None).await.expect("targeted freeze");
+        assert_eq!(sale_view.items[0].slot_code, "A1");
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
+        assert_eq!(sale_view.items[1].slot_code, "A2");
+        assert_eq!(sale_view.items[1].saleable_stock, 2);
+        assert_eq!(sale_view.items[1].slot_sales_state, "sale_ready");
+        let audit: (String,) = sqlx::query_as(
+            "SELECT context_json FROM health_events
+             WHERE code='stale_stock_maintenance_task_slot_diff'
+             ORDER BY occurred_at DESC LIMIT 1",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("slot diff audit");
+        assert!(audit.0.contains("sku_changed"));
+        assert!(audit.0.contains("capacity_changed"));
     }
 
     #[tokio::test]

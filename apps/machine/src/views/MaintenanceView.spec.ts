@@ -1840,6 +1840,67 @@ describe("MaintenanceView planogram-driven stock task", () => {
     });
   });
 
+  it("reprojects values when a completed historical retry returns a new ready refill task", async () => {
+    const next = stockMaintenanceTaskFixture();
+    next.taskId = "stock-task-02";
+    next.slots[0].currentQuantity = 4;
+    submitStockMaintenanceBatchMock.mockResolvedValueOnce({
+      task: next,
+      duplicate: true,
+    });
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const addition = stockInputByLabel(host, "补货数量");
+    addition.value = "2";
+    addition.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "确认补货").click();
+
+    await vi.waitFor(() => {
+      expect(stockInputByLabel(host, "补货数量").value).toBe("0");
+    });
+    expect(host.textContent).toContain("补货后 4/8");
+    expect(buttonByText(host, "确认补货").disabled).toBe(true);
+  });
+
+  it("reprojects a completed count response into a fresh refill form", async () => {
+    getStockMaintenanceTaskMock.mockResolvedValueOnce(
+      stockMaintenanceTaskFixture("initial_count"),
+    );
+    const refill = stockMaintenanceTaskFixture();
+    refill.taskId = "stock-task-02";
+    refill.slots[0].currentQuantity = 6;
+    submitStockMaintenanceBatchMock.mockResolvedValueOnce({
+      task: refill,
+      duplicate: false,
+    });
+    const host = await mountView();
+    await unlockMaintenance(host);
+    const count = stockInputByLabel(host, "实际数量");
+    count.value = "6";
+    count.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "提交盘点").click();
+
+    await vi.waitFor(() => {
+      expect(stockInputByLabel(host, "补货数量").value).toBe("0");
+    });
+    expect(host.textContent).toContain("补货后 6/8");
+    expect(buttonByText(host, "确认补货").disabled).toBe(true);
+    const addition = stockInputByLabel(host, "补货数量");
+    addition.value = "1";
+    addition.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "确认补货").click();
+    await vi.waitFor(() => {
+      expect(submitStockMaintenanceBatchMock).toHaveBeenLastCalledWith({
+        taskId: "stock-task-02",
+        mode: "routine_refill",
+        slots: [{ slotCode: "A1", addition: 1 }],
+      });
+    });
+  });
+
   it("rejects a fractional refill without silently rewriting its value", async () => {
     const host = await mountView();
     await unlockMaintenance(host);

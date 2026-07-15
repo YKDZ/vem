@@ -1281,19 +1281,23 @@ async function exportLogs(): Promise<void> {
   }
 }
 
+function applyStockMaintenanceTask(task: StockMaintenanceTask): void {
+  const values = Object.fromEntries(
+    task.slots.map((slot) => [
+      slot.slotCode,
+      task.mode === "routine_refill"
+        ? (slot.submittedAddition ?? 0)
+        : (slot.submittedQuantity ?? slot.currentQuantity),
+    ]),
+  );
+  stockMaintenance.task = task;
+  stockMaintenance.values = values;
+}
+
 async function refreshStockMaintenanceView(): Promise<void> {
   stockMaintenance.loading = true;
   try {
-    const task = await daemonClient.getStockMaintenanceTask();
-    stockMaintenance.task = task;
-    stockMaintenance.values = Object.fromEntries(
-      task.slots.map((slot) => [
-        slot.slotCode,
-        task.mode === "routine_refill"
-          ? (slot.submittedAddition ?? 0)
-          : (slot.submittedQuantity ?? slot.currentQuantity),
-      ]),
-    );
+    applyStockMaintenanceTask(await daemonClient.getStockMaintenanceTask());
   } catch (error) {
     stockMaintenance.message =
       error instanceof Error ? error.message : String(error);
@@ -1361,7 +1365,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
               quantity: stockMaintenance.values[slot.slotCode] as number,
             })),
           });
-    stockMaintenance.task = response.task;
+    applyStockMaintenanceTask(response.task);
     stockMaintenance.message = response.duplicate
       ? "批次已存在，已恢复原同步状态。"
       : "库存批次已提交，等待平台逐货道确认。";

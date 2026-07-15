@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -310,6 +310,16 @@ CREATE TABLE IF NOT EXISTS stock_maintenance_batches (
   payload_fingerprint TEXT NOT NULL,
   operator_id TEXT NOT NULL,
   capacity_snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+"#;
+
+pub const MIGRATION_V14: &str = r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS stock_maintenance_task_identities (
+  task_id TEXT PRIMARY KEY,
+  identity_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 "#;
