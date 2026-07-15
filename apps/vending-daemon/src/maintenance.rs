@@ -23,6 +23,13 @@ const WINDOWS_TUNNEL_NAME: &str = "VEM-Maintenance";
 const WINDOWS_WIREGUARD_EXECUTABLE: &str = "wireguard.exe";
 const WINDOWS_WG_EXECUTABLE: &str = "wg.exe";
 const WINDOWS_WIREGUARD_DIRECTORY: &str = "WireGuard";
+#[cfg(any(windows, test))]
+const WINDOWS_WIREGUARD_CONFIG_ACL_ARGS: [&str; 4] = [
+    "/inheritance:r",
+    "/grant:r",
+    "*S-1-5-18:F",
+    "*S-1-5-32-544:D",
+];
 
 #[derive(Clone)]
 struct WireGuardExecutables {
@@ -283,7 +290,7 @@ async fn persist_encrypted_config(
         .map_err(|error| format!("write encrypted WireGuard configuration failed: {error}"))?;
     let acl_status = tokio::process::Command::new("icacls.exe")
         .arg(staging_path)
-        .args(["/inheritance:r", "/grant:r", "SYSTEM:F", "Administrators:D"])
+        .args(WINDOWS_WIREGUARD_CONFIG_ACL_ARGS)
         .status()
         .await
         .map_err(|error| format!("harden encrypted WireGuard configuration failed: {error}"))?;
@@ -1413,6 +1420,19 @@ mod tests {
         )
         .expect("select x86 fallback executable");
         assert_eq!(selected, x86_fallback);
+    }
+
+    #[test]
+    fn wireguard_config_acl_uses_language_independent_builtin_sids() {
+        assert_eq!(
+            WINDOWS_WIREGUARD_CONFIG_ACL_ARGS,
+            [
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-5-18:F",
+                "*S-1-5-32-544:D",
+            ]
+        );
     }
 
     #[tokio::test]
