@@ -6,6 +6,7 @@ import {
   paymentReconciliationAttempts,
   paymentProviders,
   payments,
+  sql,
 } from "@vem/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -372,4 +373,71 @@ postgresDescribe("payment intent recovery PostgreSQL CAS", () => {
 
     expect(queryCount).toBe(1);
   }, 20_000);
+
+  it("returns the successor terminal state when a stale reconciliation owner loses its fence", async () => {
+    const seeded = await seedPayment({
+      suffix: "98",
+      failedReason: "provider_create_uncertain",
+    });
+    await database.client
+      .update(payments)
+      .set({ status: "processing" })
+      .where(eq(payments.id, seeded.paymentId));
+
+    let signalQueryStarted: (() => void) | undefined;
+    let releaseQuery: (() => void) | undefined;
+    const queryStarted = new Promise<void>((resolve) => {
+      signalQueryStarted = resolve;
+    });
+    const queryCanFinish = new Promise<void>((resolve) => {
+      releaseQuery = resolve;
+    });
+    const provider = {
+      async createPaymentIntent() {
+        throw new Error("not used");
+      },
+      async queryPayment() {
+        signalQueryStarted?.();
+        await queryCanFinish;
+        return {
+          status: "failed" as const,
+          failedReason: "stale_provider_failure",
+        };
+      },
+    };
+    const service = makePaymentsService(provider);
+
+    const reconciliation = service.reconcilePendingPaymentOnRead(
+      seeded.paymentId,
+    );
+    await queryStarted;
+    await database.client.transaction(async (tx) => {
+      await tx
+        .update(payments)
+        .set({
+          status: "succeeded",
+          paidAt: new Date(),
+          intentCreationLeaseOwnerToken: "successor-owner",
+          intentCreationLeaseFence: sql`${payments.intentCreationLeaseFence} + 1`,
+          intentCreationLeaseExpiresAt: new Date(Date.now() + 30_000),
+        })
+        .where(eq(payments.id, seeded.paymentId));
+      await tx
+        .update(orders)
+        .set({ status: "paid", paymentState: "paid", paidAt: new Date() })
+        .where(eq(orders.paymentId, seeded.paymentId));
+    });
+    releaseQuery?.();
+
+    await expect(reconciliation).resolves.toMatchObject({
+      status: "succeeded",
+      reconciled: false,
+      reason: "payment_reconciliation_lease_lost",
+    });
+    const [payment] = await database.client
+      .select({ status: payments.status })
+      .from(payments)
+      .where(eq(payments.id, seeded.paymentId));
+    expect(payment.status).toBe("succeeded");
+  });
 });

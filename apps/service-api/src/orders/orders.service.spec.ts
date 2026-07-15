@@ -3099,6 +3099,68 @@ describe("OrdersService (transaction boundary)", () => {
         }),
       );
     });
+
+    it("cancels a provider intent with its creation-time config after same-id rotation", async () => {
+      const oldConfig = {
+        id: "cfg-shared",
+        providerCode: "alipay",
+        providerId: "prov-001",
+        machineId: null,
+        merchantNo: "merchant-old",
+        appId: "app-shared",
+        publicConfigJson: {},
+        sensitiveConfigJson: { privateKey: "PRIVATE-OLD" },
+      };
+      const currentConfig = {
+        ...oldConfig,
+        merchantNo: "merchant-current",
+        sensitiveConfigJson: { privateKey: "PRIVATE-CURRENT" },
+      };
+      let resolvedConfig = oldConfig;
+      const resolveForPayment = vi.fn(async () => resolvedConfig);
+      const cancelPayment = vi.fn().mockResolvedValue({ status: "canceled" });
+      const createPaymentIntent = vi.fn().mockImplementation(async (input) => {
+        expect(input.config).toBe(oldConfig);
+        resolvedConfig = currentConfig;
+        return {
+          providerTradeNo: "TRADE-OLD-BINDING",
+          paymentUrl: "https://qr.example/PAY001",
+        };
+      });
+
+      const service = makeOrdersService({
+        db: makeOrdersDbForPaymentUpdateFailure(),
+        paymentProviderRegistry: {
+          get: vi.fn().mockReturnValue({ createPaymentIntent, cancelPayment }),
+          has: vi.fn().mockReturnValue(true),
+        },
+        configService: { resolveForPayment },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M-001",
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-001",
+              slotCode: "A1",
+            },
+          ],
+          paymentMethod: "qr_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow("payment update failed");
+
+      expect(resolveForPayment).toHaveBeenCalledTimes(1);
+      expect(cancelPayment).toHaveBeenCalledWith({
+        paymentNo: expect.any(String),
+        providerTradeNo: "TRADE-OLD-BINDING",
+        config: oldConfig,
+      });
+    });
   });
 
   describe("cancelMachineOrder", () => {

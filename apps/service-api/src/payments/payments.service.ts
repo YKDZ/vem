@@ -106,6 +106,11 @@ type ReconciliationAttemptQuery = z.infer<
 type RefundListQuery = z.infer<typeof refundQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
+type PaymentTerminalLeaseGuard = {
+  ownerToken: string;
+  fence: number;
+};
+
 const PROVIDER_MUTABLE_PAYMENT_STATUSES: PaymentStatus[] = [
   "created",
   "pending",
@@ -2694,25 +2699,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     const finalStatus: "succeeded" | "failed" =
       providerStatus === "succeeded" ? "succeeded" : "failed";
-    const [stillOwnsReconciliation] = await this.db
-      .select({ id: payments.id })
-      .from(payments)
-      .where(
-        and(
-          eq(payments.id, payment.id),
-          eq(payments.intentCreationLeaseOwnerToken, reconciliationOwnerToken),
-          eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
-          gt(payments.intentCreationLeaseExpiresAt, new Date()),
-        ),
-      )
-      .limit(1);
-    if (!stillOwnsReconciliation) {
-      return {
-        status: payment.status,
-        reconciled: false,
-        reason: "payment_reconciliation_lease_lost",
-      };
-    }
     const providerEventId = `machine_status_poll:${payment.paymentNo}:${providerStatus}:${now.getTime()}`;
     const applied = await this.applyPaymentStatusUpdate(
       payment.id,
@@ -2724,22 +2710,13 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       payment.providerId,
       result.paidAt ?? now,
       result.failedReason ?? null,
+      undefined,
+      false,
+      {
+        ownerToken: reconciliationOwnerToken,
+        fence: reconciliationLease.fence,
+      },
     );
-
-    await this.db
-      .update(payments)
-      .set({
-        intentCreationLeaseOwnerToken: null,
-        intentCreationLeaseExpiresAt: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(payments.id, payment.id),
-          eq(payments.intentCreationLeaseOwnerToken, reconciliationOwnerToken),
-          eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
-        ),
-      );
 
     await this.db
       .update(paymentReconciliationAttempts)
@@ -2761,7 +2738,20 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .catch(() => {});
     }
 
-    return { status: finalStatus, reconciled: applied };
+    if (!applied) {
+      const [successor] = await this.db
+        .select({ status: payments.status })
+        .from(payments)
+        .where(eq(payments.id, payment.id))
+        .limit(1);
+      return {
+        status: successor?.status ?? payment.status,
+        reconciled: false,
+        reason: "payment_reconciliation_lease_lost",
+      };
+    }
+
+    return { status: finalStatus, reconciled: true };
   }
 
   async applyProviderPaymentResult(input: {
@@ -2841,9 +2831,22 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     failedReason?: string | null,
     eventTypeOverride?: string,
     allowIncidentLockedResolution = false,
+    leaseGuard?: PaymentTerminalLeaseGuard,
   ): Promise<boolean> {
     return await this.db.transaction(async (tx) => {
       if (!providerId) return false;
+
+      // Serialize every provider terminal transition for this payment and its
+      // order. The winner keeps these rows locked until the payment, order,
+      // event, reservation and durable command changes commit together.
+      await tx.execute(sql`
+        select p.id
+        from payments p
+        inner join orders o on o.id = p.order_id
+        where p.id = ${paymentId} and o.id = ${orderId}
+        for update of p, o
+      `);
+
       const [existing] = await tx
         .select({ id: paymentEvents.id })
         .from(paymentEvents)
@@ -2867,6 +2870,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           fulfillmentState: orders.fulfillmentState,
           isDrill: payments.isDrill,
           orderIsDrill: orders.isDrill,
+          intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
+          intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
+          intentCreationLeaseFence: payments.intentCreationLeaseFence,
         })
         .from(payments)
         .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2875,6 +2881,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       if (r.isDrill || r.orderIsDrill) return false;
       if (!canApplyProviderTerminalStatus(r.paymentStatus)) return false;
       if (isPaymentIncidentLocked(r) && !allowIncidentLockedResolution) {
+        return false;
+      }
+      if (
+        leaseGuard &&
+        (r.intentCreationLeaseOwnerToken !== leaseGuard.ownerToken ||
+          r.intentCreationLeaseFence !== leaseGuard.fence ||
+          !r.intentCreationLeaseExpiresAt ||
+          r.intentCreationLeaseExpiresAt.getTime() <= Date.now())
+      ) {
         return false;
       }
 
@@ -2893,6 +2908,17 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .returning({ id: paymentEvents.id });
       if (inserted.length === 0) return false;
 
+      const mutablePaymentWhere = and(
+        eq(payments.id, paymentId),
+        inArray(payments.status, PROVIDER_MUTABLE_PAYMENT_STATUSES),
+        leaseGuard
+          ? eq(payments.intentCreationLeaseOwnerToken, leaseGuard.ownerToken)
+          : undefined,
+        leaseGuard
+          ? eq(payments.intentCreationLeaseFence, leaseGuard.fence)
+          : undefined,
+      );
+
       if (newStatus === "succeeded") {
         const handledAt = occurredAt ?? new Date();
         await tx
@@ -2902,9 +2928,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             paidAt: handledAt,
             failedReason: null,
             ...(providerTradeNo ? { providerTradeNo } : {}),
+            ...(leaseGuard
+              ? {
+                  intentCreationLeaseOwnerToken: null,
+                  intentCreationLeaseExpiresAt: null,
+                }
+              : {}),
             updatedAt: new Date(),
           })
-          .where(eq(payments.id, paymentId));
+          .where(mutablePaymentWhere);
 
         const projectedStatus = projectOrderStatus({
           paymentState: "paid",
@@ -2934,9 +2966,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .set({
             status: "failed",
             failedReason: failedReason ?? "provider_reported_failed",
+            ...(leaseGuard
+              ? {
+                  intentCreationLeaseOwnerToken: null,
+                  intentCreationLeaseExpiresAt: null,
+                }
+              : {}),
             updatedAt: new Date(),
           })
-          .where(eq(payments.id, paymentId));
+          .where(mutablePaymentWhere);
 
         if (r.orderStatus !== "canceled") {
           await tx

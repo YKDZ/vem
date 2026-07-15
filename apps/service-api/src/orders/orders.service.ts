@@ -909,27 +909,26 @@ export class OrdersService {
 
   private async cancelProviderIntentAfterDbFailure(
     draft: LocalPaymentDraft,
+    resolvedConfig:
+      | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
+      | null,
+    providerTradeNo: string | null,
   ): Promise<void> {
     try {
       const provider = this.paymentProviderRegistry.get(draft.providerCode);
-      const config = await this.paymentProviderConfigService
-        .resolveForPayment({
-          providerCode: draft.providerCode,
-          machineId: draft.machineId,
-        })
-        .catch(() => ({
-          id: "",
-          providerCode: draft.providerCode,
-          providerId: "",
-          machineId: null,
-          merchantNo: null,
-          appId: null,
-          publicConfigJson: {} as Record<string, unknown>,
-          sensitiveConfigJson: {} as Record<string, unknown>,
-        }));
+      const config = resolvedConfig ?? {
+        id: "",
+        providerCode: draft.providerCode,
+        providerId: "",
+        machineId: null,
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {} as Record<string, unknown>,
+        sensitiveConfigJson: {} as Record<string, unknown>,
+      };
       await provider.cancelPayment({
         paymentNo: draft.paymentNo,
-        providerTradeNo: null,
+        providerTradeNo,
         config,
       });
     } catch (error) {
@@ -2846,7 +2845,11 @@ export class OrdersService {
       if (
         await this.hasCurrentPaymentIntentLease(draft.paymentId, claimedLease)
       ) {
-        await this.cancelProviderIntentAfterDbFailure(draft);
+        await this.cancelProviderIntentAfterDbFailure(
+          draft,
+          resolvedConfig,
+          intent.providerTradeNo,
+        );
         await this.cancelLocalCreatedPayment(
           draft,
           "provider_created_db_update_failed",
