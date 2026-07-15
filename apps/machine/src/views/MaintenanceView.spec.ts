@@ -93,6 +93,14 @@ vi.mock("@/components/MockHardwareControls.vue", () => ({
   default: { template: "<div>MockHardwareControls</div>" },
 }));
 
+vi.mock("@/components/VisionCameraMaintenancePanel.vue", () => ({
+  default: {
+    props: ["maintenanceAuthorized", "mode"],
+    template:
+      "<div data-test='vision-camera-maintenance-stub'>VisionCameraMaintenancePanel</div>",
+  },
+}));
+
 vi.mock("@/daemon/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/daemon/client")>();
   return {

@@ -19,6 +19,7 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
+import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePanel.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import {
   machineConfigDefaults,
@@ -2027,6 +2028,12 @@ async function submitStockMaintenanceTask(): Promise<void> {
           {{ manualDispenseDiagnostic.message }}
         </p>
       </section>
+
+      <VisionCameraMaintenancePanel
+        v-if="operatorEnteredMaintenance"
+        :maintenance-authorized="maintenanceSessionAuthorized"
+        mode="maintenance"
+      />
 
       <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
         <p
