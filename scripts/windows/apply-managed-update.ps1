@@ -177,6 +177,92 @@ function Assert-NoPlatformPaymentSecretBytes {
       }
       return -1
     }
+    $hasPlausibleLocalBefore = {
+      param([int]$CentralOffset)
+      $localSearchFrom = $CentralOffset - 1
+      for ($checked = 0; $checked -le 256; $checked += 1) {
+        $localOffset =
+          & $findPriorZipSignature 0x04034b50 $localSearchFrom
+        if ($localOffset -lt 0) { return $false }
+        $localSearchFrom = $localOffset - 1
+        if ($localOffset + 30 -gt $CentralOffset) { continue }
+        $localNameLength = [BitConverter]::ToUInt16($Bytes, $localOffset + 26)
+        $localExtraLength = [BitConverter]::ToUInt16($Bytes, $localOffset + 28)
+        if (
+          $localOffset + 30 + $localNameLength + $localExtraLength -le
+          $CentralOffset
+        ) {
+          return $true
+        }
+      }
+      return $true
+    }
+    $findPhysicalZipShape = {
+      param([int]$CentralPhysicalEnd)
+      $centralSearchFrom = $CentralPhysicalEnd - 1
+      $completeBest = $null
+      $partialBest = $null
+      $lastCentralStart = -1
+      for ($checked = 0; $checked -le 257; $checked += 1) {
+        $centralStart =
+          & $findPriorZipSignature 0x02014b50 $centralSearchFrom
+        if ($centralStart -lt 0) {
+          if ($null -ne $completeBest) { return $completeBest }
+          return $partialBest
+        }
+        $lastCentralStart = $centralStart
+        $centralSearchFrom = $centralStart - 1
+        if ($centralStart + 46 -gt $CentralPhysicalEnd) { continue }
+
+        $centralOffset = [long]$centralStart
+        $physicalEntries = 0
+        while (
+          $centralOffset + 46 -le $CentralPhysicalEnd -and
+          [BitConverter]::ToUInt32($Bytes, [int]$centralOffset) -eq 0x02014b50 -and
+          $physicalEntries -le 256
+        ) {
+          $nameLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 28)
+          $extraLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 30)
+          $commentLength = [BitConverter]::ToUInt16($Bytes, [int]$centralOffset + 32)
+          $nextOffset =
+            $centralOffset + 46 + $nameLength + $extraLength + $commentLength
+          if ($nextOffset -gt $CentralPhysicalEnd) { break }
+          $centralOffset = $nextOffset
+          $physicalEntries += 1
+        }
+        if (
+          $physicalEntries -gt 0 -and
+          (& $hasPlausibleLocalBefore $centralStart)
+        ) {
+          $shape = [pscustomobject]@{
+            centralStart = $centralStart
+            centralEnd = $centralOffset
+            entryCount = $physicalEntries
+            ambiguous = $physicalEntries -gt 256
+          }
+          if ($centralOffset -eq $CentralPhysicalEnd) {
+            $completeBest = $shape
+          } else {
+            $partialBest = $shape
+          }
+        }
+      }
+      $best = if ($null -ne $completeBest) { $completeBest } else { $partialBest }
+      if ($null -ne $best) { $best.ambiguous = $true }
+      if ($null -ne $best) { return $best }
+      if (
+        $lastCentralStart -ge 0 -and
+        (& $hasPlausibleLocalBefore $lastCentralStart)
+      ) {
+        return [pscustomobject]@{
+          centralStart = $lastCentralStart
+          centralEnd = -1L
+          entryCount = -1
+          ambiguous = $true
+        }
+      }
+      return $null
+    }
     $findRecognizableZipContainer = {
       $searchFrom = $Bytes.Length - 4
       while ($searchFrom -ge 0) {
@@ -199,96 +285,35 @@ function Assert-NoPlatformPaymentSecretBytes {
         $detectedCentralSize = [BitConverter]::ToUInt32($Bytes, $candidate + 12)
         $detectedCentralStart = [BitConverter]::ToUInt32($Bytes, $candidate + 16)
         $detectedCentralPhysicalEnd = [long]$candidate
-        $detectedPrefixBias = $null
-        $detectedCentralAbsoluteStart = -1L
-        if (
+        $shape =
+          & $findPhysicalZipShape ([int]$detectedCentralPhysicalEnd)
+        if ($null -eq $shape) { continue }
+
+        $finiteCentralMetadata =
           $detectedCentralSize -ne 0xffffffff -and
           $detectedCentralStart -ne 0xffffffff
-        ) {
-          $candidatePrefixBias =
-            [long]$candidate - $detectedCentralSize - $detectedCentralStart
-          if ($candidatePrefixBias -ge 0) {
-            $detectedPrefixBias = $candidatePrefixBias
-            $detectedCentralAbsoluteStart =
-              $candidatePrefixBias + $detectedCentralStart
-          }
+        $detectedPrefixBias = if ($finiteCentralMetadata) {
+          [long]$candidate - $detectedCentralSize - $detectedCentralStart
+        } else {
+          -1L
         }
-        if ($detectedCentralAbsoluteStart -lt 0) {
-          $zip64EndOffset =
-            & $findPriorZipSignature 0x06064b50 ($candidate - 1)
-          if ($zip64EndOffset -ge 0) {
-            $detectedCentralPhysicalEnd = $zip64EndOffset
-          }
-          $detectedCentralAbsoluteStart =
-            & $findPriorZipSignature 0x02014b50 ([int]$detectedCentralPhysicalEnd - 1)
-          if ($detectedCentralAbsoluteStart -lt 0) { continue }
+        $metadataCentralAbsoluteStart = if ($detectedPrefixBias -ge 0) {
+          $detectedPrefixBias + $detectedCentralStart
+        } else {
+          -1L
         }
-        $detectedCentralOffset = $detectedCentralAbsoluteStart
-        $recognizable = $true
-        $detectedPhysicalEntries = 0
-        while (
-          $detectedCentralOffset -lt $detectedCentralPhysicalEnd -and
-          $detectedPhysicalEntries -le 256
-        ) {
-          if (
-            $detectedCentralOffset + 46 -gt $detectedCentralPhysicalEnd -or
-            [BitConverter]::ToUInt32($Bytes, [int]$detectedCentralOffset) -ne 0x02014b50
-          ) {
-            $recognizable = $false
-            break
-          }
-          $detectedNameLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 28)
-          $detectedExtraLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 30)
-          $detectedCommentLength = [BitConverter]::ToUInt16($Bytes, [int]$detectedCentralOffset + 32)
-          $detectedLocalOffset = [BitConverter]::ToUInt32($Bytes, [int]$detectedCentralOffset + 42)
-          $detectedCentralEnd =
-            $detectedCentralOffset + 46 + $detectedNameLength +
-            $detectedExtraLength + $detectedCommentLength
-          $detectedLocalShape = $false
-          if (
-            $null -ne $detectedPrefixBias -and
-            $detectedLocalOffset -ne 0xffffffff
-          ) {
-            $detectedLocalAbsoluteOffset =
-              $detectedPrefixBias + $detectedLocalOffset
-            $detectedLocalShape =
-              $detectedLocalAbsoluteOffset + 30 -le $detectedCentralAbsoluteStart -and
-              [BitConverter]::ToUInt32($Bytes, [int]$detectedLocalAbsoluteOffset) -eq 0x04034b50
-          }
-          if (-not $detectedLocalShape) {
-            $fallbackLocalOffset =
-              & $findPriorZipSignature 0x04034b50 ([int]$detectedCentralAbsoluteStart - 1)
-            $detectedLocalShape =
-              $fallbackLocalOffset -ge 0 -and
-              $fallbackLocalOffset + 30 -le $detectedCentralAbsoluteStart
-          }
-          if (
-            $detectedCentralEnd -gt $detectedCentralPhysicalEnd -or
-            -not $detectedLocalShape
-          ) {
-            $recognizable = $false
-            break
-          }
-          $detectedCentralOffset = $detectedCentralEnd
-          $detectedPhysicalEntries += 1
-        }
-        if (
-          $recognizable -and
-          (
-            $detectedPhysicalEntries -gt 256 -or
-            $detectedCentralOffset -eq $detectedCentralPhysicalEnd
-          )
-        ) {
-          return [pscustomobject]@{
-            archiveEnd = $archiveEnd
-            invalidMetadata =
-              $detectedDisk -ne 0 -or
-              $detectedCentralDisk -ne 0 -or
-              $detectedDiskEntries -ne $detectedEntries -or
-              $detectedEntries -eq 0xffff -or
-              $detectedCentralSize -eq 0xffffffff -or
-              $detectedCentralStart -eq 0xffffffff
-          }
+        return [pscustomobject]@{
+          archiveEnd = $archiveEnd
+          invalidMetadata =
+            $shape.ambiguous -or
+            $detectedDisk -ne 0 -or
+            $detectedCentralDisk -ne 0 -or
+            $detectedDiskEntries -ne $detectedEntries -or
+            $detectedEntries -eq 0xffff -or
+            -not $finiteCentralMetadata -or
+            $metadataCentralAbsoluteStart -ne $shape.centralStart -or
+            $shape.centralEnd -ne $detectedCentralPhysicalEnd -or
+            $shape.entryCount -ne $detectedEntries
         }
       }
       return $null

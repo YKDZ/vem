@@ -231,6 +231,28 @@ function prefixedZip64Sentinel(content) {
   return archive;
 }
 
+function prefixedZipWithOrphanLocal(content) {
+  const prefix = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x56, 0x45, 0x4d]);
+  const archive = deflatedZip("nested/runtime.bin", content);
+  const orphan = encryptedLocalHiddenByEmptyDirectory().subarray(0, -22);
+  return Buffer.concat([
+    prefix,
+    archive.subarray(0, -22),
+    orphan,
+    archive.subarray(-22),
+  ]);
+}
+
+function prefixedZipWithCorruptFiniteCentralSize(content) {
+  const archive = prefixedZipWithUnadjustedOffsets(content);
+  const endOffset = archive.length - 22;
+  archive.writeUInt32LE(
+    archive.readUInt32LE(endOffset + 12) + 1,
+    endOffset + 12,
+  );
+  return archive;
+}
+
 async function runGuards(value, artifactBytes = "machine-runtime") {
   const root = await mkdtemp(join(tmpdir(), "vem-payment-secret-guard-"));
   try {
@@ -503,6 +525,26 @@ describe("managed-update payment secret guard", () => {
     const result = await runGuards(
       { updateId: "field-prefixed-zip64", components: [] },
       prefixedZip64Sentinel(Buffer.from("neutral prefixed ZIP64 payload")),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid archive/i);
+  });
+
+  it("rejects a prefixed ZIP-shaped archive with an orphan local record", async () => {
+    const result = await runGuards(
+      { updateId: "field-prefixed-orphan", components: [] },
+      prefixedZipWithOrphanLocal(Buffer.from("neutral orphan payload")),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid archive/i);
+  });
+
+  it("rejects a prefixed ZIP-shaped archive with corrupt finite central size", async () => {
+    const result = await runGuards(
+      { updateId: "field-prefixed-central-size", components: [] },
+      prefixedZipWithCorruptFiniteCentralSize(
+        Buffer.from("neutral finite metadata payload"),
+      ),
     );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /invalid archive/i);

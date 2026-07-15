@@ -112,7 +112,71 @@ function scanZipEntries(bytes, label, state, depth) {
     const endSignature = Buffer.from("504b0506", "hex");
     const centralSignature = Buffer.from("504b0102", "hex");
     const localSignature = Buffer.from("504b0304", "hex");
-    const zip64EndSignature = Buffer.from("504b0606", "hex");
+    const plausibleLocalBefore = (centralOffset) => {
+      let searchFrom = centralOffset - 1;
+      for (let checked = 0; checked <= MAX_ARCHIVE_ENTRIES; checked += 1) {
+        const localOffset = bytes.lastIndexOf(localSignature, searchFrom);
+        if (localOffset < 0) return false;
+        searchFrom = localOffset - 1;
+        if (localOffset + 30 > centralOffset) continue;
+        const nameLength = bytes.readUInt16LE(localOffset + 26);
+        const extraLength = bytes.readUInt16LE(localOffset + 28);
+        if (localOffset + 30 + nameLength + extraLength <= centralOffset) {
+          return true;
+        }
+      }
+      return true;
+    };
+    const findPhysicalShape = (centralPhysicalEnd) => {
+      let searchFrom = centralPhysicalEnd - 1;
+      let completeBest = null;
+      let partialBest = null;
+      let lastCentralStart = -1;
+      for (let checked = 0; checked <= MAX_ARCHIVE_ENTRIES + 1; checked += 1) {
+        const centralStart = bytes.lastIndexOf(centralSignature, searchFrom);
+        if (centralStart < 0) return completeBest ?? partialBest;
+        lastCentralStart = centralStart;
+        searchFrom = centralStart - 1;
+        if (centralStart + 46 > centralPhysicalEnd) continue;
+
+        let centralOffset = centralStart;
+        let entryCount = 0;
+        while (
+          centralOffset + 46 <= centralPhysicalEnd &&
+          bytes.readUInt32LE(centralOffset) === 0x02014b50 &&
+          entryCount <= MAX_ARCHIVE_ENTRIES
+        ) {
+          const nameLength = bytes.readUInt16LE(centralOffset + 28);
+          const extraLength = bytes.readUInt16LE(centralOffset + 30);
+          const commentLength = bytes.readUInt16LE(centralOffset + 32);
+          const nextOffset =
+            centralOffset + 46 + nameLength + extraLength + commentLength;
+          if (nextOffset > centralPhysicalEnd) break;
+          centralOffset = nextOffset;
+          entryCount += 1;
+        }
+        if (entryCount > 0 && plausibleLocalBefore(centralStart)) {
+          const shape = {
+            centralStart,
+            centralEnd: centralOffset,
+            entryCount,
+            ambiguous: entryCount > MAX_ARCHIVE_ENTRIES,
+          };
+          if (centralOffset === centralPhysicalEnd) completeBest = shape;
+          else partialBest = shape;
+        }
+      }
+      const best = completeBest ?? partialBest;
+      if (best) return { ...best, ambiguous: true };
+      return lastCentralStart >= 0 && plausibleLocalBefore(lastCentralStart)
+        ? {
+            centralStart: lastCentralStart,
+            centralEnd: -1,
+            entryCount: -1,
+            ambiguous: true,
+          }
+        : null;
+    };
     let searchFrom = bytes.length - 4;
     while (searchFrom >= 0) {
       const endOffset = bytes.lastIndexOf(endSignature, searchFrom);
@@ -127,87 +191,30 @@ function scanZipEntries(bytes, label, state, depth) {
       const entryCount = bytes.readUInt16LE(endOffset + 10);
       const centralSize = bytes.readUInt32LE(endOffset + 12);
       const centralStart = bytes.readUInt32LE(endOffset + 16);
-      let centralPhysicalEnd = endOffset;
-      let prefixBias = null;
-      let centralAbsoluteStart = -1;
-      if (centralSize !== 0xffffffff && centralStart !== 0xffffffff) {
-        const candidateBias = endOffset - centralSize - centralStart;
-        if (candidateBias >= 0) {
-          prefixBias = candidateBias;
-          centralAbsoluteStart = candidateBias + centralStart;
-        }
-      }
-      if (centralAbsoluteStart < 0) {
-        const zip64EndOffset = bytes.lastIndexOf(
-          zip64EndSignature,
-          endOffset - 1,
-        );
-        if (zip64EndOffset >= 0) centralPhysicalEnd = zip64EndOffset;
-        centralAbsoluteStart = bytes.lastIndexOf(
-          centralSignature,
-          centralPhysicalEnd - 1,
-        );
-        if (centralAbsoluteStart < 0) continue;
-      }
-      let centralOffset = centralAbsoluteStart;
-      let recognizable = true;
-      let physicalEntryCount = 0;
-      while (
-        centralOffset < centralPhysicalEnd &&
-        physicalEntryCount <= MAX_ARCHIVE_ENTRIES
-      ) {
-        if (
-          centralOffset + 46 > centralPhysicalEnd ||
-          bytes.readUInt32LE(centralOffset) !== 0x02014b50
-        ) {
-          recognizable = false;
-          break;
-        }
-        const nameLength = bytes.readUInt16LE(centralOffset + 28);
-        const extraLength = bytes.readUInt16LE(centralOffset + 30);
-        const commentLength = bytes.readUInt16LE(centralOffset + 32);
-        const localOffset = bytes.readUInt32LE(centralOffset + 42);
-        const centralEnd =
-          centralOffset + 46 + nameLength + extraLength + commentLength;
-        let localShapeFound = false;
-        if (prefixBias !== null && localOffset !== 0xffffffff) {
-          const localAbsoluteOffset = prefixBias + localOffset;
-          localShapeFound =
-            localAbsoluteOffset + 30 <= centralAbsoluteStart &&
-            bytes.readUInt32LE(localAbsoluteOffset) === 0x04034b50;
-        }
-        if (!localShapeFound) {
-          const fallbackLocalOffset = bytes.lastIndexOf(
-            localSignature,
-            centralAbsoluteStart - 1,
-          );
-          localShapeFound =
-            fallbackLocalOffset >= 0 &&
-            fallbackLocalOffset + 30 <= centralAbsoluteStart;
-        }
-        if (centralEnd > centralPhysicalEnd || !localShapeFound) {
-          recognizable = false;
-          break;
-        }
-        centralOffset = centralEnd;
-        physicalEntryCount += 1;
-      }
-      if (
-        recognizable &&
-        (physicalEntryCount > MAX_ARCHIVE_ENTRIES ||
-          centralOffset === centralPhysicalEnd)
-      ) {
-        return {
-          archiveEnd,
-          invalidMetadata:
-            diskNumber !== 0 ||
-            centralDisk !== 0 ||
-            diskEntryCount !== entryCount ||
-            entryCount === 0xffff ||
-            centralSize === 0xffffffff ||
-            centralStart === 0xffffffff,
-        };
-      }
+      const centralPhysicalEnd = endOffset;
+      const shape = findPhysicalShape(centralPhysicalEnd);
+      if (!shape) continue;
+
+      const finiteCentralMetadata =
+        centralSize !== 0xffffffff && centralStart !== 0xffffffff;
+      const prefixBias = finiteCentralMetadata
+        ? endOffset - centralSize - centralStart
+        : -1;
+      const metadataCentralAbsoluteStart =
+        prefixBias >= 0 ? prefixBias + centralStart : -1;
+      return {
+        archiveEnd,
+        invalidMetadata:
+          shape.ambiguous ||
+          diskNumber !== 0 ||
+          centralDisk !== 0 ||
+          diskEntryCount !== entryCount ||
+          entryCount === 0xffff ||
+          !finiteCentralMetadata ||
+          metadataCentralAbsoluteStart !== shape.centralStart ||
+          shape.centralEnd !== centralPhysicalEnd ||
+          shape.entryCount !== entryCount,
+      };
     }
     return null;
   };
