@@ -1194,7 +1194,32 @@ describe("real deterministic Factory ISO builder", () => {
       ["1"],
       "Factory unattended AutoLogon is one logon only",
     );
-    assert.doesNotMatch(bios, /<FirstLogonCommands>/);
+    const firstLogonCommands = singleXmlBlockForTest(
+      bios,
+      "FirstLogonCommands",
+      "Factory unattended removes the temporary OOBE AutoLogon counter on its first bootstrap login",
+    );
+    const removeAutoLogonCount = singleXmlBlockForTest(
+      firstLogonCommands,
+      "SynchronousCommand",
+      "Factory unattended has one synchronous first-logon cleanup command",
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        removeAutoLogonCount,
+        "Order",
+        "first-logon AutoLogonCount cleanup has one order",
+      ),
+      "1",
+    );
+    assert.equal(
+      singleXmlTextForTest(
+        removeAutoLogonCount,
+        "CommandLine",
+        "first-logon AutoLogonCount cleanup has one exact command",
+      ),
+      "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command &quot;Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue&quot;",
+    );
     assert.doesNotMatch(bios, /YKDZ/);
 
     const production = factoryAutounattendXml(
@@ -1708,6 +1733,24 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.ok(prepareOobe.includes("^[\\x20-\\x7E]+$"));
       assert.match(prepareOobe, /bootstrap-factory-runtime\.ps1/);
+      assert.match(prepareOobe, /preserve-kiosk-autologon/);
+      assert.match(
+        prepareOobe,
+        /Get-ItemProperty -Path \$winlogonPath -Name DefaultUserName, DefaultPassword -ErrorAction Stop/,
+      );
+      assert.match(
+        prepareOobe,
+        /\$kioskAutologonPassword -cne \[string\]\$kiosk\.password/,
+      );
+      assert.match(prepareOobe, /oobe-kiosk-autologon-password/);
+      assert.match(
+        prepareOobe,
+        /icacls\.exe \$kioskAutologonStatePath \/inheritance:r \/grant:r "\*S-1-5-18:F" "\*S-1-5-32-544:F"/,
+      );
+      assert.match(
+        prepareOobe,
+        /catch \{[\s\S]+Remove-Item[^\n]+\$kioskAutologonStatePath[\s\S]+Remove-Item[^\n]+\$personalizationPath/,
+      );
       assert.match(prepareOobe, /VEMFactoryOobeCleanup/);
       assert.match(prepareOobe, /oobe-bootstrap-status\.json/);
       assert.match(prepareOobe, /'ingest-personalization'/);
@@ -1778,11 +1821,15 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(completeOobe, /Remove-ItemProperty[^\n]+AutoLogonCount/);
       assert.match(
         completeOobe,
-        /Remove-ItemProperty[^\n]+AutoLogonCount[\s\S]+Remove-LocalUser[^\n]+VEMOobeBootstrap/,
+        /Set-ItemProperty -Path \$winlogonPath -Name DefaultPassword -Value \$kioskAutologonPassword -Force[\s\S]+Remove-ItemProperty -Path \$winlogonPath -Name AutoLogonCount/,
       );
       assert.match(
         completeOobe,
-        /DefaultUserName -Value 'VEMKiosk'[\s\S]+DefaultDomainName -Value \$env:COMPUTERNAME/,
+        /DefaultUserName -Value 'VEMKiosk'[\s\S]+DefaultDomainName -Value \$env:COMPUTERNAME[\s\S]+DefaultPassword -Value \$kioskAutologonPassword/,
+      );
+      assert.match(
+        completeOobe,
+        /if \(-not \(Test-Path -LiteralPath \$kioskAutologonStatePath -PathType Leaf\)\) \{ throw 'Factory OOBE kiosk autologon handoff is unavailable' \}/,
       );
       assert.match(completeOobe, /Write-CleanupStatus 'autologon-restored'/);
       assert.match(completeOobe, /Remove-LocalUser[^\n]+VEMOobeBootstrap/);
@@ -1793,7 +1840,15 @@ describe("real deterministic Factory ISO builder", () => {
       assert.match(completeOobe, /vem-factory-oobe-cleanup-status\/v1/);
       assert.match(
         completeOobe,
-        /Write-CleanupStatus 'ready'[\s\S]+Write-CleanupStatus 'autologon-restored'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'/,
+        /Write-CleanupStatus 'ready'[\s\S]+Write-CleanupStatus 'autologon-restored'[\s\S]+Remove-LocalUser[\s\S]+Write-CleanupStatus 'account-removed'[\s\S]+Remove-Item[^\n]+\$kioskAutologonStatePath[\s\S]+Remove-Item[^\n]+\$personalizationPath[\s\S]+Write-CleanupStatus 'credentials-removed'/,
+      );
+      assert.match(
+        completeOobe,
+        /\$cleanupStatus\.phase -in @\('ready', 'autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected', 'complete'\)/,
+      );
+      assert.match(
+        completeOobe,
+        /if \(\$cleanupPhase -eq 'complete'\) \{ exit 0 \}/,
       );
       assert.match(completeOobe, /Write-CleanupStatus 'media-ejected'/);
       assert.match(completeOobe, /Write-CleanupStatus 'complete'/);

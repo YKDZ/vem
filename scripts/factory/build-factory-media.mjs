@@ -972,6 +972,7 @@ export function factoryAutounattendXml(
       <OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideLocalAccountScreen>true</HideLocalAccountScreen><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC><SkipMachineOOBE>true</SkipMachineOOBE><SkipUserOOBE>true</SkipUserOOBE></OOBE>
       <AutoLogon><Password><Value>${FACTORY_OOBE_BOOTSTRAP_PASSWORD}</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>${FACTORY_OOBE_BOOTSTRAP_USER}</Username></AutoLogon>
       <UserAccounts><LocalAccounts><LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Password><Value>${FACTORY_OOBE_BOOTSTRAP_PASSWORD}</Value><PlainText>true</PlainText></Password><Description>Temporary VEM Factory OOBE bootstrap</Description><DisplayName>VEM Factory OOBE Bootstrap</DisplayName><Group>Users</Group><Name>${FACTORY_OOBE_BOOTSTRAP_USER}</Name></LocalAccount></LocalAccounts></UserAccounts>
+      <FirstLogonCommands><SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command &quot;Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue&quot;</CommandLine><Description>Remove temporary OOBE AutoLogon counter</Description></SynchronousCommand></FirstLogonCommands>
       <RegisteredOwner>VEM Factory</RegisteredOwner><RegisteredOrganization>VEM</RegisteredOrganization><TimeZone>UTC</TimeZone>
     </component>
   </settings>
@@ -988,6 +989,7 @@ $ErrorActionPreference = 'Stop'
 $factoryRoot = 'C:\\ProgramData\\VEM\\factory'
 $personalizationPath = Join-Path $factoryRoot 'one-time-personalization.json'
 $diagnosticPath = Join-Path $factoryRoot 'oobe-bootstrap-status.json'
+$kioskAutologonStatePath = Join-Path $factoryRoot 'oobe-kiosk-autologon-password'
 $stage = 'initialize'
 function Write-BootstrapStatus([string]$State, [string]$Stage, [string]$ErrorType = '') {
   $status = [ordered]@{
@@ -1016,6 +1018,16 @@ try {
   ${factoryOobePrivacySuppressionScript()}
   $stage = 'bootstrap-runtime'
   & (Join-Path $MediaRoot 'bootstrap-factory-runtime.ps1') -MediaRoot $MediaRoot
+  $stage = 'preserve-kiosk-autologon'
+  $winlogonPath = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'
+  $winlogon = Get-ItemProperty -Path $winlogonPath -Name DefaultUserName, DefaultPassword -ErrorAction Stop
+  $kioskAutologonPassword = [string]$winlogon.DefaultPassword
+  if ([string]$winlogon.DefaultUserName -cne 'VEMKiosk' -or $kioskAutologonPassword.Length -eq 0 -or $kioskAutologonPassword -cne [string]$kiosk.password) { throw 'Factory runtime did not configure the personalized kiosk autologon' }
+  $temporaryKioskAutologonStatePath = "$kioskAutologonStatePath.tmp"
+  [IO.File]::WriteAllText($temporaryKioskAutologonStatePath, $kioskAutologonPassword, [Text.UTF8Encoding]::new($false))
+  Move-Item -LiteralPath $temporaryKioskAutologonStatePath -Destination $kioskAutologonStatePath -Force
+  icacls.exe $kioskAutologonStatePath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Factory OOBE kiosk autologon handoff ACL setup failed' }
   $stage = 'register-cleanup'
   $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\\VEM\\Factory\\complete-oobe-bootstrap.ps1'
   $cleanupTrigger = New-ScheduledTaskTrigger -AtStartup
@@ -1029,6 +1041,7 @@ try {
   Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name DefaultPassword -ErrorAction SilentlyContinue
   Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -Confirm:$false -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $kioskAutologonStatePath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
   Write-BootstrapStatus 'failed' $stage $failureType
   throw
@@ -1041,6 +1054,8 @@ export function factoryOobeCompletionScript() {
 $factoryRoot = 'C:\\ProgramData\\VEM\\factory'
 $diagnosticPath = Join-Path $factoryRoot 'oobe-bootstrap-status.json'
 $cleanupStatusPath = Join-Path $factoryRoot 'oobe-cleanup-status.json'
+$personalizationPath = Join-Path $factoryRoot 'one-time-personalization.json'
+$kioskAutologonStatePath = Join-Path $factoryRoot 'oobe-kiosk-autologon-password'
 $oobeDeadline = (Get-Date).AddMinutes(30)
 $oobeComplete = $false
 function Write-CleanupStatus([string]$Phase) {
@@ -1066,7 +1081,7 @@ do {
   $resumingCleanup =
     $null -ne $cleanupStatus -and
     $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1' -and
-    $cleanupStatus.phase -in @('ready', 'autologon-restored', 'account-removed', 'media-ejected', 'complete')
+    $cleanupStatus.phase -in @('ready', 'autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected', 'complete')
   $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
   $bootstrapUser = Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
   $oobeComplete =
@@ -1081,16 +1096,34 @@ do {
   Start-Sleep -Seconds 5
 } while ((Get-Date) -lt $oobeDeadline)
 if (-not $oobeComplete) { throw 'VEM Factory OOBE did not complete before cleanup deadline' }
-Write-CleanupStatus 'ready'
+$cleanupPhase = if ($null -ne $cleanupStatus -and $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1') { [string]$cleanupStatus.phase } else { '' }
+if ($cleanupPhase -eq 'complete') { exit 0 }
 $winlogonPath = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'
-Set-ItemProperty -Path $winlogonPath -Name AutoAdminLogon -Value '1' -Force
-Set-ItemProperty -Path $winlogonPath -Name ForceAutoLogon -Value '1' -Force
-Set-ItemProperty -Path $winlogonPath -Name DefaultUserName -Value 'VEMKiosk' -Force
-Set-ItemProperty -Path $winlogonPath -Name DefaultDomainName -Value $env:COMPUTERNAME -Force
-Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoLogonCount -ErrorAction SilentlyContinue
-Write-CleanupStatus 'autologon-restored'
-Remove-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
-Write-CleanupStatus 'account-removed'
+if ($cleanupPhase -notin @('autologon-restored', 'account-removed', 'credentials-removed', 'media-ejected')) {
+  Write-CleanupStatus 'ready'
+  if (-not (Test-Path -LiteralPath $kioskAutologonStatePath -PathType Leaf)) { throw 'Factory OOBE kiosk autologon handoff is unavailable' }
+  $kioskAutologonPassword = [IO.File]::ReadAllText($kioskAutologonStatePath, [Text.UTF8Encoding]::new($false))
+  if ([string]::IsNullOrEmpty($kioskAutologonPassword)) { throw 'Factory OOBE kiosk autologon handoff is invalid' }
+  Set-ItemProperty -Path $winlogonPath -Name AutoAdminLogon -Value '1' -Force
+  Set-ItemProperty -Path $winlogonPath -Name ForceAutoLogon -Value '1' -Force
+  Set-ItemProperty -Path $winlogonPath -Name DefaultUserName -Value 'VEMKiosk' -Force
+  Set-ItemProperty -Path $winlogonPath -Name DefaultDomainName -Value $env:COMPUTERNAME -Force
+  Set-ItemProperty -Path $winlogonPath -Name DefaultPassword -Value $kioskAutologonPassword -Force
+  Remove-ItemProperty -Path $winlogonPath -Name AutoLogonCount -ErrorAction SilentlyContinue
+  Write-CleanupStatus 'autologon-restored'
+  $cleanupPhase = 'autologon-restored'
+}
+if ($cleanupPhase -notin @('account-removed', 'credentials-removed', 'media-ejected')) {
+  Remove-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue
+  Write-CleanupStatus 'account-removed'
+  $cleanupPhase = 'account-removed'
+}
+if ($cleanupPhase -notin @('credentials-removed', 'media-ejected')) {
+  Remove-Item -LiteralPath $kioskAutologonStatePath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $personalizationPath -Force -ErrorAction SilentlyContinue
+  Write-CleanupStatus 'credentials-removed'
+  $cleanupPhase = 'credentials-removed'
+}
 $shell = New-Object -ComObject Shell.Application
 $personalizationVolumes = @()
 for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
