@@ -24,6 +24,7 @@ import {
 
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { projectOrderStatus } from "../orders/order-state-projection";
+import { RefundsService } from "../refunds/refunds.service";
 
 export type StoredRawMachineStockMovement = {
   id: string;
@@ -108,7 +109,10 @@ export type PendingFailedLinePartialRefundDecision = {
 
 @Injectable()
 export class MachineStockMovementsRepository {
-  constructor(@Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient) {}
+  constructor(
+    @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    private readonly refundsService: RefundsService,
+  ) {}
 
   async findByMachineMovement(
     machineId: string,
@@ -230,8 +234,9 @@ export class MachineStockMovementsRepository {
   async buildPendingFailedLinePartialRefundDecision(
     orderId: string,
     metadata: Record<string, unknown>,
+    source: DrizzleClient | DrizzleTransaction = this.db,
   ): Promise<PendingFailedLinePartialRefundDecision | null> {
-    const lines = await this.db
+    const lines = await source
       .select({
         id: orderItems.id,
         fulfillmentStatus: orderItems.fulfillmentStatus,
@@ -566,6 +571,17 @@ export class MachineStockMovementsRepository {
     tx: DrizzleTransaction,
     input: ConfirmOrderBoundDispenseInput,
   ): Promise<void> {
+    const [lockedOrder] = await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(eq(orders.id, input.context.orderId))
+      .for("update");
+    if (!lockedOrder) {
+      throw new OrderBoundDispenseConfirmationFailedError(
+        "Order could not be locked for dispense confirmation",
+      );
+    }
+
     const [claimedCommand] = await tx
       .update(vendingCommands)
       .set({
@@ -666,6 +682,15 @@ export class MachineStockMovementsRepository {
       metadata: { rawMovementId: input.rawMovementId },
       dispensedAt: new Date(input.input.occurredAt),
     });
+    const partialRefund =
+      await this.buildPendingFailedLinePartialRefundDecision(
+        input.context.orderId,
+        { rawMovementId: input.rawMovementId },
+        tx,
+      );
+    if (partialRefund) {
+      await this.refundsService.stageAutomaticPartialRefund(tx, partialRefund);
+    }
   }
 
   private async syncOrderFulfillmentStateFromLines(

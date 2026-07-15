@@ -50,6 +50,16 @@ import { projectOrderStatus } from "../orders/order-state-projection";
 import { RefundsService } from "../refunds/refunds.service";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
+type FailedLineRefundDecision =
+  | { kind: "none" }
+  | { kind: "full"; orderId: string; metadata: Record<string, unknown> }
+  | {
+      kind: "partial";
+      orderId: string;
+      orderItemIds: string[];
+      amountCents: number;
+      metadata: Record<string, unknown>;
+    };
 
 function isUniqueViolation(error: unknown): boolean {
   return (
@@ -426,6 +436,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         );
         const allCommandsFailedBeforeDelivery = sentLikeCommands.length === 0;
         const refundDecision = await this.db.transaction(async (tx) => {
+          await this.lockOrderForTerminalMutation(tx, orderId);
           const sentLineIds = sentLikeCommands
             .map((command) => command?.orderItemId)
             .filter((id): id is string => typeof id === "string");
@@ -480,6 +491,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
                 metadata,
               },
             );
+            await this.stageFailedLineRefund(tx, decision);
 
             await this.notificationsService.createDispenseFailedNotification(
               tx,
@@ -495,7 +507,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           return decision;
         });
 
-        await this.requestRefundForFailedLines(refundDecision);
+        if (refundDecision.kind !== "none") {
+          await this.refundsService.dispatchPendingRefunds();
+        }
         return commandResults;
       }
 
@@ -736,6 +750,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const failureContext = await this.db.transaction(async (tx) => {
+      await this.lockOrderForTerminalMutation(tx, command.orderId);
       const [updated] = await tx
         .update(vendingCommands)
         .set({
@@ -789,6 +804,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             slotSalesState: compensation.slotSalesState,
           },
         });
+      if (input.requestRefund !== false) {
+        await this.stageFailedLineRefund(tx, refundDecision);
+      }
 
       await this.notificationsService.createDispenseFailedNotification(tx, {
         orderId: command.orderId,
@@ -808,7 +826,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (failureContext && input.requestRefund !== false) {
-      await this.requestRefundForFailedLines(failureContext.refundDecision);
+      await this.refundsService.dispatchPendingRefunds();
     }
 
     return { commandId: command.id, status: "failed" as const };
@@ -1116,6 +1134,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       >;
     },
   ): Promise<boolean> {
+    await this.lockOrderForTerminalMutation(tx, input.command.orderId);
     const [updated] = await tx
       .update(vendingCommands)
       .set({
@@ -1367,6 +1386,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           : null;
       }
 
+      await this.lockOrderForTerminalMutation(tx, command.orderId);
       const [updated] = await tx
         .update(vendingCommands)
         .set({
@@ -1416,19 +1436,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             slotSalesState: compensation.slotSalesState,
           },
         });
-      if (refundDecision.kind === "full") {
-        await this.refundsService.stageAutomaticFullRefund(tx, {
-          orderId: refundDecision.orderId,
-          metadata: refundDecision.metadata,
-        });
-      } else if (refundDecision.kind === "partial") {
-        await this.refundsService.stageAutomaticPartialRefund(tx, {
-          orderId: refundDecision.orderId,
-          orderItemIds: refundDecision.orderItemIds,
-          amountCents: refundDecision.amountCents,
-          metadata: refundDecision.metadata,
-        });
-      }
+      await this.stageFailedLineRefund(tx, refundDecision);
 
       await this.notificationsService.createDispenseFailedNotification(tx, {
         orderId: command.orderId,
@@ -1462,11 +1470,17 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (resultContext?.kind === "success") {
-      await this.resolveCommandAsDispensed(resultContext.command, {
-        movementId: `mqtt-dispense:${payload.commandNo}`,
-        source: "vending_command",
-        occurredAt: payload.reportedAt,
-      });
+      const successResult = await this.resolveCommandAsDispensed(
+        resultContext.command,
+        {
+          movementId: `mqtt-dispense:${payload.commandNo}`,
+          source: "vending_command",
+          occurredAt: payload.reportedAt,
+        },
+      );
+      if (!("stockMovementStatus" in successResult)) {
+        await this.refundsService.dispatchPendingRefunds();
+      }
       // Success projection is itself idempotent (movementId + command CAS).
       // Persist the inbox receipt only after it commits, so a crash or
       // transient failure is resumed by the same messageId instead of being
@@ -1485,7 +1499,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     }
 
     if (
-      resultContext?.kind === "failure" ||
+      (resultContext?.kind === "failure" &&
+        resultContext.refundDecision.kind !== "none") ||
       resultContext?.kind === "refund_recovery"
     ) {
       await this.refundsService.dispatchPendingRefunds();
@@ -1513,6 +1528,21 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .onConflictDoNothing();
   }
 
+  private async lockOrderForTerminalMutation(
+    tx: DrizzleTransaction,
+    orderId: string,
+  ): Promise<void> {
+    const locked = await tx.execute(sql`
+      select id
+      from orders
+      where id = ${orderId}
+      for update
+    `);
+    if ((locked.rowCount ?? 0) !== 1) {
+      throw new NotFoundException("Order not found");
+    }
+  }
+
   private async markOrderLinesFailedAndBuildRefundDecision(
     tx: DrizzleTransaction,
     input: {
@@ -1522,17 +1552,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       reason: string;
       metadata: Record<string, unknown>;
     },
-  ): Promise<
-    | { kind: "none" }
-    | { kind: "full"; orderId: string; metadata: Record<string, unknown> }
-    | {
-        kind: "partial";
-        orderId: string;
-        orderItemIds: string[];
-        amountCents: number;
-        metadata: Record<string, unknown>;
-      }
-  > {
+  ): Promise<FailedLineRefundDecision> {
     const failedLines = await tx
       .select({ id: orderItems.id })
       .from(orderItems)
@@ -1669,32 +1689,22 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
   }
 
-  private async requestRefundForFailedLines(
-    decision:
-      | { kind: "none" }
-      | { kind: "full"; orderId: string; metadata: Record<string, unknown> }
-      | {
-          kind: "partial";
-          orderId: string;
-          orderItemIds: string[];
-          amountCents: number;
-          metadata: Record<string, unknown>;
-        },
+  private async stageFailedLineRefund(
+    tx: DrizzleTransaction,
+    decision: FailedLineRefundDecision,
   ): Promise<void> {
     if (decision.kind === "full") {
-      await this.refundsService.requestFullRefund({
+      await this.refundsService.stageAutomaticFullRefund(tx, {
         orderId: decision.orderId,
-        reason: "auto_dispense_failed",
         metadata: decision.metadata,
       });
       return;
     }
     if (decision.kind === "partial") {
-      await this.refundsService.requestPartialRefund({
+      await this.refundsService.stageAutomaticPartialRefund(tx, {
         orderId: decision.orderId,
         orderItemIds: decision.orderItemIds,
         amountCents: decision.amountCents,
-        reason: "auto_partial_dispense_failed",
         metadata: decision.metadata,
       });
     }

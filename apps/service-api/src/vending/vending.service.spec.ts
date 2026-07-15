@@ -105,6 +105,7 @@ describe("VendingService heartbeat ingestion", () => {
     });
     const heartbeatValues = vi.fn();
     const tx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
       insert: vi
         .fn()
         .mockReturnValueOnce({ values: machineEventValues })
@@ -305,7 +306,12 @@ describe("VendingService line-level fulfillment", () => {
       }) as never,
       (options.inventoryService ?? {}) as never,
       (options.machineStockMovementsService ?? {}) as never,
-      (options.refundsService ?? {}) as never,
+      {
+        stageAutomaticFullRefund: vi.fn(),
+        stageAutomaticPartialRefund: vi.fn(),
+        dispatchPendingRefunds: vi.fn(),
+        ...options.refundsService,
+      } as never,
       { createWorkOrder: vi.fn() } as never,
     );
   }
@@ -539,6 +545,7 @@ describe("VendingService line-level fulfillment", () => {
         .fn()
         .mockImplementation(async (fn: (tx: unknown) => unknown) => {
           const tx = {
+            execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
             update: vi.fn().mockReturnValue({
               set: vi.fn().mockReturnValue({
                 where: vi.fn().mockResolvedValue(undefined),
@@ -665,7 +672,7 @@ describe("VendingService line-level fulfillment", () => {
         releaseAffectedReservationForDispenseFailure,
         restoreConfirmedOrderItemsForDispatchFailure,
       },
-      refundsService: { requestFullRefund, requestPartialRefund: vi.fn() },
+      refundsService: { stageAutomaticFullRefund: requestFullRefund },
     });
 
     await service.createAndDispatchCommands("order1");
@@ -683,9 +690,9 @@ describe("VendingService line-level fulfillment", () => {
       expect.objectContaining({ orderItemId: "line-2", slotId: "slot2" }),
     );
     expect(requestFullRefund).toHaveBeenCalledWith(
+      expect.anything(),
       expect.objectContaining({
         orderId: "order1",
-        reason: "auto_dispense_failed",
       }),
     );
   });
@@ -807,6 +814,7 @@ describe("VendingService line-level fulfillment", () => {
         .fn()
         .mockImplementation(async (fn: (tx: unknown) => unknown) => {
           const tx = {
+            execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
             update: vi.fn().mockReturnValue({
               set: vi.fn().mockReturnValue({
                 where: vi.fn().mockResolvedValue(undefined),
@@ -926,6 +934,7 @@ describe("VendingService line-level fulfillment", () => {
         .fn()
         .mockImplementation(async (fn: (tx: unknown) => unknown) => {
           const tx = {
+            execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
             update: vi.fn().mockReturnValue({
               set: vi.fn().mockReturnValue({
                 where: vi.fn().mockReturnValue({
@@ -997,7 +1006,7 @@ describe("VendingService line-level fulfillment", () => {
     const service = makeService({
       db,
       inventoryService: { releaseAffectedReservationForDispenseFailure },
-      refundsService: { requestPartialRefund, requestFullRefund: vi.fn() },
+      refundsService: { stageAutomaticPartialRefund: requestPartialRefund },
     });
 
     await service.resolveCommand("cmd-2", {
@@ -1010,6 +1019,7 @@ describe("VendingService line-level fulfillment", () => {
       expect.objectContaining({ orderItemId: "line-2", slotId: "slot2" }),
     );
     expect(requestPartialRefund).toHaveBeenCalledWith(
+      expect.anything(),
       expect.objectContaining({
         orderId: "order1",
         orderItemIds: ["line-2"],
@@ -1048,6 +1058,7 @@ describe("VendingService line-level fulfillment", () => {
         .fn()
         .mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
           const tx = {
+            execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
             select: vi.fn().mockReturnValue({
               from: vi.fn().mockReturnValue({
                 where: vi
@@ -1330,6 +1341,7 @@ describe("VendingService line-level fulfillment", () => {
         .fn()
         .mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
           const tx = {
+            execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
             insert: vi.fn().mockReturnValue({
               values: vi.fn((value: unknown) => {
                 insertedValues.push(value);
@@ -1465,6 +1477,7 @@ describe("VendingService line-level fulfillment", () => {
         .fn()
         .mockImplementation(async (fn: (tx: unknown) => unknown) => {
           const tx = {
+            execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
             update: vi.fn().mockReturnValue({
               set: vi.fn().mockReturnValue({
                 where: vi.fn().mockReturnValue({
@@ -1537,7 +1550,10 @@ describe("VendingService line-level fulfillment", () => {
     const service = makeService({
       db,
       inventoryService: { releaseAffectedReservationForDispenseFailure },
-      refundsService: { requestPartialRefund, requestFullRefund },
+      refundsService: {
+        stageAutomaticPartialRefund: requestPartialRefund,
+        stageAutomaticFullRefund: requestFullRefund,
+      },
     });
 
     await service.resolveCommand("cmd-2", {
@@ -1546,9 +1562,9 @@ describe("VendingService line-level fulfillment", () => {
     });
 
     expect(requestFullRefund).toHaveBeenCalledWith(
+      expect.anything(),
       expect.objectContaining({
         orderId: "order1",
-        reason: "auto_dispense_failed",
       }),
     );
     expect(requestPartialRefund).not.toHaveBeenCalled();

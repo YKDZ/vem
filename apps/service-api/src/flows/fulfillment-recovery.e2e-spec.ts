@@ -52,11 +52,14 @@ import {
   loginAndGetToken,
   machineOrderBody,
   publishMqtt,
+  seedMultiSlotInventory,
   seedSingleSlotInventory,
   signMqttPayload,
   waitForMqttMessage,
+  waitForMqttMessages,
   type ApiResponse,
   type CreatedOrderPayload,
+  type SeededMultiSlotInventory,
   type SeededSingleSlotInventory,
 } from "./flow-test-helpers";
 
@@ -70,6 +73,19 @@ type PaidCommandContext = {
   commandId: string;
   commandNo: string;
   orderItemId: string;
+};
+
+type TwoLinePaidCommandContext = {
+  seeded: SeededMultiSlotInventory;
+  orderId: string;
+  orderNo: string;
+  commands: Array<{
+    id: string;
+    commandNo: string;
+    orderItemId: string;
+    slotId: string;
+    inventoryId: string;
+  }>;
 };
 
 describe("fulfillment recovery e2e", { concurrent: false }, () => {
@@ -178,6 +194,142 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       commandNo,
       orderItemId: orderItem.id,
     };
+  }
+
+  async function createTwoLinePaidCommand(
+    machineCode: string,
+  ): Promise<TwoLinePaidCommandContext> {
+    const seeded = await seedMultiSlotInventory(db, {
+      machineCode,
+      slots: [
+        {
+          onHandQty: 2,
+          lowStockThreshold: 1,
+          slotCode: "L1",
+          layerNo: 1,
+          cellNo: 1,
+          priceCents: 599,
+        },
+        {
+          onHandQty: 2,
+          lowStockThreshold: 1,
+          slotCode: "L2",
+          layerNo: 1,
+          cellNo: 2,
+          priceCents: 799,
+        },
+      ],
+    });
+    const token = await loginAndGetToken(api, appConfig);
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+      seeded.machineSecret,
+    );
+    const commandPayloadsPromise = waitForMqttMessages(
+      mqttClient,
+      `vem/machines/${seeded.machineCode}/commands/dispense`,
+      2,
+    );
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: seeded.items.map((item) => ({
+          inventoryId: item.inventoryId,
+          quantity: 1,
+          planogramVersion: seeded.planogramVersion,
+          slotId: item.slotId,
+          slotCode: item.slotCode,
+        })),
+        paymentMethod: "mock",
+      });
+    expect(createOrderResponse.status).toBe(201);
+    const createdOrder =
+      createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
+    const succeedResponse = await api
+      .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
+    expect(succeedResponse.status).toBe(201);
+    await commandPayloadsPromise;
+
+    const commands = await db.client
+      .select({
+        id: vendingCommands.id,
+        commandNo: vendingCommands.commandNo,
+        orderItemId: orderItems.id,
+        slotId: orderItems.slotId,
+        inventoryId: orderItems.inventoryId,
+      })
+      .from(vendingCommands)
+      .innerJoin(orderItems, eq(orderItems.id, vendingCommands.orderItemId))
+      .where(eq(vendingCommands.orderId, createdOrder.data.orderId))
+      .orderBy(orderItems.createdAt);
+    expect(commands).toHaveLength(2);
+
+    return {
+      seeded,
+      orderId: createdOrder.data.orderId,
+      orderNo: createdOrder.data.orderNo,
+      commands,
+    };
+  }
+
+  async function publishTwoLineResult(
+    ctx: TwoLinePaidCommandContext,
+    command: TwoLinePaidCommandContext["commands"][number],
+    success: boolean,
+    suffix: string,
+  ): Promise<void> {
+    await publishMqtt(
+      mqttClient,
+      `vem/machines/${ctx.seeded.machineCode}/events/dispense-result`,
+      signMqttPayload({
+        machineCode: ctx.seeded.machineCode,
+        mqttSigningSecret: ctx.seeded.mqttSigningSecret,
+        messageId: `result:${command.commandNo}:${suffix}`,
+        payload: {
+          commandNo: command.commandNo,
+          success,
+          errorCode: success ? null : "NO_DROP",
+          message: suffix,
+          reportedAt: new Date().toISOString(),
+        },
+      }),
+    );
+  }
+
+  async function publishBehindOrderBarrier(
+    orderId: string,
+    actions: Array<() => Promise<void>>,
+  ): Promise<void> {
+    await db.client.transaction(async (tx) => {
+      const blocker = await tx.execute(sql`
+        select pg_backend_pid() as pid
+        from orders
+        where id = ${orderId}
+        for update
+      `);
+      const blockerPid = Number(blocker.rows[0]?.pid);
+      // oxlint-disable no-await-in-loop -- deterministic waiter order is the concurrency contract under test
+      for (const action of actions) {
+        await action();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      // oxlint-enable no-await-in-loop
+      await eventually(async () => {
+        const waiting = await db.client.execute(sql`
+          select count(*)::int as total
+          from pg_stat_activity
+          where datname = current_database()
+            and cardinality(pg_blocking_pids(pid)) > 0
+            and (${blockerPid} = any(pg_blocking_pids(pid)) or pid <> pg_backend_pid())
+        `);
+        expect(Number(waiting.rows[0]?.total)).toBeGreaterThanOrEqual(2);
+      });
+    });
   }
 
   async function publishDispenseResult(
@@ -289,6 +441,296 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       .where(eq(refunds.orderId, ctx.orderId));
     expect(Number(refundCount.total)).toBe(1);
   }, 60_000);
+
+  it.each(["forward", "reverse"] as const)(
+    "serializes two successful line terminals into one fulfilled order (%s)",
+    async (commitOrder) => {
+      const ctx = await createTwoLinePaidCommand(
+        `M-E2E-REC-TWO-LINE-SUCCESS-${commitOrder}`,
+      );
+      const commands =
+        commitOrder === "forward" ? ctx.commands : [...ctx.commands].reverse();
+
+      await publishBehindOrderBarrier(
+        ctx.orderId,
+        commands.map(
+          (command, index) => () =>
+            publishTwoLineResult(
+              ctx,
+              command,
+              true,
+              `two-line-success-${index}`,
+            ),
+        ),
+      );
+
+      await eventually(async () => {
+        const [order] = await db.client
+          .select({
+            status: orders.status,
+            fulfillmentState: orders.fulfillmentState,
+          })
+          .from(orders)
+          .where(eq(orders.id, ctx.orderId));
+        expect(order).toEqual({
+          status: "fulfilled",
+          fulfillmentState: "dispensed",
+        });
+      });
+
+      const inventoryRows = await db.client
+        .select({
+          onHandQty: inventories.onHandQty,
+          reservedQty: inventories.reservedQty,
+        })
+        .from(inventories)
+        .where(eq(inventories.machineId, ctx.seeded.machineId));
+      const reservationRows = await db.client
+        .select({ status: inventoryReservations.status })
+        .from(inventoryReservations)
+        .where(eq(inventoryReservations.orderId, ctx.orderId));
+      const [refundCount] = await db.client
+        .select({ total: count() })
+        .from(refunds)
+        .where(eq(refunds.orderId, ctx.orderId));
+      expect(inventoryRows).toEqual([
+        { onHandQty: 1, reservedQty: 0 },
+        { onHandQty: 1, reservedQty: 0 },
+      ]);
+      expect(reservationRows).toEqual([
+        { status: "confirmed" },
+        { status: "confirmed" },
+      ]);
+      expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(2);
+      expect(Number(refundCount.total)).toBe(0);
+    },
+    60_000,
+  );
+
+  it.each(["forward", "reverse"] as const)(
+    "serializes two failed line terminals into one durable full refund (%s)",
+    async (commitOrder) => {
+      const ctx = await createTwoLinePaidCommand(
+        `M-E2E-REC-TWO-LINE-FAILURE-${commitOrder}`,
+      );
+      const commands =
+        commitOrder === "forward" ? ctx.commands : [...ctx.commands].reverse();
+      const provider = paymentProviderRegistry.get("mock");
+      const providerRefund = vi.spyOn(provider, "refundPayment");
+
+      try {
+        await publishBehindOrderBarrier(
+          ctx.orderId,
+          commands.map(
+            (command, index) => () =>
+              publishTwoLineResult(
+                ctx,
+                command,
+                false,
+                `two-line-failure-${index}`,
+              ),
+          ),
+        );
+
+        await eventually(async () => {
+          const [order] = await db.client
+            .select({
+              status: orders.status,
+              fulfillmentState: orders.fulfillmentState,
+              paymentState: orders.paymentState,
+            })
+            .from(orders)
+            .where(eq(orders.id, ctx.orderId));
+          const [refund] = await db.client
+            .select({ status: refunds.status, reason: refunds.reason })
+            .from(refunds)
+            .where(eq(refunds.orderId, ctx.orderId));
+          expect(order).toEqual({
+            status: "refunded",
+            fulfillmentState: "dispense_failed",
+            paymentState: "refunded",
+          });
+          expect(refund).toEqual({
+            status: "succeeded",
+            reason: "auto_dispense_failed",
+          });
+        });
+
+        const inventoryRows = await db.client
+          .select({
+            onHandQty: inventories.onHandQty,
+            reservedQty: inventories.reservedQty,
+          })
+          .from(inventories)
+          .where(eq(inventories.machineId, ctx.seeded.machineId));
+        const reservationRows = await db.client
+          .select({ status: inventoryReservations.status })
+          .from(inventoryReservations)
+          .where(eq(inventoryReservations.orderId, ctx.orderId));
+        const eventRows = await db.client
+          .select({ eventType: refundEvents.eventType })
+          .from(refundEvents)
+          .innerJoin(refunds, eq(refunds.id, refundEvents.refundId))
+          .where(eq(refunds.orderId, ctx.orderId));
+        expect(inventoryRows).toEqual([
+          { onHandQty: 2, reservedQty: 0 },
+          { onHandQty: 2, reservedQty: 0 },
+        ]);
+        expect(reservationRows).toEqual([
+          { status: "released" },
+          { status: "released" },
+        ]);
+        expect(await movementCount(ctx.orderId, "reservation_released")).toBe(
+          2,
+        );
+        expect(
+          eventRows.filter((row) => row.eventType === "refund.created"),
+        ).toHaveLength(1);
+        expect(
+          eventRows.filter((row) => row.eventType === "refund.succeeded"),
+        ).toHaveLength(1);
+        expect(providerRefund).toHaveBeenCalledOnce();
+      } finally {
+        providerRefund.mockRestore();
+      }
+    },
+    60_000,
+  );
+
+  it.each(["success_first", "failure_first"] as const)(
+    "recovers one durable partial refund when mixed line terminals commit %s",
+    async (commitOrder) => {
+      const ctx = await createTwoLinePaidCommand(
+        `M-E2E-REC-TWO-LINE-MIXED-${commitOrder}`,
+      );
+      const successCommand = ctx.commands[0];
+      const failureCommand = ctx.commands[1];
+      const ordered =
+        commitOrder === "success_first"
+          ? [
+              { command: successCommand, success: true },
+              { command: failureCommand, success: false },
+            ]
+          : [
+              { command: failureCommand, success: false },
+              { command: successCommand, success: true },
+            ];
+      const originalDispatch =
+        refundsService.dispatchPendingRefunds.bind(refundsService);
+      let injectedCrash = false;
+      const dispatch = vi
+        .spyOn(refundsService, "dispatchPendingRefunds")
+        .mockImplementation(async (...args) => {
+          const [durableRefund] = await db.client
+            .select({ id: refunds.id })
+            .from(refunds)
+            .where(eq(refunds.orderId, ctx.orderId));
+          if (durableRefund && !injectedCrash) {
+            injectedCrash = true;
+            throw new Error("injected crash after mixed terminal commit");
+          }
+          return await originalDispatch(...args);
+        });
+      const provider = paymentProviderRegistry.get("mock");
+      const providerRefund = vi.spyOn(provider, "refundPayment");
+
+      try {
+        await publishBehindOrderBarrier(
+          ctx.orderId,
+          ordered.map(
+            ({ command, success }) =>
+              () =>
+                publishTwoLineResult(
+                  ctx,
+                  command,
+                  success,
+                  `mixed-${commitOrder}-${success ? "success" : "failure"}`,
+                ),
+          ),
+        );
+        await eventually(async () => {
+          const commands = await db.client
+            .select({ status: vendingCommands.status })
+            .from(vendingCommands)
+            .where(eq(vendingCommands.orderId, ctx.orderId));
+          const [refund] = await db.client
+            .select({ status: refunds.status, reason: refunds.reason })
+            .from(refunds)
+            .where(eq(refunds.orderId, ctx.orderId));
+          expect(commands.map((command) => command.status).sort()).toEqual([
+            "failed",
+            "succeeded",
+          ]);
+          expect(refund).toEqual({
+            status: "created",
+            reason: "auto_partial_dispense_failed",
+          });
+          expect(injectedCrash).toBe(true);
+        });
+
+        const last = ordered[1];
+        const sameSuffix = `mixed-${commitOrder}-${last.success ? "success" : "failure"}`;
+        await Promise.all([
+          publishTwoLineResult(ctx, last.command, last.success, sameSuffix),
+          publishTwoLineResult(
+            ctx,
+            last.command,
+            last.success,
+            `${sameSuffix}-different-message-id`,
+          ),
+        ]);
+        await eventually(async () => {
+          const [order] = await db.client
+            .select({
+              status: orders.status,
+              fulfillmentState: orders.fulfillmentState,
+              paymentState: orders.paymentState,
+            })
+            .from(orders)
+            .where(eq(orders.id, ctx.orderId));
+          const [refund] = await db.client
+            .select({ status: refunds.status })
+            .from(refunds)
+            .where(eq(refunds.orderId, ctx.orderId));
+          expect(order).toEqual({
+            status: "refunded",
+            fulfillmentState: "partial_dispensed",
+            paymentState: "partial_refunded",
+          });
+          expect(refund.status).toBe("succeeded");
+        });
+
+        const reservationRows = await db.client
+          .select({ status: inventoryReservations.status })
+          .from(inventoryReservations)
+          .where(eq(inventoryReservations.orderId, ctx.orderId));
+        const eventRows = await db.client
+          .select({ eventType: refundEvents.eventType })
+          .from(refundEvents)
+          .innerJoin(refunds, eq(refunds.id, refundEvents.refundId))
+          .where(eq(refunds.orderId, ctx.orderId));
+        expect(reservationRows.map((row) => row.status).sort()).toEqual([
+          "confirmed",
+          "released",
+        ]);
+        expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(1);
+        expect(await movementCount(ctx.orderId, "reservation_released")).toBe(
+          1,
+        );
+        expect(
+          eventRows.filter((row) => row.eventType === "refund.created"),
+        ).toHaveLength(1);
+        expect(
+          eventRows.filter((row) => row.eventType === "refund.succeeded"),
+        ).toHaveLength(1);
+        expect(providerRefund).toHaveBeenCalledOnce();
+      } finally {
+        dispatch.mockRestore();
+        providerRefund.mockRestore();
+      }
+    },
+    60_000,
+  );
 
   it("recovers one durable full refund after failure commit and concurrent message replay", async () => {
     const ctx = await createPaidCommand("M-E2E-REC-DURABLE-FULL-REFUND");
