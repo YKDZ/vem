@@ -49,6 +49,8 @@ jobs:
       VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
       VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY }}
       VEM_VM_HOST_EXPECTED_ADAPTER_SHA256: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_SHA256 }}
+      # Factory/ISO integration must retain this daemon-selected stable endpoint contract.
+      VEM_VM_AUDIO_ENDPOINT_ID: ${{ vars.VEM_VM_AUDIO_ENDPOINT_ID }}
     steps:
       - name: Checkout Trusted Commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -669,6 +671,8 @@ jobs:
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
             --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
             --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
+            --selected-audio-endpoint-id "$VEM_VM_AUDIO_ENDPOINT_ID" \
+            --daemon-calibration-response-out "artifacts/vm-runtime-acceptance/${RUN_ID}/daemon-audio-calibration-response.json" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-audio-capture-report.json"
 
       - name: Verify Windows Native Audio Evidence
@@ -679,6 +683,7 @@ jobs:
             --run-id "$RUN_ID" \
             --runtime-report "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json" \
             --adapter-report "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-audio-capture-report.json" \
+            --daemon-calibration-response "artifacts/vm-runtime-acceptance/${RUN_ID}/daemon-audio-calibration-response.json" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/windows-native-audio-evidence.json"
 
       - name: Cleanup VM Host Adapter Overlay

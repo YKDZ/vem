@@ -248,6 +248,9 @@ async fn run_console_cycle(
         audio_output_platform: Arc::new(crate::audio_output::WindowsAudioOutputPlatform),
         audio_output_playback: Arc::new(crate::audio_output::WindowsAudioOutputPlayback::default()),
         audio_output_calibration_lock: Arc::new(tokio::sync::Mutex::new(())),
+        audio_output_observation_generation: Arc::new(
+            crate::ipc::AudioOutputObservationGenerationTracker::default(),
+        ),
         audio_output_test_evidence: Arc::new(ipc::AudioOutputTestEvidenceStore::default()),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
         sale_binding_gate: Arc::new(ipc::SaleBindingOperationGate::default()),

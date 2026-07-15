@@ -28,10 +28,10 @@ function evidence(role, hash) {
   };
 }
 
-function defaultAudioCapture(request, evidenceEntry) {
+function defaultAudioCapture(request, evidenceEntry, calibrationEvidence) {
   if (request.operation !== "capture-default-audio") return null;
   return {
-    schemaVersion: "vm-default-audio-capture-result/v1",
+    schemaVersion: "vm-selected-audio-capture-result/v2",
     runId: request.runId,
     lifecycleReference: request.lifecycleReference,
     captureOperationReference: request.operationReference,
@@ -39,13 +39,19 @@ function defaultAudioCapture(request, evidenceEntry) {
     endpoint: {
       status: "selected",
       identity: "guest-audio://fake-runtime-testbed-001",
+      stableEndpointId: request.audioCapture.selectedEndpointId,
     },
-    nativeCue: {
-      status: "emitted",
-      source: "tauri_native_audio",
-      command: "play_machine_audio",
-      challenge: request.audioCapture.nativeCue.challenge,
-      emittedAt: "2026-07-11T00:00:00.500Z",
+    daemonCalibration: {
+      status: "completed",
+      source: "vending_daemon_ipc",
+      command: "audio_output_calibration",
+      challenge: request.audioCapture.daemonCalibration.challenge,
+      endpointId: request.audioCapture.selectedEndpointId,
+      responseArtifact: calibrationEvidence.identity,
+      responseDigest: calibrationEvidence.digest,
+      responseFileName: calibrationEvidence.fileName,
+      startedAt: "2026-07-11T00:00:00.250Z",
+      completedAt: "2026-07-11T00:00:00.750Z",
     },
     capture: {
       source: "contract-test-generated-wav",
@@ -216,6 +222,28 @@ function materializeDefaultAudioEvidence() {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   writeFileSync(join(directory, fileName), bytes, { mode: 0o600 });
   return { ...evidence("default-audio-capture", hash), fileName };
+}
+
+function materializeDaemonCalibrationEvidence(request) {
+  const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
+  if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
+  const response = {
+    endpointId: request.audioCapture.selectedEndpointId,
+    testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+    testEvidenceExpiresAt: "2026-07-11T00:05:00.000Z",
+    observationRevision: `sha256:${"a".repeat(64)}`,
+    observationGeneration: 7,
+    configRevision: `sha256:${"b".repeat(64)}`,
+    configGeneration: 11,
+    proposedSettingsDigest: `sha256:${"c".repeat(64)}`,
+    challenge: request.audioCapture.daemonCalibration.challenge,
+  };
+  const bytes = Buffer.from(`${JSON.stringify(response)}\n`, "utf8");
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const fileName = `${hash}.json`;
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, fileName), bytes, { mode: 0o600 });
+  return { ...evidence("daemon-audio-calibration-response", hash), fileName };
 }
 
 function readState(path) {
@@ -395,7 +423,10 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     request.operation === "capture-display"
       ? [materializeDisplayEvidence(request.displayCapture.visualChallenge)]
       : request.operation === "capture-default-audio"
-        ? [materializeDefaultAudioEvidence()]
+        ? [
+            materializeDefaultAudioEvidence(),
+            materializeDaemonCalibrationEvidence(request),
+          ]
         : [];
   const serialRequest = request.serialSession;
   const needsSerialReport =
@@ -474,7 +505,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
         : null,
     defaultAudioCapture:
       result === "succeeded"
-        ? defaultAudioCapture(request, evidenceEntries[0])
+        ? defaultAudioCapture(request, evidenceEntries[0], evidenceEntries[1])
         : null,
     cleanup:
       request.operation === "cleanup" ||

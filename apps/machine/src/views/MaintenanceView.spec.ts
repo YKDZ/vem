@@ -400,7 +400,9 @@ beforeEach(() => {
     testEvidenceToken: "11111111-2222-4333-8444-555555555555",
     testEvidenceExpiresAt: "2026-07-15T00:01:00Z",
     observationRevision: `sha256:${"a".repeat(64)}`,
+    observationGeneration: 1,
     configRevision: `sha256:${"b".repeat(64)}`,
+    configGeneration: 1,
   });
   confirmDeviceBindingMock.mockResolvedValue({
     binding: {
@@ -515,10 +517,13 @@ beforeEach(() => {
     message: "binding required",
   });
   testAudioOutputMock.mockResolvedValue({
+    endpointId: "wasapi:endpoint-speaker",
     testEvidenceToken: "11111111-2222-4333-8444-555555555555",
     testEvidenceExpiresAt: "2030-07-15T00:01:00Z",
     observationRevision: `sha256:${"a".repeat(64)}`,
+    observationGeneration: 1,
     configRevision: `sha256:${"b".repeat(64)}`,
+    configGeneration: 1,
     proposedSettingsDigest: `sha256:${"c".repeat(64)}`,
   });
   confirmAudioOutputMock.mockResolvedValue(provisionedConfigSummary());

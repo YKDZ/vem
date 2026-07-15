@@ -55,6 +55,14 @@ function main() {
     ADAPTER_IDENTITY_PATTERN,
   );
   validateInput("VEM_VM_HOST_EXPECTED_ADAPTER_SHA256", SHA256_PATTERN);
+  const audioEndpointId = requiredEnvironmentVariable(
+    "VEM_VM_AUDIO_ENDPOINT_ID",
+  );
+  if (
+    audioEndpointId.length > 512 ||
+    /[\u0000-\u001f\u007f]/.test(audioEndpointId)
+  )
+    throw new Error("workflow input is invalid: VEM_VM_AUDIO_ENDPOINT_ID");
 
   for (const name of [
     "MAINTENANCE_RUNNER_PEER_ID",
