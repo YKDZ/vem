@@ -1862,7 +1862,7 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.match(
         completeOobe,
-        /if \(\$cleanupPhase -eq 'complete'\) \{[\s\S]+Remove-CleanupTask[\s\S]+exit 0 \}/,
+        /if \(\$cleanupPhase -eq 'complete'\) \{[\s\S]+Remove-CleanupTask[\s\S]+exit 0\s+\}/,
       );
       assert.match(completeOobe, /Write-CleanupStatus 'media-ejected'/);
       assert.match(
