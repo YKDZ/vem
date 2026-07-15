@@ -42,16 +42,18 @@ const titleText = computed(() =>
 const pickupTitle = computed(() =>
   hasCustomerVisibleError.value
     ? "出货遇到问题"
-    : pickupReminder.value?.urgency === "urgent"
-      ? "请立即取走商品"
-      : pickupReminder.value?.urgency === "warning"
-        ? "请及时取走商品"
-        : "设备出货中",
+    : pickupReminder.value?.stage === "pickup_completed"
+      ? "正在复位"
+      : pickupReminder.value?.urgency === "urgent"
+        ? "请立即取走商品"
+        : pickupReminder.value?.urgency === "warning"
+          ? "请及时取走商品"
+          : "设备出货中",
 );
 const pickupSubtitle = computed(() => {
   if (hasCustomerVisibleError.value) return "请联系工作人员处理";
   if (pickupReminder.value?.stage === "pickup_completed") {
-    return "商品已完成出货，请确认取货";
+    return "已完成取货，设备正在复位";
   }
   if (pickupReminder.value?.stage === "pickup_waiting") {
     return "商品已到达取货口，请及时取走";
@@ -62,18 +64,22 @@ const pickupSubtitle = computed(() => {
   return "请稍候，商品正在送往取货口";
 });
 const pickupNoticeTitle = computed(() =>
-  pickupReminder.value?.urgency === "urgent"
-    ? "取货口即将关闭"
-    : pickupReminder.value?.urgency === "warning"
-      ? "请尽快完成取货"
-      : "出货完成后请取货",
+  pickupReminder.value?.stage === "pickup_completed"
+    ? "取货已完成"
+    : pickupReminder.value?.urgency === "urgent"
+      ? "取货口即将关闭"
+      : pickupReminder.value?.urgency === "warning"
+        ? "请尽快完成取货"
+        : "出货完成后请取货",
 );
 const pickupNoticeCopy = computed(() =>
-  pickupReminder.value?.urgency === "urgent"
-    ? "请立即取走商品，避免取货口超时关闭。"
-    : pickupReminder.value?.urgency === "warning"
-      ? "商品已在取货口等待，请及时取走。"
-      : "取货口打开后，请及时取走商品。",
+  pickupReminder.value?.stage === "pickup_completed"
+    ? "设备正在复位，请稍候。"
+    : pickupReminder.value?.urgency === "urgent"
+      ? "请立即取走商品，避免取货口超时关闭。"
+      : pickupReminder.value?.urgency === "warning"
+        ? "商品已在取货口等待，请及时取走。"
+        : "取货口打开后，请及时取走商品。",
 );
 const hasPickupRemainingSeconds = computed(
   () => pickupRemainingSeconds.value !== null,

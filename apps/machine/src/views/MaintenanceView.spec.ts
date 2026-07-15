@@ -673,6 +673,114 @@ it("runs one protected manual dispense diagnostic and requires explicit stock re
   expect(submitStockMaintenanceBatchMock).not.toHaveBeenCalled();
 });
 
+it("reuses one manual dispense idempotency key after response loss and view reload", async () => {
+  runManualDispenseDiagnosticMock
+    .mockRejectedValueOnce(new Error("daemon response lost"))
+    .mockResolvedValue({
+      diagnosticId: "manual-dispense-replayed",
+      outcome: "result_unknown",
+      errorCode: "UNKNOWN",
+      reportedAt: "2026-07-15T00:00:00.000Z",
+      stockReconciliationRequired: true,
+      reconciliationStatus: "open",
+      replayed: true,
+    });
+  let host = await mountView();
+  await unlockMaintenance(host);
+
+  const retryButton = host.querySelector(
+    '[data-test="manual-dispense-diagnostic"] button[type="submit"]',
+  );
+  expect(retryButton).toBeInstanceOf(HTMLButtonElement);
+  (retryButton as HTMLButtonElement).click();
+  await vi.waitFor(() => {
+    expect(runManualDispenseDiagnosticMock).toHaveBeenCalledTimes(1);
+    const submit = host.querySelector(
+      '[data-test="manual-dispense-diagnostic"] button[type="submit"]',
+    );
+    expect(submit?.textContent).toContain("出货一件");
+    expect(submit).toHaveProperty("disabled", false);
+  });
+  const responseLossRetry = host.querySelector(
+    '[data-test="manual-dispense-diagnostic"] form',
+  );
+  expect(responseLossRetry).toBeInstanceOf(HTMLFormElement);
+  responseLossRetry?.dispatchEvent(
+    new Event("submit", { bubbles: true, cancelable: true }),
+  );
+  await vi.waitFor(() => {
+    expect(runManualDispenseDiagnosticMock).toHaveBeenCalledTimes(2);
+  });
+
+  mountedApp?.unmount();
+  mountedApp = null;
+  host.remove();
+  host = await mountView();
+  await unlockMaintenance(host);
+  buttonByText(host, "出货一件").click();
+  await vi.waitFor(() => {
+    expect(runManualDispenseDiagnosticMock).toHaveBeenCalledTimes(3);
+  });
+
+  const keys = runManualDispenseDiagnosticMock.mock.calls.map(
+    ([request]) => (request as { idempotencyKey: string }).idempotencyKey,
+  );
+  expect(new Set(keys).size).toBe(1);
+});
+
+it("rotates the manual dispense key only for changed parameters or an explicit new diagnostic", async () => {
+  runManualDispenseDiagnosticMock.mockResolvedValue({
+    diagnosticId: "manual-dispense-complete",
+    outcome: "completed",
+    errorCode: null,
+    reportedAt: "2026-07-15T00:00:00.000Z",
+    stockReconciliationRequired: true,
+    reconciliationStatus: "open",
+    replayed: false,
+  });
+  const host = await mountView();
+  await unlockMaintenance(host);
+  const submit = async (expectedCalls: number) => {
+    const form = host.querySelector(
+      '[data-test="manual-dispense-diagnostic"] form',
+    );
+    expect(form).toBeInstanceOf(HTMLFormElement);
+    form?.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(() => {
+      expect(runManualDispenseDiagnosticMock).toHaveBeenCalledTimes(
+        expectedCalls,
+      );
+      expect(
+        host.querySelector(
+          '[data-test="manual-dispense-diagnostic"] button[type="submit"]',
+        ),
+      ).toHaveProperty("disabled", false);
+    });
+  };
+
+  await submit(1);
+  const firstKey =
+    runManualDispenseDiagnosticMock.mock.calls[0][0].idempotencyKey;
+  const slotInput = host.querySelector(
+    '[data-test="manual-dispense-diagnostic"] input[maxlength="32"]',
+  );
+  expect(slotInput).toBeInstanceOf(HTMLInputElement);
+  (slotInput as HTMLInputElement).value = "B2";
+  slotInput?.dispatchEvent(new Event("input", { bubbles: true }));
+  await submit(2);
+  const changedParameterKey =
+    runManualDispenseDiagnosticMock.mock.calls[1][0].idempotencyKey;
+  expect(changedParameterKey).not.toBe(firstKey);
+
+  buttonByText(host, "新建诊断").click();
+  await submit(3);
+  const explicitNewKey =
+    runManualDispenseDiagnosticMock.mock.calls[2][0].idempotencyKey;
+  expect(explicitNewKey).not.toBe(changedParameterKey);
+});
+
 it("returns the rendered maintenance session to read-only when the daemon invalidates it", async () => {
   const host = await mountView();
   await unlockMaintenance(host);

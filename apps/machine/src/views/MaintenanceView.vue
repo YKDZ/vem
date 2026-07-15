@@ -105,7 +105,6 @@ const paymentEnvironmentErrorLabel = computed(() => {
       return "尚未读取";
   }
 });
-let maintenanceSessionExpiryTimer: number | null = null;
 let removeMaintenanceSessionInvalidationListener: (() => void) | null = null;
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
 const DIAGNOSTIC_DISPLAY_MAX_CHARS = 12_000;
@@ -331,25 +330,9 @@ function setMaintenanceSession(session: MaintenanceSession): void {
   clearRenderedMaintenanceSession();
   maintenanceSession.value = session;
   setMaintenanceTouchKeyboardSession(session.sessionId);
-  const delayMs = Date.parse(session.expiresAt) - Date.now();
-  if (delayMs <= 0) {
-    clearMaintenanceSession();
-    return;
-  }
-  maintenanceSessionExpiryTimer = window.setTimeout(
-    () => {
-      clearMaintenanceSession();
-      maintenanceAuthentication.message = "维护会话已过期，请重新验证 PIN。";
-    },
-    Math.min(delayMs, 2_147_483_647),
-  );
 }
 
 function clearRenderedMaintenanceSession(): void {
-  if (maintenanceSessionExpiryTimer !== null) {
-    window.clearTimeout(maintenanceSessionExpiryTimer);
-    maintenanceSessionExpiryTimer = null;
-  }
   maintenanceSession.value = null;
   paymentEnvironmentDiagnostic.value = null;
   paymentEnvironmentMessage.value = null;
@@ -672,6 +655,63 @@ const manualDispenseDiagnostic = reactive({
   message: null as string | null,
 });
 
+const MANUAL_DISPENSE_REQUEST_STORAGE_KEY =
+  "vem.maintenance.manual-dispense-request.v1";
+
+function manualDispenseRequestFingerprint(): string {
+  return JSON.stringify({
+    cellNo: manualDispenseDiagnostic.cellNo,
+    layerNo: manualDispenseDiagnostic.layerNo,
+    quantity: 1,
+    slotCode: manualDispenseDiagnostic.slotCode.trim(),
+    timeoutSeconds: 30,
+  });
+}
+
+function persistNewManualDispenseRequest(): {
+  fingerprint: string;
+  idempotencyKey: string;
+} {
+  const identity = {
+    fingerprint: manualDispenseRequestFingerprint(),
+    idempotencyKey: crypto.randomUUID(),
+  };
+  localStorage.setItem(
+    MANUAL_DISPENSE_REQUEST_STORAGE_KEY,
+    JSON.stringify(identity),
+  );
+  return identity;
+}
+
+function currentManualDispenseIdempotencyKey(): string {
+  const fingerprint = manualDispenseRequestFingerprint();
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(MANUAL_DISPENSE_REQUEST_STORAGE_KEY) ?? "null",
+    ) as unknown;
+    if (
+      stored &&
+      typeof stored === "object" &&
+      "fingerprint" in stored &&
+      stored.fingerprint === fingerprint &&
+      "idempotencyKey" in stored &&
+      typeof stored.idempotencyKey === "string" &&
+      /^[A-Za-z0-9_-]{1,96}$/.test(stored.idempotencyKey)
+    ) {
+      return stored.idempotencyKey;
+    }
+  } catch {
+    // Replace malformed local recovery state with a fresh bounded identity.
+  }
+  return persistNewManualDispenseRequest().idempotencyKey;
+}
+
+function startNewManualDispenseDiagnostic(): void {
+  persistNewManualDispenseRequest();
+  manualDispenseDiagnostic.message =
+    "已新建诊断；下次执行会产生一次新的物理出货。";
+}
+
 async function runManualDispenseDiagnostic(): Promise<void> {
   if (!maintenanceSessionAuthorized.value || !operatorEnteredMaintenance.value)
     return;
@@ -679,7 +719,7 @@ async function runManualDispenseDiagnostic(): Promise<void> {
   manualDispenseDiagnostic.message = null;
   try {
     const result = await daemonClient.runManualDispenseDiagnostic({
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: currentManualDispenseIdempotencyKey(),
       slotCode: manualDispenseDiagnostic.slotCode.trim(),
       layerNo: manualDispenseDiagnostic.layerNo,
       cellNo: manualDispenseDiagnostic.cellNo,
@@ -1923,7 +1963,17 @@ async function submitStockMaintenanceTask(): Promise<void> {
       >
         <div class="flex flex-wrap items-center justify-between gap-3">
           <p class="font-semibold text-amber-100">手动出货诊断</p>
-          <span class="text-sm text-amber-100">执行后必须核对库存</span>
+          <div class="flex items-center gap-3 text-sm text-amber-100">
+            <span>执行后必须核对库存</span>
+            <button
+              class="kiosk-touch-target rounded-xl border border-amber-100/30 px-3 py-2"
+              type="button"
+              :disabled="manualDispenseDiagnostic.loading"
+              @click="startNewManualDispenseDiagnostic"
+            >
+              新建诊断
+            </button>
+          </div>
         </div>
         <form
           class="mt-4 grid gap-3 md:grid-cols-4"
