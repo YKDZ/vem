@@ -2296,6 +2296,7 @@ mod tests {
         let config_store = Arc::new(FakeEncryptedConfigStore {
             path: encrypted_path.clone(),
             writes: Mutex::new(Vec::new()),
+            removals: AtomicUsize::new(0),
         });
         let mut results = VecDeque::from([
             CommandOutput::success(),
