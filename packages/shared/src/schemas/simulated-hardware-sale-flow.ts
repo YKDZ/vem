@@ -7,6 +7,7 @@ import {
 
 const TESTBED_MACHINE_CODE_PREFIX = "VEM-TESTBED-";
 const SHARED_PLATFORM_TARGETS = new Set(["vem-vps", "118.25.104.160"]);
+const WINDOWS_COM_PATH = /^COM[1-9][0-9]*$/i;
 
 const simulatedHardwareSaleFlowResultSchema = z.strictObject({
   simulatedHardwareReady: runtimeAcceptanceAssertionSchema,
@@ -60,6 +61,40 @@ export const simulatedHardwareSaleFlowFactsSchema = z.strictObject({
     expectedIdentity: z.string().min(1),
     expectedVersion: z.string().min(1),
     verified: z.boolean(),
+  }),
+  daemonSerialConfiguration: z.strictObject({
+    hardwareAdapter: z.string().min(1),
+    scannerAdapter: z.string().min(1),
+    lowerControllerPort: z.string().min(1).nullable(),
+    scannerPort: z.string().min(1).nullable(),
+    lowerControllerPortObserved: z.boolean(),
+    scannerPortObserved: z.boolean(),
+  }),
+  guestSerialEvidence: z.strictObject({
+    status: z.enum(["captured", "pending_host_serial_conformance", "missing"]),
+    serialSessionId: z.string().min(1).nullable(),
+    deviceMappingDigest: z.string().min(1).nullable(),
+    scannerInputTransport: z.string().min(1).nullable(),
+    mappings: z.array(
+      z.strictObject({
+        role: z.string().min(1),
+        guestPort: z.string().min(1).nullable(),
+        connectionState: z.string().min(1),
+      }),
+    ),
+    frames: z.array(
+      z.strictObject({
+        role: z.string().min(1),
+        event: z.string().min(1),
+        source: z.string().min(1),
+        sequence: z.int().positive(),
+        digest: z.string().min(1),
+        byteLength: z.int().positive(),
+        orderId: z.string().min(1).nullable(),
+        paymentId: z.string().min(1).nullable(),
+        vendingCommandId: z.string().min(1).nullable(),
+      }),
+    ),
   }),
   planogram: z.strictObject({
     syncedFromPlatform: z.boolean(),
@@ -261,6 +296,91 @@ export function classifySimulatedHardwareSaleFlowReport(
     addDiagnostic(
       "hardware_topology_not_verified",
       "Daemon must verify the expected hardware slot topology before simulated sale flow.",
+    );
+  }
+  const lowerControllerPort =
+    facts.daemonSerialConfiguration.lowerControllerPort;
+  const scannerPort = facts.daemonSerialConfiguration.scannerPort;
+  if (facts.daemonSerialConfiguration.hardwareAdapter !== "serial") {
+    addDiagnostic(
+      "serial_lower_controller_adapter_required",
+      "Simulated hardware acceptance requires hardwareAdapter=serial; daemon mock adapters are not serial evidence.",
+    );
+  }
+  if (facts.daemonSerialConfiguration.scannerAdapter !== "serial_text") {
+    addDiagnostic(
+      "serial_scanner_adapter_required",
+      "Simulated hardware acceptance requires scannerAdapter=serial_text.",
+    );
+  }
+  if (
+    lowerControllerPort === null ||
+    scannerPort === null ||
+    !WINDOWS_COM_PATH.test(lowerControllerPort) ||
+    !WINDOWS_COM_PATH.test(scannerPort) ||
+    !facts.daemonSerialConfiguration.lowerControllerPortObserved ||
+    !facts.daemonSerialConfiguration.scannerPortObserved
+  ) {
+    addDiagnostic(
+      "windows_com_path_evidence_required",
+      "Both daemon adapters must use observed Windows COM paths; TCP and unobserved paths are not acceptance evidence.",
+    );
+  }
+  if (
+    lowerControllerPort === null ||
+    scannerPort === null ||
+    lowerControllerPort.toUpperCase() === scannerPort.toUpperCase()
+  ) {
+    addDiagnostic(
+      "distinct_virtual_com_mapping_required",
+      "Lower-controller and scanner evidence must bind two distinct virtual COM mappings.",
+    );
+  }
+  const serialMappings = new Map(
+    facts.guestSerialEvidence.mappings.map((mapping) => [
+      mapping.role,
+      mapping,
+    ]),
+  );
+  const lowerMapping = serialMappings.get("lower-controller");
+  const scannerMapping = serialMappings.get("scanner");
+  const mappingsMatchDaemonPorts =
+    lowerMapping?.guestPort?.toUpperCase() ===
+      lowerControllerPort?.toUpperCase() &&
+    scannerMapping?.guestPort?.toUpperCase() === scannerPort?.toUpperCase() &&
+    lowerMapping?.connectionState === "connected" &&
+    scannerMapping?.connectionState === "connected";
+  if (
+    facts.guestSerialEvidence.status !== "captured" ||
+    facts.guestSerialEvidence.serialSessionId === null ||
+    facts.guestSerialEvidence.deviceMappingDigest === null ||
+    !mappingsMatchDaemonPorts
+  ) {
+    addDiagnostic(
+      "guest_serial_session_evidence_required",
+      "Acceptance requires a guest serial session with connected lower-controller and scanner mappings bound to the daemon COM paths.",
+    );
+  }
+  const serialFrames = facts.guestSerialEvidence.frames;
+  const hasBoundGuestFrame = (role: string, event: string) =>
+    serialFrames.some(
+      (frame) =>
+        frame.role === role &&
+        frame.event === event &&
+        frame.source === "guest-serial-session" &&
+        frame.orderId === facts.sale.orderId &&
+        frame.paymentId === facts.sale.paymentId &&
+        frame.vendingCommandId === facts.sale.vendingCommandId,
+    );
+  if (
+    facts.guestSerialEvidence.scannerInputTransport !== "guest_serial_frame" ||
+    !hasBoundGuestFrame("scanner", "scanner-injection") ||
+    !hasBoundGuestFrame("lower-controller", "dispense-request") ||
+    !hasBoundGuestFrame("lower-controller", "dispense-result")
+  ) {
+    addDiagnostic(
+      "guest_serial_frame_evidence_required",
+      "Acceptance requires guest-captured scanner and lower-controller frames for this sale; software injection and missing frames are rejected.",
     );
   }
   if (
