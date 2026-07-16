@@ -2735,11 +2735,7 @@ async function runWindowsPowerShellOverSshWithAdapter(
   },
   processAdapter,
 ) {
-  const compactScript = String(script)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .join(" ");
-  const encodedScript = Buffer.from(compactScript, "utf16le").toString(
+  const encodedScript = Buffer.from(String(script), "utf16le").toString(
     "base64",
   );
   const args = [

@@ -372,10 +372,7 @@ describe("machine-ui-cdp-driver", () => {
     assert.equal(args.at(-2), "-EncodedCommand");
     assert.equal(
       Buffer.from(args.at(-1), "base64").toString("utf16le"),
-      inspectionScript
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .join(" "),
+      inspectionScript,
     );
     assert.ok(
       `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${args.at(-1)}`
