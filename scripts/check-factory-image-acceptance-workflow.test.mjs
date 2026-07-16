@@ -270,6 +270,10 @@ describe("Factory Image Acceptance workflow", () => {
     );
     assert.match(
       serviceApiStart,
+      /MAINTENANCE_RELAY_ENDPOINT: 127\.0\.0\.1:51820/,
+    );
+    assert.match(
+      serviceApiStart,
       /MACHINE_MQTT_URL: \$\{\{ format\('mqtt:\/\/\{0\}:18884', vars\.VEM_FACTORY_PLATFORM_INGRESS_HOST\) \}\}/,
     );
     assert.match(

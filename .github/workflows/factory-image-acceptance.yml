@@ -255,6 +255,7 @@ jobs:
           MACHINE_JWT_SECRET: ci-machine-jwt-secret-min-32-chars-long!
           MACHINE_CREDENTIAL_ENCRYPTION_KEY: ci-machine-cred-enc-key-32-chars!!
           MACHINE_PROVISIONING_PROFILE: testbed
+          MAINTENANCE_RELAY_ENDPOINT: 127.0.0.1:51820
           MQTT_URL: ${{ env.EPHEMERAL_MQTT_LOCAL_URL }}
           MACHINE_MQTT_URL: ${{ format('mqtt://{0}:18884', vars.VEM_FACTORY_PLATFORM_INGRESS_HOST) }}
           MACHINE_API_BASE_URL: ${{ format('http://{0}:26850/api', vars.VEM_FACTORY_PLATFORM_INGRESS_HOST) }}
