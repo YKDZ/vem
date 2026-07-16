@@ -464,7 +464,7 @@ for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth += 1) {
 if ($null -eq $ancestor) { throw 'CDP listener is not descended from machine.exe' }
 if ([int]$listenerProcess.SessionId -ne [int]$machineProcess.SessionId) { throw 'CDP listener session differs from machine.exe' }
 if ($listenerPrincipal -cne $machinePrincipal) { throw 'CDP listener principal differs from machine.exe' }
-[ordered]@{
+[Console]::Out.WriteLine(([ordered]@{
   machine = [ordered]@{
     processId = [int]$machineProcess.Id
     executablePath = [System.IO.Path]::GetFullPath($machineCim.ExecutablePath)
@@ -480,7 +480,7 @@ if ($listenerPrincipal -cne $machinePrincipal) { throw 'CDP listener principal d
     localAddress = [string]$listeners[0].LocalAddress
     localPort = [int]$listeners[0].LocalPort
   }
-} | ConvertTo-Json -Compress -Depth 4
+} | ConvertTo-Json -Compress -Depth 4))
 `.trim();
 }
 
