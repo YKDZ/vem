@@ -2754,11 +2754,18 @@ if ([string]$daemon.Status -ne 'Running') { throw 'daemon stopped during install
 
 export function runInstalledKioskSaleRemoteScript(options, script) {
   const ssh = buildSshCommand(options);
+  const diagnosticScript = String.raw`trap {
+  [Console]::Error.WriteLine(("installed kiosk remote error: {0}" -f [string]$_.Exception.Message))
+  [Console]::Error.WriteLine(("at {0}:{1}" -f [string]$_.InvocationInfo.ScriptName, [int]$_.InvocationInfo.ScriptLineNumber))
+  [Console]::Error.WriteLine([string]$_.ScriptStackTrace)
+  exit 1
+}
+${script}`;
   const result = spawnSync(
     ssh[0],
     [...ssh.slice(1), buildStdinPowerShellCommand()],
     {
-      input: `${script}\n`,
+      input: `${diagnosticScript}\n`,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       env: nonQueryChildEnvironment(),
@@ -2772,7 +2779,7 @@ export function runInstalledKioskSaleRemoteScript(options, script) {
     throw new Error(
       result.stderr ||
         result.stdout ||
-        "installed kiosk sale remote operation failed",
+        `installed kiosk sale remote operation failed (exit=${result.status ?? "null"}, signal=${result.signal ?? "none"})`,
     );
   }
   return output;
