@@ -3787,15 +3787,8 @@ try {
     );
     assert.match(script, /\$machineConfig\.unclaimed =/);
     assert.match(script, /machineConfig = \[ordered\]@\{/);
-    assert.match(
-      script,
-      /C:\\ProgramData\\VEM\\secrets\\machine_maintenance_pin\.dpapi/,
-    );
-    assert.match(script, /\$unexpectedSecretFiles\.Count -eq 0/);
-    assert.match(
-      script,
-      /\$allowedLocalMaintenanceSecretPaths -cnotcontains \$_/,
-    );
+    assert.doesNotMatch(script, /C:\\ProgramData\\VEM\\secrets/);
+    assert.doesNotMatch(script, /protectedSecretFileCount/);
     assert.doesNotMatch(script, /\$identityPaths = .*machine-config\.json/s);
   });
 
