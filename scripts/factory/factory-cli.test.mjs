@@ -166,6 +166,7 @@ async function fixture() {
     ["vem-daemon", Buffer.from("daemon\n")],
     ["vem-machine-ui", Buffer.from("machine\n")],
     ["webview2-loader", Buffer.from("webview\n")],
+    ["webview2-runtime-installer", Buffer.from("webview runtime\n")],
     ["vision-release", Buffer.from("vision\n")],
     ["vision-configuration", Buffer.from('{"schemaVersion":"fixture/v1"}\n')],
     [
@@ -203,13 +204,20 @@ async function fixture() {
         "vem-daemon": "vending-daemon.exe",
         "vem-machine-ui": "machine.exe",
         "webview2-loader": "WebView2Loader.dll",
+        "webview2-runtime-installer":
+          "MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
         "vision-release": "vision-release.zip",
         "vision-configuration": "vision-config.json",
         "maintenance-ssh-ca-public-key": "maintenance-ca.pub",
       }[role],
       identity: `factory-cas://sha256/${hash}`,
       digest: `sha256:${hash}`,
-      version: role === "windows-source-iso" ? "10.0.19045" : "1.0.0",
+      version:
+        role === "windows-source-iso"
+          ? "10.0.19045"
+          : role === "webview2-runtime-installer"
+            ? "150.0.4078+65"
+            : "1.0.0",
       signature: signed.signature,
       provenance: signed.provenance,
       ...(role === "vision-release"
@@ -575,7 +583,7 @@ describe("Factory builder CLI fixture", () => {
           "utf8",
         ),
       );
-      assert.equal(provenance.evidence.cache.hits, 8);
+      assert.equal(provenance.evidence.cache.hits, 9);
       assert.equal(provenance.evidence.sourceMedia.cached, false);
       assert.equal(provenance.evidence.policy.hostPathsIncluded, false);
       const outputResolution = await new ContentAddressedAssetStore(

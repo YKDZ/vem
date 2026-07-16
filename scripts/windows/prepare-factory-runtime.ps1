@@ -10,6 +10,9 @@ param(
   [Parameter(Mandatory = $false)][string]$DaemonSha256,
   [Parameter(Mandatory = $false)][string]$MachineUiArtifactPath,
   [Parameter(Mandatory = $false)][string]$MachineUiSha256,
+  [Parameter(Mandatory = $false)][string]$WebView2RuntimeInstallerPath,
+  [Parameter(Mandatory = $false)][string]$WebView2RuntimeInstallerSha256,
+  [Parameter(Mandatory = $false)][string]$WebView2RuntimeVersion,
   [Parameter(Mandatory = $false)][string]$EnvironmentName,
   [Parameter(Mandatory = $false)][string]$DeploymentBatch,
   [Parameter(Mandatory = $false)][string]$ProvisioningEndpoint,
@@ -86,6 +89,9 @@ function Assert-RequiredInputs {
       "DaemonSha256",
       "MachineUiArtifactPath",
       "MachineUiSha256",
+      "WebView2RuntimeInstallerPath",
+      "WebView2RuntimeInstallerSha256",
+      "WebView2RuntimeVersion",
       "EnvironmentName",
       "DeploymentBatch",
       "ProvisioningEndpoint",
@@ -987,6 +993,10 @@ function Assert-FactoryRuntimePreflight {
     throw "required machine UI sidecar missing next to machine.exe: $machineUiSidecarPath"
   }
   $machineUiSidecarHash = (Get-FileHash -LiteralPath $machineUiSidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($WebView2RuntimeVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+(0|[1-9][0-9]*)$') {
+    throw "WebView2 Runtime version must encode a four-part version as major.minor.patch+build"
+  }
+  $webView2RuntimeInstallerHash = Assert-Sha256 -Path $WebView2RuntimeInstallerPath -ExpectedSha256 $WebView2RuntimeInstallerSha256
   $credentials = Assert-CredentialInputs
   $profilePolicy = Assert-FactoryMaintenanceProfile
   $openSshPackage = Assert-PinnedLocalPackage -Name "OpenSSH" -Path $OpenSshPackagePath -Source $OpenSshPackageSource -Version $OpenSshPackageVersion -ExpectedSha256 $OpenSshPackageSha256 -ApprovedSignerThumbprint $OpenSshApprovedSignerThumbprint -ApprovedRootThumbprint $OpenSshApprovedRootThumbprint
@@ -1000,6 +1010,15 @@ function Assert-FactoryRuntimePreflight {
     DaemonSha256 = $daemonHash
     MachineUiSha256 = $machineUiHash
     MachineUiSidecarSha256 = $machineUiSidecarHash
+    WebView2RuntimePackage = [pscustomobject]@{
+      name = "WebView2 Runtime"
+      source = "local-pinned"
+      version = $WebView2RuntimeVersion
+      sha256 = $webView2RuntimeInstallerHash
+      localInstallPath = $WebView2RuntimeInstallerPath
+      architecture = "x64"
+      installerKind = "evergreen-standalone"
+    }
     KioskPassword = $credentials.KioskPassword
     AutoLogonPassword = $credentials.AutoLogonPassword
     MaintenancePassword = $credentials.MaintenancePassword
@@ -1090,6 +1109,14 @@ function New-FactoryRuntimePlan {
         }
       )
       packages = [ordered]@{
+        webView2Runtime = [ordered]@{
+          name = $Preflight.WebView2RuntimePackage.name
+          source = $Preflight.WebView2RuntimePackage.source
+          version = $Preflight.WebView2RuntimePackage.version
+          sha256 = $Preflight.WebView2RuntimePackage.sha256
+          architecture = $Preflight.WebView2RuntimePackage.architecture
+          installerKind = $Preflight.WebView2RuntimePackage.installerKind
+        }
         openSsh = [ordered]@{
           name = $Preflight.OpenSshPackage.name
           source = $Preflight.OpenSshPackage.source
@@ -1212,6 +1239,47 @@ function Install-PinnedWindowsPackage {
     reason = "pinned_installer_executed"
     exitCode = [int]$process.ExitCode
   }
+}
+
+function ConvertTo-WebView2ManifestVersion {
+  param([string]$Version)
+
+  $match = [regex]::Match($Version, '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+  if (-not $match.Success) { return $null }
+  return "$($match.Groups[1].Value).$($match.Groups[2].Value).$($match.Groups[3].Value)+$($match.Groups[4].Value)"
+}
+
+function Get-WebView2RuntimeEvidence {
+  $clientId = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+  foreach ($path in @(
+      "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$clientId",
+      "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$clientId"
+    )) {
+    $client = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
+    if ($null -ne $client -and -not [string]::IsNullOrWhiteSpace([string]$client.pv) -and [string]$client.pv -ne "0.0.0.0") {
+      $version = [string]$client.pv
+      return [ordered]@{ installed = $true; version = $version; manifestVersion = ConvertTo-WebView2ManifestVersion -Version $version; registryPath = $path; architecture = "x64" }
+    }
+  }
+  return [ordered]@{ installed = $false; version = $null; manifestVersion = $null; registryPath = $null; architecture = $null }
+}
+
+function Install-WebView2Runtime {
+  param($Package)
+
+  $before = Get-WebView2RuntimeEvidence
+  if ([bool]$before.installed -and [string]$before.manifestVersion -ceq [string]$Package.version) {
+    return [ordered]@{ skipped = $true; reason = "runtime_already_installed"; installedVersion = $before.version; registryPath = $before.registryPath }
+  }
+  $process = Start-Process -FilePath ([string]$Package.localInstallPath) -ArgumentList @("/silent", "/install") -PassThru -Wait
+  if ([int]$process.ExitCode -notin @(0, 3010)) {
+    throw "WebView2 Runtime installer failed with exit code $($process.ExitCode)"
+  }
+  $installed = Get-WebView2RuntimeEvidence
+  if (-not [bool]$installed.installed -or [string]$installed.manifestVersion -cne [string]$Package.version) {
+    throw "WebView2 Runtime installer completed but the exact pinned machine runtime is unavailable"
+  }
+  return [ordered]@{ skipped = $false; reason = "pinned_installer_executed"; exitCode = [int]$process.ExitCode; installedVersion = $installed.version; registryPath = $installed.registryPath }
 }
 
 function Test-PinnedVersionEquivalent {
@@ -1598,6 +1666,7 @@ function Write-FactoryRuntimeFiles {
   $baselineApplication = Apply-FactoryWindowsBaseline -Policy $Plan.factoryWindowsBaselinePolicy
 
   Set-FactoryMaintenanceAccountPassword -User $ExpectedMaintenanceUser -Password $Preflight.MaintenancePassword
+  $webView2RuntimeInstallation = Install-WebView2Runtime -Package $Preflight.WebView2RuntimePackage
   $openSshInstallation = Install-PinnedWindowsPackage -Package $Preflight.OpenSshPackage
   $wireGuardInstallation = Install-PinnedWindowsPackage -Package $Preflight.WireGuardPackage
 
@@ -1625,6 +1694,7 @@ function Write-FactoryRuntimeFiles {
     personalization = $Preflight.PersonalizationRedaction
     packages = $Plan.inputs.packages
     packageInstallation = [ordered]@{
+      webView2Runtime = $webView2RuntimeInstallation
       openSsh = $openSshInstallation
       wireGuard = $wireGuardInstallation
     }

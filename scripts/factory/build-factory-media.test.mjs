@@ -661,6 +661,10 @@ async function fixture({
     ["vem-daemon", Buffer.from("daemon fixture\n")],
     ["vem-machine-ui", Buffer.from("machine UI fixture\n")],
     ["webview2-loader", Buffer.from("WebView2 loader fixture\n")],
+    [
+      "webview2-runtime-installer",
+      Buffer.from("WebView2 Runtime installer fixture\n"),
+    ],
     ["vision-release", Buffer.from("vision release fixture\n")],
     ["vision-configuration", Buffer.from('{"schemaVersion":"fixture/v1"}\n')],
     [
@@ -698,6 +702,8 @@ async function fixture({
         "vem-daemon": "vending-daemon.exe",
         "vem-machine-ui": "machine.exe",
         "webview2-loader": "WebView2Loader.dll",
+        "webview2-runtime-installer":
+          "MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
         "vision-release": "vision-release.zip",
         "vision-configuration": "vision-config.json",
         "maintenance-ssh-ca-public-key": "maintenance-ca.pub",
@@ -707,9 +713,11 @@ async function fixture({
       version:
         role === "windows-source-iso"
           ? "10.0.19045"
-          : role === "vision-release"
-            ? "2026.7.11"
-            : "1.0.0",
+          : role === "webview2-runtime-installer"
+            ? "150.0.4078+65"
+            : role === "vision-release"
+              ? "2026.7.11"
+              : "1.0.0",
       signature: signed.signature,
       provenance: signed.provenance,
       ...(role === "vision-release"
@@ -1606,7 +1614,7 @@ describe("real deterministic Factory ISO builder", () => {
         baselineScript,
         /if \(-not \(Test-Path -LiteralPath \$windowsUpdatePolicyPath -PathType Container\)\) \{[\s\S]+New-Item -Path \$windowsUpdatePolicyPath[\s\S]+\}[\s\S]+Set-ItemProperty -Path \$windowsUpdatePolicyPath -Name NoAutoUpdate/,
       );
-      assert.equal(baseline.assets.length, 8);
+      assert.equal(baseline.assets.length, 9);
       assert.match(
         baseline.assets.find((asset) => asset.role === "openssh-installer")
           .fileName,
@@ -1616,6 +1624,12 @@ describe("real deterministic Factory ISO builder", () => {
         baseline.assets.find((asset) => asset.role === "wireguard-installer")
           .fileName,
         /\.(?:msi|exe)$/i,
+      );
+      assert.match(
+        baseline.assets.find(
+          (asset) => asset.role === "webview2-runtime-installer",
+        ).fileName,
+        /\.exe$/i,
       );
       assert.equal(JSON.stringify(baseline).includes("password"), false);
       assert.equal(JSON.stringify(baseline).includes(data.root), false);
@@ -1646,6 +1660,9 @@ describe("real deterministic Factory ISO builder", () => {
           "DaemonSha256",
           "MachineUiArtifactPath",
           "MachineUiSha256",
+          "WebView2RuntimeInstallerPath",
+          "WebView2RuntimeInstallerSha256",
+          "WebView2RuntimeVersion",
           "EnvironmentName",
           "DeploymentBatch",
           "ProvisioningEndpoint",
@@ -1688,6 +1705,10 @@ describe("real deterministic Factory ISO builder", () => {
         ].sort(),
       );
       assert.equal(splat.DaemonSha256, descriptor.assets.daemon.sha256);
+      assert.equal(
+        splat.WebView2RuntimeVersion,
+        descriptor.assets.webview2RuntimeInstaller.version,
+      );
       assert.equal(
         splat.VisionConfigurationSourcePath,
         "C:\\VEM\\Factory\\assets\\vision-config.json",
@@ -1895,7 +1916,7 @@ describe("real deterministic Factory ISO builder", () => {
       );
       assert.match(
         completeOobe,
-        /function Request-HandoffReboot[\s\S]+\$previousAttempts -ge 3[\s\S]+Restart-Computer -Force -ErrorAction Stop/,
+        /function Request-HandoffReboot[\s\S]+\$previousAttempts -ge 3[\s\S]+shutdown\.exe \/r \/t 0 \/f/,
         "restart failures must persist bounded task-managed handoff state",
       );
       assert.match(
@@ -3603,7 +3624,7 @@ exec ${JSON.stringify(UDF_EXTRACTOR_PATH)} "$@"
           .sort(),
         ["builderImage", "udfExtractor", "udfWriter", "wimlib"],
       );
-      assert.equal(result.provenance.inputs.length, 9);
+      assert.equal(result.provenance.inputs.length, 10);
       assert.equal(
         result.provenance.inputs.every(
           (input) => input.signature.verified && input.provenance.verified,
@@ -3614,7 +3635,7 @@ exec ${JSON.stringify(UDF_EXTRACTOR_PATH)} "$@"
         JSON.stringify(result.provenance).includes(data.root),
         false,
       );
-      assert.equal(result.provenance.evidence.cache.misses, 8);
+      assert.equal(result.provenance.evidence.cache.misses, 9);
       const manifestPath = join(data.root, "host-store-manifest.json");
       const provenancePath = join(data.root, "host-store-provenance.json");
       await writeFile(manifestPath, JSON.stringify(data.manifest));

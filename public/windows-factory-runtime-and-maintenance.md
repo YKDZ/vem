@@ -168,8 +168,12 @@ The executable validator is stricter than structural JSON Schema validation and
 requires `schemaVersion: vem-factory-manifest/v1`, `kind: factory-manifest`, a
 self-derived `manifestId`, and exactly one immutable `factory-cas://sha256/...`
 reference for the Windows source plus these runtime roles: `openssh-installer`,
-`wireguard-installer`, `vem-daemon`, `vem-machine-ui`, `webview2-loader`, and
-`vision-release`. Every reference carries a fixed version, matching SHA-256
+`wireguard-installer`, `vem-daemon`, `vem-machine-ui`, `webview2-loader`,
+`webview2-runtime-installer`, `vision-release`, `vision-configuration`, and
+`maintenance-ssh-ca-public-key`. `webview2-loader` is the UI sidecar DLL;
+`webview2-runtime-installer` is the offline x64 Evergreen Standalone Installer
+that must install the system runtime before the machine UI first starts. Every
+reference carries a fixed version, matching SHA-256
 digest, strict semantic version, content-addressed signature evidence, and
 signed provenance evidence. Detached Ed25519 evidence is verified against an
 approved SPKI identity. Authenticode evidence is verified from the embedded PE

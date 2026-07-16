@@ -138,10 +138,13 @@ function writeBaseFactoryManifest(path) {
   const hash = "a".repeat(64);
   const asset = (role, version = "1.0.0") => ({
     role,
-    mediaFileName: `${role}.bin`,
+    mediaFileName:
+      role === "webview2-runtime-installer"
+        ? "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+        : `${role}.bin`,
     identity: `factory-cas://sha256/${hash}`,
     digest: `sha256:${hash}`,
-    version,
+    version: role === "webview2-runtime-installer" ? "150.0.4078+65" : version,
     signature: {
       scheme: "detached-ed25519",
       signerIdentity: `spki-sha256:${hash}`,
@@ -227,6 +230,7 @@ function writeBaseFactoryManifest(path) {
       "vem-daemon",
       "vem-machine-ui",
       "webview2-loader",
+      "webview2-runtime-installer",
       "vision-release",
       "vision-configuration",
       "maintenance-ssh-ca-public-key",

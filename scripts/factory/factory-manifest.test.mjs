@@ -12,7 +12,10 @@ const HASH = "a".repeat(64);
 function asset(role, version = "1.0.0") {
   const value = {
     role,
-    mediaFileName: `${role}.bin`,
+    mediaFileName:
+      role === "webview2-runtime-installer"
+        ? "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+        : `${role}.bin`,
     identity: `factory-cas://sha256/${HASH}`,
     digest: `sha256:${HASH}`,
     version,
@@ -103,6 +106,7 @@ function validInput() {
       asset("vem-daemon", "0.1.0"),
       asset("vem-machine-ui", "0.1.0"),
       asset("webview2-loader", "1.0.0"),
+      asset("webview2-runtime-installer", "150.0.4078+65"),
       asset("vision-release", "2026.7.11"),
       asset("vision-configuration", "1.0.0"),
       asset("maintenance-ssh-ca-public-key", "1.0.0"),
@@ -242,6 +246,21 @@ describe("Factory Manifest v1", () => {
       );
     }
 
+    for (const invalidWebView2Version of [
+      "1.0.0",
+      "150.0.4078.65",
+      "150.0.4078+beta",
+    ]) {
+      const invalid = validInput();
+      invalid.assets.find(
+        (entry) => entry.role === "webview2-runtime-installer",
+      ).version = invalidWebView2Version;
+      assert.throws(
+        () => createFactoryManifest(invalid),
+        /four-part WebView2 Runtime version|pattern/i,
+      );
+    }
+
     const nestedUnknown = validInput();
     nestedUnknown.assets[0].signature.comment = "not in schema";
     assert.throws(
@@ -317,6 +336,14 @@ describe("Factory Manifest v1", () => {
     assert.throws(
       () => createFactoryManifest(collision),
       /case-insensitively/i,
+    );
+    const wrongWebView2Installer = validInput();
+    wrongWebView2Installer.assets.find(
+      (asset) => asset.role === "webview2-runtime-installer",
+    ).mediaFileName = "MicrosoftEdgeWebView2RuntimeInstallerX86.exe";
+    assert.throws(
+      () => createFactoryManifest(wrongWebView2Installer),
+      /equal to constant|MicrosoftEdgeWebView2RuntimeInstallerX64\.exe/,
     );
   });
 

@@ -23,6 +23,7 @@ const ASSET_ROLES = new Set([
   "vem-daemon",
   "vem-machine-ui",
   "webview2-loader",
+  "webview2-runtime-installer",
   "vision-release",
   "vision-configuration",
   "maintenance-ssh-ca-public-key",
@@ -33,6 +34,7 @@ const REQUIRED_ASSET_ROLES = new Set([
   "vem-daemon",
   "vem-machine-ui",
   "webview2-loader",
+  "webview2-runtime-installer",
   "vision-release",
   "vision-configuration",
   "maintenance-ssh-ca-public-key",
@@ -404,6 +406,20 @@ function assertAsset(value, path, issues) {
     );
   }
   fixedVersion(value.version, `${path}.version`, issues);
+  if (
+    value.role === "webview2-runtime-installer" &&
+    (typeof value.version !== "string" ||
+      !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+(0|[1-9][0-9]*)$/.test(
+        value.version,
+      ))
+  ) {
+    issues.push(
+      issue(
+        `${path}.version`,
+        "must encode a four-part WebView2 Runtime version as major.minor.patch+build",
+      ),
+    );
+  }
 
   assertExactKeys(
     value.signature,
