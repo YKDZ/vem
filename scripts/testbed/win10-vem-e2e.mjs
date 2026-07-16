@@ -3005,12 +3005,23 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const runtimeCommand = buildAcceptanceScriptCommand(
     "runtime-acceptance",
     { ...options, runId, machineCode, platformTarget },
-    ["--out", runtimeAcceptanceReport],
+    [
+      "--ephemeral-platform-evidence",
+      ephemeralPlatformEvidence,
+      "--out",
+      runtimeAcceptanceReport,
+    ],
   );
   const postSaleRuntimeCommand = buildAcceptanceScriptCommand(
     "runtime-acceptance",
     { ...options, runId, machineCode, platformTarget },
-    ["--out", postSaleRuntimeAcceptanceReport],
+    [
+      "--ephemeral-platform-evidence",
+      ephemeralPlatformEvidence,
+      "--already-claimed",
+      "--out",
+      postSaleRuntimeAcceptanceReport,
+    ],
   );
   const salePrepareCommand = buildAcceptanceScriptCommand(
     "simulated-hardware-sale-flow",
@@ -9260,6 +9271,14 @@ if ($mode -eq "bring-up") {
 
 if ($mode -eq "provision") {
   Invoke-TestbedProvisioningClaim $provisioningActions
+}
+
+if ($mode -eq "runtime-acceptance" -and ${ephemeralPlatformSetup ? "$true" : "$false"}) {
+  if (${options.alreadyClaimed ? "$true" : "$false"}) {
+    Confirm-ExistingTestbedProvisioningClaim $provisioningActions
+  } else {
+    Invoke-TestbedProvisioningClaim $provisioningActions
+  }
 }
 
 if ($mode -eq "clean-base-factory-acceptance") {
