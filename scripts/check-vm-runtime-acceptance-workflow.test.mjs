@@ -203,6 +203,11 @@ describe("VM runtime acceptance workflow local direct path", () => {
     ]) {
       assert.match(access, requiredTextPattern(required));
     }
+    assert.doesNotMatch(access, /const serialLifecycle/);
+    assert.match(
+      access,
+      /VM_TESTBED_SERIAL_ENDPOINT_POLICY_JSON=\$\{JSON\.stringify\(policy\(adapterLifecycle\)\)\}/,
+    );
 
     for (const fileName of [
       "id_ed25519",
@@ -246,11 +251,6 @@ describe("VM runtime acceptance workflow local direct path", () => {
       access,
       /vm-lifecycle:\/\/\$\{runId\.toLowerCase\(\)\}\.\$\{lifecycleSeed\}/,
     );
-    assert.match(
-      access,
-      /vm-lifecycle:\/\/\$\{runId\.toLowerCase\(\)\}\.runtime-acceptance/,
-    );
-
     assert.match(overlay, /--operation create-disposable-overlay/);
     assert.match(
       overlay,

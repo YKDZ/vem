@@ -154,7 +154,6 @@ jobs:
           const target = process.env.VEM_VM_HOST_TARGET_ID;
           const lifecycleSeed = crypto.createHash("sha256").update(`${runId}\n${target}`).digest("hex").slice(0, 32);
           const adapterLifecycle = `vm-lifecycle://${runId.toLowerCase()}.${lifecycleSeed}`;
-          const serialLifecycle = `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`;
           const publicKey = () => crypto.randomBytes(32).toString("base64");
           const session = {
             sessionId: crypto.randomUUID(),
@@ -173,7 +172,7 @@ jobs:
           process.stdout.write(`VM_RUNTIME_SSH_HOST_KEY_ALIAS=${hostKeyAlias}\n`);
           process.stdout.write(`VM_TESTBED_MAINTENANCE_SESSION_JSON=${JSON.stringify(session)}\n`);
           process.stdout.write(`VM_TESTBED_ENDPOINT_POLICY_JSON=${JSON.stringify(policy(adapterLifecycle))}\n`);
-          process.stdout.write(`VM_TESTBED_SERIAL_ENDPOINT_POLICY_JSON=${JSON.stringify(policy(serialLifecycle))}\n`);
+          process.stdout.write(`VM_TESTBED_SERIAL_ENDPOINT_POLICY_JSON=${JSON.stringify(policy(adapterLifecycle))}\n`);
           process.stdout.write(`MAINTENANCE_RELAY_PEER_ID=${crypto.randomUUID()}\n`);
           process.stdout.write(`MAINTENANCE_RELAY_PUBLIC_KEY=${session.relayPeer.publicKey}\n`);
           process.stdout.write(`MAINTENANCE_RELAY_TUNNEL_ADDRESS=${session.relayPeer.tunnelAddress}\n`);
