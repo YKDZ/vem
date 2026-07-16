@@ -1175,6 +1175,19 @@ export async function runInstalledKioskSaleAcceptanceCli(
   return report;
 }
 
+export function formatInstalledKioskSaleError(error) {
+  if (error instanceof AggregateError) {
+    return [
+      error.message,
+      ...error.errors.map(
+        (cause, index) =>
+          `cause ${index + 1}: ${formatInstalledKioskSaleError(cause)}`,
+      ),
+    ].join("\n");
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function usage() {
   console.error(
     `Usage: VEM_INSTALLED_KIOSK_SALE_DATABASE_URL=... installed-kiosk-sale-acceptance.mjs --run-id ID --machine-code CODE --platform-target TARGET --ephemeral-platform-evidence PATH --runtime-acceptance-report PATH (--remote USER@HOST | --factory-guest-endpoint-json JSON --expected-testbed-user USER) --identity KEY --certificate CERT --adapter PATH --target-identity ID --approved-runtime-base factory-cas://sha256/HASH [--scanner-code-file PATH] [--profile vm-normal|vm-route-competition|factory-route-competition] --out PATH [--dry-run]`,
@@ -1196,7 +1209,7 @@ if (
       const report = await runInstalledKioskSaleAcceptanceCli(options);
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
+      console.error(formatInstalledKioskSaleError(error));
       usage();
       process.exitCode = 2;
     }
