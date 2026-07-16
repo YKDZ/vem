@@ -29,6 +29,10 @@ describe("installed kiosk sale preflight", () => {
       JSON.stringify(steps),
       /catalog-category.*:not\(:disabled\)/,
     );
+    assert.match(
+      JSON.stringify(steps),
+      /payment-option.*:not\(:disabled\)/,
+    );
   });
   it("preserves primary and cleanup failures in CLI diagnostics", () => {
     assert.equal(
