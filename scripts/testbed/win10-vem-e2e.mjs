@@ -5958,6 +5958,21 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $localSettings = Read-JsonFile $localSettingsPath
     $localSettings.provisioningEndpointOverride = ${psString(platform.apiBaseUrl)}
     Write-JsonFile -Path $localSettingsPath -Value $localSettings
+
+    # The disposable VM has only a virtual NIC. Use the daemon's existing
+    # test adapter for local-link evidence while keeping Platform probes,
+    # claim, MQTT, payment, and device flows real.
+    $serviceKey = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\VemVendingDaemon"
+    $serviceEnvironment = @(
+      (Get-ItemProperty -LiteralPath $serviceKey -Name Environment -ErrorAction SilentlyContinue).Environment |
+        Where-Object {
+          -not ([string]$_).StartsWith("VEM_NETWORK_ADAPTER=", [StringComparison]::OrdinalIgnoreCase) -and
+          -not ([string]$_).StartsWith("VEM_FAKE_NETWORK_OUTCOME=", [StringComparison]::OrdinalIgnoreCase)
+        }
+    )
+    $serviceEnvironment += "VEM_NETWORK_ADAPTER=fake"
+    $serviceEnvironment += "VEM_FAKE_NETWORK_OUTCOME=success"
+    Set-ItemProperty -LiteralPath $serviceKey -Name Environment -Type MultiString -Value $serviceEnvironment
     Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
 
     $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
