@@ -235,7 +235,7 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
     {
       type: "customer-activation",
       name: "payment option",
-      selector: '[data-test="payment-option"]',
+      selector: '[data-test="payment-option"]:not(:disabled)',
       routeBefore: "#/checkout",
       routeAfter: "#/checkout",
     },
