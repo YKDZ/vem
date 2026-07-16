@@ -35,6 +35,7 @@ import {
   parse7ZipBannerVersion,
   rangeBackedIsoMedia,
   replaySourceVisibleFilesAbsentFromUdf,
+  runtimeAssetRequiresPrivateKeyScan,
   writeSourceReplayBytes,
 } from "./build-factory-media.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
@@ -69,6 +70,12 @@ const ISO_SECTOR_BYTES = 2048;
 const EL_TORITO_VIRTUAL_SECTOR_BYTES = 512;
 const PINNED_UDF_WRITER_VERSION = "1.1.11";
 const PINNED_UDF_WRITER_DIGEST = process.env.VEM_FACTORY_TEST_UDF_WRITER_DIGEST;
+
+it("skips the bounded private-key scan only for the signed Vision bundle", () => {
+  assert.equal(runtimeAssetRequiresPrivateKeyScan("vision-release"), false);
+  assert.equal(runtimeAssetRequiresPrivateKeyScan("vem-machine-ui"), true);
+  assert.equal(runtimeAssetRequiresPrivateKeyScan("vending-daemon"), true);
+});
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
