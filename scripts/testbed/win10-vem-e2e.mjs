@@ -6173,11 +6173,11 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     if ($LASTEXITCODE -ne 0) {
       throw "failed to grant VEMKiosk runtime access: C:\\VEM\\vision"
     }
-    & schtasks.exe /End /TN "VEMMachineUI" 2>$null | Out-Null
-    & schtasks.exe /End /TN "VEM\StartVisionServer" 2>$null | Out-Null
+    Stop-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue
+    Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\\VEM\\" -ErrorAction SilentlyContinue
     Get-Process -Name "machine" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    & schtasks.exe /Run /TN "VEM\StartVisionServer" | Out-Null
-    & schtasks.exe /Run /TN "VEMMachineUI" | Out-Null
+    Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\\VEM\\" -ErrorAction Stop
+    Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop
     Start-Sleep -Seconds 5
   } catch {
     $status = "failed"
