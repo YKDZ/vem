@@ -2735,6 +2735,9 @@ async function runWindowsPowerShellOverSshWithAdapter(
   },
   processAdapter,
 ) {
+  const encodedScript = Buffer.from(String(script), "utf16le").toString(
+    "base64",
+  );
   const args = [
     "-o",
     "BatchMode=yes",
@@ -2751,8 +2754,8 @@ async function runWindowsPowerShellOverSshWithAdapter(
     "-NoLogo",
     "-NoProfile",
     "-NonInteractive",
-    "-Command",
-    script,
+    "-EncodedCommand",
+    encodedScript,
   ];
   const child = processAdapter.spawn("ssh", args, {
     stdio: ["ignore", "pipe", "pipe"],
