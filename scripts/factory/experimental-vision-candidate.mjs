@@ -57,13 +57,42 @@ function evidenceIdentity(digest) {
   return `factory-evidence://${digest.replace(":", "/")}`;
 }
 
-function manifestSourceIdentity(value) {
-  const gitCommit =
-    /^git\+https:\/\/([^\s?#]+)@([a-f0-9]{40}|[a-f0-9]{64})$/i.exec(value);
-  if (gitCommit) {
-    return `git-commit:${gitCommit[1]}@${gitCommit[2].toLowerCase()}`;
+const NETWORK_IDENTITY = /^(?:https?|git(?:\+https)?|ssh):\/\//i;
+
+function parseNetworkIdentity(value, label) {
+  if (typeof value !== "string" || value !== value.trim()) {
+    throw new Error(`${label} must be a normalized non-empty string`);
   }
-  if (/^(?:https?|git|ssh):\/\//i.test(value)) {
+  const parseable = value.replace(/^git\+https:/i, "https:");
+  let url;
+  try {
+    url = new URL(parseable);
+  } catch {
+    throw new Error(`${label} is not a valid network identity`);
+  }
+  if (url.username || url.password || url.search || url.hash || url.port) {
+    throw new Error(`${label} must not contain credentials or URL modifiers`);
+  }
+  return url;
+}
+
+export function manifestSourceIdentity(value) {
+  if (typeof value !== "string" || value !== value.trim()) {
+    throw new Error("Candidate provenance source must be normalized");
+  }
+  const gitCommit =
+    /^git\+https:\/\/([^@\s?#]+)@([a-f0-9]{40}|[a-f0-9]{64})$/i.exec(value);
+  if (gitCommit) {
+    const url = parseNetworkIdentity(
+      `git+https://${gitCommit[1]}`,
+      "Candidate provenance source",
+    );
+    if (!url.hostname || url.pathname === "/") {
+      throw new Error("Candidate provenance source must name a repository");
+    }
+    return `git-commit:${url.hostname}${url.pathname.replace(/\/$/, "")}@${gitCommit[2].toLowerCase()}`;
+  }
+  if (NETWORK_IDENTITY.test(value)) {
     throw new Error(
       "Candidate provenance source must bind an immutable Git commit",
     );
@@ -71,8 +100,12 @@ function manifestSourceIdentity(value) {
   return value;
 }
 
-function manifestBuilderIdentity(value) {
-  if (!/^(?:https?|git|ssh):\/\//i.test(value)) return value;
+export function manifestBuilderIdentity(value) {
+  if (typeof value !== "string" || value !== value.trim()) {
+    throw new Error("Candidate provenance builder must be normalized");
+  }
+  if (!NETWORK_IDENTITY.test(value)) return value;
+  parseNetworkIdentity(value, "Candidate provenance builder");
   return `builder-uri-sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 

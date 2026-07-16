@@ -10,6 +10,8 @@ import { describe, it } from "node:test";
 import {
   createPreapprovalDeliveryManifest,
   FACTORY_VISION_INSTALLER_FILES,
+  manifestBuilderIdentity,
+  manifestSourceIdentity,
   stageFactoryVisionInstaller,
   stagePreapprovalDeliveryUnit,
 } from "./experimental-vision-candidate.mjs";
@@ -259,6 +261,38 @@ function writeBaseFactoryManifest(path) {
 }
 
 describe("experimental Vision preapproval delivery", () => {
+  it("normalizes only immutable credential-free provenance identities", () => {
+    const commit = "a".repeat(40);
+    assert.equal(
+      manifestSourceIdentity(
+        `git+https://github.com/hbhjt/vending-vision@${commit}`,
+      ),
+      `git-commit:github.com/hbhjt/vending-vision@${commit}`,
+    );
+    assert.equal(
+      manifestBuilderIdentity("https://github.com/actions/runner/windows"),
+      "builder-uri-sha256:79bf7ae0eb73b778188a967d2bf120bf6187afce6c156ccfa575b89e9fe94d39",
+    );
+    for (const source of [
+      "git+https://github.com/hbhjt/vending-vision@main",
+      `git+https://github.com/hbhjt/vending-vision@${commit}?mutable=true`,
+      ` git+https://github.com/hbhjt/vending-vision@${commit}`,
+      `git+https://user@example.invalid/vision@${commit}`,
+    ]) {
+      assert.throws(() => manifestSourceIdentity(source), /provenance source/i);
+    }
+    for (const builder of [
+      " git+https://example.invalid/builder",
+      "git+https://user@example.invalid/builder",
+      "https://example.invalid/builder?mutable=true",
+    ]) {
+      assert.throws(
+        () => manifestBuilderIdentity(builder),
+        /provenance builder/i,
+      );
+    }
+  });
+
   it("stages every finalizer script through the actual Factory producer", () => {
     const staged = new Map();
     stageFactoryVisionInstaller((relative, bytes) =>
