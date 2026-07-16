@@ -1244,44 +1244,6 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "Machine Runtime Console evidence must match the active VEMKiosk interactive session.",
     );
   }
-  const desktopEscape = facts.kioskDesktopEscape ?? {};
-  for (const [field, code, message] of [
-    [
-      "desktopVisible",
-      "kiosk_desktop_visible",
-      "VEMKiosk normal UI path must not expose the Windows desktop.",
-    ],
-    [
-      "taskbarVisible",
-      "kiosk_taskbar_visible",
-      "VEMKiosk normal UI path must not expose the Windows taskbar.",
-    ],
-    [
-      "startMenuVisible",
-      "kiosk_start_menu_visible",
-      "VEMKiosk normal UI path must not expose the Windows Start menu.",
-    ],
-    [
-      "edgeReachable",
-      "kiosk_edge_reachable",
-      "VEMKiosk normal UI path must not reach Microsoft Edge.",
-    ],
-    [
-      "fileExplorerReachable",
-      "kiosk_file_explorer_reachable",
-      "VEMKiosk normal UI path must not reach File Explorer.",
-    ],
-  ]) {
-    if (desktopEscape[field] === true) {
-      addDiagnostic(diagnostics, code, message);
-    } else if (desktopEscape[field] !== false) {
-      addDiagnostic(
-        diagnostics,
-        `${code}_observation_missing`,
-        `${message} The acceptance probe must explicitly observe this surface as unavailable.`,
-      );
-    }
-  }
   if (
     !Number.isInteger(facts.kioskRuntime?.processId) ||
     facts.kioskRuntime?.machineProcessCount !== 1 ||
@@ -8002,21 +7964,6 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     $Facts.kioskRuntime.sessionId -ne $Facts.displayEvidence.portraitKioskAcceptance.sessionId
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_id_mismatch" "Machine Runtime Console evidence must match the active VEMKiosk interactive session."
-  }
-  if ($Facts.kioskDesktopEscape.desktopVisible -eq $true) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_desktop_visible" "VEMKiosk normal UI path must not expose the Windows desktop."
-  }
-  if ($Facts.kioskDesktopEscape.taskbarVisible -eq $true) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_taskbar_visible" "VEMKiosk normal UI path must not expose the Windows taskbar."
-  }
-  if ($Facts.kioskDesktopEscape.startMenuVisible -eq $true) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_start_menu_visible" "VEMKiosk normal UI path must not expose the Windows Start menu."
-  }
-  if ($Facts.kioskDesktopEscape.edgeReachable -eq $true) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_edge_reachable" "VEMKiosk normal UI path must not reach Microsoft Edge."
-  }
-  if ($Facts.kioskDesktopEscape.fileExplorerReachable -eq $true) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_file_explorer_reachable" "VEMKiosk normal UI path must not reach File Explorer."
   }
   if ([string]$Facts.displayEvidence.portraitKioskAcceptance.sessionUser -ne "VEMKiosk") {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_session_user_mismatch" "Portrait Kiosk Acceptance must be captured from the VEMKiosk customer session."

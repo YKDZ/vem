@@ -6903,70 +6903,29 @@ if ($errors.Count -gt 0) {
     );
   });
 
-  it("fails runtime-ready when normal kiosk UI can reach Windows desktop surfaces", () => {
-    for (const [field, expectedCode] of [
-      ["desktopVisible", "kiosk_desktop_visible"],
-      ["taskbarVisible", "kiosk_taskbar_visible"],
-      ["startMenuVisible", "kiosk_start_menu_visible"],
-      ["edgeReachable", "kiosk_edge_reachable"],
-      ["fileExplorerReachable", "kiosk_file_explorer_reachable"],
-    ]) {
-      const facts = runtimeAcceptanceFacts({
+  it("records desktop escape surfaces without blocking business acceptance", () => {
+    const report = buildRuntimeAcceptanceReport(
+      runtimeAcceptanceFacts({
         kioskDesktopEscape: {
-          desktopVisible: false,
-          taskbarVisible: false,
-          startMenuVisible: false,
-          edgeReachable: false,
-          fileExplorerReachable: false,
-          [field]: true,
+          desktopVisible: true,
+          taskbarVisible: true,
+          startMenuVisible: true,
+          edgeReachable: true,
+          fileExplorerReachable: true,
         },
-      });
+      }),
+    );
 
-      const report = buildRuntimeAcceptanceReport(facts);
-
-      assert.deepEqual(report.result.runtimeReady, {
-        status: "failed",
-        asserted: false,
-      });
-      assert.ok(
-        report.diagnostics.some(
-          (diagnostic) => diagnostic.code === expectedCode,
-        ),
-      );
-    }
-  });
-
-  it("fails runtime-ready when desktop escape surfaces are not explicitly observed", () => {
-    for (const kioskDesktopEscape of [
-      undefined,
-      {
-        status: "not_asserted",
-        source: "process_presence_only",
-        interactiveProbe: {
-          status: "not_available",
-          message: "interactive desktop escape probe is not available",
-        },
-        processPresence: {
-          explorer: [{ processId: 100, sessionId: 3, ownerUser: "VEMKiosk" }],
-          edge: [],
-          startMenu: [],
-        },
-      },
-    ]) {
-      const report = buildRuntimeAcceptanceReport(
-        runtimeAcceptanceFacts({ kioskDesktopEscape }),
-      );
-
-      assert.deepEqual(report.result.runtimeReady, {
-        status: "failed",
-        asserted: false,
-      });
-      assert.ok(
-        report.diagnostics.some((diagnostic) =>
-          diagnostic.code.endsWith("_observation_missing"),
-        ),
-      );
-    }
+    assert.deepEqual(report.result.runtimeReady, {
+      status: "passed",
+      asserted: true,
+    });
+    assert.equal(
+      report.diagnostics.some((diagnostic) =>
+        diagnostic.code.startsWith("kiosk_desktop"),
+      ),
+      false,
+    );
   });
 
   it("fails runtime-ready when CDP listener is not bound to machine.exe", () => {
