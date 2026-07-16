@@ -21,17 +21,10 @@ function stepBlock(stepName) {
 }
 
 describe("Factory Image Acceptance workflow", () => {
-  it("reads token files without requiring a trailing newline", () => {
-    assert.doesNotMatch(workflow, /\bread\b[^\n]*token/);
-    assert.equal(
-      workflow.match(/token="\$\(<"\$automation_token"\)"/g)?.length,
-      1,
-    );
-    assert.equal(
-      workflow.match(/automation_token="\$\(<"\$automation_token_path"\)"/g)
-        ?.length,
-      1,
-    );
+  it("does not depend on an external maintenance control plane", () => {
+    assert.doesNotMatch(workflow, /maintenance-automation\//);
+    assert.doesNotMatch(workflow, /MAINTENANCE_CONTROL_PLANE_URL/);
+    assert.doesNotMatch(workflow, /ACTIONS_ID_TOKEN_REQUEST/);
   });
 
   it("requires the real platform-neutral Factory lifecycle orchestrator", () => {
@@ -96,17 +89,12 @@ describe("Factory Image Acceptance workflow", () => {
     assert.match(lifecycle, /mkdir -p "\$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"/);
   });
 
-  it("grants OIDC only to the Factory acceptance job that creates the relay session", () => {
-    assert.match(
-      workflow,
-      /accept:\n(?:.*\n)*?\s+permissions:\n\s+contents: read\n\s+id-token: write/,
+  it("keeps the Factory acceptance job on repository-read permissions", () => {
+    assert.equal(workflowDocument.jobs.accept.permissions.contents, "read");
+    assert.equal(
+      workflowDocument.jobs.accept.permissions["id-token"],
+      undefined,
     );
-    assert.doesNotMatch(
-      workflow,
-      /^permissions:\n\s+contents: read\n\s+id-token: write/m,
-    );
-    assert.match(workflow, /audience=vem-maintenance/);
-    assert.match(workflow, /maintenance-automation\/exchange/);
   });
 
   it("pins the deployment-external VM Host Adapter by digest and lifecycle identity", () => {
@@ -132,35 +120,25 @@ describe("Factory Image Acceptance workflow", () => {
     assert.doesNotMatch(workflow, /unraid:\/\//i);
   });
 
-  it("creates run-scoped SSH key material and requests the certificate from the same automation session", () => {
-    const exchange = stepBlock("Create Maintenance Relay Session");
+  it("creates run-scoped SSH key material signed by the Factory testbed CA", () => {
+    const access = stepBlock("Prepare Local Factory Maintenance Access");
     const input = stepBlock("Generate Typed Factory Lifecycle Input");
     const cleanup = stepBlock("Cleanup Ephemeral Services");
 
     assert.doesNotMatch(workflow, /VEM_FACTORY_ACCEPTANCE_SSH_/);
     assert.match(
-      exchange,
+      access,
       /ssh_dir="\$RUNNER_TEMP\/vem-factory-maintenance-ssh-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}"/,
     );
+    assert.match(access, /ssh-keygen -q -t ed25519 -N '' -f "\$ssh_key_path"/);
     assert.match(
-      exchange,
-      /ssh-keygen -q -t ed25519 -N '' -f "\$ssh_key_path"/,
+      access,
+      /ssh-keygen -q -s "\$VEM_FACTORY_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH"/,
     );
-    assert.match(exchange, /maintenance-automation\/session\/ssh-certificate/);
-    assert.match(
-      exchange,
-      /const endpointVisibleSourceAddress = process\.env\.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE/,
-    );
-    assert.match(
-      exchange,
-      /JSON\.stringify\(\{ publicKey, requestId: crypto\.randomUUID\(\), endpointVisibleSourceAddress \}\)/,
-    );
-    assert.match(
-      exchange,
-      /response\.sourceAddress !== process\.env\.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE/,
-    );
-    assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_IDENTITY_PATH/);
-    assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_CERTIFICATE_PATH/);
+    assert.match(access, /-V -5m:\+3h/);
+    assert.match(access, /VEM_FACTORY_MAINTENANCE_SSH_IDENTITY_PATH/);
+    assert.match(access, /VEM_FACTORY_MAINTENANCE_SSH_CERTIFICATE_PATH/);
+    assert.match(access, /VEM_FACTORY_MAINTENANCE_RELAY_ATTESTATION_PATH/);
     assert.match(
       input,
       /sshIdentityPath\.startsWith\(process\.env\.RUNNER_TEMP \+ "\/vem-factory-maintenance-ssh-"\)/,
@@ -169,18 +147,7 @@ describe("Factory Image Acceptance workflow", () => {
       input,
       /identityPath: sshIdentityPath,\n\s+certificatePath: sshCertificatePath/,
     );
-    assert.match(cleanup, /maintenance-automation\/session\/revoke/);
-    assert.match(cleanup, /revoked\.status !== "revoked"/);
-    assert.match(
-      cleanup,
-      /rm -f "\$automation_token_path" "\$revoke_response_path"/,
-    );
     assert.match(cleanup, /rm -rf -- "\$ssh_directory"/);
-    assert.ok(
-      cleanup.indexOf('rm -rf -- "$ssh_directory"') <
-        cleanup.indexOf('if [ -s "$automation_token_path" ]'),
-      "Factory SSH key material must be removed before fallible service cleanup",
-    );
   });
 
   it("starts a same-run ephemeral platform and writes the typed lifecycle input at runtime", () => {
@@ -193,13 +160,10 @@ describe("Factory Image Acceptance workflow", () => {
       "EPHEMERAL_API_READY_URL",
       "VEM_FACTORY_PLATFORM_INGRESS_HOST",
       "VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE",
-      "MAINTENANCE_CONTROL_PLANE_URL",
-      "MAINTENANCE_ALLOW_INSECURE_HTTP",
       "MAINTENANCE_RUNNER_PEER_ID",
       "MAINTENANCE_TARGET_MACHINE_ID",
-      "VEM_MAINTENANCE_RELAY_INTERFACE",
+      "VEM_FACTORY_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH",
       "MAINTENANCE_RELAY_PEER_ID",
-      "MAINTENANCE_RELAY_ENDPOINT",
       "MAINTENANCE_RELAY_PUBLIC_KEY",
       "MAINTENANCE_RELAY_TUNNEL_ADDRESS",
       "Cleanup Ephemeral Services",
@@ -243,11 +207,8 @@ describe("Factory Image Acceptance workflow", () => {
     assert.match(workflow, /SERVICE_HOST: "0\.0\.0\.0"/);
     assert.match(workflow, /-p 18884:1883/);
     assert.doesNotMatch(workflow, /192\.168\.2\.23/);
-    assert.match(workflow, /Create Maintenance Relay Session/);
-    assert.match(workflow, /Prove Relay WireGuard Bootstrap Route/);
-    assert.match(workflow, /maintenance-automation\/exchange/);
-    assert.match(workflow, /maintenance-automation\/session/);
-    assert.match(workflow, /factory-maintenance-relay-attestation\.mjs/);
+    assert.match(workflow, /Prepare Local Factory Maintenance Access/);
+    assert.match(workflow, /factory-maintenance-relay-attestation\/v1/);
     assert.doesNotMatch(workflow, /VEM_FACTORY_MAINTENANCE_RELAY_SESSION_JSON/);
   });
 
@@ -267,26 +228,17 @@ describe("Factory Image Acceptance workflow", () => {
     assert.doesNotMatch(workflow, /"\$GITHUB_WORKSPACE\/\$evidence_root/);
   });
 
-  it("shares every required testbed maintenance setting with the Service API and preparer", () => {
+  it("shares local testbed maintenance metadata with the Service API and preparer", () => {
     assert.match(workflow, /MACHINE_PROVISIONING_PROFILE: testbed/);
     assert.doesNotMatch(workflow, /550e8400-e29b-41d4-a716-446655440010/);
     assert.doesNotMatch(
       workflow,
       /AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=/,
     );
-    assert.doesNotMatch(
-      workflow,
-      /MAINTENANCE_RELAY_ENDPOINT: 127\.0\.0\.1:51820/,
-    );
-    assert.equal(
-      workflowDocument.jobs.accept.env.MAINTENANCE_RELAY_ENDPOINT,
-      "${{ vars.VEM_MAINTENANCE_RELAY_ENDPOINT }}",
-    );
     const guard = stepBlock("Guard Exact Protected Runner Before Checkout");
-    assert.match(guard, /MAINTENANCE_RELAY_ENDPOINT/);
-    assert.match(guard, /BASH_REMATCH\[2\]/);
-    assert.match(guard, /<= 65535/);
-    assert.doesNotMatch(workflow, /session\.relay\.endpoint/);
+    assert.match(guard, /VEM_FACTORY_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH/);
+    assert.match(guard, /must be an absolute private-key path/);
+    assert.match(workflow, /endpoint: "127\.0\.0\.1:51820"/);
     assert.match(
       workflow,
       /--maintenance-relay-peer-id\s+"\$MAINTENANCE_RELAY_PEER_ID"/,
