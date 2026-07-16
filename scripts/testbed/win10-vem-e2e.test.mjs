@@ -3038,6 +3038,8 @@ describe("win10-vem-e2e reset planning", () => {
       /C:\\ProgramData\\VEM\\bringup\\local-settings\.json/,
     );
     assert.match(script, /\$localSettings\.provisioningEndpointOverride = /);
+    assert.match(script, /VEM_NETWORK_ADAPTER=fake/);
+    assert.match(script, /VEM_FAKE_NETWORK_OUTCOME=success/);
     assert.match(
       script,
       /Restart-Service -Name "VemVendingDaemon" -Force/,
