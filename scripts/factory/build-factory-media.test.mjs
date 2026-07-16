@@ -833,9 +833,10 @@ async function fixture({
     ]),
   );
   visionAsset.version = descriptor.releaseVersion;
+  const descriptorBytesDigest = sha256(descriptorBytes);
   visionAsset.release = {
-    descriptorIdentity: evidenceIdentity(descriptor.identity),
-    descriptorDigest: descriptor.identity,
+    descriptorIdentity: evidenceIdentity(descriptorBytesDigest),
+    descriptorDigest: descriptorBytesDigest,
     attestationIdentity: evidenceIdentity(sha256(attestationBytes)),
     attestationDigest: sha256(attestationBytes),
     approvalIdentity: evidenceIdentity(sha256(approvalBytes)),

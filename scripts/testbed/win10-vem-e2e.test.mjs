@@ -12,9 +12,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
+import {
+  deriveCorrelation,
+  runInstalledKioskSaleAcceptanceCli,
+} from "./installed-kiosk-sale-acceptance.mjs";
 import {
   deriveSerialConformanceReportDigest,
   readFailureMatrixCommands,
@@ -42,6 +46,9 @@ import {
   buildRuntimeAcceptanceReport,
   buildVmRuntimeAcceptanceReport,
   buildVmRuntimeAcceptancePlan,
+  runVmRuntimeAcceptance,
+  buildInstalledKioskSaleLaunchScript,
+  buildInstalledKioskSaleCleanupScript,
   buildCleanBaseFactoryAcceptancePlan,
   buildFactoryImageDeliveryUnitReport,
   assertTrustedProtectedFactoryPersonalizationGate,
@@ -59,6 +66,7 @@ import {
   findActiveKioskSession,
   getRuntimeAcceptanceExitStatus,
   isStrictTauriHashRouteUrl,
+  nonQueryChildEnvironment,
   sanitizeFactoryPreclaimReport,
 } from "./win10-vem-e2e.mjs";
 
@@ -178,6 +186,81 @@ function completedSerialSaleEvidence(overrides = {}) {
     expectedAdapterIdentity:
       capturedSerialConformance.reports.start.adapter.identity,
     ...overrides,
+  };
+}
+
+function platformRawRecords({
+  runId = "RUN-180-EVIDENCE",
+  machineCode = "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
+} = {}) {
+  const machineId = "MACHINE-180";
+  return {
+    schemaVersion: "installed-kiosk-sale-platform-raw-records/v2",
+    source: "authoritative_ephemeral_platform_database",
+    scope: { runId, machineCode, machineId },
+    raw: {
+      orders: [
+        {
+          id: "ORDER-180",
+          orderNo: "ORDER-NO-180",
+          machineId,
+          status: "completed",
+        },
+      ],
+      orderItems: [
+        {
+          id: "ORDER-ITEM-180",
+          orderId: "ORDER-180",
+          inventoryId: "INVENTORY-180",
+          slotId: "SLOT-180",
+          quantity: 1,
+        },
+      ],
+      payments: [
+        {
+          id: "PAYMENT-180",
+          orderId: "ORDER-180",
+          paymentNo: "PAYMENT-NO-180",
+          status: "succeeded",
+        },
+      ],
+      reservations: [
+        {
+          id: "RESERVATION-180",
+          orderId: "ORDER-180",
+          orderItemId: "ORDER-ITEM-180",
+          inventoryId: "INVENTORY-180",
+          quantity: 1,
+          status: "confirmed",
+        },
+      ],
+      commands: [
+        {
+          id: "VEND-180",
+          commandNo: "COMMAND-NO-180",
+          orderId: "ORDER-180",
+          machineId,
+          orderItemId: "ORDER-ITEM-180",
+          slotId: "SLOT-180",
+          status: "succeeded",
+        },
+      ],
+      movements: [
+        {
+          id: "RAW-MOVEMENT-180",
+          movementId: "MOVEMENT-180",
+          machineId,
+          movementType: "dispense_succeeded",
+          quantity: 1,
+          status: "accepted",
+          slotId: "SLOT-180",
+          orderNo: "ORDER-NO-180",
+          orderItemId: "ORDER-ITEM-180",
+          inventoryId: "INVENTORY-180",
+          commandNo: "COMMAND-NO-180",
+        },
+      ],
+    },
   };
 }
 
@@ -526,6 +609,488 @@ describe("transient SSH operation retry", () => {
 });
 
 describe("simulated hardware serial acceptance evidence", () => {
+  it("accepts one rendered customer binding and rejects a second serial sale binding", () => {
+    const input = completedSerialSaleEvidence();
+    const conformance = input.serialConformance;
+    conformance.profile = "installed-kiosk-sale";
+    conformance.customerUiSale = {
+      orderId: "ORDER-180",
+      paymentId: "PAYMENT-180",
+      orderNo: "ORDER-NO-180",
+      scenarioSha256: "a".repeat(64),
+    };
+    delete conformance.failureMatrix;
+    resignSerialConformance(conformance);
+    assert.doesNotThrow(() =>
+      validateSerialConformanceReport(conformance, {
+        expectedRunnerPublicKey: input.expectedRunnerPublicKey,
+        expectedAdapterIdentity: input.expectedAdapterIdentity,
+      }),
+    );
+    const duplicateSaleBindings = [
+      ...conformance.reports.inject.request.serialSession.saleBindings,
+      { ...conformance.reports.inject.request.serialSession.saleBindings[0] },
+    ];
+    conformance.requests.inject.serialSession.saleBindings =
+      duplicateSaleBindings;
+    conformance.reports.inject.request.serialSession.saleBindings =
+      duplicateSaleBindings;
+    resignSerialConformance(conformance);
+    assert.throws(
+      () =>
+        validateSerialConformanceReport(conformance, {
+          expectedRunnerPublicKey: input.expectedRunnerPublicKey,
+          expectedAdapterIdentity: input.expectedAdapterIdentity,
+        }),
+      /must bind every requested sale correlation identity/,
+    );
+  });
+
+  it("runs the canonical kiosk-sale CLI through fixture, rendered binding, serial completion, and cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-installed-kiosk-cli-"));
+    const runtimeReport = join(root, "runtime-acceptance.json");
+    const output = join(root, "profile", "installed-kiosk-sale.json");
+    const scannerInput = join(root, "caller-scanner-code.txt");
+    writeFileSync(scannerInput, "CALLER-SCANNER-CODE\n", { mode: 0o600 });
+    const input = completedSerialSaleEvidence();
+    const serial = input.serialConformance;
+    serial.profile = "installed-kiosk-sale";
+    serial.customerUiSale = {
+      orderId: "ORDER-180",
+      paymentId: "PAYMENT-180",
+      orderNo: "ORDER-NO-180",
+      scenarioSha256: "a".repeat(64),
+    };
+    delete serial.failureMatrix;
+    resignSerialConformance(serial);
+    writeFileSync(
+      runtimeReport,
+      JSON.stringify({
+        ok: true,
+        runtimeAcceptanceReport: {
+          schemaVersion: "runtime-acceptance-report/v1",
+          kioskRuntime: {
+            sessionUser: "VEMKiosk",
+            sessionId: 1,
+            url: "http://tauri.localhost/#/catalog",
+            cdpTargetId: "normal-target",
+          },
+        },
+      }),
+      "utf8",
+    );
+    const calls = [];
+    const previousDatabaseUrl =
+      process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+    const previousGenericDatabaseUrl = process.env.DATABASE_URL;
+    process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL =
+      "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime";
+    process.env.DATABASE_URL = "postgresql://shared:secret@db.test/vem";
+    try {
+      const report = await runInstalledKioskSaleAcceptanceCli(
+        {
+          run_id: "RUN-180-EVIDENCE",
+          machine_code: "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
+          platform_target: "ephemeral-run-180",
+          ephemeral_platform_evidence: join(root, "ephemeral-platform.json"),
+          runtime_acceptance_report: runtimeReport,
+          remote: "YKDZ@vm.example.test",
+          identity: join(root, "identity"),
+          certificate: join(root, "identity-cert.pub"),
+          adapter: FAKE_VM_HOST_ADAPTER,
+          target_identity: "vm-target://runtime-testbed",
+          approved_runtime_base: `factory-cas://sha256/${"a".repeat(64)}`,
+          profile: "vm-route-competition",
+          maintenance_relay_session_json: JSON.stringify({
+            sessionId: "relay-session",
+          }),
+          maintenance_endpoint_policy_json: JSON.stringify({
+            transport: "testbed-runner-direct",
+            lifecycleReference: "vm-lifecycle://run-180-evidence.factory",
+          }),
+          lifecycle_reference: "vm-lifecycle://run-180-evidence.factory",
+          scanner_code_file: scannerInput,
+          ssh_known_hosts_path: join(root, "known-hosts"),
+          ssh_host_key_alias: "vem-installed-kiosk-run-180",
+          out: output,
+        },
+        {
+          runCommand(command, label, { env } = {}) {
+            calls.push(label);
+            assert.equal(env.DATABASE_URL, undefined);
+            const out = command[command.indexOf("--out") + 1];
+            if (label === "simulated hardware fixture") {
+              writeFileSync(
+                out,
+                JSON.stringify({
+                  schemaVersion: "simulated-hardware-sale-fixture/v1",
+                  phase: "fixture",
+                  result: {
+                    simulatedHardwareReady: { status: "fixture_ready" },
+                  },
+                }),
+                "utf8",
+              );
+              return { status: 0 };
+            }
+            if (label.startsWith("authoritative platform raw")) {
+              assert.equal(command.includes("--database-url"), false);
+              assert.equal(
+                env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL,
+                "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime",
+              );
+              assert.equal(command.includes("--remote"), false);
+              const report = platformRawRecords();
+              if (label.endsWith("baseline query")) {
+                for (const records of Object.values(report.raw))
+                  records.length = 0;
+              }
+              writeFileSync(out, JSON.stringify(report), "utf8");
+              return { status: 0 };
+            }
+            const scannerCodePath =
+              command[command.indexOf("--scanner-code-file") + 1];
+            assert.notEqual(scannerCodePath, scannerInput);
+            assert.equal(
+              readFileSync(scannerCodePath, "utf8"),
+              "CALLER-SCANNER-CODE\n",
+            );
+            rmSync(scannerCodePath, { force: true });
+            const completion = JSON.parse(
+              command[command.indexOf("--sale-complete-command-json") + 1],
+            );
+            assert.deepEqual(
+              JSON.parse(
+                command[
+                  command.indexOf("--maintenance-relay-session-json") + 1
+                ],
+              ),
+              { sessionId: "relay-session" },
+            );
+            assert.deepEqual(
+              JSON.parse(
+                command[
+                  command.indexOf("--maintenance-endpoint-policy-json") + 1
+                ],
+              ),
+              {
+                transport: "testbed-runner-direct",
+                lifecycleReference: "vm-lifecycle://run-180-evidence.factory",
+              },
+            );
+            assert.equal(
+              command[command.indexOf("--lifecycle-reference") + 1],
+              "vm-lifecycle://run-180-evidence.factory",
+            );
+            const completionOut = completion[completion.indexOf("--out") + 1];
+            writeFileSync(
+              completionOut,
+              JSON.stringify({
+                simulatedHardwareSaleFlow: {
+                  sale: {
+                    orderId: "ORDER-180",
+                    paymentId: "PAYMENT-180",
+                    orderNo: "ORDER-NO-180",
+                    paymentStatus: "succeeded",
+                    vendingCommandId: "VEND-180",
+                    dispenseResult: "dispensed",
+                  },
+                  platformState: {
+                    postSaleDispenseMovement: {
+                      movementId: "MOVEMENT-180",
+                      orderId: "ORDER-180",
+                      vendingCommandId: "VEND-180",
+                      deltaQuantity: -1,
+                      status: "accepted",
+                    },
+                  },
+                },
+              }),
+              "utf8",
+            );
+            writeFileSync(out, JSON.stringify(serial), "utf8");
+            return { status: 0 };
+          },
+          runRemote(_options, script) {
+            if (script.includes("acceptance_overlay_cdp")) {
+              calls.push("cleanup");
+              return {
+                daemonRunning: true,
+                cdpListenerCount: 1,
+                normal: {
+                  processId: 4243,
+                  principal: "VEM\\VEMKiosk",
+                  sessionId: 1,
+                  machineCount: 1,
+                  task: {
+                    name: "VEMMachineUI",
+                    exists: true,
+                    enabled: true,
+                    runAsUser: "VEMKiosk",
+                    acceptanceOverlayCdp: true,
+                    launcher: "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs",
+                  },
+                  acceptanceOverlayCdp: true,
+                  cdpListenerCount: 1,
+                  cdpListenerProcessId: 5151,
+                  cdpListenerSessionId: 1,
+                  cdpMachineAncestorProcessId: 4243,
+                  route: "#/catalog",
+                  routeEvidence: {
+                    source: "acceptance_overlay_cdp",
+                    initialTargetId: "restored-normal-target",
+                    initialTargetUrl:
+                      "http://127.0.0.1:9222/devtools/page/restored-normal-target",
+                    initialRoute: "#/result",
+                    allowedInitialRoutes: ["#/catalog", "#/result"],
+                    settledTargetId: "restored-normal-target",
+                    settledTargetUrl:
+                      "http://127.0.0.1:9222/devtools/page/restored-normal-target",
+                    settledRoute: "#/catalog",
+                    resultAutoReturnObserved: true,
+                    settledWithAcceptanceOverlay: true,
+                    processId: 4243,
+                    principal: "VEM\\VEMKiosk",
+                    sessionId: 1,
+                  },
+                },
+              };
+            }
+            calls.push("launch");
+            return {
+              prelaunch: {
+                principal: "VEM\\VEMKiosk",
+                sessionId: 1,
+                executablePath: "C:\\VEM\\bringup\\machine.exe",
+              },
+              machine: {
+                principal: "VEM\\VEMKiosk",
+                sessionId: 1,
+                executablePath: "C:\\VEM\\bringup\\machine.exe",
+              },
+              debugTarget: {
+                id: "debug-target",
+                url: "http://127.0.0.1:9222/devtools/page/debug-target",
+              },
+            };
+          },
+          async drive(options) {
+            assert.equal(
+              options.expectedRuntimeAttestation.targetId,
+              "debug-target",
+            );
+            assert.ok(
+              options.steps.some(
+                (step) =>
+                  step.type === "route-action" &&
+                  step.stimulus === "history-back",
+              ),
+            );
+            assert.equal(
+              options.tunnelOptions.sshKnownHostsPath,
+              join(root, "known-hosts"),
+            );
+            assert.equal(
+              options.tunnelOptions.sshHostKeyAlias,
+              "vem-installed-kiosk-run-180",
+            );
+            const paymentWindow = await options.onPaymentWindow();
+            return {
+              schemaVersion: "machine-ui-cdp-sale-scenario/v3",
+              status: "passed",
+              target: { id: "debug-target" },
+              evidence: [
+                {
+                  type: "route-barrier",
+                  forbiddenRoutes: ["/catalog"],
+                  allowedRoutes: ["/payment", "/dispensing", "/result"],
+                },
+                {
+                  type: "route-action",
+                  stimulus: "history-back",
+                  routeBefore: "#/payment",
+                  routeAfter: "#/payment",
+                  triggerAcknowledged: true,
+                },
+                {
+                  type: "route-disturbance",
+                  disturbance: "catalog_refresh",
+                  injection: {
+                    injectionId: "browser-injection-catalog-1",
+                    kind: "catalog_refresh",
+                    count: 1,
+                    outcome: "completed",
+                    pressure: {
+                      refreshedState: "catalog",
+                      attemptedRoute: "/catalog",
+                      resolvedRoute: "/payment",
+                      routeAuthorityWon: true,
+                    },
+                  },
+                },
+                {
+                  type: "checkpoint",
+                  label: "continuous",
+                  ordinal: 1,
+                  route: "#/payment",
+                },
+                {
+                  type: "checkpoint",
+                  label: "continuous",
+                  ordinal: 2,
+                  route: "#/result",
+                },
+                {
+                  type: "payment-window",
+                  serialCompleted: paymentWindow.serialCompleted,
+                  postSaleStable: paymentWindow.postSaleStable,
+                  continuousCheckpointOrdinals: [1, 2],
+                },
+              ],
+            };
+          },
+          async capture({ selector }) {
+            if (selector.includes("payment-surface")) {
+              return {
+                targetId: "debug-target",
+                route: "#/payment",
+                orderId: "ORDER-180",
+                paymentId: "PAYMENT-180",
+                orderNo: "ORDER-NO-180",
+              };
+            }
+            return {
+              targetId: "debug-target",
+              route: "#/result",
+              orderId: "ORDER-180",
+              paymentId: "PAYMENT-180",
+              orderNo: "ORDER-NO-180",
+              commandId: "VEND-180",
+            };
+          },
+        },
+      );
+      assert.equal(report.schemaVersion, "installed-kiosk-sale-acceptance/v2");
+      assert.equal(
+        report.runtimeBinding.normal.normalTargetId,
+        "normal-target",
+      );
+      assert.equal(report.runtimeBinding.debug.targetId, "debug-target");
+      assert.equal(report.cleanup.status, "passed");
+      assert.equal(report.cleanup.normal.acceptanceOverlayCdp, true);
+      assert.equal(
+        report.cleanup.normal.routeEvidence.settledRoute,
+        "#/catalog",
+      );
+      assert.deepEqual(
+        JSON.parse(readFileSync(output, "utf8")).cleanup,
+        report.cleanup,
+      );
+      assert.equal(report.correlation.exactOnce.commandCount, 1);
+      assert.equal(report.correlation.exactOnce.orderNoCount, 1);
+      assert.equal(report.correlation.exactOnce.reservationCount, 1);
+      assert.equal(
+        report.correlation.platform.reservation.source,
+        "authoritative_ephemeral_platform.inventory_reservations",
+      );
+      assert.equal(
+        JSON.stringify(report).includes("runner-only@127.0.0.1"),
+        false,
+      );
+      assert.equal(readFileSync(scannerInput, "utf8"), "CALLER-SCANNER-CODE\n");
+      assert.deepEqual(calls, [
+        "simulated hardware fixture",
+        "launch",
+        "authoritative platform raw baseline query",
+        "serial conformance",
+        "authoritative platform raw post query",
+        "cleanup",
+      ]);
+    } finally {
+      if (previousDatabaseUrl === undefined) {
+        delete process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL;
+      } else {
+        process.env.VEM_INSTALLED_KIOSK_SALE_DATABASE_URL = previousDatabaseUrl;
+      }
+      if (previousGenericDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = previousGenericDatabaseUrl;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes DATABASE_URL from non-query child environments", () => {
+    const environment = {
+      DATABASE_URL: "postgresql://shared:secret@db.test/vem",
+      KEEP: "value",
+    };
+    assert.deepEqual(nonQueryChildEnvironment(environment), { KEEP: "value" });
+  });
+
+  it("derives every exact-once identity from raw platform records and rejects same-ID duplicates", () => {
+    const serial = completedSerialSaleEvidence().serialConformance;
+    const payment = {
+      orderId: "ORDER-180",
+      paymentId: "PAYMENT-180",
+      orderNo: "ORDER-NO-180",
+    };
+    const fulfillment = {
+      ...payment,
+      commandId: "VEND-180",
+    };
+    const completion = {
+      simulatedHardwareSaleFlow: {
+        sale: {
+          ...payment,
+          paymentStatus: "succeeded",
+          vendingCommandId: "VEND-180",
+          dispenseResult: "dispensed",
+        },
+        platformState: {
+          postSaleDispenseMovement: { movementId: "MOVEMENT-180" },
+        },
+      },
+    };
+    const derive = (platformRawPost) =>
+      deriveCorrelation({
+        payment,
+        fulfillment,
+        serial,
+        completion,
+        platformRawBaseline: {
+          ...platformRawPost,
+          raw: Object.fromEntries(
+            Object.entries(platformRawPost.raw).map(([name]) => [name, []]),
+          ),
+        },
+        platformRawPost,
+        runId: "RUN-180-EVIDENCE",
+        machineCode: "VEM-TESTBED-WINVM-RUN-180-EVIDENCE",
+        saleCorrelationId:
+          "sale-correlation://installed-kiosk-run-180-evidence",
+      });
+
+    assert.equal(derive(platformRawRecords()).exactOnce.orderNoCount, 1);
+    for (const [identity, recordName] of [
+      ["order", "orders"],
+      ["order item", "orderItems"],
+      ["payment", "payments"],
+      ["reservation", "reservations"],
+      ["command", "commands"],
+      ["movement", "movements"],
+    ]) {
+      const duplicate = platformRawRecords();
+      duplicate.raw[recordName].push({ ...duplicate.raw[recordName][0] });
+      assert.throws(
+        () => derive(duplicate),
+        /do not prove one exact sale/,
+        `duplicate ${identity} identity must fail raw exact-once evidence`,
+      );
+    }
+  });
+
   it("parses nested production failure commands and executes the command array", () => {
     const failedSaleOutput = JSON.stringify({
       ok: false,
@@ -1136,6 +1701,12 @@ function runtimeAcceptanceFacts(overrides = {}) {
         enabled: true,
         runAsUser: "VEMKiosk",
       },
+      visionTask: {
+        name: "VEM\\StartVisionServer",
+        exists: true,
+        enabled: true,
+        runAsUser: "VEMKiosk",
+      },
     },
     startupBringup: {
       configuredBy: "scripts/windows/setup-scheduled-tasks.ps1",
@@ -1188,13 +1759,51 @@ function runtimeAcceptanceFacts(overrides = {}) {
         ready: true,
       },
     },
+    visionRuntime: {
+      healthReachable: true,
+      healthStatus: "ok",
+      healthProtocol: "vem.vision.v1",
+      healthModule: "vision",
+      healthMockScenario: false,
+      version: "0.2.1-rc.8",
+      cameraReady: false,
+      modelReady: true,
+      installedProcessBound: true,
+      selectedReleaseVersion: "0.2.1-rc.8",
+      activeProcessId: 789,
+      listenerBound: true,
+      listenerProcessId: 789,
+      listenerOwnerCount: 1,
+      listenerBindingSource: "Get-NetTCPConnection",
+      webSocketConnected: true,
+      readyProtocol: "vem.vision.v1",
+      readyType: "vision.ready",
+      readyMessageId: "ready-001",
+      readyTimestamp: "2026-07-16T01:02:03.456Z",
+      readyServerName: "vem-vision-runtime",
+      readyServerVersion: "0.2.1-rc.8",
+      readyCameraReady: false,
+      readyModelReady: true,
+      readyCapabilities: [
+        "profile_push",
+        "presence_status",
+        "person_departed",
+        "ambient_light",
+        "try_on_session",
+      ],
+      error: null,
+    },
     kioskRuntime: {
       webviewRunning: true,
       url: "http://tauri.localhost/#/",
       sessionUser: "VEMKiosk",
       sessionId: 3,
       processId: 500,
+      machineProcessCount: 1,
+      machineExecutablePath: "C:\\VEM\\bringup\\machine.exe",
+      webView2ProcessCount: 1,
       cdpAvailable: true,
+      acceptanceOverlayCdp: true,
       cdpListenerProcessId: 600,
       cdpListenerSessionId: 3,
       cdpMachineAncestorProcessId: 500,
@@ -1771,7 +2380,12 @@ describe("win10-vem-e2e reset planning", () => {
       source: "quser",
     };
     const machineProcesses = [
-      { processId: 500, ownerUser: "VEMKiosk", sessionId: 3 },
+      {
+        processId: 500,
+        ownerUser: "VEMKiosk",
+        sessionId: 3,
+        executablePath: "C:\\VEM\\bringup\\machine.exe",
+      },
     ];
 
     assert.deepEqual(
@@ -1786,12 +2400,16 @@ describe("win10-vem-e2e reset planning", () => {
         sessionUser: "VEMKiosk",
         sessionId: 3,
         processId: 500,
+        machineProcessCount: 1,
+        machineExecutablePath: "C:\\VEM\\bringup\\machine.exe",
         webView2ProcessId: null,
+        webView2ProcessCount: 0,
         cdpListenerProcessId: null,
         cdpListenerSessionId: null,
         cdpMachineAncestorProcessId: null,
         cdpTargetId: null,
         cdpAvailable: true,
+        acceptanceOverlayCdp: false,
         error: "kiosk_webview_not_verified",
       },
     );
@@ -1827,6 +2445,7 @@ describe("win10-vem-e2e reset planning", () => {
           sessionId: 3,
           machineAncestorProcessId: 500,
         },
+        acceptanceOverlayCdp: true,
         cdpTargets: [
           { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
         ],
@@ -1861,6 +2480,7 @@ describe("win10-vem-e2e reset planning", () => {
         ],
         cdpTargets: [],
         cdpAvailable: false,
+        acceptanceOverlayCdp: false,
       }),
       {
         webviewRunning: true,
@@ -1868,12 +2488,16 @@ describe("win10-vem-e2e reset planning", () => {
         sessionUser: "VEMKiosk",
         sessionId: 3,
         processId: 500,
+        machineProcessCount: 1,
+        machineExecutablePath: "C:\\VEM\\bringup\\machine.exe",
         webView2ProcessId: 600,
+        webView2ProcessCount: 1,
         cdpListenerProcessId: null,
         cdpListenerSessionId: null,
         cdpMachineAncestorProcessId: null,
         cdpTargetId: null,
         cdpAvailable: false,
+        acceptanceOverlayCdp: false,
         error: null,
       },
     );
@@ -3465,6 +4089,15 @@ try {
     assert.match(script, /function Invoke-SimulatedHardwareSaleFlow/);
     assert.match(script, /function Classify-SimulatedHardwareSaleFlowReport/);
     assert.match(script, /function Assert-SimulatedSaleFlowPreMutationTarget/);
+    const fixtureStart = script.indexOf(
+      "function Invoke-SimulatedHardwareSaleFlow(",
+    );
+    const fixtureEnd = script.indexOf(
+      "\nfunction Invoke-ResetStep",
+      fixtureStart,
+    );
+    assert.ok(fixtureStart >= 0 && fixtureEnd > fixtureStart);
+    const fixtureFlow = script.slice(fixtureStart, fixtureEnd);
     assert.match(script, /simulated-hardware-sale-flow\.json/);
     assert.match(script, /schemaVersion = "simulated-hardware-sale-flow\/v1"/);
     assert.match(script, /hardwareMode = if \(\$null -ne \$bringUp/);
@@ -3479,36 +4112,11 @@ try {
       /scannerOnline = \[bool\]\$daemonIpc\.healthz\.scannerOnline/,
     );
     assert.match(script, /daemonHealth = \$facts\.daemonHealth/);
-    assert.match(script, /function Invoke-HardwareMappingFaultProbe/);
-    assert.match(script, /LOWER_CONTROLLER_UNAVAILABLE/);
-    assert.match(
-      script,
-      /hardwareMappingFault = \$hardwareMappingFaultProbe\.mappingFault/,
-    );
-    assert.match(
-      script,
-      /transactionEntry = \$hardwareMappingFaultProbe\.transactionEntry/,
-    );
-    assert.match(script, /successfulPrepare = \[ordered\]@\{/);
-    assert.match(script, /\[string\]\$Context\.runId -ne \[string\]\$RunId/);
-    assert.match(script, /successfulPrepare\.status -ne "succeeded"/);
-    assert.match(script, /successfulPrepare\.phase -ne "prepare"/);
-    assert.match(script, /\[string\]\$Context\.saleView\.planogramVersion/);
-    assert.match(script, /\[string\]\$Context\.selectedItem\.inventoryId/);
-    assert.match(script, /\[string\]\$_\.method -ne "payment_code"/);
-    assert.match(script, /\[string\]\$_\.method -eq "qr_code"/);
-    assert.match(script, /\/v1\/sale-readiness/);
-    assert.match(script, /\$_.ready -eq \$true/);
-    assert.match(script, /readyzObserved/);
-    assert.match(script, /statusCode = \$rejection\.statusCode/);
-    assert.match(
-      script,
-      /responseCode = Convert-ClaimFailureClassification \$rejection/,
-    );
     assert.match(script, /hardwareMappingFaultProbeRequired/);
-    assert.doesNotMatch(script, /hardwareMappingFaultCode/);
-    assert.doesNotMatch(script, /hardware-mapping-fault-code/);
-    assert.doesNotMatch(script, /hardware-mapping-fault-probe/);
+    assert.match(
+      fixtureFlow,
+      /fixture-only sale setup requires healthy serial hardware before customer checkout/,
+    );
     assert.match(
       script,
       /\$Facts\.runtimeState\.bringUpState -ne "simulated_hardware_ready"/,
@@ -3531,17 +4139,11 @@ try {
       /PHYSICAL_STOCK_ATTESTATION_PENDING.*must not expose saleable stock/s,
     );
     assert.match(script, /\$physicalStockAttestation\.status -eq "ready"/);
-    assert.match(
-      script,
-      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/create-order"/,
-    );
-    assert.match(
-      script,
-      /\$preparedPaymentId = if \(-not \[string\]::IsNullOrWhiteSpace\(\[string\]\$createOrder\.paymentId\)\)/,
-    );
-    assert.match(
-      script,
-      /throw "successful sale prepare did not return order and payment IDs"/,
+    assert.match(fixtureFlow, /\$salePhase -eq "fixture"/);
+    assert.match(fixtureFlow, /kind = "simulated_hardware_sale_fixture"/);
+    assert.doesNotMatch(
+      fixtureFlow,
+      /create-order|successfulPrepare|\$createOrder/,
     );
     assert.match(
       script,
@@ -3555,7 +4157,6 @@ try {
     );
     assert.doesNotMatch(script, /\/v1\/intents\/mock-payment/);
     assert.match(script, /paymentMethod = "payment_code"/);
-    assert.match(script, /\$salePhase -eq "prepare"/);
     assert.match(script, /\$salePhase -eq "complete"/);
     assert.match(
       script,
@@ -3584,17 +4185,60 @@ try {
         ),
     );
     assert.ok(
-      script.indexOf(
-        "$stockAcceptance = Wait-PlatformAcceptedStockAttestation",
-      ) <
-        script.indexOf(
-          'Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order"',
-        ),
-    );
-    assert.ok(
       script.indexOf("$selectedItem = @($saleView.items") <
         script.indexOf("platformMovementId ="),
     );
+  });
+
+  it("PowerShell-parses the generated simulated-sale fixture script", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-sale-flow-parse-"));
+    try {
+      const evidencePath = join(temp, "ephemeral-platform.json");
+      const scriptPath = join(temp, "simulated-sale-fixture.ps1");
+      const parserPath = join(temp, "parse-generated-script.ps1");
+      writeFileSync(
+        evidencePath,
+        JSON.stringify(ephemeralPlatformEvidence()),
+        "utf8",
+      );
+      writeFileSync(
+        scriptPath,
+        buildRemotePowerShellScript({
+          mode: "simulated-hardware-sale-flow",
+          salePhase: "fixture",
+          platformTarget: "ephemeral-run-180",
+          machineCode: "VEM-TESTBED-WINVM-01",
+          runId: "RUN-180",
+          ephemeralPlatformEvidence: evidencePath,
+        }),
+        "utf8",
+      );
+      writeFileSync(
+        parserPath,
+        `param([string]$Path)
+$tokens = $null
+$errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) {
+  $errors | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Message)" }
+  exit 1
+}
+`,
+        "utf8",
+      );
+      const parsed = spawnSync(
+        "pwsh",
+        ["-NoProfile", "-NonInteractive", "-File", parserPath, scriptPath],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        parsed.status,
+        0,
+        `generated fixture PowerShell failed to parse:\n${parsed.stdout}\n${parsed.stderr}`,
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it("factory preparation uses production serial adapters for simulated hardware", () => {
@@ -3678,8 +4322,6 @@ try {
           "RUN-181",
           "--platform-target",
           "ephemeral-run-181",
-          "--ephemeral-database-url",
-          "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
           "--ephemeral-api-base-url",
           "http://127.0.0.1:26849/api",
           "--ephemeral-mqtt-url",
@@ -3710,7 +4352,15 @@ try {
           outputPath,
           "--dry-run",
         ],
-        { cwd: process.cwd(), encoding: "utf8" },
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            VEM_EPHEMERAL_DATABASE_URL:
+              "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+          },
+        },
       );
 
       assert.equal(result.status, 0, result.stderr);
@@ -3734,6 +4384,14 @@ try {
         plan.artifacts.ephemeralPlatformEvidence,
         "artifacts/vm-runtime-acceptance/RUN-181/ephemeral-platform.json",
       );
+      assert.equal(
+        plan.artifacts.simulatedHardwareSaleFlow,
+        "artifacts/vm-runtime-acceptance/RUN-181/simulated-hardware-sale-flow-response.json",
+      );
+      assert.equal(
+        plan.artifacts.serialConformance,
+        "artifacts/vm-runtime-acceptance/RUN-181/serial-com-scanner-sale-conformance.json",
+      );
       assert.deepEqual(
         plan.steps.map((step) => step.name),
         [
@@ -3741,6 +4399,9 @@ try {
           "ephemeral platform setup",
           "runtime acceptance",
           "simulated hardware sale flow",
+          "installed kiosk sale normal",
+          "installed kiosk sale route competition",
+          "post-sale runtime acceptance",
         ],
       );
       assert.equal(plan.artifacts.source, "approved-preclaim-base");
@@ -3766,6 +4427,12 @@ try {
         plan.steps[1].command.includes("--allow-ephemeral-target"),
         "ephemeral setup must carry explicit safety flags",
       );
+      assert.equal(
+        plan.steps.every(
+          (step) => !step.command.includes("--ephemeral-database-url"),
+        ),
+        true,
+      );
       assert.ok(
         plan.steps[1].command.includes("--allow-mock-payment"),
         "ephemeral setup must carry explicit mock-payment acknowledgement",
@@ -3786,8 +4453,18 @@ try {
         ),
         maintenanceEndpointPolicy,
       );
+      assert.equal(plan.steps[4].mode, "installed-kiosk-sale");
+      assert.equal(plan.steps[5].mode, "installed-kiosk-sale");
       assert.equal(
         plan.steps[3].ephemeralPlatformEvidence,
+        plan.artifacts.ephemeralPlatformEvidence,
+      );
+      assert.equal(
+        plan.steps[5].ephemeralPlatformEvidence,
+        plan.artifacts.ephemeralPlatformEvidence,
+      );
+      assert.equal(
+        plan.steps[4].ephemeralPlatformEvidence,
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(plan.readinessLevels.sellReady, "not_asserted");
@@ -3807,7 +4484,7 @@ try {
         readFileSync(outputPath, "utf8"),
         /pass@127\.0\.0\.1/,
       );
-      assert.match(result.stdout, /\[REDACTED\]/);
+      assert.doesNotMatch(result.stdout, /postgres(?:ql)?:\/\//i);
 
       const wireGuardOutputPath = join(
         temp,
@@ -3823,8 +4500,6 @@ try {
           "RUN-181",
           "--platform-target",
           "ephemeral-run-181",
-          "--ephemeral-database-url",
-          "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
           "--ephemeral-api-base-url",
           "http://127.0.0.1:26849/api",
           "--ephemeral-mqtt-url",
@@ -3853,7 +4528,15 @@ try {
           wireGuardOutputPath,
           "--dry-run",
         ],
-        { cwd: process.cwd(), encoding: "utf8" },
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            VEM_EPHEMERAL_DATABASE_URL:
+              "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+          },
+        },
       );
       assert.equal(wireGuardResult.status, 0, wireGuardResult.stderr);
       const wireGuardPlan = JSON.parse(wireGuardResult.stdout);
@@ -3876,6 +4559,68 @@ try {
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
+  });
+
+  it("restores the single kiosk UI through the disposable acceptance-overlay CDP task action", () => {
+    const launch = buildInstalledKioskSaleLaunchScript();
+    const cleanup = buildInstalledKioskSaleCleanupScript({
+      principal: "VEM\\VEMKiosk",
+      sessionId: 1,
+      expectedRoute: "#/catalog",
+    });
+
+    assert.match(launch, /launch-machine-ui-debug\.vbs/);
+    assert.match(launch, /VEMInstalledKioskSaleDebug/);
+    assert.match(
+      launch,
+      /temporary CDP-enabled machine\.exe did not reach exactly-one process\/listener state/,
+    );
+    assert.match(launch, /WTSGetActiveConsoleSessionId/);
+    assert.match(
+      launch,
+      /normal machine\.exe must belong exactly to the active console VEMKiosk principal and session/,
+    );
+    assert.match(
+      launch,
+      /debugTarget = \[ordered\]@\{ id = \[string\]\$targets\[0\]\.id/,
+    );
+    assert.doesNotMatch(launch, /Stop-Service -Name 'VemVendingDaemon'/);
+    assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
+    assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
+    assert.match(cleanup, /CDP listener remained after debug UI cleanup/);
+    assert.match(cleanup, /launch-machine-ui-debug\.vbs/);
+    assert.match(
+      cleanup,
+      /Set-ScheduledTask -TaskName \$normalTask -Action \$acceptanceOverlayAction/,
+    );
+    assert.match(
+      cleanup,
+      /acceptance overlay machine\.exe principal or session differs from saved VEMKiosk owner/,
+    );
+    assert.match(
+      cleanup,
+      /daemon stopped during installed kiosk sale acceptance/,
+    );
+    assert.match(cleanup, /http:\/\/127\.0\.0\.1:9222\/json/);
+    assert.match(cleanup, /acceptance_overlay_cdp/);
+    assert.match(
+      cleanup,
+      /acceptance overlay CDP route is outside the post-sale return policy/,
+    );
+    assert.match(cleanup, /#\/result/);
+    assert.match(cleanup, /settledRoute/);
+    assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
+    assert.match(
+      cleanup,
+      /acceptance overlay kiosk restoration did not retain exactly one CDP listener/,
+    );
+    assert.match(cleanup, /acceptanceOverlayCdp = \$true/);
+    assert.doesNotMatch(cleanup, /VEMInstalledKioskSaleRestoreObserve/);
+    assert.ok(
+      cleanup.indexOf("Unregister-ScheduledTask -TaskName $debugTask") <
+        cleanup.indexOf("Get-Service -Name 'VemVendingDaemon'"),
+      "cleanup must remove the temporary debug task before daemon health is evaluated",
+    );
   });
 
   it("plans clean-base factory acceptance with explicit clean-source evidence and destructive gates", () => {
@@ -4976,76 +5721,67 @@ try {
       "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
     );
     const saleStep = plan.steps.find(
+      (step) => step.name === "installed kiosk sale route competition",
+    );
+    const normalSaleStep = plan.steps.find(
+      (step) => step.name === "installed kiosk sale normal",
+    );
+    assert.equal(
+      saleStep.command[1],
+      "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--profile"),
+      "vm-route-competition",
+    );
+    assert.equal(commandArg(normalSaleStep.command, "--profile"), "vm-normal");
+    assert.equal(
+      commandArg(saleStep.command, "--runtime-acceptance-report"),
+      plan.artifacts.runtimeAcceptance,
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--out"),
+      plan.artifacts.customerUiSaleRouteCompetition,
+    );
+    assert.equal(
+      commandArg(normalSaleStep.command, "--out"),
+      plan.artifacts.customerUiSaleNormal,
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--sale-prepare-command-json"),
+      undefined,
+    );
+    assert.equal(
+      commandArg(saleStep.command, "--sale-complete-command-json"),
+      undefined,
+    );
+    assert.equal(saleStep.command.includes("--already-claimed"), true);
+    assert.equal(normalSaleStep.command.includes("--already-claimed"), true);
+    const serialStep = plan.steps.find(
       (step) => step.name === "simulated hardware sale flow",
     );
-    assert.equal(
-      commandArg(saleStep.command, "--runner-signing-key-file"),
-      "runner-owned-serial-signing-key-file-required",
+    const failureCommands = JSON.parse(
+      commandArg(serialStep.command, "--failure-matrix-commands-json"),
     );
     assert.equal(
-      commandArg(saleStep.command, "--expected-runner-public-key"),
-      "expected-serial-runner-public-key-required",
-    );
-    const failureArtifacts = plan.artifacts.failureMatrix;
-    const failureCommands = readFailureMatrixCommands(
-      commandArg(saleStep.command, "--failure-matrix-commands-json"),
-    );
-    assert.deepEqual(
       JSON.parse(
-        commandArg(saleStep.command, "--failure-matrix-artifact-paths-json"),
+        commandArg(serialStep.command, "--sale-prepare-command-json"),
+      ).includes("--already-claimed"),
+      false,
+    );
+    assert.equal(
+      failureCommands["scanner-timeout"].salePrepareCommand.includes(
+        "--already-claimed",
       ),
-      failureArtifacts,
+      true,
     );
-    const failureReports = Object.values(failureArtifacts).map(
-      (artifact) => artifact.report,
-    );
-    assert.equal(new Set(failureReports).size, 6);
     assert.equal(
       commandArg(
-        failureCommands["dispense-failed"].saleCompleteCommand,
+        plan.steps.find((step) => step.name === "post-sale runtime acceptance")
+          .command,
         "--out",
       ),
-      failureArtifacts["dispense-failed"].saleComplete,
-    );
-    for (const failureMode of [
-      "swapped-roles",
-      "missing-device",
-      "scanner-timeout",
-    ])
-      assert.equal(
-        commandArg(failureCommands[failureMode].salePrepareCommand, "--out"),
-        failureArtifacts[failureMode].salePrepare,
-      );
-    for (const failureMode of ["swapped-roles", "missing-device"])
-      assert.equal(
-        commandArg(
-          failureCommands[failureMode].runtimeRecoveryCommand,
-          "--out",
-        ),
-        failureArtifacts[failureMode].runtimeRecovery,
-      );
-    assert.equal(
-      new Set([
-        ...failureReports,
-        ...Object.values(failureCommands).flatMap((commands) =>
-          Object.values(commands).map((command) =>
-            commandArg(command, "--out"),
-          ),
-        ),
-        commandArg(
-          JSON.parse(
-            commandArg(saleStep.command, "--sale-prepare-command-json"),
-          ),
-          "--out",
-        ),
-        commandArg(
-          JSON.parse(
-            commandArg(saleStep.command, "--sale-complete-command-json"),
-          ),
-          "--out",
-        ),
-      ]).size,
-      14,
+      plan.artifacts.postSaleRuntimeAcceptance,
     );
 
     assert.throws(
@@ -5063,6 +5799,165 @@ try {
         }),
       /explicit --machine-code must end with canonical run id/,
     );
+  });
+
+  it("executes serial trust and per-step scanner copies with final cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-runtime-execution-"));
+    const scannerCodeFile = join(root, "protected-scanner-code");
+    const previousRunnerTemp = process.env.RUNNER_TEMP;
+    const previousDatabaseUrl = process.env.VEM_EPHEMERAL_DATABASE_URL;
+    writeFileSync(scannerCodeFile, "SCANNER-CODE-MUST-NOT-LEAK\n", {
+      mode: 0o600,
+    });
+    process.env.RUNNER_TEMP = root;
+    process.env.VEM_EPHEMERAL_DATABASE_URL =
+      "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime";
+    const scannerCopies = [];
+    let runnerSigningKeyFile = null;
+    try {
+      const report = await runVmRuntimeAcceptance(
+        {
+          runId: "RUN-EXECUTION",
+          evidenceRoot: join(root, "artifacts"),
+          platformTarget: "ephemeral-run-execution",
+          ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+          ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+          scannerCodeFile,
+          approvedRuntimeBase: `factory-cas://sha256/${"a".repeat(64)}`,
+          identity: join(root, "id_ed25519"),
+          certificate: join(root, "id_ed25519-cert.pub"),
+        },
+        {
+          spawnSync(executable, args) {
+            const command = [executable, ...args];
+            const out = command[command.indexOf("--out") + 1];
+            const scannerIndex = command.indexOf("--scanner-code-file");
+            if (scannerIndex !== -1) {
+              const copy = command[scannerIndex + 1];
+              scannerCopies.push(copy);
+              assert.notEqual(copy, scannerCodeFile);
+              assert.equal(
+                readFileSync(copy, "utf8"),
+                "SCANNER-CODE-MUST-NOT-LEAK\n",
+              );
+            }
+            if (
+              command.includes(
+                "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+              )
+            ) {
+              runnerSigningKeyFile =
+                command[command.indexOf("--runner-signing-key-file") + 1];
+              assert.equal(existsSync(runnerSigningKeyFile), true);
+              assert.match(
+                command[command.indexOf("--expected-runner-public-key") + 1],
+                /^ed25519-public-key:base64:/,
+              );
+              assert.equal(
+                JSON.parse(
+                  command[command.indexOf("--sale-prepare-command-json") + 1],
+                ).includes("--already-claimed"),
+                false,
+              );
+            }
+            const runtime =
+              command.includes("--mode") &&
+              command[command.indexOf("--mode") + 1] === "runtime-acceptance";
+            const output = runtime
+              ? {
+                  ok: true,
+                  runtimeAcceptanceReport: {
+                    result: {
+                      runtimeReady: { status: "passed", asserted: true },
+                    },
+                    kioskRuntime: {
+                      sessionUser: "VEMKiosk",
+                      sessionId: 7,
+                      url: "http://tauri.localhost/#/",
+                      cdpTargetId: "refreshed-cdp-target",
+                    },
+                  },
+                }
+              : command.includes("installed-kiosk-sale-acceptance.mjs")
+                ? {
+                    ok: true,
+                    schemaVersion: "installed-kiosk-sale-acceptance/v2",
+                    correlation: {
+                      platform: { observations: {} },
+                      exactOnce: {},
+                    },
+                  }
+                : {};
+            if (out) {
+              mkdirSync(dirname(out), { recursive: true });
+              writeFileSync(out, JSON.stringify(output));
+            }
+            return { status: 0, stdout: JSON.stringify(output), stderr: "" };
+          },
+        },
+      );
+      assert.equal(
+        report.steps.every((step) => step.status === "passed"),
+        true,
+      );
+      assert.equal(scannerCopies.length, 3);
+      assert.equal(new Set(scannerCopies).size, 3);
+      assert.equal(report.displayBinding.cdpTargetId, "refreshed-cdp-target");
+      assert.equal(
+        JSON.stringify(report).includes("SCANNER-CODE-MUST-NOT-LEAK"),
+        false,
+      );
+      assert.equal(
+        readFileSync(scannerCodeFile, "utf8"),
+        "SCANNER-CODE-MUST-NOT-LEAK\n",
+      );
+      for (const copy of scannerCopies) assert.equal(existsSync(copy), false);
+      assert.equal(existsSync(runnerSigningKeyFile), false);
+      assert.equal(existsSync(dirname(runnerSigningKeyFile)), false);
+
+      let failedRunnerSigningKeyFile = null;
+      await assert.rejects(
+        runVmRuntimeAcceptance(
+          {
+            runId: "RUN-EXECUTION-FAILURE",
+            evidenceRoot: join(root, "failure-artifacts"),
+            platformTarget: "ephemeral-run-execution-failure",
+            ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+            ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+            scannerCodeFile,
+            approvedRuntimeBase: `factory-cas://sha256/${"a".repeat(64)}`,
+            identity: join(root, "id_ed25519"),
+            certificate: join(root, "id_ed25519-cert.pub"),
+          },
+          {
+            spawnSync(executable, args) {
+              const command = [executable, ...args];
+              if (
+                command.includes(
+                  "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+                )
+              ) {
+                failedRunnerSigningKeyFile =
+                  command[command.indexOf("--runner-signing-key-file") + 1];
+                assert.equal(existsSync(failedRunnerSigningKeyFile), true);
+                throw new Error("forced serial execution failure");
+              }
+              return { status: 0, stdout: "{}", stderr: "" };
+            },
+          },
+        ),
+        /forced serial execution failure/,
+      );
+      assert.equal(existsSync(failedRunnerSigningKeyFile), false);
+      assert.equal(existsSync(dirname(failedRunnerSigningKeyFile)), false);
+    } finally {
+      if (previousRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = previousRunnerTemp;
+      if (previousDatabaseUrl === undefined)
+        delete process.env.VEM_EPHEMERAL_DATABASE_URL;
+      else process.env.VEM_EPHEMERAL_DATABASE_URL = previousDatabaseUrl;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("threads optional clean-base factory evidence through preclaim-based runtime acceptance", () => {
@@ -5091,6 +5986,9 @@ try {
         "ephemeral platform setup",
         "runtime acceptance",
         "simulated hardware sale flow",
+        "installed kiosk sale normal",
+        "installed kiosk sale route competition",
+        "post-sale runtime acceptance",
       ],
     );
     assert.equal(plan.steps[0].mode, "clean-base-factory-acceptance");
@@ -5213,37 +6111,16 @@ try {
         "vem-runtime-run-183",
       );
     }
-    const saleStep = plan.steps.find(
-      (step) => step.name === "simulated hardware sale flow",
-    );
-    assert.ok(saleStep);
-    for (const option of [
-      "--sale-prepare-command-json",
-      "--sale-complete-command-json",
-    ]) {
-      const childCommand = JSON.parse(commandArg(saleStep.command, option));
-      assert.equal(commandArg(childCommand, "--ssh-port"), "22022");
+    for (const saleStep of plan.steps.filter(
+      (step) => step.mode === "installed-kiosk-sale",
+    )) {
+      assert.equal(commandArg(saleStep.command, "--ssh-port"), "22022");
       assert.equal(
-        commandArg(childCommand, "--ssh-known-hosts-path"),
+        commandArg(saleStep.command, "--ssh-known-hosts-path"),
         "/tmp/vem-runtime-known-hosts",
       );
       assert.equal(
-        commandArg(childCommand, "--ssh-host-key-alias"),
-        "vem-runtime-run-183",
-      );
-    }
-    for (const command of Object.values(
-      JSON.parse(
-        commandArg(saleStep.command, "--failure-matrix-commands-json"),
-      ),
-    ).flatMap((commands) => Object.values(commands))) {
-      assert.equal(commandArg(command, "--ssh-port"), "22022");
-      assert.equal(
-        commandArg(command, "--ssh-known-hosts-path"),
-        "/tmp/vem-runtime-known-hosts",
-      );
-      assert.equal(
-        commandArg(command, "--ssh-host-key-alias"),
+        commandArg(saleStep.command, "--ssh-host-key-alias"),
         "vem-runtime-run-183",
       );
     }
@@ -5556,6 +6433,215 @@ try {
     assert.deepEqual(report.diagnostics, []);
   });
 
+  it("requires the installed Vision health and protocol while allowing absent cameras", () => {
+    for (const [mutate, expectedCode] of [
+      [
+        (facts) => {
+          facts.serviceState.visionTask.exists = false;
+        },
+        "vision_task_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.modelReady = false;
+        },
+        "vision_health_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyType = "vision.error";
+        },
+        "vision_protocol_not_ready",
+      ],
+    ]) {
+      const facts = runtimeAcceptanceFacts();
+      mutate(facts);
+      const report = buildRuntimeAcceptanceReport(facts);
+      assert.deepEqual(report.result.runtimeReady, {
+        status: "failed",
+        asserted: false,
+      });
+      assert.ok(
+        report.diagnostics.some(
+          (diagnostic) => diagnostic.code === expectedCode,
+        ),
+      );
+    }
+  });
+
+  it("rejects Vision evidence that is mocked, stale, or incomplete", () => {
+    for (const [mutate, expectedCode] of [
+      [
+        (facts) => {
+          facts.visionRuntime.healthMockScenario = true;
+        },
+        "vision_health_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.installedProcessBound = false;
+        },
+        "vision_installed_process_not_bound",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyServerVersion = "stale-version";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyCapabilities = ["profile_push"];
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyMessageId = "";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyMessageId = 42;
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyTimestamp = "not-a-timestamp";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyTimestamp = "2026-02-29T01:02:03Z";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyServerName = "   ";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyServerName = 42;
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.listenerProcessId = 790;
+        },
+        "vision_installed_process_not_bound",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.listenerOwnerCount = 2;
+        },
+        "vision_installed_process_not_bound",
+      ],
+    ]) {
+      const facts = runtimeAcceptanceFacts();
+      mutate(facts);
+      const rejected = buildRuntimeAcceptanceReport(facts);
+      assert.equal(rejected.result.runtimeReady.status, "failed");
+      assert.ok(
+        rejected.diagnostics.some(
+          (diagnostic) => diagnostic.code === expectedCode,
+        ),
+      );
+    }
+  });
+
+  it("generates a bounded, release-bound Vision readiness probe", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "runtime-acceptance",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+
+    assert.match(script, /function Get-VisionInstalledRuntimeBinding/);
+    assert.match(script, /function Get-VisionLoopbackListenerBinding/);
+    assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort 7892/);
+    assert.match(script, /System32\\netstat\.exe/);
+    assert.match(script, /\$listeners\.Count -ne 1/);
+    assert.match(script, /\$listenerProcessId -ne \$ExpectedProcessId/);
+    assert.match(script, /C:\\ProgramData\\VEM\\vision\\current\.json/);
+    assert.match(
+      script,
+      /C:\\ProgramData\\VEM\\vision\\process-state\\active-process\.json/,
+    );
+    assert.match(
+      script,
+      /\$active\.selectionRevision -cne \$selection\.revision/,
+    );
+    assert.match(
+      script,
+      /\$process\.StartTime\.ToUniversalTime\(\)\.Ticks -ne \$active\.creationTimeUtcTicks/,
+    );
+    assert.match(script, /\$health\.mockScenario -isnot \[bool\]/);
+    assert.match(script, /\$health\.mockScenario -ne \$false/);
+    assert.match(
+      script,
+      /\$health\.version -cne \$runtimeBinding\.releaseVersion/,
+    );
+    assert.match(script, /while \(\(Get-Date\) -lt \$deadline\)/);
+    assert.match(script, /\$maxMessageBytes = 65536/);
+    assert.match(script, /\$messageStream\.Length \+ \$received\.Count/);
+    assert.match(script, /while \(-not \$received\.EndOfMessage\)/);
+    assert.match(
+      script,
+      /\$ready\.payload\.serverVersion -cne \$health\.version/,
+    );
+    assert.match(script, /\$ready\.messageId -isnot \[string\]/);
+    assert.match(script, /Test-VisionProtocolTimestamp \$ready\.timestamp/);
+    assert.match(script, /\$ready\.payload\.serverName -isnot \[string\]/);
+    assert.match(script, /\$ready\.payload\.capabilities -isnot \[array\]/);
+  });
+
+  it("PowerShell-parses the generated runtime acceptance script", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-runtime-acceptance-parse-"));
+    try {
+      const scriptPath = join(temp, "runtime-acceptance.ps1");
+      const parserPath = join(temp, "parse-generated-script.ps1");
+      writeFileSync(
+        scriptPath,
+        buildRemotePowerShellScript({
+          mode: "runtime-acceptance",
+          machineCode: "VEM-TESTBED-WINVM-01",
+        }),
+        "utf8",
+      );
+      writeFileSync(
+        parserPath,
+        `param([string]$Path)
+$tokens = $null
+$errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) {
+  $errors | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Message)" }
+  exit 1
+}
+`,
+        "utf8",
+      );
+      const parsed = spawnSync(
+        "pwsh",
+        ["-NoProfile", "-NonInteractive", "-File", parserPath, scriptPath],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        parsed.status,
+        0,
+        `generated runtime acceptance PowerShell failed to parse:\n${parsed.stdout}\n${parsed.stderr}`,
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it("does not pass runtime-ready when required report facts are missing", () => {
     const facts = runtimeAcceptanceFacts({
       readyFile: {
@@ -5814,6 +6900,38 @@ try {
         ),
       );
     }
+  });
+
+  it("accepts a production normal UI with CDP disabled only when its installed VEMKiosk process is unique", () => {
+    const productionFacts = runtimeAcceptanceFacts({
+      kioskRuntime: {
+        ...runtimeAcceptanceFacts().kioskRuntime,
+        url: "unavailable:production-cdp-disabled",
+        source: "webview2_process",
+        cdpAvailable: false,
+        cdpTargetId: null,
+        cdpListenerProcessId: null,
+        cdpListenerSessionId: null,
+        cdpMachineAncestorProcessId: null,
+      },
+    });
+
+    assert.deepEqual(
+      buildRuntimeAcceptanceReport(productionFacts).result.runtimeReady,
+      {
+        status: "passed",
+        asserted: true,
+      },
+    );
+
+    productionFacts.kioskRuntime.machineProcessCount = 2;
+    const rejected = buildRuntimeAcceptanceReport(productionFacts);
+    assert.equal(rejected.result.runtimeReady.status, "failed");
+    assert.ok(
+      rejected.diagnostics.some(
+        (diagnostic) => diagnostic.code === "kiosk_normal_process_not_unique",
+      ),
+    );
   });
 
   it("uses runtime acceptance result when deciding local process exit status", () => {

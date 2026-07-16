@@ -118,7 +118,14 @@ async function submitOrder(): Promise<void> {
 
 <template>
   <KioskLayout>
-    <section v-if="item" class="checkout-page">
+    <section
+      v-if="item"
+      class="checkout-page"
+      data-test="checkout-page"
+      :data-catalog-key="item.catalogKey"
+      :data-slot-id="item.slotId"
+      :data-slot-code="item.slotCode"
+    >
       <KioskHeader class="checkout-header" />
 
       <div class="checkout-back-row">
@@ -194,6 +201,10 @@ async function submitOrder(): Promise<void> {
               }"
               type="button"
               :disabled="option.disabled"
+              data-test="payment-option"
+              :data-payment-option-key="option.optionKey"
+              :data-payment-method="option.method"
+              :data-payment-provider="option.providerCode"
               @click="checkoutStore.selectPaymentOption(option.optionKey)"
             >
               <span
@@ -268,6 +279,14 @@ async function submitOrder(): Promise<void> {
         class="checkout-submit kiosk-touch-target"
         type="button"
         :disabled="!canSubmit"
+        data-test="checkout-submit"
+        :data-catalog-key="item.catalogKey"
+        :data-slot-id="item.slotId"
+        :data-slot-code="item.slotCode"
+        :data-payment-method="checkoutStore.selectedPaymentOption?.method ?? ''"
+        :data-payment-provider="
+          checkoutStore.selectedPaymentOption?.providerCode ?? ''
+        "
         @click="submitOrder"
       >
         {{ submitButtonText }}

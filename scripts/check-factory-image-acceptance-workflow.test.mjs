@@ -147,6 +147,18 @@ describe("Factory Image Acceptance workflow", () => {
       /ssh-keygen -q -t ed25519 -N '' -f "\$ssh_key_path"/,
     );
     assert.match(exchange, /maintenance-automation\/session\/ssh-certificate/);
+    assert.match(
+      exchange,
+      /const endpointVisibleSourceAddress = process\.env\.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE/,
+    );
+    assert.match(
+      exchange,
+      /JSON\.stringify\(\{ publicKey, requestId: crypto\.randomUUID\(\), endpointVisibleSourceAddress \}\)/,
+    );
+    assert.match(
+      exchange,
+      /response\.sourceAddress !== process\.env\.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE/,
+    );
     assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_IDENTITY_PATH/);
     assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_CERTIFICATE_PATH/);
     assert.match(
@@ -164,6 +176,11 @@ describe("Factory Image Acceptance workflow", () => {
       /rm -f "\$automation_token_path" "\$revoke_response_path"/,
     );
     assert.match(cleanup, /rm -rf -- "\$ssh_directory"/);
+    assert.ok(
+      cleanup.indexOf('rm -rf -- "$ssh_directory"') <
+        cleanup.indexOf('if [ -s "$automation_token_path" ]'),
+      "Factory SSH key material must be removed before fallible service cleanup",
+    );
   });
 
   it("starts a same-run ephemeral platform and writes the typed lifecycle input at runtime", () => {
@@ -206,7 +223,23 @@ describe("Factory Image Acceptance workflow", () => {
       workflow,
       /--mqtt-url\s+"mqtt:\/\/\$\{VEM_FACTORY_PLATFORM_INGRESS_HOST\}:18884"/,
     );
+    const preparePlatform = stepBlock("Prepare Same-Run Ephemeral Platform");
+    assert.match(
+      preparePlatform,
+      /VEM_EPHEMERAL_DATABASE_URL="\$DATABASE_URL"\s+pnpm --filter service-api testbed:prepare-ephemeral-platform/,
+    );
+    assert.doesNotMatch(preparePlatform, /--database-url/);
     assert.match(workflow, /curl -fsS "\$EPHEMERAL_API_READY_URL\/health"/);
+    const lifecycle = stepBlock("Run Typed Factory Lifecycle");
+    assert.match(
+      lifecycle,
+      /export VEM_FACTORY_EPHEMERAL_DATABASE_URL="\$DATABASE_URL"/,
+    );
+    assert.match(lifecycle, /unset VEM_FACTORY_EPHEMERAL_DATABASE_URL/);
+    assert.doesNotMatch(
+      stepBlock("Generate Typed Factory Lifecycle Input"),
+      /databaseUrl|database_url|VEM_FACTORY_EPHEMERAL_DATABASE_URL/,
+    );
     assert.match(workflow, /SERVICE_HOST: "0\.0\.0\.0"/);
     assert.match(workflow, /-p 18884:1883/);
     assert.doesNotMatch(workflow, /192\.168\.2\.23/);

@@ -11,7 +11,7 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
   const identity = {
     orderId: "order-1",
     paymentId: "payment-1",
-    transactionId: "transaction-1",
+    orderNo: "order-no-1",
     paymentUrl: "https://pay.example.test/order-1",
   };
   return {
@@ -43,14 +43,14 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
               payload: {
                 orderId: identity.orderId,
                 paymentId: identity.paymentId,
-                transactionId: identity.transactionId,
+                orderNo: identity.orderNo,
                 paymentStatus: "succeeded",
               },
             },
           ],
         },
         transaction: {
-          transactionId: identity.transactionId,
+          orderNo: identity.orderNo,
           orderId: identity.orderId,
           paymentId: identity.paymentId,
           reservationId: "reservation-1",
@@ -59,14 +59,14 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
         vendingCommand: {
           commandId: "command-1",
           orderId: identity.orderId,
-          transactionId: identity.transactionId,
+          orderNo: identity.orderNo,
           status: "succeeded",
           creationCount: 1,
         },
         stockMovement: {
           movementId: "movement-1",
           orderId: identity.orderId,
-          transactionId: identity.transactionId,
+          orderNo: identity.orderNo,
           commandId: "command-1",
           quantity: -1,
           status: "accepted",
@@ -75,7 +75,7 @@ function completeFacts(): BrowserInstalledKioskSaleContractFacts {
         fulfillment: {
           status: "succeeded",
           orderId: identity.orderId,
-          transactionId: identity.transactionId,
+          orderNo: identity.orderNo,
           commandId: "command-1",
           stockMovementId: "movement-1",
         },
@@ -207,7 +207,7 @@ describe("browser Installed Kiosk Sale UI contract", () => {
       boundary: "transaction -> vending command",
       breakBinding: (record) => {
         if (!record.vendingCommand) throw new Error("command missing");
-        record.vendingCommand.transactionId = "unrelated-transaction";
+        record.vendingCommand.orderNo = "unrelated-order-number";
       },
     },
     {
@@ -299,7 +299,7 @@ describe("browser Installed Kiosk Sale UI contract", () => {
       deliveredAt: "2026-07-15T00:00:01.800Z",
       payload: {
         ...facts.transactions[0].payment.statusDeliveries[0].payload,
-        transactionId: "unrelated-transaction",
+        orderNo: "unrelated-order-number",
       },
     });
 

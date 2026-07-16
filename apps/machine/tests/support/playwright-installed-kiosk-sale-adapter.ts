@@ -78,7 +78,7 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
           observedAt: new Date().toISOString(),
           orderId: element.getAttribute("data-order-id"),
           paymentId: element.getAttribute("data-payment-id"),
-          transactionId: element.getAttribute("data-transaction-id"),
+          orderNo: element.getAttribute("data-order-no"),
           paymentUrl: element.getAttribute("data-payment-url"),
           renderedQrSource: qr?.getAttribute("src") ?? null,
         };
@@ -86,7 +86,7 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     if (
       !surface.orderId ||
       !surface.paymentId ||
-      !surface.transactionId ||
+      !surface.orderNo ||
       !surface.paymentUrl ||
       !surface.renderedQrSource ||
       !URL.canParse(surface.paymentUrl)
@@ -97,7 +97,7 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
       observedAt: surface.observedAt,
       orderId: surface.orderId,
       paymentId: surface.paymentId,
-      transactionId: surface.transactionId,
+      orderNo: surface.orderNo,
       paymentUrl: surface.paymentUrl,
       renderedQrSource: surface.renderedQrSource,
       decodedQrPayload: decodeRenderedPaymentQr(surface.renderedQrSource),
@@ -254,7 +254,7 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
         route,
         orderId: element.getAttribute("data-order-id"),
         paymentId: element.getAttribute("data-payment-id"),
-        transactionId: element.getAttribute("data-transaction-id"),
+        orderNo: element.getAttribute("data-order-no"),
         paymentUrl: element.getAttribute("data-payment-url"),
         commandId: element.getAttribute("data-command-id"),
       }),
@@ -263,7 +263,7 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     if (
       !surface.orderId ||
       !surface.paymentId ||
-      !surface.transactionId ||
+      !surface.orderNo ||
       !surface.paymentUrl ||
       !surface.commandId ||
       !URL.canParse(surface.paymentUrl)
@@ -280,7 +280,7 @@ export class PlaywrightInstalledKioskSaleAdapter implements InstalledKioskSaleSc
     expect(observedSurface).toMatchObject({
       orderId: this.paymentSurface.orderId,
       paymentId: this.paymentSurface.paymentId,
-      transactionId: this.paymentSurface.transactionId,
+      orderNo: this.paymentSurface.orderNo,
       paymentUrl: this.paymentSurface.paymentUrl,
     });
     await this.control("observeTransactionSurface", observedSurface);

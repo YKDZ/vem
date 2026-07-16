@@ -319,6 +319,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(exchange, /MAINTENANCE_SSH_DIR=%s.*GITHUB_ENV/);
     assert.match(exchange, /install -d -m 0700 "\$MAINTENANCE_SSH_DIR"/);
+    assert.match(
+      workflow,
+      /VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE: \$\{\{ vars\.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE \}\}/,
+    );
+    assert.match(
+      exchange,
+      /if \(process\.env\.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE\) \{\s+body\.endpointVisibleSourceAddress = process\.env\.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE;/,
+    );
     for (const fileName of [
       "id_ed25519",
       "id_ed25519.pub",
@@ -387,7 +395,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     const bindAudioSession = stepBlock(
       workflow,
-      "Bind Active Kiosk Session For Native Audio Capture",
+      "Bind Refreshed Kiosk Session For Native Audio Capture",
     );
     const verifyAudio = stepBlock(
       workflow,
@@ -405,11 +413,17 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.match(audio, /if:\s+success\(\)/);
     assert.match(bindAudioSession, /win10-runtime-acceptance-report\.json/);
     assert.match(bindAudioSession, /value\.runtimeAcceptanceReport/);
+    assert.match(
+      bindAudioSession,
+      /bringUpStateProgression\?\.postSaleRuntimeAcceptance !== "passed"/,
+    );
+    assert.match(bindAudioSession, /value\.displayBinding\?\.cdpTargetId/);
     assert.doesNotMatch(
       bindAudioSession,
       /runtimeAcceptanceReport\s*\?\?\s*value/,
     );
     assert.match(bindAudioSession, /kiosk\?\.sessionUser !== "VEMKiosk"/);
+    assert.match(bindAudioSession, /kiosk\?\.acceptanceOverlayCdp !== true/);
     assert.match(bindAudioSession, /typeof kiosk\.cdpTargetId !== "string"/);
     assert.match(bindAudioSession, /A-Za-z0-9\._:-.*8,256/);
     assert.match(bindAudioSession, /VEM_ACTIVE_KIOSK_CDP_TARGET_ID/);

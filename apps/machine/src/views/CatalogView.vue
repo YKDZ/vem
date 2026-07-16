@@ -353,6 +353,7 @@ onUnmounted(() => {
       v-if="!selectedTopCategoryKey"
       class="catalog-home relative -mx-6 -my-5 flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
       :class="presenceClass"
+      data-test="catalog-page"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
@@ -444,6 +445,8 @@ onUnmounted(() => {
           "
           :disabled="!categoryHasProducts(category.key)"
           type="button"
+          data-test="catalog-category"
+          :data-category-key="category.key"
           @click="selectTopCategory(category.key)"
         >
           <img
@@ -468,6 +471,8 @@ onUnmounted(() => {
         v-if="categoryHasProducts('other')"
         class="home-other-products-entry kiosk-touch-target relative z-10 mt-3 shrink-0"
         type="button"
+        data-test="catalog-category"
+        data-category-key="other"
         @click="selectTopCategory('other')"
       >
         其他商品
@@ -557,6 +562,8 @@ onUnmounted(() => {
       v-else
       class="catalog-list relative flex min-h-0 flex-1 flex-col overflow-hidden px-[var(--machine-page-inline)] pt-[var(--machine-page-header-top)] pb-6"
       :class="presenceClass"
+      data-test="catalog-page"
+      :data-category-key="selectedTopCategoryKey"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
@@ -621,6 +628,8 @@ onUnmounted(() => {
             }"
             :disabled="!categoryHasProducts(category.key)"
             type="button"
+            data-test="catalog-category"
+            :data-category-key="category.key"
             @click="selectTopCategory(category.key)"
           >
             <span>
@@ -635,6 +644,8 @@ onUnmounted(() => {
               'sidebar-category-active': selectedTopCategoryKey === 'other',
             }"
             type="button"
+            data-test="catalog-category"
+            data-category-key="other"
             @click="selectTopCategory('other')"
           >
             <span>
@@ -667,6 +678,11 @@ onUnmounted(() => {
                 :key="product.id"
                 class="display-product-card"
                 type="button"
+                data-test="catalog-product"
+                :data-catalog-key="product.item.catalogKey"
+                :data-slot-id="product.item.slotId"
+                :data-slot-code="product.item.slotCode"
+                :data-variant-id="product.item.variantId"
                 @click="openProductDetail(product)"
               >
                 <div class="product-image-panel">

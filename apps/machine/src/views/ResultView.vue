@@ -247,7 +247,13 @@ onBeforeUnmount(stopAutoReturn);
     <section v-if="!projectedResult" class="result-empty-state">
       <p>正在恢复页面，请稍候。</p>
     </section>
-    <section v-else-if="isDispenseFailureResult" class="dispense-failure-page">
+    <section
+      v-else-if="isDispenseFailureResult"
+      class="dispense-failure-page"
+      data-test="result-page"
+      :data-result-kind="kind"
+      :data-result-display-intent="displayIntent"
+    >
       <div class="failure-mist failure-mist-left"></div>
       <div class="failure-mist failure-mist-right"></div>
 
@@ -348,9 +354,12 @@ onBeforeUnmount(stopAutoReturn);
       data-installed-kiosk-sale-result-surface
       :data-order-id="checkoutStore.transaction?.orderId ?? ''"
       :data-payment-id="checkoutStore.transaction?.paymentId ?? ''"
-      :data-transaction-id="checkoutStore.transaction?.orderNo ?? ''"
+      :data-order-no="checkoutStore.transaction?.orderNo ?? ''"
       :data-payment-url="checkoutStore.transaction?.paymentUrl ?? ''"
       :data-command-id="checkoutStore.transaction?.vending?.commandId ?? ''"
+      data-test="result-page"
+      :data-result-kind="kind"
+      :data-result-display-intent="displayIntent"
     >
       <div class="result-mist result-mist-left"></div>
       <div class="result-mist result-mist-right"></div>

@@ -51,6 +51,7 @@ export const maintenanceSshUserPublicKeySchema = z
   );
 
 export const issueMaintenanceSshCertificateRequestSchema = z.strictObject({
+  endpointVisibleSourceAddress: z.ipv4().optional(),
   publicKey: maintenanceSshUserPublicKeySchema,
   requestId: z.uuid(),
 });

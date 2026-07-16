@@ -10,12 +10,16 @@ describe("MaintenanceAccessController", () => {
     const listAudit = vi.fn().mockResolvedValue([]);
     const createHumanSession = vi.fn().mockResolvedValue({ id: "session-1" });
     const revokeSession = vi.fn().mockResolvedValue({ id: "session-1" });
+    const issueSshCertificateForHumanSession = vi
+      .fn()
+      .mockResolvedValue({ serial: 1 });
     const controller = new MaintenanceAccessController({
       getOverview,
       listSessions,
       listAudit,
       createHumanSession,
       revokeSession,
+      issueSshCertificateForHumanSession,
     } as never);
 
     expect(
@@ -85,5 +89,23 @@ describe("MaintenanceAccessController", () => {
       controller.revokeSession({ id: "admin-1" } as never, "session-1"),
     ).resolves.toEqual({ id: "session-1" });
     expect(revokeSession).toHaveBeenCalledWith("admin-1", "session-1");
+    await expect(
+      controller.issueSshCertificate({ id: "admin-1" } as never, "session-1", {
+        endpointVisibleSourceAddress: "192.168.122.1",
+        publicKey:
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH5k0JQb4ubKJw4kC9aSxX7IeH8w3OvEu4OR7ow7FJQ9",
+        requestId: "550e8400-e29b-41d4-a716-446655440003",
+      }),
+    ).resolves.toEqual({ serial: 1 });
+    expect(issueSshCertificateForHumanSession).toHaveBeenCalledWith(
+      "admin-1",
+      "session-1",
+      {
+        endpointVisibleSourceAddress: "192.168.122.1",
+        publicKey:
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH5k0JQb4ubKJw4kC9aSxX7IeH8w3OvEu4OR7ow7FJQ9",
+        requestId: "550e8400-e29b-41d4-a716-446655440003",
+      },
+    );
   });
 });

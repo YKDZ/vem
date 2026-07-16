@@ -57,6 +57,79 @@ function evidenceIdentity(digest) {
   return `factory-evidence://${digest.replace(":", "/")}`;
 }
 
+const NETWORK_IDENTITY = /^(?:https?|git\+(?:https|ssh)|ssh):\/\//i;
+
+function hasExplicitNetworkPort(value) {
+  const authority = value.slice(value.indexOf("://") + 3).split(/[/?#]/, 1)[0];
+  const host = authority.slice(authority.lastIndexOf("@") + 1);
+  if (host.startsWith("[")) {
+    return host.indexOf("]") !== host.length - 1;
+  }
+  return host.includes(":");
+}
+
+function parseNetworkIdentity(value, label) {
+  if (typeof value !== "string" || value !== value.trim()) {
+    throw new Error(`${label} must be a normalized non-empty string`);
+  }
+  if (/^git\+ssh:/i.test(value)) {
+    throw new Error(`${label} must not use git+ssh`);
+  }
+  if (hasExplicitNetworkPort(value)) {
+    throw new Error(`${label} must not contain an explicit port`);
+  }
+  const parseable = value.replace(/^git\+https:/i, "https:");
+  let url;
+  try {
+    url = new URL(parseable);
+  } catch {
+    throw new Error(`${label} is not a valid network identity`);
+  }
+  if (url.username || url.password || url.search || url.hash || url.port) {
+    throw new Error(`${label} must not contain credentials or URL modifiers`);
+  }
+  return url;
+}
+
+export function manifestSourceIdentity(value) {
+  if (typeof value !== "string" || value !== value.trim()) {
+    throw new Error("Candidate provenance source must be normalized");
+  }
+  if (/^git\+ssh:/i.test(value)) {
+    throw new Error("Candidate provenance source must not use git+ssh");
+  }
+  const gitCommit =
+    /^git\+https:\/\/([^@\s?#]+)@([a-f0-9]{40}|[a-f0-9]{64})$/i.exec(value);
+  if (gitCommit) {
+    const url = parseNetworkIdentity(
+      `git+https://${gitCommit[1]}`,
+      "Candidate provenance source",
+    );
+    if (!url.hostname || url.pathname === "/") {
+      throw new Error("Candidate provenance source must name a repository");
+    }
+    return `git-commit:${url.hostname}${url.pathname.replace(/\/$/, "")}@${gitCommit[2].toLowerCase()}`;
+  }
+  if (NETWORK_IDENTITY.test(value)) {
+    throw new Error(
+      "Candidate provenance source must bind an immutable Git commit",
+    );
+  }
+  return value;
+}
+
+export function manifestBuilderIdentity(value) {
+  if (typeof value !== "string" || value !== value.trim()) {
+    throw new Error("Candidate provenance builder must be normalized");
+  }
+  if (/^git\+ssh:/i.test(value)) {
+    throw new Error("Candidate provenance builder must not use git+ssh");
+  }
+  if (!NETWORK_IDENTITY.test(value)) return value;
+  parseNetworkIdentity(value, "Candidate provenance builder");
+  return `builder-uri-sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
 function canonicalBytes(value) {
   return Buffer.from(`${canonicalJson(value)}\n`);
 }
@@ -294,9 +367,10 @@ function createExperimentalFactoryManifest({
   const signatureEvidence = canonicalBytes(signatures.attestation);
   const signatureReference = evidenceReference(signatureEvidence);
   const provenanceReference = evidenceReference(documents.provenance);
+  const descriptorReference = evidenceReference(documents.descriptor);
   const release = {
-    descriptorIdentity: evidenceIdentity(verified.descriptorDigest),
-    descriptorDigest: verified.descriptorDigest,
+    descriptorIdentity: descriptorReference.identity,
+    descriptorDigest: descriptorReference.digest,
     attestationIdentity: evidenceIdentity(digestBytes(documents.attestation)),
     attestationDigest: digestBytes(documents.attestation),
     approvalIdentity: evidenceIdentity(digestBytes(documents.approval)),
@@ -320,8 +394,8 @@ function createExperimentalFactoryManifest({
     },
     provenance: {
       predicateType: "https://slsa.dev/provenance/v1",
-      sourceIdentity: resolvedSource,
-      builderIdentity,
+      sourceIdentity: manifestSourceIdentity(resolvedSource),
+      builderIdentity: manifestBuilderIdentity(builderIdentity),
       buildId,
       signerIdentity: verified.supplierIdentity,
       evidenceIdentity: provenanceReference.identity,

@@ -27,7 +27,7 @@ export const installedKioskSaleRouteSchema = z.enum([
 const linkedTransactionIdentitySchema = z.object({
   orderId: z.string().min(1),
   paymentId: z.string().min(1),
-  transactionId: z.string().min(1),
+  orderNo: z.string().min(1),
   paymentUrl: z.url(),
 });
 
@@ -35,7 +35,7 @@ export const installedKioskSaleCustomerPaymentSurfaceSchema = z.object({
   observedAt: z.iso.datetime(),
   orderId: z.string().min(1),
   paymentId: z.string().min(1),
-  transactionId: z.string().min(1),
+  orderNo: z.string().min(1),
   paymentUrl: z.url(),
   renderedQrSource: z.string().min(1),
   decodedQrPayload: z.url(),
@@ -100,14 +100,14 @@ export const installedKioskSaleLinkedTransactionSchema = z.object({
         payload: z.object({
           orderId: z.string().min(1),
           paymentId: z.string().min(1),
-          transactionId: z.string().min(1),
+          orderNo: z.string().min(1),
           paymentStatus: z.enum(["succeeded", "failed"]),
         }),
       }),
     ),
   }),
   transaction: z.object({
-    transactionId: z.string().min(1),
+    orderNo: z.string().min(1),
     orderId: z.string().min(1),
     paymentId: z.string().min(1),
     reservationId: z.string().min(1),
@@ -117,7 +117,7 @@ export const installedKioskSaleLinkedTransactionSchema = z.object({
     .object({
       commandId: z.string().min(1),
       orderId: z.string().min(1),
-      transactionId: z.string().min(1),
+      orderNo: z.string().min(1),
       status: z.enum(["sent", "succeeded", "failed"]),
       creationCount: z.number().int().nonnegative(),
     })
@@ -126,7 +126,7 @@ export const installedKioskSaleLinkedTransactionSchema = z.object({
     .object({
       movementId: z.string().min(1),
       orderId: z.string().min(1),
-      transactionId: z.string().min(1),
+      orderNo: z.string().min(1),
       commandId: z.string().min(1),
       quantity: z.number().int(),
       status: z.enum(["pending", "accepted", "rejected"]),
@@ -137,7 +137,7 @@ export const installedKioskSaleLinkedTransactionSchema = z.object({
     .object({
       status: z.enum(["succeeded", "failed"]),
       orderId: z.string().min(1),
-      transactionId: z.string().min(1),
+      orderNo: z.string().min(1),
       commandId: z.string().min(1),
       stockMovementId: z.string().min(1),
     })
@@ -227,14 +227,14 @@ function transactionBindingsMatch(
     transaction.reservationId === reservation.reservationId &&
     (!command ||
       (command.orderId === order.orderId &&
-        command.transactionId === transaction.transactionId)) &&
+        command.orderNo === transaction.orderNo)) &&
     (!movement ||
       (movement.orderId === order.orderId &&
-        movement.transactionId === transaction.transactionId &&
+        movement.orderNo === transaction.orderNo &&
         movement.commandId === command?.commandId)) &&
     (!fulfillment ||
       (fulfillment.orderId === order.orderId &&
-        fulfillment.transactionId === transaction.transactionId &&
+        fulfillment.orderNo === transaction.orderNo &&
         fulfillment.commandId === command?.commandId &&
         fulfillment.stockMovementId === movement?.movementId))
   );
@@ -258,16 +258,16 @@ function finalFulfillmentMatches(
     command.status === "succeeded" &&
     command.creationCount === 1 &&
     command.orderId === order.orderId &&
-    command.transactionId === transaction.transactionId &&
+    command.orderNo === transaction.orderNo &&
     movement.status === "accepted" &&
     movement.creationCount === 1 &&
     movement.quantity === -1 &&
     movement.orderId === order.orderId &&
-    movement.transactionId === transaction.transactionId &&
+    movement.orderNo === transaction.orderNo &&
     movement.commandId === command.commandId &&
     fulfillment.status === "succeeded" &&
     fulfillment.orderId === order.orderId &&
-    fulfillment.transactionId === transaction.transactionId &&
+    fulfillment.orderNo === transaction.orderNo &&
     fulfillment.commandId === command.commandId &&
     fulfillment.stockMovementId === movement.movementId,
   );
@@ -289,7 +289,7 @@ function inspectSideEffectCounts(
       delivery.deliveryId === firstDelivery?.deliveryId &&
       delivery.payload.orderId === record.order.orderId &&
       delivery.payload.paymentId === record.payment.paymentId &&
-      delivery.payload.transactionId === record.transaction.transactionId &&
+      delivery.payload.orderNo === record.transaction.orderNo &&
       delivery.payload.paymentStatus === "succeeded" &&
       JSON.stringify(delivery.payload) ===
         JSON.stringify(firstDelivery?.payload),
@@ -460,7 +460,7 @@ function inspectTimeline(
     if (
       entry.orderId !== record.order.orderId ||
       entry.paymentId !== record.payment.paymentId ||
-      entry.transactionId !== record.transaction.transactionId
+      entry.orderNo !== record.transaction.orderNo
     ) {
       addDiagnostic(
         diagnostics,

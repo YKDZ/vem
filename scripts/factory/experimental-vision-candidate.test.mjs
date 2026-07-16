@@ -10,6 +10,8 @@ import { describe, it } from "node:test";
 import {
   createPreapprovalDeliveryManifest,
   FACTORY_VISION_INSTALLER_FILES,
+  manifestBuilderIdentity,
+  manifestSourceIdentity,
   stageFactoryVisionInstaller,
   stagePreapprovalDeliveryUnit,
 } from "./experimental-vision-candidate.mjs";
@@ -18,7 +20,10 @@ import {
   verifyFactoryVisionDelivery,
   verifyPreapprovalDelivery,
 } from "./verify-vision-delivery-assembly.mjs";
-import { createVisionReleaseDescriptor } from "./vision-release.mjs";
+import {
+  createVisionReleaseDescriptor,
+  verifySignedVisionReleaseEvidence,
+} from "./vision-release.mjs";
 
 const digest = (bytes) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -31,18 +36,20 @@ function writeSignedCandidate(root) {
       predicate: {
         buildDefinition: {
           resolvedDependencies: [
-            { uri: "git+https://example.invalid/vision@abc" },
+            {
+              uri: `git+https://example.invalid/vision@${"a".repeat(40)}`,
+            },
           ],
         },
         runDetails: {
-          builder: { id: "builder:fixture" },
+          builder: { id: "https://github.com/actions/runner/windows" },
           metadata: { invocationId: "fixture-run-1" },
         },
       },
     }),
   );
   const descriptor = createVisionReleaseDescriptor({
-    releaseVersion: "0.2.1-rc.1",
+    releaseVersion: "0.2.1-rc.8",
     bundle: {
       digest: digest(bundle),
       bytes: bundle.length,
@@ -257,6 +264,45 @@ function writeBaseFactoryManifest(path) {
 }
 
 describe("experimental Vision preapproval delivery", () => {
+  it("normalizes only immutable credential-free provenance identities", () => {
+    const commit = "a".repeat(40);
+    assert.equal(
+      manifestSourceIdentity(
+        `git+https://github.com/hbhjt/vending-vision@${commit}`,
+      ),
+      `git-commit:github.com/hbhjt/vending-vision@${commit}`,
+    );
+    assert.equal(
+      manifestBuilderIdentity("https://github.com/actions/runner/windows"),
+      "builder-uri-sha256:79bf7ae0eb73b778188a967d2bf120bf6187afce6c156ccfa575b89e9fe94d39",
+    );
+    for (const source of [
+      "git+https://github.com/hbhjt/vending-vision@main",
+      `git+https://github.com/hbhjt/vending-vision@${commit}?mutable=true`,
+      `git+https://github.com/hbhjt/vending-vision@${commit}#fragment`,
+      ` git+https://github.com/hbhjt/vending-vision@${commit}`,
+      `git+https://user@example.invalid/vision@${commit}`,
+      `git+https://example.invalid:443/vision@${commit}`,
+      `git+ssh://example.invalid/vision@${commit}`,
+    ]) {
+      assert.throws(() => manifestSourceIdentity(source), /provenance source/i);
+    }
+    for (const builder of [
+      " git+https://example.invalid/builder",
+      "git+https://user@example.invalid/builder",
+      "https://example.invalid/builder?mutable=true",
+      "https://example.invalid:443/builder",
+      "https://example.invalid/builder#fragment",
+      "git+ssh://example.invalid/builder",
+      "git+ssh:example.invalid/builder",
+    ]) {
+      assert.throws(
+        () => manifestBuilderIdentity(builder),
+        /provenance builder/i,
+      );
+    }
+  });
+
   it("stages every finalizer script through the actual Factory producer", () => {
     const staged = new Map();
     stageFactoryVisionInstaller((relative, bytes) =>
@@ -376,7 +422,7 @@ describe("experimental Vision preapproval delivery", () => {
         "--candidate-dir",
         candidateRoot,
         "--tag",
-        "v0.2.1-rc.1",
+        "v0.2.1-rc.8",
         "--expected-bundle-digest",
         digest(candidate.bundle),
         "--expected-supplier-identity",
@@ -460,6 +506,105 @@ describe("experimental Vision preapproval delivery", () => {
       );
       assert.equal(finalizer.status, 0, finalizer.stderr);
       const stagedFactory = join(finalizerRoot, "VEM");
+      const finalizedManifest = JSON.parse(
+        readFileSync(
+          join(stagedFactory, "VISION-RELEASE", "factory-manifest.json"),
+          "utf8",
+        ),
+      );
+      const finalizedVision = finalizedManifest.assets.find(
+        (asset) => asset.role === "vision-release",
+      );
+      const finalizedApprovalBytes = readFileSync(
+        join(stagedFactory, "VISION-RELEASE", "approval.json"),
+      );
+      const finalizedDescriptorBytes = readFileSync(
+        join(stagedFactory, "VISION-RELEASE", "descriptor.json"),
+      );
+      assert.equal(
+        finalizedVision.release.descriptorDigest,
+        digest(finalizedDescriptorBytes),
+      );
+      assert.equal(
+        finalizedVision.release.descriptorIdentity,
+        `factory-evidence://${digest(finalizedDescriptorBytes).replace(":", "/")}`,
+      );
+      assert.equal(
+        finalizedVision.release.approvalDigest,
+        digest(finalizedApprovalBytes),
+      );
+      assert.equal(
+        finalizedVision.release.approvalIdentity,
+        `factory-evidence://${digest(finalizedApprovalBytes).replace(":", "/")}`,
+      );
+      assert.equal(
+        finalizedVision.provenance.sourceIdentity,
+        `git-commit:example.invalid/vision@${"a".repeat(40)}`,
+      );
+      assert.match(
+        finalizedVision.provenance.builderIdentity,
+        /^builder-uri-sha256:[a-f0-9]{64}$/,
+      );
+      const delivery = JSON.parse(
+        readFileSync(join(finalizerRoot, "delivery-unit.json"), "utf8"),
+      );
+      const documents = Object.fromEntries(
+        Object.entries(delivery.documents).map(([role, value]) => [
+          role,
+          Buffer.from(value, "base64"),
+        ]),
+      );
+      verifySignedVisionReleaseEvidence({
+        manifestAsset: {
+          role: finalizedVision.role,
+          digest: finalizedVision.digest,
+          version: finalizedVision.version,
+          release: finalizedVision.release,
+        },
+        documents,
+        signatures: delivery.signatures,
+        approvedIdentities: {
+          descriptor: [candidate.supplierIdentity],
+          attestation: [candidate.supplierIdentity],
+          sbom: [candidate.supplierIdentity],
+          provenance: [candidate.supplierIdentity],
+          conformance: [acceptanceIdentity],
+          approval: [acceptanceIdentity],
+        },
+      });
+      const contentDescriptorIdentity = JSON.parse(
+        finalizedDescriptorBytes.toString("utf8"),
+      ).identity;
+      assert.notEqual(
+        contentDescriptorIdentity,
+        finalizedVision.release.descriptorDigest,
+      );
+      assert.throws(
+        () =>
+          verifySignedVisionReleaseEvidence({
+            manifestAsset: {
+              role: finalizedVision.role,
+              digest: finalizedVision.digest,
+              version: finalizedVision.version,
+              release: {
+                ...finalizedVision.release,
+                descriptorIdentity: `factory-evidence://${contentDescriptorIdentity.replace(":", "/")}`,
+                descriptorDigest: contentDescriptorIdentity,
+              },
+            },
+            documents,
+            signatures: delivery.signatures,
+            approvedIdentities: {
+              descriptor: [candidate.supplierIdentity],
+              attestation: [candidate.supplierIdentity],
+              sbom: [candidate.supplierIdentity],
+              provenance: [candidate.supplierIdentity],
+              conformance: [acceptanceIdentity],
+              approval: [acceptanceIdentity],
+            },
+          }),
+        /Factory Manifest.*descriptor|selection must match/i,
+      );
       verifyFactoryVisionDelivery(stagedFactory);
       const factoryProof = spawnSync(
         process.execPath,

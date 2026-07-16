@@ -239,6 +239,9 @@ describe("DispensingView", () => {
 
     const host = await mountView();
 
+    expect(host.querySelector('[data-test="dispensing-page"]')).toBeInstanceOf(
+      HTMLElement,
+    );
     expect(host.textContent).toContain("正在出货");
     expect(routerReplaceMock).not.toHaveBeenCalled();
   });

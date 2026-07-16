@@ -712,6 +712,11 @@ describe("ResultView", () => {
     expect(host.textContent).toContain("等待人工处理");
     expect(host.textContent).toContain("订单凭证 ORD-UNKNOWN-001");
     expect(host.textContent).toContain("出货结果待确认");
+    const page = host.querySelector('[data-test="result-page"]');
+    expect(page?.getAttribute("data-result-kind")).toBe("manual_handling");
+    expect(page?.getAttribute("data-result-display-intent")).toBe(
+      "manual_handling",
+    );
     expect(host.textContent).not.toContain("返回首页");
   });
 

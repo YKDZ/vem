@@ -32,4 +32,26 @@ describe("MaintenanceAccessService", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(transaction).not.toHaveBeenCalled();
   });
+
+  it("rejects endpoint-visible certificate source overrides for human issuance before opening a transaction", async () => {
+    const transaction = vi.fn();
+    const service = new MaintenanceAccessService(
+      { transaction } as never,
+      config,
+    );
+
+    await expect(
+      service.issueSshCertificateForHumanSession(
+        "550e8400-e29b-41d4-a716-446655440010",
+        "550e8400-e29b-41d4-a716-446655440011",
+        {
+          endpointVisibleSourceAddress: "192.168.122.1",
+          publicKey:
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH5k0JQb4ubKJw4kC9aSxX7IeH8w3OvEu4OR7ow7FJQ9",
+          requestId: "550e8400-e29b-41d4-a716-446655440012",
+        },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction).not.toHaveBeenCalled();
+  });
 });

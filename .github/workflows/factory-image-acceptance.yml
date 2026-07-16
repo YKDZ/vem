@@ -231,13 +231,17 @@ jobs:
           const fs = require("node:fs");
           const publicKey = fs.readFileSync(process.argv[2], "utf8").trim().split(/\s+/).slice(0, 2).join(" ");
           if (!publicKey.startsWith("ssh-ed25519 ")) throw new Error("runner SSH public key must be ed25519");
-          fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID() }), { mode: 0o600 });
+          const endpointVisibleSourceAddress = process.env.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE;
+          if (!endpointVisibleSourceAddress) throw new Error("VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE is required for the SSH certificate source binding");
+          fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID(), endpointVisibleSourceAddress }), { mode: 0o600 });
           NODE
           { printf 'header = "Authorization: Bearer %s"\n' "$token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$control_plane/maintenance-automation/session/ssh-certificate"
           node - "$ssh_response_path" "$ssh_certificate_path" <<'NODE'
           const fs = require("node:fs");
-          const certificate = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data?.certificate;
+          const response = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data;
+          const certificate = response?.certificate;
           if (typeof certificate !== "string" || !certificate.startsWith("ssh-ed25519-cert-v01@openssh.com ")) throw new Error("maintenance SSH certificate response is invalid");
+          if (response.sourceAddress !== process.env.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE) throw new Error("maintenance SSH certificate source binding does not match endpoint.bootstrap.runnerSourceAllowlist");
           fs.writeFileSync(process.argv[3], `${certificate}\n`, { mode: 0o600 });
           NODE
           chmod 600 "$ssh_certificate_path"
@@ -319,10 +323,9 @@ jobs:
           evidence_root="$GITHUB_WORKSPACE/artifacts/factory-image-acceptance/lifecycle/$RUN_ID"
           mkdir -p "$evidence_root"
           machine_prefix="VEM-TESTBED-FACTORY"
-          pnpm --filter service-api testbed:prepare-ephemeral-platform -- \
+          VEM_EPHEMERAL_DATABASE_URL="$DATABASE_URL" pnpm --filter service-api testbed:prepare-ephemeral-platform -- \
             --run-id "$RUN_ID" \
             --machine-code-prefix "$machine_prefix" \
-            --database-url "$DATABASE_URL" \
             --api-base-url "http://${VEM_FACTORY_PLATFORM_INGRESS_HOST}:26850/api" \
             --mqtt-url "mqtt://${VEM_FACTORY_PLATFORM_INGRESS_HOST}:18884" \
             --maintenance-relay-peer-id "$MAINTENANCE_RELAY_PEER_ID" \
@@ -427,6 +430,7 @@ jobs:
         run: |
           set -euo pipefail
           export VEM_FACTORY_PERSONALIZATION_RUNNER_NAME="$RUNNER_NAME"
+          export VEM_FACTORY_EPHEMERAL_DATABASE_URL="$DATABASE_URL"
           admission_tmp="$VEM_FACTORY_WORK_ROOT/acceptance-tmp/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           rm -rf "$admission_tmp"
           mkdir -p "$admission_tmp"
@@ -435,6 +439,7 @@ jobs:
           mkdir -p "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"
           chmod 700 "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR"
           node scripts/testbed/factory-image-acceptance.mjs
+          unset VEM_FACTORY_EPHEMERAL_DATABASE_URL
           node - "$VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH" <<'NODE'
           const fs = require("node:fs");
           const input = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -473,6 +478,11 @@ jobs:
           revoke_response_path="$RUNNER_TEMP/factory-maintenance-session-revoke.json"
           session_path="$RUNNER_TEMP/factory-maintenance-session.json"
           ssh_directory="${VEM_FACTORY_MAINTENANCE_SSH_DIR:-$RUNNER_TEMP/vem-factory-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+          rm -rf -- "$ssh_directory" || failed=1
+          if [ -e "$ssh_directory" ]; then
+            echo "run-scoped Factory Maintenance SSH directory remained after cleanup: $ssh_directory" >&2
+            failed=1
+          fi
           if [ -s "$automation_token_path" ]; then
             control_plane="${MAINTENANCE_CONTROL_PLANE_URL%/}"
             automation_token="$(<"$automation_token_path")"
@@ -530,11 +540,6 @@ jobs:
             failed=1
           fi
           rm -f "$automation_token_path" "$revoke_response_path"
-          rm -rf -- "$ssh_directory" || failed=1
-          if [ -e "$ssh_directory" ]; then
-            echo "run-scoped Factory Maintenance SSH directory remained after cleanup: $ssh_directory" >&2
-            failed=1
-          fi
           rm -rf "$RUNNER_TEMP/vem-factory-mosquitto" "$RUNNER_TEMP/factory-image-acceptance-input.json" "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR" "$RUNNER_TEMP/factory-maintenance-oidc.json" "$RUNNER_TEMP/factory-maintenance-exchange.json" "$RUNNER_TEMP/factory-maintenance-exchange.json.request" "$RUNNER_TEMP/factory-maintenance-session-created.json" "$RUNNER_TEMP/factory-maintenance-session.json" "$RUNNER_TEMP/factory-maintenance-relay-attestation.json"
           exit "$failed"
 

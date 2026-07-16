@@ -242,6 +242,9 @@ describe("PaymentView", () => {
 
     const host = await mountView();
 
+    const page = host.querySelector('[data-test="payment-page"]');
+    expect(page?.getAttribute("data-payment-method")).toBe("qr_code");
+    expect(page?.getAttribute("data-payment-provider")).toBe("alipay");
     expect(host.querySelector(".payment-countdown")?.textContent).toBe("01:23");
   });
 

@@ -285,7 +285,15 @@ async function enterTryOn(): Promise<void> {
 
 <template>
   <KioskLayout>
-    <section v-if="item" class="product-detail-page">
+    <section
+      v-if="item"
+      class="product-detail-page"
+      data-test="product-detail-page"
+      :data-catalog-key="item.catalogKey"
+      :data-slot-id="selectedConcreteItem?.slotId ?? item.slotId"
+      :data-slot-code="selectedConcreteItem?.slotCode ?? item.slotCode"
+      :data-variant-id="selectedVariant?.variantId ?? item.variantId"
+    >
       <div class="detail-mist detail-mist-left"></div>
       <div class="detail-mist detail-mist-right"></div>
 
@@ -459,6 +467,11 @@ async function enterTryOn(): Promise<void> {
               class="detail-buy-button kiosk-touch-target"
               type="button"
               :disabled="!canBuy"
+              data-test="product-buy"
+              :data-catalog-key="item.catalogKey"
+              :data-slot-id="selectedConcreteItem?.slotId ?? item.slotId"
+              :data-slot-code="selectedConcreteItem?.slotCode ?? item.slotCode"
+              :data-variant-id="selectedVariant?.variantId ?? item.variantId"
               @click="purchase"
             >
               {{ canBuy ? `立即购买 ${priceText}` : "该规格暂不可购买" }}

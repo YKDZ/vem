@@ -196,8 +196,11 @@ onUnmounted(() => {
       data-installed-kiosk-sale-payment-surface
       :data-order-id="checkoutStore.transaction?.orderId ?? ''"
       :data-payment-id="checkoutStore.transaction?.paymentId ?? ''"
-      :data-transaction-id="checkoutStore.transaction?.orderNo ?? ''"
+      :data-order-no="checkoutStore.transaction?.orderNo ?? ''"
       :data-payment-url="paymentView.paymentUrl ?? ''"
+      data-test="payment-page"
+      :data-payment-method="paymentView.method"
+      :data-payment-provider="paymentView.provider"
     >
       <div class="payment-mist payment-mist-left"></div>
       <div class="payment-mist payment-mist-right"></div>

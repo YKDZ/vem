@@ -302,8 +302,6 @@ describe("parseCliOptions", () => {
     "--run-id",
     "issue-179",
     "--machine-code-prefix=VEM-TESTBED-ACCEPT",
-    "--database-url",
-    "postgres://testbed:testbed@127.0.0.1:5432/vem_testbed_issue_179",
     "--api-base-url",
     "http://127.0.0.1:3000/api",
     "--mqtt-url",
@@ -317,8 +315,12 @@ describe("parseCliOptions", () => {
     "--allow-ephemeral-target",
     "--allow-mock-payment",
   ];
+  const privateDatabaseEnv = {
+    VEM_EPHEMERAL_DATABASE_URL:
+      "postgres://testbed:testbed@127.0.0.1:5432/vem_testbed_issue_179",
+  };
 
-  it("rejects ambient env-only stack targets", () => {
+  it("requires the private database URL environment variable", () => {
     expect(() =>
       parseCliOptions([], {
         DATABASE_URL: "postgres://test",
@@ -328,7 +330,7 @@ describe("parseCliOptions", () => {
         TESTBED_MACHINE_CODE_PREFIX: "VEM-TESTBED-ACCEPT",
         PAYMENT_MOCK_ENABLED: "true",
       }),
-    ).toThrow("--database-url is required");
+    ).toThrow("VEM_EPHEMERAL_DATABASE_URL is required");
   });
 
   it("requires non-default run id and explicit ephemeral target acknowledgement", () => {
@@ -337,14 +339,14 @@ describe("parseCliOptions", () => {
         explicitSafeArgs.filter(
           (arg) => arg !== "--run-id" && arg !== "issue-179",
         ),
-        { PAYMENT_MOCK_ENABLED: "true" },
+        { ...privateDatabaseEnv, PAYMENT_MOCK_ENABLED: "true" },
       ),
     ).toThrow("--run-id is required");
 
     expect(() =>
       parseCliOptions(
         explicitSafeArgs.filter((arg) => arg !== "--allow-ephemeral-target"),
-        { PAYMENT_MOCK_ENABLED: "true" },
+        { ...privateDatabaseEnv, PAYMENT_MOCK_ENABLED: "true" },
       ),
     ).toThrow("--allow-ephemeral-target is required");
   });
@@ -357,7 +359,7 @@ describe("parseCliOptions", () => {
             arg !== "--maintenance-relay-peer-id" &&
             arg !== "550e8400-e29b-41d4-a716-446655440010",
         ),
-        { PAYMENT_MOCK_ENABLED: "true" },
+        { ...privateDatabaseEnv, PAYMENT_MOCK_ENABLED: "true" },
       ),
     ).toThrow("--maintenance-relay-peer-id is required");
   });
@@ -368,20 +370,17 @@ describe("parseCliOptions", () => {
         explicitSafeArgs.map((arg) =>
           arg === "mqtt://127.0.0.1:1883" ? "mqtt://118.25.104.160:1883" : arg,
         ),
-        { PAYMENT_MOCK_ENABLED: "true" },
+        { ...privateDatabaseEnv, PAYMENT_MOCK_ENABLED: "true" },
       ),
     ).toThrow(/Refusing known production or VPS target/);
 
     expect(() =>
-      parseCliOptions(
-        explicitSafeArgs.map((arg) =>
-          arg ===
-          "postgres://testbed:testbed@127.0.0.1:5432/vem_testbed_issue_179"
-            ? "postgres://vem:secret@db.example.com:5432/vem"
-            : arg,
-        ),
-        { PAYMENT_MOCK_ENABLED: "true" },
-      ),
+      parseCliOptions(explicitSafeArgs, {
+        ...privateDatabaseEnv,
+        VEM_EPHEMERAL_DATABASE_URL:
+          "postgres://vem:secret@db.example.com:5432/vem",
+        PAYMENT_MOCK_ENABLED: "true",
+      }),
     ).toThrow(/Refusing known production or VPS target/);
   });
 
@@ -389,12 +388,15 @@ describe("parseCliOptions", () => {
     expect(() =>
       parseCliOptions(
         explicitSafeArgs.filter((arg) => arg !== "--allow-mock-payment"),
-        { PAYMENT_MOCK_ENABLED: "true" },
+        { ...privateDatabaseEnv, PAYMENT_MOCK_ENABLED: "true" },
       ),
     ).toThrow("--allow-mock-payment is required");
 
     expect(
-      parseCliOptions(explicitSafeArgs, { PAYMENT_MOCK_ENABLED: "false" }),
+      parseCliOptions(explicitSafeArgs, {
+        ...privateDatabaseEnv,
+        PAYMENT_MOCK_ENABLED: "false",
+      }),
     ).toMatchObject({
       allowMockPayment: true,
       runtimePaymentMockEnabled: false,
@@ -403,10 +405,14 @@ describe("parseCliOptions", () => {
 
   it("rejects claim TTLs shorter than a clean install and defaults to two hours", () => {
     expect(
-      parseCliOptions(explicitSafeArgs, { PAYMENT_MOCK_ENABLED: "true" }),
+      parseCliOptions(explicitSafeArgs, {
+        ...privateDatabaseEnv,
+        PAYMENT_MOCK_ENABLED: "true",
+      }),
     ).toMatchObject({ claimCodeTtlSeconds: 7200 });
     expect(() =>
       parseCliOptions(explicitSafeArgs, {
+        ...privateDatabaseEnv,
         PAYMENT_MOCK_ENABLED: "true",
         MACHINE_CLAIM_CODE_TTL_SECONDS: "7199",
       }),
@@ -420,8 +426,6 @@ describe("parseCliOptions", () => {
           "--run-id",
           "issue-179",
           "--machine-code-prefix=VEM-TESTBED-ACCEPT",
-          "--database-url",
-          "postgres://testbed:testbed@127.0.0.1:5432/vem_testbed_issue_179",
           "--api-base-url",
           "http://127.0.0.1:3000/api",
           "--mqtt-url",
@@ -438,7 +442,7 @@ describe("parseCliOptions", () => {
           "--output",
           "/tmp/evidence.json",
         ],
-        { PAYMENT_MOCK_ENABLED: "true" },
+        { ...privateDatabaseEnv, PAYMENT_MOCK_ENABLED: "true" },
       ),
     ).toMatchObject({
       runId: "issue-179",

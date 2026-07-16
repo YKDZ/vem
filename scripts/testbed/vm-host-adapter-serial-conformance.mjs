@@ -440,11 +440,24 @@ export function validateSerialConformanceReport(
       typeof collectedSale.vendingCommandId === "string",
     "serial collection must complete the injected sale without relabeling it",
   );
-  validateFailureMatrix(
-    conformance.failureMatrix,
-    collectedSale,
-    lifecycleIdentity(start),
-  );
+  if (conformance.profile === "installed-kiosk-sale") {
+    assertConformance(
+      conformance.customerUiSale?.orderId === collectedSale.orderId &&
+        conformance.customerUiSale?.paymentId === collectedSale.paymentId &&
+        conformance.customerUiSale?.orderNo &&
+        conformance.customerUiSale?.scenarioSha256 &&
+        inject.request.serialSession.saleBindings?.length === 1 &&
+        collect.request.serialSession.saleBindings?.length === 1 &&
+        !Object.hasOwn(conformance, "failureMatrix"),
+      "installed kiosk sale conformance must derive one rendered customer sale from exact serial operations",
+    );
+  } else {
+    validateFailureMatrix(
+      conformance.failureMatrix,
+      collectedSale,
+      lifecycleIdentity(start),
+    );
+  }
   return { ...conformance, reports: validatedReports };
 }
 
@@ -775,6 +788,24 @@ function readProtectedScannerCode() {
   }
 }
 
+function readCustomerUiSaleBinding() {
+  const path = readOption("--customer-ui-sale-binding-file", {
+    optional: true,
+  });
+  if (!path) return null;
+  let binding;
+  try {
+    binding = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error("--customer-ui-sale-binding-file must contain JSON");
+  }
+  for (const field of ["orderId", "paymentId", "orderNo", "scenarioSha256"]) {
+    if (typeof binding?.[field] !== "string" || binding[field].trim() === "")
+      throw new Error(`customer UI sale binding requires ${field}`);
+  }
+  return binding;
+}
+
 function nonce() {
   return `op-${randomBytes(16).toString("hex")}`;
 }
@@ -913,6 +944,7 @@ async function main() {
   const approvedRuntimeBase = readOption("--approved-runtime-base");
   const lifecycleReference = readOption("--lifecycle-reference");
   const saleCorrelationId = readOption("--sale-correlation-id");
+  const customerUiSale = readCustomerUiSaleBinding();
   const contractTest =
     process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY === "1";
   const workDirectory = join(
@@ -929,11 +961,13 @@ async function main() {
   let repeatedStop;
   let recoveryStop;
   let failureMatrix;
-  const failureMatrixArtifactPaths = contractTest
+  const failureMatrixArtifactPaths = customerUiSale
     ? null
-    : readFailureMatrixArtifactPaths(
-        readOption("--failure-matrix-artifact-paths-json"),
-      );
+    : contractTest
+      ? null
+      : readFailureMatrixArtifactPaths(
+          readOption("--failure-matrix-artifact-paths-json"),
+        );
   let session;
   let startRequest;
   let injectRequest;
@@ -968,17 +1002,24 @@ async function main() {
       start,
     );
     session = start.serialSession;
-    preparedSale = contractTest
+    preparedSale = customerUiSale
       ? {
           saleCorrelationId,
-          orderId: readOption("--order-id"),
-          paymentId: readOption("--payment-id"),
+          orderId: customerUiSale.orderId,
+          paymentId: customerUiSale.paymentId,
           vendingCommandId: null,
         }
-      : runSaleCommand(
-          readCommandJson("--sale-prepare-command-json"),
-          "prepare",
-        );
+      : contractTest
+        ? {
+            saleCorrelationId,
+            orderId: readOption("--order-id"),
+            paymentId: readOption("--payment-id"),
+            vendingCommandId: null,
+          }
+        : runSaleCommand(
+            readCommandJson("--sale-prepare-command-json"),
+            "prepare",
+          );
     const scannerDescriptor = createScannerCodeDescriptor(scannerCode);
     injectRequest = requestFor({
       operation: "inject-scanner-code",
@@ -1080,49 +1121,51 @@ async function main() {
     });
     if (!repeatedStop.serialSession.simulatorCleanup.idempotencyVerified)
       throw new Error("adapter did not prove repeated serial stop idempotency");
-    failureMatrix = contractTest
-      ? (
-          await runFailureMatrix({
+    failureMatrix = customerUiSale
+      ? undefined
+      : contractTest
+        ? (
+            await runFailureMatrix({
+              runId,
+              targetIdentity,
+              lifecycleReference,
+              approvedRuntimeBase,
+              saleCorrelationId,
+              saleBinding: completedSale,
+              scannerCode,
+              workDirectory,
+              environment,
+              ...maintenanceEndpointContext,
+            })
+          ).map((entry) =>
+            entry.failureMode === "swapped-roles" ||
+            entry.failureMode === "missing-device"
+              ? {
+                  ...entry,
+                  recovery: {
+                    runtimeReady: "passed",
+                    hardwareOnline: true,
+                    scannerOnline: true,
+                    ready: true,
+                  },
+                }
+              : entry,
+          )
+        : await runProductionFailureMatrix({
             runId,
             targetIdentity,
             lifecycleReference,
             approvedRuntimeBase,
             saleCorrelationId,
-            saleBinding: completedSale,
+            successfulSaleBinding: completedSale,
             scannerCode,
             workDirectory,
             environment,
+            failureCommands: readFailureMatrixCommands(
+              readOption("--failure-matrix-commands-json"),
+            ),
             ...maintenanceEndpointContext,
-          })
-        ).map((entry) =>
-          entry.failureMode === "swapped-roles" ||
-          entry.failureMode === "missing-device"
-            ? {
-                ...entry,
-                recovery: {
-                  runtimeReady: "passed",
-                  hardwareOnline: true,
-                  scannerOnline: true,
-                  ready: true,
-                },
-              }
-            : entry,
-        )
-      : await runProductionFailureMatrix({
-          runId,
-          targetIdentity,
-          lifecycleReference,
-          approvedRuntimeBase,
-          saleCorrelationId,
-          successfulSaleBinding: completedSale,
-          scannerCode,
-          workDirectory,
-          environment,
-          failureCommands: readFailureMatrixCommands(
-            readOption("--failure-matrix-commands-json"),
-          ),
-          ...maintenanceEndpointContext,
-        });
+          });
     if (failureMatrixArtifactPaths)
       writeFailureMatrixArtifacts(failureMatrix, failureMatrixArtifactPaths);
   } catch (error) {
@@ -1154,6 +1197,17 @@ async function main() {
     const conformance = {
       schemaVersion: "vem-vm-host-adapter-serial-conformance/v1",
       runId,
+      ...(customerUiSale
+        ? {
+            profile: "installed-kiosk-sale",
+            customerUiSale: {
+              orderId: customerUiSale.orderId,
+              paymentId: customerUiSale.paymentId,
+              orderNo: customerUiSale.orderNo,
+              scenarioSha256: customerUiSale.scenarioSha256,
+            },
+          }
+        : {}),
       requests: {
         start: startRequest,
         inject: injectRequest,
@@ -1183,7 +1237,7 @@ async function main() {
         repeatedStop,
         recoveryStop,
       },
-      failureMatrix,
+      ...(failureMatrix === undefined ? {} : { failureMatrix }),
     };
     commitRunnerConformance(runnerEvidence, conformance);
     writeFileSync(out, `${JSON.stringify(conformance, null, 2)}\n`, {
