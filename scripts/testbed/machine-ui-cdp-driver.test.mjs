@@ -13,6 +13,7 @@ import {
   assertTargetDebuggerWebSocketUrl,
   captureScreenshot,
   bindMachineUiRuntimeEvidence,
+  buildWindowsMachineUiInspectionScript,
   discoverMachineUiTarget,
   inspectWindowsMachineUiRuntimeForTest,
   normalizeMachineRoute,
@@ -335,12 +336,16 @@ describe("machine-ui-cdp-driver", () => {
 
     const child = new FakeChildProcess();
     let args;
+    const inspectionScript = buildWindowsMachineUiInspectionScript({
+      machinePath: ATTESTATION.machine.executablePath,
+      remoteCdpPort: 9222,
+    });
     const command = runWindowsPowerShellOverSshForTest(
       {
         remote: "YKDZ@win10.test",
         sshKnownHostsPath: "/tmp/vem-known-hosts",
         sshHostKeyAlias: "vem-factory-run-180",
-        script: "Write-Output '{}'",
+        script: inspectionScript,
       },
       {
         processAdapter: {
@@ -367,7 +372,14 @@ describe("machine-ui-cdp-driver", () => {
     assert.equal(args.at(-2), "-EncodedCommand");
     assert.equal(
       Buffer.from(args.at(-1), "base64").toString("utf16le"),
-      "Write-Output '{}'",
+      inspectionScript
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .join(" "),
+    );
+    assert.ok(
+      `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${args.at(-1)}`
+        .length < 8191,
     );
   });
 

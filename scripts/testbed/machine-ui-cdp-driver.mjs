@@ -438,21 +438,21 @@ $machinePath = [System.IO.Path]::GetFullPath([System.Text.Encoding]::UTF8.GetStr
 $machine = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object {
   $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath)
 })
-if ($machine.Count -ne 1) { throw "expected exactly one machine.exe at $machinePath, found $($machine.Count)" }
+if ($machine.Count -ne 1) { throw "machine_count:$($machine.Count)" }
 $machineCim = $machine[0]
 $machineProcess = Get-Process -Id ([int]$machineCim.ProcessId) -ErrorAction Stop
 $machineOwner = Invoke-CimMethod -InputObject $machineCim -MethodName GetOwner -ErrorAction Stop
 $machinePrincipal = "{0}\\{1}" -f [string]$machineOwner.Domain, [string]$machineOwner.User
-if ([string]::IsNullOrWhiteSpace([string]$machineOwner.Domain) -or [string]::IsNullOrWhiteSpace([string]$machineOwner.User)) { throw 'machine.exe owner must include Domain and User' }
+if ([string]::IsNullOrWhiteSpace([string]$machineOwner.Domain) -or [string]::IsNullOrWhiteSpace([string]$machineOwner.User)) { throw 'machine_owner' }
 $listeners = @(Get-NetTCPConnection -LocalPort ${remoteCdpPort} -State Listen -ErrorAction Stop | Where-Object {
   [string]$_.LocalAddress -ceq '127.0.0.1'
 })
-if ($listeners.Count -ne 1) { throw "expected exactly one loopback CDP listener on port ${remoteCdpPort}, found $($listeners.Count)" }
+if ($listeners.Count -ne 1) { throw "listener_count:$($listeners.Count)" }
 $listenerCim = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$listeners[0].OwningProcess)" -ErrorAction Stop
 $listenerProcess = Get-Process -Id ([int]$listenerCim.ProcessId) -ErrorAction Stop
 $listenerOwner = Invoke-CimMethod -InputObject $listenerCim -MethodName GetOwner -ErrorAction Stop
 $listenerPrincipal = "{0}\\{1}" -f [string]$listenerOwner.Domain, [string]$listenerOwner.User
-if ([string]::IsNullOrWhiteSpace([string]$listenerOwner.Domain) -or [string]::IsNullOrWhiteSpace([string]$listenerOwner.User)) { throw 'CDP listener owner must include Domain and User' }
+if ([string]::IsNullOrWhiteSpace([string]$listenerOwner.Domain) -or [string]::IsNullOrWhiteSpace([string]$listenerOwner.User)) { throw 'listener_owner' }
 $cursor = $listenerCim
 $ancestor = $null
 for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth += 1) {
@@ -461,9 +461,9 @@ for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth += 1) {
   if ($parentId -le 0 -or $parentId -eq [int]$cursor.ProcessId) { break }
   $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
 }
-if ($null -eq $ancestor) { throw 'CDP listener is not descended from machine.exe' }
-if ([int]$listenerProcess.SessionId -ne [int]$machineProcess.SessionId) { throw 'CDP listener session differs from machine.exe' }
-if ($listenerPrincipal -cne $machinePrincipal) { throw 'CDP listener principal differs from machine.exe' }
+if ($null -eq $ancestor) { throw 'listener_ancestor' }
+if ([int]$listenerProcess.SessionId -ne [int]$machineProcess.SessionId) { throw 'listener_session' }
+if ($listenerPrincipal -cne $machinePrincipal) { throw 'listener_principal' }
 [Console]::Out.WriteLine(([ordered]@{
   machine = [ordered]@{
     processId = [int]$machineProcess.Id
@@ -2735,7 +2735,11 @@ async function runWindowsPowerShellOverSshWithAdapter(
   },
   processAdapter,
 ) {
-  const encodedScript = Buffer.from(String(script), "utf16le").toString(
+  const compactScript = String(script)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .join(" ");
+  const encodedScript = Buffer.from(compactScript, "utf16le").toString(
     "base64",
   );
   const args = [
