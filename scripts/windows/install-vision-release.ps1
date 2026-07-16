@@ -885,7 +885,8 @@ function Rollback-PreviousRelease([object]$Previous, [object]$Candidate) {
   [void](Get-CanonicalContainedPath $StateRoot $selectionPath "Vision current selection before rollback write")
   Write-AtomicJson $selectionPath $Previous $StateRoot
   Set-SystemInstallerAcl $selectionPath $true
-  Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"
+  & $launcherPath
+  if ($LASTEXITCODE -ne 0) { Throw-InstallError "Vision launcher failed during rollback validation" }
   Test-VisionProtocol $Previous $metadata.descriptor
 }
 
@@ -965,7 +966,7 @@ try {
   $existingDocuments = @{}
   foreach($name in @("descriptor","attestation","sbom","provenance","conformance","approval","manifest")) { $existingDocuments[$name]=[pscustomobject]@{ value=$existing.documents.$name.value; digest=$existing.documents.$name.digest; path=$null } }
   Assert-ReleaseContracts $existing.descriptor $existing.attestation $existing.approval $existingDocuments.manifest.value $existingDocuments
-  Write-VisionLauncher; Ensure-VisionTask; $previous=if(Test-Path $selectionPath){(Read-StrictJson $selectionPath "Vision selection").value}else{$null}; if($previous){$evidence.previousDigest=$previous.bundleDigest}; $next=$candidate; $activationStarted=$true; if($previous){Stop-RecordedVision $previous}; [void](Get-CanonicalContainedPath $configurationRoot $configurationPathForSelection "Vision configuration before selection"); [void](Get-CanonicalContainedPath $StateRoot $selectionPath "Vision current selection before write"); Write-AtomicJson $selectionPath $next $StateRoot; Set-SystemInstallerAcl $selectionPath $true; Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\"; Test-VisionProtocol $next $descriptor; $evidence.healthOk=$true; $evidence.webSocketOk=$true; $evidence.installedDigest=$record.bundleDigest
+  Write-VisionLauncher; Ensure-VisionTask; $previous=if(Test-Path $selectionPath){(Read-StrictJson $selectionPath "Vision selection").value}else{$null}; if($previous){$evidence.previousDigest=$previous.bundleDigest}; $next=$candidate; $activationStarted=$true; if($previous){Stop-RecordedVision $previous}; [void](Get-CanonicalContainedPath $configurationRoot $configurationPathForSelection "Vision configuration before selection"); [void](Get-CanonicalContainedPath $StateRoot $selectionPath "Vision current selection before write"); Write-AtomicJson $selectionPath $next $StateRoot; Set-SystemInstallerAcl $selectionPath $true; & $launcherPath; if ($LASTEXITCODE -ne 0) { Throw-InstallError "Vision launcher failed during activation" }; Test-VisionProtocol $next $descriptor; $evidence.healthOk=$true; $evidence.webSocketOk=$true; $evidence.installedDigest=$record.bundleDigest
 } catch {
   $evidence.failure=Sanitize $_.Exception.Message
   if($activationStarted){$evidence.rollbackAttempted=$true; try { Rollback-PreviousRelease $previous $next; $evidence.rollbackOk=$true } catch {$evidence.rollbackOk=$false; $rollbackFailure=Sanitize $_.Exception.Message; if(-not [string]::IsNullOrWhiteSpace($rollbackFailure)){$evidence.failure=Sanitize ("$($evidence.failure); rollback: $rollbackFailure")} } }
