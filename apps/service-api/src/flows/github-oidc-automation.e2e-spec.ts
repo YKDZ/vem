@@ -476,12 +476,14 @@ describe(
         .split(/\s+/)
         .slice(0, 2)
         .join(" ");
+      const endpointVisibleSourceAddress = "192.168.122.1";
+      const requestId = randomUUID();
 
       const certificate = (
         await api
           .post("/api/maintenance-automation/session/ssh-certificate")
           .set(authorization)
-          .send({ publicKey, requestId: randomUUID() })
+          .send({ publicKey, requestId, endpointVisibleSourceAddress })
           .expect(201)
       ).body.data as {
         certificate: string;
@@ -491,10 +493,28 @@ describe(
       };
       expect(certificate).toMatchObject({
         principal: "YKDZ",
-        sourceAddress: session.sourcePeer.tunnelAddress,
+        sourceAddress: endpointVisibleSourceAddress,
         serial: expect.any(Number),
       });
       expect(certificate.certificate.split(/\s+/)).toHaveLength(2);
+      const repeatedCertificate = (
+        await api
+          .post("/api/maintenance-automation/session/ssh-certificate")
+          .set(authorization)
+          .send({ publicKey, requestId, endpointVisibleSourceAddress })
+          .expect(201)
+      ).body.data as { sourceAddress: string; serial: number };
+      expect(repeatedCertificate).toMatchObject({
+        sourceAddress: endpointVisibleSourceAddress,
+        serial: certificate.serial,
+      });
+      const [persisted] = await db.client
+        .select({ sourceAddress: maintenanceSshCertificates.sourceAddress })
+        .from(maintenanceSshCertificates)
+        .where(eq(maintenanceSshCertificates.sessionId, session.id));
+      expect(persisted).toEqual({
+        sourceAddress: endpointVisibleSourceAddress,
+      });
       const [audit] = await db.client
         .select({ afterJson: auditLogs.afterJson })
         .from(auditLogs)
@@ -505,6 +525,7 @@ describe(
           runId: TEST_RUN_ID,
           runAttempt: TEST_RUN_ATTEMPT,
         },
+        sourceAddress: endpointVisibleSourceAddress,
       });
       expect(JSON.stringify(audit)).not.toContain(certificate.certificate);
     });

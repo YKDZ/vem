@@ -1058,6 +1058,14 @@ export class MaintenanceAccessService implements OnModuleDestroy {
         "Invalid maintenance SSH certificate request",
       );
     }
+    if (
+      actor.type === "admin" &&
+      parsed.data.endpointVisibleSourceAddress !== undefined
+    ) {
+      throw new BadRequestException(
+        "Only GitHub automation may set an endpoint-visible SSH certificate source address",
+      );
+    }
     const now = new Date();
     return await this.db.transaction(async (tx) => {
       let automationAttribution:
@@ -1160,6 +1168,10 @@ export class MaintenanceAccessService implements OnModuleDestroy {
           "Maintenance session source peer is not active",
         );
       }
+      const selectedSourceAddress =
+        actor.type === "github_actions_automation"
+          ? (parsed.data.endpointVisibleSourceAddress ?? source.tunnelAddress)
+          : source.tunnelAddress;
 
       const publicKeyFingerprint = sha256(parsed.data.publicKey);
       const [existing] = await tx
@@ -1207,7 +1219,7 @@ export class MaintenanceAccessService implements OnModuleDestroy {
         publicKey: parsed.data.publicKey,
         serial: numericSerial,
         keyId,
-        sourceAddress: source.tunnelAddress,
+        sourceAddress: selectedSourceAddress,
         validAfter: now,
         validBefore,
         usage: session.kind === "human" ? "human" : "automation",
@@ -1223,7 +1235,7 @@ export class MaintenanceAccessService implements OnModuleDestroy {
           serial: numericSerial,
           keyId,
           principal: issued.principal,
-          sourceAddress: source.tunnelAddress,
+          sourceAddress: selectedSourceAddress,
           validAfter: issued.validAfter,
           validBefore: issued.validBefore,
           caFingerprint: issued.caFingerprint,

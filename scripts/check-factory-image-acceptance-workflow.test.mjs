@@ -147,6 +147,18 @@ describe("Factory Image Acceptance workflow", () => {
       /ssh-keygen -q -t ed25519 -N '' -f "\$ssh_key_path"/,
     );
     assert.match(exchange, /maintenance-automation\/session\/ssh-certificate/);
+    assert.match(
+      exchange,
+      /const endpointVisibleSourceAddress = process\.env\.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE/,
+    );
+    assert.match(
+      exchange,
+      /JSON\.stringify\(\{ publicKey, requestId: crypto\.randomUUID\(\), endpointVisibleSourceAddress \}\)/,
+    );
+    assert.match(
+      exchange,
+      /response\.sourceAddress !== process\.env\.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE/,
+    );
     assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_IDENTITY_PATH/);
     assert.match(exchange, /VEM_FACTORY_MAINTENANCE_SSH_CERTIFICATE_PATH/);
     assert.match(

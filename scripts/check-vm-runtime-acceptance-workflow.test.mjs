@@ -319,6 +319,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(exchange, /MAINTENANCE_SSH_DIR=%s.*GITHUB_ENV/);
     assert.match(exchange, /install -d -m 0700 "\$MAINTENANCE_SSH_DIR"/);
+    assert.match(
+      workflow,
+      /VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE: \$\{\{ vars\.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE \}\}/,
+    );
+    assert.match(
+      exchange,
+      /if \(process\.env\.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE\) \{\s+body\.endpointVisibleSourceAddress = process\.env\.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE;/,
+    );
     for (const fileName of [
       "id_ed25519",
       "id_ed25519.pub",

@@ -44,6 +44,7 @@ jobs:
       MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
       MAINTENANCE_ALLOW_INSECURE_HTTP: ${{ vars.VEM_MAINTENANCE_ALLOW_INSECURE_HTTP }}
       MAINTENANCE_RUNNER_PEER_ID: ${{ vars.VEM_MAINTENANCE_RUNNER_PEER_ID }}
+      VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE: ${{ vars.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE }}
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
       VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
@@ -283,9 +284,14 @@ jobs:
           ssh-keygen -q -t ed25519 -N '' -f "$ssh_key_path"
           chmod 600 "$ssh_key_path" "$ssh_public_key_path"
           node - "$ssh_public_key_path" "$ssh_request_path" <<'NODE'
+          const crypto = require("node:crypto");
           const fs = require("node:fs");
           const publicKey = fs.readFileSync(process.argv[2], "utf8").trim().split(/\s+/).slice(0, 2).join(" ");
-          fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID() }), { mode: 0o600 });
+          const body = { publicKey, requestId: crypto.randomUUID() };
+          if (process.env.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE) {
+            body.endpointVisibleSourceAddress = process.env.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE;
+          }
+          fs.writeFileSync(process.argv[3], JSON.stringify(body), { mode: 0o600 });
           NODE
           automation_token="$(<"$automation_token_path")"
           { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --globoff --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session/ssh-certificate"

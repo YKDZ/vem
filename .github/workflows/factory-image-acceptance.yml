@@ -231,13 +231,17 @@ jobs:
           const fs = require("node:fs");
           const publicKey = fs.readFileSync(process.argv[2], "utf8").trim().split(/\s+/).slice(0, 2).join(" ");
           if (!publicKey.startsWith("ssh-ed25519 ")) throw new Error("runner SSH public key must be ed25519");
-          fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID() }), { mode: 0o600 });
+          const endpointVisibleSourceAddress = process.env.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE;
+          if (!endpointVisibleSourceAddress) throw new Error("VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE is required for the SSH certificate source binding");
+          fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID(), endpointVisibleSourceAddress }), { mode: 0o600 });
           NODE
           { printf 'header = "Authorization: Bearer %s"\n' "$token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$control_plane/maintenance-automation/session/ssh-certificate"
           node - "$ssh_response_path" "$ssh_certificate_path" <<'NODE'
           const fs = require("node:fs");
-          const certificate = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data?.certificate;
+          const response = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data;
+          const certificate = response?.certificate;
           if (typeof certificate !== "string" || !certificate.startsWith("ssh-ed25519-cert-v01@openssh.com ")) throw new Error("maintenance SSH certificate response is invalid");
+          if (response.sourceAddress !== process.env.VEM_FACTORY_MAINTENANCE_RUNNER_SOURCE) throw new Error("maintenance SSH certificate source binding does not match endpoint.bootstrap.runnerSourceAllowlist");
           fs.writeFileSync(process.argv[3], `${certificate}\n`, { mode: 0o600 });
           NODE
           chmod 600 "$ssh_certificate_path"
