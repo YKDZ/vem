@@ -6152,6 +6152,16 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     if (-not $evidence.provisioned) {
       throw "daemon IPC claim completed but daemon config is not provisioned"
     }
+
+    # A restored VM snapshot can retain a scheduled-task state whose original
+    # process no longer exists. Rebind both interactive runtimes to the live
+    # VEMKiosk session after the daemon finishes its claim reconfigure.
+    & schtasks.exe /End /TN "VEMMachineUI" 2>$null | Out-Null
+    & schtasks.exe /End /TN "VEM\StartVisionServer" 2>$null | Out-Null
+    Get-Process -Name "machine" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    & schtasks.exe /Run /TN "VEM\StartVisionServer" | Out-Null
+    & schtasks.exe /Run /TN "VEMMachineUI" | Out-Null
+    Start-Sleep -Seconds 5
   } catch {
     $status = "failed"
     $message = [string]$_
