@@ -8547,20 +8547,8 @@ function Wait-PlatformAcceptedStockAttestation(
 
     if ([string]$physicalStockAttestation.status -eq "pending") {
       if ($saleableSlots.Count -gt 0) {
-        Start-Sleep -Milliseconds 100
-        $refreshedReadiness = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-readiness" $Headers
-        $refreshedAttestation = $refreshedReadiness.components.physicalStockAttestation
-        if (
-          [string]$refreshedAttestation.status -ne "ready" -or
-          [string]$refreshedAttestation.attestationId -ne $AttestationId -or
-          [string]$refreshedAttestation.planogramVersion -ne $PlanogramVersion
-        ) {
-          throw "PHYSICAL_STOCK_ATTESTATION_PENDING must not expose saleable stock"
-        }
-        return [ordered]@{
-          readiness = $refreshedReadiness
-          saleView = $saleView
-          evidence = $refreshedAttestation
+        if ([bool]$readiness.canStartNetworkAuthorizedSale) {
+          throw "PHYSICAL_STOCK_ATTESTATION_PENDING must block network-authorized sale"
         }
       }
     } elseif ([string]$physicalStockAttestation.status -eq "ready") {

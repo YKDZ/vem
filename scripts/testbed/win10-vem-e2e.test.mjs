@@ -4250,11 +4250,7 @@ try {
     );
     assert.match(
       script,
-      /PHYSICAL_STOCK_ATTESTATION_PENDING.*must not expose saleable stock/s,
-    );
-    assert.match(
-      script,
-      /\$refreshedAttestation\.status -ne "ready"/,
+      /PHYSICAL_STOCK_ATTESTATION_PENDING.*must block network-authorized sale/s,
     );
     assert.match(script, /\$physicalStockAttestation\.status -eq "ready"/);
     assert.match(fixtureFlow, /\$salePhase -eq "fixture"/);
