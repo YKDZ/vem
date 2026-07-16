@@ -12,7 +12,10 @@ const HASH = "a".repeat(64);
 function asset(role, version = "1.0.0") {
   const value = {
     role,
-    mediaFileName: `${role}.bin`,
+    mediaFileName:
+      role === "webview2-runtime-installer"
+        ? "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+        : `${role}.bin`,
     identity: `factory-cas://sha256/${HASH}`,
     digest: `sha256:${HASH}`,
     version,
@@ -318,6 +321,14 @@ describe("Factory Manifest v1", () => {
     assert.throws(
       () => createFactoryManifest(collision),
       /case-insensitively/i,
+    );
+    const wrongWebView2Installer = validInput();
+    wrongWebView2Installer.assets.find(
+      (asset) => asset.role === "webview2-runtime-installer",
+    ).mediaFileName = "MicrosoftEdgeWebView2RuntimeInstallerX86.exe";
+    assert.throws(
+      () => createFactoryManifest(wrongWebView2Installer),
+      /equal to constant|MicrosoftEdgeWebView2RuntimeInstallerX64\.exe/,
     );
   });
 

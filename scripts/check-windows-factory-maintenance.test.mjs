@@ -532,6 +532,38 @@ test("factory preparation hardens maintenance login before network package insta
   );
 });
 
+test("WebView2 preparation normalizes and enforces the exact pinned runtime version", () => {
+  const preparation = readFileSync(
+    "scripts/windows/prepare-factory-runtime.ps1",
+    "utf8",
+  );
+  const functions = preparation.slice(
+    preparation.indexOf("function ConvertTo-WebView2ManifestVersion"),
+    preparation.indexOf("function Test-PinnedVersionEquivalent"),
+  );
+  const fixture = `${functions}
+$script:InstalledVersion = '150.0.4078.65'
+$script:InstallerRuns = 0
+function Get-ItemProperty { param($LiteralPath, $ErrorAction) [pscustomobject]@{ pv = $script:InstalledVersion } }
+function Start-Process { param($FilePath, $ArgumentList, [switch]$PassThru, [switch]$Wait) $script:InstallerRuns += 1; $script:InstalledVersion = '150.0.4078.65'; [pscustomobject]@{ ExitCode = 0 } }
+$package = [pscustomobject]@{ localInstallPath = 'fixture.exe'; version = '150.0.4078+65' }
+$matching = Install-WebView2Runtime -Package $package
+if (-not $matching.skipped -or $script:InstallerRuns -ne 0) { throw 'matching runtime must skip installation' }
+$script:InstalledVersion = '149.0.4022.98'
+$installed = Install-WebView2Runtime -Package $package
+if ($installed.skipped -or $script:InstallerRuns -ne 1) { throw 'mismatched runtime must execute the pinned installer' }
+if ((ConvertTo-WebView2ManifestVersion -Version '150.0.4078.65') -cne '150.0.4078+65') { throw 'four-part version normalization failed' }
+`;
+  const result = run("pwsh", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    fixture,
+  ]);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+});
+
 test("generated clean-base orchestration is profile-neutral and parses", () => {
   const root = mkdtempSync(join(tmpdir(), "vem-issue09-node-"));
   try {

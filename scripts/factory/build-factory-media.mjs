@@ -1573,6 +1573,14 @@ function factoryBaselineManifest(manifest, resolvedAssets) {
             `Factory installer must preserve its pinned MSI or EXE extension: ${reference.role}`,
           );
         }
+        if (
+          reference.role === "webview2-runtime-installer" &&
+          fileName !== "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+        ) {
+          throw new Error(
+            "Factory WebView2 Runtime asset must be the x64 Evergreen Standalone Installer",
+          );
+        }
         return {
           role: reference.role,
           fileName,
@@ -4705,6 +4713,14 @@ export async function buildFactoryMedia({
       ) {
         throw new Error(
           `windows-serviced-iso requires ${role}.mediaFileName to name a pinned MSI or EXE`,
+        );
+      }
+      if (
+        role === "webview2-runtime-installer" &&
+        asset.mediaFileName !== "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+      ) {
+        throw new Error(
+          "windows-serviced-iso requires the x64 WebView2 Evergreen Standalone Installer filename",
         );
       }
     }

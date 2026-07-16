@@ -343,6 +343,24 @@
             "properties": { "release": {} },
             "required": ["release"]
           }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "role": { "const": "webview2-runtime-installer" }
+            },
+            "required": ["role"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "mediaFileName": {
+                "const": "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+              }
+            },
+            "required": ["mediaFileName"]
+          }
         }
       ]
     },

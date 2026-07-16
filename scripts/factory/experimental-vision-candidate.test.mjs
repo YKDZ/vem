@@ -138,7 +138,10 @@ function writeBaseFactoryManifest(path) {
   const hash = "a".repeat(64);
   const asset = (role, version = "1.0.0") => ({
     role,
-    mediaFileName: `${role}.bin`,
+    mediaFileName:
+      role === "webview2-runtime-installer"
+        ? "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+        : `${role}.bin`,
     identity: `factory-cas://sha256/${hash}`,
     digest: `sha256:${hash}`,
     version,

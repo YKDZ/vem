@@ -1016,6 +1016,8 @@ function Assert-FactoryRuntimePreflight {
       version = $WebView2RuntimeVersion
       sha256 = $webView2RuntimeInstallerHash
       localInstallPath = $WebView2RuntimeInstallerPath
+      architecture = "x64"
+      installerKind = "evergreen-standalone"
     }
     KioskPassword = $credentials.KioskPassword
     AutoLogonPassword = $credentials.AutoLogonPassword
@@ -1112,6 +1114,8 @@ function New-FactoryRuntimePlan {
           source = $Preflight.WebView2RuntimePackage.source
           version = $Preflight.WebView2RuntimePackage.version
           sha256 = $Preflight.WebView2RuntimePackage.sha256
+          architecture = $Preflight.WebView2RuntimePackage.architecture
+          installerKind = $Preflight.WebView2RuntimePackage.installerKind
         }
         openSsh = [ordered]@{
           name = $Preflight.OpenSshPackage.name
@@ -1237,6 +1241,14 @@ function Install-PinnedWindowsPackage {
   }
 }
 
+function ConvertTo-WebView2ManifestVersion {
+  param([string]$Version)
+
+  $match = [regex]::Match($Version, '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+  if (-not $match.Success) { return $null }
+  return "$($match.Groups[1].Value).$($match.Groups[2].Value).$($match.Groups[3].Value)+$($match.Groups[4].Value)"
+}
+
 function Get-WebView2RuntimeEvidence {
   $clientId = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
   foreach ($path in @(
@@ -1245,17 +1257,18 @@ function Get-WebView2RuntimeEvidence {
     )) {
     $client = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
     if ($null -ne $client -and -not [string]::IsNullOrWhiteSpace([string]$client.pv) -and [string]$client.pv -ne "0.0.0.0") {
-      return [ordered]@{ installed = $true; version = [string]$client.pv; registryPath = $path }
+      $version = [string]$client.pv
+      return [ordered]@{ installed = $true; version = $version; manifestVersion = ConvertTo-WebView2ManifestVersion -Version $version; registryPath = $path; architecture = "x64" }
     }
   }
-  return [ordered]@{ installed = $false; version = $null; registryPath = $null }
+  return [ordered]@{ installed = $false; version = $null; manifestVersion = $null; registryPath = $null; architecture = $null }
 }
 
 function Install-WebView2Runtime {
   param($Package)
 
   $before = Get-WebView2RuntimeEvidence
-  if ([bool]$before.installed) {
+  if ([bool]$before.installed -and [string]$before.manifestVersion -ceq [string]$Package.version) {
     return [ordered]@{ skipped = $true; reason = "runtime_already_installed"; installedVersion = $before.version; registryPath = $before.registryPath }
   }
   $process = Start-Process -FilePath ([string]$Package.localInstallPath) -ArgumentList @("/silent", "/install") -PassThru -Wait
@@ -1263,8 +1276,8 @@ function Install-WebView2Runtime {
     throw "WebView2 Runtime installer failed with exit code $($process.ExitCode)"
   }
   $installed = Get-WebView2RuntimeEvidence
-  if (-not [bool]$installed.installed) {
-    throw "WebView2 Runtime installer completed but the machine runtime is unavailable"
+  if (-not [bool]$installed.installed -or [string]$installed.manifestVersion -cne [string]$Package.version) {
+    throw "WebView2 Runtime installer completed but the exact pinned machine runtime is unavailable"
   }
   return [ordered]@{ skipped = $false; reason = "pinned_installer_executed"; exitCode = [int]$process.ExitCode; installedVersion = $installed.version; registryPath = $installed.registryPath }
 }

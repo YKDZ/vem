@@ -1000,6 +1000,14 @@ function Get-FactoryPackageEvidence {
   return $result
 }
 
+function ConvertTo-WebView2ManifestVersion {
+  param([string]$Version)
+
+  $match = [regex]::Match($Version, '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+  if (-not $match.Success) { return $null }
+  return "$($match.Groups[1].Value).$($match.Groups[2].Value).$($match.Groups[3].Value)+$($match.Groups[4].Value)"
+}
+
 function Get-WebView2RuntimeEvidence {
   $clientId = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
   foreach ($path in @(
@@ -1008,10 +1016,11 @@ function Get-WebView2RuntimeEvidence {
     )) {
     $client = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
     if ($null -ne $client -and -not [string]::IsNullOrWhiteSpace([string]$client.pv) -and [string]$client.pv -ne "0.0.0.0") {
-      return [ordered]@{ installed = $true; version = [string]$client.pv; registryPath = $path }
+      $version = [string]$client.pv
+      return [ordered]@{ installed = $true; version = $version; manifestVersion = ConvertTo-WebView2ManifestVersion -Version $version; registryPath = $path; architecture = "x64" }
     }
   }
-  return [ordered]@{ installed = $false; version = $null; registryPath = $null }
+  return [ordered]@{ installed = $false; version = $null; manifestVersion = $null; registryPath = $null; architecture = $null }
 }
 
 function Test-PinnedVersionEquivalent {
@@ -1350,8 +1359,11 @@ try {
     Add-Failure $failures "factory manifest must declare pinned OpenSSH, WireGuard, and WebView2 Runtime packages"
   }
   $checks.webView2Runtime = Get-WebView2RuntimeEvidence
-  if (-not [bool]$checks.webView2Runtime.installed) {
-    Add-Failure $failures "system-level WebView2 Runtime is unavailable"
+  if (-not [bool]$checks.webView2Runtime.installed -or
+      [string]$checks.webView2Runtime.manifestVersion -cne [string]$manifest.packages.webView2Runtime.version -or
+      [string]$manifest.packages.webView2Runtime.architecture -cne "x64" -or
+      [string]$manifest.packages.webView2Runtime.installerKind -cne "evergreen-standalone") {
+    Add-Failure $failures "exact pinned x64 Evergreen WebView2 Runtime is unavailable"
   }
   if ($null -eq $manifest.maintenanceSsh -or $null -eq $manifest.wireGuard) {
     Add-Failure $failures "factory manifest must declare Maintenance SSH CA and WireGuard ownership"
