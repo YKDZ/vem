@@ -31,11 +31,13 @@ function writeSignedCandidate(root) {
       predicate: {
         buildDefinition: {
           resolvedDependencies: [
-            { uri: "git+https://example.invalid/vision@abc" },
+            {
+              uri: `git+https://example.invalid/vision@${"a".repeat(40)}`,
+            },
           ],
         },
         runDetails: {
-          builder: { id: "builder:fixture" },
+          builder: { id: "https://github.com/actions/runner/windows" },
           metadata: { invocationId: "fixture-run-1" },
         },
       },
@@ -460,6 +462,23 @@ describe("experimental Vision preapproval delivery", () => {
       );
       assert.equal(finalizer.status, 0, finalizer.stderr);
       const stagedFactory = join(finalizerRoot, "VEM");
+      const finalizedManifest = JSON.parse(
+        readFileSync(
+          join(stagedFactory, "VISION-RELEASE", "factory-manifest.json"),
+          "utf8",
+        ),
+      );
+      const finalizedVision = finalizedManifest.assets.find(
+        (asset) => asset.role === "vision-release",
+      );
+      assert.equal(
+        finalizedVision.provenance.sourceIdentity,
+        `git-commit:example.invalid/vision@${"a".repeat(40)}`,
+      );
+      assert.match(
+        finalizedVision.provenance.builderIdentity,
+        /^builder-uri-sha256:[a-f0-9]{64}$/,
+      );
       verifyFactoryVisionDelivery(stagedFactory);
       const factoryProof = spawnSync(
         process.execPath,

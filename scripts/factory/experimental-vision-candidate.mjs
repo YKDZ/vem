@@ -57,6 +57,25 @@ function evidenceIdentity(digest) {
   return `factory-evidence://${digest.replace(":", "/")}`;
 }
 
+function manifestSourceIdentity(value) {
+  const gitCommit =
+    /^git\+https:\/\/([^\s?#]+)@([a-f0-9]{40}|[a-f0-9]{64})$/i.exec(value);
+  if (gitCommit) {
+    return `git-commit:${gitCommit[1]}@${gitCommit[2].toLowerCase()}`;
+  }
+  if (/^(?:https?|git|ssh):\/\//i.test(value)) {
+    throw new Error(
+      "Candidate provenance source must bind an immutable Git commit",
+    );
+  }
+  return value;
+}
+
+function manifestBuilderIdentity(value) {
+  if (!/^(?:https?|git|ssh):\/\//i.test(value)) return value;
+  return `builder-uri-sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
 function canonicalBytes(value) {
   return Buffer.from(`${canonicalJson(value)}\n`);
 }
@@ -320,8 +339,8 @@ function createExperimentalFactoryManifest({
     },
     provenance: {
       predicateType: "https://slsa.dev/provenance/v1",
-      sourceIdentity: resolvedSource,
-      builderIdentity,
+      sourceIdentity: manifestSourceIdentity(resolvedSource),
+      builderIdentity: manifestBuilderIdentity(builderIdentity),
       buildId,
       signerIdentity: verified.supplierIdentity,
       evidenceIdentity: provenanceReference.identity,
