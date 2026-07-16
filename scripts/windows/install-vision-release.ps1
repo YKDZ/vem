@@ -228,10 +228,15 @@ function Invoke-ReleaseEvidenceVerifier {
   try { $result = $stdout | ConvertFrom-Json } catch { Throw-InstallError "cryptographic release evidence verifier returned invalid output" }
   Assert-Keys $result @("schemaVersion", "kind", "verified", "identities") "Vision evidence verification result"
   if ($result.schemaVersion -cne "vem-vision-release-verification/v1" -or $result.kind -cne "vision-release-verification" -or $result.verified -ne $true) { Throw-InstallError "cryptographic release evidence verification was not approved" }
+  $approvedIdentities = @()
   foreach ($role in @("descriptor", "attestation", "sbom", "provenance", "conformance", "approval")) {
     $approved = @($Policy.approvedIdentities.$role)
     if ($approved.Count -eq 0 -or @($approved | Where-Object { [string]$_ -notmatch '^spki-sha256:[a-f0-9]{64}$' }).Count -gt 0) { Throw-InstallError "Vision $role approved identities are invalid" }
-    if ($approved -notcontains [string]$result.identities.$role) { Throw-InstallError "Vision $role signer is not an approved identity" }
+    $approvedIdentities += $approved
+  }
+  $approvedIdentities = @($approvedIdentities | Select-Object -Unique)
+  foreach ($role in @("descriptor", "attestation", "sbom", "provenance", "conformance", "approval")) {
+    if ($approvedIdentities -notcontains [string]$result.identities.$role) { Throw-InstallError "Vision $role signer is not an approved identity" }
   }
 }
 
