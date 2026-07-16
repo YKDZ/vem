@@ -106,6 +106,10 @@ describe("VM runtime acceptance workflow local direct path", () => {
     );
     assert.match(
       workflow,
+      /MACHINE_CLAIM_LOOKUP_HMAC_KEY:\s+ci-machine-claim-lookup-hmac-key-v1/,
+    );
+    assert.match(
+      workflow,
       /EPHEMERAL_API_BASE_URL:\s+\$\{\{ format\('http:\/\/\{0\}:26849\/api'/,
     );
     assert.match(

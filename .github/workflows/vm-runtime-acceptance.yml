@@ -39,6 +39,9 @@ jobs:
       VEM_RUNTIME_PLATFORM_HOST: ${{ vars.VEM_VM_RUNTIME_PLATFORM_INGRESS_HOST }}
       VEM_RUNTIME_RUNNER_SOURCE_ALLOWLIST: ${{ vars.VEM_VM_RUNTIME_RUNNER_SOURCE_ALLOWLIST }}
       DATABASE_URL: postgresql://vem:vem_password@127.0.0.1:55432/vem_runtime
+      # Keep the long-running API process and the run-local claim seeder
+      # independent from any untracked .env left on the self-hosted runner.
+      MACHINE_CLAIM_LOOKUP_HMAC_KEY: ci-machine-claim-lookup-hmac-key-v1
       EPHEMERAL_API_READY_URL: http://127.0.0.1:26849/api
       EPHEMERAL_API_BASE_URL: ${{ format('http://{0}:26849/api', vars.VEM_VM_RUNTIME_PLATFORM_INGRESS_HOST) }}
       EPHEMERAL_MQTT_URL: ${{ format('mqtt://{0}:18883', vars.VEM_VM_RUNTIME_PLATFORM_INGRESS_HOST) }}
