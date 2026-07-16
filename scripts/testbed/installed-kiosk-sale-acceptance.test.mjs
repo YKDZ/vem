@@ -61,7 +61,7 @@ describe("installed kiosk sale preflight", () => {
         runtimeAcceptanceReport: {
           schemaVersion: "runtime-acceptance-report/v1",
           kioskRuntime: {
-            sessionUser: "VEMKiosk",
+            sessionUser: "vemkiosk",
             sessionId: 1,
             url: "unavailable:production-cdp-disabled",
             source: "webview2_process",
