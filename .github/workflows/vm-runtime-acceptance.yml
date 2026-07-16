@@ -30,22 +30,19 @@ jobs:
     permissions:
       actions: read
       contents: read
-      id-token: write
     defaults:
       run:
         shell: bash
     env:
       RUN_ID: ${{ inputs.run_id || format('RUN-{0}', github.run_number) }}
       WINDOWS_SSH_USER: ${{ inputs.windows_ssh_user }}
-      DATABASE_URL: postgresql://vem:vem_password@localhost:55432/vem_runtime
-      EPHEMERAL_API_BASE_URL: http://127.0.0.1:26849/api
-      EPHEMERAL_MQTT_URL: mqtt://127.0.0.1:18883
+      VEM_RUNTIME_PLATFORM_HOST: ${{ vars.VEM_VM_RUNTIME_PLATFORM_INGRESS_HOST }}
+      VEM_RUNTIME_RUNNER_SOURCE_ALLOWLIST: ${{ vars.VEM_VM_RUNTIME_RUNNER_SOURCE_ALLOWLIST }}
+      DATABASE_URL: postgresql://vem:vem_password@127.0.0.1:55432/vem_runtime
+      EPHEMERAL_API_READY_URL: http://127.0.0.1:26849/api
+      EPHEMERAL_API_BASE_URL: ${{ format('http://{0}:26849/api', vars.VEM_VM_RUNTIME_PLATFORM_INGRESS_HOST) }}
+      EPHEMERAL_MQTT_URL: ${{ format('mqtt://{0}:18883', vars.VEM_VM_RUNTIME_PLATFORM_INGRESS_HOST) }}
       PAYMENT_MOCK_ENABLED: "true"
-      MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
-      MAINTENANCE_ALLOW_INSECURE_HTTP: ${{ vars.VEM_MAINTENANCE_ALLOW_INSECURE_HTTP }}
-      MAINTENANCE_RUNNER_PEER_ID: ${{ vars.VEM_MAINTENANCE_RUNNER_PEER_ID }}
-      VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE: ${{ vars.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE }}
-      MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
       VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
       VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY }}
@@ -59,7 +56,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Guard Protected Maintenance Trust Boundary
+      - name: Guard Local VM Runtime Trust Boundary
         env:
           EXPECTED_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main
           OBSERVED_WORKFLOW_REF: ${{ github.workflow_ref }}
@@ -69,13 +66,38 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/main"
           test "$OBSERVED_WORKFLOW_REF" = "$EXPECTED_WORKFLOW_REF"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          node scripts/testbed/validate-vm-runtime-acceptance-inputs.mjs >> "$GITHUB_ENV"
-          node -e '
-            const labels = JSON.parse(process.env.RUNNER_LABELS_JSON);
-            for (const required of ["self-hosted", "Linux", "X64", "vem-runtime"]) {
-              if (!labels.includes(required)) throw new Error(`missing trusted runner label: ${required}`);
-            }
-          '
+          node <<'NODE'
+          const labels = JSON.parse(process.env.RUNNER_LABELS_JSON);
+          for (const required of ["self-hosted", "Linux", "X64", "vem-runtime"]) {
+            if (!labels.includes(required)) throw new Error(`missing trusted runner label: ${required}`);
+          }
+          const patterns = {
+            RUN_ID: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,
+            WINDOWS_SSH_USER: /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/,
+            VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY: /^vm-host-adapter:\/\/[A-Za-z0-9._/-]+@[0-9]+\.[0-9]+\.[0-9]+$/,
+            VEM_VM_HOST_EXPECTED_ADAPTER_SHA256: /^[a-f0-9]{64}$/,
+          };
+          for (const [name, pattern] of Object.entries(patterns)) {
+            if (!pattern.test(process.env[name] ?? "")) throw new Error(`workflow input is invalid: ${name}`);
+          }
+          for (const name of [
+            "VEM_VM_HOST_ADAPTER",
+            "VEM_VM_HOST_TARGET_ID",
+            "VEM_VM_HOST_APPROVED_BASE_ID",
+            "VEM_VM_AUDIO_ENDPOINT_ID",
+          ]) {
+            if (!process.env[name]) throw new Error(`environment variable is required: ${name}`);
+          }
+          const net = require("node:net");
+          if (net.isIP(process.env.VEM_RUNTIME_PLATFORM_HOST) !== 4) {
+            throw new Error("VEM_RUNTIME_PLATFORM_HOST must be the runner's LAN IPv4 address");
+          }
+          if (process.env.VEM_RUNTIME_RUNNER_SOURCE_ALLOWLIST !== `${process.env.VEM_RUNTIME_PLATFORM_HOST}/32`) {
+            throw new Error("VEM_RUNTIME_RUNNER_SOURCE_ALLOWLIST must bind only the runner LAN address");
+          }
+          NODE
+          [[ "$VEM_VM_HOST_ADAPTER" = /* && -x "$VEM_VM_HOST_ADAPTER" ]]
+          ip -o -4 addr show scope global | awk '{ sub(/\/.*/, "", $4); print $4 }' | grep -Fx "$VEM_RUNTIME_PLATFORM_HOST"
 
       - name: Install pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
@@ -112,277 +134,66 @@ jobs:
           node scripts/testbed/vm-host-adapter-conformance.mjs \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-conformance.json"
 
-      - name: Exchange OIDC And Create Maintenance Session
+      - name: Prepare Local VM Testbed SSH Access
         run: |
           set -euo pipefail
           umask 077
-          MAINTENANCE_SSH_DIR="$RUNNER_TEMP/vem-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          export MAINTENANCE_SSH_DIR
-          printf 'MAINTENANCE_SSH_DIR=%s\n' "$MAINTENANCE_SSH_DIR" >> "$GITHUB_ENV"
-          oidc_response_path="$RUNNER_TEMP/maintenance-oidc-response.json"
-          oidc_token_path="$RUNNER_TEMP/maintenance-oidc-token.jwt"
-          exchange_request_path="$RUNNER_TEMP/maintenance-exchange-request.json"
-          exchange_response_path="$RUNNER_TEMP/maintenance-exchange-response.json"
-          automation_token_path="$RUNNER_TEMP/automation-token.jwt"
-          session_create_path="$RUNNER_TEMP/maintenance-session-create.json"
-          session_verify_path="$RUNNER_TEMP/maintenance-session-verify.json"
-          rm -f \
-            "$oidc_response_path" \
-            "$oidc_token_path" \
-            "$exchange_request_path" \
-            "$exchange_response_path" \
-            "$automation_token_path" \
-            "$session_create_path" \
-            "$session_verify_path"
-
-          {
-            printf 'url = "%s&audience=vem-maintenance"\n' "$ACTIONS_ID_TOKEN_REQUEST_URL"
-            printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
-          } | curl --globoff --config - \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --output "$oidc_response_path"
-          chmod 600 "$oidc_response_path"
-          node - "$oidc_response_path" "$oidc_token_path" <<'NODE'
-          const fs = require("node:fs");
-          const payload = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-          if (typeof payload.value !== "string" || payload.value.split(".").length !== 3) {
-            throw new Error("GitHub OIDC endpoint returned no JWT value");
+          artifact_dir="artifacts/vm-runtime-acceptance/${RUN_ID}"
+          mkdir -p "$artifact_dir"
+          ca_key_path="${VEM_VM_RUNTIME_SSH_CA_PRIVATE_KEY_PATH:-${VEM_FACTORY_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH:-${VEM_TESTBED_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH:-}}}"
+          [[ "$ca_key_path" = /* && -f "$ca_key_path" ]] || {
+            echo "A local VM runtime, Factory, or testbed SSH CA private key path is required." >&2
+            exit 1
           }
-          fs.writeFileSync(process.argv[3], payload.value, {
-            encoding: "utf8",
-            flag: "wx",
-            mode: 0o600,
-          });
-          NODE
-          id_token="$(<"$oidc_token_path")"
-          printf '::add-mask::%s\n' "$id_token"
-          unset id_token
-
-          node - "$oidc_token_path" "$exchange_request_path" <<'NODE'
-          const fs = require("node:fs");
-          const body = {
-            idToken: fs.readFileSync(process.argv[2], "utf8"),
-            runId: process.env.GITHUB_RUN_ID,
-            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
-            sha: process.env.GITHUB_SHA,
-            sourcePeerId: process.env.MAINTENANCE_RUNNER_PEER_ID,
-            targetMachineId: process.env.MAINTENANCE_TARGET_MACHINE_ID,
-            reason: "Run VM Runtime Acceptance",
-          };
-          fs.writeFileSync(process.argv[3], JSON.stringify(body), {
-            encoding: "utf8",
-            flag: "wx",
-            mode: 0o600,
-          });
-          NODE
-          curl --globoff --fail-with-body \
-            --silent \
-            --show-error \
-            --header 'Content-Type: application/json' \
-            --data-binary @"$exchange_request_path" \
-            --output "$exchange_response_path" \
-            "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/exchange"
-          chmod 600 "$exchange_response_path"
-          node - "$exchange_response_path" "$automation_token_path" <<'NODE'
-          const fs = require("node:fs");
-          const response = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-          const exchange = response.data;
-          if (
-            typeof exchange?.accessToken !== "string" ||
-            exchange.accessToken.split(".").length !== 3 ||
-            exchange.actor?.runId !== process.env.GITHUB_RUN_ID ||
-            exchange.actor?.runAttempt !== process.env.GITHUB_RUN_ATTEMPT ||
-            exchange.sessionTtlMinutes !== 150
-          ) {
-            throw new Error("maintenance automation exchange response is invalid");
-          }
-          const remainingSeconds = (Date.parse(exchange.expiresAt) - Date.now()) / 1000;
-          if (remainingSeconds < 120 * 60 || remainingSeconds > 125 * 60 + 60) {
-            throw new Error("maintenance automation token does not cover the cleanup window");
-          }
-          fs.writeFileSync(process.argv[3], exchange.accessToken, {
-            encoding: "utf8",
-            flag: "wx",
-            mode: 0o600,
-          });
-          NODE
-          automation_token="$(<"$automation_token_path")"
-          printf '::add-mask::%s\n' "$automation_token"
-          unset automation_token
-          rm -f \
-            "$oidc_response_path" \
-            "$oidc_token_path" \
-            "$exchange_request_path" \
-            "$exchange_response_path"
-
-          automation_token="$(<"$automation_token_path")"
-          {
-            printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
-            printf 'request = "POST"\n'
-          } | curl --globoff --config - \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --output "$session_create_path" \
-            "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session"
-          unset automation_token
-          chmod 600 "$session_create_path"
-
-          automation_token="$(<"$automation_token_path")"
-          {
-            printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
-            printf 'request = "GET"\n'
-          } | curl --globoff --config - \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --output "$session_verify_path" \
-            "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session"
-          unset automation_token
-          chmod 600 "$session_verify_path"
-          node - "$session_create_path" "$session_verify_path" <<'NODE'
-          const fs = require("node:fs");
-          const created = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data;
-          const verified = JSON.parse(fs.readFileSync(process.argv[3], "utf8")).data;
-          const ttlMinutes = (Date.parse(created?.expiresAt) - Date.parse(created?.issuedAt)) / 60000;
-          if (
-            !created?.id ||
-            created.kind !== "ci" ||
-            created.status !== "active" ||
-            created.sourcePeer?.id !== process.env.MAINTENANCE_RUNNER_PEER_ID ||
-            created.targetMachine?.id !== process.env.MAINTENANCE_TARGET_MACHINE_ID ||
-            created.relayPeer?.role !== "relay" ||
-            typeof created.relayPeer?.publicKey !== "string" ||
-            typeof created.relayPeer?.tunnelAddress !== "string" ||
-            ttlMinutes !== 150 ||
-            verified?.id !== created.id ||
-            verified.status !== "active"
-          ) {
-            throw new Error("maintenance session create/get verification failed");
-          }
-          const relaySession = {
-            sessionId: created.id,
-            relayPeer: created.relayPeer,
-            sourceTunnelAddress: created.sourcePeer.tunnelAddress,
-            endpointTunnelAddress: created.targetMachine.tunnelAddress,
-          };
-          fs.appendFileSync(
-            process.env.GITHUB_ENV,
-            `VEM_MAINTENANCE_RELAY_SESSION_JSON=${JSON.stringify(relaySession)}\n`,
-            { mode: 0o600 },
-          );
-          NODE
-          rm -rf -- "$MAINTENANCE_SSH_DIR"
-          install -d -m 0700 "$MAINTENANCE_SSH_DIR"
-          ssh_key_path="$MAINTENANCE_SSH_DIR/id_ed25519"
-          ssh_public_key_path="$MAINTENANCE_SSH_DIR/id_ed25519.pub"
-          ssh_certificate_path="$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
-          ssh_request_path="$MAINTENANCE_SSH_DIR/certificate-request.json"
-          ssh_response_path="$MAINTENANCE_SSH_DIR/certificate-response.json"
+          ssh_dir="$RUNNER_TEMP/vem-vm-runtime-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ssh_key_path="$ssh_dir/id_ed25519"
+          ssh_public_key_path="$ssh_dir/id_ed25519.pub"
+          ssh_certificate_path="$ssh_dir/id_ed25519-cert.pub"
+          known_hosts_path="$ssh_dir/known_hosts"
+          rm -rf -- "$ssh_dir"
+          install -d -m 0700 "$ssh_dir"
           ssh-keygen -q -t ed25519 -N '' -f "$ssh_key_path"
           chmod 600 "$ssh_key_path" "$ssh_public_key_path"
-          node - "$ssh_public_key_path" "$ssh_request_path" <<'NODE'
-          const crypto = require("node:crypto");
-          const fs = require("node:fs");
-          const publicKey = fs.readFileSync(process.argv[2], "utf8").trim().split(/\s+/).slice(0, 2).join(" ");
-          const body = { publicKey, requestId: crypto.randomUUID() };
-          if (process.env.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE) {
-            body.endpointVisibleSourceAddress = process.env.VEM_MAINTENANCE_RUNNER_ENDPOINT_VISIBLE_SOURCE;
-          }
-          fs.writeFileSync(process.argv[3], JSON.stringify(body), { mode: 0o600 });
-          NODE
-          automation_token="$(<"$automation_token_path")"
-          { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --globoff --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session/ssh-certificate"
-          unset automation_token
-          node - "$ssh_response_path" "$ssh_certificate_path" <<'NODE'
-          const fs = require("node:fs");
-          const certificate = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data?.certificate;
-          if (typeof certificate !== "string" || !certificate.startsWith("ssh-ed25519-cert-v01@openssh.com ")) throw new Error("maintenance SSH certificate response is invalid");
-          fs.writeFileSync(process.argv[3], `${certificate}\n`, { mode: 0o600 });
-          NODE
+          ssh-keygen -q -s "$ca_key_path" \
+            -I "vem-vm-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            -n "$WINDOWS_SSH_USER" \
+            -V -5m:+150m \
+            "$ssh_public_key_path"
           chmod 600 "$ssh_certificate_path"
-          rm -f "$ssh_request_path" "$ssh_response_path"
-          rm -f "$session_create_path" "$session_verify_path"
-
-      - name: Start Runner Maintenance Relay WireGuard Peer
-        run: |
-          set -euo pipefail
-          mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
-          diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
-          test -n "${VEM_MAINTENANCE_RELAY_INTERFACE:-}"
-          test -n "${VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP:-}"
-          case "$VEM_MAINTENANCE_RELAY_INTERFACE" in *[!A-Za-z0-9_.-]*|'') exit 1;; esac
-          installed_config_path="/etc/wireguard/${VEM_MAINTENANCE_RELAY_INTERFACE}.conf"
-          record_config_metadata() {
-            label="$1"
-            path="$2"
-            if [ -f "$path" ]; then
-              permissions="$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null || echo unknown)"
-              hash="$(sha256sum "$path" | awk '{print $1}')"
-              echo "${label}.exists=true"
-              echo "${label}.permissions=${permissions}"
-              echo "${label}.sha256=${hash}"
-            else
-              echo "${label}.exists=false"
-            fi
-          }
-          {
-            echo "Controlled Maintenance Ingress: WireGuard Maintenance Relay"
-            echo "interface=${VEM_MAINTENANCE_RELAY_INTERFACE}"
-            echo "runnerPeerIp=runner-service-configured"
-            echo "runnerWireGuardConfig=root-owned runner WireGuard config"
-            echo "vmRelayBootstrapContract=preconfigured-base-image"
-            echo "repositoryConfiguresVmRelay=false"
-          } > "$diagnostics"
-
-          command -v wg-quick >/dev/null || {
-            echo "::error::wg-quick is required on the self-hosted VM runner for Maintenance Relay startup."
-            echo "wg-quick=missing" >> "$diagnostics"
-            exit 1
-          }
-          command -v wg >/dev/null || {
-            echo "::error::wg is required on the self-hosted VM runner for Maintenance Relay diagnostics."
-            echo "wg=missing" >> "$diagnostics"
-            exit 1
-          }
-
-          if [ ! -f "$installed_config_path" ] || [ "$(stat -c '%U:%G:%a' "$installed_config_path")" != "root:root:600" ]; then
-            echo "::error::Missing or unsafe root-owned runner WireGuard config."
-            echo "runnerWireGuardConfig=missing" >> "$diagnostics"
-            exit 1
-          fi
-
-          {
-            record_config_metadata "runnerWireGuardConfig" "$installed_config_path"
-          } >> "$diagnostics"
-
-          sudo wg-quick down "$VEM_MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1 || true
-          sudo wg-quick up "$VEM_MAINTENANCE_RELAY_INTERFACE"
-          {
-            echo "wgShowSummary.interface=${VEM_MAINTENANCE_RELAY_INTERFACE}"
-            echo "wgShowSummary.latestHandshakes<<EOF"
-            sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" latest-handshakes
-            echo "EOF"
-            echo "wgShowSummary.endpoints<<EOF"
-            sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" endpoints
-            echo "EOF"
-            echo "wgShowSummary.allowedIps<<EOF"
-            sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" allowed-ips
-            echo "EOF"
-          } >> "$diagnostics"
-
-      - name: Preflight Maintenance Relay Bootstrap Contract
-        run: |
-          set -euo pipefail
-          diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
-          {
-            echo "preflight.vmRelayBootstrapContract=preconfigured-base-image"
-            echo "preflight.vmWireGuardPeer=must-already-be-configured-and-running-in-base-image"
-            echo "preflight.windowsControlledMaintenanceIngress=host-configured-runner-peer-only"
-            echo "preflight.repositoryConfiguresVmRelay=false"
-          } >> "$diagnostics"
+          : > "$known_hosts_path"
+          chmod 600 "$known_hosts_path"
+          ssh-keygen -Lf "$ssh_certificate_path" > "$artifact_dir/local-ssh-certificate.txt"
+          node - "$ssh_dir" "$known_hosts_path" >> "$GITHUB_ENV" <<'NODE'
+          const crypto = require("node:crypto");
+          const [sshDir, knownHostsPath] = process.argv.slice(2);
+          const runId = process.env.RUN_ID;
+          const target = process.env.VEM_VM_HOST_TARGET_ID;
+          const lifecycleSeed = crypto.createHash("sha256").update(`${runId}\n${target}`).digest("hex").slice(0, 32);
+          const adapterLifecycle = `vm-lifecycle://${runId.toLowerCase()}.${lifecycleSeed}`;
+          const serialLifecycle = `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`;
+          const publicKey = () => crypto.randomBytes(32).toString("base64");
+          const session = {
+            sessionId: crypto.randomUUID(),
+            relayPeer: { publicKey: publicKey(), tunnelAddress: "10.91.0.1" },
+            sourceTunnelAddress: "10.91.0.2",
+            endpointTunnelAddress: "10.91.0.3",
+          };
+          const policy = (lifecycleReference) => ({
+            transport: "testbed-runner-direct",
+            runnerSourceAllowlist: [process.env.VEM_RUNTIME_RUNNER_SOURCE_ALLOWLIST],
+            lifecycleReference,
+          });
+          const hostKeyAlias = `vem-runtime-${runId.toLowerCase()}`;
+          process.stdout.write(`VM_RUNTIME_SSH_DIR=${sshDir}\n`);
+          process.stdout.write(`VM_RUNTIME_SSH_KNOWN_HOSTS_PATH=${knownHostsPath}\n`);
+          process.stdout.write(`VM_RUNTIME_SSH_HOST_KEY_ALIAS=${hostKeyAlias}\n`);
+          process.stdout.write(`VM_TESTBED_MAINTENANCE_SESSION_JSON=${JSON.stringify(session)}\n`);
+          process.stdout.write(`VM_TESTBED_ENDPOINT_POLICY_JSON=${JSON.stringify(policy(adapterLifecycle))}\n`);
+          process.stdout.write(`VM_TESTBED_SERIAL_ENDPOINT_POLICY_JSON=${JSON.stringify(policy(serialLifecycle))}\n`);
+          process.stdout.write(`MAINTENANCE_RELAY_PEER_ID=${crypto.randomUUID()}\n`);
+          process.stdout.write(`MAINTENANCE_RELAY_PUBLIC_KEY=${session.relayPeer.publicKey}\n`);
+          process.stdout.write(`MAINTENANCE_RELAY_TUNNEL_ADDRESS=${session.relayPeer.tunnelAddress}\n`);
+          NODE
 
       - name: Start Ephemeral Postgres And MQTT
         run: |
@@ -431,7 +242,6 @@ jobs:
             docker logs "$postgres_name"
             exit 1
           fi
-          sleep 2
           mqtt_ready=false
           for attempt in $(seq 1 60); do
             mqtt_status="$(docker inspect -f '{{.State.Status}}' "$mqtt_name" 2>/dev/null || true)"
@@ -462,7 +272,7 @@ jobs:
           node apps/service-api/dist/main.js > service-api.log 2>&1 &
           echo "$!" > service-api.pid
           for attempt in $(seq 1 60); do
-            if curl --globoff -fsS http://127.0.0.1:26849/api/health >/dev/null 2>&1; then
+            if curl --globoff -fsS "$EPHEMERAL_API_READY_URL/health" >/dev/null 2>&1; then
               exit 0
             fi
             sleep 2
@@ -474,12 +284,17 @@ jobs:
           JWT_REFRESH_SECRET: ci-jwt-refresh-secret-minimum-32-chars!!
           MACHINE_JWT_SECRET: ci-machine-jwt-secret-min-32-chars-long!
           MACHINE_CREDENTIAL_ENCRYPTION_KEY: ci-machine-cred-enc-key-32-chars!!
-          MQTT_URL: ${{ env.EPHEMERAL_MQTT_URL }}
+          MACHINE_PROVISIONING_PROFILE: testbed
+          MAINTENANCE_RELAY_ENDPOINT: 127.0.0.1:51820
+          MQTT_URL: mqtt://127.0.0.1:18883
+          MACHINE_MQTT_URL: ${{ env.EPHEMERAL_MQTT_URL }}
+          MACHINE_API_BASE_URL: ${{ env.EPHEMERAL_API_BASE_URL }}
           PAYMENT_WEBHOOK_BASE_URL: http://127.0.0.1:26849
           BOOTSTRAP_ADMIN_PASSWORD: AdminPassword123!
           SERVICE_PORT: "26849"
+          SERVICE_HOST: "0.0.0.0"
 
-      - name: Restore Windows Runtime VM Through Host Adapter
+      - name: Create Windows Runtime VM Direct Testbed Overlay
         run: |
           set -euo pipefail
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
@@ -487,11 +302,12 @@ jobs:
           test -n "$VEM_VM_HOST_TARGET_ID"
           test -n "$VEM_VM_HOST_APPROVED_BASE_ID"
           node scripts/testbed/run-vm-host-adapter.mjs \
-            --operation restore-approved-base \
+            --operation create-disposable-overlay \
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
-            --maintenance-relay-session-json "$VEM_MAINTENANCE_RELAY_SESSION_JSON" \
+            --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
+            --maintenance-endpoint-policy-json "$VM_TESTBED_ENDPOINT_POLICY_JSON" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
           node - "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json" <<'NODE'
           const fs = require("node:fs");
@@ -501,90 +317,40 @@ jobs:
           }
           NODE
 
-      - name: Consume Discovered Guest Maintenance Endpoint
+      - name: Consume Direct Testbed Guest Maintenance Endpoint
         run: |
           set -euo pipefail
           report="artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
           node - "$report" >> "$GITHUB_ENV" <<'NODE'
           const fs = require("node:fs");
+          const net = require("node:net");
           const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           const endpoint = report.guest?.maintenanceEndpoint;
-          const session = JSON.parse(process.env.VEM_MAINTENANCE_RELAY_SESSION_JSON);
-          const proof = endpoint?.relayProof;
           if (
+            endpoint?.transport !== "testbed-runner-direct" ||
             endpoint?.protocol !== "ssh" ||
-            endpoint.reachability !== "discovered" ||
-            typeof endpoint.host !== "string" ||
-            !Number.isInteger(endpoint.port) ||
-            endpoint.host !== session.endpointTunnelAddress ||
-            JSON.stringify({
-              sessionId: proof?.sessionId,
-              relayPeer: proof?.relayPeer,
-              sourceTunnelAddress: proof?.sourceTunnelAddress,
-              endpointTunnelAddress: proof?.endpointTunnelAddress,
-            }) !== JSON.stringify(session) ||
-            proof?.endpointAllowedIp !== `${endpoint.host}/32` ||
-            proof?.endpointRoute !== `${endpoint.host}/32` ||
-            !Number.isInteger(proof?.handshakeUnixSeconds) ||
-            proof.handshakeUnixSeconds < 1
+            net.isIP(endpoint.host) === 0 ||
+            ["0.0.0.0", "::", "127.0.0.1", "::1", process.env.VEM_RUNTIME_PLATFORM_HOST].includes(endpoint.host) ||
+            endpoint.port !== 22 ||
+            !["discovered", "authenticated"].includes(endpoint.reachability) ||
+            endpoint.relayProof !== undefined
           ) {
-            throw new Error("VM Host Adapter did not provide the maintenance-session Relay-bound guest endpoint");
+            throw new Error("VM Host Adapter did not provide a direct testbed-runner SSH endpoint");
           }
           process.stdout.write(`VM_GUEST_MAINTENANCE_ENDPOINT_JSON=${JSON.stringify(endpoint)}\n`);
           NODE
 
-      - name: Initialize Run-Scoped VM Guest SSH Trust
-        run: |
-          set -euo pipefail
-          test -n "${MAINTENANCE_SSH_DIR:-}"
-          install -d -m 0700 "$MAINTENANCE_SSH_DIR"
-          known_hosts_path="$MAINTENANCE_SSH_DIR/known_hosts"
-          : > "$known_hosts_path"
-          chmod 600 "$known_hosts_path"
-          host_key_alias="vem-runtime-$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
-          printf 'VM_RUNTIME_SSH_KNOWN_HOSTS_PATH=%s\n' "$known_hosts_path" >> "$GITHUB_ENV"
-          printf 'VM_RUNTIME_SSH_HOST_KEY_ALIAS=%s\n' "$host_key_alias" >> "$GITHUB_ENV"
-
-      - name: Prove Relay WireGuard SSH Data Plane
+      - name: Prove Direct Certificate SSH Data Plane
         run: |
           set -euo pipefail
           artifact_dir="artifacts/vm-runtime-acceptance/${RUN_ID}"
           mkdir -p "$artifact_dir"
           endpoint_host="$(node -e 'process.stdout.write(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).host)')"
           endpoint_port="$(node -e 'process.stdout.write(String(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).port))')"
-          session_json="$VEM_MAINTENANCE_RELAY_SESSION_JSON"
-          route_json="$(ip -j route get "$endpoint_host" from "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP")"
-          allowed_ips="$(sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" allowed-ips)"
-          node - "$route_json" "$session_json" "$VM_GUEST_MAINTENANCE_ENDPOINT_JSON" <<'NODE'
-          const [routeJson, sessionJson, endpointJson] = process.argv.slice(2);
-          const routes = JSON.parse(routeJson);
-          const session = JSON.parse(sessionJson);
-          const endpoint = JSON.parse(endpointJson);
-          const route = routes[0];
-          if (
-            !route ||
-            route.dev !== process.env.VEM_MAINTENANCE_RELAY_INTERFACE ||
-            endpoint.host !== session.endpointTunnelAddress ||
-            process.env.VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP !== session.sourceTunnelAddress
-          ) {
-            throw new Error("Relay WireGuard SSH data-plane route is not bound to the maintenance session endpoint and source address");
-          }
-          NODE
-          node - "$allowed_ips" "$session_json" <<'NODE'
-          const [lines, sessionJson] = process.argv.slice(2);
-          const session = JSON.parse(sessionJson);
-          const selected = lines.trim().split(/\r?\n/).map((line) => line.trim().split(/\s+/)).find(
-            ([peer]) => peer === session.relayPeer.publicKey,
-          );
-          if (!selected || !selected.slice(1).join(" ").split(",").includes(`${session.endpointTunnelAddress}/32`)) {
-            throw new Error("maintenance-session Relay peer does not own the endpoint /32 AllowedIPs route");
-          }
-          NODE
           ssh_common=(
-            -b "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP"
             -p "$endpoint_port"
-            -i "$MAINTENANCE_SSH_DIR/id_ed25519"
-            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
+            -i "$VM_RUNTIME_SSH_DIR/id_ed25519"
+            -o "CertificateFile=$VM_RUNTIME_SSH_DIR/id_ed25519-cert.pub"
             -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH"
             -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS"
             -o StrictHostKeyChecking=accept-new
@@ -597,50 +363,16 @@ jobs:
             -o ProxyCommand=none
           )
           target="${WINDOWS_SSH_USER}@${endpoint_host}"
-          proof_started_at="$(date +%s)"
-          ssh "${ssh_common[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -Command \"whoami | Out-Null\"" >/dev/null
-          handshake_observed=false
-          for attempt in $(seq 1 15); do
-            handshakes="$(sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" latest-handshakes)"
-            if node - "$handshakes" "$proof_started_at" "$session_json" <<'NODE'
-          const [lines, startedAt, sessionJson] = process.argv.slice(2);
-          const session = JSON.parse(sessionJson);
-          const relayHandshake = lines
-            .trim()
-            .split(/\r?\n/)
-            .map((line) => line.trim().split(/\s+/))
-            .find(([peer]) => peer === session.relayPeer.publicKey);
-          if (
-            !relayHandshake ||
-            !Number.isInteger(Number(relayHandshake.at(-1))) ||
-            Number(relayHandshake.at(-1)) < Number(startedAt) - 5
-          ) {
-            process.exit(1);
-          }
-          NODE
-            then
-              handshake_observed=true
-              break
-            fi
-            sleep 2
-          done
-          if [ "$handshake_observed" != true ]; then
-            echo "Relay WireGuard SSH data-plane proof failed: no fresh Relay handshake after certificate SSH." >&2
-            exit 1
-          fi
-          node - "$artifact_dir/wireguard-ssh-data-plane.json" <<'NODE'
+          ssh "${ssh_common[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -Command \"whoami | Out-Null\""
+          node - "$artifact_dir/direct-ssh-certificate-proof.json" <<'NODE'
           const fs = require("node:fs");
           fs.writeFileSync(process.argv[2], `${JSON.stringify({
-            schemaVersion: "vem-wireguard-ssh-data-plane/v1",
-            interface: process.env.VEM_MAINTENANCE_RELAY_INTERFACE,
-            sessionId: JSON.parse(process.env.VEM_MAINTENANCE_RELAY_SESSION_JSON).sessionId,
-            relayPeerPublicKey: JSON.parse(process.env.VEM_MAINTENANCE_RELAY_SESSION_JSON).relayPeer.publicKey,
-            sourceAddress: process.env.VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP,
-            endpointAllowedIp: `${endpoint_host}/32`,
-            endpointRoute: `${endpoint_host}/32`,
-            routeBoundToWireGuard: true,
+            schemaVersion: "vem-direct-ssh-certificate-proof/v1",
+            transport: "testbed-runner-direct",
+            runnerHost: process.env.VEM_RUNTIME_PLATFORM_HOST,
+            endpoint: JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON),
+            hostKeyAlias: process.env.VM_RUNTIME_SSH_HOST_KEY_ALIAS,
             certificateSshAuthenticated: true,
-            freshRelayHandshakeObserved: true,
           })}\n`, { mode: 0o600 });
           NODE
 
@@ -667,79 +399,16 @@ jobs:
             --ephemeral-api-base-url "$EPHEMERAL_API_BASE_URL" \
             --ephemeral-mqtt-url "$EPHEMERAL_MQTT_URL" \
             --factory-guest-endpoint-json "$VM_GUEST_MAINTENANCE_ENDPOINT_JSON" \
+            --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
+            --maintenance-endpoint-policy-json "$VM_TESTBED_SERIAL_ENDPOINT_POLICY_JSON" \
             --expected-testbed-user "$WINDOWS_SSH_USER" \
             --ssh-known-hosts-path "$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH" \
             --ssh-host-key-alias "$VM_RUNTIME_SSH_HOST_KEY_ALIAS" \
-            --maintenance-ingress-source-allowlist "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP" \
-            --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
-            --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
+            --identity "$VM_RUNTIME_SSH_DIR/id_ed25519" \
+            --certificate "$VM_RUNTIME_SSH_DIR/id_ed25519-cert.pub" \
             --scanner-code-file "$VEM_VM_HOST_SCANNER_CODE_FILE" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
-
-      - name: Accept Windows LocalSystem WireGuard Claim To Handshake
-        if: success()
-        run: |
-          set -euo pipefail
-          artifact_dir="artifacts/vm-runtime-acceptance/${RUN_ID}"
-          mkdir -p "$artifact_dir"
-          endpoint_host="$(node -e 'process.stdout.write(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).host)' )"
-          endpoint_port="$(node -e 'process.stdout.write(String(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).port))' )"
-          remote_script='C:/Windows/Temp/vem-wireguard-localsystem-acceptance.ps1'
-          remote_evidence='C:/ProgramData/VEM/evidence/wireguard-localsystem-acceptance.json'
-          ssh_common=(
-            -p "$endpoint_port"
-            -i "$MAINTENANCE_SSH_DIR/id_ed25519"
-            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
-            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH"
-            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS"
-            -o StrictHostKeyChecking=yes
-          )
-          target="${WINDOWS_SSH_USER}@${endpoint_host}"
-          ssh "${ssh_common[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -Command \"Remove-Item -LiteralPath 'C:\\ProgramData\\VEM\\evidence\\wireguard-localsystem-acceptance.json' -Force -ErrorAction SilentlyContinue\""
-          scp -P "$endpoint_port" \
-            -i "$MAINTENANCE_SSH_DIR/id_ed25519" \
-            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
-            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH" \
-            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS" \
-            -o StrictHostKeyChecking=yes \
-            scripts/windows/test-wireguard-localsystem-acceptance.ps1 \
-            "${target}:${remote_script}"
-          set +e
-          ssh "${ssh_common[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\Windows\\Temp\\vem-wireguard-localsystem-acceptance.ps1"
-          acceptance_status="$?"
-          scp -P "$endpoint_port" \
-            -i "$MAINTENANCE_SSH_DIR/id_ed25519" \
-            -o "CertificateFile=$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
-            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH" \
-            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS" \
-            -o StrictHostKeyChecking=yes \
-            "${target}:${remote_evidence}" \
-            "$artifact_dir/wireguard-localsystem-acceptance.json"
-          copy_status="$?"
-          set -e
-          test "$copy_status" -eq 0
-          node - "$artifact_dir/wireguard-localsystem-acceptance.json" "$acceptance_status" <<'NODE'
-          const fs = require("node:fs");
-          const [path, sshStatus] = process.argv.slice(2);
-          const evidence = JSON.parse(fs.readFileSync(path, "utf8"));
-          if (
-            evidence.schemaVersion !== "vem-wireguard-localsystem-acceptance/v2" ||
-            evidence.ok !== true ||
-            evidence.daemonService?.localSystem !== true ||
-            evidence.tunnelService?.localSystem !== true ||
-            evidence.configAclProtected !== true ||
-            evidence.daemonRestartRead !== true ||
-            evidence.tunnelConnectedAfterRestart !== true ||
-            evidence.claimRetainedAfterRestart !== true ||
-            evidence.configReplayIdempotent !== true ||
-            typeof evidence.firstHandshakeVerifiedAt !== "string" ||
-            evidence.firstHandshakeVerifiedAt.length < 1 ||
-            !Number.isInteger(evidence.handshakeUnixSeconds) ||
-            evidence.handshakeUnixSeconds < 1
-          ) throw new Error("Windows LocalSystem WireGuard acceptance evidence is incomplete");
-          if (Number(sshStatus) !== 0) console.log("wireguard-acceptance-ssh-disconnected-during-tunnel-restart=true");
-          NODE
 
       - name: Remove Protected Simulated Scanner Code
         if: always()
@@ -789,7 +458,8 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
-            --maintenance-relay-session-json "$VEM_MAINTENANCE_RELAY_SESSION_JSON" \
+            --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
+            --maintenance-endpoint-policy-json "$VM_TESTBED_ENDPOINT_POLICY_JSON" \
             --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
             --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
             --tauri-route "$VEM_ACTIVE_KIOSK_TAURI_ROUTE" \
@@ -805,7 +475,8 @@ jobs:
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
-            --maintenance-relay-session-json "$VEM_MAINTENANCE_RELAY_SESSION_JSON" \
+            --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
+            --maintenance-endpoint-policy-json "$VM_TESTBED_ENDPOINT_POLICY_JSON" \
             --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
             --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
             --selected-audio-endpoint-id "$VEM_VM_AUDIO_ENDPOINT_ID" \
@@ -840,96 +511,40 @@ jobs:
         run: |
           set +e
           cleanup_status=0
-          ssh_directory="${MAINTENANCE_SSH_DIR:-$RUNNER_TEMP/vem-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
-          mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
-          diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
-          automation_token_path="$RUNNER_TEMP/automation-token.jwt"
-          revoke_response_path="$RUNNER_TEMP/maintenance-session-revoke.json"
-          if [ -s "$automation_token_path" ]; then
-            automation_token="$(<"$automation_token_path")"
-            {
-              printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
-              printf 'request = "POST"\n'
-            } | curl --globoff --config - \
-              --fail-with-body \
-              --silent \
-              --show-error \
-              --output "$revoke_response_path" \
-              "$MAINTENANCE_CONTROL_PLANE_CANONICAL_URL/maintenance-automation/session/revoke"
-            revoke_status="$?"
-            unset automation_token
-            if [ "$revoke_status" -eq 0 ]; then
-              node -e '
-                const fs = require("node:fs");
-                const revoked = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).data;
-                if (!revoked?.id || revoked.status !== "revoked") {
-                  throw new Error("maintenance session revoke response is invalid");
-                }
-              ' "$revoke_response_path"
-              revoke_status="$?"
-            fi
-            if [ "$revoke_status" -ne 0 ]; then
-              echo "::error::Maintenance Session explicit cleanup failed; the fixed 150-minute session TTL remains the fallback."
-              cleanup_status=1
-            fi
-          fi
-          sudo wg-quick down "$VEM_MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1
-          wg_down_status="$?"
-          rm -f \
-            "$automation_token_path" \
-            "$revoke_response_path" \
-            "$RUNNER_TEMP/maintenance-oidc-response.json" \
-            "$RUNNER_TEMP/maintenance-oidc-token.jwt" \
-            "$RUNNER_TEMP/maintenance-exchange-request.json" \
-            "$RUNNER_TEMP/maintenance-exchange-response.json" \
-            "$RUNNER_TEMP/maintenance-session-create.json" \
-            "$RUNNER_TEMP/maintenance-session-verify.json"
+          ssh_directory="${VM_RUNTIME_SSH_DIR:-$RUNNER_TEMP/vem-vm-runtime-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+          if [ -f service-api.pid ]; then kill "$(cat service-api.pid)" 2>/dev/null || true; fi
+          docker rm -f "vem-runtime-postgres-${GITHUB_RUN_ID}" "vem-runtime-mqtt-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
           rm -rf -- "$ssh_directory"
           ssh_cleanup_status="$?"
           if [ "$ssh_cleanup_status" -ne 0 ] || [ -e "$ssh_directory" ]; then
-            echo "::error::Run-scoped Maintenance SSH directory cleanup failed."
+            echo "::error::Run-scoped VM runtime SSH directory cleanup failed."
             cleanup_status=1
           fi
+          mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
           {
-            echo "cleanup.wgQuickDownExit=${wg_down_status}"
-            echo "cleanup.rootOwnedWireGuardConfigPreserved=true"
             echo "cleanup.sshDirectoryRemoved=$([ "$ssh_cleanup_status" -eq 0 ] && [ ! -e "$ssh_directory" ] && echo true || echo false)"
-            echo "cleanup.maintenanceSessionExplicitRevoke=$([ "$cleanup_status" -eq 0 ] && echo passed || echo failed)"
-          } >> "$diagnostics" 2>/dev/null || true
-          if [ -f service-api.pid ]; then kill "$(cat service-api.pid)" 2>/dev/null || true; fi
-          docker rm -f "vem-runtime-postgres-${GITHUB_RUN_ID}" "vem-runtime-mqtt-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
+            echo "cleanup.localServicesStopped=true"
+          } >> "artifacts/vm-runtime-acceptance/${RUN_ID}/local-direct-cleanup-diagnostics.txt" 2>/dev/null || true
           exit "$cleanup_status"
 
-      - name: Guard Maintenance Automation Evidence
-        id: maintenance_leak_guard
+      - name: Guard Local VM Acceptance Credential Evidence
+        id: credential_leak_guard
         if: always()
         run: |
           set -euo pipefail
           node <<'NODE'
           const fs = require("node:fs");
           const path = require("node:path");
-          const forbiddenTempFiles = [
-            "automation-token.jwt",
-            "maintenance-oidc-token.jwt",
-            "maintenance-exchange-request.json",
-            "maintenance-exchange-response.json",
-          ].map((name) => path.join(process.env.RUNNER_TEMP, name));
-          const sshDirectory = process.env.MAINTENANCE_SSH_DIR ?? path.join(
+          const sshDirectory = process.env.VM_RUNTIME_SSH_DIR ?? path.join(
             process.env.RUNNER_TEMP,
-            `vem-maintenance-ssh-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+            `vem-vm-runtime-ssh-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
           );
-          for (const name of [
-            "id_ed25519",
-            "id_ed25519.pub",
-            "id_ed25519-cert.pub",
-            "known_hosts",
-            "certificate-request.json",
-            "certificate-response.json",
-          ]) {
-            forbiddenTempFiles.push(path.join(sshDirectory, name));
+          const leaks = [];
+          for (const name of ["id_ed25519", "id_ed25519.pub", "id_ed25519-cert.pub", "known_hosts"]) {
+            const candidate = path.join(sshDirectory, name);
+            if (fs.existsSync(candidate)) leaks.push(candidate);
           }
-          forbiddenTempFiles.push(sshDirectory);
-          const leaks = forbiddenTempFiles.filter((candidate) => fs.existsSync(candidate));
+          if (fs.existsSync(sshDirectory)) leaks.push(sshDirectory);
           const roots = [
             path.join("artifacts", "vm-runtime-acceptance", process.env.RUN_ID),
             "service-api.log",
@@ -951,13 +566,13 @@ jobs:
           }
           for (const root of roots) visit(root);
           if (leaks.length > 0) {
-            throw new Error(`maintenance automation credential material found in: ${leaks.join(", ")}`);
+            throw new Error(`VM runtime credential material found in: ${leaks.join(", ")}`);
           }
-          console.log("maintenance-automation-leak-guard=passed");
+          console.log("vm-runtime-local-credential-leak-guard=passed");
           NODE
 
       - name: Upload VM Runtime Acceptance Artifacts
-        if: always() && steps.maintenance_leak_guard.outcome == 'success'
+        if: always() && steps.credential_leak_guard.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: vm-runtime-acceptance-${{ env.RUN_ID }}
