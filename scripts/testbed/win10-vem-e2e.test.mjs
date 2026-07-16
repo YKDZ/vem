@@ -4252,6 +4252,10 @@ try {
       script,
       /PHYSICAL_STOCK_ATTESTATION_PENDING.*must not expose saleable stock/s,
     );
+    assert.match(
+      script,
+      /\$refreshedAttestation\.status -ne "ready"/,
+    );
     assert.match(script, /\$physicalStockAttestation\.status -eq "ready"/);
     assert.match(fixtureFlow, /\$salePhase -eq "fixture"/);
     assert.match(fixtureFlow, /kind = "simulated_hardware_sale_fixture"/);
