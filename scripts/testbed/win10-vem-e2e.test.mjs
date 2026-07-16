@@ -4232,6 +4232,14 @@ try {
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/stock\/planogram\/sync"/,
     );
     assert.match(
+      fixtureFlow,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/maintenance\/sessions"/,
+    );
+    assert.match(
+      fixtureFlow,
+      /\$headers\["x-vem-maintenance-session"\] = \[string\]\$maintenanceSession\.sessionId/,
+    );
+    assert.match(
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/stock\/attestation"/,
     );
