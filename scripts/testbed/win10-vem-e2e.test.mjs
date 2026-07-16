@@ -49,6 +49,7 @@ import {
   runVmRuntimeAcceptance,
   buildInstalledKioskSaleLaunchScript,
   buildInstalledKioskSaleCleanupScript,
+  runInstalledKioskSaleRemoteScript,
   buildCleanBaseFactoryAcceptancePlan,
   buildFactoryImageDeliveryUnitReport,
   assertTrustedProtectedFactoryPersonalizationGate,
@@ -5288,7 +5289,10 @@ if ($errors.Count -gt 0) {
       "assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand)",
     );
     assert.ok(preflightIndex > 0);
-    assert.ok(preflightIndex < source.indexOf("writeFileSync(localScriptPath"));
+    assert.ok(
+      preflightIndex <
+        source.indexOf("writeFileSync(localScriptPath", preflightIndex),
+    );
     assert.ok(preflightIndex < source.indexOf("createSupportRootCommand"));
     assert.ok(preflightIndex < source.indexOf("uploadArtifact"));
   });
@@ -7170,6 +7174,14 @@ if ($errors.Count -gt 0) {
   });
 
   it("executes generated PowerShell through a temporary remote script instead of an oversized encoded command", () => {
+    assert.match(
+      runInstalledKioskSaleRemoteScript.toString(),
+      /buildScpCommand\(localScriptPath, remoteScriptPath, options\)/,
+    );
+    assert.doesNotMatch(
+      runInstalledKioskSaleRemoteScript.toString(),
+      /buildStdinPowerShellCommand\(\)/,
+    );
     assert.equal(
       buildRemotePowerShellCommand(
         "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",

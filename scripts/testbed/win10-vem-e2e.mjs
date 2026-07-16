@@ -2761,16 +2761,44 @@ export function runInstalledKioskSaleRemoteScript(options, script) {
   exit 1
 }
 ${script}`;
-  const result = spawnSync(
-    ssh[0],
-    [...ssh.slice(1), buildStdinPowerShellCommand()],
-    {
-      input: `${diagnosticScript}\n`,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
-      env: nonQueryChildEnvironment(),
-    },
-  );
+  const stagingRoot = mkdtempSync(join(tmpdir(), "vem-kiosk-remote-"));
+  const localScriptPath = join(stagingRoot, "run.ps1");
+  const remoteScriptPath = `C:\\Windows\\Temp\\vem-kiosk-${process.pid}-${Date.now()}.ps1`;
+  writeFileSync(localScriptPath, `${diagnosticScript}\n`, "utf8");
+  const childOptions = {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: nonQueryChildEnvironment(),
+  };
+  let result;
+  try {
+    const scp = buildScpCommand(localScriptPath, remoteScriptPath, options);
+    const copy = spawnSync(scp[0], scp.slice(1), childOptions);
+    if (copy.status !== 0) {
+      throw new Error(
+        copy.stderr ||
+          copy.stdout ||
+          `installed kiosk remote script upload failed (exit=${copy.status ?? "null"}, signal=${copy.signal ?? "none"})`,
+      );
+    }
+    result = spawnSync(
+      ssh[0],
+      [...ssh.slice(1), buildRemotePowerShellCommand(remoteScriptPath)],
+      childOptions,
+    );
+  } finally {
+    rmSync(stagingRoot, { recursive: true, force: true });
+    spawnSync(
+      ssh[0],
+      [
+        ...ssh.slice(1),
+        buildEncodedPowerShellCommand(
+          `Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue`,
+        ),
+      ],
+      childOptions,
+    );
+  }
   let output = null;
   try {
     output = JSON.parse(result.stdout || "null");
