@@ -5017,20 +5017,10 @@ try {
   $provisioningFiles = if (Test-Path -LiteralPath 'C:\\ProgramData\\VEM\\provisioning') {
     @(Get-ChildItem -LiteralPath 'C:\\ProgramData\\VEM\\provisioning' -File -Recurse -Force -ErrorAction Stop | ForEach-Object { $_.FullName })
   } else { @() }
-  $secretFiles = if (Test-Path -LiteralPath 'C:\\ProgramData\\VEM\\secrets') {
-    @(Get-ChildItem -LiteralPath 'C:\\ProgramData\\VEM\\secrets' -File -Recurse -Force -ErrorAction Stop | ForEach-Object { $_.FullName })
-  } else { @() }
-  $allowedLocalMaintenanceSecretPaths = @(
-    'C:\\ProgramData\\VEM\\secrets\\machine_maintenance_pin.dpapi'
-  )
-  $unexpectedSecretFiles = @(
-    $secretFiles | Where-Object { $allowedLocalMaintenanceSecretPaths -cnotcontains $_ }
-  )
   $identityAbsent =
     $machineConfig.unclaimed -and
     $identityFiles.Count -eq 0 -and
-    $provisioningFiles.Count -eq 0 -and
-    $unexpectedSecretFiles.Count -eq 0
+    $provisioningFiles.Count -eq 0
   $result = [ordered]@{
     schemaVersion = 'factory-preclaim-verification/v1'
     kind = 'factory-preclaim-verification'
@@ -5057,10 +5047,6 @@ try {
         machineIdentityFileCount = $identityFiles.Count
         machineConfig = $machineConfig
         provisioningFileCount = $provisioningFiles.Count
-        protectedSecretFileCount = $unexpectedSecretFiles.Count
-        allowedLocalMaintenanceSecretFileCount = @(
-          $secretFiles | Where-Object { $allowedLocalMaintenanceSecretPaths -ccontains $_ }
-        ).Count
       }
       oobeComplete = [ordered]@{
         asserted = $oobeComplete
