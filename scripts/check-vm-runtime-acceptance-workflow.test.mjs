@@ -45,6 +45,7 @@ describe("VM runtime acceptance workflow local direct path", () => {
 
     assert.match(workflow, /permissions:\n\s+actions: read\n\s+contents: read/);
     assert.match(workflow, /Guard Local VM Runtime Trust Boundary/);
+    assert.doesNotMatch(workflow, /runner\.labels|RUNNER_LABELS_JSON/);
   });
 
   it("does not start or prove a runner relay or maintenance port-security path", () => {

@@ -60,17 +60,12 @@ jobs:
         env:
           EXPECTED_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main
           OBSERVED_WORKFLOW_REF: ${{ github.workflow_ref }}
-          RUNNER_LABELS_JSON: ${{ toJSON(runner.labels) }}
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
           test "$OBSERVED_WORKFLOW_REF" = "$EXPECTED_WORKFLOW_REF"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           node <<'NODE'
-          const labels = JSON.parse(process.env.RUNNER_LABELS_JSON);
-          for (const required of ["self-hosted", "Linux", "X64", "vem-runtime"]) {
-            if (!labels.includes(required)) throw new Error(`missing trusted runner label: ${required}`);
-          }
           const patterns = {
             RUN_ID: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,
             WINDOWS_SSH_USER: /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/,
