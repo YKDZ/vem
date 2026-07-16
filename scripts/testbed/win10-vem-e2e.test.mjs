@@ -4582,6 +4582,7 @@ if ($errors.Count -gt 0) {
         commandArg(plan.steps[3].command, "--sale-prepare-command-json"),
       );
       assert.equal(commandArg(salePrepareCommand, "--sale-phase"), "fixture");
+      assert.equal(salePrepareCommand.includes("--already-claimed"), true);
       const failureMatrixCommands = JSON.parse(
         commandArg(plan.steps[3].command, "--failure-matrix-commands-json"),
       );
