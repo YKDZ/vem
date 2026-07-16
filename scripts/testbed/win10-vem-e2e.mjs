@@ -2993,6 +2993,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       ephemeralPlatformEvidence,
       "--sale-phase",
       "fixture",
+      "--already-claimed",
       "--out",
       `${evidenceRoot}/simulated-hardware-sale-prepare-response.json`,
     ],
