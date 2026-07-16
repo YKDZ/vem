@@ -1078,10 +1078,20 @@ export async function dispatchPhysicalInput(
 }
 
 export async function activateVisibleSelector(client, selector, options = {}) {
-  const probe = await probeSelectorBounds(client, selector, options);
-  if (!probe?.actionable) {
-    throw new Error(`selector is not physically actionable: ${selector}`);
-  }
+  const timeoutMs = options.timeoutMs ?? 0;
+  const pollMs = options.pollMs ?? DEFAULT_ROUTE_POLL_MS;
+  const deadline = Date.now() + timeoutMs;
+  let probe;
+  do {
+    probe = await probeSelectorBounds(client, selector, options);
+    if (probe?.actionable) break;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `selector is not physically actionable: ${selector}; last probe=${JSON.stringify(probe ?? null)}`,
+      );
+    }
+    await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+  } while (true);
   const input = await dispatchPhysicalInput(client, probe.center, options);
   return {
     selector,

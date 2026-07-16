@@ -723,6 +723,38 @@ describe("machine-ui-cdp-driver", () => {
     await client.close();
   });
 
+  it("waits for an asynchronously enabled physical action", async () => {
+    let probes = 0;
+    const { factory } = createFakeWebSocketFactory((message) => {
+      if (message.method === "Runtime.evaluate") {
+        probes += 1;
+        return cdpValue(
+          probes === 1
+            ? { selector: "#submit", exists: true, actionable: false }
+            : {
+                selector: "#submit",
+                exists: true,
+                actionable: true,
+                bounds: { x: 0, y: 0, width: 20, height: 20 },
+                center: { x: 10, y: 10 },
+              },
+          message.id,
+        );
+      }
+      return { id: message.id, result: {} };
+    });
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/async", {
+      webSocketFactory: factory,
+    });
+    await client.connect();
+    await activateVisibleSelector(client, "#submit", {
+      timeoutMs: 100,
+      pollMs: 1,
+    });
+    assert.equal(probes, 2);
+    await client.close();
+  });
+
   it("rejects off-viewport, pointer-disabled, or occluded selectors", async () => {
     for (const probe of [
       {
