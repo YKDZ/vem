@@ -137,7 +137,7 @@ function readRuntimeBinding(path) {
   if (
     report?.ok !== true ||
     runtime?.schemaVersion !== "runtime-acceptance-report/v1" ||
-    kiosk?.sessionUser !== "VEMKiosk" ||
+    kiosk?.sessionUser?.toLowerCase() !== "vemkiosk" ||
     !Number.isInteger(kiosk?.sessionId) ||
     kiosk.sessionId < 1 ||
     (!cdpRoute && !productionNormalUi)
@@ -151,7 +151,7 @@ function readRuntimeBinding(path) {
       cdpRoute && typeof kiosk.cdpTargetId === "string" && kiosk.cdpTargetId
         ? kiosk.cdpTargetId
         : null,
-    sessionUser: kiosk.sessionUser,
+    sessionUser: "VEMKiosk",
     sessionId: kiosk.sessionId,
     route: cdpRoute ? routeFromTauriUrl(kiosk.url) : "#/catalog",
     url: kiosk.url,
