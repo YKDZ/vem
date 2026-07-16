@@ -5631,7 +5631,7 @@ if ($errors.Count -gt 0) {
       JSON.parse(
         commandArg(serialStep.command, "--sale-prepare-command-json"),
       ).includes("--already-claimed"),
-      true,
+      false,
     );
     assert.equal(
       failureCommands["scanner-timeout"].salePrepareCommand.includes(
@@ -5721,7 +5721,7 @@ if ($errors.Count -gt 0) {
                 JSON.parse(
                   command[command.indexOf("--sale-prepare-command-json") + 1],
                 ).includes("--already-claimed"),
-                true,
+                false,
               );
             }
             const runtime =

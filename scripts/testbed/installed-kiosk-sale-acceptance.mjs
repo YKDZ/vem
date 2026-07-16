@@ -653,6 +653,10 @@ export async function runInstalledKioskSaleAcceptanceCli(
   options,
   dependencies = {},
 ) {
+  const queryDatabaseUrl = process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+  if (typeof queryDatabaseUrl !== "string" || queryDatabaseUrl.trim() === "") {
+    throw new Error(`${INSTALLED_KIOSK_SALE_DATABASE_URL_ENV} is required`);
+  }
   const plan = buildInstalledKioskSaleAcceptancePlan(options);
   const remote = executionOptions(options);
   const runtime = readRuntimeBinding(options.runtime_acceptance_report);
@@ -667,10 +671,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
   const runRemote = dependencies.runRemote ?? runInstalledKioskSaleRemoteScript;
   const drive = dependencies.drive ?? runVisibleMachineSaleScenario;
   const capture = dependencies.capture ?? captureInstalledKioskSaleHook;
-  const queryDatabaseUrl = process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
-  if (typeof queryDatabaseUrl !== "string" || queryDatabaseUrl.trim() === "") {
-    throw new Error(`${INSTALLED_KIOSK_SALE_DATABASE_URL_ENV} is required`);
-  }
   const nonQueryEnvironment = nonQueryChildEnvironment();
   const queryEnvironment = {
     ...nonQueryEnvironment,

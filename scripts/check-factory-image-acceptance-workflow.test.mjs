@@ -176,6 +176,11 @@ describe("Factory Image Acceptance workflow", () => {
       /rm -f "\$automation_token_path" "\$revoke_response_path"/,
     );
     assert.match(cleanup, /rm -rf -- "\$ssh_directory"/);
+    assert.ok(
+      cleanup.indexOf('rm -rf -- "$ssh_directory"') <
+        cleanup.indexOf('if [ -s "$automation_token_path" ]'),
+      "Factory SSH key material must be removed before fallible service cleanup",
+    );
   });
 
   it("starts a same-run ephemeral platform and writes the typed lifecycle input at runtime", () => {

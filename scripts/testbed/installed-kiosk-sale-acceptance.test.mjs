@@ -1,10 +1,44 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
   buildInstalledKioskSaleAcceptancePlan,
   postMinusBaselinePlatformRaw,
+  runInstalledKioskSaleAcceptanceCli,
 } from "./installed-kiosk-sale-acceptance.mjs";
+
+const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
+  "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
+
+describe("installed kiosk sale preflight", () => {
+  it("rejects a missing database binding before creating runner secrets", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-installed-kiosk-preflight-"));
+    const previousRunnerTemp = process.env.RUNNER_TEMP;
+    const previousDatabaseUrl =
+      process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+    process.env.RUNNER_TEMP = root;
+    delete process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+    try {
+      await assert.rejects(
+        runInstalledKioskSaleAcceptanceCli({}),
+        /VEM_INSTALLED_KIOSK_SALE_DATABASE_URL is required/,
+      );
+      assert.deepEqual(readdirSync(root), []);
+    } finally {
+      if (previousRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = previousRunnerTemp;
+      if (previousDatabaseUrl === undefined)
+        delete process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+      else
+        process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV] =
+          previousDatabaseUrl;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 function rawRecord(id, extras = {}) {
   return { id, ...extras };

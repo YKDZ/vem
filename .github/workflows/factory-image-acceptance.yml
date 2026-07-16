@@ -478,6 +478,11 @@ jobs:
           revoke_response_path="$RUNNER_TEMP/factory-maintenance-session-revoke.json"
           session_path="$RUNNER_TEMP/factory-maintenance-session.json"
           ssh_directory="${VEM_FACTORY_MAINTENANCE_SSH_DIR:-$RUNNER_TEMP/vem-factory-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+          rm -rf -- "$ssh_directory" || failed=1
+          if [ -e "$ssh_directory" ]; then
+            echo "run-scoped Factory Maintenance SSH directory remained after cleanup: $ssh_directory" >&2
+            failed=1
+          fi
           if [ -s "$automation_token_path" ]; then
             control_plane="${MAINTENANCE_CONTROL_PLANE_URL%/}"
             automation_token="$(<"$automation_token_path")"
@@ -535,11 +540,6 @@ jobs:
             failed=1
           fi
           rm -f "$automation_token_path" "$revoke_response_path"
-          rm -rf -- "$ssh_directory" || failed=1
-          if [ -e "$ssh_directory" ]; then
-            echo "run-scoped Factory Maintenance SSH directory remained after cleanup: $ssh_directory" >&2
-            failed=1
-          fi
           rm -rf "$RUNNER_TEMP/vem-factory-mosquitto" "$RUNNER_TEMP/factory-image-acceptance-input.json" "$VEM_VM_HOST_EVIDENCE_EXPORT_DIR" "$RUNNER_TEMP/factory-maintenance-oidc.json" "$RUNNER_TEMP/factory-maintenance-exchange.json" "$RUNNER_TEMP/factory-maintenance-exchange.json.request" "$RUNNER_TEMP/factory-maintenance-session-created.json" "$RUNNER_TEMP/factory-maintenance-session.json" "$RUNNER_TEMP/factory-maintenance-relay-attestation.json"
           exit "$failed"
 
