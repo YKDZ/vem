@@ -579,6 +579,19 @@ test("Factory WireGuard MSI never launches its interactive tray UI", () => {
   );
 });
 
+test("Factory runtime installs an automatic VPS reverse SSH task", () => {
+  const preparation = readFileSync(
+    "scripts/windows/prepare-factory-runtime.ps1",
+    "utf8",
+  );
+  assert.match(preparation, /function Install-TestbedReverseSsh/);
+  assert.match(preparation, /ubuntu@118\.25\.104\.160/);
+  assert.match(preparation, /127\.0\.0\.1:22023:127\.0\.0\.1:22/);
+  assert.match(preparation, /ServerAliveInterval=15/);
+  assert.match(preparation, /while \(\$true\)/);
+  assert.match(preparation, /New-ScheduledTaskPrincipal -UserId "SYSTEM"/);
+});
+
 test("generated clean-base orchestration is profile-neutral and parses", () => {
   const root = mkdtempSync(join(tmpdir(), "vem-issue09-node-"));
   try {
