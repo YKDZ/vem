@@ -181,7 +181,7 @@ function New-Object { param($ComObject) [pscustomobject]@{} }
 function Start-Sleep { param($Seconds) throw "initial cleanup must not busy-wait: $Seconds" }
 function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
-function Restart-Computer { param([switch]$Force, $ErrorAction) if (-not $Force) { throw 'cleanup restart must be forced' }; $script:RestartRequests += 1; throw 'restart service temporarily unavailable' }
+function shutdown.exe { if (($args -join ' ') -cne '/r /t 0 /f') { throw 'cleanup restart must be immediate and forced' }; $script:RestartRequests += 1; throw 'restart service temporarily unavailable' }
 try { ${completion}; throw 'cleanup reboot failure fixture unexpectedly succeeded' } catch { if ([string]$_ -notmatch 'handoff reboot request 1 failed') { throw } }
 if (-not $script:TaskRegistered) { throw 'cleanup task was removed before the requested reboot' }
 if ($script:RestartRequests -cne 1) { throw "cleanup must make one scheduler-managed restart request; got $script:RestartRequests" }
@@ -229,7 +229,7 @@ function Get-CimInstance { param($ClassName, $ErrorAction) if ($ClassName -eq 'W
 function Start-Sleep { param($Seconds) throw "same-boot reentry must not busy-wait: $Seconds" }
 function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
-function Restart-Computer { param([switch]$Force, $ErrorAction) $script:RestartRequests += 1; throw 'restart service temporarily unavailable' }
+function shutdown.exe { $script:RestartRequests += 1; throw 'restart service temporarily unavailable' }
 try { ${completion}; throw 'same-boot retry fixture unexpectedly succeeded' } catch { if ([string]$_ -notmatch 'handoff reboot request 2 failed') { throw } }
 if ($script:RestartRequests -ne 1) { throw "same-boot reentry must make one retry request; got $script:RestartRequests" }
 $cleanupStatus = Get-Content -LiteralPath '${cleanupStatusPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
@@ -271,7 +271,7 @@ function Get-CimInstance { param($ClassName, $ErrorAction) if ($ClassName -eq 'W
 function Start-Sleep { param($Seconds) throw "unexpected post-reboot wait: $Seconds" }
 function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
-function Restart-Computer { param([switch]$Force, $ErrorAction) $script:RestartRequests += 1 }
+function shutdown.exe { $script:RestartRequests += 1 }
 ${completion}
 if ($script:TaskRegistered) { throw 'cleanup task was not removed after kiosk console proof' }
 if ($script:RestartRequests -ne 0) { throw 'post-reboot cleanup must not request another reboot' }
@@ -305,7 +305,7 @@ function Get-LocalUser { param($Name, $ErrorAction) $null }
 function Start-Sleep { param($Seconds) throw "completed cleanup must not wait: $Seconds" }
 function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) $script:TaskRegistered = $false }
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:TaskRegistered) { [pscustomobject]@{ TaskName = $TaskName } } }
-function Restart-Computer { param([switch]$Force, $ErrorAction) $script:RestartRequests += 1 }
+function shutdown.exe { $script:RestartRequests += 1 }
 ${completion}
 if ($script:TaskRegistered) { throw 'completed cleanup reentry did not remove its retained task' }
 if ($script:RestartRequests -ne 0) { throw 'completed cleanup reentry requested another reboot' }
@@ -475,6 +475,14 @@ test("factory preparation hardens maintenance login before network package insta
   assert.ok(
     writeRuntime.indexOf("Set-FactoryMaintenanceAccountPassword") <
       writeRuntime.indexOf("Install-PinnedWindowsPackage"),
+  );
+  assert.match(
+    preparation,
+    /Start-Process[\s\S]+WebView2 Runtime installer failed[\s\S]+Get-WebView2RuntimeEvidence/,
+  );
+  assert.match(
+    writeRuntime,
+    /Install-WebView2Runtime[\s\S]+Install-PinnedWindowsPackage/,
   );
   const passwordSetter = preparation.slice(
     preparation.indexOf("function Set-FactoryMaintenanceAccountPassword"),

@@ -72,7 +72,7 @@ Skeleton 会保留下一步命令，要求你补齐：
 
 - L2 VM runtime acceptance 的 `daemonSha256` / `machineUiSha256`
 - L3 非 ISO managed-update manifest/evidence/source binding
-- L4 Factory Manifest 的 `vem-daemon` / `vem-machine-ui` / `webview2-loader` / `vision-release`
+- L4 Factory Manifest 的 `vem-daemon` / `vem-machine-ui` / `webview2-loader` / `webview2-runtime-installer` / `vision-release`
 
 用统一校验入口比对：
 

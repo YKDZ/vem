@@ -43,8 +43,8 @@
     "factoryPreparation": { "$ref": "#/$defs/factoryPreparation" },
     "assets": {
       "type": "array",
-      "minItems": 8,
-      "maxItems": 8,
+      "minItems": 9,
+      "maxItems": 9,
       "items": { "$ref": "#/$defs/runtimeAssetReference" },
       "allOf": [
         {
@@ -88,6 +88,15 @@
           "contains": {
             "type": "object",
             "properties": { "role": { "const": "webview2-loader" } },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "role": { "const": "webview2-runtime-installer" }
+            },
             "required": ["role"]
           }
         },
@@ -315,6 +324,7 @@
                 "vem-daemon",
                 "vem-machine-ui",
                 "webview2-loader",
+                "webview2-runtime-installer",
                 "vision-release",
                 "vision-configuration",
                 "maintenance-ssh-ca-public-key"

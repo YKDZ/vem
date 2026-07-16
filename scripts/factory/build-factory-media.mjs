@@ -1137,7 +1137,8 @@ function Request-HandoffReboot([string]$RebootOriginBootIdentity, $PreviousStatu
   $attempt = $previousAttempts + 1
   Write-CleanupStatus 'reboot-pending' $RebootOriginBootIdentity '' $null $attempt
   try {
-    Restart-Computer -Force -ErrorAction Stop
+    & shutdown.exe /r /t 0 /f
+    if ($LASTEXITCODE -ne 0) { throw "shutdown.exe exited with code $LASTEXITCODE" }
     exit 0
   } catch {
     $failure = [string]$_.Exception.Message
@@ -1300,6 +1301,7 @@ function factoryPreparationDescriptor(manifest, resolvedAssets) {
     return {
       path: `assets/${reference.mediaFileName}`,
       sha256: reference.digest.slice(7),
+      version: reference.version,
     };
   };
   const preparation = manifest.factoryPreparation;
@@ -1323,6 +1325,7 @@ function factoryPreparationDescriptor(manifest, resolvedAssets) {
       daemon: asset("vem-daemon"),
       machineUi: asset("vem-machine-ui"),
       webview2Loader: asset("webview2-loader"),
+      webview2RuntimeInstaller: asset("webview2-runtime-installer"),
       openSsh: asset("openssh-installer"),
       wireGuard: asset("wireguard-installer"),
       maintenanceSshCa: asset("maintenance-ssh-ca-public-key"),
@@ -1344,6 +1347,10 @@ export function factoryPreparationSplat(
     DaemonSha256: descriptor.assets.daemon.sha256,
     MachineUiArtifactPath: path("machineUi"),
     MachineUiSha256: descriptor.assets.machineUi.sha256,
+    WebView2RuntimeInstallerPath: path("webview2RuntimeInstaller"),
+    WebView2RuntimeInstallerSha256:
+      descriptor.assets.webview2RuntimeInstaller.sha256,
+    WebView2RuntimeVersion: descriptor.assets.webview2RuntimeInstaller.version,
     EnvironmentName: parameters.environmentName,
     DeploymentBatch: parameters.deploymentBatch,
     ProvisioningEndpoint: parameters.provisioningEndpoint,
@@ -1421,10 +1428,10 @@ try {
   Assert-ExactProperties $descriptor.parameters.maintenance @('wireGuardInterfaceAlias','wireGuardListenAddress','runnerSourceAllowlist','maintainerSourceAllowlist','openSsh','wireGuard') 'Factory preparation maintenance'
   Assert-ExactProperties $descriptor.parameters.maintenance.openSsh @('version','approvedSignerThumbprint','approvedRootThumbprint') 'Factory OpenSSH trust'
   Assert-ExactProperties $descriptor.parameters.maintenance.wireGuard @('version','approvedSignerThumbprint','approvedRootThumbprint') 'Factory WireGuard trust'
-  Assert-ExactProperties $descriptor.assets @('daemon','machineUi','webview2Loader','openSsh','wireGuard','maintenanceSshCa','visionConfiguration') 'Factory preparation assets'
-  foreach ($assetName in @('daemon','machineUi','webview2Loader','openSsh','wireGuard','maintenanceSshCa','visionConfiguration')) {
+  Assert-ExactProperties $descriptor.assets @('daemon','machineUi','webview2Loader','webview2RuntimeInstaller','openSsh','wireGuard','maintenanceSshCa','visionConfiguration') 'Factory preparation assets'
+  foreach ($assetName in @('daemon','machineUi','webview2Loader','webview2RuntimeInstaller','openSsh','wireGuard','maintenanceSshCa','visionConfiguration')) {
     $asset = $descriptor.assets.$assetName
-    Assert-ExactProperties $asset @('path','sha256') "Factory asset $assetName"
+    Assert-ExactProperties $asset @('path','sha256','version') "Factory asset $assetName"
     $assetPath = Join-Path $MediaRoot ([string]$asset.path)
     if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) { throw "Factory asset $assetName is missing" }
     if ((Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$asset.sha256) { throw "Factory asset $assetName hash mismatch" }
@@ -1434,6 +1441,7 @@ try {
   $prepare = @{
     DaemonArtifactPath = Join-Path $MediaRoot $descriptor.assets.daemon.path; DaemonSha256 = $descriptor.assets.daemon.sha256
     MachineUiArtifactPath = Join-Path $MediaRoot $descriptor.assets.machineUi.path; MachineUiSha256 = $descriptor.assets.machineUi.sha256
+    WebView2RuntimeInstallerPath = Join-Path $MediaRoot $descriptor.assets.webview2RuntimeInstaller.path; WebView2RuntimeInstallerSha256 = $descriptor.assets.webview2RuntimeInstaller.sha256; WebView2RuntimeVersion = $descriptor.assets.webview2RuntimeInstaller.version
     EnvironmentName = $descriptor.parameters.environmentName; DeploymentBatch = $descriptor.parameters.deploymentBatch; ProvisioningEndpoint = $descriptor.parameters.provisioningEndpoint; MqttUrl = $descriptor.parameters.mqttUrl
     HardwareMode = $descriptor.parameters.hardware.mode; HardwareModel = $descriptor.parameters.hardware.model; TopologyIdentity = $descriptor.parameters.hardware.topologyIdentity; TopologyVersion = $descriptor.parameters.hardware.topologyVersion
     ExpectedDisplayWidth = [int]$descriptor.parameters.display.width; ExpectedDisplayHeight = [int]$descriptor.parameters.display.height; ExpectedDisplayOrientation = $descriptor.parameters.display.orientation
@@ -1554,9 +1562,11 @@ function factoryBaselineManifest(manifest, resolvedAssets) {
           );
         }
         if (
-          ["openssh-installer", "wireguard-installer"].includes(
-            reference.role,
-          ) &&
+          [
+            "openssh-installer",
+            "wireguard-installer",
+            "webview2-runtime-installer",
+          ].includes(reference.role) &&
           !/\.(?:msi|exe)$/i.test(fileName)
         ) {
           throw new Error(
@@ -4681,7 +4691,11 @@ export async function buildFactoryMedia({
     );
   }
   if (validatedManifest.outputPolicy.assemblyMode === WINDOWS_SERVICED_ISO) {
-    for (const role of ["openssh-installer", "wireguard-installer"]) {
+    for (const role of [
+      "openssh-installer",
+      "wireguard-installer",
+      "webview2-runtime-installer",
+    ]) {
       const asset = resolvedAssets.find(
         ({ reference }) => reference.role === role,
       )?.reference;

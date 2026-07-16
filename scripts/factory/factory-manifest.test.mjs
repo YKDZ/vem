@@ -103,6 +103,7 @@ function validInput() {
       asset("vem-daemon", "0.1.0"),
       asset("vem-machine-ui", "0.1.0"),
       asset("webview2-loader", "1.0.0"),
+      asset("webview2-runtime-installer", "150.0.4078+65"),
       asset("vision-release", "2026.7.11"),
       asset("vision-configuration", "1.0.0"),
       asset("maintenance-ssh-ca-public-key", "1.0.0"),

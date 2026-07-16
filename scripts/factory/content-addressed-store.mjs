@@ -12,6 +12,7 @@ const CACHEABLE_ROLES = new Set([
   "vem-daemon",
   "vem-machine-ui",
   "webview2-loader",
+  "webview2-runtime-installer",
   "vision-release",
   "vision-configuration",
   "maintenance-ssh-ca-public-key",

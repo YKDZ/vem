@@ -1000,6 +1000,20 @@ function Get-FactoryPackageEvidence {
   return $result
 }
 
+function Get-WebView2RuntimeEvidence {
+  $clientId = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+  foreach ($path in @(
+      "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$clientId",
+      "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$clientId"
+    )) {
+    $client = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
+    if ($null -ne $client -and -not [string]::IsNullOrWhiteSpace([string]$client.pv) -and [string]$client.pv -ne "0.0.0.0") {
+      return [ordered]@{ installed = $true; version = [string]$client.pv; registryPath = $path }
+    }
+  }
+  return [ordered]@{ installed = $false; version = $null; registryPath = $null }
+}
+
 function Test-PinnedVersionEquivalent {
   param(
     [string]$Actual,
@@ -1332,8 +1346,12 @@ try {
       [string]::IsNullOrWhiteSpace([string]$manifest.deploymentBatch)) {
     Add-Failure $failures "factory runtime manifest must retain non-empty EnvironmentName and DeploymentBatch trace metadata"
   }
-  if ($null -eq $manifest.packages.openSsh -or $null -eq $manifest.packages.wireGuard) {
-    Add-Failure $failures "factory manifest must declare pinned OpenSSH and WireGuard packages"
+  if ($null -eq $manifest.packages.openSsh -or $null -eq $manifest.packages.wireGuard -or $null -eq $manifest.packages.webView2Runtime) {
+    Add-Failure $failures "factory manifest must declare pinned OpenSSH, WireGuard, and WebView2 Runtime packages"
+  }
+  $checks.webView2Runtime = Get-WebView2RuntimeEvidence
+  if (-not [bool]$checks.webView2Runtime.installed) {
+    Add-Failure $failures "system-level WebView2 Runtime is unavailable"
   }
   if ($null -eq $manifest.maintenanceSsh -or $null -eq $manifest.wireGuard) {
     Add-Failure $failures "factory manifest must declare Maintenance SSH CA and WireGuard ownership"
