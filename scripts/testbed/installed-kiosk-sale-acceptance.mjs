@@ -494,6 +494,79 @@ function serialSaleBinding(conformance) {
   };
 }
 
+function terminalCheckpoint(scenario) {
+  const checkpoints = scenario?.evidence?.filter(
+    (entry) =>
+      entry?.type === "checkpoint" &&
+      entry?.label === "continuous" &&
+      /^#\/(dispensing|result)/.test(
+        entry?.identity?.route ?? entry?.route ?? "",
+      ),
+  );
+  const checkpoint = checkpoints?.at(-1);
+  if (!checkpoint || !Number.isSafeInteger(checkpoint.ordinal)) {
+    throw new Error(
+      "fulfillment binding requires a continuous terminal checkpoint before catalog return",
+    );
+  }
+  return checkpoint;
+}
+
+export function deriveFulfillmentBinding({
+  payment,
+  serial,
+  completion,
+  scenario,
+  observedFulfillment = null,
+}) {
+  const checkpoint = terminalCheckpoint(scenario);
+  const bindings = serialSaleBinding(serial);
+  const sale = completion?.simulatedHardwareSaleFlow?.sale;
+  const commandId = sale?.vendingCommandId;
+  const identitiesMatch =
+    payment?.orderId === sale?.orderId &&
+    payment?.paymentId === sale?.paymentId &&
+    payment?.orderNo === sale?.orderNo &&
+    bindings.injected.orderId === payment?.orderId &&
+    bindings.injected.paymentId === payment?.paymentId &&
+    bindings.collected.orderId === payment?.orderId &&
+    bindings.collected.paymentId === payment?.paymentId &&
+    bindings.collected.vendingCommandId === commandId;
+  if (
+    !identitiesMatch ||
+    sale?.paymentStatus !== "succeeded" ||
+    sale?.dispenseResult !== "dispensed" ||
+    typeof commandId !== "string" ||
+    commandId.length === 0
+  ) {
+    throw new Error(
+      "terminal checkpoint, serial, and completion evidence do not bind one fulfillment",
+    );
+  }
+  if (observedFulfillment != null) {
+    if (
+      observedFulfillment.orderId !== payment.orderId ||
+      observedFulfillment.paymentId !== payment.paymentId ||
+      observedFulfillment.orderNo !== payment.orderNo ||
+      observedFulfillment.commandId !== commandId
+    ) {
+      throw new Error(
+        "terminal fulfillment DOM probe does not match serial and completion evidence",
+      );
+    }
+    return { ...observedFulfillment, source: "terminal_dom" };
+  }
+  return {
+    source: "terminal_checkpoint_serial_completion",
+    terminalRoute: checkpoint.identity?.route ?? checkpoint.route,
+    terminalCheckpointOrdinal: checkpoint.ordinal,
+    orderId: payment.orderId,
+    paymentId: payment.paymentId,
+    orderNo: payment.orderNo,
+    commandId,
+  };
+}
+
 export function deriveCorrelation({
   payment,
   fulfillment,
@@ -808,7 +881,8 @@ export async function runInstalledKioskSaleAcceptanceCli(
     let payment;
     let serial;
     let completion;
-    let fulfillment;
+    let fulfillmentProbe;
+    let fulfillmentProbeError;
     const scenario = await drive({
       tunnelOptions: {
         remote: remote.remote,
@@ -921,16 +995,21 @@ export async function runInstalledKioskSaleAcceptanceCli(
         completion = JSON.parse(
           readFileSync(plan.artifacts.completionReport, "utf8"),
         );
-        fulfillment = await capture({
-          options: remote,
-          attestation,
-          selector:
-            "[data-installed-kiosk-sale-fulfillment-surface], [data-installed-kiosk-sale-result-surface]",
-          route: /^#\/(dispensing|result)/,
-        });
+        try {
+          fulfillmentProbe = await capture({
+            options: remote,
+            attestation,
+            selector:
+              "[data-installed-kiosk-sale-fulfillment-surface], [data-installed-kiosk-sale-result-surface]",
+            route: /^#\/(dispensing|result)/,
+          });
+        } catch (error) {
+          fulfillmentProbeError =
+            error instanceof Error ? error.message : String(error);
+        }
         return {
           serialCompleted: true,
-          postSaleStable: fulfillment != null,
+          postSaleStable: true,
         };
       },
     });
@@ -958,6 +1037,13 @@ export async function runInstalledKioskSaleAcceptanceCli(
     const platformRawPost = JSON.parse(
       readFileSync(plan.artifacts.platformRawRecordsReport, "utf8"),
     );
+    const fulfillment = deriveFulfillmentBinding({
+      payment,
+      serial,
+      completion,
+      scenario,
+      observedFulfillment: fulfillmentProbe,
+    });
     const correlation = deriveCorrelation({
       payment,
       fulfillment,
@@ -988,6 +1074,11 @@ export async function runInstalledKioskSaleAcceptanceCli(
       machineUiCdpScenario: scenario,
       fixture: JSON.parse(readFileSync(plan.artifacts.fixtureReport, "utf8")),
       correlation,
+      fulfillmentBinding: {
+        ...fulfillment,
+        currentDomProbe:
+          fulfillmentProbeError == null ? "observed" : "returned_to_catalog",
+      },
       evidence: {
         scenarioPath: plan.artifacts.scenarioReport,
         serialConformancePath: plan.artifacts.serialReport,
@@ -1011,7 +1102,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
         );
         if (
           cleanup?.daemonRunning !== true ||
-          cleanup?.cdpListenerCount !== 0 ||
+          cleanup?.cdpListenerCount !== 1 ||
           cleanup?.normal?.principal !== launch.prelaunch.principal ||
           cleanup?.normal?.sessionId !== launch.prelaunch.sessionId ||
           cleanup?.normal?.machineCount !== 1 ||
@@ -1019,13 +1110,19 @@ export async function runInstalledKioskSaleAcceptanceCli(
           cleanup.normal.task.exists !== true ||
           cleanup.normal.task.enabled !== true ||
           !String(cleanup.normal.task.runAsUser ?? "").endsWith("VEMKiosk") ||
-          cleanup.normal.cdpListenerCount !== 0 ||
-          cleanup.normal.cdpDisabled !== true ||
+          cleanup.normal.cdpListenerCount !== 1 ||
+          cleanup.normal.acceptanceOverlayCdp !== true ||
+          cleanup.normal.task.acceptanceOverlayCdp !== true ||
+          cleanup.normal.task.launcher !==
+            "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs" ||
+          !Number.isInteger(cleanup.normal.cdpListenerProcessId) ||
+          cleanup.normal.cdpListenerSessionId !== launch.prelaunch.sessionId ||
+          cleanup.normal.cdpMachineAncestorProcessId !==
+            cleanup.normal.processId ||
           cleanup?.normal?.route !== "#/catalog" ||
-          cleanup?.normal?.routeEvidence?.source !==
-            "temporary_cdp_restore_observer" ||
+          cleanup?.normal?.routeEvidence?.source !== "acceptance_overlay_cdp" ||
           cleanup.normal.routeEvidence.settledRoute !== "#/catalog" ||
-          cleanup.normal.routeEvidence.settledBeforeNormalLaunch !== true ||
+          cleanup.normal.routeEvidence.settledWithAcceptanceOverlay !== true ||
           !Array.isArray(cleanup.normal.routeEvidence.allowedInitialRoutes) ||
           !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
             "#/catalog",
@@ -1038,7 +1135,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
           )
         ) {
           throw new Error(
-            "installed kiosk cleanup did not restore normal VEMKiosk ownership",
+            "installed kiosk cleanup did not restore the acceptance-overlay VEMKiosk CDP binding",
           );
         }
       } else {

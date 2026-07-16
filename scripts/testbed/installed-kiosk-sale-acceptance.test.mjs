@@ -12,6 +12,7 @@ import { describe, it } from "node:test";
 
 import {
   buildInstalledKioskSaleAcceptancePlan,
+  deriveFulfillmentBinding,
   postMinusBaselinePlatformRaw,
   runInstalledKioskSaleAcceptanceCli,
 } from "./installed-kiosk-sale-acceptance.mjs";
@@ -195,6 +196,109 @@ function snapshot({ includeSecondOrder = false } = {}) {
 }
 
 describe("installed kiosk sale authoritative platform snapshots", () => {
+  it("binds fulfillment from terminal checkpoint and completion evidence after ResultView returns to catalog", () => {
+    const binding = deriveFulfillmentBinding({
+      payment: {
+        orderId: "order-terminal",
+        paymentId: "payment-terminal",
+        orderNo: "order-no-terminal",
+      },
+      serial: {
+        reports: {
+          inject: {
+            request: {
+              serialSession: {
+                saleBindings: [
+                  { orderId: "order-terminal", paymentId: "payment-terminal" },
+                ],
+              },
+            },
+          },
+          collect: {
+            request: {
+              serialSession: {
+                saleBindings: [
+                  {
+                    orderId: "order-terminal",
+                    paymentId: "payment-terminal",
+                    vendingCommandId: "command-terminal",
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+      completion: {
+        simulatedHardwareSaleFlow: {
+          sale: {
+            orderId: "order-terminal",
+            paymentId: "payment-terminal",
+            orderNo: "order-no-terminal",
+            vendingCommandId: "command-terminal",
+            paymentStatus: "succeeded",
+            dispenseResult: "dispensed",
+          },
+        },
+      },
+      scenario: {
+        evidence: [
+          {
+            type: "checkpoint",
+            label: "continuous",
+            ordinal: 1000002,
+            identity: { route: "#/result" },
+          },
+          {
+            type: "checkpoint",
+            label: "final",
+            identity: { route: "#/catalog" },
+          },
+        ],
+      },
+    });
+
+    assert.deepEqual(binding, {
+      source: "terminal_checkpoint_serial_completion",
+      terminalRoute: "#/result",
+      terminalCheckpointOrdinal: 1000002,
+      orderId: "order-terminal",
+      paymentId: "payment-terminal",
+      orderNo: "order-no-terminal",
+      commandId: "command-terminal",
+    });
+  });
+
+  it("rejects catalog fulfillment when no terminal checkpoint preceded it", () => {
+    assert.throws(
+      () =>
+        deriveFulfillmentBinding({
+          payment: {
+            orderId: "order-terminal",
+            paymentId: "payment-terminal",
+            orderNo: "order-no-terminal",
+          },
+          serial: {
+            reports: {
+              inject: { request: { serialSession: { saleBindings: [] } } },
+              collect: { request: { serialSession: { saleBindings: [] } } },
+            },
+          },
+          completion: { simulatedHardwareSaleFlow: { sale: {} } },
+          scenario: {
+            evidence: [
+              {
+                type: "checkpoint",
+                label: "final",
+                identity: { route: "#/catalog" },
+              },
+            ],
+          },
+        }),
+      /terminal checkpoint/,
+    );
+  });
+
   it("retains same-machine history yet exposes a second post-baseline order", () => {
     const delta = postMinusBaselinePlatformRaw({
       baseline: snapshot(),

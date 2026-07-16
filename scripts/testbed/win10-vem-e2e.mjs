@@ -1296,6 +1296,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   }
   if (facts.kioskRuntime?.cdpAvailable === true) {
     if (
+      facts.kioskRuntime?.acceptanceOverlayCdp !== true ||
       !Number.isInteger(facts.kioskRuntime?.cdpListenerProcessId) ||
       facts.kioskRuntime?.cdpListenerSessionId !==
         facts.kioskRuntime?.sessionId ||
@@ -1382,6 +1383,7 @@ export function buildKioskRuntimeEvidence({
   cdpTargets = [],
   cdpAvailable = Array.isArray(cdpTargets),
   cdpListener = null,
+  acceptanceOverlayCdp = false,
 } = {}) {
   const session = activeSession
     ? normalizeSessionEvidence(activeSession)
@@ -1443,6 +1445,7 @@ export function buildKioskRuntimeEvidence({
     cdpMachineAncestorProcessId: cdpListener?.machineAncestorProcessId ?? null,
     cdpTargetId,
     cdpAvailable,
+    acceptanceOverlayCdp: cdpVerified && acceptanceOverlayCdp === true,
     error: webviewRunning ? null : "kiosk_webview_not_verified",
   };
 }
@@ -2699,11 +2702,10 @@ export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
   }
   return String.raw`
 $ErrorActionPreference = 'Stop'
-  $debugTask = '${INSTALLED_KIOSK_SALE_DEBUG_TASK}'
-  $normalTask = '${EXPECTED_MACHINE_UI_TASK_NAME}'
-  $observationTask = 'VEMInstalledKioskSaleRestoreObserve'
-  $observationLauncher = Join-Path $env:TEMP 'vem-installed-kiosk-sale-restore-observe.vbs'
-  $machinePath = '${INSTALLED_KIOSK_SALE_MACHINE_PATH}'
+$debugTask = '${INSTALLED_KIOSK_SALE_DEBUG_TASK}'
+$normalTask = '${EXPECTED_MACHINE_UI_TASK_NAME}'
+$debugLauncher = '${INSTALLED_KIOSK_SALE_DEBUG_LAUNCHER}'
+$machinePath = '${INSTALLED_KIOSK_SALE_MACHINE_PATH}'
 $principal = '${principal.replaceAll("'", "''")}'
 $sessionId = ${sessionId}
 $expectedRoute = '${expectedRoute.replaceAll("'", "''")}'
@@ -2713,47 +2715,49 @@ Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction Silen
 $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
 foreach ($listener in $listeners) { Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue }
 Get-Process -Name machine -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId } | Stop-Process -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Milliseconds 300
-  if (@(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue).Count -ne 0) { throw 'CDP listener remained after debug UI cleanup' }
-  $normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
-  if (-not [bool]$normalTaskInstance.Settings.Enabled) { throw 'normal VEMMachineUI task is disabled during cleanup' }
-  $normalTaskPrincipal = [string]$normalTaskInstance.Principal.UserId
-  if ($normalTaskPrincipal -notmatch '(?i)VEMKiosk$') { throw 'normal VEMMachineUI task does not target VEMKiosk' }
-  Stop-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
-  Unregister-ScheduledTask -TaskName $observationTask -Confirm:$false -ErrorAction SilentlyContinue
-  @(
-    'Set oShell = CreateObject("WScript.Shell")',
-    'Set env = oShell.Environment("PROCESS")',
-    'env("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") = "--remote-debugging-port=9222"',
-    'oShell.CurrentDirectory = "C:\VEM\bringup"',
-    'oShell.Run """C:\VEM\bringup\machine.exe""", 1, False'
-  ) | Set-Content -LiteralPath $observationLauncher -Encoding ASCII
-  $principalSpec = New-ScheduledTaskPrincipal -UserId $principal -LogonType InteractiveToken -RunLevel Limited
-  $observationAction = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $observationLauncher) -WorkingDirectory 'C:\VEM\bringup'
-  Register-ScheduledTask -TaskName $observationTask -InputObject (New-ScheduledTask -Action $observationAction -Principal $principalSpec) -Force | Out-Null
-  Start-ScheduledTask -TaskName $observationTask
-  $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  $observationTarget = $null
+Start-Sleep -Milliseconds 300
+if (@(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue).Count -ne 0) { throw 'CDP listener remained after debug UI cleanup' }
+$normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
+if (-not [bool]$normalTaskInstance.Settings.Enabled) { throw 'normal VEMMachineUI task is disabled during cleanup' }
+$normalTaskPrincipal = [string]$normalTaskInstance.Principal.UserId
+if ($normalTaskPrincipal -notmatch '(?i)VEMKiosk$') { throw 'normal VEMMachineUI task does not target VEMKiosk' }
+if (-not (Test-Path -LiteralPath $debugLauncher -PathType Leaf)) { throw 'installed kiosk sale acceptance CDP launcher is missing' }
+$acceptanceOverlayAction = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $debugLauncher) -WorkingDirectory 'C:\VEM\bringup'
+Set-ScheduledTask -TaskName $normalTask -Action $acceptanceOverlayAction | Out-Null
+Start-ScheduledTask -TaskName $normalTask -ErrorAction Stop
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+$acceptanceTarget = $null
   do {
     $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) })
     $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
     if ($normal.Count -eq 1 -and $listeners.Count -eq 1) {
       $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
       if ($targets.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$targets[0].id)) {
-        $observationTarget = $targets[0]
+        $acceptanceTarget = $targets[0]
         break
       }
     }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
-  if ($normal.Count -ne 1 -or $null -eq $observationTarget) { throw 'normal kiosk restoration did not produce observable CDP route evidence' }
+  if ($normal.Count -ne 1 -or $listeners.Count -ne 1 -or $null -eq $acceptanceTarget) { throw 'acceptance overlay kiosk restoration did not retain exactly one CDP listener' }
   $normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
   $owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
   $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
-  if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'restored normal machine.exe principal or session differs from saved VEMKiosk owner' }
-  $initialRoute = ([uri][string]$observationTarget.url).Fragment
-  if ([string]::IsNullOrWhiteSpace($initialRoute) -or $allowedInitialRoutes -notcontains $initialRoute) { throw 'temporary restore observer route is outside the post-sale return policy' }
-  $settledTarget = $observationTarget
+  if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'acceptance overlay machine.exe principal or session differs from saved VEMKiosk owner' }
+  $listenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$listeners[0].OwningProcess)" -ErrorAction Stop
+  if ([int]$listenerProcess.SessionId -ne $sessionId) { throw 'acceptance overlay CDP listener session differs from VEMKiosk' }
+  $cursor = $listenerProcess
+  $listenerBound = $false
+  for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth++) {
+    if ([int]$cursor.ProcessId -eq [int]$normalProcess.Id) { $listenerBound = $true; break }
+    $parentId = [int]$cursor.ParentProcessId
+    if ($parentId -le 0 -or $parentId -eq [int]$cursor.ProcessId) { break }
+    $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+  }
+  if (-not $listenerBound) { throw 'acceptance overlay CDP listener is not a machine.exe descendant' }
+  $initialRoute = ([uri][string]$acceptanceTarget.url).Fragment
+  if ([string]::IsNullOrWhiteSpace($initialRoute) -or $allowedInitialRoutes -notcontains $initialRoute) { throw 'acceptance overlay CDP route is outside the post-sale return policy' }
+  $settledTarget = $acceptanceTarget
   $settledRoute = $initialRoute
   $resultAutoReturnObserved = $false
   if ($initialRoute -eq '#/result') {
@@ -2771,33 +2775,18 @@ Get-Process -Name machine -ErrorAction SilentlyContinue | Where-Object { $_.Sess
       }
       Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
-    if (-not $resultAutoReturnObserved) { throw 'ResultView did not settle to the post-sale return route before normal UI restoration' }
+    if (-not $resultAutoReturnObserved) { throw 'ResultView did not settle to the post-sale return route in the acceptance overlay' }
   }
-  if ($settledRoute -ne $expectedRoute) { throw 'temporary restore observer did not settle to the expected normal route' }
-  $routeEvidence = [ordered]@{ source = 'temporary_cdp_restore_observer'; initialTargetId = [string]$observationTarget.id; initialTargetUrl = [string]$observationTarget.url; initialRoute = $initialRoute; allowedInitialRoutes = $allowedInitialRoutes; settledTargetId = [string]$settledTarget.id; settledTargetUrl = [string]$settledTarget.url; settledRoute = $settledRoute; resultAutoReturnObserved = $resultAutoReturnObserved; settledBeforeNormalLaunch = $true; processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId }
-  $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
-  foreach ($listener in $listeners) { Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue }
-  Stop-Process -Id ([int]$normalProcess.Id) -Force -ErrorAction SilentlyContinue
-  Unregister-ScheduledTask -TaskName $observationTask -Confirm:$false -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $observationLauncher -Force -ErrorAction SilentlyContinue
-  Start-ScheduledTask -TaskName $normalTask -ErrorAction Stop
-  $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  do {
-    $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) })
-    if ($normal.Count -eq 1) { break }
-    Start-Sleep -Milliseconds 250
-  } while ([DateTime]::UtcNow -lt $deadline)
-  if ($normal.Count -ne 1) { throw 'final normal kiosk restoration did not produce exactly one machine.exe' }
-  $normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
-  $owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
-  $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
-  if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'final normal machine.exe principal or session differs from saved VEMKiosk owner' }
-  if ($normal[0].CommandLine -match '--remote-debugging-port(?:=|\s+)9222') { throw 'final normal machine.exe retained CDP route' }
+  if ($settledRoute -ne $expectedRoute) { throw 'acceptance overlay CDP did not settle to the expected normal route' }
+  $normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
+  $taskAction = @($normalTaskInstance.Actions | Select-Object -First 1)
+  if ($taskAction.Count -ne 1 -or [string]$taskAction[0].Arguments -notmatch [regex]::Escape($debugLauncher)) { throw 'VEMMachineUI task action is not bound to the acceptance CDP launcher' }
+  $routeEvidence = [ordered]@{ source = 'acceptance_overlay_cdp'; initialTargetId = [string]$acceptanceTarget.id; initialTargetUrl = [string]$acceptanceTarget.url; initialRoute = $initialRoute; allowedInitialRoutes = $allowedInitialRoutes; settledTargetId = [string]$settledTarget.id; settledTargetUrl = [string]$settledTarget.url; settledRoute = $settledRoute; resultAutoReturnObserved = $resultAutoReturnObserved; settledWithAcceptanceOverlay = $true; processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId }
 $cdpListenerCount = @((Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)).Count
-if ($cdpListenerCount -ne 0) { throw 'normal kiosk restoration retained CDP listener' }
+if ($cdpListenerCount -ne 1) { throw 'acceptance overlay kiosk restoration did not retain exactly one CDP listener' }
 $daemon = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
 if ([string]$daemon.Status -ne 'Running') { throw 'daemon stopped during installed kiosk sale acceptance' }
-  [ordered]@{ ok = $true; restored = 'normal_task_after_settled_route'; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId; machineCount = $normal.Count; task = [ordered]@{ name = $normalTask; exists = $true; enabled = [bool]$normalTaskInstance.Settings.Enabled; runAsUser = $normalTaskPrincipal }; cdpListenerCount = $cdpListenerCount; cdpDisabled = $true; route = $settledRoute; routeEvidence = $routeEvidence }; daemonRunning = $true; cdpListenerCount = $cdpListenerCount } | ConvertTo-Json -Compress -Depth 8
+[ordered]@{ ok = $true; restored = 'acceptance_overlay_cdp_task_after_settled_route'; overlayScope = 'disposable_acceptance_overlay'; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId; machineCount = $normal.Count; task = [ordered]@{ name = $normalTask; exists = $true; enabled = [bool]$normalTaskInstance.Settings.Enabled; runAsUser = $normalTaskPrincipal; acceptanceOverlayCdp = $true; launcher = $debugLauncher }; acceptanceOverlayCdp = $true; cdpListenerCount = $cdpListenerCount; cdpListenerProcessId = [int]$listenerProcess.ProcessId; cdpListenerSessionId = [int]$listenerProcess.SessionId; cdpMachineAncestorProcessId = [int]$normalProcess.Id; cdpTargetId = [string]$settledTarget.id; route = $settledRoute; routeEvidence = $routeEvidence }; daemonRunning = $true; cdpListenerCount = $cdpListenerCount } | ConvertTo-Json -Compress -Depth 8
 `.trim();
 }
 
@@ -6788,6 +6777,9 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
   $cdp = Get-WebViewCdpUrlEvidence
   $cdpVerified = $kioskProcess.Count -gt 0 -and $null -ne $cdpListener -and [bool]$cdpListener.bound -and (Test-TauriHashRouteUrl ([string]$cdp.url)) -and -not [string]::IsNullOrWhiteSpace([string]$cdp.cdpTargetId)
   $productionWebViewVerified = $kioskProcess.Count -gt 0 -and $kioskWebView2Process.Count -gt 0 -and -not [bool]$cdp.available
+  $machineUiTask = Get-ScheduledTask -TaskName "VEMMachineUI" -TaskPath "\\" -ErrorAction SilentlyContinue
+  $machineUiAction = @($machineUiTask.Actions | Select-Object -First 1)
+  $acceptanceOverlayCdp = $cdpVerified -and $machineUiAction.Count -eq 1 -and [string]$machineUiAction[0].Arguments -match [regex]::Escape("C:\VEM\bringup\launch-machine-ui-debug.vbs")
   return [ordered]@{
     webviewRunning = $kioskMachineProcesses.Count -eq 1 -and ($cdpVerified -or $productionWebViewVerified)
     url = if ($cdpVerified) { [string]$cdp.url } elseif ($productionWebViewVerified) { "unavailable:production-cdp-disabled" } else { [string]$cdp.url }
@@ -6804,6 +6796,7 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     sessionId = if ($null -ne $ActiveKioskSession) { [int]$ActiveKioskSession.sessionId } else { $null }
     cdpAvailable = [bool]$cdp.available
     cdpTargetId = if ($cdpVerified) { [string]$cdp.cdpTargetId } else { $null }
+    acceptanceOverlayCdp = [bool]$acceptanceOverlayCdp
     error = $cdp.error
   }
 }
@@ -9159,6 +9152,7 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       cdpMachineAncestorProcessId = $kioskRuntime.cdpMachineAncestorProcessId
       cdpAvailable = $kioskRuntime.cdpAvailable
       cdpTargetId = $kioskRuntime.cdpTargetId
+      acceptanceOverlayCdp = $kioskRuntime.acceptanceOverlayCdp
     }
     kioskDesktopEscape = $kioskDesktopEscape
   }

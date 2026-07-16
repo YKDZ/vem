@@ -584,6 +584,14 @@ function isPaymentBarrierRoute(value) {
   });
 }
 
+function isPostTerminalRoute(value) {
+  if (typeof value !== "string" || value.length === 0) return false;
+  const actual = routePath(value);
+  return ["/dispensing", "/result", "/catalog"].some(
+    (allowed) => actual === allowed || actual.startsWith(`${allowed}/`),
+  );
+}
+
 export function overlayMaintenanceEndpoint(reports) {
   const endpoint = reports.overlay?.guest?.maintenanceEndpoint;
   if (!endpoint) {
@@ -820,7 +828,8 @@ function verifyRuntimeResult(path, { requireCdpDisplayBinding = false } = {}) {
   const cdpDisplayBinding =
     /^http:\/\/tauri\.localhost\/#\//.test(kiosk?.url ?? "") &&
     typeof kiosk?.cdpTargetId === "string" &&
-    kiosk.cdpTargetId.length > 0;
+    kiosk.cdpTargetId.length > 0 &&
+    kiosk?.acceptanceOverlayCdp === true;
   const productionNormalUi =
     kiosk?.source === "webview2_process" &&
     kiosk?.cdpAvailable === false &&
@@ -855,6 +864,7 @@ function verifyRuntimeResult(path, { requireCdpDisplayBinding = false } = {}) {
       },
       tauriRoute: cdpDisplayBinding ? kiosk.url : null,
       cdpTargetId: cdpDisplayBinding ? kiosk.cdpTargetId : null,
+      acceptanceOverlayCdp: cdpDisplayBinding,
       normalUi: productionNormalUi
         ? {
             processId: kiosk.processId,
@@ -967,6 +977,9 @@ export function verifyInstalledKioskSaleScenarioResult(
   const continuousEvidence = scenario?.evidence?.filter(
     (entry) => entry?.type === "checkpoint" && entry?.label === "continuous",
   );
+  const terminalContinuousCheckpoint = continuousEvidence?.find((entry) =>
+    /^#\/(dispensing|result)/.test(entry?.identity?.route ?? ""),
+  );
   const catalogDisturbance = scenario?.evidence?.find(
     (entry) =>
       entry?.type === "route-disturbance" &&
@@ -1008,16 +1021,38 @@ export function verifyInstalledKioskSaleScenarioResult(
       ? scenario?.evidence?.[barrierIndex]
       : null;
   const barrierArmBaseline = barrier?.armBaseline;
-  const routesAfterBarrier = scenario?.evidence
-    ?.slice((barrierIndex ?? -1) + 1)
+  const terminalEvidenceIndex = scenario?.evidence?.findIndex(
+    (entry) =>
+      entry?.type === "checkpoint" &&
+      entry?.label === "continuous" &&
+      /^#\/(dispensing|result)/.test(entry?.identity?.route ?? ""),
+  );
+  const routesBeforeTerminal = scenario?.evidence
+    ?.slice(
+      (barrierIndex ?? -1) + 1,
+      terminalEvidenceIndex == null || terminalEvidenceIndex < 0
+        ? undefined
+        : terminalEvidenceIndex,
+    )
     .flatMap((entry) => [
       entry?.identity?.route,
       entry?.routeBefore,
       entry?.routeAfter,
     ])
     .filter((route) => typeof route === "string");
-  const nonPaymentRouteAfterBarrier = routesAfterBarrier?.some(
+  const nonPaymentRouteBeforeTerminal = routesBeforeTerminal?.some(
     (route) => !isPaymentBarrierRoute(route),
+  );
+  const routesAfterTerminal = scenario?.evidence
+    ?.slice(terminalEvidenceIndex ?? scenario.evidence.length)
+    .flatMap((entry) => [
+      entry?.identity?.route,
+      entry?.routeBefore,
+      entry?.routeAfter,
+    ])
+    .filter((route) => typeof route === "string");
+  const invalidRouteAfterTerminal = routesAfterTerminal?.some(
+    (route) => !isPostTerminalRoute(route),
   );
   if (
     report?.schemaVersion !== "installed-kiosk-sale-acceptance/v2" ||
@@ -1050,12 +1085,17 @@ export function verifyInstalledKioskSaleScenarioResult(
     cleanup.task.exists !== true ||
     cleanup.task.enabled !== true ||
     !String(cleanup.task.runAsUser ?? "").endsWith("VEMKiosk") ||
-    cleanup.cdpListenerCount !== 0 ||
-    cleanup.cdpDisabled !== true ||
+    cleanup.cdpListenerCount !== 1 ||
+    cleanup.acceptanceOverlayCdp !== true ||
+    cleanup.task.acceptanceOverlayCdp !== true ||
+    cleanup.task.launcher !== "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs" ||
+    !Number.isInteger(cleanup.cdpListenerProcessId) ||
+    cleanup.cdpListenerSessionId !== session.sessionId ||
+    cleanup.cdpMachineAncestorProcessId !== cleanup.processId ||
     cleanup.route !== "#/catalog" ||
-    cleanup?.routeEvidence?.source !== "temporary_cdp_restore_observer" ||
+    cleanup?.routeEvidence?.source !== "acceptance_overlay_cdp" ||
     cleanup.routeEvidence.settledRoute !== "#/catalog" ||
-    cleanup.routeEvidence.settledBeforeNormalLaunch !== true ||
+    cleanup.routeEvidence.settledWithAcceptanceOverlay !== true ||
     !Array.isArray(cleanup.routeEvidence.allowedInitialRoutes) ||
     !cleanup.routeEvidence.allowedInitialRoutes.includes("#/result") ||
     !cleanup.routeEvidence.allowedInitialRoutes.includes("#/catalog") ||
@@ -1067,6 +1107,7 @@ export function verifyInstalledKioskSaleScenarioResult(
       runtime.debug.targetId ||
     !Array.isArray(continuousEvidence) ||
     continuousEvidence.length < 1 ||
+    !terminalContinuousCheckpoint ||
     !catalogDisturbance ||
     !paymentWindow ||
     !paymentWindowContinuousCoverage ||
@@ -1086,7 +1127,8 @@ export function verifyInstalledKioskSaleScenarioResult(
         isPaymentBarrierRoute(entry.routeAfter) &&
         entry.triggerAcknowledged === true,
     ) ||
-    nonPaymentRouteAfterBarrier ||
+    nonPaymentRouteBeforeTerminal ||
+    invalidRouteAfterTerminal ||
     exactOnce?.orderCount !== 1 ||
     exactOnce.paymentCount !== 1 ||
     exactOnce.orderNoCount !== 1 ||
@@ -1129,7 +1171,7 @@ export function verifyInstalledKioskSaleScenarioResult(
     )
   ) {
     throw new Error(
-      "installed kiosk sale acceptance did not prove the v2 VEMKiosk route-barrier and exact-once contract, including cleanup normal production UI recovery",
+      "installed kiosk sale acceptance did not prove the v2 VEMKiosk route-barrier and exact-once contract, including acceptance-overlay CDP recovery",
     );
   }
   assertPhysicalInputActivations(scenario);
@@ -1173,7 +1215,7 @@ export function verifyInstalledKioskSaleScenarioResult(
       normalUi: {
         sessionId: cleanup.sessionId,
         route: cleanup.route,
-        cdpDisabled: cleanup.cdpDisabled,
+        acceptanceOverlayCdp: cleanup.acceptanceOverlayCdp,
       },
     },
   };
@@ -1479,19 +1521,7 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
     runExact(runtime, "runtime acceptance failed");
     reports.runtimeAcceptance = verifyRuntimeResult(
       verifierOutput(input, "runtime-acceptance.json"),
-      { requireCdpDisplayBinding: true },
     );
-    const display = await runAdapter(
-      input,
-      "capture-display",
-      [base],
-      null,
-      reports.runtimeAcceptance.displayBinding,
-    );
-    reports.display = {
-      ...display,
-      materializedEvidence: materializeFactoryDisplayEvidence(input, display),
-    };
     const customerSale = buildFactoryInstalledKioskSaleInvocation(
       input,
       endpoint,
@@ -1523,7 +1553,19 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
     runExact(postSaleRuntime, "post-sale runtime acceptance failed");
     reports.postSaleRuntimeAcceptance = verifyRuntimeResult(
       verifierOutput(input, "runtime-acceptance.json"),
+      { requireCdpDisplayBinding: true },
     );
+    const display = await runAdapter(
+      input,
+      "capture-display",
+      [base],
+      null,
+      reports.postSaleRuntimeAcceptance.displayBinding,
+    );
+    reports.display = {
+      ...display,
+      materializedEvidence: materializeFactoryDisplayEvidence(input, display),
+    };
   } finally {
     try {
       reports.cleanup = await runAdapter(input, "cleanup", [

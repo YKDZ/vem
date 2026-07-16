@@ -812,11 +812,11 @@ describe("simulated hardware serial acceptance evidence", () => {
             return { status: 0 };
           },
           runRemote(_options, script) {
-            if (script.includes("temporary_cdp_restore_observer")) {
+            if (script.includes("acceptance_overlay_cdp")) {
               calls.push("cleanup");
               return {
                 daemonRunning: true,
-                cdpListenerCount: 0,
+                cdpListenerCount: 1,
                 normal: {
                   processId: 4243,
                   principal: "VEM\\VEMKiosk",
@@ -827,12 +827,17 @@ describe("simulated hardware serial acceptance evidence", () => {
                     exists: true,
                     enabled: true,
                     runAsUser: "VEMKiosk",
+                    acceptanceOverlayCdp: true,
+                    launcher: "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs",
                   },
-                  cdpListenerCount: 0,
-                  cdpDisabled: true,
+                  acceptanceOverlayCdp: true,
+                  cdpListenerCount: 1,
+                  cdpListenerProcessId: 5151,
+                  cdpListenerSessionId: 1,
+                  cdpMachineAncestorProcessId: 4243,
                   route: "#/catalog",
                   routeEvidence: {
-                    source: "temporary_cdp_restore_observer",
+                    source: "acceptance_overlay_cdp",
                     initialTargetId: "restored-normal-target",
                     initialTargetUrl:
                       "http://127.0.0.1:9222/devtools/page/restored-normal-target",
@@ -843,7 +848,7 @@ describe("simulated hardware serial acceptance evidence", () => {
                       "http://127.0.0.1:9222/devtools/page/restored-normal-target",
                     settledRoute: "#/catalog",
                     resultAutoReturnObserved: true,
-                    settledBeforeNormalLaunch: true,
+                    settledWithAcceptanceOverlay: true,
                     processId: 4243,
                     principal: "VEM\\VEMKiosk",
                     sessionId: 1,
@@ -972,7 +977,7 @@ describe("simulated hardware serial acceptance evidence", () => {
       );
       assert.equal(report.runtimeBinding.debug.targetId, "debug-target");
       assert.equal(report.cleanup.status, "passed");
-      assert.equal(report.cleanup.normal.cdpDisabled, true);
+      assert.equal(report.cleanup.normal.acceptanceOverlayCdp, true);
       assert.equal(
         report.cleanup.normal.routeEvidence.settledRoute,
         "#/catalog",
@@ -1798,6 +1803,7 @@ function runtimeAcceptanceFacts(overrides = {}) {
       machineExecutablePath: "C:\\VEM\\bringup\\machine.exe",
       webView2ProcessCount: 1,
       cdpAvailable: true,
+      acceptanceOverlayCdp: true,
       cdpListenerProcessId: 600,
       cdpListenerSessionId: 3,
       cdpMachineAncestorProcessId: 500,
@@ -2403,6 +2409,7 @@ describe("win10-vem-e2e reset planning", () => {
         cdpMachineAncestorProcessId: null,
         cdpTargetId: null,
         cdpAvailable: true,
+        acceptanceOverlayCdp: false,
         error: "kiosk_webview_not_verified",
       },
     );
@@ -2438,6 +2445,7 @@ describe("win10-vem-e2e reset planning", () => {
           sessionId: 3,
           machineAncestorProcessId: 500,
         },
+        acceptanceOverlayCdp: true,
         cdpTargets: [
           { id: "cdp-target-runtime-001", url: "http://tauri.localhost/#/" },
         ],
@@ -2472,6 +2480,7 @@ describe("win10-vem-e2e reset planning", () => {
         ],
         cdpTargets: [],
         cdpAvailable: false,
+        acceptanceOverlayCdp: false,
       }),
       {
         webviewRunning: true,
@@ -2488,6 +2497,7 @@ describe("win10-vem-e2e reset planning", () => {
         cdpMachineAncestorProcessId: null,
         cdpTargetId: null,
         cdpAvailable: false,
+        acceptanceOverlayCdp: false,
         error: null,
       },
     );
@@ -4551,7 +4561,7 @@ if ($errors.Count -gt 0) {
     }
   });
 
-  it("launches a single temporary CDP kiosk UI and settles the result route before restoring normal production UI", () => {
+  it("restores the single kiosk UI through the disposable acceptance-overlay CDP task action", () => {
     const launch = buildInstalledKioskSaleLaunchScript();
     const cleanup = buildInstalledKioskSaleCleanupScript({
       principal: "VEM\\VEMKiosk",
@@ -4578,31 +4588,38 @@ if ($errors.Count -gt 0) {
     assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
     assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
     assert.match(cleanup, /CDP listener remained after debug UI cleanup/);
-    assert.match(cleanup, /VEMInstalledKioskSaleRestoreObserve/);
-    assert.match(cleanup, /-LogonType InteractiveToken/);
+    assert.match(cleanup, /launch-machine-ui-debug\.vbs/);
     assert.match(
       cleanup,
-      /restored normal machine\.exe principal or session differs from saved VEMKiosk owner/,
+      /Set-ScheduledTask -TaskName \$normalTask -Action \$acceptanceOverlayAction/,
+    );
+    assert.match(
+      cleanup,
+      /acceptance overlay machine\.exe principal or session differs from saved VEMKiosk owner/,
     );
     assert.match(
       cleanup,
       /daemon stopped during installed kiosk sale acceptance/,
     );
     assert.match(cleanup, /http:\/\/127\.0\.0\.1:9222\/json/);
-    assert.match(cleanup, /temporary_cdp_restore_observer/);
+    assert.match(cleanup, /acceptance_overlay_cdp/);
     assert.match(
       cleanup,
-      /temporary restore observer route is outside the post-sale return policy/,
+      /acceptance overlay CDP route is outside the post-sale return policy/,
     );
     assert.match(cleanup, /#\/result/);
     assert.match(cleanup, /settledRoute/);
     assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
-    assert.match(cleanup, /normal kiosk restoration retained CDP listener/);
-    assert.doesNotMatch(cleanup, /VEMInstalledKioskSaleRestore'/);
+    assert.match(
+      cleanup,
+      /acceptance overlay kiosk restoration did not retain exactly one CDP listener/,
+    );
+    assert.match(cleanup, /acceptanceOverlayCdp = \$true/);
+    assert.doesNotMatch(cleanup, /VEMInstalledKioskSaleRestoreObserve/);
     assert.ok(
       cleanup.indexOf("Unregister-ScheduledTask -TaskName $debugTask") <
         cleanup.indexOf("Get-Service -Name 'VemVendingDaemon'"),
-      "cleanup must remove the debug task/listener before daemon health is evaluated",
+      "cleanup must remove the temporary debug task before daemon health is evaluated",
     );
   });
 

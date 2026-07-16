@@ -762,6 +762,7 @@ jobs:
             value.displayBinding?.cdpTargetId !== kiosk?.cdpTargetId ||
             runtime.result?.runtimeReady?.status !== "passed" ||
             kiosk?.sessionUser !== "VEMKiosk" ||
+            kiosk?.acceptanceOverlayCdp !== true ||
             !Number.isInteger(kiosk.sessionId) ||
             kiosk.sessionId < 1 ||
             typeof kiosk.url !== "string" ||

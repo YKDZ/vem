@@ -186,6 +186,7 @@ function writeRuntimeAcceptanceVerifier(input) {
         sessionId: 1,
         url: "http://tauri.localhost/#/sale",
         cdpTargetId: "machine-ui-cdp-target-1",
+        acceptanceOverlayCdp: true,
       },
     },
   };
@@ -306,17 +307,22 @@ function saleScenario(input, _runtimeDigest) {
           exists: true,
           enabled: true,
           runAsUser: "VEMKiosk",
+          acceptanceOverlayCdp: true,
+          launcher: "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs",
         },
-        cdpListenerCount: 0,
-        cdpDisabled: true,
+        acceptanceOverlayCdp: true,
+        cdpListenerCount: 1,
+        cdpListenerProcessId: 5151,
+        cdpListenerSessionId: 1,
+        cdpMachineAncestorProcessId: 4343,
         route: "#/catalog",
         routeEvidence: {
-          source: "temporary_cdp_restore_observer",
+          source: "acceptance_overlay_cdp",
           initialRoute: "#/result",
           allowedInitialRoutes: ["#/catalog", "#/result"],
           settledRoute: "#/catalog",
           resultAutoReturnObserved: true,
-          settledBeforeNormalLaunch: true,
+          settledWithAcceptanceOverlay: true,
         },
       },
     },
@@ -912,7 +918,7 @@ describe("Factory Image Acceptance lifecycle", () => {
           normalUi: {
             sessionId: 1,
             route: "#/catalog",
-            cdpDisabled: true,
+            acceptanceOverlayCdp: true,
           },
         },
       },
@@ -942,7 +948,7 @@ describe("Factory Image Acceptance lifecycle", () => {
           input,
           runtimeAcceptanceSummary(),
         ),
-      /cleanup.*normal production UI/i,
+      /acceptance-overlay CDP recovery/i,
     );
 
     const missingCatalogDisturbance = saleScenario(input, digest);
@@ -1072,7 +1078,6 @@ describe("Factory Image Acceptance lifecycle", () => {
     for (const route of [
       "#/checkout",
       "#/products/factory-1",
-      "#/catalog",
       "#/home",
       "#/maintenance",
     ]) {
@@ -1097,6 +1102,25 @@ describe("Factory Image Acceptance lifecycle", () => {
         `post-payment ${route} must fail Factory acceptance`,
       );
     }
+
+    const catalogAfterTerminal = saleScenario(input, digest);
+    catalogAfterTerminal.machineUiCdpScenario.evidence.push({
+      type: "checkpoint",
+      label: "continuous",
+      ordinal: 1000003,
+      identity: {
+        url: "http://tauri.localhost/#/catalog",
+        route: "#/catalog",
+      },
+    });
+    writeFileSync(output, `${JSON.stringify(catalogAfterTerminal)}\n`);
+    assert.doesNotThrow(() =>
+      verifyInstalledKioskSaleScenarioResult(
+        output,
+        input,
+        runtimeAcceptanceSummary(),
+      ),
+    );
 
     const checkoutAfterArm = saleScenario(input, digest);
     checkoutAfterArm.machineUiCdpScenario.evidence.push({

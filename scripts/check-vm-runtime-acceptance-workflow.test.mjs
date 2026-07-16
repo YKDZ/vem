@@ -423,6 +423,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       /runtimeAcceptanceReport\s*\?\?\s*value/,
     );
     assert.match(bindAudioSession, /kiosk\?\.sessionUser !== "VEMKiosk"/);
+    assert.match(bindAudioSession, /kiosk\?\.acceptanceOverlayCdp !== true/);
     assert.match(bindAudioSession, /typeof kiosk\.cdpTargetId !== "string"/);
     assert.match(bindAudioSession, /A-Za-z0-9\._:-.*8,256/);
     assert.match(bindAudioSession, /VEM_ACTIVE_KIOSK_CDP_TARGET_ID/);
