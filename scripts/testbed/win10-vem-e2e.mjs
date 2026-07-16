@@ -1131,7 +1131,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     !["ok", "degraded"].includes(facts.visionRuntime?.healthStatus) ||
     facts.visionRuntime?.healthProtocol !== "vem.vision.v1" ||
     facts.visionRuntime?.healthModule !== "vision" ||
-    facts.visionRuntime?.healthMockScenario !== false ||
+    facts.visionRuntime?.healthMockScenario !== "off" ||
     !present(facts.visionRuntime?.version) ||
     facts.visionRuntime?.modelReady !== true
   ) {
@@ -7706,8 +7706,8 @@ function Get-VisionRuntimeEvidence {
         $health.version -isnot [string] -or
         [string]::IsNullOrWhiteSpace($health.version) -or
         $health.version -cne $runtimeBinding.releaseVersion -or
-        $health.mockScenario -isnot [bool] -or
-        $health.mockScenario -ne $false -or
+        $health.mockScenario -isnot [string] -or
+        $health.mockScenario -cne "off" -or
         $health.cameraReady -isnot [bool] -or
         $health.modelReady -isnot [bool] -or
         $health.modelReady -ne $true
@@ -7944,7 +7944,7 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     [string]$Facts.visionRuntime.healthStatus -notin @("ok", "degraded") -or
     [string]$Facts.visionRuntime.healthProtocol -ne "vem.vision.v1" -or
     [string]$Facts.visionRuntime.healthModule -ne "vision" -or
-    $Facts.visionRuntime.healthMockScenario -ne $false -or
+    [string]$Facts.visionRuntime.healthMockScenario -cne "off" -or
     [string]::IsNullOrWhiteSpace([string]$Facts.visionRuntime.version) -or
     -not [bool]$Facts.visionRuntime.modelReady
   ) {

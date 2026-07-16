@@ -1770,7 +1770,7 @@ function runtimeAcceptanceFacts(overrides = {}) {
       healthStatus: "ok",
       healthProtocol: "vem.vision.v1",
       healthModule: "vision",
-      healthMockScenario: false,
+      healthMockScenario: "off",
       version: "0.2.1-rc.8",
       cameraReady: false,
       modelReady: true,
@@ -6609,7 +6609,7 @@ if ($errors.Count -gt 0) {
     for (const [mutate, expectedCode] of [
       [
         (facts) => {
-          facts.visionRuntime.healthMockScenario = true;
+          facts.visionRuntime.healthMockScenario = "success";
         },
         "vision_health_not_ready",
       ],
@@ -6717,8 +6717,8 @@ if ($errors.Count -gt 0) {
       script,
       /\$process\.StartTime\.ToUniversalTime\(\)\.Ticks -ne \$active\.creationTimeUtcTicks/,
     );
-    assert.match(script, /\$health\.mockScenario -isnot \[bool\]/);
-    assert.match(script, /\$health\.mockScenario -ne \$false/);
+    assert.match(script, /\$health\.mockScenario -isnot \[string\]/);
+    assert.match(script, /\$health\.mockScenario -cne "off"/);
     assert.match(
       script,
       /\$health\.version -cne \$runtimeBinding\.releaseVersion/,
