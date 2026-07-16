@@ -523,7 +523,8 @@ foreach ($shim in @("Get-NetIPAddress", "Get-NetFirewallRule", "Get-NetFirewallP
 Import-ScriptFunctions -Path $VerifierPath
 $managedRule = [pscustomobject]@{ Name = "managed"; DisplayName = "VEM Controlled Maintenance SSH"; Direction = "Inbound"; Enabled = "True"; Action = "Allow" }
 $rogueRule = [pscustomobject]@{ Name = "rogue"; DisplayName = "Emergency Access"; Direction = "Inbound"; Enabled = "True"; Action = "Allow" }
-$script:fixtureFirewallRules = @($managedRule, $rogueRule)
+$packagedAnyRule = [pscustomobject]@{ Name = "packaged-any"; DisplayName = "Packaged App"; Direction = "Inbound"; Enabled = "True"; Action = "Allow" }
+$script:fixtureFirewallRules = @($managedRule, $rogueRule, $packagedAnyRule)
 $script:fixtureFirewallInterfaceAlias = "VEM-Maintenance"
 $script:fixtureListeners = @(
   [pscustomobject]@{ LocalAddress = "10.77.0.10"; LocalPort = 22; OwningProcess = 100 },
@@ -535,6 +536,9 @@ function Get-NetFirewallRule {
 }
 function Get-NetFirewallPortFilter {
   param($AssociatedNetFirewallRule, $ErrorAction)
+  if ($AssociatedNetFirewallRule.Name -ceq "packaged-any") {
+    return [pscustomobject]@{ Protocol = "Any"; LocalPort = "Any" }
+  }
   return [pscustomobject]@{ Protocol = "TCP"; LocalPort = "22" }
 }
 function Get-NetFirewallAddressFilter {
@@ -569,6 +573,7 @@ $firewallEvidence = Get-MaintenanceFirewallEvidence -Manifest ([pscustomobject]@
   })
 Assert-Fixture (@($firewallEvidence.enabledInboundTcp22Rules).Count -eq 2) "verifier must enumerate every enabled inbound TCP/22 rule"
 Assert-Fixture (@($firewallEvidence.unexpectedEnabledInboundTcp22Rules).Count -eq 1) "verifier must reject arbitrarily named extra TCP/22 rules"
+Assert-Fixture (@($firewallEvidence.enabledInboundTcp22Rules | Where-Object { $_.displayName -ceq "Packaged App" }).Count -eq 0) "verifier must not misclassify packaged Any/Any rules as explicit TCP/22 ingress"
 Assert-Fixture (@($firewallEvidence.listeners).Count -eq 2) "verifier must enumerate every TCP/22 listener"
 Assert-Fixture (@($firewallEvidence.unexpectedListeners).Count -eq 1) "verifier must reject wildcard or non-tunnel listeners"
 $testbedManifest = [pscustomobject]@{
@@ -704,6 +709,7 @@ $validPersonalizationRedaction = [pscustomobject]@{
     administrator = "configured"
     kiosk = "configured"
   }
+  maintenancePinVerifier = "configured"
   wireGuardPrivateKey = "not-supplied; generated-locally"
   mediaConsumed = $true
   stagingRetained = $false
@@ -713,6 +719,7 @@ $redactedEvidence = Get-FactoryPersonalizationRedaction -Manifest ([pscustomobje
     personalization = $validPersonalizationRedaction
   })
 Assert-Fixture ($redactedEvidence.credentials.administrator -ceq "configured") "verifier must reconstruct allowlisted personalization evidence"
+Assert-Fixture ($redactedEvidence.maintenancePinVerifier -ceq "configured") "verifier must preserve the redacted maintenance PIN verifier marker"
 $validPersonalizationRedaction | Add-Member -NotePropertyName injectedSecret -NotePropertyValue "must-not-survive"
 Assert-ThrowsLike -Action {
   Get-FactoryPersonalizationRedaction -Manifest ([pscustomobject]@{
@@ -732,6 +739,7 @@ $invalidBooleanRedaction = [pscustomobject]@{
     retention = "installation-lifecycle-only"
   }
   credentials = [pscustomobject]@{ administrator = "configured"; kiosk = "configured" }
+  maintenancePinVerifier = "configured"
   wireGuardPrivateKey = "not-supplied; generated-locally"
   mediaConsumed = $true
   stagingRetained = $false

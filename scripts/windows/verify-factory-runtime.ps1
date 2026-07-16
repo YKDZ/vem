@@ -1074,7 +1074,7 @@ function Get-MaintenanceFirewallEvidence {
           }
         }
       }
-      if (($protocol -eq "TCP" -or $protocol -eq "6" -or $protocol -eq "Any") -and $includesSsh) {
+      if (($protocol -eq "TCP" -or $protocol -eq "6") -and $includesSsh) {
         $addressFilter = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
         $interfaceFilter = Get-NetFirewallInterfaceFilter -AssociatedNetFirewallRule $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
         $sshRules.Add([pscustomobject]@{
@@ -1205,11 +1205,12 @@ function Get-FactoryPersonalizationRedaction {
   param($Manifest)
 
   $redaction = $Manifest.personalization
-  Assert-ExactPersonalizationProperties -Value $redaction -ExpectedNames @("schemaVersion", "kind", "profile", "protection", "credentials", "wireGuardPrivateKey", "mediaConsumed", "stagingRetained") -Label "Factory Personalization redaction"
+  Assert-ExactPersonalizationProperties -Value $redaction -ExpectedNames @("schemaVersion", "kind", "profile", "protection", "credentials", "maintenancePinVerifier", "wireGuardPrivateKey", "mediaConsumed", "stagingRetained") -Label "Factory Personalization redaction"
   $profile = Get-RequiredPersonalizationProperty -Value $redaction -Name "profile" -Label "Factory Personalization redaction"
   if ([string]$redaction.schemaVersion -cne "vem-factory-personalization-media-redaction/v1" -or
       [string]$redaction.kind -cne "factory-personalization-media-redaction" -or
       [string]$profile -cne [string]$Manifest.factoryProfile -or
+      [string]$redaction.maintenancePinVerifier -cne "configured" -or
       [string]$redaction.wireGuardPrivateKey -cne "not-supplied; generated-locally" -or
       $redaction.mediaConsumed -isnot [bool] -or $redaction.mediaConsumed -ne $true -or
       $redaction.stagingRetained -isnot [bool] -or $redaction.stagingRetained -ne $false) {
@@ -1247,6 +1248,7 @@ function Get-FactoryPersonalizationRedaction {
       retention = "installation-lifecycle-only"
     }
     credentials = $credentialEvidence
+    maintenancePinVerifier = "configured"
     wireGuardPrivateKey = "not-supplied; generated-locally"
     mediaConsumed = $true
     stagingRetained = $false
