@@ -8606,6 +8606,14 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
     }
     $baseUrl = Get-IpcBaseUrl $ready
     $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+    $maintenanceSession = Invoke-IpcJson "POST" "$baseUrl/v1/maintenance/sessions" $headers ([ordered]@{
+      pin = ${psString(process.env.VEM_TESTBED_MAINTENANCE_PIN ?? "2468")}
+      operatorId = "vm-runtime-acceptance"
+    })
+    if ([string]::IsNullOrWhiteSpace([string]$maintenanceSession.sessionId)) {
+      throw "testbed maintenance session response has no session id"
+    }
+    $headers["x-vem-maintenance-session"] = [string]$maintenanceSession.sessionId
 
     if ($salePhase -eq "complete") {
       if (-not (Test-Path -LiteralPath $contextPath -PathType Leaf)) {
