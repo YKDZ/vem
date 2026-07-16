@@ -76,6 +76,7 @@ function runScenarioForTest(options) {
 async function runInstalledRouteCompetitionScenario({
   competingRoute = null,
   touchIntervalRoute = null,
+  onPaymentWindow,
 } = {}) {
   return withFakeHttpTargets(
     [target("machine-target", "#/catalog")],
@@ -112,6 +113,23 @@ async function runInstalledRouteCompetitionScenario({
               }
               return cdpValue(
                 { stimulus: "history-back", routeBefore },
+                message.id,
+              );
+            }
+            if (expression.includes("__VEM_INSTALLED_KIOSK_SALE_DEBUG__")) {
+              return cdpValue(
+                {
+                  injectionId: "browser-injection-catalog-1",
+                  kind: "catalog_refresh",
+                  count: 1,
+                  outcome: "completed",
+                  pressure: {
+                    refreshedState: "catalog",
+                    attemptedRoute: "/catalog",
+                    resolvedRoute: "/payment",
+                    routeAuthorityWon: true,
+                  },
+                },
                 message.id,
               );
             }
@@ -164,6 +182,7 @@ async function runInstalledRouteCompetitionScenario({
         continuousCapture: true,
         continuousCaptureIntervalMs: 1,
         routePollMs: 1,
+        onPaymentWindow,
       });
       return { result, sockets };
     },
@@ -732,6 +751,15 @@ describe("machine-ui-cdp-driver", () => {
           entry.routeAfter === "#/payment",
       ),
     );
+    assert.ok(
+      result.evidence.some(
+        (entry) =>
+          entry.type === "route-disturbance" &&
+          entry.disturbance === "catalog_refresh" &&
+          entry.injection.pressure.attemptedRoute === "/catalog" &&
+          entry.injection.pressure.resolvedRoute === "/payment",
+      ),
+    );
     const barrier = result.evidence.find(
       (entry) => entry.type === "route-barrier",
     );
@@ -748,6 +776,32 @@ describe("machine-ui-cdp-driver", () => {
         (message) =>
           message.method === "Runtime.evaluate" &&
           message.params.expression.includes("history.back()"),
+      ),
+    );
+  });
+
+  it("keeps continuous route capture active through serial completion and post-sale stability", async () => {
+    let paymentWindowCalls = 0;
+    const { result } = await runInstalledRouteCompetitionScenario({
+      onPaymentWindow: async () => {
+        paymentWindowCalls += 1;
+        await sleep(5);
+        return { serialCompleted: true, postSaleStable: true };
+      },
+    });
+
+    assert.equal(paymentWindowCalls, 1);
+    assert.ok(
+      result.evidence.some(
+        (entry) =>
+          entry.type === "payment-window" &&
+          entry.serialCompleted === true &&
+          entry.postSaleStable === true,
+      ),
+    );
+    assert.ok(
+      result.evidence.some(
+        (entry) => entry.type === "checkpoint" && entry.label === "continuous",
       ),
     );
   });

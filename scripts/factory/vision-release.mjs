@@ -486,11 +486,14 @@ export function validateVisionReleaseTrustPolicy(policy) {
 export function verifyVisionReleaseSelection({
   manifestAsset,
   descriptor,
+  descriptorDigest: exactDescriptorDigest,
   attestation,
   attestationDigest: exactAttestationDigest,
   approval,
 }) {
   const selected = validateVisionReleaseDescriptor(descriptor);
+  const descriptorDigest = exactDescriptorDigest ?? selected.identity;
+  assertDigest(descriptorDigest, "Vision descriptor digest");
   const verifiedAttestation = validateVisionArtifactAttestation(
     attestation,
     selected,
@@ -555,7 +558,7 @@ export function verifyVisionReleaseSelection({
     );
   }
   if (
-    release.descriptorDigest !== selected.identity ||
+    release.descriptorDigest !== descriptorDigest ||
     release.attestationDigest !== attestationDigest ||
     release.conformanceEvidenceDigest !== approved.conformanceEvidenceDigest ||
     approved.releaseVersion !== selected.releaseVersion ||
@@ -570,7 +573,8 @@ export function verifyVisionReleaseSelection({
   return {
     releaseVersion: selected.releaseVersion,
     bundleDigest: selected.bundle.digest,
-    descriptorDigest: selected.identity,
+    descriptorDigest,
+    descriptorIdentity: selected.identity,
     approvalDigest: approved.identity,
     attestationDigest,
   };
@@ -664,6 +668,7 @@ export function verifySignedVisionReleaseEvidence({
   const selection = verifyVisionReleaseSelection({
     manifestAsset,
     descriptor,
+    descriptorDigest: digestBytes(documents.descriptor),
     attestation: parsed.attestation,
     attestationDigest: digestBytes(documents.attestation),
     approval,

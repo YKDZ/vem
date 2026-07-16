@@ -376,11 +376,46 @@ function saleScenario(input, _runtimeDigest) {
           triggerAcknowledged: true,
         },
         {
+          type: "route-disturbance",
+          label: "catalog refresh during payment",
+          disturbance: "catalog_refresh",
+          routeBefore: "#/payment",
+          routeAfter: "#/payment",
+          injection: {
+            injectionId: "browser-injection-catalog-1",
+            kind: "catalog_refresh",
+            count: 1,
+            outcome: "completed",
+            pressure: {
+              refreshedState: "catalog",
+              attemptedRoute: "/catalog",
+              resolvedRoute: "/payment",
+              routeAuthorityWon: true,
+            },
+          },
+        },
+        {
+          type: "payment-window",
+          serialCompleted: true,
+          postSaleStable: true,
+          continuousCheckpointOrdinals: [1000000, 1000001],
+        },
+        {
           type: "checkpoint",
           label: "continuous",
+          ordinal: 1000000,
           identity: {
             url: "http://tauri.localhost/#/payment",
             route: "#/payment",
+          },
+        },
+        {
+          type: "checkpoint",
+          label: "continuous",
+          ordinal: 1000001,
+          identity: {
+            url: "http://tauri.localhost/#/result",
+            route: "#/result",
           },
         },
         {
@@ -853,6 +888,40 @@ describe("Factory Image Acceptance lifecycle", () => {
           runtimeAcceptanceSummary(),
         ),
       /physical Input/,
+    );
+
+    const missingCatalogDisturbance = saleScenario(input, digest);
+    missingCatalogDisturbance.machineUiCdpScenario.evidence =
+      missingCatalogDisturbance.machineUiCdpScenario.evidence.filter(
+        (entry) => entry.type !== "route-disturbance",
+      );
+    writeFileSync(output, `${JSON.stringify(missingCatalogDisturbance)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /route-barrier.*exact-once contract/,
+      "catalog_during_payment requires an observed catalog disturbance",
+    );
+
+    const missingPaymentWindow = saleScenario(input, digest);
+    missingPaymentWindow.machineUiCdpScenario.evidence =
+      missingPaymentWindow.machineUiCdpScenario.evidence.filter(
+        (entry) => entry.type !== "payment-window",
+      );
+    writeFileSync(output, `${JSON.stringify(missingPaymentWindow)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /route-barrier.*exact-once contract/,
+      "Factory acceptance requires the payment window to cover serial completion",
     );
 
     const wrongStock = saleScenario(input, digest);

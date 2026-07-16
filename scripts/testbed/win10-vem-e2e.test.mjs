@@ -872,6 +872,7 @@ describe("simulated hardware serial acceptance evidence", () => {
               options.tunnelOptions.sshHostKeyAlias,
               "vem-installed-kiosk-run-180",
             );
+            const paymentWindow = await options.onPaymentWindow();
             return {
               schemaVersion: "machine-ui-cdp-sale-scenario/v3",
               status: "passed",
@@ -888,6 +889,40 @@ describe("simulated hardware serial acceptance evidence", () => {
                   routeBefore: "#/payment",
                   routeAfter: "#/payment",
                   triggerAcknowledged: true,
+                },
+                {
+                  type: "route-disturbance",
+                  disturbance: "catalog_refresh",
+                  injection: {
+                    injectionId: "browser-injection-catalog-1",
+                    kind: "catalog_refresh",
+                    count: 1,
+                    outcome: "completed",
+                    pressure: {
+                      refreshedState: "catalog",
+                      attemptedRoute: "/catalog",
+                      resolvedRoute: "/payment",
+                      routeAuthorityWon: true,
+                    },
+                  },
+                },
+                {
+                  type: "checkpoint",
+                  label: "continuous",
+                  ordinal: 1,
+                  route: "#/payment",
+                },
+                {
+                  type: "checkpoint",
+                  label: "continuous",
+                  ordinal: 2,
+                  route: "#/result",
+                },
+                {
+                  type: "payment-window",
+                  serialCompleted: paymentWindow.serialCompleted,
+                  postSaleStable: paymentWindow.postSaleStable,
+                  continuousCheckpointOrdinals: [1, 2],
                 },
               ],
             };
@@ -1694,15 +1729,28 @@ function runtimeAcceptanceFacts(overrides = {}) {
     },
     visionRuntime: {
       healthReachable: true,
+      healthStatus: "ok",
       healthProtocol: "vem.vision.v1",
       healthModule: "vision",
+      healthMockScenario: false,
       version: "0.2.1-rc.8",
       cameraReady: false,
       modelReady: true,
+      installedProcessBound: true,
+      selectedReleaseVersion: "0.2.1-rc.8",
       webSocketConnected: true,
       readyProtocol: "vem.vision.v1",
       readyType: "vision.ready",
       readyServerVersion: "0.2.1-rc.8",
+      readyCameraReady: false,
+      readyModelReady: true,
+      readyCapabilities: [
+        "profile_push",
+        "presence_status",
+        "person_departed",
+        "ambient_light",
+        "try_on_session",
+      ],
       error: null,
     },
     kioskRuntime: {
@@ -6350,6 +6398,82 @@ if ($errors.Count -gt 0) {
         ),
       );
     }
+  });
+
+  it("rejects Vision evidence that is mocked, stale, or incomplete", () => {
+    for (const [mutate, expectedCode] of [
+      [
+        (facts) => {
+          facts.visionRuntime.healthMockScenario = true;
+        },
+        "vision_health_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.installedProcessBound = false;
+        },
+        "vision_installed_process_not_bound",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyServerVersion = "stale-version";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyCapabilities = ["profile_push"];
+        },
+        "vision_protocol_not_ready",
+      ],
+    ]) {
+      const facts = runtimeAcceptanceFacts();
+      mutate(facts);
+      const rejected = buildRuntimeAcceptanceReport(facts);
+      assert.equal(rejected.result.runtimeReady.status, "failed");
+      assert.ok(
+        rejected.diagnostics.some(
+          (diagnostic) => diagnostic.code === expectedCode,
+        ),
+      );
+    }
+  });
+
+  it("generates a bounded, release-bound Vision readiness probe", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "runtime-acceptance",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+
+    assert.match(script, /function Get-VisionInstalledRuntimeBinding/);
+    assert.match(script, /C:\\ProgramData\\VEM\\vision\\current\.json/);
+    assert.match(
+      script,
+      /C:\\ProgramData\\VEM\\vision\\process-state\\active-process\.json/,
+    );
+    assert.match(
+      script,
+      /\$active\.selectionRevision -cne \$selection\.revision/,
+    );
+    assert.match(
+      script,
+      /\$process\.StartTime\.ToUniversalTime\(\)\.Ticks -ne \$active\.creationTimeUtcTicks/,
+    );
+    assert.match(script, /\$health\.mockScenario -isnot \[bool\]/);
+    assert.match(script, /\$health\.mockScenario -ne \$false/);
+    assert.match(
+      script,
+      /\$health\.version -cne \$runtimeBinding\.releaseVersion/,
+    );
+    assert.match(script, /while \(\(Get-Date\) -lt \$deadline\)/);
+    assert.match(script, /\$maxMessageBytes = 65536/);
+    assert.match(script, /\$messageStream\.Length \+ \$received\.Count/);
+    assert.match(script, /while \(-not \$received\.EndOfMessage\)/);
+    assert.match(
+      script,
+      /\$ready\.payload\.serverVersion -cne \$health\.version/,
+    );
+    assert.match(script, /\$ready\.payload\.capabilities -isnot \[array\]/);
   });
 
   it("does not pass runtime-ready when required report facts are missing", () => {

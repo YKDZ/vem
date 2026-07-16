@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -30,6 +30,82 @@ describe("installed kiosk sale preflight", () => {
     } finally {
       if (previousRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
       else process.env.RUNNER_TEMP = previousRunnerTemp;
+      if (previousDatabaseUrl === undefined)
+        delete process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+      else
+        process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV] =
+          previousDatabaseUrl;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers the normal kiosk task when temporary CDP launch fails without metadata", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-installed-kiosk-recovery-"));
+    const runtimeAcceptanceReport = join(root, "runtime-acceptance.json");
+    const output = join(root, "installed-kiosk-sale.json");
+    const previousDatabaseUrl =
+      process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
+    process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV] =
+      "postgresql://testbed:password@127.0.0.1:5432/vem";
+    writeFileSync(
+      runtimeAcceptanceReport,
+      `${JSON.stringify({
+        ok: true,
+        runtimeAcceptanceReport: {
+          schemaVersion: "runtime-acceptance-report/v1",
+          kioskRuntime: {
+            sessionUser: "VEMKiosk",
+            sessionId: 1,
+            url: "http://tauri.localhost/#/catalog",
+          },
+        },
+      })}\n`,
+    );
+    const remoteScripts = [];
+    try {
+      await assert.rejects(
+        runInstalledKioskSaleAcceptanceCli(
+          {
+            run_id: "RUN-LAUNCH-FAILURE",
+            machine_code: "VEM-TESTBED-WINVM-RUN-LAUNCH-FAILURE",
+            platform_target: "ephemeral-run-launch-failure",
+            ephemeral_platform_evidence: join(root, "platform.json"),
+            runtime_acceptance_report: runtimeAcceptanceReport,
+            remote: "YKDZ@win10.test",
+            identity: join(root, "id"),
+            certificate: join(root, "id-cert.pub"),
+            adapter: "runner-service-adapter",
+            target_identity: "vm-target://runtime-testbed",
+            approved_runtime_base: "factory-cas://sha256/abc",
+            profile: "vm-normal",
+            out: output,
+          },
+          {
+            runCommand() {},
+            runRemote(_remote, script) {
+              remoteScripts.push(script);
+              if (remoteScripts.length === 1) {
+                throw new Error(
+                  "temporary CDP launch terminated before metadata",
+                );
+              }
+              return {
+                ok: true,
+                recovery: "launch_failure_normal_task_restart",
+                normalTask: "VEMMachineUI",
+              };
+            },
+          },
+        ),
+        /temporary CDP launch terminated before metadata/,
+      );
+      assert.equal(remoteScripts.length, 2);
+      assert.match(
+        remoteScripts[1],
+        /Start-ScheduledTask -TaskName \$normalTask/,
+      );
+      assert.match(remoteScripts[1], /\$normalTask = 'VEMMachineUI'/);
+    } finally {
       if (previousDatabaseUrl === undefined)
         delete process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
       else

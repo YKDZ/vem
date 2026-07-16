@@ -815,6 +815,58 @@ export async function evaluateExpression(
   return result.result?.value;
 }
 
+async function injectDebugDisturbance(client, disturbance, options = {}) {
+  const injection = await evaluateExpression(
+    client,
+    `(() => {
+      const control = window.__VEM_INSTALLED_KIOSK_SALE_DEBUG__;
+      if (!control || typeof control.inject !== "function" || typeof control.readEvidence !== "function") {
+        throw new Error("installed kiosk sale debug disturbance control is unavailable");
+      }
+      return Promise.resolve(control.inject(${JSON.stringify(disturbance)})).then(() => {
+        const injections = control.readEvidence()?.disturbanceInjections;
+        return Array.isArray(injections) ? injections[injections.length - 1] ?? null : null;
+      });
+    })()`,
+    options,
+  );
+  const expectedState =
+    disturbance === "catalog_refresh" ? "catalog" : "readiness";
+  if (
+    injection?.kind !== disturbance ||
+    injection.count !== 1 ||
+    injection.outcome !== "completed" ||
+    injection.pressure?.refreshedState !== expectedState ||
+    injection.pressure?.routeAuthorityWon !== true ||
+    injection.pressure?.resolvedRoute !== "/payment" ||
+    injection.pressure.attemptedRoute === injection.pressure.resolvedRoute
+  ) {
+    throw new Error(
+      `${disturbance} did not prove competing navigation pressure during payment`,
+    );
+  }
+  return {
+    injectionId: boundedRequiredString(
+      injection.injectionId,
+      "debug disturbance injection id",
+      MAX_LABEL_LENGTH,
+    ),
+    kind: disturbance,
+    count: 1,
+    outcome: "completed",
+    pressure: {
+      refreshedState: expectedState,
+      attemptedRoute: boundedRequiredString(
+        injection.pressure.attemptedRoute,
+        "debug disturbance attempted route",
+        MAX_URL_LENGTH,
+      ),
+      resolvedRoute: "/payment",
+      routeAuthorityWon: true,
+    },
+  };
+}
+
 export async function captureDomIdentity(client, options = {}) {
   const identity = await evaluateExpression(
     client,
@@ -1102,6 +1154,12 @@ export function startContinuousIdentityCapture(client, options = {}) {
     throwIfFailed() {
       if (failure) throw failure;
     },
+    async captureNow() {
+      capture();
+      await inFlight;
+      if (failure) throw failure;
+      return checkpoints.at(-1) ?? null;
+    },
     async stop() {
       stopped = true;
       clearInterval(timer);
@@ -1168,6 +1226,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     continuousCaptureIntervalMs = 500,
     initialForbiddenRoutes = INITIAL_FORBIDDEN_CUSTOMER_ROUTES,
     screenshotCheckpoints = false,
+    onPaymentWindow,
     clock,
   } = options;
   const sequence = validateScenarioSequence({ sequenceName, steps });
@@ -1477,6 +1536,38 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           identity: after,
         });
         continue;
+      } else if (step.type === "debug-disturbance") {
+        const before = await captureDomIdentity(client, {
+          timeoutMs: step.timeoutMs ?? timeoutMs,
+        });
+        assertAllowedRoute(
+          before.route,
+          activeForbiddenRoutes,
+          activeAllowedRoutes,
+        );
+        assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
+        const injection = await injectDebugDisturbance(
+          client,
+          step.disturbance,
+          { timeoutMs: step.timeoutMs ?? timeoutMs },
+        );
+        const after = await waitForRoute(client, step.routeAfter, {
+          timeoutMs: step.timeoutMs ?? timeoutMs,
+          pollMs: routePollMs,
+          forbiddenRoutes: activeForbiddenRoutes,
+          allowedRoutes: activeAllowedRoutes,
+          assertHealthy,
+        });
+        assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
+        record({
+          type: "route-disturbance",
+          label: step.name,
+          disturbance: step.disturbance,
+          routeBefore: before.route,
+          routeAfter: after.route,
+          injection,
+        });
+        continue;
       }
       const checkpoint = await captureCheckpoint(client, step.name, {
         timeoutMs: step.timeoutMs ?? timeoutMs,
@@ -1490,6 +1581,32 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         activeAllowedRoutes,
       );
       record(checkpoint);
+    }
+
+    if (typeof onPaymentWindow === "function") {
+      const continuousStart = capture ? await capture.captureNow() : null;
+      const paymentWindow = await onPaymentWindow();
+      const continuousEnd = capture ? await capture.captureNow() : null;
+      if (
+        paymentWindow?.serialCompleted !== true ||
+        paymentWindow?.postSaleStable !== true ||
+        continuousStart == null ||
+        continuousEnd == null
+      ) {
+        throw new Error(
+          "payment window must confirm continuous capture, serial completion, and post-sale stability",
+        );
+      }
+      record({
+        type: "payment-window",
+        serialCompleted: true,
+        postSaleStable: true,
+        continuousCheckpointOrdinals: [
+          continuousStart.ordinal,
+          continuousEnd.ordinal,
+        ],
+      });
+      assertHealthy();
     }
 
     const final = await captureCheckpoint(client, "final", {
@@ -1639,6 +1756,15 @@ function validateScenarioSequence({ sequenceName, steps }) {
           routeAfter: requiredStepRouteMatcher(step, "routeAfter", index),
         }),
       );
+    } else if (type === "debug-disturbance") {
+      validatedSteps.push(
+        Object.freeze({
+          ...common,
+          disturbance: requiredStepDebugDisturbance(step, index),
+          routeBefore: requiredStepRouteMatcher(step, "routeBefore", index),
+          routeAfter: requiredStepRouteMatcher(step, "routeAfter", index),
+        }),
+      );
     } else {
       throw new Error(`${name} has unsupported step type ${String(step.type)}`);
     }
@@ -1678,7 +1804,17 @@ function assertClosedStep(step, index, type) {
               "timeoutMs",
               "screenshot",
             ])
-          : null;
+          : type === "debug-disturbance"
+            ? new Set([
+                "type",
+                "name",
+                "disturbance",
+                "routeBefore",
+                "routeAfter",
+                "timeoutMs",
+                "screenshot",
+              ])
+            : null;
   if (!allowed) return;
   for (const key of Object.keys(step)) {
     if (!allowed.has(key)) {
@@ -1726,6 +1862,17 @@ function requiredStepRouteActionStimulus(step, index) {
     throw new Error(`scenario step ${index + 1} stimulus is invalid`);
   }
   return stimulus;
+}
+
+function requiredStepDebugDisturbance(step, index) {
+  const disturbance = requiredStepString(step, "disturbance", index);
+  if (
+    disturbance !== "catalog_refresh" &&
+    disturbance !== "readiness_refresh"
+  ) {
+    throw new Error(`scenario step ${index + 1} disturbance is invalid`);
+  }
+  return disturbance;
 }
 
 function requiredStepTimeout(step, index) {
@@ -2017,6 +2164,81 @@ function boundEvidenceEntry(entry) {
       routeBefore: normalizeMachineRoute(entry.routeBefore),
       routeAfter: normalizeMachineRoute(entry.routeAfter),
       triggerAcknowledged: true,
+    };
+  }
+  if (entry.type === "route-disturbance") {
+    const disturbance = entry.disturbance;
+    if (
+      disturbance !== "catalog_refresh" &&
+      disturbance !== "readiness_refresh"
+    ) {
+      throw new Error("route disturbance is invalid");
+    }
+    const expectedState =
+      disturbance === "catalog_refresh" ? "catalog" : "readiness";
+    if (
+      entry.injection?.kind !== disturbance ||
+      entry.injection?.count !== 1 ||
+      entry.injection?.outcome !== "completed" ||
+      entry.injection?.pressure?.refreshedState !== expectedState ||
+      entry.injection?.pressure?.routeAuthorityWon !== true ||
+      entry.injection?.pressure?.resolvedRoute !== "/payment" ||
+      entry.injection.pressure.attemptedRoute ===
+        entry.injection.pressure.resolvedRoute
+    ) {
+      throw new Error("route disturbance did not prove route authority");
+    }
+    return {
+      type: "route-disturbance",
+      label: boundedRequiredString(
+        entry.label,
+        "route disturbance label",
+        MAX_LABEL_LENGTH,
+      ),
+      disturbance,
+      routeBefore: normalizeMachineRoute(entry.routeBefore),
+      routeAfter: normalizeMachineRoute(entry.routeAfter),
+      injection: {
+        injectionId: boundedRequiredString(
+          entry.injection.injectionId,
+          "route disturbance injection id",
+          MAX_LABEL_LENGTH,
+        ),
+        kind: disturbance,
+        count: 1,
+        outcome: "completed",
+        pressure: {
+          refreshedState: expectedState,
+          attemptedRoute: boundedRequiredString(
+            entry.injection.pressure.attemptedRoute,
+            "route disturbance attempted route",
+            MAX_URL_LENGTH,
+          ),
+          resolvedRoute: "/payment",
+          routeAuthorityWon: true,
+        },
+      },
+    };
+  }
+  if (entry.type === "payment-window") {
+    if (
+      entry.serialCompleted !== true ||
+      entry.postSaleStable !== true ||
+      !Array.isArray(entry.continuousCheckpointOrdinals) ||
+      entry.continuousCheckpointOrdinals.length !== 2 ||
+      entry.continuousCheckpointOrdinals.some(
+        (ordinal) => !Number.isSafeInteger(ordinal) || ordinal < 0,
+      )
+    ) {
+      throw new Error(
+        "payment window did not prove continuous capture, completion, and stability",
+      );
+    }
+    return {
+      type: "payment-window",
+      serialCompleted: true,
+      postSaleStable: true,
+      continuousCheckpointOrdinals: [...entry.continuousCheckpointOrdinals],
     };
   }
   if (entry.type === "runtime-attestation") {

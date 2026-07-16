@@ -240,6 +240,13 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
   ];
   if (profile !== "vm-normal") {
     steps.push({
+      type: "debug-disturbance",
+      name: "catalog refresh during payment",
+      disturbance: "catalog_refresh",
+      routeBefore: /^#\/payment/,
+      routeAfter: /^#\/payment/,
+    });
+    steps.push({
       type: "route-action",
       name: "history competition during payment",
       stimulus: "history-back",
@@ -248,6 +255,21 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
     });
   }
   return steps;
+}
+
+export function buildInstalledKioskSaleLaunchFailureRecoveryScript() {
+  return String.raw`
+$ErrorActionPreference = 'Stop'
+$debugTask = 'VEMInstalledKioskSaleDebug'
+$normalTask = 'VEMMachineUI'
+Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
+Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+  Stop-Process -Id ([int]$_.OwningProcess) -Force -ErrorAction SilentlyContinue
+}
+Start-ScheduledTask -TaskName $normalTask -ErrorAction Stop
+[ordered]@{ ok = $true; recovery = 'launch_failure_normal_task_restart'; normalTask = $normalTask } | ConvertTo-Json -Compress
+`.trim();
 }
 
 function createRunnerTrust(root) {
@@ -718,6 +740,10 @@ export async function runInstalledKioskSaleAcceptanceCli(
       "authoritative platform raw baseline query",
       { env: queryEnvironment },
     );
+    let payment;
+    let serial;
+    let completion;
+    let fulfillment;
     const scenario = await drive({
       tunnelOptions: {
         remote: remote.remote,
@@ -735,102 +761,114 @@ export async function runInstalledKioskSaleAcceptanceCli(
       screenshotCheckpoints: true,
       continuousCapture: true,
       steps: buildInstalledKioskSaleScenarioSteps(options.profile),
+      onPaymentWindow: async () => {
+        payment = await capture({
+          options: remote,
+          attestation,
+          selector: "[data-installed-kiosk-sale-payment-surface]",
+          route: /^#\/payment/,
+        });
+        const binding = {
+          orderId: payment.orderId,
+          paymentId: payment.paymentId,
+          orderNo: payment.orderNo,
+          scenarioSha256: createHash("sha256")
+            .update(`${options.run_id}:${payment.paymentId}`)
+            .digest("hex"),
+        };
+        writeJson(plan.artifacts.bindingReport, binding, 0o600);
+        const saleCorrelationId = `sale-correlation://installed-kiosk-${options.run_id.toLowerCase()}`;
+        const completionCommand = buildAcceptanceScriptCommand(
+          "simulated-hardware-sale-flow",
+          remote,
+          [
+            "--ephemeral-platform-evidence",
+            options.ephemeral_platform_evidence,
+            "--sale-phase",
+            "complete",
+            "--sale-binding-json",
+            JSON.stringify(binding),
+            "--out",
+            plan.artifacts.completionReport,
+          ],
+        );
+        const serialCommand = [
+          process.execPath,
+          "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+          "--adapter",
+          options.adapter,
+          "--scanner-code-file",
+          scanner.path,
+          "--runner-signing-key-file",
+          trust.signingKeyFile,
+          "--expected-runner-public-key",
+          trust.publicKey,
+          "--run-id",
+          options.run_id,
+          "--target-identity",
+          options.target_identity,
+          "--approved-runtime-base",
+          options.approved_runtime_base,
+          "--lifecycle-reference",
+          options.lifecycle_reference ??
+            `vm-lifecycle://${options.run_id.toLowerCase()}.installed-kiosk-sale`,
+          "--sale-correlation-id",
+          saleCorrelationId,
+          "--machine-code",
+          options.machine_code,
+          "--ephemeral-platform-evidence",
+          options.ephemeral_platform_evidence,
+          "--customer-ui-sale-binding-file",
+          plan.artifacts.bindingReport,
+          "--sale-complete-command-json",
+          JSON.stringify(completionCommand),
+          "--out",
+          plan.artifacts.serialReport,
+        ];
+        if (
+          options.maintenance_endpoint_policy_json &&
+          !options.maintenance_relay_session_json
+        ) {
+          throw new Error(
+            "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
+          );
+        }
+        if (options.maintenance_relay_session_json) {
+          serialCommand.splice(
+            serialCommand.indexOf("--out"),
+            0,
+            "--maintenance-relay-session-json",
+            options.maintenance_relay_session_json,
+          );
+        }
+        if (options.maintenance_endpoint_policy_json) {
+          serialCommand.splice(
+            serialCommand.indexOf("--out"),
+            0,
+            "--maintenance-endpoint-policy-json",
+            options.maintenance_endpoint_policy_json,
+          );
+        }
+        run(serialCommand, "serial conformance", { env: nonQueryEnvironment });
+        serial = JSON.parse(readFileSync(plan.artifacts.serialReport, "utf8"));
+        completion = JSON.parse(
+          readFileSync(plan.artifacts.completionReport, "utf8"),
+        );
+        fulfillment = await capture({
+          options: remote,
+          attestation,
+          selector:
+            "[data-installed-kiosk-sale-fulfillment-surface], [data-installed-kiosk-sale-result-surface]",
+          route: /^#\/(dispensing|result)/,
+        });
+        return {
+          serialCompleted: true,
+          postSaleStable: fulfillment != null,
+        };
+      },
     });
     writeJson(plan.artifacts.scenarioReport, scenario);
-    const payment = await capture({
-      options: remote,
-      attestation,
-      selector: "[data-installed-kiosk-sale-payment-surface]",
-      route: /^#\/payment/,
-    });
-    const binding = {
-      orderId: payment.orderId,
-      paymentId: payment.paymentId,
-      orderNo: payment.orderNo,
-      scenarioSha256: createHash("sha256")
-        .update(JSON.stringify(scenario))
-        .digest("hex"),
-    };
-    writeJson(plan.artifacts.bindingReport, binding, 0o600);
     const saleCorrelationId = `sale-correlation://installed-kiosk-${options.run_id.toLowerCase()}`;
-    const completionCommand = buildAcceptanceScriptCommand(
-      "simulated-hardware-sale-flow",
-      remote,
-      [
-        "--ephemeral-platform-evidence",
-        options.ephemeral_platform_evidence,
-        "--sale-phase",
-        "complete",
-        "--sale-binding-json",
-        JSON.stringify(binding),
-        "--out",
-        plan.artifacts.completionReport,
-      ],
-    );
-    const serialCommand = [
-      process.execPath,
-      "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
-      "--adapter",
-      options.adapter,
-      "--scanner-code-file",
-      scanner.path,
-      "--runner-signing-key-file",
-      trust.signingKeyFile,
-      "--expected-runner-public-key",
-      trust.publicKey,
-      "--run-id",
-      options.run_id,
-      "--target-identity",
-      options.target_identity,
-      "--approved-runtime-base",
-      options.approved_runtime_base,
-      "--lifecycle-reference",
-      options.lifecycle_reference ??
-        `vm-lifecycle://${options.run_id.toLowerCase()}.installed-kiosk-sale`,
-      "--sale-correlation-id",
-      saleCorrelationId,
-      "--machine-code",
-      options.machine_code,
-      "--ephemeral-platform-evidence",
-      options.ephemeral_platform_evidence,
-      "--customer-ui-sale-binding-file",
-      plan.artifacts.bindingReport,
-      "--sale-complete-command-json",
-      JSON.stringify(completionCommand),
-      "--out",
-      plan.artifacts.serialReport,
-    ];
-    if (
-      options.maintenance_endpoint_policy_json &&
-      !options.maintenance_relay_session_json
-    ) {
-      throw new Error(
-        "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
-      );
-    }
-    if (options.maintenance_relay_session_json) {
-      serialCommand.splice(
-        serialCommand.indexOf("--out"),
-        0,
-        "--maintenance-relay-session-json",
-        options.maintenance_relay_session_json,
-      );
-    }
-    if (options.maintenance_endpoint_policy_json) {
-      serialCommand.splice(
-        serialCommand.indexOf("--out"),
-        0,
-        "--maintenance-endpoint-policy-json",
-        options.maintenance_endpoint_policy_json,
-      );
-    }
-    run(serialCommand, "serial conformance", { env: nonQueryEnvironment });
-    const serial = JSON.parse(
-      readFileSync(plan.artifacts.serialReport, "utf8"),
-    );
-    const completion = JSON.parse(
-      readFileSync(plan.artifacts.completionReport, "utf8"),
-    );
     const projectedMovementId =
       completion?.simulatedHardwareSaleFlow?.platformState
         ?.postSaleDispenseMovement?.movementId;
@@ -842,13 +880,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
         "simulated hardware completion did not expose a movement identity for authoritative platform verification",
       );
     }
-    const fulfillment = await capture({
-      options: remote,
-      attestation,
-      selector:
-        "[data-installed-kiosk-sale-fulfillment-surface], [data-installed-kiosk-sale-result-surface]",
-      route: /^#\/(dispensing|result)/,
-    });
     run(
       platformRawQuery(plan.artifacts.platformRawRecordsReport),
       "authoritative platform raw post query",
@@ -928,6 +959,16 @@ export async function runInstalledKioskSaleAcceptanceCli(
         ) {
           throw new Error(
             "installed kiosk cleanup did not restore normal VEMKiosk ownership",
+          );
+        }
+      } else {
+        cleanup = runRemote(
+          remote,
+          buildInstalledKioskSaleLaunchFailureRecoveryScript(),
+        );
+        if (cleanup?.recovery !== "launch_failure_normal_task_restart") {
+          throw new Error(
+            "installed kiosk launch failure recovery did not restart the normal UI task",
           );
         }
       }

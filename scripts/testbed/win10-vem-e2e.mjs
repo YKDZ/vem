@@ -1105,8 +1105,11 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   }
   if (
     facts.visionRuntime?.healthReachable !== true ||
+    !["ok", "degraded"].includes(facts.visionRuntime?.healthStatus) ||
     facts.visionRuntime?.healthProtocol !== "vem.vision.v1" ||
     facts.visionRuntime?.healthModule !== "vision" ||
+    facts.visionRuntime?.healthMockScenario !== false ||
+    !present(facts.visionRuntime?.version) ||
     facts.visionRuntime?.modelReady !== true
   ) {
     addDiagnostic(
@@ -1116,9 +1119,40 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     );
   }
   if (
+    facts.visionRuntime?.installedProcessBound !== true ||
+    !present(facts.visionRuntime?.selectedReleaseVersion) ||
+    facts.visionRuntime?.version !== facts.visionRuntime?.selectedReleaseVersion
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "vision_installed_process_not_bound",
+      "Vision acceptance must bind the listener to the selected installed release and its recorded active process.",
+    );
+  }
+  if (
     facts.visionRuntime?.webSocketConnected !== true ||
     facts.visionRuntime?.readyProtocol !== "vem.vision.v1" ||
-    facts.visionRuntime?.readyType !== "vision.ready"
+    facts.visionRuntime?.readyType !== "vision.ready" ||
+    facts.visionRuntime?.readyServerVersion !== facts.visionRuntime?.version ||
+    typeof facts.visionRuntime?.readyCameraReady !== "boolean" ||
+    facts.visionRuntime?.readyCameraReady !==
+      facts.visionRuntime?.cameraReady ||
+    facts.visionRuntime?.readyModelReady !== true ||
+    facts.visionRuntime?.readyModelReady !== facts.visionRuntime?.modelReady ||
+    !Array.isArray(facts.visionRuntime?.readyCapabilities) ||
+    !facts.visionRuntime.readyCapabilities.every(
+      (capability) =>
+        typeof capability === "string" && capability.trim().length > 0,
+    ) ||
+    ![
+      "profile_push",
+      "presence_status",
+      "person_departed",
+      "ambient_light",
+      "try_on_session",
+    ].every((capability) =>
+      facts.visionRuntime.readyCapabilities.includes(capability),
+    )
   ) {
     addDiagnostic(
       diagnostics,
@@ -7336,78 +7370,224 @@ function Add-RuntimeAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$M
   }) | Out-Null
 }
 
+function Get-VisionInstalledRuntimeBinding {
+  $selectionPath = "C:\\ProgramData\\VEM\\vision\\current.json"
+  $activeProcessPath = "C:\\ProgramData\\VEM\\vision\\process-state\\active-process.json"
+  if (-not (Test-Path -LiteralPath $selectionPath -PathType Leaf)) {
+    throw "Vision current selection is missing"
+  }
+  if (-not (Test-Path -LiteralPath $activeProcessPath -PathType Leaf)) {
+    throw "Vision active process record is missing"
+  }
+  $selection = Get-Content -LiteralPath $selectionPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+  foreach ($name in @("revision", "bundleDigest", "installDirectory", "entrypoint", "metadataPath")) {
+    if ($null -eq $selection.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$selection.$name)) {
+      throw "Vision current selection is missing $name"
+    }
+  }
+  $metadata = Get-Content -LiteralPath ([string]$selection.metadataPath) -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+  foreach ($name in @("bundleDigest", "installDirectory", "entrypoint", "entrypointDigest", "descriptor")) {
+    if ($null -eq $metadata.PSObject.Properties[$name]) {
+      throw "Vision release metadata is missing $name"
+    }
+  }
+  if (
+    $metadata.bundleDigest -cne $selection.bundleDigest -or
+    $metadata.installDirectory -cne $selection.installDirectory -or
+    $metadata.entrypoint -cne $selection.entrypoint -or
+    $null -eq $metadata.descriptor.PSObject.Properties["releaseVersion"] -or
+    [string]::IsNullOrWhiteSpace([string]$metadata.descriptor.releaseVersion)
+  ) {
+    throw "Vision release metadata does not bind the current selection"
+  }
+  $entrypoint = [IO.Path]::GetFullPath((Join-Path ([string]$selection.installDirectory) ([string]$selection.entrypoint)))
+  if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) {
+    throw "Vision selected entrypoint is missing"
+  }
+  $active = Get-Content -LiteralPath $activeProcessPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+  $activeKeys = @($active.PSObject.Properties.Name | Sort-Object)
+  $expectedActiveKeys = @("bundleDigest", "creationTimeUtcTicks", "executableDigest", "executablePath", "processId", "selectionRevision" | Sort-Object)
+  if (
+    ($activeKeys -join "|") -cne ($expectedActiveKeys -join "|") -or
+    $active.bundleDigest -cne $selection.bundleDigest -or
+    $active.selectionRevision -cne $selection.revision -or
+    $active.executablePath -cne $entrypoint -or
+    $active.executableDigest -cne $metadata.entrypointDigest
+  ) {
+    throw "Vision active process record does not bind the current selection"
+  }
+  [int]$processId = 0
+  if (
+    -not [int]::TryParse([string]$active.processId, [ref]$processId) -or
+    $processId -lt 1 -or
+    $active.creationTimeUtcTicks -isnot [Int64] -or
+    $active.creationTimeUtcTicks -lt 1
+  ) {
+    throw "Vision active process record has an invalid process identity"
+  }
+  $process = Get-Process -Id $processId -ErrorAction Stop
+  try {
+    if (
+      $process.HasExited -or
+      $process.StartTime.ToUniversalTime().Ticks -ne $active.creationTimeUtcTicks -or
+      $process.Path -cne $entrypoint -or
+      ("sha256:" + (Get-FileHash -LiteralPath $process.Path -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $metadata.entrypointDigest
+    ) {
+      throw "Vision active process does not bind the selected executable"
+    }
+  } finally {
+    $process.Dispose()
+  }
+  return [ordered]@{
+    bound = $true
+    releaseVersion = [string]$metadata.descriptor.releaseVersion
+    bundleDigest = [string]$selection.bundleDigest
+    selectionRevision = [string]$selection.revision
+    processId = $processId
+    executablePath = $entrypoint
+  }
+}
+
 function Get-VisionRuntimeEvidence {
   $evidence = [ordered]@{
     healthReachable = $false
+    healthStatus = $null
     healthProtocol = $null
     healthModule = $null
+    healthMockScenario = $null
     version = $null
     cameraReady = $null
     modelReady = $null
+    installedProcessBound = $false
+    selectedReleaseVersion = $null
     webSocketConnected = $false
     readyProtocol = $null
     readyType = $null
     readyServerVersion = $null
+    readyCameraReady = $null
+    readyModelReady = $null
+    readyCapabilities = @()
     error = $null
   }
-  $socket = $null
-  $cancellation = $null
-  try {
-    $health = $null
-    $healthError = $null
-    $healthDeadline = (Get-Date).AddSeconds(45)
-    while ($null -eq $health -and (Get-Date) -lt $healthDeadline) {
-      try {
-        $health = Invoke-RestMethod -Uri "http://127.0.0.1:7892/health" -Method Get -TimeoutSec 3 -ErrorAction Stop
-      } catch {
-        $healthError = $_
-        Start-Sleep -Milliseconds 500
+  $deadline = (Get-Date).AddSeconds(45)
+  $lastError = $null
+  while ((Get-Date) -lt $deadline) {
+    $socket = $null
+    $cancellation = $null
+    try {
+      $runtimeBinding = Get-VisionInstalledRuntimeBinding
+      $evidence.installedProcessBound = [bool]$runtimeBinding.bound
+      $evidence.selectedReleaseVersion = [string]$runtimeBinding.releaseVersion
+      $remainingSeconds = [Math]::Max(1, [Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
+      $healthTimeoutSeconds = [Math]::Min(3, $remainingSeconds)
+      $health = Invoke-RestMethod -Uri "http://127.0.0.1:7892/health" -Method Get -TimeoutSec $healthTimeoutSeconds -ErrorAction Stop
+      if (
+        $health.status -isnot [string] -or
+        $health.status -notin @("ok", "degraded") -or
+        $health.module -isnot [string] -or
+        $health.module -cne "vision" -or
+        $health.protocol -isnot [string] -or
+        $health.protocol -cne "vem.vision.v1" -or
+        $health.version -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($health.version) -or
+        $health.version -cne $runtimeBinding.releaseVersion -or
+        $health.mockScenario -isnot [bool] -or
+        $health.mockScenario -ne $false -or
+        $health.cameraReady -isnot [bool] -or
+        $health.modelReady -isnot [bool] -or
+        $health.modelReady -ne $true
+      ) {
+        throw "Vision health does not satisfy the selected installed runtime contract"
       }
-    }
-    if ($null -eq $health) { throw "Vision health did not become reachable: $healthError" }
-    $evidence.healthReachable = $true
-    $evidence.healthProtocol = [string]$health.protocol
-    $evidence.healthModule = [string]$health.module
-    $evidence.version = [string]$health.version
-    $evidence.cameraReady = [bool]$health.cameraReady
-    $evidence.modelReady = [bool]$health.modelReady
+      $evidence.healthReachable = $true
+      $evidence.healthStatus = [string]$health.status
+      $evidence.healthProtocol = [string]$health.protocol
+      $evidence.healthModule = [string]$health.module
+      $evidence.healthMockScenario = $health.mockScenario
+      $evidence.version = [string]$health.version
+      $evidence.cameraReady = $health.cameraReady
+      $evidence.modelReady = $health.modelReady
 
-    $socket = [Net.WebSockets.ClientWebSocket]::new()
-    $socket.Options.SetRequestHeader("Origin", "http://tauri.localhost")
-    $cancellation = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-    $socket.ConnectAsync([Uri]"ws://127.0.0.1:7892/ws", $cancellation.Token).GetAwaiter().GetResult()
-    $message = [ordered]@{
-      protocol = "vem.vision.v1"
-      type = "vision.hello"
-      messageId = "factory-runtime-hello"
-      timestamp = (Get-Date).ToUniversalTime().ToString("o")
-      payload = [ordered]@{
-        protocolVersion = 1
-        capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session")
-        clientRole = "machine"
-        machineCode = "VEM-TESTBED-RUNTIME-ACCEPTANCE"
+      $socket = [Net.WebSockets.ClientWebSocket]::new()
+      $socket.Options.SetRequestHeader("Origin", "http://tauri.localhost")
+      $webSocketTimeoutSeconds = [Math]::Min(5, $remainingSeconds)
+      $cancellation = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($webSocketTimeoutSeconds))
+      $socket.ConnectAsync([Uri]"ws://127.0.0.1:7892/ws", $cancellation.Token).GetAwaiter().GetResult()
+      $message = [ordered]@{
+        protocol = "vem.vision.v1"
+        type = "vision.hello"
+        messageId = "factory-runtime-hello"
+        timestamp = (Get-Date).ToUniversalTime().ToString("o")
+        payload = [ordered]@{
+          protocolVersion = 1
+          capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session")
+          clientRole = "machine"
+          machineCode = "VEM-TESTBED-RUNTIME-ACCEPTANCE"
+        }
       }
+      $messageBytes = [Text.Encoding]::UTF8.GetBytes(($message | ConvertTo-Json -Depth 8 -Compress))
+      $sendSegment = [ArraySegment[byte]]::new($messageBytes)
+      $socket.SendAsync($sendSegment, [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
+      $maxMessageBytes = 65536
+      $messageStream = New-Object IO.MemoryStream
+      try {
+        do {
+          $buffer = New-Object byte[] 4096
+          $received = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), $cancellation.Token).GetAwaiter().GetResult()
+          if ($received.MessageType -ne [Net.WebSockets.WebSocketMessageType]::Text) {
+            throw "Vision handshake must return a text message"
+          }
+          if (($messageStream.Length + $received.Count) -gt $maxMessageBytes) {
+            throw "Vision handshake response exceeds $maxMessageBytes bytes"
+          }
+          if ($received.Count -gt 0) {
+            $messageStream.Write($buffer, 0, $received.Count)
+          }
+        } while (-not $received.EndOfMessage)
+        $ready = [Text.Encoding]::UTF8.GetString($messageStream.ToArray()) | ConvertFrom-Json -ErrorAction Stop
+      } finally {
+        $messageStream.Dispose()
+      }
+      $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session")
+      if (
+        $ready.protocol -isnot [string] -or
+        $ready.protocol -cne "vem.vision.v1" -or
+        $ready.type -isnot [string] -or
+        $ready.type -cne "vision.ready" -or
+        $null -eq $ready.PSObject.Properties["payload"] -or
+        $ready.payload.serverVersion -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($ready.payload.serverVersion) -or
+        $ready.payload.serverVersion -cne $health.version -or
+        $ready.payload.cameraReady -isnot [bool] -or
+        $ready.payload.cameraReady -ne $health.cameraReady -or
+        $ready.payload.modelReady -isnot [bool] -or
+        $ready.payload.modelReady -ne $true -or
+        $ready.payload.modelReady -ne $health.modelReady -or
+        $ready.payload.capabilities -isnot [array] -or
+        (@($ready.payload.capabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) -or
+        (@($requiredCapabilities | Where-Object { $ready.payload.capabilities -cnotcontains $_ }).Count -ne 0)
+      ) {
+        throw "Vision WebSocket ready does not satisfy the selected installed runtime contract"
+      }
+      $evidence.webSocketConnected = $true
+      $evidence.readyProtocol = [string]$ready.protocol
+      $evidence.readyType = [string]$ready.type
+      $evidence.readyServerVersion = [string]$ready.payload.serverVersion
+      $evidence.readyCameraReady = $ready.payload.cameraReady
+      $evidence.readyModelReady = $ready.payload.modelReady
+      $evidence.readyCapabilities = @($ready.payload.capabilities)
+      return $evidence
+    } catch {
+      $lastError = $_
+    } finally {
+      if ($null -ne $socket) { $socket.Dispose() }
+      if ($null -ne $cancellation) { $cancellation.Dispose() }
     }
-    $messageBytes = [Text.Encoding]::UTF8.GetBytes(($message | ConvertTo-Json -Depth 8 -Compress))
-    $sendSegment = [ArraySegment[byte]]::new($messageBytes)
-    $socket.SendAsync($sendSegment, [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
-    $buffer = New-Object byte[] 16384
-    $receiveSegment = [ArraySegment[byte]]::new($buffer)
-    $received = $socket.ReceiveAsync($receiveSegment, $cancellation.Token).GetAwaiter().GetResult()
-    if ($received.MessageType -ne [Net.WebSockets.WebSocketMessageType]::Text -or -not $received.EndOfMessage) {
-      throw "Vision handshake must return one bounded text message"
+    if ((Get-Date) -lt $deadline) {
+      Start-Sleep -Milliseconds 500
     }
-    $ready = [Text.Encoding]::UTF8.GetString($buffer, 0, $received.Count) | ConvertFrom-Json -ErrorAction Stop
-    $evidence.webSocketConnected = $true
-    $evidence.readyProtocol = [string]$ready.protocol
-    $evidence.readyType = [string]$ready.type
-    $evidence.readyServerVersion = [string]$ready.payload.serverVersion
-  } catch {
-    $evidence.error = [string]$_
-  } finally {
-    if ($null -ne $socket) { $socket.Dispose() }
-    if ($null -ne $cancellation) { $cancellation.Dispose() }
   }
+  $evidence.error = "Vision runtime did not become ready within 45 seconds: $lastError"
   return $evidence
 }
 
@@ -7533,16 +7713,35 @@ function Classify-RuntimeAcceptanceReport($Facts) {
   }
   if (
     -not [bool]$Facts.visionRuntime.healthReachable -or
+    [string]$Facts.visionRuntime.healthStatus -notin @("ok", "degraded") -or
     [string]$Facts.visionRuntime.healthProtocol -ne "vem.vision.v1" -or
     [string]$Facts.visionRuntime.healthModule -ne "vision" -or
+    $Facts.visionRuntime.healthMockScenario -ne $false -or
+    [string]::IsNullOrWhiteSpace([string]$Facts.visionRuntime.version) -or
     -not [bool]$Facts.visionRuntime.modelReady
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_health_not_ready" "The installed Vision runtime must expose a healthy vem.vision.v1 service with loaded models."
   }
   if (
+    -not [bool]$Facts.visionRuntime.installedProcessBound -or
+    [string]::IsNullOrWhiteSpace([string]$Facts.visionRuntime.selectedReleaseVersion) -or
+    [string]$Facts.visionRuntime.version -ne [string]$Facts.visionRuntime.selectedReleaseVersion
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_installed_process_not_bound" "Vision acceptance must bind the listener to the selected installed release and its recorded active process."
+  }
+  if (
     -not [bool]$Facts.visionRuntime.webSocketConnected -or
     [string]$Facts.visionRuntime.readyProtocol -ne "vem.vision.v1" -or
-    [string]$Facts.visionRuntime.readyType -ne "vision.ready"
+    [string]$Facts.visionRuntime.readyType -ne "vision.ready" -or
+    [string]$Facts.visionRuntime.readyServerVersion -ne [string]$Facts.visionRuntime.version -or
+    $Facts.visionRuntime.readyCameraReady -isnot [bool] -or
+    $Facts.visionRuntime.readyCameraReady -ne $Facts.visionRuntime.cameraReady -or
+    $Facts.visionRuntime.readyModelReady -isnot [bool] -or
+    $Facts.visionRuntime.readyModelReady -ne $true -or
+    $Facts.visionRuntime.readyModelReady -ne $Facts.visionRuntime.modelReady -or
+    $Facts.visionRuntime.readyCapabilities -isnot [array] -or
+    (@($Facts.visionRuntime.readyCapabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) -or
+    (@(@("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session") | Where-Object { $Facts.visionRuntime.readyCapabilities -cnotcontains $_ }).Count -ne 0)
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_protocol_not_ready" "The installed Vision runtime must complete the vem.vision.v1 hello handshake."
   }

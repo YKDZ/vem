@@ -929,6 +929,35 @@ export function verifyInstalledKioskSaleScenarioResult(
   const continuousEvidence = scenario?.evidence?.filter(
     (entry) => entry?.type === "checkpoint" && entry?.label === "continuous",
   );
+  const catalogDisturbance = scenario?.evidence?.find(
+    (entry) =>
+      entry?.type === "route-disturbance" &&
+      entry.disturbance === "catalog_refresh" &&
+      isPaymentBarrierRoute(entry.routeBefore) &&
+      isPaymentBarrierRoute(entry.routeAfter) &&
+      entry.injection?.kind === "catalog_refresh" &&
+      entry.injection?.count === 1 &&
+      entry.injection?.outcome === "completed" &&
+      entry.injection?.pressure?.refreshedState === "catalog" &&
+      entry.injection?.pressure?.routeAuthorityWon === true &&
+      entry.injection?.pressure?.attemptedRoute === "/catalog" &&
+      entry.injection?.pressure?.resolvedRoute === "/payment",
+  );
+  const paymentWindow = scenario?.evidence?.find(
+    (entry) =>
+      entry?.type === "payment-window" &&
+      entry.serialCompleted === true &&
+      entry.postSaleStable === true,
+  );
+  const continuousCheckpointOrdinals = new Set(
+    continuousEvidence?.map((entry) => entry?.ordinal),
+  );
+  const paymentWindowContinuousCoverage =
+    Array.isArray(paymentWindow?.continuousCheckpointOrdinals) &&
+    paymentWindow.continuousCheckpointOrdinals.length === 2 &&
+    paymentWindow.continuousCheckpointOrdinals.every((ordinal) =>
+      continuousCheckpointOrdinals.has(ordinal),
+    );
   const barrierIndex = scenario?.evidence?.findIndex(
     (entry) => entry?.type === "route-barrier",
   );
@@ -970,6 +999,9 @@ export function verifyInstalledKioskSaleScenarioResult(
       runtime.debug.targetId ||
     !Array.isArray(continuousEvidence) ||
     continuousEvidence.length < 1 ||
+    !catalogDisturbance ||
+    !paymentWindow ||
+    !paymentWindowContinuousCoverage ||
     barrierIndex == null ||
     barrierIndex < 0 ||
     barrier?.armedBeforeInput !== true ||

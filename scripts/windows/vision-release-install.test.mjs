@@ -119,6 +119,25 @@ function assertSameNonReparseFile(actual, expected) {
 
 describe("Vision release installer fixtures", () => {
   boundedIt(
+    "binds Factory descriptor evidence to the exact signed descriptor bytes",
+    () => {
+      const installer = readFileSync(
+        "scripts/windows/install-vision-release.ps1",
+        "utf8",
+      );
+      const harness = readFileSync(windowsHarness, "utf8");
+      assert.match(
+        installer,
+        /\$selection\.descriptorDigest -cne \$Documents\.descriptor\.digest/,
+      );
+      assert.match(
+        harness,
+        /Factory Manifest descriptor evidence did not bind exact signed bytes/,
+      );
+    },
+  );
+
+  boundedIt(
     "compares delivery evidence by canonical non-reparse file identity",
     () => {
       const root = mkdtempSync(join(tmpdir(), "vem-vision-path-identity-"));
