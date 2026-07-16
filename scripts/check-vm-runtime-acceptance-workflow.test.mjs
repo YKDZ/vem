@@ -387,7 +387,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     const bindAudioSession = stepBlock(
       workflow,
-      "Bind Active Kiosk Session For Native Audio Capture",
+      "Bind Refreshed Kiosk Session For Native Audio Capture",
     );
     const verifyAudio = stepBlock(
       workflow,
@@ -405,6 +405,11 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.match(audio, /if:\s+success\(\)/);
     assert.match(bindAudioSession, /win10-runtime-acceptance-report\.json/);
     assert.match(bindAudioSession, /value\.runtimeAcceptanceReport/);
+    assert.match(
+      bindAudioSession,
+      /bringUpStateProgression\?\.postSaleRuntimeAcceptance !== "passed"/,
+    );
+    assert.match(bindAudioSession, /value\.displayBinding\?\.cdpTargetId/);
     assert.doesNotMatch(
       bindAudioSession,
       /runtimeAcceptanceReport\s*\?\?\s*value/,

@@ -733,6 +733,33 @@ describe("Factory Image Acceptance lifecycle", () => {
       "factory-route-competition",
     );
     assert.equal(invocation.includes("--already-claimed"), true);
+    const expectedLifecycleReference = `vm-lifecycle://${input.runId.toLowerCase()}.${createHash(
+      "sha256",
+    )
+      .update(`${input.runId}\n${input.targetIdentity}`)
+      .digest("hex")
+      .slice(0, 32)}`;
+    assert.deepEqual(
+      JSON.parse(
+        invocation[invocation.indexOf("--maintenance-relay-session-json") + 1],
+      ),
+      input.endpoint.maintenanceRelaySession,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        invocation[
+          invocation.indexOf("--maintenance-endpoint-policy-json") + 1
+        ],
+      ),
+      {
+        ...input.endpoint.bootstrap,
+        lifecycleReference: expectedLifecycleReference,
+      },
+    );
+    assert.equal(
+      invocation[invocation.indexOf("--lifecycle-reference") + 1],
+      expectedLifecycleReference,
+    );
     assert.equal(invocation.includes("--ephemeral-database-url"), false);
     assert.equal(
       invocation[invocation.indexOf("--ssh-known-hosts-path") + 1],

@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -46,6 +46,7 @@ import {
   buildRuntimeAcceptanceReport,
   buildVmRuntimeAcceptanceReport,
   buildVmRuntimeAcceptancePlan,
+  runVmRuntimeAcceptance,
   buildInstalledKioskSaleLaunchScript,
   buildInstalledKioskSaleCleanupScript,
   buildCleanBaseFactoryAcceptancePlan,
@@ -700,6 +701,14 @@ describe("simulated hardware serial acceptance evidence", () => {
           target_identity: "vm-target://runtime-testbed",
           approved_runtime_base: `factory-cas://sha256/${"a".repeat(64)}`,
           profile: "vm-route-competition",
+          maintenance_relay_session_json: JSON.stringify({
+            sessionId: "relay-session",
+          }),
+          maintenance_endpoint_policy_json: JSON.stringify({
+            transport: "testbed-runner-direct",
+            lifecycleReference: "vm-lifecycle://run-180-evidence.factory",
+          }),
+          lifecycle_reference: "vm-lifecycle://run-180-evidence.factory",
           scanner_code_file: scannerInput,
           ssh_known_hosts_path: join(root, "known-hosts"),
           ssh_host_key_alias: "vem-installed-kiosk-run-180",
@@ -749,6 +758,29 @@ describe("simulated hardware serial acceptance evidence", () => {
             rmSync(scannerCodePath, { force: true });
             const completion = JSON.parse(
               command[command.indexOf("--sale-complete-command-json") + 1],
+            );
+            assert.deepEqual(
+              JSON.parse(
+                command[
+                  command.indexOf("--maintenance-relay-session-json") + 1
+                ],
+              ),
+              { sessionId: "relay-session" },
+            );
+            assert.deepEqual(
+              JSON.parse(
+                command[
+                  command.indexOf("--maintenance-endpoint-policy-json") + 1
+                ],
+              ),
+              {
+                transport: "testbed-runner-direct",
+                lifecycleReference: "vm-lifecycle://run-180-evidence.factory",
+              },
+            );
+            assert.equal(
+              command[command.indexOf("--lifecycle-reference") + 1],
+              "vm-lifecycle://run-180-evidence.factory",
             );
             const completionOut = completion[completion.indexOf("--out") + 1];
             writeFileSync(
@@ -4243,6 +4275,7 @@ if ($errors.Count -gt 0) {
           "simulated hardware sale flow",
           "installed kiosk sale normal",
           "installed kiosk sale route competition",
+          "post-sale runtime acceptance",
         ],
       );
       assert.equal(plan.artifacts.source, "approved-preclaim-base");
@@ -5587,7 +5620,33 @@ if ($errors.Count -gt 0) {
       undefined,
     );
     assert.equal(saleStep.command.includes("--already-claimed"), true);
-    assert.equal(normalSaleStep.command.includes("--already-claimed"), false);
+    assert.equal(normalSaleStep.command.includes("--already-claimed"), true);
+    const serialStep = plan.steps.find(
+      (step) => step.name === "simulated hardware sale flow",
+    );
+    const failureCommands = JSON.parse(
+      commandArg(serialStep.command, "--failure-matrix-commands-json"),
+    );
+    assert.equal(
+      JSON.parse(
+        commandArg(serialStep.command, "--sale-prepare-command-json"),
+      ).includes("--already-claimed"),
+      true,
+    );
+    assert.equal(
+      failureCommands["scanner-timeout"].salePrepareCommand.includes(
+        "--already-claimed",
+      ),
+      true,
+    );
+    assert.equal(
+      commandArg(
+        plan.steps.find((step) => step.name === "post-sale runtime acceptance")
+          .command,
+        "--out",
+      ),
+      plan.artifacts.postSaleRuntimeAcceptance,
+    );
 
     assert.throws(
       () =>
@@ -5604,6 +5663,165 @@ if ($errors.Count -gt 0) {
         }),
       /explicit --machine-code must end with canonical run id/,
     );
+  });
+
+  it("executes serial trust and per-step scanner copies with final cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-runtime-execution-"));
+    const scannerCodeFile = join(root, "protected-scanner-code");
+    const previousRunnerTemp = process.env.RUNNER_TEMP;
+    const previousDatabaseUrl = process.env.VEM_EPHEMERAL_DATABASE_URL;
+    writeFileSync(scannerCodeFile, "SCANNER-CODE-MUST-NOT-LEAK\n", {
+      mode: 0o600,
+    });
+    process.env.RUNNER_TEMP = root;
+    process.env.VEM_EPHEMERAL_DATABASE_URL =
+      "postgresql://vem:runner-only@127.0.0.1:55432/vem_runtime";
+    const scannerCopies = [];
+    let runnerSigningKeyFile = null;
+    try {
+      const report = await runVmRuntimeAcceptance(
+        {
+          runId: "RUN-EXECUTION",
+          evidenceRoot: join(root, "artifacts"),
+          platformTarget: "ephemeral-run-execution",
+          ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+          ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+          scannerCodeFile,
+          approvedRuntimeBase: `factory-cas://sha256/${"a".repeat(64)}`,
+          identity: join(root, "id_ed25519"),
+          certificate: join(root, "id_ed25519-cert.pub"),
+        },
+        {
+          spawnSync(executable, args) {
+            const command = [executable, ...args];
+            const out = command[command.indexOf("--out") + 1];
+            const scannerIndex = command.indexOf("--scanner-code-file");
+            if (scannerIndex !== -1) {
+              const copy = command[scannerIndex + 1];
+              scannerCopies.push(copy);
+              assert.notEqual(copy, scannerCodeFile);
+              assert.equal(
+                readFileSync(copy, "utf8"),
+                "SCANNER-CODE-MUST-NOT-LEAK\n",
+              );
+            }
+            if (
+              command.includes(
+                "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+              )
+            ) {
+              runnerSigningKeyFile =
+                command[command.indexOf("--runner-signing-key-file") + 1];
+              assert.equal(existsSync(runnerSigningKeyFile), true);
+              assert.match(
+                command[command.indexOf("--expected-runner-public-key") + 1],
+                /^ed25519-public-key:base64:/,
+              );
+              assert.equal(
+                JSON.parse(
+                  command[command.indexOf("--sale-prepare-command-json") + 1],
+                ).includes("--already-claimed"),
+                true,
+              );
+            }
+            const runtime =
+              command.includes("--mode") &&
+              command[command.indexOf("--mode") + 1] === "runtime-acceptance";
+            const output = runtime
+              ? {
+                  ok: true,
+                  runtimeAcceptanceReport: {
+                    result: {
+                      runtimeReady: { status: "passed", asserted: true },
+                    },
+                    kioskRuntime: {
+                      sessionUser: "VEMKiosk",
+                      sessionId: 7,
+                      url: "http://tauri.localhost/#/",
+                      cdpTargetId: "refreshed-cdp-target",
+                    },
+                  },
+                }
+              : command.includes("installed-kiosk-sale-acceptance.mjs")
+                ? {
+                    ok: true,
+                    schemaVersion: "installed-kiosk-sale-acceptance/v2",
+                    correlation: {
+                      platform: { observations: {} },
+                      exactOnce: {},
+                    },
+                  }
+                : {};
+            if (out) {
+              mkdirSync(dirname(out), { recursive: true });
+              writeFileSync(out, JSON.stringify(output));
+            }
+            return { status: 0, stdout: JSON.stringify(output), stderr: "" };
+          },
+        },
+      );
+      assert.equal(
+        report.steps.every((step) => step.status === "passed"),
+        true,
+      );
+      assert.equal(scannerCopies.length, 3);
+      assert.equal(new Set(scannerCopies).size, 3);
+      assert.equal(report.displayBinding.cdpTargetId, "refreshed-cdp-target");
+      assert.equal(
+        JSON.stringify(report).includes("SCANNER-CODE-MUST-NOT-LEAK"),
+        false,
+      );
+      assert.equal(
+        readFileSync(scannerCodeFile, "utf8"),
+        "SCANNER-CODE-MUST-NOT-LEAK\n",
+      );
+      for (const copy of scannerCopies) assert.equal(existsSync(copy), false);
+      assert.equal(existsSync(runnerSigningKeyFile), false);
+      assert.equal(existsSync(dirname(runnerSigningKeyFile)), false);
+
+      let failedRunnerSigningKeyFile = null;
+      await assert.rejects(
+        runVmRuntimeAcceptance(
+          {
+            runId: "RUN-EXECUTION-FAILURE",
+            evidenceRoot: join(root, "failure-artifacts"),
+            platformTarget: "ephemeral-run-execution-failure",
+            ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+            ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+            scannerCodeFile,
+            approvedRuntimeBase: `factory-cas://sha256/${"a".repeat(64)}`,
+            identity: join(root, "id_ed25519"),
+            certificate: join(root, "id_ed25519-cert.pub"),
+          },
+          {
+            spawnSync(executable, args) {
+              const command = [executable, ...args];
+              if (
+                command.includes(
+                  "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+                )
+              ) {
+                failedRunnerSigningKeyFile =
+                  command[command.indexOf("--runner-signing-key-file") + 1];
+                assert.equal(existsSync(failedRunnerSigningKeyFile), true);
+                throw new Error("forced serial execution failure");
+              }
+              return { status: 0, stdout: "{}", stderr: "" };
+            },
+          },
+        ),
+        /forced serial execution failure/,
+      );
+      assert.equal(existsSync(failedRunnerSigningKeyFile), false);
+      assert.equal(existsSync(dirname(failedRunnerSigningKeyFile)), false);
+    } finally {
+      if (previousRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = previousRunnerTemp;
+      if (previousDatabaseUrl === undefined)
+        delete process.env.VEM_EPHEMERAL_DATABASE_URL;
+      else process.env.VEM_EPHEMERAL_DATABASE_URL = previousDatabaseUrl;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("threads optional clean-base factory evidence through preclaim-based runtime acceptance", () => {
@@ -5634,6 +5852,7 @@ if ($errors.Count -gt 0) {
         "simulated hardware sale flow",
         "installed kiosk sale normal",
         "installed kiosk sale route competition",
+        "post-sale runtime acceptance",
       ],
     );
     assert.equal(plan.steps[0].mode, "clean-base-factory-acceptance");

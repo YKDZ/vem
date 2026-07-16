@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -2831,6 +2832,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     options.cleanBaseEvidence ?? options.cleanBaseFactoryAcceptance ?? null;
   const approvedPreclaimBaseReport = `${evidenceRoot}/approved-preclaim-base-response.json`;
   const runtimeAcceptanceReport = `${evidenceRoot}/runtime-acceptance-response.json`;
+  const postSaleRuntimeAcceptanceReport = `${evidenceRoot}/post-sale-runtime-acceptance-response.json`;
   const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
   const serialConformanceReport = `${evidenceRoot}/serial-com-scanner-sale-conformance.json`;
   const customerUiSaleNormalRoot = `${evidenceRoot}/installed-kiosk-sale-normal`;
@@ -2856,6 +2858,11 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     { ...options, runId, machineCode, platformTarget },
     ["--out", runtimeAcceptanceReport],
   );
+  const postSaleRuntimeCommand = buildAcceptanceScriptCommand(
+    "runtime-acceptance",
+    { ...options, runId, machineCode, platformTarget },
+    ["--out", postSaleRuntimeAcceptanceReport],
+  );
   const salePrepareCommand = buildAcceptanceScriptCommand(
     "simulated-hardware-sale-flow",
     { ...options, runId, machineCode, platformTarget },
@@ -2864,6 +2871,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       ephemeralPlatformEvidence,
       "--sale-phase",
       "prepare",
+      "--already-claimed",
       "--out",
       `${evidenceRoot}/simulated-hardware-sale-prepare-response.json`,
     ],
@@ -2964,6 +2972,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const installedKioskSaleNormalCommand = buildInstalledKioskSaleCommand(
     "vm-normal",
     customerUiSaleNormalReport,
+    true,
   );
   const installedKioskSaleCompetitionCommand = buildInstalledKioskSaleCommand(
     "vm-route-competition",
@@ -2980,6 +2989,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
           ephemeralPlatformEvidence,
           "--sale-phase",
           "prepare",
+          "--already-claimed",
           "--out",
           failureMatrixArtifacts["swapped-roles"].salePrepare,
         ],
@@ -2999,6 +3009,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
           ephemeralPlatformEvidence,
           "--sale-phase",
           "prepare",
+          "--already-claimed",
           "--out",
           failureMatrixArtifacts["missing-device"].salePrepare,
         ],
@@ -3018,6 +3029,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
           ephemeralPlatformEvidence,
           "--sale-phase",
           "prepare",
+          "--already-claimed",
           "--out",
           failureMatrixArtifacts["scanner-timeout"].salePrepare,
         ],
@@ -3148,6 +3160,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       cleanBaseFactoryAcceptance,
       approvedPreclaimBase: approvedPreclaimBaseReport,
       runtimeAcceptance: runtimeAcceptanceReport,
+      postSaleRuntimeAcceptance: postSaleRuntimeAcceptanceReport,
       simulatedHardwareSaleFlow: saleFlowReport,
       serialConformance: serialConformanceReport,
       failureMatrix: failureMatrixArtifacts,
@@ -3254,6 +3267,14 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         report: customerUiSaleCompetitionReport,
         blocksOnFailure: true,
         requiresEphemeralDatabase: true,
+      },
+      {
+        name: "post-sale runtime acceptance",
+        mode: "runtime-acceptance",
+        status: "planned",
+        command: postSaleRuntimeCommand,
+        report: postSaleRuntimeAcceptanceReport,
+        blocksOnFailure: true,
       },
     ],
   };
@@ -4298,6 +4319,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const saleFlow = stepMap.get("simulated hardware sale flow");
   const saleNormal = stepMap.get("installed kiosk sale normal");
   const saleCompetition = stepMap.get("installed kiosk sale route competition");
+  const postSaleRuntime = stepMap.get("post-sale runtime acceptance");
   const simulatedHardwareEvidence = evaluateSimulatedHardwareSerialEvidence({
     saleFlow: saleFlow?.parsed,
     serialConformance: saleFlow?.serialConformance,
@@ -4372,6 +4394,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       simulatedHardwareSaleFlow: saleFlow?.status ?? "missing",
       installedKioskSaleNormal: saleNormal?.status ?? "missing",
       installedKioskSaleRouteCompetition: saleCompetition?.status ?? "missing",
+      postSaleRuntimeAcceptance: postSaleRuntime?.status ?? "missing",
     },
     platformSetup: {
       status: ephemeral?.status ?? "missing",
@@ -4409,6 +4432,26 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         asserted: false,
       },
     },
+    runtimeAcceptanceReport:
+      postSaleRuntime?.parsed?.runtimeAcceptanceReport ?? null,
+    displayBinding: postSaleRuntime?.parsed?.runtimeAcceptanceReport
+      ?.kioskRuntime
+      ? {
+          activeKioskSession: {
+            sessionUser:
+              postSaleRuntime.parsed.runtimeAcceptanceReport.kioskRuntime
+                .sessionUser,
+            sessionId:
+              postSaleRuntime.parsed.runtimeAcceptanceReport.kioskRuntime
+                .sessionId,
+          },
+          tauriRoute:
+            postSaleRuntime.parsed.runtimeAcceptanceReport.kioskRuntime.url,
+          cdpTargetId:
+            postSaleRuntime.parsed.runtimeAcceptanceReport.kioskRuntime
+              .cdpTargetId,
+        }
+      : null,
     finalReadiness: {
       approvedPreclaimBase: {
         status: approvedPreclaimBaseEvaluation.status,
@@ -4418,9 +4461,9 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         status: cleanBaseEvaluation.status,
         asserted: cleanBaseEvaluation.asserted,
       },
-      runtimeReady: runtime?.parsed?.runtimeAcceptanceReport?.result
+      runtimeReady: postSaleRuntime?.parsed?.runtimeAcceptanceReport?.result
         ?.runtimeReady ?? {
-        status: runtime?.status ?? "missing",
+        status: postSaleRuntime?.status ?? "missing",
         asserted: false,
       },
       simulatedHardwareReady: {
@@ -4437,7 +4480,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   };
 }
 
-async function runVmRuntimeAcceptance(options) {
+export async function runVmRuntimeAcceptance(options, dependencies = {}) {
   if (!options.scannerCodeFile || !options.approvedRuntimeBase)
     throw new Error(
       "VM runtime acceptance requires --scanner-code-file and --approved-runtime-base",
@@ -4455,7 +4498,11 @@ async function runVmRuntimeAcceptance(options) {
   const steps = [];
   let blocked = false;
   let serialRunnerTrust = null;
-  {
+  const scannerCopiesRoot = mkdtempSync(
+    join(process.env.RUNNER_TEMP ?? tmpdir(), "vem-vm-runtime-scanner-"),
+  );
+  chmodSync(scannerCopiesRoot, 0o700);
+  try {
     for (const [index, originalStep] of plan.steps.entries()) {
       let step = originalStep;
       const startedAt = new Date().toISOString();
@@ -4494,21 +4541,51 @@ async function runVmRuntimeAcceptance(options) {
           ),
         };
       }
-      const result = spawnSync(step.command[0], step.command.slice(1), {
-        cwd: step.cwd ?? process.cwd(),
-        encoding: "utf8",
-        env: {
-          ...childEnvironment,
-          ...(step.env ?? {}),
-          ...(step.requiresEphemeralDatabase
-            ? step.mode === "installed-kiosk-sale"
-              ? {
-                  [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: databaseUrl,
-                }
-              : { [EPHEMERAL_DATABASE_URL_ENV]: databaseUrl }
-            : {}),
-        },
-      });
+      const scannerCodeFile = commandOption(
+        step.command,
+        "--scanner-code-file",
+      );
+      const scannerCopy = scannerCodeFile
+        ? createRunScopedScannerCodeCopy(
+            scannerCodeFile,
+            scannerCopiesRoot,
+            index,
+          )
+        : null;
+      if (scannerCopy) {
+        step = {
+          ...step,
+          command: replaceCommandOption(
+            step.command,
+            "--scanner-code-file",
+            scannerCopy,
+          ),
+        };
+      }
+      let result;
+      try {
+        result = (dependencies.spawnSync ?? spawnSync)(
+          step.command[0],
+          step.command.slice(1),
+          {
+            cwd: step.cwd ?? process.cwd(),
+            encoding: "utf8",
+            env: {
+              ...childEnvironment,
+              ...(step.env ?? {}),
+              ...(step.requiresEphemeralDatabase
+                ? step.mode === "installed-kiosk-sale"
+                  ? {
+                      [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: databaseUrl,
+                    }
+                  : { [EPHEMERAL_DATABASE_URL_ENV]: databaseUrl }
+                : {}),
+            },
+          },
+        );
+      } finally {
+        if (scannerCopy) rmSync(scannerCopy, { force: true });
+      }
       writeFileSync(stdoutPath, result.stdout ?? "", "utf8");
       writeFileSync(stderrPath, result.stderr ?? "", "utf8");
       const status = result.status === 0 ? "passed" : "failed";
@@ -4552,7 +4629,58 @@ async function runVmRuntimeAcceptance(options) {
       `${JSON.stringify(report, null, 2)}\n`,
     );
     return report;
+  } finally {
+    serialRunnerTrust?.cleanup();
+    rmSync(scannerCopiesRoot, { recursive: true, force: true });
   }
+}
+
+function createSerialRunnerTrustAnchor() {
+  const root = mkdtempSync(
+    join(process.env.RUNNER_TEMP ?? tmpdir(), "vem-serial-runner-trust-"),
+  );
+  chmodSync(root, 0o700);
+  const signingKeyFile = join(root, "runner-ed25519.pem");
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  writeFileSync(
+    signingKeyFile,
+    privateKey.export({ type: "pkcs8", format: "pem" }),
+    { mode: 0o600 },
+  );
+  chmodSync(signingKeyFile, 0o600);
+  return {
+    signingKeyFile,
+    publicKey: `ed25519-public-key:base64:${publicKey
+      .export({ type: "spki", format: "der" })
+      .toString("base64")}`,
+    cleanup() {
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function replaceCommandOption(command, option, value) {
+  const index = command.indexOf(option);
+  if (index === -1 || !command[index + 1])
+    throw new Error(`${option} is required for serial conformance`);
+  const replaced = [...command];
+  replaced[index + 1] = value;
+  return replaced;
+}
+
+function commandOption(command, option) {
+  const index = command.indexOf(option);
+  return index === -1 ? null : (command[index + 1] ?? null);
+}
+
+function createRunScopedScannerCodeCopy(source, root, stepIndex) {
+  const target = join(
+    root,
+    `${String(stepIndex + 1).padStart(2, "0")}-scanner-code`,
+  );
+  copyFileSync(source, target);
+  chmodSync(target, 0o600);
+  return target;
 }
 
 function runFactoryImageDeliveryUnit(options) {

@@ -717,13 +717,6 @@ export function buildFactoryInstalledKioskSaleInvocation(
   const verifierArgs = commonVerifierArgs(accepted, endpoint, {
     sshKnownHostsPath,
   });
-  for (const option of [
-    "--maintenance-relay-session-json",
-    "--maintenance-endpoint-policy-json",
-  ]) {
-    const index = verifierArgs.indexOf(option);
-    if (index !== -1) verifierArgs.splice(index, 2);
-  }
   return [
     "node",
     "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
@@ -736,6 +729,8 @@ export function buildFactoryInstalledKioskSaleInvocation(
     accepted.targetIdentity,
     "--approved-runtime-base",
     accepted.factory.isoIdentity,
+    "--lifecycle-reference",
+    lifecycleReference(accepted),
     "--profile",
     "factory-route-competition",
     "--already-claimed",
@@ -1401,12 +1396,21 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
       input,
       reports.runtimeAcceptance,
     );
+    const postSaleRuntime = buildFactoryRuntimeAcceptanceInvocation(
+      input,
+      endpoint,
+      sshKnownHostsPath,
+    );
+    runExact(postSaleRuntime, "post-sale runtime acceptance failed");
+    reports.postSaleRuntimeAcceptance = verifyRuntimeResult(
+      verifierOutput(input, "runtime-acceptance.json"),
+    );
     const display = await runAdapter(
       input,
       "capture-display",
       [base],
       null,
-      reports.runtimeAcceptance.displayBinding,
+      reports.postSaleRuntimeAcceptance.displayBinding,
     );
     reports.display = {
       ...display,

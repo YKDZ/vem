@@ -740,7 +740,7 @@ jobs:
         shell: bash
         run: rm -f -- "${VEM_VM_HOST_SCANNER_CODE_FILE:-}"
 
-      - name: Bind Active Kiosk Session For Native Audio Capture
+      - name: Bind Refreshed Kiosk Session For Native Audio Capture
         if: success()
         run: |
           set -euo pipefail
@@ -752,6 +752,8 @@ jobs:
           const kiosk = runtime.kioskRuntime;
           if (
             value.ok !== true ||
+            value.bringUpStateProgression?.postSaleRuntimeAcceptance !== "passed" ||
+            value.displayBinding?.cdpTargetId !== kiosk?.cdpTargetId ||
             runtime.result?.runtimeReady?.status !== "passed" ||
             kiosk?.sessionUser !== "VEMKiosk" ||
             !Number.isInteger(kiosk.sessionId) ||
