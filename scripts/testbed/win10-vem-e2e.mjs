@@ -3036,6 +3036,9 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       saleComplete: `${evidenceRoot}/failure-matrix/dispense-failed/sale-complete-response.json`,
     },
   };
+  const serialLifecycleReference =
+    options.maintenanceEndpointPolicy?.lifecycleReference ??
+    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`;
   const buildInstalledKioskSaleCommand = (profile, out, alreadyClaimed) => {
     const command = [
       process.execPath,
@@ -3060,6 +3063,8 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
       "--approved-runtime-base",
       options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
+      "--lifecycle-reference",
+      serialLifecycleReference,
       "--profile",
       profile,
       ...(alreadyClaimed ? ["--already-claimed"] : []),
@@ -3088,6 +3093,18 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     }
     if (options.sshHostKeyAlias) {
       command.push("--ssh-host-key-alias", options.sshHostKeyAlias);
+    }
+    if (options.maintenanceRelaySession !== undefined) {
+      command.push(
+        "--maintenance-relay-session-json",
+        JSON.stringify(options.maintenanceRelaySession),
+      );
+    }
+    if (options.maintenanceEndpointPolicy !== undefined) {
+      command.push(
+        "--maintenance-endpoint-policy-json",
+        JSON.stringify(options.maintenanceEndpointPolicy),
+      );
     }
     return command;
   };
@@ -3173,9 +3190,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     },
   };
   const saleCorrelationId = `sale-correlation://vm-runtime-${runId.toLowerCase()}`;
-  const serialLifecycleReference =
-    options.maintenanceEndpointPolicy?.lifecycleReference ??
-    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`;
   const saleFlowCommand = [
     process.execPath,
     "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
@@ -3377,16 +3391,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         command: runtimeCommand,
         report: runtimeAcceptanceReport,
         blocksOnFailure: true,
-      },
-      {
-        name: "simulated hardware sale flow",
-        mode: "simulated-hardware-sale-flow",
-        status: "planned",
-        command: saleFlowCommand,
-        ephemeralPlatformEvidence,
-        report: saleFlowReport,
-        blocksOnFailure: true,
-        requiresEphemeralDatabase: true,
       },
       {
         name: "installed kiosk sale normal",

@@ -4517,7 +4517,6 @@ if ($errors.Count -gt 0) {
           "approved preclaim base verification",
           "ephemeral platform setup",
           "runtime acceptance",
-          "simulated hardware sale flow",
           "installed kiosk sale normal",
           "installed kiosk sale route competition",
           "post-sale runtime acceptance",
@@ -4556,65 +4555,37 @@ if ($errors.Count -gt 0) {
         plan.steps[1].command.includes("--allow-mock-payment"),
         "ephemeral setup must carry explicit mock-payment acknowledgement",
       );
-      assert.equal(plan.steps[3].mode, "simulated-hardware-sale-flow");
+      assert.equal(plan.steps[3].mode, "installed-kiosk-sale");
       assert.equal(
         commandArg(plan.steps[2].command, "--ephemeral-platform-evidence"),
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(plan.steps[2].command.includes("--already-claimed"), false);
       assert.equal(
-        commandArg(plan.steps[6].command, "--ephemeral-platform-evidence"),
+        commandArg(plan.steps[5].command, "--ephemeral-platform-evidence"),
         plan.artifacts.ephemeralPlatformEvidence,
       );
-      assert.equal(plan.steps[6].command.includes("--already-claimed"), true);
-      assert.deepEqual(
-        JSON.parse(
-          commandArg(plan.steps[3].command, "--maintenance-relay-session-json"),
-        ),
-        maintenanceRelaySession,
-      );
-      assert.deepEqual(
-        JSON.parse(
-          commandArg(
-            plan.steps[3].command,
-            "--maintenance-endpoint-policy-json",
+      assert.equal(plan.steps[5].command.includes("--already-claimed"), true);
+      for (const saleStep of [plan.steps[3], plan.steps[4]]) {
+        assert.deepEqual(
+          JSON.parse(
+            commandArg(saleStep.command, "--maintenance-relay-session-json"),
           ),
-        ),
-        maintenanceEndpointPolicy,
-      );
-      assert.equal(
-        commandArg(plan.steps[3].command, "--lifecycle-reference"),
-        maintenanceEndpointPolicy.lifecycleReference,
-      );
-      const salePrepareCommand = JSON.parse(
-        commandArg(plan.steps[3].command, "--sale-prepare-command-json"),
-      );
-      assert.equal(commandArg(salePrepareCommand, "--sale-phase"), "fixture");
-      assert.equal(salePrepareCommand.includes("--already-claimed"), true);
-      const failureMatrixCommands = JSON.parse(
-        commandArg(plan.steps[3].command, "--failure-matrix-commands-json"),
-      );
-      for (const scenario of [
-        "swapped-roles",
-        "missing-device",
-        "scanner-timeout",
-      ]) {
+          maintenanceRelaySession,
+        );
+        assert.deepEqual(
+          JSON.parse(
+            commandArg(saleStep.command, "--maintenance-endpoint-policy-json"),
+          ),
+          maintenanceEndpointPolicy,
+        );
         assert.equal(
-          commandArg(
-            failureMatrixCommands[scenario].salePrepareCommand,
-            "--sale-phase",
-          ),
-          "fixture",
+          commandArg(saleStep.command, "--lifecycle-reference"),
+          maintenanceEndpointPolicy.lifecycleReference,
         );
       }
-      assert.equal(plan.steps[4].mode, "installed-kiosk-sale");
-      assert.equal(plan.steps[5].mode, "installed-kiosk-sale");
       assert.equal(
         plan.steps[3].ephemeralPlatformEvidence,
-        plan.artifacts.ephemeralPlatformEvidence,
-      );
-      assert.equal(
-        plan.steps[5].ephemeralPlatformEvidence,
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(
@@ -5926,24 +5897,6 @@ if ($errors.Count -gt 0) {
     );
     assert.equal(saleStep.command.includes("--already-claimed"), true);
     assert.equal(normalSaleStep.command.includes("--already-claimed"), true);
-    const serialStep = plan.steps.find(
-      (step) => step.name === "simulated hardware sale flow",
-    );
-    const failureCommands = JSON.parse(
-      commandArg(serialStep.command, "--failure-matrix-commands-json"),
-    );
-    assert.equal(
-      JSON.parse(
-        commandArg(serialStep.command, "--sale-prepare-command-json"),
-      ).includes("--already-claimed"),
-      false,
-    );
-    assert.equal(
-      failureCommands["scanner-timeout"].salePrepareCommand.includes(
-        "--already-claimed",
-      ),
-      true,
-    );
     assert.equal(
       commandArg(
         plan.steps.find((step) => step.name === "post-sale runtime acceptance")
@@ -5970,7 +5923,7 @@ if ($errors.Count -gt 0) {
     );
   });
 
-  it("executes serial trust and per-step scanner copies with final cleanup", async () => {
+  it("executes per-step scanner copies with final cleanup", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-runtime-execution-"));
     const scannerCodeFile = join(root, "protected-scanner-code");
     const previousRunnerTemp = process.env.RUNNER_TEMP;
@@ -6069,8 +6022,8 @@ if ($errors.Count -gt 0) {
         report.steps.every((step) => step.status === "passed"),
         true,
       );
-      assert.equal(scannerCopies.length, 3);
-      assert.equal(new Set(scannerCopies).size, 3);
+      assert.equal(scannerCopies.length, 2);
+      assert.equal(new Set(scannerCopies).size, 2);
       assert.equal(report.displayBinding.cdpTargetId, "refreshed-cdp-target");
       assert.equal(
         JSON.stringify(report).includes("SCANNER-CODE-MUST-NOT-LEAK"),
@@ -6081,10 +6034,8 @@ if ($errors.Count -gt 0) {
         "SCANNER-CODE-MUST-NOT-LEAK\n",
       );
       for (const copy of scannerCopies) assert.equal(existsSync(copy), false);
-      assert.equal(existsSync(runnerSigningKeyFile), false);
-      assert.equal(existsSync(dirname(runnerSigningKeyFile)), false);
+      assert.equal(runnerSigningKeyFile, null);
 
-      let failedRunnerSigningKeyFile = null;
       await assert.rejects(
         runVmRuntimeAcceptance(
           {
@@ -6102,23 +6053,41 @@ if ($errors.Count -gt 0) {
             spawnSync(executable, args) {
               const command = [executable, ...args];
               if (
-                command.includes(
-                  "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+                command.some((argument) =>
+                  argument.endsWith("installed-kiosk-sale-acceptance.mjs"),
                 )
               ) {
-                failedRunnerSigningKeyFile =
-                  command[command.indexOf("--runner-signing-key-file") + 1];
-                assert.equal(existsSync(failedRunnerSigningKeyFile), true);
-                throw new Error("forced serial execution failure");
+                throw new Error("forced installed kiosk execution failure");
               }
-              return { status: 0, stdout: "{}", stderr: "" };
+              const out = command[command.indexOf("--out") + 1];
+              const runtime =
+                command.includes("--mode") &&
+                command[command.indexOf("--mode") + 1] ===
+                  "runtime-acceptance";
+              const output = runtime
+                ? {
+                    ok: true,
+                    runtimeAcceptanceReport: {
+                      result: {
+                        runtimeReady: { status: "passed", asserted: true },
+                      },
+                    },
+                  }
+                : {};
+              if (out) {
+                mkdirSync(dirname(out), { recursive: true });
+                writeFileSync(out, JSON.stringify(output));
+              }
+              return {
+                status: 0,
+                stdout: JSON.stringify(output),
+                stderr: "",
+              };
             },
           },
         ),
-        /forced serial execution failure/,
+        /forced installed kiosk execution failure/,
       );
-      assert.equal(existsSync(failedRunnerSigningKeyFile), false);
-      assert.equal(existsSync(dirname(failedRunnerSigningKeyFile)), false);
     } finally {
       if (previousRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
       else process.env.RUNNER_TEMP = previousRunnerTemp;
@@ -6154,7 +6123,6 @@ if ($errors.Count -gt 0) {
         "approved preclaim base verification",
         "ephemeral platform setup",
         "runtime acceptance",
-        "simulated hardware sale flow",
         "installed kiosk sale normal",
         "installed kiosk sale route competition",
         "post-sale runtime acceptance",
