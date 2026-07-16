@@ -3013,6 +3013,13 @@ describe("win10-vem-e2e reset planning", () => {
       script,
       /C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready\.json/,
     );
+    assert.match(
+      script,
+      /C:\\ProgramData\\VEM\\vending-daemon\\factory\\bootstrap-provisioning-capability/,
+    );
+    assert.match(script, /C:\\VEM\\bringup\\machine\.exe/);
+    assert.match(script, /C:\\VEM\\bringup\\launch-machine-ui-debug\.vbs/);
+    assert.doesNotMatch(script, /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/);
     assert.match(script, /Authorization = "Bearer \$\(\$ready\.ipcToken\)"/);
     assert.match(
       script,

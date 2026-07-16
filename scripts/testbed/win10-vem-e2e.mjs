@@ -5960,7 +5960,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     # Factory writes a random single-use capability readable only by the
     # maintenance account. Exchange it for the daemon's ordinary in-memory
     # session before any protected Bring-Up task; never use mutable config IPC.
-    $bootstrapCapabilityPath = "C:\ProgramData\VEM\vending-daemon\factory\bootstrap-provisioning-capability"
+    $bootstrapCapabilityPath = "C:\\ProgramData\\VEM\\vending-daemon\\factory\\bootstrap-provisioning-capability"
     if (-not (Test-Path -LiteralPath $bootstrapCapabilityPath -PathType Leaf)) {
       throw "Factory bootstrap maintenance capability is missing"
     }
@@ -6755,7 +6755,7 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     $_.sessionId -eq $ActiveKioskSession.sessionId
   })
   $kioskProcess = @($kioskMachineProcesses | Where-Object {
-    [string]$_.executablePath -ieq "C:\VEM\bringup\machine.exe"
+    [string]$_.executablePath -ieq "C:\\VEM\\bringup\\machine.exe"
   } | Select-Object -First 1)
   $webView2Processes = @(Get-WebView2ProcessEvidence)
   $kioskWebView2Processes = @($webView2Processes | Where-Object {
@@ -6774,7 +6774,7 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
   $productionWebViewVerified = $kioskProcess.Count -gt 0 -and $kioskWebView2Process.Count -gt 0 -and -not [bool]$cdp.available
   $machineUiTask = Get-ScheduledTask -TaskName "VEMMachineUI" -TaskPath "\\" -ErrorAction SilentlyContinue
   $machineUiAction = @($machineUiTask.Actions | Select-Object -First 1)
-  $acceptanceOverlayCdp = $cdpVerified -and $machineUiAction.Count -eq 1 -and [string]$machineUiAction[0].Arguments -match [regex]::Escape("C:\VEM\bringup\launch-machine-ui-debug.vbs")
+  $acceptanceOverlayCdp = $cdpVerified -and $machineUiAction.Count -eq 1 -and [string]$machineUiAction[0].Arguments -match [regex]::Escape("C:\\VEM\\bringup\\launch-machine-ui-debug.vbs")
   return [ordered]@{
     webviewRunning = $kioskMachineProcesses.Count -eq 1 -and ($cdpVerified -or $productionWebViewVerified)
     url = if ($cdpVerified) { [string]$cdp.url } elseif ($productionWebViewVerified) { "unavailable:production-cdp-disabled" } else { [string]$cdp.url }
@@ -7948,7 +7948,7 @@ function Classify-RuntimeAcceptanceReport($Facts) {
   if (
     $Facts.kioskRuntime.processId -isnot [int] -or
     [int]$Facts.kioskRuntime.machineProcessCount -ne 1 -or
-    [string]$Facts.kioskRuntime.machineExecutablePath -cne "C:\VEM\bringup\machine.exe"
+    [string]$Facts.kioskRuntime.machineExecutablePath -cne "C:\\VEM\\bringup\\machine.exe"
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_normal_process_not_unique" "Runtime acceptance requires exactly one installed machine.exe in the active VEMKiosk session."
   }
