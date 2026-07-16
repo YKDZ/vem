@@ -505,6 +505,20 @@ describe("experimental Vision preapproval delivery", () => {
       const finalizedVision = finalizedManifest.assets.find(
         (asset) => asset.role === "vision-release",
       );
+      const finalizedApproval = JSON.parse(
+        readFileSync(
+          join(stagedFactory, "VISION-RELEASE", "approval.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(
+        finalizedVision.release.approvalDigest,
+        finalizedApproval.identity,
+      );
+      assert.equal(
+        finalizedVision.release.approvalIdentity,
+        `factory-evidence://${finalizedApproval.identity.replace(":", "/")}`,
+      );
       assert.equal(
         finalizedVision.provenance.sourceIdentity,
         `git-commit:example.invalid/vision@${"a".repeat(40)}`,
