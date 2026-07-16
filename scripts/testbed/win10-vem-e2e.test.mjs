@@ -4574,6 +4574,10 @@ if ($errors.Count -gt 0) {
         ),
         maintenanceEndpointPolicy,
       );
+      assert.equal(
+        commandArg(plan.steps[3].command, "--lifecycle-reference"),
+        maintenanceEndpointPolicy.lifecycleReference,
+      );
       assert.equal(plan.steps[4].mode, "installed-kiosk-sale");
       assert.equal(plan.steps[5].mode, "installed-kiosk-sale");
       assert.equal(

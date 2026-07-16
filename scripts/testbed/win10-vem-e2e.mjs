@@ -3172,6 +3172,9 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     },
   };
   const saleCorrelationId = `sale-correlation://vm-runtime-${runId.toLowerCase()}`;
+  const serialLifecycleReference =
+    options.maintenanceEndpointPolicy?.lifecycleReference ??
+    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`;
   const saleFlowCommand = [
     process.execPath,
     "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
@@ -3192,7 +3195,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     "--approved-runtime-base",
     options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
     "--lifecycle-reference",
-    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`,
+    serialLifecycleReference,
     "--sale-correlation-id",
     saleCorrelationId,
     "--machine-code",
