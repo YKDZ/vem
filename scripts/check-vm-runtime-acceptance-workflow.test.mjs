@@ -84,6 +84,19 @@ describe("VM runtime acceptance workflow local direct path", () => {
     const runtime = stepBlock(workflow, "Run VM Runtime Acceptance");
 
     assert.match(
+      runtime,
+      /--maintenance-relay-peer-id\s+"\$MAINTENANCE_RELAY_PEER_ID"/,
+    );
+    assert.match(
+      runtime,
+      /--maintenance-relay-public-key\s+"\$MAINTENANCE_RELAY_PUBLIC_KEY"/,
+    );
+    assert.match(
+      runtime,
+      /--maintenance-relay-tunnel-address\s+"\$MAINTENANCE_RELAY_TUNNEL_ADDRESS"/,
+    );
+
+    assert.match(
       workflow,
       /VEM_RUNTIME_PLATFORM_HOST:\s+\$\{\{ vars\.VEM_VM_RUNTIME_PLATFORM_INGRESS_HOST \}\}/,
     );
