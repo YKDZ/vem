@@ -1225,7 +1225,11 @@ function Install-PinnedWindowsPackage {
   if ($extension -eq ".msi") {
     $msiPath = [string]$Package.localInstallPath
     if ($msiPath.Contains('"')) { throw "$($Package.name) MSI path contains an invalid quote" }
-    $process = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", ('"{0}"' -f $msiPath), "/qn", "/norestart") -PassThru -Wait
+    $msiArguments = @("/i", ('"{0}"' -f $msiPath), "/qn", "/norestart")
+    if ([string]$Package.name -eq "WireGuard") {
+      $msiArguments += "DO_NOT_LAUNCH=1"
+    }
+    $process = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArguments -PassThru -Wait
   } elseif ($extension -eq ".exe") {
     $process = Start-Process -FilePath ([string]$Package.localInstallPath) -ArgumentList @("/quiet", "/norestart") -PassThru -Wait
   } else {

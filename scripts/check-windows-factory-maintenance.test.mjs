@@ -564,6 +564,21 @@ if ((ConvertTo-WebView2ManifestVersion -Version '150.0.4078.65') -cne '150.0.407
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 });
 
+test("Factory WireGuard MSI never launches its interactive tray UI", () => {
+  const preparation = readFileSync(
+    "scripts/windows/prepare-factory-runtime.ps1",
+    "utf8",
+  );
+  assert.match(
+    preparation,
+    /if \(\[string\]\$Package\.name -eq "WireGuard"\) \{[\s\S]*\$msiArguments \+= "DO_NOT_LAUNCH=1"/,
+  );
+  assert.match(
+    preparation,
+    /Start-Process -FilePath "msiexec\.exe" -ArgumentList \$msiArguments -PassThru -Wait/,
+  );
+});
+
 test("generated clean-base orchestration is profile-neutral and parses", () => {
   const root = mkdtempSync(join(tmpdir(), "vem-issue09-node-"));
   try {
