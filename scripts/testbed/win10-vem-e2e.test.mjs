@@ -4578,6 +4578,26 @@ if ($errors.Count -gt 0) {
         commandArg(plan.steps[3].command, "--lifecycle-reference"),
         maintenanceEndpointPolicy.lifecycleReference,
       );
+      const salePrepareCommand = JSON.parse(
+        commandArg(plan.steps[3].command, "--sale-prepare-command-json"),
+      );
+      assert.equal(commandArg(salePrepareCommand, "--sale-phase"), "fixture");
+      const failureMatrixCommands = JSON.parse(
+        commandArg(plan.steps[3].command, "--failure-matrix-commands-json"),
+      );
+      for (const scenario of [
+        "swapped-roles",
+        "missing-device",
+        "scanner-timeout",
+      ]) {
+        assert.equal(
+          commandArg(
+            failureMatrixCommands[scenario].salePrepareCommand,
+            "--sale-phase",
+          ),
+          "fixture",
+        );
+      }
       assert.equal(plan.steps[4].mode, "installed-kiosk-sale");
       assert.equal(plan.steps[5].mode, "installed-kiosk-sale");
       assert.equal(
