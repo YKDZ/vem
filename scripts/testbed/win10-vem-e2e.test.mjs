@@ -3029,7 +3029,13 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /"\$baseUrl\/v1\/config" \$headers/);
     assert.match(
       script,
-      /Factory bootstrap provisioning endpoint does not match the isolated Testbed platform/,
+      /disposable Testbed config did not reload the run-local Platform endpoint/,
+    );
+    assert.match(script, /\$machineConfig\.apiBaseUrl = /);
+    assert.match(script, /\$machineConfig\.mqttUrl = /);
+    assert.match(
+      script,
+      /Restart-Service -Name "VemVendingDaemon" -Force/,
     );
     assert.match(script, /preClaimFactoryConfigVerified = \$true/);
     assert.match(
@@ -4306,7 +4312,12 @@ if ($errors.Count -gt 0) {
     assert.match(script, /serialPortPath = \$LowerControllerSerialPortPath/);
     assert.match(script, /scannerAdapter = "serial_text"/);
     assert.match(script, /scannerSerialPortPath = \$ScannerSerialPortPath/);
-    assert.match(script, /visionEnabled = \$false/);
+    assert.match(script, /visionEnabled = \$true/);
+    assert.match(
+      script,
+      /\$visionInstallation = Invoke-FactoryVisionRelease -Plan \$Plan/,
+    );
+    assert.doesNotMatch(script, /not-applicable-testbed/);
     assert.match(script, /kioskMode = \$true/);
     assert.match(
       script,
