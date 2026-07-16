@@ -4056,6 +4056,44 @@ try {
     assert.match(script, /runtimeAcceptanceReport = \$runtimeAcceptanceReport/);
   });
 
+  it("claims through daemon IPC before first runtime acceptance and verifies the existing claim after sale", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-runtime-claim-order-"));
+    try {
+      const evidencePath = join(temp, "ephemeral-platform.json");
+      writeFileSync(
+        evidencePath,
+        JSON.stringify(ephemeralPlatformEvidence()),
+        "utf8",
+      );
+      const firstRuntime = buildRemotePowerShellScript({
+        mode: "runtime-acceptance",
+        platformTarget: "ephemeral-run-180",
+        machineCode: "VEM-TESTBED-WINVM-01",
+        runId: "RUN-180",
+        ephemeralPlatformEvidence: evidencePath,
+      });
+      const postSaleRuntime = buildRemotePowerShellScript({
+        mode: "runtime-acceptance",
+        platformTarget: "ephemeral-run-180",
+        machineCode: "VEM-TESTBED-WINVM-01",
+        runId: "RUN-180",
+        ephemeralPlatformEvidence: evidencePath,
+        alreadyClaimed: true,
+      });
+
+      assert.match(
+        firstRuntime,
+        /if \(\$mode -eq "runtime-acceptance" -and \$true\)[\s\S]*Invoke-TestbedProvisioningClaim \$provisioningActions/,
+      );
+      assert.match(
+        postSaleRuntime,
+        /if \(\$mode -eq "runtime-acceptance" -and \$true\)[\s\S]*Confirm-ExistingTestbedProvisioningClaim \$provisioningActions/,
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it("builds a simulated hardware sale-flow workflow with distinct readiness evidence", () => {
     const temp = mkdtempSync(join(tmpdir(), "vem-sale-flow-evidence-"));
     let script;
@@ -4453,6 +4491,16 @@ if ($errors.Count -gt 0) {
         "ephemeral setup must carry explicit mock-payment acknowledgement",
       );
       assert.equal(plan.steps[3].mode, "simulated-hardware-sale-flow");
+      assert.equal(
+        commandArg(plan.steps[2].command, "--ephemeral-platform-evidence"),
+        plan.artifacts.ephemeralPlatformEvidence,
+      );
+      assert.equal(plan.steps[2].command.includes("--already-claimed"), false);
+      assert.equal(
+        commandArg(plan.steps[6].command, "--ephemeral-platform-evidence"),
+        plan.artifacts.ephemeralPlatformEvidence,
+      );
+      assert.equal(plan.steps[6].command.includes("--already-claimed"), true);
       assert.deepEqual(
         JSON.parse(
           commandArg(plan.steps[3].command, "--maintenance-relay-session-json"),
