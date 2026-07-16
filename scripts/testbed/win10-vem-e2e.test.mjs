@@ -4254,6 +4254,10 @@ try {
       /PHYSICAL_STOCK_ATTESTATION_PENDING.*must block network-authorized sale/s,
     );
     assert.match(script, /\$physicalStockAttestation\.status -eq "ready"/);
+    assert.match(
+      script,
+      /if \(-not \[bool\]\$readiness\.canStartNetworkAuthorizedSale\) \{\s*Start-Sleep -Milliseconds 500\s*continue/s,
+    );
     assert.match(fixtureFlow, /\$salePhase -eq "fixture"/);
     assert.match(fixtureFlow, /kind = "simulated_hardware_sale_fixture"/);
     assert.doesNotMatch(

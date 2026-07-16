@@ -8604,6 +8604,10 @@ function Wait-PlatformAcceptedStockAttestation(
       if ($saleableSlots.Count -eq 0) {
         throw "Platform accepted stock attestation did not produce a sale-ready slot"
       }
+      if (-not [bool]$readiness.canStartNetworkAuthorizedSale) {
+        Start-Sleep -Milliseconds 500
+        continue
+      }
       return [ordered]@{
         readiness = $readiness
         saleView = $saleView
