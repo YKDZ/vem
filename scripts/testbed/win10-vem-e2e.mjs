@@ -2891,7 +2891,7 @@ async function runInstalledKioskCatalogScenario({ options, attestation }) {
     for (const step of [
       {
         name: "catalog category",
-        selector: '[data-test="catalog-category"]',
+        selector: '[data-test="catalog-category"]:not(:disabled)',
         before: "#/catalog",
         after: "#/catalog",
       },

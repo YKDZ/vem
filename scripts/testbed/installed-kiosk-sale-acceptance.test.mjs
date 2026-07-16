@@ -12,6 +12,7 @@ import { describe, it } from "node:test";
 
 import {
   buildInstalledKioskSaleAcceptancePlan,
+  buildInstalledKioskSaleScenarioSteps,
   deriveFulfillmentBinding,
   formatInstalledKioskSaleError,
   postMinusBaselinePlatformRaw,
@@ -22,6 +23,13 @@ const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
   "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 
 describe("installed kiosk sale preflight", () => {
+  it("selects a physically available catalog category", () => {
+    const steps = buildInstalledKioskSaleScenarioSteps("vm-normal");
+    assert.match(
+      JSON.stringify(steps),
+      /catalog-category.*:not\(:disabled\)/,
+    );
+  });
   it("preserves primary and cleanup failures in CLI diagnostics", () => {
     assert.equal(
       formatInstalledKioskSaleError(

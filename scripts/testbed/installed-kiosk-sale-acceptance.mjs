@@ -214,7 +214,7 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
     {
       type: "customer-activation",
       name: "catalog category",
-      selector: '[data-test="catalog-category"]',
+      selector: '[data-test="catalog-category"]:not(:disabled)',
       routeBefore: "#/catalog",
       routeAfter: "#/catalog",
     },
