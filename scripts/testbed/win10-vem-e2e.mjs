@@ -6156,6 +6156,23 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     # A restored VM snapshot can retain a scheduled-task state whose original
     # process no longer exists. Rebind both interactive runtimes to the live
     # VEMKiosk session after the daemon finishes its claim reconfigure.
+    $machineUiLauncher = "C:\\VEM\\bringup\\launch-machine-ui.vbs"
+    if (Test-Path -LiteralPath $machineUiLauncher) {
+      $launcherText = [IO.File]::ReadAllText($machineUiLauncher)
+      $launcherText = $launcherText.Replace(
+        'capture-kiosk-display.ps1""", 0, True',
+        'capture-kiosk-display.ps1""", 0, False'
+      )
+      [IO.File]::WriteAllText($machineUiLauncher, $launcherText, [Text.Encoding]::ASCII)
+    }
+    & icacls.exe "C:\\VEM\\bringup" /grant:r "VEMKiosk:(OI)(CI)(RX)" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "failed to grant VEMKiosk runtime access: C:\\VEM\\bringup"
+    }
+    & icacls.exe "C:\\VEM\\vision" /grant:r "VEMKiosk:(OI)(CI)(M)" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "failed to grant VEMKiosk runtime access: C:\\VEM\\vision"
+    }
     & schtasks.exe /End /TN "VEMMachineUI" 2>$null | Out-Null
     & schtasks.exe /End /TN "VEM\StartVisionServer" 2>$null | Out-Null
     Get-Process -Name "machine" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue

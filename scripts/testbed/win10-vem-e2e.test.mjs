@@ -2569,6 +2569,11 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /VEMMachineUI logon task is the sole kiosk UI owner/);
     assert.match(script, /function Ensure-KioskDisplayProbeScript/);
     assert.match(script, /capture-kiosk-display\.ps1/);
+    assert.match(script, /0, False' -f \$DisplayProbePath/);
+    assert.match(script, /function Ensure-CustomerRuntimeAccess/);
+    assert.match(script, /icacls\.exe \$path \/grant:r/);
+    assert.match(script, /-ReadExecutePaths @\(\$BringupDir\)/);
+    assert.match(script, /-ModifyPaths @\(\$VisionWorkingDirectory\)/);
     assert.match(script, /kiosk-display-evidence\.json/);
   });
 

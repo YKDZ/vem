@@ -103,6 +103,29 @@ function Ensure-Directory {
   }
 }
 
+function Ensure-CustomerRuntimeAccess {
+  param(
+    [string]$User,
+    [string[]]$ReadExecutePaths,
+    [string[]]$ModifyPaths
+  )
+
+  foreach ($path in $ReadExecutePaths) {
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    & icacls.exe $path /grant:r "${User}:(OI)(CI)(RX)" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to grant runtime read/execute access to $User on $path"
+    }
+  }
+  foreach ($path in $ModifyPaths) {
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    & icacls.exe $path /grant:r "${User}:(OI)(CI)(M)" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to grant runtime modify access to $User on $path"
+    }
+  }
+}
+
 function Ensure-MachineUiLauncher {
   param(
     [string]$LauncherPath,
@@ -115,7 +138,7 @@ function Ensure-MachineUiLauncher {
   $content = @(
     'Set oShell = CreateObject("WScript.Shell")',
     ('oShell.CurrentDirectory = "{0}"' -f $WorkingDirectory),
-    ('oShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""{0}""", 0, True' -f $DisplayProbePath),
+    ('oShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""{0}""", 0, False' -f $DisplayProbePath),
     ('oShell.Run """{0}""", 1, False' -f $ExePath)
   )
   Set-Content -LiteralPath $LauncherPath -Value $content -Encoding ASCII
@@ -1370,6 +1393,10 @@ Ensure-MachineUiDebugLauncher `
   -LauncherPath $MachineUiDebugLauncher `
   -ExePath $MachineUiExe `
   -WorkingDirectory $BringupDir
+Ensure-CustomerRuntimeAccess `
+  -User $CustomerSessionUser `
+  -ReadExecutePaths @($BringupDir) `
+  -ModifyPaths @($VisionWorkingDirectory)
 
 Write-Host "[4/9] Configure daemon service" -ForegroundColor Yellow
 Ensure-DaemonService `
