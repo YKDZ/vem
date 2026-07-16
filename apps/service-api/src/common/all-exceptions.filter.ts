@@ -28,6 +28,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
         `${request.method} ${request.url} failed`,
         exception instanceof Error ? exception.stack : String(exception),
       );
+    } else if (
+      request.method === "POST" &&
+      request.url.split("?", 1)[0] === "/api/machines/claim"
+    ) {
+      // The machine daemon deliberately exposes one generic claim error.
+      // Preserve the server-side classification without logging claim input.
+      this.logger.warn(
+        `${request.method} ${request.url} rejected with ${status}: ${message}`,
+      );
     }
 
     response.status(status).json({
