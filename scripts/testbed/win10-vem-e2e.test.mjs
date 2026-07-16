@@ -4709,6 +4709,7 @@ if ($errors.Count -gt 0) {
       launch,
       /debugTarget = \[ordered\]@\{ id = \[string\]\$targets\[0\]\.id/,
     );
+    assert.match(launch, /\[Console\]::Out\.WriteLine/);
     assert.doesNotMatch(launch, /Stop-Service -Name 'VemVendingDaemon'/);
     assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
     assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
@@ -4735,6 +4736,7 @@ if ($errors.Count -gt 0) {
     assert.match(cleanup, /#\/result/);
     assert.match(cleanup, /settledRoute/);
     assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
+    assert.match(cleanup, /\[Console\]::Out\.WriteLine/);
     assert.match(
       cleanup,
       /acceptance overlay kiosk restoration did not retain exactly one CDP listener/,

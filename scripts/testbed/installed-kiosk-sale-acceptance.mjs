@@ -314,7 +314,7 @@ $normalProcess = Get-Process -Id ([int]$machines[0].ProcessId) -ErrorAction Stop
 $owner = Invoke-CimMethod -InputObject $machines[0] -MethodName GetOwner -ErrorAction Stop
 $principal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
 if ($principal -notmatch '(?i)\\VEMKiosk$' -or $normalProcess.SessionId -ne $sessionId) { throw 'launch failure cleanup restored the wrong kiosk ownership or session' }
-[ordered]@{ ok = $true; recovery = 'launch_failure_normal_task_restart'; normalTask = $normalTask; cdpListenerCount = $listeners.Count; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $principal; sessionId = [int]$normalProcess.SessionId; machineCount = $machines.Count } } | ConvertTo-Json -Compress
+[Console]::Out.WriteLine(([ordered]@{ ok = $true; recovery = 'launch_failure_normal_task_restart'; normalTask = $normalTask; cdpListenerCount = $listeners.Count; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $principal; sessionId = [int]$normalProcess.SessionId; machineCount = $machines.Count } } | ConvertTo-Json -Compress))
 `.trim();
 }
 
