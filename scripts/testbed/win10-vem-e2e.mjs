@@ -2685,7 +2685,11 @@ $normalTaskPrincipal = [string]$normalTaskInstance.Principal.UserId
 if ($normalTaskPrincipal -notmatch '(?i)VEMKiosk$') { throw 'normal VEMMachineUI task does not target VEMKiosk' }
 if (-not (Test-Path -LiteralPath $debugLauncher -PathType Leaf)) { throw 'installed kiosk sale acceptance CDP launcher is missing' }
 $acceptanceOverlayAction = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $debugLauncher) -WorkingDirectory 'C:\VEM\bringup'
-Set-ScheduledTask -TaskName $normalTask -Action $acceptanceOverlayAction | Out-Null
+$acceptanceOverlayPrincipal = New-ScheduledTaskPrincipal -UserId $principal -LogonType Interactive -RunLevel Limited
+Unregister-ScheduledTask -TaskName $normalTask -Confirm:$false -ErrorAction Stop
+$acceptanceOverlayTask = New-ScheduledTask -Action $acceptanceOverlayAction -Principal $acceptanceOverlayPrincipal
+Register-ScheduledTask -TaskName $normalTask -InputObject $acceptanceOverlayTask -Force | Out-Null
+$normalTaskPrincipal = $principal
 Start-ScheduledTask -TaskName $normalTask -ErrorAction Stop
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 $acceptanceTarget = $null

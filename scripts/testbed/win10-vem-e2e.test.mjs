@@ -4720,8 +4720,13 @@ if ($errors.Count -gt 0) {
     assert.match(cleanup, /launch-machine-ui-debug\.vbs/);
     assert.match(
       cleanup,
-      /Set-ScheduledTask -TaskName \$normalTask -Action \$acceptanceOverlayAction/,
+      /Register-ScheduledTask -TaskName \$normalTask -InputObject \$acceptanceOverlayTask/,
     );
+    assert.match(
+      cleanup,
+      /New-ScheduledTaskPrincipal -UserId \$principal -LogonType Interactive/,
+    );
+    assert.doesNotMatch(cleanup, /Set-ScheduledTask -TaskName \$normalTask/);
     assert.match(
       cleanup,
       /acceptance overlay machine\.exe principal or session differs from saved VEMKiosk owner/,
