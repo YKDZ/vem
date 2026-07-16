@@ -3040,6 +3040,9 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /\$localSettings\.provisioningEndpointOverride = /);
     assert.match(script, /VEM_NETWORK_ADAPTER=fake/);
     assert.match(script, /VEM_FAKE_NETWORK_OUTCOME=success/);
+    assert.match(script, /schtasks\.exe \/End \/TN "VEMMachineUI"/);
+    assert.match(script, /schtasks\.exe \/Run \/TN .*StartVisionServer/);
+    assert.match(script, /schtasks\.exe \/Run \/TN "VEMMachineUI"/);
     assert.match(
       script,
       /Restart-Service -Name "VemVendingDaemon" -Force/,
