@@ -8579,7 +8579,8 @@ function Wait-PlatformAcceptedStockAttestation(
   [string]$AttestationId,
   [string]$PlanogramVersion
 ) {
-  $deadline = [DateTime]::UtcNow.AddSeconds(120)
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  $readiness = $null
   do {
     $readiness = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-readiness" $Headers
     $saleView = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-view" $Headers
@@ -8623,7 +8624,8 @@ function Wait-PlatformAcceptedStockAttestation(
     Start-Sleep -Milliseconds 500
   } while ([DateTime]::UtcNow -lt $deadline)
 
-  throw "timed out waiting for Platform-accepted simulated stock attestation"
+  $lastReadiness = if ($null -eq $readiness) { "null" } else { $readiness | ConvertTo-Json -Compress -Depth 12 }
+  throw "timed out waiting for network-authorized simulated sale readiness: $lastReadiness"
 }
 
 function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {

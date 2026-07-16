@@ -4258,6 +4258,10 @@ try {
       script,
       /if \(-not \[bool\]\$readiness\.canStartNetworkAuthorizedSale\) \{\s*Start-Sleep -Milliseconds 500\s*continue/s,
     );
+    assert.match(
+      script,
+      /timed out waiting for network-authorized simulated sale readiness: \$lastReadiness/,
+    );
     assert.match(fixtureFlow, /\$salePhase -eq "fixture"/);
     assert.match(fixtureFlow, /kind = "simulated_hardware_sale_fixture"/);
     assert.doesNotMatch(
