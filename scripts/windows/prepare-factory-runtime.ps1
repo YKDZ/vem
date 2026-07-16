@@ -1813,7 +1813,7 @@ function Write-FactoryRuntimeFiles {
     scannerUsbIdentity = $null
     scannerBaudRate = 9600
     scannerFrameSuffix = "crlf"
-    visionEnabled = $false
+    visionEnabled = $true
     visionWsUrl = "ws://127.0.0.1:7892/ws"
     visionRequestTimeoutMs = 8000
     kioskMode = $true
@@ -1846,11 +1846,7 @@ function Write-FactoryRuntimeFiles {
   }
   New-Service -Name "VemVendingDaemon" -BinaryPathName (Join-Path $RuntimeRoot "vending-daemon.exe") -StartupType Automatic -DisplayName "VEM Vending Daemon" -ErrorAction SilentlyContinue | Out-Null
   Invoke-NamedPowerShellScript -ScriptPath (Join-Path $scriptsRoot "setup-scheduled-tasks.ps1") -Arguments $setupArguments
-  $visionInstallation = if ($FactoryProfile -eq "production") {
-    Invoke-FactoryVisionRelease -Plan $Plan
-  } else {
-    [ordered]@{ status = "not-applicable-testbed"; redacted = $true }
-  }
+  $visionInstallation = Invoke-FactoryVisionRelease -Plan $Plan
   $manifest["visionRelease"] = $visionInstallation
   Write-JsonFile -Path ([string]$Plan.layout.manifestPath) -Value ([pscustomobject]$manifest)
 

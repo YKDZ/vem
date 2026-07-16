@@ -5978,6 +5978,18 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       throw "refusing to provision non-testbed target identity: ${machineCode}"
     }
 
+    # A disposable VM uses the run-local API/MQTT stack rather than the
+    # endpoint baked into its reusable Factory base.
+    $machineConfigPath = "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json"
+    $machineConfig = Read-JsonFile $machineConfigPath
+    if (-not [string]::IsNullOrWhiteSpace([string]$machineConfig.machineCode)) {
+      throw "refusing to retarget an already claimed machine config"
+    }
+    $machineConfig.apiBaseUrl = ${psString(platform.apiBaseUrl)}
+    $machineConfig.mqttUrl = ${psString(platform.mqttUrl)}
+    Write-JsonFile -Path $machineConfigPath -Value $machineConfig
+    Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
+
     $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
     $ready = $daemonIpc.ready
     $baseUrl = $daemonIpc.baseUrl
@@ -6023,7 +6035,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       throw "Factory bootstrap configuration is missing before Testbed claim"
     }
     if ([string]$public.apiBaseUrl -ne ${psString(platform.apiBaseUrl)}) {
-      throw "Factory bootstrap provisioning endpoint does not match the isolated Testbed platform"
+      throw "disposable Testbed config did not reload the run-local Platform endpoint"
     }
     $evidence.preClaimFactoryConfigVerified = $true
 
