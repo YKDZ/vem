@@ -780,17 +780,27 @@ describe("machine-ui-cdp-driver", () => {
     );
   });
 
-  it("keeps continuous route capture active through serial completion and post-sale stability", async () => {
+  it("records a timer checkpoint strictly during injected serial completion", async () => {
     let paymentWindowCalls = 0;
+    let serialTimerTicks = 0;
     const { result } = await runInstalledRouteCompetitionScenario({
       onPaymentWindow: async () => {
         paymentWindowCalls += 1;
-        await sleep(5);
+        await new Promise((resolve) => {
+          const timer = setInterval(() => {
+            serialTimerTicks += 1;
+            if (serialTimerTicks === 3) {
+              clearInterval(timer);
+              resolve();
+            }
+          }, 1);
+        });
         return { serialCompleted: true, postSaleStable: true };
       },
     });
 
     assert.equal(paymentWindowCalls, 1);
+    assert.ok(serialTimerTicks >= 3);
     assert.ok(
       result.evidence.some(
         (entry) =>
@@ -799,9 +809,17 @@ describe("machine-ui-cdp-driver", () => {
           entry.postSaleStable === true,
       ),
     );
+    const paymentWindow = result.evidence.find(
+      (entry) => entry.type === "payment-window",
+    );
+    const [before, during, after] = paymentWindow.continuousCheckpointOrdinals;
+    assert.ok(before < during && during < after);
     assert.ok(
       result.evidence.some(
-        (entry) => entry.type === "checkpoint" && entry.label === "continuous",
+        (entry) =>
+          entry.type === "checkpoint" &&
+          entry.label === "continuous" &&
+          entry.ordinal === during,
       ),
     );
   });

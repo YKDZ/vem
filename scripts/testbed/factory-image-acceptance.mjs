@@ -954,10 +954,14 @@ export function verifyInstalledKioskSaleScenarioResult(
   );
   const paymentWindowContinuousCoverage =
     Array.isArray(paymentWindow?.continuousCheckpointOrdinals) &&
-    paymentWindow.continuousCheckpointOrdinals.length === 2 &&
+    paymentWindow.continuousCheckpointOrdinals.length === 3 &&
     paymentWindow.continuousCheckpointOrdinals.every((ordinal) =>
       continuousCheckpointOrdinals.has(ordinal),
-    );
+    ) &&
+    paymentWindow.continuousCheckpointOrdinals[0] <
+      paymentWindow.continuousCheckpointOrdinals[1] &&
+    paymentWindow.continuousCheckpointOrdinals[1] <
+      paymentWindow.continuousCheckpointOrdinals[2];
   const barrierIndex = scenario?.evidence?.findIndex(
     (entry) => entry?.type === "route-barrier",
   );

@@ -631,6 +631,29 @@ function present(value) {
   return true;
 }
 
+function isVisionProtocolTimestamp(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/.exec(value);
+  if (!match) {
+    return false;
+  }
+  const [year, month, day, hour, minute, second] = match
+    .slice(1, 7)
+    .map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day &&
+    parsed.getUTCHours() === hour &&
+    parsed.getUTCMinutes() === minute &&
+    parsed.getUTCSeconds() === second
+  );
+}
+
 function normalizeWindowsUser(user) {
   const value = String(user ?? "").trim();
   if (value.length === 0) {
@@ -1121,7 +1144,18 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   if (
     facts.visionRuntime?.installedProcessBound !== true ||
     !present(facts.visionRuntime?.selectedReleaseVersion) ||
-    facts.visionRuntime?.version !== facts.visionRuntime?.selectedReleaseVersion
+    facts.visionRuntime?.version !==
+      facts.visionRuntime?.selectedReleaseVersion ||
+    !Number.isInteger(facts.visionRuntime?.activeProcessId) ||
+    facts.visionRuntime.activeProcessId < 1 ||
+    facts.visionRuntime?.listenerBound !== true ||
+    !Number.isInteger(facts.visionRuntime?.listenerProcessId) ||
+    facts.visionRuntime.listenerProcessId !==
+      facts.visionRuntime.activeProcessId ||
+    facts.visionRuntime?.listenerOwnerCount !== 1 ||
+    !["Get-NetTCPConnection", "netstat"].includes(
+      facts.visionRuntime?.listenerBindingSource,
+    )
   ) {
     addDiagnostic(
       diagnostics,
@@ -1133,6 +1167,16 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     facts.visionRuntime?.webSocketConnected !== true ||
     facts.visionRuntime?.readyProtocol !== "vem.vision.v1" ||
     facts.visionRuntime?.readyType !== "vision.ready" ||
+    typeof facts.visionRuntime?.readyMessageId !== "string" ||
+    facts.visionRuntime.readyMessageId.trim().length === 0 ||
+    facts.visionRuntime.readyMessageId.length > 128 ||
+    !isVisionProtocolTimestamp(facts.visionRuntime?.readyTimestamp) ||
+    typeof facts.visionRuntime?.readyServerName !== "string" ||
+    facts.visionRuntime.readyServerName.trim().length === 0 ||
+    facts.visionRuntime.readyServerName.length > 128 ||
+    typeof facts.visionRuntime?.readyServerVersion !== "string" ||
+    facts.visionRuntime.readyServerVersion.trim().length === 0 ||
+    facts.visionRuntime.readyServerVersion.length > 64 ||
     facts.visionRuntime?.readyServerVersion !== facts.visionRuntime?.version ||
     typeof facts.visionRuntime?.readyCameraReady !== "boolean" ||
     facts.visionRuntime?.readyCameraReady !==
@@ -1142,7 +1186,9 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     !Array.isArray(facts.visionRuntime?.readyCapabilities) ||
     !facts.visionRuntime.readyCapabilities.every(
       (capability) =>
-        typeof capability === "string" && capability.trim().length > 0,
+        typeof capability === "string" &&
+        capability.trim().length > 0 &&
+        capability.length <= 64,
     ) ||
     ![
       "profile_push",
@@ -7370,6 +7416,65 @@ function Add-RuntimeAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$M
   }) | Out-Null
 }
 
+function Get-VisionLoopbackListenerBinding([int]$ExpectedProcessId) {
+  $listeners = $null
+  $source = $null
+  if ($null -ne (Get-Command -Name Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
+    try {
+      $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object {
+        [string]$_.LocalAddress -ceq "127.0.0.1"
+      })
+      $source = "Get-NetTCPConnection"
+    } catch {
+      $listeners = $null
+    }
+  }
+  if ($null -eq $listeners) {
+    $netstatPath = Join-Path $env:SystemRoot "System32\\netstat.exe"
+    $listeners = @()
+    foreach ($line in @(& $netstatPath -ano -p tcp)) {
+      $match = [regex]::Match([string]$line, '^\\s*TCP\\s+127\\.0\\.0\\.1:7892\\s+\\S+\\s+LISTENING\\s+(\\d+)\\s*$')
+      if ($match.Success) {
+        $listeners += [pscustomobject]@{ OwningProcess = $match.Groups[1].Value }
+      }
+    }
+    $source = "netstat"
+  }
+  if ($listeners.Count -ne 1) {
+    throw "Vision must have exactly one 127.0.0.1:7892 LISTEN owner; found $($listeners.Count)"
+  }
+  [int]$listenerProcessId = 0
+  if (
+    -not [int]::TryParse([string]$listeners[0].OwningProcess, [ref]$listenerProcessId) -or
+    $listenerProcessId -lt 1
+  ) {
+    throw "Vision 127.0.0.1:7892 LISTEN owner has an invalid process identity"
+  }
+  if ($listenerProcessId -ne $ExpectedProcessId) {
+    throw "Vision selected active process $ExpectedProcessId does not own 127.0.0.1:7892 LISTEN (owner $listenerProcessId)"
+  }
+  return [ordered]@{
+    processId = $listenerProcessId
+    ownerCount = $listeners.Count
+    source = $source
+  }
+}
+
+function Test-VisionProtocolTimestamp($Value) {
+  if ($Value -isnot [string] -or $Value -notmatch '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$') {
+    return $false
+  }
+  $timestampWithoutFraction = [regex]::Replace($Value, '\\.\\d+(?=Z$)', '')
+  [DateTime]$parsed = [DateTime]::MinValue
+  return [DateTime]::TryParseExact(
+    $timestampWithoutFraction,
+    "yyyy-MM-dd'T'HH:mm:ss'Z'",
+    [Globalization.CultureInfo]::InvariantCulture,
+    ([Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal),
+    [ref]$parsed
+  )
+}
+
 function Get-VisionInstalledRuntimeBinding {
   $selectionPath = "C:\\ProgramData\\VEM\\vision\\current.json"
   $activeProcessPath = "C:\\ProgramData\\VEM\\vision\\process-state\\active-process.json"
@@ -7438,6 +7543,7 @@ function Get-VisionInstalledRuntimeBinding {
   } finally {
     $process.Dispose()
   }
+  $listenerBinding = Get-VisionLoopbackListenerBinding -ExpectedProcessId $processId
   return [ordered]@{
     bound = $true
     releaseVersion = [string]$metadata.descriptor.releaseVersion
@@ -7445,6 +7551,9 @@ function Get-VisionInstalledRuntimeBinding {
     selectionRevision = [string]$selection.revision
     processId = $processId
     executablePath = $entrypoint
+    listenerProcessId = $listenerBinding.processId
+    listenerOwnerCount = $listenerBinding.ownerCount
+    listenerBindingSource = $listenerBinding.source
   }
 }
 
@@ -7460,9 +7569,17 @@ function Get-VisionRuntimeEvidence {
     modelReady = $null
     installedProcessBound = $false
     selectedReleaseVersion = $null
+    activeProcessId = $null
+    listenerBound = $false
+    listenerProcessId = $null
+    listenerOwnerCount = $null
+    listenerBindingSource = $null
     webSocketConnected = $false
     readyProtocol = $null
     readyType = $null
+    readyMessageId = $null
+    readyTimestamp = $null
+    readyServerName = $null
     readyServerVersion = $null
     readyCameraReady = $null
     readyModelReady = $null
@@ -7478,6 +7595,11 @@ function Get-VisionRuntimeEvidence {
       $runtimeBinding = Get-VisionInstalledRuntimeBinding
       $evidence.installedProcessBound = [bool]$runtimeBinding.bound
       $evidence.selectedReleaseVersion = [string]$runtimeBinding.releaseVersion
+      $evidence.activeProcessId = $runtimeBinding.processId
+      $evidence.listenerBound = $true
+      $evidence.listenerProcessId = $runtimeBinding.listenerProcessId
+      $evidence.listenerOwnerCount = $runtimeBinding.listenerOwnerCount
+      $evidence.listenerBindingSource = [string]$runtimeBinding.listenerBindingSource
       $remainingSeconds = [Math]::Max(1, [Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
       $healthTimeoutSeconds = [Math]::Min(3, $remainingSeconds)
       $health = Invoke-RestMethod -Uri "http://127.0.0.1:7892/health" -Method Get -TimeoutSec $healthTimeoutSeconds -ErrorAction Stop
@@ -7550,13 +7672,23 @@ function Get-VisionRuntimeEvidence {
       }
       $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session")
       if (
+        $null -eq $ready -or
         $ready.protocol -isnot [string] -or
         $ready.protocol -cne "vem.vision.v1" -or
         $ready.type -isnot [string] -or
         $ready.type -cne "vision.ready" -or
+        $ready.messageId -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($ready.messageId) -or
+        $ready.messageId.Length -gt 128 -or
+        -not (Test-VisionProtocolTimestamp $ready.timestamp) -or
         $null -eq $ready.PSObject.Properties["payload"] -or
+        $ready.payload -isnot [System.Management.Automation.PSCustomObject] -or
+        $ready.payload.serverName -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($ready.payload.serverName) -or
+        $ready.payload.serverName.Length -gt 128 -or
         $ready.payload.serverVersion -isnot [string] -or
         [string]::IsNullOrWhiteSpace($ready.payload.serverVersion) -or
+        $ready.payload.serverVersion.Length -gt 64 -or
         $ready.payload.serverVersion -cne $health.version -or
         $ready.payload.cameraReady -isnot [bool] -or
         $ready.payload.cameraReady -ne $health.cameraReady -or
@@ -7564,7 +7696,7 @@ function Get-VisionRuntimeEvidence {
         $ready.payload.modelReady -ne $true -or
         $ready.payload.modelReady -ne $health.modelReady -or
         $ready.payload.capabilities -isnot [array] -or
-        (@($ready.payload.capabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) -or
+        (@($ready.payload.capabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_.Length -gt 64 }).Count -ne 0) -or
         (@($requiredCapabilities | Where-Object { $ready.payload.capabilities -cnotcontains $_ }).Count -ne 0)
       ) {
         throw "Vision WebSocket ready does not satisfy the selected installed runtime contract"
@@ -7572,6 +7704,9 @@ function Get-VisionRuntimeEvidence {
       $evidence.webSocketConnected = $true
       $evidence.readyProtocol = [string]$ready.protocol
       $evidence.readyType = [string]$ready.type
+      $evidence.readyMessageId = [string]$ready.messageId
+      $evidence.readyTimestamp = [string]$ready.timestamp
+      $evidence.readyServerName = [string]$ready.payload.serverName
       $evidence.readyServerVersion = [string]$ready.payload.serverVersion
       $evidence.readyCameraReady = $ready.payload.cameraReady
       $evidence.readyModelReady = $ready.payload.modelReady
@@ -7725,7 +7860,14 @@ function Classify-RuntimeAcceptanceReport($Facts) {
   if (
     -not [bool]$Facts.visionRuntime.installedProcessBound -or
     [string]::IsNullOrWhiteSpace([string]$Facts.visionRuntime.selectedReleaseVersion) -or
-    [string]$Facts.visionRuntime.version -ne [string]$Facts.visionRuntime.selectedReleaseVersion
+    [string]$Facts.visionRuntime.version -ne [string]$Facts.visionRuntime.selectedReleaseVersion -or
+    $Facts.visionRuntime.activeProcessId -isnot [int] -or
+    $Facts.visionRuntime.activeProcessId -lt 1 -or
+    -not [bool]$Facts.visionRuntime.listenerBound -or
+    $Facts.visionRuntime.listenerProcessId -isnot [int] -or
+    $Facts.visionRuntime.listenerProcessId -ne $Facts.visionRuntime.activeProcessId -or
+    $Facts.visionRuntime.listenerOwnerCount -ne 1 -or
+    [string]$Facts.visionRuntime.listenerBindingSource -notin @("Get-NetTCPConnection", "netstat")
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_installed_process_not_bound" "Vision acceptance must bind the listener to the selected installed release and its recorded active process."
   }
@@ -7733,6 +7875,16 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     -not [bool]$Facts.visionRuntime.webSocketConnected -or
     [string]$Facts.visionRuntime.readyProtocol -ne "vem.vision.v1" -or
     [string]$Facts.visionRuntime.readyType -ne "vision.ready" -or
+    $Facts.visionRuntime.readyMessageId -isnot [string] -or
+    [string]::IsNullOrWhiteSpace($Facts.visionRuntime.readyMessageId) -or
+    $Facts.visionRuntime.readyMessageId.Length -gt 128 -or
+    -not (Test-VisionProtocolTimestamp $Facts.visionRuntime.readyTimestamp) -or
+    $Facts.visionRuntime.readyServerName -isnot [string] -or
+    [string]::IsNullOrWhiteSpace($Facts.visionRuntime.readyServerName) -or
+    $Facts.visionRuntime.readyServerName.Length -gt 128 -or
+    $Facts.visionRuntime.readyServerVersion -isnot [string] -or
+    [string]::IsNullOrWhiteSpace($Facts.visionRuntime.readyServerVersion) -or
+    $Facts.visionRuntime.readyServerVersion.Length -gt 64 -or
     [string]$Facts.visionRuntime.readyServerVersion -ne [string]$Facts.visionRuntime.version -or
     $Facts.visionRuntime.readyCameraReady -isnot [bool] -or
     $Facts.visionRuntime.readyCameraReady -ne $Facts.visionRuntime.cameraReady -or
@@ -7740,7 +7892,7 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     $Facts.visionRuntime.readyModelReady -ne $true -or
     $Facts.visionRuntime.readyModelReady -ne $Facts.visionRuntime.modelReady -or
     $Facts.visionRuntime.readyCapabilities -isnot [array] -or
-    (@($Facts.visionRuntime.readyCapabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) -or
+    (@($Facts.visionRuntime.readyCapabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_.Length -gt 64 }).Count -ne 0) -or
     (@(@("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session") | Where-Object { $Facts.visionRuntime.readyCapabilities -cnotcontains $_ }).Count -ne 0)
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_protocol_not_ready" "The installed Vision runtime must complete the vem.vision.v1 hello handshake."

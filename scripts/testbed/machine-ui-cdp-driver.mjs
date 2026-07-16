@@ -1155,6 +1155,7 @@ export function startContinuousIdentityCapture(client, options = {}) {
       if (failure) throw failure;
     },
     async captureNow() {
+      if (inFlight) await inFlight;
       capture();
       await inFlight;
       if (failure) throw failure;
@@ -1587,14 +1588,20 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       const continuousStart = capture ? await capture.captureNow() : null;
       const paymentWindow = await onPaymentWindow();
       const continuousEnd = capture ? await capture.captureNow() : null;
+      const continuousDuring = capture?.checkpoints.find(
+        (checkpoint) =>
+          checkpoint.ordinal > continuousStart?.ordinal &&
+          checkpoint.ordinal < continuousEnd?.ordinal,
+      );
       if (
         paymentWindow?.serialCompleted !== true ||
         paymentWindow?.postSaleStable !== true ||
         continuousStart == null ||
+        continuousDuring == null ||
         continuousEnd == null
       ) {
         throw new Error(
-          "payment window must confirm continuous capture, serial completion, and post-sale stability",
+          "payment window must include a continuous checkpoint during serial completion",
         );
       }
       record({
@@ -1603,6 +1610,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         postSaleStable: true,
         continuousCheckpointOrdinals: [
           continuousStart.ordinal,
+          continuousDuring.ordinal,
           continuousEnd.ordinal,
         ],
       });
@@ -2225,10 +2233,14 @@ function boundEvidenceEntry(entry) {
       entry.serialCompleted !== true ||
       entry.postSaleStable !== true ||
       !Array.isArray(entry.continuousCheckpointOrdinals) ||
-      entry.continuousCheckpointOrdinals.length !== 2 ||
+      entry.continuousCheckpointOrdinals.length !== 3 ||
       entry.continuousCheckpointOrdinals.some(
         (ordinal) => !Number.isSafeInteger(ordinal) || ordinal < 0,
-      )
+      ) ||
+      entry.continuousCheckpointOrdinals[0] >=
+        entry.continuousCheckpointOrdinals[1] ||
+      entry.continuousCheckpointOrdinals[1] >=
+        entry.continuousCheckpointOrdinals[2]
     ) {
       throw new Error(
         "payment window did not prove continuous capture, completion, and stability",

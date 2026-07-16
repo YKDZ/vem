@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -257,18 +257,53 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
   return steps;
 }
 
-export function buildInstalledKioskSaleLaunchFailureRecoveryScript() {
+export function buildInstalledKioskSaleLaunchFailureRecoveryScript(runtime) {
+  if (!Number.isSafeInteger(runtime?.sessionId) || runtime.sessionId < 1) {
+    throw new Error(
+      "installed kiosk launch failure recovery requires the saved VEMKiosk session",
+    );
+  }
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $debugTask = 'VEMInstalledKioskSaleDebug'
 $normalTask = 'VEMMachineUI'
+$machinePath = '${MACHINE_PATH}'
+$sessionId = ${runtime.sessionId}
 Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
 Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
   Stop-Process -Id ([int]$_.OwningProcess) -Force -ErrorAction SilentlyContinue
 }
+Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object {
+  $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) -and
+  (Get-Process -Id ([int]$_.ProcessId) -ErrorAction SilentlyContinue).SessionId -eq $sessionId
+} | ForEach-Object {
+  Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Milliseconds 300
+$remainingDebugOwners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
+if ($remainingDebugOwners.Count -ne 0) { throw 'launch failure cleanup retained a CDP owner' }
+$remainingMachines = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object {
+  $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) -and
+  (Get-Process -Id ([int]$_.ProcessId) -ErrorAction SilentlyContinue).SessionId -eq $sessionId
+})
+if ($remainingMachines.Count -ne 0) { throw 'launch failure cleanup retained a detached machine.exe' }
 Start-ScheduledTask -TaskName $normalTask -ErrorAction Stop
-[ordered]@{ ok = $true; recovery = 'launch_failure_normal_task_restart'; normalTask = $normalTask } | ConvertTo-Json -Compress
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+do {
+  $machines = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object {
+    $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath)
+  })
+  $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
+  if ($machines.Count -eq 1 -and $listeners.Count -eq 0) { break }
+  Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $deadline)
+if ($machines.Count -ne 1 -or $listeners.Count -ne 0) { throw 'launch failure cleanup did not restore one normal machine.exe without CDP' }
+$normalProcess = Get-Process -Id ([int]$machines[0].ProcessId) -ErrorAction Stop
+$owner = Invoke-CimMethod -InputObject $machines[0] -MethodName GetOwner -ErrorAction Stop
+$principal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
+if ($principal -notmatch '(?i)\\VEMKiosk$' -or $normalProcess.SessionId -ne $sessionId) { throw 'launch failure cleanup restored the wrong kiosk ownership or session' }
+[ordered]@{ ok = $true; recovery = 'launch_failure_normal_task_restart'; normalTask = $normalTask; cdpListenerCount = $listeners.Count; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $principal; sessionId = [int]$normalProcess.SessionId; machineCount = $machines.Count } } | ConvertTo-Json -Compress
 `.trim();
 }
 
@@ -304,16 +339,33 @@ function prepareScannerCode(options, root) {
   return { path, owned: true };
 }
 
-function runCommand(command, label, { env = process.env } = {}) {
-  const result = spawnSync(command[0], command.slice(1), {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env,
+async function runCommand(command, label, { env = process.env } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command[0], command.slice(1), {
+      cwd: process.cwd(),
+      env,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", (error) => {
+      reject(new Error(`${label} failed: ${error.message}`, { cause: error }));
+    });
+    child.once("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`${label} failed: ${stderr || stdout}`));
+        return;
+      }
+      resolve({ status: code, stdout, stderr });
+    });
   });
-  if (result.status !== 0) {
-    throw new Error(`${label} failed: ${result.stderr || result.stdout}`);
-  }
-  return result;
 }
 
 export function nonQueryChildEnvironment(environment = process.env) {
@@ -702,7 +754,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
   let cleanup;
   let primaryError;
   try {
-    run(plan.fixtureCommand, "simulated hardware fixture", {
+    await run(plan.fixtureCommand, "simulated hardware fixture", {
       env: nonQueryEnvironment,
     });
     launch = runRemote(remote, buildInstalledKioskSaleLaunchScript());
@@ -735,7 +787,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
       out,
     ];
     // This must precede the first customer activation, including checkout submit.
-    run(
+    await run(
       platformRawQuery(plan.artifacts.platformRawBaselineReport),
       "authoritative platform raw baseline query",
       { env: queryEnvironment },
@@ -849,7 +901,9 @@ export async function runInstalledKioskSaleAcceptanceCli(
             options.maintenance_endpoint_policy_json,
           );
         }
-        run(serialCommand, "serial conformance", { env: nonQueryEnvironment });
+        await run(serialCommand, "serial conformance", {
+          env: nonQueryEnvironment,
+        });
         serial = JSON.parse(readFileSync(plan.artifacts.serialReport, "utf8"));
         completion = JSON.parse(
           readFileSync(plan.artifacts.completionReport, "utf8"),
@@ -880,7 +934,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
         "simulated hardware completion did not expose a movement identity for authoritative platform verification",
       );
     }
-    run(
+    await run(
       platformRawQuery(plan.artifacts.platformRawRecordsReport),
       "authoritative platform raw post query",
       { env: queryEnvironment },
@@ -964,11 +1018,18 @@ export async function runInstalledKioskSaleAcceptanceCli(
       } else {
         cleanup = runRemote(
           remote,
-          buildInstalledKioskSaleLaunchFailureRecoveryScript(),
+          buildInstalledKioskSaleLaunchFailureRecoveryScript(runtime),
         );
-        if (cleanup?.recovery !== "launch_failure_normal_task_restart") {
+        if (
+          cleanup?.recovery !== "launch_failure_normal_task_restart" ||
+          cleanup?.normalTask !== "VEMMachineUI" ||
+          cleanup?.cdpListenerCount !== 0 ||
+          cleanup?.normal?.machineCount !== 1 ||
+          cleanup.normal.sessionId !== runtime.sessionId ||
+          !String(cleanup.normal.principal ?? "").endsWith("\\VEMKiosk")
+        ) {
           throw new Error(
-            "installed kiosk launch failure recovery did not restart the normal UI task",
+            "installed kiosk launch failure cleanup did not restore normal VEMKiosk ownership",
           );
         }
       }

@@ -93,6 +93,13 @@ describe("installed kiosk sale preflight", () => {
                 ok: true,
                 recovery: "launch_failure_normal_task_restart",
                 normalTask: "VEMMachineUI",
+                cdpListenerCount: 0,
+                normal: {
+                  processId: 4242,
+                  principal: "VEM\\VEMKiosk",
+                  sessionId: 1,
+                  machineCount: 1,
+                },
               };
             },
           },
@@ -105,6 +112,15 @@ describe("installed kiosk sale preflight", () => {
         /Start-ScheduledTask -TaskName \$normalTask/,
       );
       assert.match(remoteScripts[1], /\$normalTask = 'VEMMachineUI'/);
+      assert.match(
+        remoteScripts[1],
+        /launch failure cleanup retained a CDP owner/,
+      );
+      assert.match(
+        remoteScripts[1],
+        /launch failure cleanup retained a detached machine\.exe/,
+      );
+      assert.match(remoteScripts[1], /\$machines\.Count -eq 1/);
     } finally {
       if (previousDatabaseUrl === undefined)
         delete process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];

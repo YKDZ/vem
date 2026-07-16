@@ -398,7 +398,7 @@ function saleScenario(input, _runtimeDigest) {
           type: "payment-window",
           serialCompleted: true,
           postSaleStable: true,
-          continuousCheckpointOrdinals: [1000000, 1000001],
+          continuousCheckpointOrdinals: [1000000, 1000001, 1000002],
         },
         {
           type: "checkpoint",
@@ -413,6 +413,15 @@ function saleScenario(input, _runtimeDigest) {
           type: "checkpoint",
           label: "continuous",
           ordinal: 1000001,
+          identity: {
+            url: "http://tauri.localhost/#/payment",
+            route: "#/payment",
+          },
+        },
+        {
+          type: "checkpoint",
+          label: "continuous",
+          ordinal: 1000002,
           identity: {
             url: "http://tauri.localhost/#/result",
             route: "#/result",
@@ -922,6 +931,22 @@ describe("Factory Image Acceptance lifecycle", () => {
         ),
       /route-barrier.*exact-once contract/,
       "Factory acceptance requires the payment window to cover serial completion",
+    );
+
+    const boundaryOnlyPaymentWindow = saleScenario(input, digest);
+    boundaryOnlyPaymentWindow.machineUiCdpScenario.evidence.find(
+      (entry) => entry.type === "payment-window",
+    ).continuousCheckpointOrdinals = [1000000, 1000002];
+    writeFileSync(output, `${JSON.stringify(boundaryOnlyPaymentWindow)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /route-barrier.*exact-once contract/,
+      "Factory acceptance requires a timer checkpoint during serial completion",
     );
 
     const wrongStock = saleScenario(input, digest);

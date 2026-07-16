@@ -1738,9 +1738,17 @@ function runtimeAcceptanceFacts(overrides = {}) {
       modelReady: true,
       installedProcessBound: true,
       selectedReleaseVersion: "0.2.1-rc.8",
+      activeProcessId: 789,
+      listenerBound: true,
+      listenerProcessId: 789,
+      listenerOwnerCount: 1,
+      listenerBindingSource: "Get-NetTCPConnection",
       webSocketConnected: true,
       readyProtocol: "vem.vision.v1",
       readyType: "vision.ready",
+      readyMessageId: "ready-001",
+      readyTimestamp: "2026-07-16T01:02:03.456Z",
+      readyServerName: "vem-vision-runtime",
       readyServerVersion: "0.2.1-rc.8",
       readyCameraReady: false,
       readyModelReady: true,
@@ -6426,6 +6434,54 @@ if ($errors.Count -gt 0) {
         },
         "vision_protocol_not_ready",
       ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyMessageId = "";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyMessageId = 42;
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyTimestamp = "not-a-timestamp";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyTimestamp = "2026-02-29T01:02:03Z";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyServerName = "   ";
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyServerName = 42;
+        },
+        "vision_protocol_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.listenerProcessId = 790;
+        },
+        "vision_installed_process_not_bound",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.listenerOwnerCount = 2;
+        },
+        "vision_installed_process_not_bound",
+      ],
     ]) {
       const facts = runtimeAcceptanceFacts();
       mutate(facts);
@@ -6446,6 +6502,11 @@ if ($errors.Count -gt 0) {
     });
 
     assert.match(script, /function Get-VisionInstalledRuntimeBinding/);
+    assert.match(script, /function Get-VisionLoopbackListenerBinding/);
+    assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort 7892/);
+    assert.match(script, /System32\\netstat\.exe/);
+    assert.match(script, /\$listeners\.Count -ne 1/);
+    assert.match(script, /\$listenerProcessId -ne \$ExpectedProcessId/);
     assert.match(script, /C:\\ProgramData\\VEM\\vision\\current\.json/);
     assert.match(
       script,
@@ -6473,7 +6534,51 @@ if ($errors.Count -gt 0) {
       script,
       /\$ready\.payload\.serverVersion -cne \$health\.version/,
     );
+    assert.match(script, /\$ready\.messageId -isnot \[string\]/);
+    assert.match(script, /Test-VisionProtocolTimestamp \$ready\.timestamp/);
+    assert.match(script, /\$ready\.payload\.serverName -isnot \[string\]/);
     assert.match(script, /\$ready\.payload\.capabilities -isnot \[array\]/);
+  });
+
+  it("PowerShell-parses the generated runtime acceptance script", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-runtime-acceptance-parse-"));
+    try {
+      const scriptPath = join(temp, "runtime-acceptance.ps1");
+      const parserPath = join(temp, "parse-generated-script.ps1");
+      writeFileSync(
+        scriptPath,
+        buildRemotePowerShellScript({
+          mode: "runtime-acceptance",
+          machineCode: "VEM-TESTBED-WINVM-01",
+        }),
+        "utf8",
+      );
+      writeFileSync(
+        parserPath,
+        `param([string]$Path)
+$tokens = $null
+$errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) {
+  $errors | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Message)" }
+  exit 1
+}
+`,
+        "utf8",
+      );
+      const parsed = spawnSync(
+        "pwsh",
+        ["-NoProfile", "-NonInteractive", "-File", parserPath, scriptPath],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        parsed.status,
+        0,
+        `generated runtime acceptance PowerShell failed to parse:\n${parsed.stdout}\n${parsed.stderr}`,
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it("does not pass runtime-ready when required report facts are missing", () => {
