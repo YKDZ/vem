@@ -3035,6 +3035,11 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /\$machineConfig\.mqttUrl = /);
     assert.match(
       script,
+      /C:\\ProgramData\\VEM\\bringup\\local-settings\.json/,
+    );
+    assert.match(script, /\$localSettings\.provisioningEndpointOverride = /);
+    assert.match(
+      script,
       /Restart-Service -Name "VemVendingDaemon" -Force/,
     );
     assert.match(script, /preClaimFactoryConfigVerified = \$true/);

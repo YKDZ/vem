@@ -5950,6 +5950,14 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $machineConfig.apiBaseUrl = ${psString(platform.apiBaseUrl)}
     $machineConfig.mqttUrl = ${psString(platform.mqttUrl)}
     Write-JsonFile -Path $machineConfigPath -Value $machineConfig
+
+    # Effective pre-claim configuration is layered over the Factory manifest.
+    # machine-config.json is only a compatibility snapshot, so override the
+    # provisioning endpoint in the mutable local Bring-Up layer as well.
+    $localSettingsPath = "C:\\ProgramData\\VEM\\bringup\\local-settings.json"
+    $localSettings = Read-JsonFile $localSettingsPath
+    $localSettings.provisioningEndpointOverride = ${psString(platform.apiBaseUrl)}
+    Write-JsonFile -Path $localSettingsPath -Value $localSettings
     Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
 
     $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
