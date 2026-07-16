@@ -13,6 +13,7 @@ import { describe, it } from "node:test";
 import {
   buildInstalledKioskSaleAcceptancePlan,
   deriveFulfillmentBinding,
+  formatInstalledKioskSaleError,
   postMinusBaselinePlatformRaw,
   runInstalledKioskSaleAcceptanceCli,
 } from "./installed-kiosk-sale-acceptance.mjs";
@@ -21,6 +22,20 @@ const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
   "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 
 describe("installed kiosk sale preflight", () => {
+  it("preserves primary and cleanup failures in CLI diagnostics", () => {
+    assert.equal(
+      formatInstalledKioskSaleError(
+        new AggregateError(
+          [new Error("CDP launch failed"), new Error("task recovery failed")],
+          "installed kiosk sale and cleanup failed",
+        ),
+      ),
+      "installed kiosk sale and cleanup failed\n" +
+        "cause 1: CDP launch failed\n" +
+        "cause 2: task recovery failed",
+    );
+  });
+
   it("rejects a missing database binding before creating runner secrets", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-installed-kiosk-preflight-"));
     const previousRunnerTemp = process.env.RUNNER_TEMP;
