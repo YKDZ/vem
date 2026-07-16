@@ -406,6 +406,20 @@ function assertAsset(value, path, issues) {
     );
   }
   fixedVersion(value.version, `${path}.version`, issues);
+  if (
+    value.role === "webview2-runtime-installer" &&
+    (typeof value.version !== "string" ||
+      !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+(0|[1-9][0-9]*)$/.test(
+        value.version,
+      ))
+  ) {
+    issues.push(
+      issue(
+        `${path}.version`,
+        "must encode a four-part WebView2 Runtime version as major.minor.patch+build",
+      ),
+    );
+  }
 
   assertExactKeys(
     value.signature,

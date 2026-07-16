@@ -144,7 +144,7 @@ function writeBaseFactoryManifest(path) {
         : `${role}.bin`,
     identity: `factory-cas://sha256/${hash}`,
     digest: `sha256:${hash}`,
-    version,
+    version: role === "webview2-runtime-installer" ? "150.0.4078+65" : version,
     signature: {
       scheme: "detached-ed25519",
       signerIdentity: `spki-sha256:${hash}`,

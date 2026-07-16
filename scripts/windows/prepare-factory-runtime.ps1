@@ -993,8 +993,8 @@ function Assert-FactoryRuntimePreflight {
     throw "required machine UI sidecar missing next to machine.exe: $machineUiSidecarPath"
   }
   $machineUiSidecarHash = (Get-FileHash -LiteralPath $machineUiSidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ([string]::IsNullOrWhiteSpace($WebView2RuntimeVersion) -or $WebView2RuntimeVersion -match "(?i)latest|floating") {
-    throw "WebView2 Runtime version must be fixed"
+  if ($WebView2RuntimeVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+(0|[1-9][0-9]*)$') {
+    throw "WebView2 Runtime version must encode a four-part version as major.minor.patch+build"
   }
   $webView2RuntimeInstallerHash = Assert-Sha256 -Path $WebView2RuntimeInstallerPath -ExpectedSha256 $WebView2RuntimeInstallerSha256
   $credentials = Assert-CredentialInputs

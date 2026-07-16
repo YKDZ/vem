@@ -246,6 +246,21 @@ describe("Factory Manifest v1", () => {
       );
     }
 
+    for (const invalidWebView2Version of [
+      "1.0.0",
+      "150.0.4078.65",
+      "150.0.4078+beta",
+    ]) {
+      const invalid = validInput();
+      invalid.assets.find(
+        (entry) => entry.role === "webview2-runtime-installer",
+      ).version = invalidWebView2Version;
+      assert.throws(
+        () => createFactoryManifest(invalid),
+        /four-part WebView2 Runtime version|pattern/i,
+      );
+    }
+
     const nestedUnknown = validInput();
     nestedUnknown.assets[0].signature.comment = "not in schema";
     assert.throws(

@@ -212,7 +212,12 @@ async function fixture() {
       }[role],
       identity: `factory-cas://sha256/${hash}`,
       digest: `sha256:${hash}`,
-      version: role === "windows-source-iso" ? "10.0.19045" : "1.0.0",
+      version:
+        role === "windows-source-iso"
+          ? "10.0.19045"
+          : role === "webview2-runtime-installer"
+            ? "150.0.4078+65"
+            : "1.0.0",
       signature: signed.signature,
       provenance: signed.provenance,
       ...(role === "vision-release"

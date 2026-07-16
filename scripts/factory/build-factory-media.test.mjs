@@ -713,9 +713,11 @@ async function fixture({
       version:
         role === "windows-source-iso"
           ? "10.0.19045"
-          : role === "vision-release"
-            ? "2026.7.11"
-            : "1.0.0",
+          : role === "webview2-runtime-installer"
+            ? "150.0.4078+65"
+            : role === "vision-release"
+              ? "2026.7.11"
+              : "1.0.0",
       signature: signed.signature,
       provenance: signed.provenance,
       ...(role === "vision-release"
