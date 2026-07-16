@@ -1016,6 +1016,12 @@ export async function probeSelectorBounds(client, selector, options = {}) {
         selector,
         exists: true,
         actionable,
+        disabled: element.hasAttribute("disabled"),
+        ariaDisabled: element.getAttribute("aria-disabled"),
+        text: String(element.textContent || "").trim().slice(0, 256),
+        pageMessage: String(
+          document.querySelector(".checkout-tip, [role='alert']")?.textContent || ""
+        ).replace(/\s+/g, " ").trim().slice(0, 1024),
         inViewport,
         pointerEvents: style.pointerEvents,
         hitTarget,
