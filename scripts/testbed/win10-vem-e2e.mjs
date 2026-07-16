@@ -3365,6 +3365,21 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
           mqttUrl,
           "--machine-code-prefix",
           machineCodePrefix,
+          ...(options.maintenanceRelayPeerId
+            ? ["--maintenance-relay-peer-id", options.maintenanceRelayPeerId]
+            : []),
+          ...(options.maintenanceRelayPublicKey
+            ? [
+                "--maintenance-relay-public-key",
+                options.maintenanceRelayPublicKey,
+              ]
+            : []),
+          ...(options.maintenanceRelayTunnelAddress
+            ? [
+                "--maintenance-relay-tunnel-address",
+                options.maintenanceRelayTunnelAddress,
+              ]
+            : []),
           "--allow-ephemeral-target",
           "--allow-mock-payment",
           "--reset",
@@ -10046,6 +10061,15 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--maintenance-relay-session-json") {
       options.maintenanceRelaySession = parseJsonObjectArgument(arg, next);
+      index += 1;
+    } else if (arg === "--maintenance-relay-peer-id") {
+      options.maintenanceRelayPeerId = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-public-key") {
+      options.maintenanceRelayPublicKey = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-tunnel-address") {
+      options.maintenanceRelayTunnelAddress = next;
       index += 1;
     } else if (arg === "--maintenance-endpoint-policy-json") {
       options.maintenanceEndpointPolicy = parseJsonObjectArgument(arg, next);

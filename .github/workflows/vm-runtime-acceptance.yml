@@ -381,6 +381,9 @@ jobs:
             --ephemeral-mqtt-url "$EPHEMERAL_MQTT_URL" \
             --factory-guest-endpoint-json "$VM_GUEST_MAINTENANCE_ENDPOINT_JSON" \
             --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
+            --maintenance-relay-peer-id "$MAINTENANCE_RELAY_PEER_ID" \
+            --maintenance-relay-public-key "$MAINTENANCE_RELAY_PUBLIC_KEY" \
+            --maintenance-relay-tunnel-address "$MAINTENANCE_RELAY_TUNNEL_ADDRESS" \
             --maintenance-endpoint-policy-json "$VM_TESTBED_SERIAL_ENDPOINT_POLICY_JSON" \
             --expected-testbed-user "$WINDOWS_SSH_USER" \
             --ssh-known-hosts-path "$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH" \

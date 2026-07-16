@@ -5713,6 +5713,9 @@ if ($errors.Count -gt 0) {
       ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
       ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
       machineCode: "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
+      maintenanceRelayPeerId: "650e8400-e29b-41d4-a716-446655440001",
+      maintenanceRelayPublicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+      maintenanceRelayTunnelAddress: "10.91.0.1",
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
     });
@@ -5730,6 +5733,18 @@ if ($errors.Count -gt 0) {
     assert.equal(
       commandArg(plan.steps[1].command, "--machine-code-prefix"),
       "VEM-TESTBED-CUSTOM",
+    );
+    assert.equal(
+      commandArg(plan.steps[1].command, "--maintenance-relay-peer-id"),
+      "650e8400-e29b-41d4-a716-446655440001",
+    );
+    assert.equal(
+      commandArg(plan.steps[1].command, "--maintenance-relay-public-key"),
+      "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+    );
+    assert.equal(
+      commandArg(plan.steps[1].command, "--maintenance-relay-tunnel-address"),
+      "10.91.0.1",
     );
     assert.equal(
       commandArg(plan.steps[3].command, "--machine-code"),
