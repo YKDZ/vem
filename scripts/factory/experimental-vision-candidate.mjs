@@ -346,17 +346,13 @@ function createExperimentalFactoryManifest({
   const signatureEvidence = canonicalBytes(signatures.attestation);
   const signatureReference = evidenceReference(signatureEvidence);
   const provenanceReference = evidenceReference(documents.provenance);
-  const approval = JSON.parse(documents.approval.toString("utf8"));
-  if (!DIGEST.test(approval.identity ?? "")) {
-    throw new Error("Vision approval identity is invalid");
-  }
   const release = {
     descriptorIdentity: evidenceIdentity(verified.descriptorDigest),
     descriptorDigest: verified.descriptorDigest,
     attestationIdentity: evidenceIdentity(digestBytes(documents.attestation)),
     attestationDigest: digestBytes(documents.attestation),
-    approvalIdentity: evidenceIdentity(approval.identity),
-    approvalDigest: approval.identity,
+    approvalIdentity: evidenceIdentity(digestBytes(documents.approval)),
+    approvalDigest: digestBytes(documents.approval),
     conformanceEvidenceIdentity: evidenceIdentity(
       digestBytes(documents.conformance),
     ),

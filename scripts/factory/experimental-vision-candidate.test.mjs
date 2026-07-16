@@ -20,7 +20,10 @@ import {
   verifyFactoryVisionDelivery,
   verifyPreapprovalDelivery,
 } from "./verify-vision-delivery-assembly.mjs";
-import { createVisionReleaseDescriptor } from "./vision-release.mjs";
+import {
+  createVisionReleaseDescriptor,
+  verifySignedVisionReleaseEvidence,
+} from "./vision-release.mjs";
 
 const digest = (bytes) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -505,19 +508,16 @@ describe("experimental Vision preapproval delivery", () => {
       const finalizedVision = finalizedManifest.assets.find(
         (asset) => asset.role === "vision-release",
       );
-      const finalizedApproval = JSON.parse(
-        readFileSync(
-          join(stagedFactory, "VISION-RELEASE", "approval.json"),
-          "utf8",
-        ),
+      const finalizedApprovalBytes = readFileSync(
+        join(stagedFactory, "VISION-RELEASE", "approval.json"),
       );
       assert.equal(
         finalizedVision.release.approvalDigest,
-        finalizedApproval.identity,
+        digest(finalizedApprovalBytes),
       );
       assert.equal(
         finalizedVision.release.approvalIdentity,
-        `factory-evidence://${finalizedApproval.identity.replace(":", "/")}`,
+        `factory-evidence://${digest(finalizedApprovalBytes).replace(":", "/")}`,
       );
       assert.equal(
         finalizedVision.provenance.sourceIdentity,
@@ -527,6 +527,33 @@ describe("experimental Vision preapproval delivery", () => {
         finalizedVision.provenance.builderIdentity,
         /^builder-uri-sha256:[a-f0-9]{64}$/,
       );
+      const delivery = JSON.parse(
+        readFileSync(join(finalizerRoot, "delivery-unit.json"), "utf8"),
+      );
+      const documents = Object.fromEntries(
+        Object.entries(delivery.documents).map(([role, value]) => [
+          role,
+          Buffer.from(value, "base64"),
+        ]),
+      );
+      verifySignedVisionReleaseEvidence({
+        manifestAsset: {
+          role: finalizedVision.role,
+          digest: finalizedVision.digest,
+          version: finalizedVision.version,
+          release: finalizedVision.release,
+        },
+        documents,
+        signatures: delivery.signatures,
+        approvedIdentities: {
+          descriptor: [candidate.supplierIdentity],
+          attestation: [candidate.supplierIdentity],
+          sbom: [candidate.supplierIdentity],
+          provenance: [candidate.supplierIdentity],
+          conformance: [acceptanceIdentity],
+          approval: [acceptanceIdentity],
+        },
+      });
       verifyFactoryVisionDelivery(stagedFactory);
       const factoryProof = spawnSync(
         process.execPath,

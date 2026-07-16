@@ -487,6 +487,7 @@ export function verifyVisionReleaseSelection({
   manifestAsset,
   descriptor,
   attestation,
+  attestationDigest: exactAttestationDigest,
   approval,
 }) {
   const selected = validateVisionReleaseDescriptor(descriptor);
@@ -494,7 +495,9 @@ export function verifyVisionReleaseSelection({
     attestation,
     selected,
   );
-  const attestationDigest = digestJson(verifiedAttestation);
+  const attestationDigest =
+    exactAttestationDigest ?? digestJson(verifiedAttestation);
+  assertDigest(attestationDigest, "Vision attestation digest");
   const approved = validateVisionReleaseApproval(approval);
   exactKeys(
     manifestAsset,
@@ -662,6 +665,7 @@ export function verifySignedVisionReleaseEvidence({
     manifestAsset,
     descriptor,
     attestation: parsed.attestation,
+    attestationDigest: digestBytes(documents.attestation),
     approval,
   });
   if (
