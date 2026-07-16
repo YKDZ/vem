@@ -762,9 +762,6 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
 
 async fn wait_for_platform_accepted_stock(daemon: &DaemonHarness) -> serde_json::Value {
     for _ in 0..60 {
-        // Bring-Up reads the daemon-owned attestation status and atomically
-        // finalizes the staged stock only after the Platform receipt exists.
-        let bring_up = daemon.get_json("/v1/bring-up").await;
         let sale_view = daemon.get_json("/v1/sale-view").await;
         let sale_ready = sale_view["items"].as_array().is_some_and(|items| {
             items.iter().any(|item| {
@@ -773,8 +770,13 @@ async fn wait_for_platform_accepted_stock(daemon: &DaemonHarness) -> serde_json:
             })
         });
         if sale_ready {
-            assert_ne!(bring_up["currentTask"]["kind"], "attest_stock");
-            return sale_view;
+            // The stock uploader and Bring-Up snapshot are refreshed through
+            // separate async paths, so only return when both customer sale
+            // stock and the operator cursor agree that Platform accepted it.
+            let bring_up = daemon.get_json("/v1/bring-up").await;
+            if bring_up["currentTask"]["kind"] != "attest_stock" {
+                return sale_view;
+            }
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
