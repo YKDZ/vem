@@ -364,6 +364,11 @@ describe("machine-ui-cdp-driver", () => {
       "-o",
       "HostKeyAlias=vem-factory-run-180",
     ]);
+    assert.equal(args.at(-2), "-EncodedCommand");
+    assert.equal(
+      Buffer.from(args.at(-1), "base64").toString("utf16le"),
+      "Write-Output '{}'",
+    );
   });
 
   for (const [name, mutate, pattern] of [
