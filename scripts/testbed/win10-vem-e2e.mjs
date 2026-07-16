@@ -5136,7 +5136,8 @@ export function buildRemotePowerShellScript(options = {}) {
     PLATFORM_TARGETS["vem-vps"];
   const claimCode =
     mode === "simulated-hardware-sale-flow" ||
-    (mode === "provision" && ephemeralPlatformSetup)
+    ((mode === "provision" || mode === "runtime-acceptance") &&
+      ephemeralPlatformSetup)
       ? ephemeralPlatformSetup.claimCode
       : (options.claimCode ?? "");
   if (mode === "provision" && String(claimCode).trim().length === 0) {

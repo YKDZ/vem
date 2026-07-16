@@ -3730,6 +3730,29 @@ try {
     }
   });
 
+  it("passes the same-run claim code into runtime acceptance provisioning", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-claim-evidence-"));
+    try {
+      const evidencePath = join(root, "ephemeral-platform.json");
+      writeFileSync(
+        evidencePath,
+        JSON.stringify(ephemeralPlatformEvidence()),
+        "utf8",
+      );
+      const script = buildRemotePowerShellScript({
+        mode: "runtime-acceptance",
+        runId: "RUN-180",
+        machineCode: "VEM-TESTBED-WINVM-01",
+        platformTarget: "ephemeral-run-180",
+        ephemeralPlatformEvidence: evidencePath,
+      });
+
+      assert.match(script, /claimCode = 'ABCD-2345'/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("builds a read-only preclaim verifier from the Factory ISO-installed verifier", () => {
     const script = buildFactoryPreclaimVerificationScript({
       runId: "RUN-180",
