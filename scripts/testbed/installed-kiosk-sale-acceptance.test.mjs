@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -56,12 +62,18 @@ describe("installed kiosk sale preflight", () => {
           kioskRuntime: {
             sessionUser: "VEMKiosk",
             sessionId: 1,
-            url: "http://tauri.localhost/#/catalog",
+            url: "unavailable:production-cdp-disabled",
+            source: "webview2_process",
+            cdpAvailable: false,
+            machineProcessCount: 1,
+            machineExecutablePath: "C:\\VEM\\bringup\\machine.exe",
+            webView2ProcessCount: 1,
           },
         },
       })}\n`,
     );
     const remoteScripts = [];
+    writeFileSync(output, '{"status":"passed"}\n');
     try {
       await assert.rejects(
         runInstalledKioskSaleAcceptanceCli(
@@ -121,6 +133,7 @@ describe("installed kiosk sale preflight", () => {
         /launch failure cleanup retained a detached machine\.exe/,
       );
       assert.match(remoteScripts[1], /\$machines\.Count -eq 1/);
+      assert.equal(existsSync(output), false);
     } finally {
       if (previousDatabaseUrl === undefined)
         delete process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];

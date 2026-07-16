@@ -812,21 +812,38 @@ describe("simulated hardware serial acceptance evidence", () => {
             return { status: 0 };
           },
           runRemote(_options, script) {
-            if (script.includes("VEMInstalledKioskSaleRestore")) {
+            if (script.includes("temporary_cdp_restore_observer")) {
               calls.push("cleanup");
               return {
                 daemonRunning: true,
                 cdpListenerCount: 0,
                 normal: {
+                  processId: 4243,
                   principal: "VEM\\VEMKiosk",
                   sessionId: 1,
+                  machineCount: 1,
+                  task: {
+                    name: "VEMMachineUI",
+                    exists: true,
+                    enabled: true,
+                    runAsUser: "VEMKiosk",
+                  },
+                  cdpListenerCount: 0,
+                  cdpDisabled: true,
                   route: "#/catalog",
                   routeEvidence: {
-                    source: "remote_cdp",
-                    targetId: "restored-normal-target",
-                    targetUrl:
+                    source: "temporary_cdp_restore_observer",
+                    initialTargetId: "restored-normal-target",
+                    initialTargetUrl:
                       "http://127.0.0.1:9222/devtools/page/restored-normal-target",
-                    route: "#/catalog",
+                    initialRoute: "#/result",
+                    allowedInitialRoutes: ["#/catalog", "#/result"],
+                    settledTargetId: "restored-normal-target",
+                    settledTargetUrl:
+                      "http://127.0.0.1:9222/devtools/page/restored-normal-target",
+                    settledRoute: "#/catalog",
+                    resultAutoReturnObserved: true,
+                    settledBeforeNormalLaunch: true,
                     processId: 4243,
                     principal: "VEM\\VEMKiosk",
                     sessionId: 1,
@@ -954,6 +971,16 @@ describe("simulated hardware serial acceptance evidence", () => {
         "normal-target",
       );
       assert.equal(report.runtimeBinding.debug.targetId, "debug-target");
+      assert.equal(report.cleanup.status, "passed");
+      assert.equal(report.cleanup.normal.cdpDisabled, true);
+      assert.equal(
+        report.cleanup.normal.routeEvidence.settledRoute,
+        "#/catalog",
+      );
+      assert.deepEqual(
+        JSON.parse(readFileSync(output, "utf8")).cleanup,
+        report.cleanup,
+      );
       assert.equal(report.correlation.exactOnce.commandCount, 1);
       assert.equal(report.correlation.exactOnce.orderNoCount, 1);
       assert.equal(report.correlation.exactOnce.reservationCount, 1);
@@ -1767,6 +1794,9 @@ function runtimeAcceptanceFacts(overrides = {}) {
       sessionUser: "VEMKiosk",
       sessionId: 3,
       processId: 500,
+      machineProcessCount: 1,
+      machineExecutablePath: "C:\\VEM\\bringup\\machine.exe",
+      webView2ProcessCount: 1,
       cdpAvailable: true,
       cdpListenerProcessId: 600,
       cdpListenerSessionId: 3,
@@ -2344,7 +2374,12 @@ describe("win10-vem-e2e reset planning", () => {
       source: "quser",
     };
     const machineProcesses = [
-      { processId: 500, ownerUser: "VEMKiosk", sessionId: 3 },
+      {
+        processId: 500,
+        ownerUser: "VEMKiosk",
+        sessionId: 3,
+        executablePath: "C:\\VEM\\bringup\\machine.exe",
+      },
     ];
 
     assert.deepEqual(
@@ -2359,7 +2394,10 @@ describe("win10-vem-e2e reset planning", () => {
         sessionUser: "VEMKiosk",
         sessionId: 3,
         processId: 500,
+        machineProcessCount: 1,
+        machineExecutablePath: "C:\\VEM\\bringup\\machine.exe",
         webView2ProcessId: null,
+        webView2ProcessCount: 0,
         cdpListenerProcessId: null,
         cdpListenerSessionId: null,
         cdpMachineAncestorProcessId: null,
@@ -2441,7 +2479,10 @@ describe("win10-vem-e2e reset planning", () => {
         sessionUser: "VEMKiosk",
         sessionId: 3,
         processId: 500,
+        machineProcessCount: 1,
+        machineExecutablePath: "C:\\VEM\\bringup\\machine.exe",
         webView2ProcessId: 600,
+        webView2ProcessCount: 1,
         cdpListenerProcessId: null,
         cdpListenerSessionId: null,
         cdpMachineAncestorProcessId: null,
@@ -4510,7 +4551,7 @@ if ($errors.Count -gt 0) {
     }
   });
 
-  it("launches a single temporary CDP kiosk UI and always restores the normal owner without daemon mutation", () => {
+  it("launches a single temporary CDP kiosk UI and settles the result route before restoring normal production UI", () => {
     const launch = buildInstalledKioskSaleLaunchScript();
     const cleanup = buildInstalledKioskSaleCleanupScript({
       principal: "VEM\\VEMKiosk",
@@ -4537,7 +4578,6 @@ if ($errors.Count -gt 0) {
     assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
     assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
     assert.match(cleanup, /CDP listener remained after debug UI cleanup/);
-    assert.match(cleanup, /VEMInstalledKioskSaleRestore/);
     assert.match(cleanup, /VEMInstalledKioskSaleRestoreObserve/);
     assert.match(cleanup, /-LogonType InteractiveToken/);
     assert.match(
@@ -4549,12 +4589,16 @@ if ($errors.Count -gt 0) {
       /daemon stopped during installed kiosk sale acceptance/,
     );
     assert.match(cleanup, /http:\/\/127\.0\.0\.1:9222\/json/);
-    assert.match(cleanup, /source = 'remote_cdp'/);
+    assert.match(cleanup, /temporary_cdp_restore_observer/);
     assert.match(
       cleanup,
-      /restored normal machine\.exe CDP route differs from saved route/,
+      /temporary restore observer route is outside the post-sale return policy/,
     );
-    assert.doesNotMatch(cleanup, /route = \$expectedRoute/);
+    assert.match(cleanup, /#\/result/);
+    assert.match(cleanup, /settledRoute/);
+    assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
+    assert.match(cleanup, /normal kiosk restoration retained CDP listener/);
+    assert.doesNotMatch(cleanup, /VEMInstalledKioskSaleRestore'/);
     assert.ok(
       cleanup.indexOf("Unregister-ScheduledTask -TaskName $debugTask") <
         cleanup.indexOf("Get-Service -Name 'VemVendingDaemon'"),
@@ -6839,6 +6883,38 @@ if ($errors.Count -gt 0) {
         ),
       );
     }
+  });
+
+  it("accepts a production normal UI with CDP disabled only when its installed VEMKiosk process is unique", () => {
+    const productionFacts = runtimeAcceptanceFacts({
+      kioskRuntime: {
+        ...runtimeAcceptanceFacts().kioskRuntime,
+        url: "unavailable:production-cdp-disabled",
+        source: "webview2_process",
+        cdpAvailable: false,
+        cdpTargetId: null,
+        cdpListenerProcessId: null,
+        cdpListenerSessionId: null,
+        cdpMachineAncestorProcessId: null,
+      },
+    });
+
+    assert.deepEqual(
+      buildRuntimeAcceptanceReport(productionFacts).result.runtimeReady,
+      {
+        status: "passed",
+        asserted: true,
+      },
+    );
+
+    productionFacts.kioskRuntime.machineProcessCount = 2;
+    const rejected = buildRuntimeAcceptanceReport(productionFacts);
+    assert.equal(rejected.result.runtimeReady.status, "failed");
+    assert.ok(
+      rejected.diagnostics.some(
+        (diagnostic) => diagnostic.code === "kiosk_normal_process_not_unique",
+      ),
+    );
   });
 
   it("uses runtime acceptance result when deciding local process exit status", () => {

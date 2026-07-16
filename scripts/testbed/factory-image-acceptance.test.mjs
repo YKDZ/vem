@@ -294,6 +294,32 @@ function saleScenario(input, _runtimeDigest) {
         },
       },
     },
+    cleanup: {
+      status: "passed",
+      normal: {
+        processId: 4343,
+        principal: "VEM\\VEMKiosk",
+        sessionId: 1,
+        machineCount: 1,
+        task: {
+          name: "VEMMachineUI",
+          exists: true,
+          enabled: true,
+          runAsUser: "VEMKiosk",
+        },
+        cdpListenerCount: 0,
+        cdpDisabled: true,
+        route: "#/catalog",
+        routeEvidence: {
+          source: "temporary_cdp_restore_observer",
+          initialRoute: "#/result",
+          allowedInitialRoutes: ["#/catalog", "#/result"],
+          settledRoute: "#/catalog",
+          resultAutoReturnObserved: true,
+          settledBeforeNormalLaunch: true,
+        },
+      },
+    },
     machineUiCdpScenario: {
       schemaVersion: "machine-ui-cdp-sale-scenario/v3",
       status: "passed",
@@ -740,7 +766,7 @@ describe("Factory Image Acceptance lifecycle", () => {
     assert.equal(evidence.path, "[REDACTED]");
   });
 
-  it("runs one installed customer UI sale after runtime acceptance and before display capture", () => {
+  it("builds one installed customer UI sale after runtime acceptance", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-factory-image-sale-command-"));
     const input = typedInput(root);
     const endpoint = overlayEndpoint(input);
@@ -882,6 +908,13 @@ describe("Factory Image Acceptance lifecycle", () => {
           stockMovementId: "movement-factory-1",
         },
         routeCompetitionCase: "catalog_during_payment",
+        cleanup: {
+          normalUi: {
+            sessionId: 1,
+            route: "#/catalog",
+            cdpDisabled: true,
+          },
+        },
       },
     );
 
@@ -897,6 +930,19 @@ describe("Factory Image Acceptance lifecycle", () => {
           runtimeAcceptanceSummary(),
         ),
       /physical Input/,
+    );
+
+    const missingCleanup = saleScenario(input, digest);
+    delete missingCleanup.cleanup;
+    writeFileSync(output, `${JSON.stringify(missingCleanup)}\n`);
+    assert.throws(
+      () =>
+        verifyInstalledKioskSaleScenarioResult(
+          output,
+          input,
+          runtimeAcceptanceSummary(),
+        ),
+      /cleanup.*normal production UI/i,
     );
 
     const missingCatalogDisturbance = saleScenario(input, digest);

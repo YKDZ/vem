@@ -18,13 +18,24 @@ const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 const MAX_SCENARIO_STEPS = 32;
 const MAX_ROUTE_EVIDENCE_ENTRIES = 128;
 const MAX_EVIDENCE_ENTRIES = 512;
-const MAX_CONTINUOUS_CHECKPOINTS = 64;
+const DEFAULT_CONTINUOUS_CAPTURE_INTERVAL_MS = 500;
+const CONTINUOUS_CAPTURE_BUDGET_MS = 120_000 + 30_000;
+const CONTINUOUS_CAPTURE_HEADROOM_CHECKPOINTS = 20;
+const MAX_CONTINUOUS_CHECKPOINTS =
+  Math.ceil(
+    CONTINUOUS_CAPTURE_BUDGET_MS / DEFAULT_CONTINUOUS_CAPTURE_INTERVAL_MS,
+  ) + CONTINUOUS_CAPTURE_HEADROOM_CHECKPOINTS;
 const INITIAL_FORBIDDEN_CUSTOMER_ROUTES = [
   "/maintenance",
   "/offline",
   "/bring-up",
 ];
 const PAYMENT_BARRIER_ALLOWED_ROUTES = ["/payment", "/dispensing", "/result"];
+const PAYMENT_BARRIER_TERMINAL_ROUTES = ["/dispensing", "/result"];
+const PAYMENT_BARRIER_COMPLETED_ALLOWED_ROUTES = [
+  ...PAYMENT_BARRIER_ALLOWED_ROUTES,
+  "/catalog",
+];
 const PRODUCTION_TUNNEL_OPTION_KEYS = new Set([
   "remote",
   "sshPort",
@@ -278,6 +289,8 @@ export async function inspectWindowsMachineUiRuntime({
       sshPort,
       identityFile,
       certificateFile,
+      sshKnownHostsPath,
+      sshHostKeyAlias,
       sshArgs,
       remoteCdpPort,
       expectedMachinePath,
@@ -300,6 +313,8 @@ async function inspectWindowsMachineUiRuntimeWithRunner(
     sshPort,
     identityFile,
     certificateFile,
+    sshKnownHostsPath,
+    sshHostKeyAlias,
     sshArgs = [],
     remoteCdpPort = DEFAULT_REMOTE_CDP_PORT,
     expectedMachinePath,
@@ -322,6 +337,8 @@ async function inspectWindowsMachineUiRuntimeWithRunner(
     sshPort,
     identityFile,
     certificateFile,
+    sshKnownHostsPath,
+    sshHostKeyAlias,
     sshArgs,
     timeoutMs,
     script: buildWindowsMachineUiInspectionScript({
@@ -1105,7 +1122,8 @@ export function assertRouteIdentity(identity, expected, label = "route") {
 }
 
 export function startContinuousIdentityCapture(client, options = {}) {
-  const intervalMs = options.intervalMs ?? 500;
+  const intervalMs =
+    options.intervalMs ?? DEFAULT_CONTINUOUS_CAPTURE_INTERVAL_MS;
   const maxCheckpoints = options.maxCheckpoints ?? MAX_CONTINUOUS_CHECKPOINTS;
   if (!Number.isSafeInteger(maxCheckpoints) || maxCheckpoints <= 0) {
     throw new Error(
@@ -1224,7 +1242,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     routePollMs = DEFAULT_ROUTE_POLL_MS,
     inputKind = "touch",
     continuousCapture = true,
-    continuousCaptureIntervalMs = 500,
+    continuousCaptureIntervalMs = DEFAULT_CONTINUOUS_CAPTURE_INTERVAL_MS,
     initialForbiddenRoutes = INITIAL_FORBIDDEN_CUSTOMER_ROUTES,
     screenshotCheckpoints = false,
     onPaymentWindow,
@@ -1250,6 +1268,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   let activeForbiddenRoutes = validateForbiddenRoutes(initialForbiddenRoutes);
   let activeAllowedRoutes = null;
   let routePolicyEpoch = 0;
+  let paymentBarrierTerminalObserved = false;
   const currentRoutePolicy = () =>
     Object.freeze({
       epoch: routePolicyEpoch,
@@ -1261,6 +1280,8 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     sshPort: tunnelTransport.sshPort,
     identityFile: tunnelTransport.identityFile,
     certificateFile: tunnelTransport.certificateFile,
+    sshKnownHostsPath: tunnelTransport.sshKnownHostsPath,
+    sshHostKeyAlias: tunnelTransport.sshHostKeyAlias,
     sshArgs: tunnelTransport.sshArgs,
     remoteCdpPort: inspectionRemoteCdpPort,
     expectedMachinePath: expectedRuntime.machine.executablePath,
@@ -1309,6 +1330,17 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         policy.forbiddenRoutes,
         policy.allowedRoutes,
       );
+      if (
+        activeAllowedRoutes !== null &&
+        !paymentBarrierTerminalObserved &&
+        matchesAnyRoutePath(identity.route, PAYMENT_BARRIER_TERMINAL_ROUTES)
+      ) {
+        paymentBarrierTerminalObserved = true;
+        activeAllowedRoutes = validateAllowedRoutes(
+          PAYMENT_BARRIER_COMPLETED_ALLOWED_ROUTES,
+        );
+        routePolicyEpoch += 1;
+      }
       record({ type: "route-changed", source, identity });
     } catch (error) {
       fatalError = new Error(`route capture failed: ${error.message}`, {
@@ -1419,6 +1451,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           activeAllowedRoutes = validateAllowedRoutes(
             PAYMENT_BARRIER_ALLOWED_ROUTES,
           );
+          paymentBarrierTerminalObserved = false;
           routePolicyEpoch += 1;
           record({
             type: "route-barrier",
@@ -1959,6 +1992,11 @@ function routeMatchesRoutePath(path, candidate) {
     ? routePath(normalizeMachineRoute(candidate))
     : normalizeForbiddenRoutePath(candidate);
   return path === route || path.startsWith(`${route}/`);
+}
+
+function matchesAnyRoutePath(route, candidates) {
+  const path = routePath(normalizeMachineRoute(route));
+  return candidates.some((candidate) => routeMatchesRoutePath(path, candidate));
 }
 
 function validateForbiddenRoutes(routes) {
@@ -2650,6 +2688,8 @@ async function runWindowsPowerShellOverSsh({
   sshPort,
   identityFile,
   certificateFile,
+  sshKnownHostsPath,
+  sshHostKeyAlias,
   sshArgs = [],
   timeoutMs,
   script,
@@ -2660,6 +2700,8 @@ async function runWindowsPowerShellOverSsh({
       sshPort,
       identityFile,
       certificateFile,
+      sshKnownHostsPath,
+      sshHostKeyAlias,
       sshArgs,
       timeoutMs,
       script,
@@ -2684,6 +2726,8 @@ async function runWindowsPowerShellOverSshWithAdapter(
     sshPort,
     identityFile,
     certificateFile,
+    sshKnownHostsPath,
+    sshHostKeyAlias,
     sshArgs = [],
     timeoutMs = DEFAULT_TIMEOUT_MS,
     shutdownTimeoutMs = 1_000,
@@ -2697,6 +2741,10 @@ async function runWindowsPowerShellOverSshWithAdapter(
     ...(sshPort ? ["-p", String(sshPort)] : []),
     ...(identityFile ? ["-i", identityFile] : []),
     ...(certificateFile ? ["-o", `CertificateFile=${certificateFile}`] : []),
+    ...(sshKnownHostsPath
+      ? ["-o", `UserKnownHostsFile=${sshKnownHostsPath}`]
+      : []),
+    ...(sshHostKeyAlias ? ["-o", `HostKeyAlias=${sshHostKeyAlias}`] : []),
     ...sshArgs,
     remote,
     "powershell.exe",

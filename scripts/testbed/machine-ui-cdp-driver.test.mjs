@@ -83,8 +83,17 @@ async function runInstalledRouteCompetitionScenario({
     async (endpoint) => {
       let route = "#/catalog";
       let activations = 0;
+      let cdpSocket;
+      const setRoute = (nextRoute) => {
+        route = nextRoute;
+        cdpSocket.emitMessage({
+          method: "Page.navigatedWithinDocument",
+          params: { url: `http://tauri.localhost/${route}` },
+        });
+      };
       const { factory, sockets } = createFakeWebSocketFactory(
         (message, socket) => {
+          cdpSocket = socket;
           if (message.method === "Runtime.evaluate") {
             const expression = message.params.expression;
             if (expression.includes("getBoundingClientRect")) {
@@ -105,11 +114,7 @@ async function runInstalledRouteCompetitionScenario({
               assert.doesNotMatch(expression, /location\.hash\s*=/);
               const routeBefore = route;
               if (competingRoute) {
-                route = competingRoute;
-                socket.emitMessage({
-                  method: "Page.navigatedWithinDocument",
-                  params: { url: `http://tauri.localhost/${route}` },
-                });
+                setRoute(competingRoute);
               }
               return cdpValue(
                 { stimulus: "history-back", routeBefore },
@@ -155,11 +160,7 @@ async function runInstalledRouteCompetitionScenario({
               });
             }
             if (activations === 5 && touchIntervalRoute) {
-              route = touchIntervalRoute;
-              socket.emitMessage({
-                method: "Page.navigatedWithinDocument",
-                params: { url: `http://tauri.localhost/${route}` },
-              });
+              setRoute(touchIntervalRoute);
             }
           }
           if (message.method === "Page.captureScreenshot") {
@@ -182,7 +183,10 @@ async function runInstalledRouteCompetitionScenario({
         continuousCapture: true,
         continuousCaptureIntervalMs: 1,
         routePollMs: 1,
-        onPaymentWindow,
+        onPaymentWindow:
+          typeof onPaymentWindow === "function"
+            ? () => onPaymentWindow({ setRoute })
+            : undefined,
       });
       return { result, sockets };
     },
@@ -305,6 +309,61 @@ describe("machine-ui-cdp-driver", () => {
     assert.match(invocation.script, /listenerOwner\.Domain/);
     assert.equal(evidence.observed.machine.processId, 4242);
     assert.equal(evidence.observed.cdpTarget.route, "#/checkout?a=1&b=2");
+  });
+
+  it("passes known-host trust options through runtime inspection and its SSH command", async () => {
+    let inspectionInvocation;
+    await inspectWindowsMachineUiRuntimeForTest(
+      {
+        remote: "YKDZ@win10.test",
+        expectedMachinePath: ATTESTATION.machine.executablePath,
+        sshKnownHostsPath: "/tmp/vem-known-hosts",
+        sshHostKeyAlias: "vem-factory-run-180",
+      },
+      {
+        commandRunner: async (input) => {
+          inspectionInvocation = input;
+          return OBSERVED_RUNTIME;
+        },
+      },
+    );
+    assert.equal(
+      inspectionInvocation.sshKnownHostsPath,
+      "/tmp/vem-known-hosts",
+    );
+    assert.equal(inspectionInvocation.sshHostKeyAlias, "vem-factory-run-180");
+
+    const child = new FakeChildProcess();
+    let args;
+    const command = runWindowsPowerShellOverSshForTest(
+      {
+        remote: "YKDZ@win10.test",
+        sshKnownHostsPath: "/tmp/vem-known-hosts",
+        sshHostKeyAlias: "vem-factory-run-180",
+        script: "Write-Output '{}'",
+      },
+      {
+        processAdapter: {
+          spawn(_command, receivedArgs) {
+            args = receivedArgs;
+            queueMicrotask(() => {
+              child.stdout.emit("data", JSON.stringify(OBSERVED_RUNTIME));
+              child.finish(0, null);
+            });
+            return child;
+          },
+        },
+      },
+    );
+    await command;
+    assert.deepEqual(args.slice(0, 6), [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "UserKnownHostsFile=/tmp/vem-known-hosts",
+      "-o",
+      "HostKeyAlias=vem-factory-run-180",
+    ]);
   });
 
   for (const [name, mutate, pattern] of [
@@ -824,6 +883,48 @@ describe("machine-ui-cdp-driver", () => {
     );
   });
 
+  it("accepts a terminal result's automatic catalog return without bypassing payment completion", async () => {
+    const { result } = await runInstalledRouteCompetitionScenario({
+      onPaymentWindow: async ({ setRoute }) => {
+        setRoute("#/result");
+        await sleep(3);
+        setRoute("#/catalog");
+        await sleep(3);
+        return { serialCompleted: true, postSaleStable: true };
+      },
+    });
+
+    assert.ok(
+      result.evidence.some(
+        (entry) =>
+          entry.type === "route-changed" &&
+          entry.identity.route === "#/catalog",
+      ),
+    );
+    assert.ok(
+      result.evidence.some(
+        (entry) =>
+          entry.type === "payment-window" &&
+          entry.serialCompleted === true &&
+          entry.postSaleStable === true,
+      ),
+    );
+  });
+
+  for (const rejectedRoute of ["#/", "#/maintenance", "#/orders/other-order"]) {
+    it(`rejects ${rejectedRoute} before a terminal payment result`, async () => {
+      await assert.rejects(
+        runInstalledRouteCompetitionScenario({
+          onPaymentWindow: async ({ setRoute }) => {
+            setRoute(rejectedRoute);
+            return { serialCompleted: true, postSaleStable: true };
+          },
+        }),
+        new RegExp(`payment barrier route observed: ${rejectedRoute}`),
+      );
+    });
+  }
+
   for (const competingRoute of ["#/checkout", "#/products/test-item"]) {
     it(`rejects ${competingRoute} committed by history-back after the payment barrier`, async () => {
       await assert.rejects(
@@ -1190,12 +1291,30 @@ describe("machine-ui-cdp-driver", () => {
     await client.close();
   });
 
+  it("reserves default continuous evidence capacity for the 120s serial and 30s inventory budget", async () => {
+    const { factory } = createFakeWebSocketFactory((message) =>
+      cdpValue(identity("#/payment"), message.id),
+    );
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/capacity", {
+      webSocketFactory: factory,
+    });
+    await client.connect();
+    const capture = startContinuousIdentityCapture(client);
+    for (let index = 0; index < 300; index += 1) {
+      await capture.captureNow();
+    }
+    const checkpoints = await capture.stop();
+    assert.equal(checkpoints.length, 300);
+    await client.close();
+  });
+
   it("runs an immutable copy of closed scenario steps and reports execution counts", async () => {
     await withFakeHttpTargets(
       [target("machine-target", "#/sale")],
       async (endpoint) => {
         let route = "#/sale";
         let releaseInspection;
+        let inspectionOptions;
         let sidecarOptions;
         const inspection = new Promise((resolve) => {
           releaseInspection = resolve;
@@ -1243,7 +1362,11 @@ describe("machine-ui-cdp-driver", () => {
         const running = runVisibleMachineSaleScenarioForTest(
           {
             endpoint,
-            tunnelOptions: { remote: "test@win10.test" },
+            tunnelOptions: {
+              remote: "test@win10.test",
+              sshKnownHostsPath: "/tmp/vem-known-hosts",
+              sshHostKeyAlias: "vem-factory-run-180",
+            },
             expectedRuntimeAttestation: ATTESTATION,
             expectedInitialRoute: "#/sale",
             sequenceName: "immutable-sequence",
@@ -1252,7 +1375,10 @@ describe("machine-ui-cdp-driver", () => {
           },
           {
             webSocketFactory: factory,
-            remoteCommandRunner: async () => inspection,
+            remoteCommandRunner: async (options) => {
+              inspectionOptions = options;
+              return inspection;
+            },
             async openSidecar(options) {
               sidecarOptions = options;
               return { endpoint, async close() {} };
@@ -1274,9 +1400,16 @@ describe("machine-ui-cdp-driver", () => {
         });
         assert.deepEqual(sidecarOptions, {
           remote: "test@win10.test",
+          sshKnownHostsPath: "/tmp/vem-known-hosts",
+          sshHostKeyAlias: "vem-factory-run-180",
           remoteCdpHost: "127.0.0.1",
           remoteCdpPort: 9222,
         });
+        assert.equal(
+          inspectionOptions.sshKnownHostsPath,
+          "/tmp/vem-known-hosts",
+        );
+        assert.equal(inspectionOptions.sshHostKeyAlias, "vem-factory-run-180");
       },
     );
   });

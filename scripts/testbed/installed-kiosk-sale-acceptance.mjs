@@ -124,13 +124,23 @@ function readRuntimeBinding(path) {
   const report = JSON.parse(readFileSync(path, "utf8"));
   const runtime = report?.runtimeAcceptanceReport;
   const kiosk = runtime?.kioskRuntime;
+  const cdpRoute =
+    typeof kiosk?.url === "string" &&
+    kiosk.url.startsWith("http://tauri.localhost/#/");
+  const productionNormalUi =
+    kiosk?.source === "webview2_process" &&
+    kiosk?.cdpAvailable === false &&
+    kiosk?.url === "unavailable:production-cdp-disabled" &&
+    kiosk?.machineProcessCount === 1 &&
+    kiosk?.machineExecutablePath === "C:\\VEM\\bringup\\machine.exe" &&
+    kiosk?.webView2ProcessCount >= 1;
   if (
     report?.ok !== true ||
     runtime?.schemaVersion !== "runtime-acceptance-report/v1" ||
     kiosk?.sessionUser !== "VEMKiosk" ||
     !Number.isInteger(kiosk?.sessionId) ||
     kiosk.sessionId < 1 ||
-    typeof kiosk?.url !== "string"
+    (!cdpRoute && !productionNormalUi)
   ) {
     throw new Error(
       "runtime acceptance report must prove an active VEMKiosk session",
@@ -138,13 +148,14 @@ function readRuntimeBinding(path) {
   }
   return {
     normalTargetId:
-      typeof kiosk.cdpTargetId === "string" && kiosk.cdpTargetId
+      cdpRoute && typeof kiosk.cdpTargetId === "string" && kiosk.cdpTargetId
         ? kiosk.cdpTargetId
         : null,
     sessionUser: kiosk.sessionUser,
     sessionId: kiosk.sessionId,
-    route: routeFromTauriUrl(kiosk.url),
+    route: cdpRoute ? routeFromTauriUrl(kiosk.url) : "#/catalog",
     url: kiosk.url,
+    productionCdpDisabled: productionNormalUi,
   };
 }
 
@@ -735,6 +746,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
   const remote = executionOptions(options);
   const runtime = readRuntimeBinding(options.runtime_acceptance_report);
   mkdirSync(dirname(resolve(options.out)), { recursive: true, mode: 0o700 });
+  rmSync(resolve(options.out), { force: true });
   const root = mkdtempSync(
     join(process.env.RUNNER_TEMP ?? tmpdir(), "vem-installed-kiosk-sale-"),
   );
@@ -753,6 +765,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
   let launch;
   let cleanup;
   let primaryError;
+  let report;
   try {
     await run(plan.fixtureCommand, "simulated hardware fixture", {
       env: nonQueryEnvironment,
@@ -956,7 +969,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
       machineCode: options.machine_code,
       saleCorrelationId,
     });
-    const report = {
+    report = {
       schemaVersion: SCHEMA_VERSION,
       kind: "installed-kiosk-sale-acceptance",
       status: "passed",
@@ -983,8 +996,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
         platformRawBaselinePath: plan.artifacts.platformRawBaselineReport,
       },
     };
-    writeJson(options.out, report);
-    return report;
   } catch (error) {
     primaryError = error;
     throw error;
@@ -995,7 +1006,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
           remote,
           buildInstalledKioskSaleCleanupScript({
             ...launch.prelaunch,
-            expectedRoute: runtime.route,
+            expectedRoute: "#/catalog",
           }),
         );
         if (
@@ -1003,13 +1014,28 @@ export async function runInstalledKioskSaleAcceptanceCli(
           cleanup?.cdpListenerCount !== 0 ||
           cleanup?.normal?.principal !== launch.prelaunch.principal ||
           cleanup?.normal?.sessionId !== launch.prelaunch.sessionId ||
-          cleanup?.normal?.route !== runtime.route ||
-          cleanup?.normal?.routeEvidence?.source !== "remote_cdp" ||
-          cleanup?.normal?.routeEvidence?.route !== runtime.route ||
-          typeof cleanup?.normal?.routeEvidence?.targetId !== "string" ||
-          cleanup.normal.routeEvidence.targetId.length === 0 ||
-          typeof cleanup?.normal?.routeEvidence?.targetUrl !== "string" ||
-          cleanup.normal.routeEvidence.targetUrl.length === 0
+          cleanup?.normal?.machineCount !== 1 ||
+          cleanup?.normal?.task?.name !== "VEMMachineUI" ||
+          cleanup.normal.task.exists !== true ||
+          cleanup.normal.task.enabled !== true ||
+          !String(cleanup.normal.task.runAsUser ?? "").endsWith("VEMKiosk") ||
+          cleanup.normal.cdpListenerCount !== 0 ||
+          cleanup.normal.cdpDisabled !== true ||
+          cleanup?.normal?.route !== "#/catalog" ||
+          cleanup?.normal?.routeEvidence?.source !==
+            "temporary_cdp_restore_observer" ||
+          cleanup.normal.routeEvidence.settledRoute !== "#/catalog" ||
+          cleanup.normal.routeEvidence.settledBeforeNormalLaunch !== true ||
+          !Array.isArray(cleanup.normal.routeEvidence.allowedInitialRoutes) ||
+          !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
+            "#/catalog",
+          ) ||
+          !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
+            "#/result",
+          ) ||
+          !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
+            cleanup.normal.routeEvidence.initialRoute,
+          )
         ) {
           throw new Error(
             "installed kiosk cleanup did not restore normal VEMKiosk ownership",
@@ -1044,6 +1070,12 @@ export async function runInstalledKioskSaleAcceptanceCli(
       rmSync(root, { recursive: true, force: true });
     }
   }
+  report.cleanup = {
+    status: "passed",
+    normal: cleanup.normal,
+  };
+  writeJson(options.out, report);
+  return report;
 }
 
 function usage() {

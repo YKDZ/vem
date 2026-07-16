@@ -703,12 +703,20 @@ export function buildFactoryInstalledKioskSaleInvocation(
 ) {
   const accepted = validateFactoryImageAcceptanceInput(input);
   const displayBinding = runtimeAcceptance?.displayBinding;
+  const cdpDisplayBinding =
+    typeof displayBinding?.cdpTargetId === "string" &&
+    displayBinding.cdpTargetId.length > 0 &&
+    /^http:\/\/tauri\.localhost\/#\//.test(displayBinding.tauriRoute ?? "");
+  const productionNormalUi =
+    displayBinding?.normalUi?.cdpDisabled === true &&
+    displayBinding.normalUi.machineProcessCount === 1 &&
+    displayBinding.normalUi.machineExecutablePath ===
+      "C:\\VEM\\bringup\\machine.exe";
   if (
     displayBinding?.activeKioskSession?.sessionUser !== "VEMKiosk" ||
     !Number.isInteger(displayBinding.activeKioskSession.sessionId) ||
     displayBinding.activeKioskSession.sessionId < 1 ||
-    typeof displayBinding.cdpTargetId !== "string" ||
-    displayBinding.cdpTargetId.length === 0
+    (!cdpDisplayBinding && !productionNormalUi)
   ) {
     throw new Error(
       "installed kiosk sale acceptance requires VEMKiosk runtime display binding",
@@ -805,19 +813,30 @@ function verifyPreclaimResult(path, input) {
   return { status: "passed", readOnly: true, verifier: "factory-runtime" };
 }
 
-function verifyRuntimeResult(path) {
+function verifyRuntimeResult(path, { requireCdpDisplayBinding = false } = {}) {
   const report = JSON.parse(readFileSync(path, "utf8"));
   const runtime = report.runtimeAcceptanceReport;
+  const kiosk = runtime?.kioskRuntime;
+  const cdpDisplayBinding =
+    /^http:\/\/tauri\.localhost\/#\//.test(kiosk?.url ?? "") &&
+    typeof kiosk?.cdpTargetId === "string" &&
+    kiosk.cdpTargetId.length > 0;
+  const productionNormalUi =
+    kiosk?.source === "webview2_process" &&
+    kiosk?.cdpAvailable === false &&
+    kiosk?.url === "unavailable:production-cdp-disabled" &&
+    kiosk?.machineProcessCount === 1 &&
+    kiosk?.machineExecutablePath === "C:\\VEM\\bringup\\machine.exe" &&
+    kiosk?.webView2ProcessCount >= 1;
   if (
     report.ok !== true ||
     runtime?.schemaVersion !== "runtime-acceptance-report/v1" ||
     runtime.result?.runtimeReady?.asserted !== true ||
-    runtime.kioskRuntime?.sessionUser !== "VEMKiosk" ||
-    !Number.isInteger(runtime.kioskRuntime?.sessionId) ||
-    runtime.kioskRuntime.sessionId < 1 ||
-    !/^http:\/\/tauri\.localhost\/#\//.test(runtime.kioskRuntime?.url ?? "") ||
-    typeof runtime.kioskRuntime?.cdpTargetId !== "string" ||
-    runtime.kioskRuntime.cdpTargetId.length === 0
+    kiosk?.sessionUser !== "VEMKiosk" ||
+    !Number.isInteger(kiosk?.sessionId) ||
+    kiosk.sessionId < 1 ||
+    (!cdpDisplayBinding && !productionNormalUi) ||
+    (requireCdpDisplayBinding && !cdpDisplayBinding)
   ) {
     throw new Error(
       "runtime acceptance did not produce a runtime-ready assertion",
@@ -831,11 +850,20 @@ function verifyRuntimeResult(path) {
     },
     displayBinding: {
       activeKioskSession: {
-        sessionUser: runtime.kioskRuntime.sessionUser,
-        sessionId: runtime.kioskRuntime.sessionId,
+        sessionUser: kiosk.sessionUser,
+        sessionId: kiosk.sessionId,
       },
-      tauriRoute: runtime.kioskRuntime.url,
-      cdpTargetId: runtime.kioskRuntime.cdpTargetId,
+      tauriRoute: cdpDisplayBinding ? kiosk.url : null,
+      cdpTargetId: cdpDisplayBinding ? kiosk.cdpTargetId : null,
+      normalUi: productionNormalUi
+        ? {
+            processId: kiosk.processId,
+            machineProcessCount: kiosk.machineProcessCount,
+            machineExecutablePath: kiosk.machineExecutablePath,
+            webView2ProcessCount: kiosk.webView2ProcessCount,
+            cdpDisabled: true,
+          }
+        : null,
     },
   };
 }
@@ -922,6 +950,16 @@ export function verifyInstalledKioskSaleScenarioResult(
   const scenario = report?.machineUiCdpScenario;
   const runtime = report?.runtimeBinding;
   const correlation = report?.correlation;
+  const cleanup = report?.cleanup?.normal;
+  const preSaleCdpBinding =
+    typeof displayBinding.cdpTargetId === "string" &&
+    displayBinding.cdpTargetId.length > 0 &&
+    /^http:\/\/tauri\.localhost\/#\//.test(displayBinding.tauriRoute ?? "");
+  const preSaleProductionNormalUi =
+    displayBinding?.normalUi?.cdpDisabled === true &&
+    displayBinding.normalUi.machineProcessCount === 1 &&
+    displayBinding.normalUi.machineExecutablePath ===
+      "C:\\VEM\\bringup\\machine.exe";
   const exactOnce = correlation?.exactOnce;
   const observations = correlation?.platform?.observations;
   const orderItem = correlation?.platform?.orderItem;
@@ -989,8 +1027,14 @@ export function verifyInstalledKioskSaleScenarioResult(
     scenario.status !== "passed" ||
     runtime?.normal?.sessionUser !== "VEMKiosk" ||
     runtime.normal.sessionId !== session.sessionId ||
-    runtime.normal.url !== displayBinding.tauriRoute ||
-    runtime.normal.normalTargetId !== displayBinding.cdpTargetId ||
+    (preSaleCdpBinding &&
+      (runtime.normal.url !== displayBinding.tauriRoute ||
+        runtime.normal.normalTargetId !== displayBinding.cdpTargetId)) ||
+    (preSaleProductionNormalUi &&
+      (runtime.normal.productionCdpDisabled !== true ||
+        runtime.normal.normalTargetId !== null ||
+        runtime.normal.route !== "#/catalog")) ||
+    (!preSaleCdpBinding && !preSaleProductionNormalUi) ||
     runtime?.prelaunch?.executablePath !== "C:\\VEM\\bringup\\machine.exe" ||
     runtime.prelaunch.sessionId !== session.sessionId ||
     !String(runtime.prelaunch.principal ?? "").endsWith("\\VEMKiosk") ||
@@ -998,6 +1042,26 @@ export function verifyInstalledKioskSaleScenarioResult(
       runtime.prelaunch.executablePath ||
     runtime.debug.machine.sessionId !== runtime.prelaunch.sessionId ||
     runtime.debug.machine.principal !== runtime.prelaunch.principal ||
+    cleanup?.processId == null ||
+    cleanup.principal !== runtime.prelaunch.principal ||
+    cleanup.sessionId !== session.sessionId ||
+    cleanup.machineCount !== 1 ||
+    cleanup?.task?.name !== "VEMMachineUI" ||
+    cleanup.task.exists !== true ||
+    cleanup.task.enabled !== true ||
+    !String(cleanup.task.runAsUser ?? "").endsWith("VEMKiosk") ||
+    cleanup.cdpListenerCount !== 0 ||
+    cleanup.cdpDisabled !== true ||
+    cleanup.route !== "#/catalog" ||
+    cleanup?.routeEvidence?.source !== "temporary_cdp_restore_observer" ||
+    cleanup.routeEvidence.settledRoute !== "#/catalog" ||
+    cleanup.routeEvidence.settledBeforeNormalLaunch !== true ||
+    !Array.isArray(cleanup.routeEvidence.allowedInitialRoutes) ||
+    !cleanup.routeEvidence.allowedInitialRoutes.includes("#/result") ||
+    !cleanup.routeEvidence.allowedInitialRoutes.includes("#/catalog") ||
+    !cleanup.routeEvidence.allowedInitialRoutes.includes(
+      cleanup.routeEvidence.initialRoute,
+    ) ||
     scenario.target?.id !== runtime.debug.targetId ||
     scenario.target?.attestation?.observed?.cdpTarget?.id !==
       runtime.debug.targetId ||
@@ -1065,7 +1129,7 @@ export function verifyInstalledKioskSaleScenarioResult(
     )
   ) {
     throw new Error(
-      "installed kiosk sale acceptance did not prove the v2 VEMKiosk, route-barrier, and exact-once contract",
+      "installed kiosk sale acceptance did not prove the v2 VEMKiosk route-barrier and exact-once contract, including cleanup normal production UI recovery",
     );
   }
   assertPhysicalInputActivations(scenario);
@@ -1105,6 +1169,13 @@ export function verifyInstalledKioskSaleScenarioResult(
       stockMovementId: correlation.platform.stockMovementId,
     },
     routeCompetitionCase: "catalog_during_payment",
+    cleanup: {
+      normalUi: {
+        sessionId: cleanup.sessionId,
+        route: cleanup.route,
+        cdpDisabled: cleanup.cdpDisabled,
+      },
+    },
   };
 }
 
@@ -1408,7 +1479,19 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
     runExact(runtime, "runtime acceptance failed");
     reports.runtimeAcceptance = verifyRuntimeResult(
       verifierOutput(input, "runtime-acceptance.json"),
+      { requireCdpDisplayBinding: true },
     );
+    const display = await runAdapter(
+      input,
+      "capture-display",
+      [base],
+      null,
+      reports.runtimeAcceptance.displayBinding,
+    );
+    reports.display = {
+      ...display,
+      materializedEvidence: materializeFactoryDisplayEvidence(input, display),
+    };
     const customerSale = buildFactoryInstalledKioskSaleInvocation(
       input,
       endpoint,
@@ -1441,17 +1524,6 @@ async function runAdmittedFactoryImageAcceptanceLifecycleWithSshTrust(
     reports.postSaleRuntimeAcceptance = verifyRuntimeResult(
       verifierOutput(input, "runtime-acceptance.json"),
     );
-    const display = await runAdapter(
-      input,
-      "capture-display",
-      [base],
-      null,
-      reports.postSaleRuntimeAcceptance.displayBinding,
-    );
-    reports.display = {
-      ...display,
-      materializedEvidence: materializeFactoryDisplayEvidence(input, display),
-    };
   } finally {
     try {
       reports.cleanup = await runAdapter(input, "cleanup", [
