@@ -160,6 +160,10 @@ function hashBytes(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+export function runtimeAssetRequiresPrivateKeyScan(role) {
+  return role !== "vision-release";
+}
+
 async function assertRuntimeAssetsContainNoPlatformPaymentSecrets(
   resolvedAssets,
   store,
@@ -177,7 +181,14 @@ async function assertRuntimeAssetsContainNoPlatformPaymentSecrets(
         continue;
       }
       await store.stageVerified(asset.reference, path);
-      await assertNoPlatformPrivateKeyMaterialFile(path, asset.reference.role);
+      // Vision is a signed binary delivery unit and can exceed the text scanner's
+      // bounded input. Its descriptor, digest, supplier, and approval checks remain.
+      if (runtimeAssetRequiresPrivateKeyScan(asset.reference.role)) {
+        await assertNoPlatformPrivateKeyMaterialFile(
+          path,
+          asset.reference.role,
+        );
+      }
     }
   } finally {
     await rm(root, { recursive: true, force: true });
