@@ -1634,6 +1634,12 @@ function runtimeAcceptanceFacts(overrides = {}) {
         enabled: true,
         runAsUser: "VEMKiosk",
       },
+      visionTask: {
+        name: "VEM\\StartVisionServer",
+        exists: true,
+        enabled: true,
+        runAsUser: "VEMKiosk",
+      },
     },
     startupBringup: {
       configuredBy: "scripts/windows/setup-scheduled-tasks.ps1",
@@ -1685,6 +1691,19 @@ function runtimeAcceptanceFacts(overrides = {}) {
       readyz: {
         ready: true,
       },
+    },
+    visionRuntime: {
+      healthReachable: true,
+      healthProtocol: "vem.vision.v1",
+      healthModule: "vision",
+      version: "0.2.1-rc.8",
+      cameraReady: false,
+      modelReady: true,
+      webSocketConnected: true,
+      readyProtocol: "vem.vision.v1",
+      readyType: "vision.ready",
+      readyServerVersion: "0.2.1-rc.8",
+      error: null,
     },
     kioskRuntime: {
       webviewRunning: true,
@@ -6295,6 +6314,42 @@ if ($errors.Count -gt 0) {
       asserted: false,
     });
     assert.deepEqual(report.diagnostics, []);
+  });
+
+  it("requires the installed Vision health and protocol while allowing absent cameras", () => {
+    for (const [mutate, expectedCode] of [
+      [
+        (facts) => {
+          facts.serviceState.visionTask.exists = false;
+        },
+        "vision_task_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.modelReady = false;
+        },
+        "vision_health_not_ready",
+      ],
+      [
+        (facts) => {
+          facts.visionRuntime.readyType = "vision.error";
+        },
+        "vision_protocol_not_ready",
+      ],
+    ]) {
+      const facts = runtimeAcceptanceFacts();
+      mutate(facts);
+      const report = buildRuntimeAcceptanceReport(facts);
+      assert.deepEqual(report.result.runtimeReady, {
+        status: "failed",
+        asserted: false,
+      });
+      assert.ok(
+        report.diagnostics.some(
+          (diagnostic) => diagnostic.code === expectedCode,
+        ),
+      );
+    }
   });
 
   it("does not pass runtime-ready when required report facts are missing", () => {

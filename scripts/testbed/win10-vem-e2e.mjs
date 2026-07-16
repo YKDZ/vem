@@ -1093,6 +1093,39 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "Daemon health must report MQTT connectivity.",
     );
   }
+  if (
+    facts.serviceState?.visionTask?.exists !== true ||
+    facts.serviceState?.visionTask?.enabled !== true
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "vision_task_not_ready",
+      "The installed Vision runtime task must exist and be enabled.",
+    );
+  }
+  if (
+    facts.visionRuntime?.healthReachable !== true ||
+    facts.visionRuntime?.healthProtocol !== "vem.vision.v1" ||
+    facts.visionRuntime?.healthModule !== "vision" ||
+    facts.visionRuntime?.modelReady !== true
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "vision_health_not_ready",
+      "The installed Vision runtime must expose a healthy vem.vision.v1 service with loaded models.",
+    );
+  }
+  if (
+    facts.visionRuntime?.webSocketConnected !== true ||
+    facts.visionRuntime?.readyProtocol !== "vem.vision.v1" ||
+    facts.visionRuntime?.readyType !== "vision.ready"
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "vision_protocol_not_ready",
+      "The installed Vision runtime must complete the vem.vision.v1 hello handshake.",
+    );
+  }
   if (facts.kioskRuntime?.webviewRunning !== true) {
     addDiagnostic(
       diagnostics,
@@ -7303,6 +7336,81 @@ function Add-RuntimeAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$M
   }) | Out-Null
 }
 
+function Get-VisionRuntimeEvidence {
+  $evidence = [ordered]@{
+    healthReachable = $false
+    healthProtocol = $null
+    healthModule = $null
+    version = $null
+    cameraReady = $null
+    modelReady = $null
+    webSocketConnected = $false
+    readyProtocol = $null
+    readyType = $null
+    readyServerVersion = $null
+    error = $null
+  }
+  $socket = $null
+  $cancellation = $null
+  try {
+    $health = $null
+    $healthError = $null
+    $healthDeadline = (Get-Date).AddSeconds(45)
+    while ($null -eq $health -and (Get-Date) -lt $healthDeadline) {
+      try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:7892/health" -Method Get -TimeoutSec 3 -ErrorAction Stop
+      } catch {
+        $healthError = $_
+        Start-Sleep -Milliseconds 500
+      }
+    }
+    if ($null -eq $health) { throw "Vision health did not become reachable: $healthError" }
+    $evidence.healthReachable = $true
+    $evidence.healthProtocol = [string]$health.protocol
+    $evidence.healthModule = [string]$health.module
+    $evidence.version = [string]$health.version
+    $evidence.cameraReady = [bool]$health.cameraReady
+    $evidence.modelReady = [bool]$health.modelReady
+
+    $socket = [Net.WebSockets.ClientWebSocket]::new()
+    $socket.Options.SetRequestHeader("Origin", "http://tauri.localhost")
+    $cancellation = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+    $socket.ConnectAsync([Uri]"ws://127.0.0.1:7892/ws", $cancellation.Token).GetAwaiter().GetResult()
+    $message = [ordered]@{
+      protocol = "vem.vision.v1"
+      type = "vision.hello"
+      messageId = "factory-runtime-hello"
+      timestamp = (Get-Date).ToUniversalTime().ToString("o")
+      payload = [ordered]@{
+        protocolVersion = 1
+        capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session")
+        clientRole = "machine"
+        machineCode = "VEM-TESTBED-RUNTIME-ACCEPTANCE"
+      }
+    }
+    $messageBytes = [Text.Encoding]::UTF8.GetBytes(($message | ConvertTo-Json -Depth 8 -Compress))
+    $sendSegment = [ArraySegment[byte]]::new($messageBytes)
+    $socket.SendAsync($sendSegment, [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
+    $buffer = New-Object byte[] 16384
+    $receiveSegment = [ArraySegment[byte]]::new($buffer)
+    $received = $socket.ReceiveAsync($receiveSegment, $cancellation.Token).GetAwaiter().GetResult()
+    if ($received.MessageType -ne [Net.WebSockets.WebSocketMessageType]::Text -or -not $received.EndOfMessage) {
+      throw "Vision handshake must return one bounded text message"
+    }
+    $ready = [Text.Encoding]::UTF8.GetString($buffer, 0, $received.Count) | ConvertFrom-Json -ErrorAction Stop
+    $evidence.webSocketConnected = $true
+    $evidence.readyProtocol = [string]$ready.protocol
+    $evidence.readyType = [string]$ready.type
+    $evidence.readyServerVersion = [string]$ready.payload.serverVersion
+  } catch {
+    $evidence.error = [string]$_
+  } finally {
+    if ($null -ne $socket) { $socket.Dispose() }
+    if ($null -ne $cancellation) { $cancellation.Dispose() }
+  }
+  return $evidence
+}
+
 function Test-RuntimeAcceptanceTauriHashRouteUrl([string]$Url) {
   return Test-TauriHashRouteUrl $Url
 }
@@ -7420,6 +7528,24 @@ function Classify-RuntimeAcceptanceReport($Facts) {
   if (-not [bool]$Facts.daemonRuntime.healthz.mqttConnected) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "mqtt_connectivity_failed" "Daemon health must report MQTT connectivity."
   }
+  if (-not [bool]$Facts.serviceState.visionTask.exists -or -not [bool]$Facts.serviceState.visionTask.enabled) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_task_not_ready" "The installed Vision runtime task must exist and be enabled."
+  }
+  if (
+    -not [bool]$Facts.visionRuntime.healthReachable -or
+    [string]$Facts.visionRuntime.healthProtocol -ne "vem.vision.v1" -or
+    [string]$Facts.visionRuntime.healthModule -ne "vision" -or
+    -not [bool]$Facts.visionRuntime.modelReady
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_health_not_ready" "The installed Vision runtime must expose a healthy vem.vision.v1 service with loaded models."
+  }
+  if (
+    -not [bool]$Facts.visionRuntime.webSocketConnected -or
+    [string]$Facts.visionRuntime.readyProtocol -ne "vem.vision.v1" -or
+    [string]$Facts.visionRuntime.readyType -ne "vision.ready"
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_protocol_not_ready" "The installed Vision runtime must complete the vem.vision.v1 hello handshake."
+  }
   if (-not [bool]$Facts.kioskRuntime.webviewRunning) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_webview_missing" "Machine Runtime Console must be running as a Tauri WebView in the active VEMKiosk session."
   }
@@ -7484,6 +7610,7 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     readyFile = $Facts.readyFile
     provisioning = $Facts.provisioning
     daemonRuntime = $Facts.daemonRuntime
+    visionRuntime = $Facts.visionRuntime
     kioskRuntime = $Facts.kioskRuntime
     kioskDesktopEscape = $Facts.kioskDesktopEscape
     result = [ordered]@{
@@ -7533,6 +7660,7 @@ function Get-RuntimeAcceptanceReport($ProvisioningActions = @()) {
       healthz = $daemonRuntime.healthz
       readyz = $daemonRuntime.readyz
     }
+    visionRuntime = Get-VisionRuntimeEvidence
     kioskRuntime = $factsSubset.kioskRuntime
     kioskDesktopEscape = $factsSubset.kioskDesktopEscape
   }
@@ -8562,6 +8690,7 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
   $daemonService = Get-ServiceStateOrNull -Name "VemVendingDaemon"
   $machineUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMachineUI" -TaskPath "\\"
   $maintenanceUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMaintenanceUI" -TaskPath "\\"
+  $visionTask = Get-ScheduledTaskEvidence -TaskName "StartVisionServer" -TaskPath "\\VEM\\"
   $readyFile = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
   $daemonConfig = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json"
   $startupBringup = Get-StartupBringupEvidence
@@ -8591,6 +8720,12 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
         exists = [bool]$machineUiTask.exists
         enabled = [bool]$machineUiTask.enabled
         runAsUser = if ([string]::IsNullOrWhiteSpace($machineUiTask.runAsUser)) { "unknown" } else { [string]$machineUiTask.runAsUser }
+      }
+      visionTask = [ordered]@{
+        name = "VEM\\StartVisionServer"
+        exists = [bool]$visionTask.exists
+        enabled = [bool]$visionTask.enabled
+        runAsUser = if ([string]::IsNullOrWhiteSpace($visionTask.runAsUser)) { "unknown" } else { [string]$visionTask.runAsUser }
       }
     }
     startupBringup = $startupBringup
@@ -8647,7 +8782,7 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       daemonService = $daemonService
       machineUiTask = $machineUiTask
       maintenanceUiTask = $maintenanceUiTask
-      visionTask = Get-ScheduledTaskEvidence -TaskName "StartVisionServer" -TaskPath "\\VEM\\"
+      visionTask = $visionTask
     }
     displayEvidence = [ordered]@{
       hostDisplayBaseline = $hostDisplay
