@@ -4697,6 +4697,8 @@ if ($errors.Count -gt 0) {
 
     assert.match(launch, /launch-machine-ui-debug\.vbs/);
     assert.match(launch, /VEMInstalledKioskSaleDebug/);
+    assert.match(launch, /-LogonType Interactive -RunLevel Limited/);
+    assert.doesNotMatch(launch, /-LogonType InteractiveToken/);
     assert.match(
       launch,
       /temporary CDP-enabled machine\.exe did not reach exactly-one process\/listener state/,

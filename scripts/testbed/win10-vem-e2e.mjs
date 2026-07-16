@@ -2629,7 +2629,7 @@ foreach ($launcherOwner in $launcherOwners) { Stop-Process -Id ([int]$launcherOw
 Stop-Process -Id ([int]$normal[0].ProcessId) -Force -ErrorAction Stop
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
 $action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $debugLauncher) -WorkingDirectory 'C:\VEM\bringup'
-$principalSpec = New-ScheduledTaskPrincipal -UserId $principal -LogonType InteractiveToken -RunLevel Limited
+$principalSpec = New-ScheduledTaskPrincipal -UserId $principal -LogonType Interactive -RunLevel Limited
 $task = New-ScheduledTask -Action $action -Principal $principalSpec
 Register-ScheduledTask -TaskName $debugTask -InputObject $task -Force | Out-Null
 Start-ScheduledTask -TaskName $debugTask
