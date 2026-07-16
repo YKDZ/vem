@@ -225,41 +225,10 @@ async function expectCoreElements(
       );
       break;
     case "maintenance":
-      await expect(
-        page.getByRole("heading", { name: "生产维护" }),
-      ).toBeVisible();
-      await expect(page.getByText("维护控制台")).toBeVisible();
-      await expect(page.getByText("本地服务", { exact: true })).toBeVisible();
-      await expect(page.getByText("同步", { exact: true })).toBeVisible();
-      await expect(page.getByText("下位机", { exact: true })).toBeVisible();
-      await expect(page.getByText("扫码器", { exact: true })).toBeVisible();
-      await expect(
-        page.getByText("视觉运行状态", { exact: true }),
-      ).toBeVisible();
-      await expect(page.getByText("远程运维", { exact: true })).toBeVisible();
-      await expect(page.getByText("整机维护锁", { exact: true })).toBeVisible();
-      await expect(page.getByText("销售就绪阻塞项")).toBeVisible();
-      await expect(page.getByText("Admin Operations Console")).toHaveCount(0);
+      await expectMaintenanceConsoleScreenshot(page);
       break;
     case "bring-up-console":
-      await expect(
-        page.getByRole("heading", { name: "首次部署控制台" }),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("heading", { name: "货道拓扑不匹配" }),
-      ).toBeVisible();
-      await expect(
-        page.getByText("平台货道拓扑与本机下位机返回不一致"),
-      ).toBeVisible();
-      await expect(page.getByText("现场网络", { exact: true })).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "导出现场证据" }),
-      ).toBeVisible();
-      await expect(page.getByText("Bring-Up Console")).toHaveCount(0);
-      await expect(page.getByText("Runtime Acceptance")).toHaveCount(0);
-      await expect(page.getByText("Protected Maintenance Mode")).toHaveCount(0);
-      await expect(page.getByText("PROVISIONING")).toHaveCount(0);
-      await expect(page.getByText("Diagnostics")).toHaveCount(0);
+      await expectBringUpConsoleScreenshot(page);
       break;
     default:
       throw new Error(
@@ -290,6 +259,50 @@ async function expectDispensingReminderScreenshot(
     expectation.noticeTitle,
   );
   await expect(page.getByAltText("让温柔贴近 让善意发生")).toBeVisible();
+}
+
+async function expectMaintenanceConsoleScreenshot(page: Page): Promise<void> {
+  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
+  await expect(page.getByText("维护控制台")).toBeVisible();
+  await expect(page.getByText("本地服务", { exact: true })).toBeVisible();
+  await expect(page.getByText("同步", { exact: true })).toBeVisible();
+  await expect(page.getByText("下位机", { exact: true })).toBeVisible();
+  await expect(page.getByText("扫码器", { exact: true })).toBeVisible();
+  await expect(page.getByText("视觉运行状态", { exact: true })).toBeVisible();
+  await expect(page.getByText("远程运维", { exact: true })).toBeVisible();
+
+  const currentBlockers = page.getByLabel("当前阻塞项");
+  await expect(
+    currentBlockers.getByText("整机维护锁", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "确认解除整机锁" }),
+  ).toBeVisible();
+  await expect(
+    page.getByPlaceholder("填写现场处理、复位和自检结果"),
+  ).toBeVisible();
+
+  await expect(page.getByText("销售就绪阻塞项")).toBeVisible();
+  await expect(page.getByText("Admin Operations Console")).toHaveCount(0);
+}
+
+async function expectBringUpConsoleScreenshot(page: Page): Promise<void> {
+  await expect(
+    page.getByRole("heading", { name: "首次部署控制台" }),
+  ).toBeVisible();
+  await expect(page.getByText("本机状态已由 daemon 确认")).toBeVisible();
+  await expect(page.getByText("当前任务：正在确认本机状态")).toBeVisible();
+  await expect(page.getByLabel("首次部署进度")).toBeVisible();
+
+  await expect(page.getByText("货道拓扑不匹配")).toHaveCount(0);
+  await expect(
+    page.getByText("平台货道拓扑与本机下位机返回不一致"),
+  ).toHaveCount(0);
+  await expect(page.getByText("Bring-Up Console")).toHaveCount(0);
+  await expect(page.getByText("Runtime Acceptance")).toHaveCount(0);
+  await expect(page.getByText("Protected Maintenance Mode")).toHaveCount(0);
+  await expect(page.getByText("PROVISIONING")).toHaveCount(0);
+  await expect(page.getByText("Diagnostics")).toHaveCount(0);
 }
 
 async function loadMachineRuntimeScreenshotScenario(
@@ -327,10 +340,7 @@ async function seedRuntimeScreenshotMode(page: Page): Promise<void> {
 async function expectPaymentQrVisual(page: Page): Promise<void> {
   const qrImage = page.getByRole("img", { name: "支付二维码" });
   await expect(qrImage).toBeVisible();
-  await expect(qrImage).toHaveAttribute(
-    "src",
-    /^data:image\/svg\+xml;charset=utf-8,/,
-  );
+  await expect(qrImage).toHaveAttribute("src", /^data:image\/png;base64,/);
 
   const visual = await qrImage.evaluate((element) => {
     if (!(element instanceof HTMLImageElement)) {
