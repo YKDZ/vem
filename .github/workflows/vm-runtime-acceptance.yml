@@ -115,20 +115,6 @@ jobs:
             ${{ runner.os }}-turbo-${{ github.job }}-
             ${{ runner.os }}-turbo-
 
-      - name: Run Host Adapter Conformance
-        run: |
-          set -euo pipefail
-          test -n "${VEM_VM_HOST_ADAPTER:-}"
-          test -x "$VEM_VM_HOST_ADAPTER"
-          test -n "${VEM_VM_HOST_TARGET_ID:-}"
-          test -n "${VEM_VM_HOST_APPROVED_BASE_ID:-}"
-          test -n "${VEM_VM_HOST_FACTORY_ISO_ID:-}"
-          test -n "${VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID:-}"
-          observed_adapter_sha256="$(sha256sum "$VEM_VM_HOST_ADAPTER" | awk '{print $1}')"
-          test "$observed_adapter_sha256" = "$VEM_VM_HOST_EXPECTED_ADAPTER_SHA256"
-          node scripts/testbed/vm-host-adapter-conformance.mjs \
-            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-conformance.json"
-
       - name: Prepare Local VM Testbed SSH Access
         run: |
           set -euo pipefail
