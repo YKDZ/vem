@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)][string]$DaemonExe,
   [Parameter(Mandatory = $true)][string]$MachineUiExe,
   [Parameter(Mandatory = $true)][string]$DataDir,
-  [string]$MachineConfig = "",
+  [string]$RuntimeBootstrap = "",
   [string]$DefaultApiBaseUrl = "",
   [string]$ServiceName = "VemVendingDaemon",
   [string]$ComPort = "COM3",
@@ -20,7 +20,7 @@ $record = [ordered]@{
   webView2 = $null
   serviceName = $ServiceName
   dataDir = $DataDir
-  machineConfig = $MachineConfig
+  runtimeBootstrap = $RuntimeBootstrap
   defaultApiBaseUrl = $DefaultApiBaseUrl
   comPort = $ComPort
   scannerPort = $ScannerPort
@@ -114,21 +114,7 @@ function Get-ProtectedMaintenanceHeaders {
       operatorId = "windows-smoke"
     } | ConvertTo-Json -Compress)
   } else {
-    $capabilityPath = Join-Path $RuntimeDataDir "factory\bootstrap-provisioning-capability"
-    if (-not (Test-Path -LiteralPath $capabilityPath -PathType Leaf)) {
-      throw "MaintenancePin is required after the one-time Factory bootstrap capability has been consumed"
-    }
-    $capability = [IO.File]::ReadAllText($capabilityPath, [Text.UTF8Encoding]::new($false)).Trim()
-    if ([string]::IsNullOrWhiteSpace($capability)) {
-      throw "Factory bootstrap maintenance capability is empty"
-    }
-    try {
-      $headers["x-vem-factory-bootstrap-capability"] = $capability
-      $session = Invoke-RestMethod "$BaseUrl/v1/factory/bootstrap/maintenance-session" -Method Post -Headers $headers
-    } finally {
-      $capability = $null
-      $headers.Remove("x-vem-factory-bootstrap-capability")
-    }
+    return $headers
   }
   if ([string]::IsNullOrWhiteSpace([string]$session.sessionId)) {
     throw "daemon did not issue a protected maintenance session"
@@ -138,11 +124,23 @@ function Get-ProtectedMaintenanceHeaders {
 }
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-$targetConfig = Join-Path $DataDir "machine-config.json"
-if ($MachineConfig.Length -gt 0) {
-  Add-Check "machine-config-source-exists" (Test-Path $MachineConfig) $MachineConfig
-  Copy-Item -Force -Path $MachineConfig -Destination $targetConfig
-  Add-Check "machine-config-seeded" (Test-Path $targetConfig) $targetConfig
+$targetConfig = Join-Path $DataDir "runtime-bootstrap.json"
+if ($RuntimeBootstrap.Length -gt 0) {
+  Add-Check "runtime-bootstrap-source-exists" (Test-Path $RuntimeBootstrap) $RuntimeBootstrap
+  Copy-Item -Force -Path $RuntimeBootstrap -Destination $targetConfig
+  Add-Check "runtime-bootstrap-seeded" (Test-Path $targetConfig) $targetConfig
+} elseif ($DefaultApiBaseUrl.Length -gt 0) {
+  $bootstrap = [ordered]@{
+    schemaVersion = 1
+    provisioningApiBaseUrl = $DefaultApiBaseUrl.Trim().TrimEnd("/")
+    hardwareModel = "vem-prod-24"
+    topology = [ordered]@{
+      identity = "vem-prod-24"
+      version = "2026-06-adr0026"
+    }
+  }
+  $bootstrap | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $targetConfig -Encoding UTF8
+  Add-Check "runtime-bootstrap-created" (Test-Path $targetConfig) $targetConfig
 }
 $acl = Get-Acl $DataDir
 Add-Check "data-dir-acl-readable" ($acl.Access.Count -gt 0) "ACL entries: $($acl.Access.Count)"
@@ -163,17 +161,6 @@ if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
 }
 sc.exe create $ServiceName binPath= "`"$DaemonExe`" --data-dir `"$DataDir`" --print-ready-file `"$readyFile`"" start= auto | Out-Null
 sc.exe failure $ServiceName reset= 60 actions= restart/5000/restart/5000/""/5000 | Out-Null
-if ($DefaultApiBaseUrl.Length -gt 0) {
-  $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
-  $currentEnvironment = (Get-ItemProperty -Path $serviceKey -Name Environment -ErrorAction SilentlyContinue).Environment
-  $environment = @()
-  if ($null -ne $currentEnvironment) {
-    $environment = @($currentEnvironment | Where-Object { $_ -notlike "VEM_DEFAULT_API_BASE_URL=*" })
-  }
-  $environment += "VEM_DEFAULT_API_BASE_URL=$DefaultApiBaseUrl"
-  New-ItemProperty -Path $serviceKey -Name Environment -PropertyType MultiString -Value $environment -Force | Out-Null
-  Add-Check "service-env-default-api-base-url" $true "VEM_DEFAULT_API_BASE_URL=$DefaultApiBaseUrl"
-}
 Start-Service $ServiceName
 Start-Sleep -Seconds 5
 $svc = Get-Service $ServiceName
@@ -188,14 +175,22 @@ $baseUrl = $ready.healthzUrl -replace "/healthz$", ""
 $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
 $maintenanceHeaders = Get-ProtectedMaintenanceHeaders -BaseUrl $baseUrl -DaemonHeaders $headers -RuntimeDataDir $DataDir -Pin $MaintenancePin
 $configSummary = Invoke-RestMethod "$baseUrl/v1/config/summary" -Headers $headers
-Add-Check "runtime-config-summary" ($null -ne $configSummary.effectivePublic -and $null -ne $configSummary.configuredState) ($configSummary | ConvertTo-Json -Compress)
-$config = $configSummary.effectivePublic
+$groupedRuntimeConfig = $null -ne $configSummary.sourceDocuments -and $null -ne $configSummary.sourceDocuments.bootstrap
+$legacyRuntimeConfig = $null -ne $configSummary.effectivePublic -and $null -ne $configSummary.configuredState
+Add-Check "runtime-config-summary" ($groupedRuntimeConfig -or $legacyRuntimeConfig) ($configSummary | ConvertTo-Json -Compress)
+$config = if ($groupedRuntimeConfig) {
+  [pscustomobject]@{
+    apiBaseUrl = if ($null -ne $configSummary.platform) { $configSummary.platform.apiBaseUrl } else { $configSummary.sourceDocuments.bootstrap.provisioningApiBaseUrl }
+  }
+} else {
+  $configSummary.effectivePublic
+}
 if ($DefaultApiBaseUrl.Length -gt 0) {
   $expectedApiBaseUrl = $DefaultApiBaseUrl.Trim().TrimEnd("/")
   if (Test-Path $targetConfig) {
     $seededConfig = Get-Content $targetConfig -Raw | ConvertFrom-Json
-    if ($null -ne $seededConfig.apiBaseUrl -and $seededConfig.apiBaseUrl.Length -gt 0) {
-      $expectedApiBaseUrl = $seededConfig.apiBaseUrl.Trim().TrimEnd("/")
+    if ($null -ne $seededConfig.provisioningApiBaseUrl -and $seededConfig.provisioningApiBaseUrl.Length -gt 0) {
+      $expectedApiBaseUrl = $seededConfig.provisioningApiBaseUrl.Trim().TrimEnd("/")
     }
   }
   Add-Check "default-api-base-url-configured" ($config.apiBaseUrl -eq $expectedApiBaseUrl) ($config | ConvertTo-Json -Compress)

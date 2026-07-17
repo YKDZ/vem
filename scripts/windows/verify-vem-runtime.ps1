@@ -1,6 +1,6 @@
 param(
   [string]$ReadyFile = "C:\ProgramData\VEM\vending-daemon\daemon-ready.json",
-  [string]$DaemonConfig = "C:\ProgramData\VEM\vending-daemon\machine-config.json",
+  [string]$DaemonConfig = "C:\ProgramData\VEM\vending-daemon\runtime-bootstrap.json",
   [string]$ServiceName = "VemVendingDaemon",
   [switch]$ExpectSimulator,
   [switch]$RequireScannerOnline,
@@ -179,9 +179,9 @@ if (-not $VisionOnly -and (Test-Path $DaemonConfig)) {
   $checks.config = [pscustomobject]@{
     machineCode = $config.machineCode
     hardwareAdapter = $config.hardwareAdapter
-    serialPortPath = $config.serialPortPath
+    lowerControllerPath = $config.lowerControllerPath
     scannerAdapter = $config.scannerAdapter
-    scannerSerialPortPath = $config.scannerSerialPortPath
+    scannerPath = $config.scannerPath
     apiBaseUrl = $config.apiBaseUrl
     mqttUrl = $config.mqttUrl
   }
@@ -198,8 +198,8 @@ if ($ExpectSimulator) {
   if ($null -eq $simProcess) {
     Add-Failure $failures "lower-controller-sim process is not running"
   }
-  if ($null -eq $config -or -not ([string]$config.serialPortPath).StartsWith("tcp://")) {
-    Add-Failure $failures "ExpectSimulator requires serialPortPath=tcp://..., got: $($config.serialPortPath)"
+  if ($null -eq $config -or -not ([string]$config.lowerControllerPath).StartsWith("tcp://")) {
+    Add-Failure $failures "ExpectSimulator requires lowerControllerPath=tcp://..., got: $($config.lowerControllerPath)"
   }
 }
 

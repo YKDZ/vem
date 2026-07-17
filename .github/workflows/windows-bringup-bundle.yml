@@ -62,6 +62,7 @@ jobs:
             Copy-Item -Force -Path $path -Destination (Join-Path $bundleRoot (Split-Path -Leaf $path))
           }
 
+          Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\runtime-bootstrap.example.json") -Destination (Join-Path $bundleRoot "runtime-bootstrap.example.json")
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\vending-daemon-smoke.ps1") -Destination $scriptDir
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\setup-scheduled-tasks.ps1") -Destination $scriptDir
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "public\windows-bringup-bundle.md") -Destination (Join-Path $bundleRoot "README.md")

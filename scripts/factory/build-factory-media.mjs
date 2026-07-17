@@ -88,7 +88,7 @@ const PREPARE_FACTORY_RUNTIME_PARAMETERS = [
   "ExpectedAutoLogonUser",
   "ExpectedKioskShell",
   "TargetLayoutVersion",
-  "FactoryProfile",
+  "RuntimeImageProfile",
   "PersonalizationMediaPath",
   "FactoryMediaRoot",
   "VisionConfigurationSourcePath",
@@ -1246,7 +1246,7 @@ Request-HandoffReboot $rebootOriginBootIdentity $cleanupStatus
 `;
 }
 
-export function factoryProfileImplementationScript(source, profile) {
+export function runtimeImageProfileImplementationScript(source, profile) {
   const text = Buffer.isBuffer(source)
     ? source.toString("utf8")
     : String(source);
@@ -1367,7 +1367,7 @@ export function factoryPreparationSplat(
     ExpectedAutoLogonUser: parameters.accounts.autoLogonUser,
     ExpectedKioskShell: parameters.expectedKioskShell,
     TargetLayoutVersion: parameters.targetLayoutVersion,
-    FactoryProfile: descriptor.profile,
+    RuntimeImageProfile: descriptor.profile,
     PersonalizationMediaPath: personalizationPath,
     FactoryMediaRoot: mediaRoot,
     VisionConfigurationSourcePath: path("visionConfiguration"),
@@ -1446,7 +1446,7 @@ try {
     HardwareMode = $descriptor.parameters.hardware.mode; HardwareModel = $descriptor.parameters.hardware.model; TopologyIdentity = $descriptor.parameters.hardware.topologyIdentity; TopologyVersion = $descriptor.parameters.hardware.topologyVersion
     ExpectedDisplayWidth = [int]$descriptor.parameters.display.width; ExpectedDisplayHeight = [int]$descriptor.parameters.display.height; ExpectedDisplayOrientation = $descriptor.parameters.display.orientation
     ExpectedKioskUser = $descriptor.parameters.accounts.kioskUser; ExpectedMaintenanceUser = $descriptor.parameters.accounts.maintenanceUser; ExpectedAutoLogonUser = $descriptor.parameters.accounts.autoLogonUser; ExpectedKioskShell = $descriptor.parameters.expectedKioskShell
-    TargetLayoutVersion = $descriptor.parameters.targetLayoutVersion; FactoryProfile = '${profile}'; PersonalizationMediaPath = $personalizationPath; FactoryMediaRoot = $MediaRoot; VisionConfigurationSourcePath = Join-Path $MediaRoot $descriptor.assets.visionConfiguration.path
+    TargetLayoutVersion = $descriptor.parameters.targetLayoutVersion; RuntimeImageProfile = '${profile}'; PersonalizationMediaPath = $personalizationPath; FactoryMediaRoot = $MediaRoot; VisionConfigurationSourcePath = Join-Path $MediaRoot $descriptor.assets.visionConfiguration.path
     OpenSshPackagePath = Join-Path $MediaRoot $descriptor.assets.openSsh.path; OpenSshPackageSource = 'local-pinned'; OpenSshPackageVersion = $descriptor.parameters.maintenance.openSsh.version; OpenSshPackageSha256 = $descriptor.assets.openSsh.sha256; OpenSshApprovedSignerThumbprint = $descriptor.parameters.maintenance.openSsh.approvedSignerThumbprint; OpenSshApprovedRootThumbprint = $descriptor.parameters.maintenance.openSsh.approvedRootThumbprint
     WireGuardPackagePath = Join-Path $MediaRoot $descriptor.assets.wireGuard.path; WireGuardPackageSource = 'local-pinned'; WireGuardPackageVersion = $descriptor.parameters.maintenance.wireGuard.version; WireGuardPackageSha256 = $descriptor.assets.wireGuard.sha256; WireGuardApprovedSignerThumbprint = $descriptor.parameters.maintenance.wireGuard.approvedSignerThumbprint; WireGuardApprovedRootThumbprint = $descriptor.parameters.maintenance.wireGuard.approvedRootThumbprint
     MaintenanceSshCaPublicKeyPath = Join-Path $MediaRoot $descriptor.assets.maintenanceSshCa.path; MaintenanceSshCaPublicKeySha256 = $descriptor.assets.maintenanceSshCa.sha256
@@ -4336,7 +4336,7 @@ export async function createWindowsFactoryFirstBootMedia({
   ]) {
     await writeFile(
       join(scriptsRoot, script),
-      factoryProfileImplementationScript(
+      runtimeImageProfileImplementationScript(
         await readFile(new URL(`../windows/${script}`, import.meta.url)),
         manifest.profile,
       ),

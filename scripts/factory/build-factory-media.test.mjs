@@ -22,7 +22,7 @@ import {
   assertWimMagic,
   createWindowsFactoryFirstBootMedia,
   factoryAutounattendXml,
-  factoryProfileImplementationScript,
+  runtimeImageProfileImplementationScript,
   expectedFactoryEffectiveInputRoles,
   factoryPreparationSplat,
   inspectBootableIso,
@@ -1679,7 +1679,7 @@ describe("real deterministic Factory ISO builder", () => {
           "ExpectedAutoLogonUser",
           "ExpectedKioskShell",
           "TargetLayoutVersion",
-          "FactoryProfile",
+          "RuntimeImageProfile",
           "PersonalizationMediaPath",
           "FactoryMediaRoot",
           "VisionConfigurationSourcePath",
@@ -2033,14 +2033,14 @@ describe("real deterministic Factory ISO builder", () => {
 
   it("specializes production runtime scripts without embedding the testbed account literal", async () => {
     const source = 'Get-LocalUser -Name "YKDZ"; "reject YKDZ"';
-    const production = factoryProfileImplementationScript(
+    const production = runtimeImageProfileImplementationScript(
       source,
       "production",
     ).toString("utf8");
     assert.doesNotMatch(production, /YKDZ/);
     assert.match(production, /YK\$\(\[char\]68\)Z/);
     assert.equal(
-      factoryProfileImplementationScript(source, "testbed").toString("utf8"),
+      runtimeImageProfileImplementationScript(source, "testbed").toString("utf8"),
       source,
     );
     for (const name of [
@@ -2048,7 +2048,7 @@ describe("real deterministic Factory ISO builder", () => {
       "setup-scheduled-tasks.ps1",
       "verify-factory-runtime.ps1",
     ]) {
-      const specialized = factoryProfileImplementationScript(
+      const specialized = runtimeImageProfileImplementationScript(
         await readFile(new URL(`../windows/${name}`, import.meta.url)),
         "production",
       ).toString("utf8");

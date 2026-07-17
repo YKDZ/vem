@@ -3,8 +3,8 @@ param(
   [string]$DaemonPort,
   [string]$TcpListen,
   [string]$SimulatorExe = "C:\VEM\bringup\lower-controller-sim.exe",
-  [string]$DaemonConfig = "C:\ProgramData\VEM\vending-daemon\machine-config.json",
-  [string]$BringupConfig = "C:\VEM\bringup\machine-config.json",
+  [string]$DaemonConfig = "C:\ProgramData\VEM\vending-daemon\runtime-bootstrap.json",
+  [string]$BringupConfig = "C:\VEM\bringup\runtime-bootstrap.json",
   [string]$ServiceName = "VemVendingDaemon",
   [ValidateSet("normal", "pickup-timeout-success", "pickup-timeout-blocked", "mechanical-fault")]
   [string]$Scenario = "normal",
@@ -94,7 +94,7 @@ function Update-DaemonConfigForSerial([string]$Path, [string]$SerialPath) {
   $config = Read-JsonObject $Path
   $backup = Backup-File $Path
   Set-JsonProperty $config "hardwareAdapter" "serial"
-  Set-JsonProperty $config "serialPortPath" $SerialPath
+  Set-JsonProperty $config "lowerControllerPath" $SerialPath
   Set-JsonProperty $config "lowerControllerUsbIdentity" $null
   Write-JsonObject $Path $config
   return [pscustomobject]@{ path = $Path; backup = $backup }

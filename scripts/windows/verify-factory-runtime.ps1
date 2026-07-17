@@ -49,7 +49,7 @@ function Test-FactoryRuntimeBoundaryProjection {
 
   $checks = [ordered]@{
     schemaVersion = $Projection.schemaVersion
-    factoryProfile = $Projection.factoryProfile
+    runtimeImageProfile = $Projection.runtimeImageProfile
     environmentName = $Projection.inputs.environmentName
     deploymentBatch = $Projection.inputs.deploymentBatch
     daemonEnvironment = $Projection.daemonFactoryManifest.environment
@@ -57,15 +57,15 @@ function Test-FactoryRuntimeBoundaryProjection {
   if ([string]$Projection.schemaVersion -ne "vem-factory-runtime-boundary-projection/v1") {
     Add-Failure $Failures "unexpected factory runtime boundary projection schema"
   }
-  $profile = [string]$Projection.factoryProfile
+  $profile = [string]$Projection.runtimeImageProfile
   if ($profile -notin @("production", "testbed")) {
-    Add-Failure $Failures "projection FactoryProfile must be production or testbed"
+    Add-Failure $Failures "projection RuntimeImageProfile must be production or testbed"
   }
   if ([string]::IsNullOrWhiteSpace([string]$Projection.inputs.environmentName) -or
       [string]::IsNullOrWhiteSpace([string]$Projection.inputs.deploymentBatch)) {
     Add-Failure $Failures "projection must retain non-empty EnvironmentName and DeploymentBatch trace metadata"
   }
-  if ([string]$Projection.factoryRuntimeManifest.factoryProfile -cne $profile -or
+  if ([string]$Projection.factoryRuntimeManifest.runtimeImageProfile -cne $profile -or
       [string]$Projection.factoryRuntimeManifest.environmentName -cne [string]$Projection.inputs.environmentName -or
       [string]$Projection.factoryRuntimeManifest.deploymentBatch -cne [string]$Projection.inputs.deploymentBatch) {
     Add-Failure $Failures "projection factory runtime trace metadata must match its declared inputs"
@@ -77,7 +77,7 @@ function Test-FactoryRuntimeBoundaryProjection {
 
   $daemonManifest = $Projection.daemonFactoryManifest
   if ($null -eq $daemonManifest -or [string]$daemonManifest.environment -cne $profile) {
-    Add-Failure $Failures "projection daemon factory manifest environment must match FactoryProfile"
+    Add-Failure $Failures "projection daemon factory manifest environment must match RuntimeImageProfile"
   }
   foreach ($traceField in @("environmentName", "deploymentBatch")) {
     if ($null -ne $daemonManifest -and $null -ne $daemonManifest.PSObject.Properties[$traceField]) {
@@ -657,9 +657,9 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
   $wireGuardListenAddressEvidence = Get-WireGuardListenAddressEvidence -Manifest $Manifest
   $wireGuardService = Get-WireGuardServiceEvidence -Manifest $Manifest
   $accountPolicy = [ordered]@{
-    profile = [string]$Manifest.factoryProfile
+    profile = [string]$Manifest.runtimeImageProfile
     maintenanceUser = $MaintenanceUser
-    expectedMaintenanceUser = if ([string]$Manifest.factoryProfile -eq "production") { "Admin" } else { "YKDZ" }
+    expectedMaintenanceUser = if ([string]$Manifest.runtimeImageProfile -eq "production") { "Admin" } else { "YKDZ" }
     kioskUser = $KioskUser
     maintenanceAdministrator = $maintenanceAdministrator
     kioskAdministrator = $kioskAdministrator
@@ -774,7 +774,7 @@ function Get-MaintenanceIngressEvidence {
   param($Manifest)
 
   $policy = $Manifest.maintenanceSsh
-  $profile = [string]$Manifest.factoryProfile
+  $profile = [string]$Manifest.runtimeImageProfile
   $mode = [string]$policy.ingressMode
   $listenAddress = [string]$policy.effectiveListenAddress
   $interfaceScope = [string]$policy.effectiveFirewallInterfaceScope
@@ -838,8 +838,8 @@ function Get-WireGuardListenAddressEvidence {
     wireGuardListenAddress = $listenAddress
     addressIsConcrete = $validAddress
     addressOwnedByInterface = $null -ne $ownedAddress
-    effectiveListenerMatchesWireGuardAddress = [string]$Manifest.factoryProfile -eq "production" -and [string]$policy.effectiveListenAddress -ceq $listenAddress
-    effectiveFirewallMatchesWireGuardInterface = [string]$Manifest.factoryProfile -eq "production" -and [string]$policy.effectiveFirewallInterfaceScope -ceq $interfaceAlias
+    effectiveListenerMatchesWireGuardAddress = [string]$Manifest.runtimeImageProfile -eq "production" -and [string]$policy.effectiveListenAddress -ceq $listenAddress
+    effectiveFirewallMatchesWireGuardInterface = [string]$Manifest.runtimeImageProfile -eq "production" -and [string]$policy.effectiveFirewallInterfaceScope -ceq $interfaceAlias
   }
 }
 
@@ -1068,8 +1068,8 @@ function Get-MaintenanceCaEvidence {
     sha256 = $hash
     sha256Matches = $exists -and $hash -eq ([string]$ca.caSha256).ToLowerInvariant()
     profile = $profile
-    expectedProfile = [string]$Manifest.factoryProfile
-    profileMatches = $profile -ceq [string]$Manifest.factoryProfile
+    expectedProfile = [string]$Manifest.runtimeImageProfile
+    profileMatches = $profile -ceq [string]$Manifest.runtimeImageProfile
     keyType = $keyType
     keyCount = $keyLines.Count
     expectedFingerprint = [string]$ca.caFingerprint
@@ -1232,7 +1232,7 @@ function Get-FactoryPersonalizationRedaction {
   $profile = Get-RequiredPersonalizationProperty -Value $redaction -Name "profile" -Label "Factory Personalization redaction"
   if ([string]$redaction.schemaVersion -cne "vem-factory-personalization-media-redaction/v1" -or
       [string]$redaction.kind -cne "factory-personalization-media-redaction" -or
-      [string]$profile -cne [string]$Manifest.factoryProfile -or
+      [string]$profile -cne [string]$Manifest.runtimeImageProfile -or
       [string]$redaction.maintenancePinVerifier -cne "configured" -or
       [string]$redaction.wireGuardPrivateKey -cne "not-supplied; generated-locally" -or
       $redaction.mediaConsumed -isnot [bool] -or $redaction.mediaConsumed -ne $true -or
@@ -1293,9 +1293,9 @@ function Get-FactoryPersonalizationEvidence {
   )
   $redaction = Get-FactoryPersonalizationRedaction -Manifest $Manifest
   return [ordered]@{
-    profile = [string]$Manifest.factoryProfile
+    profile = [string]$Manifest.runtimeImageProfile
     consumed = $markerExists
-    profileMatches = $markerExists -and [string]$marker.profile -ceq [string]$Manifest.factoryProfile
+    profileMatches = $markerExists -and [string]$marker.profile -ceq [string]$Manifest.runtimeImageProfile
     retainedMediaPresent = $retainedMedia.Count -gt 0
     retainedKioskAutologonHandoffPresent = $retainedKioskAutologonHandoffPresent
     retainedKioskAutologonHandoffPath = $retainedKioskAutologonHandoffPath
@@ -1336,7 +1336,7 @@ try {
     path = $ManifestPath
     schemaVersion = $manifest.schemaVersion
     layoutVersion = $manifest.layoutVersion
-    factoryProfile = $manifest.factoryProfile
+    runtimeImageProfile = $manifest.runtimeImageProfile
     environmentName = $manifest.environmentName
     deploymentBatch = $manifest.deploymentBatch
     hardwareMode = $manifest.hardware.mode
@@ -1348,7 +1348,7 @@ try {
   if ([string]$manifest.schemaVersion -ne "vem-factory-runtime-manifest/v1") {
     Add-Failure $failures "unexpected factory manifest schema: $($manifest.schemaVersion)"
   }
-  if ([string]$manifest.factoryProfile -notin @("production", "testbed")) {
+  if ([string]$manifest.runtimeImageProfile -notin @("production", "testbed")) {
     Add-Failure $failures "factory manifest must declare production or testbed profile"
   }
   if ([string]::IsNullOrWhiteSpace([string]$manifest.environmentName) -or
@@ -1369,7 +1369,7 @@ try {
     Add-Failure $failures "factory manifest must declare Maintenance SSH CA and WireGuard ownership"
   }
   $checks.visionRelease = $manifest.visionRelease
-  if ([string]$manifest.factoryProfile -eq "production") {
+  if ([string]$manifest.runtimeImageProfile -eq "production") {
     $vision = $manifest.visionRelease
     if (
       $null -eq $vision -or
@@ -1398,14 +1398,14 @@ try {
 }
 
 if ($null -ne $manifest) {
-  # FactoryProfile is a strict production/testbed boundary, not a display label.
+  # RuntimeImageProfile is a strict production/testbed boundary, not a display label.
   $expectedPaths = [ordered]@{
     runtimeRoot = "C:\VEM\bringup"
     daemonExecutable = "C:\VEM\bringup\vending-daemon.exe"
     machineUiExecutable = "C:\VEM\bringup\machine.exe"
     machineUiWebView2Loader = "C:\VEM\bringup\WebView2Loader.dll"
     factoryRoot = "C:\ProgramData\VEM\factory"
-    bringupSettings = "C:\ProgramData\VEM\bringup\local-bringup-settings.json"
+    bringupSettings = "C:\ProgramData\VEM\bringup\local-runtime-settings.json"
     provisioningRoot = "C:\ProgramData\VEM\provisioning"
     secretsRoot = "C:\ProgramData\VEM\secrets"
     daemonRoot = "C:\ProgramData\VEM\vending-daemon"
@@ -1424,7 +1424,7 @@ if ($null -ne $manifest) {
   }
   $checks.fixedPaths = $pathEvidence
 
-  $settingsPath = "C:\ProgramData\VEM\bringup\local-bringup-settings.json"
+  $settingsPath = "C:\ProgramData\VEM\bringup\local-runtime-settings.json"
   if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
     $settings = Read-JsonFile -Path $settingsPath
     $checks.localBringupSettings = [ordered]@{
@@ -1434,7 +1434,7 @@ if ($null -ne $manifest) {
       deploymentBatch = $settings.deploymentBatch
       provisioningEndpoint = $settings.provisioningEndpoint
     }
-    if ([string]$settings.schemaVersion -ne "vem-local-bringup-settings/v1") {
+    if ([string]$settings.schemaVersion -ne "vem-local-runtime-settings/v1") {
       Add-Failure $failures "unexpected local bring-up settings schema: $($settings.schemaVersion)"
     }
     if ([string]$settings.environmentName -cne [string]$manifest.environmentName -or
@@ -1452,8 +1452,8 @@ if ($null -ne $manifest) {
       path = $daemonFactoryManifestPath
       environment = $daemonFactoryManifest.environment
     }
-    if ([string]$daemonFactoryManifest.environment -cne [string]$manifest.factoryProfile) {
-      Add-Failure $failures "daemon factory manifest environment must match FactoryProfile"
+    if ([string]$daemonFactoryManifest.environment -cne [string]$manifest.runtimeImageProfile) {
+      Add-Failure $failures "daemon factory manifest environment must match RuntimeImageProfile"
     }
   } else {
     Add-Failure $failures "daemon factory manifest missing: $daemonFactoryManifestPath"
@@ -1691,17 +1691,17 @@ if ($null -ne $manifest) {
   if ([string]$checks.factoryRemoteMaintenanceCapability.kioskRemoteAccess -ne "denied") {
     Add-Failure $failures "kiosk account must not have remote maintenance access"
   }
-  if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.expectations.maintenanceUser -cne "Admin") {
+  if ([string]$manifest.runtimeImageProfile -eq "production" -and [string]$manifest.expectations.maintenanceUser -cne "Admin") {
     Add-Failure $failures "production verifier requires the Admin maintenance administrator"
   }
   $personalizationJson = $checks.personalization | ConvertTo-Json -Depth 12 -Compress
-  if ([string]$manifest.factoryProfile -eq "production" -and $personalizationJson -match "(?i)YKDZ|testbed|test-ca|test-peer|simulator|shared-password") {
+  if ([string]$manifest.runtimeImageProfile -eq "production" -and $personalizationJson -match "(?i)YKDZ|testbed|test-ca|test-peer|simulator|shared-password") {
     Add-Failure $failures "production verifier rejects testbed Factory Personalization Media contamination"
   }
-  if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.expectations.maintenanceUser -eq "YKDZ") {
+  if ([string]$manifest.runtimeImageProfile -eq "production" -and [string]$manifest.expectations.maintenanceUser -eq "YKDZ") {
     Add-Failure $failures "production verifier rejects the testbed YKDZ maintenance administrator"
   }
-  if ([string]$manifest.factoryProfile -eq "testbed" -and [string]$manifest.expectations.maintenanceUser -cne "YKDZ") {
+  if ([string]$manifest.runtimeImageProfile -eq "testbed" -and [string]$manifest.expectations.maintenanceUser -cne "YKDZ") {
     Add-Failure $failures "testbed verifier requires the existing YKDZ maintenance administrator"
   }
   $maintenanceIngress = $checks.factoryRemoteMaintenanceCapability.ingress
@@ -1712,31 +1712,31 @@ if ($null -ne $manifest) {
       -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.addressOwnedByInterface) {
     Add-Failure $failures "Factory verifier requires the declared concrete WireGuard address on its interface"
   }
-  if ([string]$manifest.factoryProfile -eq "production" -and
+  if ([string]$manifest.runtimeImageProfile -eq "production" -and
       (-not [bool]$maintenanceIngress.wireGuardOnly -or
        -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.effectiveListenerMatchesWireGuardAddress -or
        -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardListenAddressEvidence.effectiveFirewallMatchesWireGuardInterface)) {
     Add-Failure $failures "production Factory verifier requires SSH listener and firewall scope on the declared WireGuard interface/address"
   }
-  if ([string]$manifest.factoryProfile -eq "testbed" -and
+  if ([string]$manifest.runtimeImageProfile -eq "testbed" -and
       (-not [bool]$maintenanceIngress.runnerDirectPlusWireGuard -or
        @($manifest.maintenanceSsh.runnerSourceAllowlist).Count -eq 0)) {
     Add-Failure $failures "testbed runner-direct SSH bootstrap requires an explicit non-empty runner source allowlist"
   }
-  if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.hardware.mode -ne "production") {
+  if ([string]$manifest.runtimeImageProfile -eq "production" -and [string]$manifest.hardware.mode -ne "production") {
     Add-Failure $failures "production verifier rejects simulated hardware mode"
   }
-  if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.hardware.model -match "(?i)simulator|mock|tcp") {
+  if ([string]$manifest.runtimeImageProfile -eq "production" -and [string]$manifest.hardware.model -match "(?i)simulator|mock|tcp") {
     Add-Failure $failures "production verifier rejects simulator and TCP hardware identities"
   }
-  if ([string]$manifest.factoryProfile -eq "production" -and $null -ne (Get-LocalUser -Name "YKDZ" -ErrorAction SilentlyContinue)) {
+  if ([string]$manifest.runtimeImageProfile -eq "production" -and $null -ne (Get-LocalUser -Name "YKDZ" -ErrorAction SilentlyContinue)) {
     Add-Failure $failures "production verifier rejects a live YKDZ testbed account"
   }
-  if ([string]$manifest.factoryProfile -eq "production") {
+  if ([string]$manifest.runtimeImageProfile -eq "production") {
     $daemonConfigPath = [string]$manifest.paths.daemonConfigPath
     if (Test-Path -LiteralPath $daemonConfigPath -PathType Leaf) {
       $daemonConfigText = Get-Content -LiteralPath $daemonConfigPath -Raw
-      if ($daemonConfigText -match '(?i)"hardwareAdapter"\s*:\s*"mock"|"serialPortPath"\s*:\s*"tcp://|"machineCode"\s*:\s*"[^"]*(testbed|test|sim)') {
+      if ($daemonConfigText -match '(?i)"hardwareAdapter"\s*:\s*"mock"|"lowerControllerPath"\s*:\s*"tcp://|"machineCode"\s*:\s*"[^"]*(testbed|test|sim)') {
         Add-Failure $failures "production verifier rejects live daemon simulator/testbed hardware configuration"
       }
     }
@@ -1769,7 +1769,7 @@ if ($null -ne $manifest) {
       -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.serviceNameMatches -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.ownerMatches -or
       -not [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.independentOfKiosk -or
-      ([string]$manifest.factoryProfile -eq "production" -and [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.profileContamination)) {
+      ([string]$manifest.runtimeImageProfile -eq "production" -and [bool]$checks.factoryRemoteMaintenanceCapability.wireGuardService.profileContamination)) {
     Add-Failure $failures "WireGuard machine maintenance service must be automatic and LocalSystem-owned"
   }
   foreach ($packageName in @("openSsh", "wireGuard")) {

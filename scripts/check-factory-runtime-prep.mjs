@@ -76,7 +76,7 @@ const requiredPrepareParams = [
   "ExpectedAutoLogonUser",
   "ExpectedKioskShell",
   "TargetLayoutVersion",
-  "FactoryProfile",
+  "RuntimeImageProfile",
   "PersonalizationMediaPath",
   "FactoryMediaRoot",
   "VisionConfigurationSourcePath",
@@ -112,7 +112,7 @@ const requiredLayoutPaths = [
 
 const verifierConcerns = [
   "factory-runtime-manifest.json",
-  "local-bringup-settings.json",
+  "local-runtime-settings.json",
   "vending-daemon.exe",
   "machine.exe",
   "VemVendingDaemon",
@@ -155,14 +155,14 @@ const setupVisionTaskBlock = topLevelTail(
 addCheck(
   "factory-profile-is-the-only-daemon-environment-source",
   prepare.includes(
-    "# Merge preservation: FactoryProfile alone defines daemon environment;",
+    "# Merge preservation: RuntimeImageProfile alone defines daemon environment;",
   ) &&
-    prepare.includes("environment = $Preflight.FactoryProfile") &&
+    prepare.includes("environment = $Preflight.RuntimeImageProfile") &&
     !prepare.includes("environment = $EnvironmentName") &&
     !daemonManifestBlock.includes("environmentName") &&
     !daemonManifestBlock.includes("deploymentBatch") &&
     verifier.includes(
-      "daemon factory manifest environment must match FactoryProfile",
+      "daemon factory manifest environment must match RuntimeImageProfile",
     ) &&
     !verifier.includes("daemon factory manifest must retain EnvironmentName") &&
     verifier.includes(
@@ -171,14 +171,14 @@ addCheck(
     verifier.includes(
       "local bring-up settings trace metadata must match factory runtime manifest",
     ),
-  "FactoryProfile must be the daemon's only environment source; trace metadata belongs in factory-runtime and local bring-up records",
+  "RuntimeImageProfile must be the daemon's only environment source; trace metadata belongs in factory-runtime and local bring-up records",
 );
 
 addCheck(
   "clean-base-factory-preparation-keeps-batch-like-labels-outside-daemon-environment",
-  testbedRunner.includes("vps-fresh-${cleanBaseFactoryProfile}-clean-base") &&
+  testbedRunner.includes("vps-fresh-${cleanBaseRuntimeImageProfile}-clean-base") &&
     testbedRunner.includes(
-      "DeploymentBatch = ${psString(`clean-base-${cleanBaseFactoryProfile}-v1`)}",
+      "DeploymentBatch = ${psString(`clean-base-${cleanBaseRuntimeImageProfile}-v1`)}",
     ) &&
     !testbedRunner.includes('DeploymentBatch = "dirty-host-reset-v1"'),
   "Canonical clean-base preparation must retain a deterministic deployment batch outside the daemon environment without restoring dirty-host acceptance",
@@ -237,8 +237,8 @@ addCheck(
   "prepare-uses-fixed-standard-runtime-layout",
   requiredLayoutPaths.every((path) => prepare.includes(path)) &&
     prepare.includes("factory-runtime-manifest.json") &&
-    prepare.includes("local-bringup-settings.json") &&
-    prepare.includes("machine-config.json") &&
+    prepare.includes("local-runtime-settings.json") &&
+    prepare.includes("runtime-bootstrap.json") &&
     prepare.includes("setup-scheduled-tasks.ps1") &&
     prepare.includes("provision-vision-factory-release.ps1") &&
     prepare.includes("install-vision-release.ps1") &&
@@ -340,7 +340,7 @@ addCheck(
     prepare.includes("Copy-Item -LiteralPath $DaemonArtifactPath") &&
     prepare.includes("Copy-Item -LiteralPath $MachineUiArtifactPath") &&
     prepare.includes("factory-runtime-manifest/v1") &&
-    prepare.includes("local-bringup-settings/v1") &&
+    prepare.includes("local-runtime-settings/v1") &&
     prepare.includes("New-Service") &&
     prepare.includes("setup-scheduled-tasks.ps1") &&
     prepare.includes("$setupArguments = @{") &&
@@ -422,7 +422,7 @@ addCheck(
     "MaintenanceRunnerSourceAllowlist",
     "MaintenanceMaintainerSourceAllowlist",
     "MaintenanceWireGuardListenAddress",
-    "factoryProfile",
+    "runtimeImageProfile",
     'privateKeySource = "generated_locally"',
   ].every((needle) => prepare.includes(needle)) &&
     prepare.indexOf("Assert-PinnedLocalPackage") <

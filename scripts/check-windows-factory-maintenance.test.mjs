@@ -631,11 +631,11 @@ test("generated clean-base orchestration is profile-neutral and parses", () => {
     };
     const production = buildRemotePowerShellScript({
       ...common,
-      factoryProfile: "production",
+      runtimeImageProfile: "production",
     });
     const testbed = buildRemotePowerShellScript({
       ...common,
-      factoryProfile: "testbed",
+      runtimeImageProfile: "testbed",
       platformApiBaseUrl: "http://test-platform.invalid/api",
       platformMqttUrl: "mqtt://test-platform.invalid:1883",
     });
@@ -646,7 +646,7 @@ test("generated clean-base orchestration is profile-neutral and parses", () => {
     );
     assert.match(productionInvocation, /HardwareMode = 'production'/);
     assert.match(productionInvocation, /ExpectedMaintenanceUser = 'Admin'/);
-    assert.match(productionInvocation, /FactoryProfile = 'production'/);
+    assert.match(productionInvocation, /RuntimeImageProfile = 'production'/);
     assert.match(
       productionInvocation,
       /FactoryMediaRoot = 'C:\\VEM\\factory-media'/,
@@ -674,7 +674,7 @@ test("generated clean-base orchestration is profile-neutral and parses", () => {
     );
     assert.match(testbedInvocation, /HardwareMode = 'simulated'/);
     assert.match(testbedInvocation, /ExpectedMaintenanceUser = 'YKDZ'/);
-    assert.match(testbedInvocation, /FactoryProfile = 'testbed'/);
+    assert.match(testbedInvocation, /RuntimeImageProfile = 'testbed'/);
 
     const productionPath = join(root, "production.ps1");
     const testbedPath = join(root, "testbed.ps1");
@@ -735,7 +735,7 @@ test("production orchestration rejects testbed platform and identity inputs", ()
     );
     const options = {
       mode: "clean-base-factory-acceptance",
-      factoryProfile: "production",
+      runtimeImageProfile: "production",
       openSshPackage: openSsh,
       wireGuardPackage: wireGuard,
       maintenanceCaPublicKey: ca,

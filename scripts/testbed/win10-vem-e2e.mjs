@@ -166,8 +166,8 @@ const CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES = [
     code: "preflightNoMachineIdentity",
     paths: [
       "C:\\ProgramData\\VEM\\provisioning",
-      "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json",
-      "C:\\ProgramData\\VEM\\bringup\\local-bringup-settings.json",
+      "C:\\ProgramData\\VEM\\vending-daemon\\runtime-bootstrap.json",
+      "C:\\ProgramData\\VEM\\bringup\\local-runtime-settings.json",
     ],
     services: [],
     tasks: [],
@@ -1780,7 +1780,7 @@ async function resolveHostOwnedFactoryPersonalizationMedia(options = {}) {
   } = await loadFactoryPersonalizationMedia();
   const snapshot = await readFactoryPersonalizationMediaSnapshot(mediaPath);
   const media = snapshot.media;
-  const expectedProfile = options.factoryProfile ?? "testbed";
+  const expectedProfile = options.runtimeImageProfile ?? "testbed";
   if (media.profile !== expectedProfile) {
     throw new Error(
       "Factory Personalization Media profile does not match --factory-profile",
@@ -1799,8 +1799,8 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
   if (options.mode !== "clean-base-factory-acceptance") {
     return null;
   }
-  const factoryProfile = String(options.factoryProfile ?? "").trim();
-  if (!new Set(["production", "testbed"]).has(factoryProfile)) {
+  const runtimeImageProfile = String(options.runtimeImageProfile ?? "").trim();
+  if (!new Set(["production", "testbed"]).has(runtimeImageProfile)) {
     throw new Error(
       "clean-base factory capability requires explicit --factory-profile production|testbed",
     );
@@ -1861,13 +1861,13 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
     .filter((line) => line && !line.startsWith("#"));
   if (
     caLines.length !== 1 ||
-    !caLines[0].endsWith(` vem-maintenance-ca:${factoryProfile}`)
+    !caLines[0].endsWith(` vem-maintenance-ca:${runtimeImageProfile}`)
   ) {
     throw new Error(
-      `Maintenance SSH CA must contain exactly one key for profile ${factoryProfile}`,
+      `Maintenance SSH CA must contain exactly one key for profile ${runtimeImageProfile}`,
     );
   }
-  if (factoryProfile === "production") {
+  if (runtimeImageProfile === "production") {
     if (!options.platformApiBaseUrl || !options.platformMqttUrl) {
       throw new Error(
         "production factory capability requires explicit production platform API and MQTT endpoints",
@@ -1923,9 +1923,9 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
     return { pathKey, hash: actual };
   });
   return {
-    factoryProfile,
-    maintenanceUser: factoryProfile === "production" ? "Admin" : "YKDZ",
-    hardwareMode: factoryProfile === "production" ? "production" : "simulated",
+    runtimeImageProfile,
+    maintenanceUser: runtimeImageProfile === "production" ? "Admin" : "YKDZ",
+    hardwareMode: runtimeImageProfile === "production" ? "production" : "simulated",
     openSshPackageSha256: packageInputs[0].hash,
     wireGuardPackageSha256: packageInputs[1].hash,
     maintenanceCaPublicKeySha256: packageInputs[2].hash,
@@ -2208,10 +2208,10 @@ export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
       source,
     );
   }
-  const factoryProfile = evidence.factoryProfile;
-  if (!new Set(["production", "testbed"]).has(factoryProfile)) {
+  const runtimeImageProfile = evidence.runtimeImageProfile;
+  if (!new Set(["production", "testbed"]).has(runtimeImageProfile)) {
     return cleanBaseValidationFailure(
-      "clean-base evidence requires an explicit production or testbed factoryProfile",
+      "clean-base evidence requires an explicit production or testbed runtimeImageProfile",
     );
   }
   const factoryWindowsBaselinePolicy = evidence.factoryWindowsBaselinePolicy;
@@ -2330,9 +2330,9 @@ export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
     );
   }
   const hardwareProfileMode = assertions.hardwareProfileMode;
-  if (hardwareProfileMode.profile !== factoryProfile) {
+  if (hardwareProfileMode.profile !== runtimeImageProfile) {
     return cleanBaseValidationFailure(
-      "clean-base evidence factoryProfile must match the hardware profile assertion",
+      "clean-base evidence runtimeImageProfile must match the hardware profile assertion",
     );
   }
   const expectedHardwareMode =
@@ -2417,7 +2417,7 @@ export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
     status: "passed",
     asserted: true,
     source,
-    factoryProfile,
+    runtimeImageProfile,
     readiness,
     factoryWindowsBaselinePolicy,
     requiredAssertions: [...REQUIRED_CLEAN_BASE_ASSERTIONS],
@@ -2433,9 +2433,9 @@ export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
   const runId = normalizeEphemeralRunId(options.runId);
   const cleanBaseSource = requireCleanBaseSource(options.cleanBaseSource);
   const cleanBaseSnapshot = String(options.cleanBaseSnapshot ?? "").trim();
-  const factoryProfile = String(options.factoryProfile ?? "").trim();
+  const runtimeImageProfile = String(options.runtimeImageProfile ?? "").trim();
   const visionInputs =
-    factoryProfile === "production"
+    runtimeImageProfile === "production"
       ? {
           factoryMediaRoot: String(options.factoryMediaRoot ?? "").trim(),
           visionConfigurationSourcePath: String(
@@ -3770,8 +3770,8 @@ function validateFactoryImageDeliveryUnitCleanBaseEvidence(
   if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
     missingEvidence.push("evidence");
   } else {
-    if (evidence.factoryProfile !== cleanBaseAcceptance.factoryProfile) {
-      missingEvidence.push("evidence.factoryProfile");
+    if (evidence.runtimeImageProfile !== cleanBaseAcceptance.runtimeImageProfile) {
+      missingEvidence.push("evidence.runtimeImageProfile");
     }
     if (!isNonEmptyString(evidence.preparationOutput)) {
       missingEvidence.push("evidence.preparationOutput");
@@ -3810,7 +3810,7 @@ function validateFactoryImageDeliveryUnitCleanBaseEvidence(
       } else {
         for (const field of [
           "schemaVersion",
-          "factoryProfile",
+          "runtimeImageProfile",
           "hardwareMode",
           "hardwareModel",
           "topologyIdentity",
@@ -3822,9 +3822,9 @@ function validateFactoryImageDeliveryUnitCleanBaseEvidence(
             );
           }
         }
-        if (manifest.factoryProfile !== cleanBaseAcceptance.factoryProfile) {
+        if (manifest.runtimeImageProfile !== cleanBaseAcceptance.runtimeImageProfile) {
           missingEvidence.push(
-            "evidence.factoryRuntimeVerification.checks.manifest.factoryProfile mismatch",
+            "evidence.factoryRuntimeVerification.checks.manifest.runtimeImageProfile mismatch",
           );
         }
       }
@@ -3890,7 +3890,7 @@ export function buildFactoryImageDeliveryUnitReport({
     ok: cleanBaseAcceptance.ok === true,
     reportPath,
     imageSource: cleanBaseAcceptance.source,
-    factoryProfile: cleanBaseAcceptance.factoryProfile,
+    runtimeImageProfile: cleanBaseAcceptance.runtimeImageProfile,
     declaredBuildInputs: {
       source: cleanBaseAcceptance.source,
       artifacts: {
@@ -3901,7 +3901,7 @@ export function buildFactoryImageDeliveryUnitReport({
       factoryManifest: {
         path: manifestPath,
         schemaVersion: manifest?.schemaVersion ?? null,
-        factoryProfile: manifest?.factoryProfile ?? null,
+        runtimeImageProfile: manifest?.runtimeImageProfile ?? null,
         hardwareMode: manifest?.hardwareMode ?? null,
         hardwareModel: manifest?.hardwareModel ?? null,
         topologyIdentity: manifest?.topologyIdentity ?? null,
@@ -3918,7 +3918,7 @@ export function buildFactoryImageDeliveryUnitReport({
     },
     factoryManifest: {
       path: manifestPath,
-      factoryProfile: manifest?.factoryProfile ?? null,
+      runtimeImageProfile: manifest?.runtimeImageProfile ?? null,
       summary: manifest,
     },
     preparationLogs: cleanBasePreparationLogs(cleanBaseAcceptance),
@@ -4899,7 +4899,7 @@ export function buildFactoryPreclaimVerificationScript(options = {}) {
   const verifierPath = "C:\\VEM\\bringup\\scripts\\verify-factory-runtime.ps1";
   const verifierEvidencePath = `C:\\Windows\\Temp\\vem-factory-preclaim-${runId}.json`;
   const machineConfigPath =
-    "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json";
+    "C:\\ProgramData\\VEM\\vending-daemon\\runtime-bootstrap.json";
   const oobeStatusPath =
     "C:\\ProgramData\\VEM\\factory\\oobe-bootstrap-status.json";
   const cleanupStatusPath =
@@ -5188,16 +5188,16 @@ export function buildRemotePowerShellScript(options = {}) {
   const expectedDaemonArtifactSha256 = options.daemonArtifactSha256 ?? "";
   const expectedMachineUiArtifactSha256 = options.machineUiArtifactSha256 ?? "";
   const cleanBaseSource = cleanBasePlan?.cleanBase.source ?? "";
-  const cleanBaseFactoryProfile = String(options.factoryProfile ?? "");
-  const cleanBaseEnvironmentName = `vps-fresh-${cleanBaseFactoryProfile}-clean-base`;
+  const cleanBaseRuntimeImageProfile = String(options.runtimeImageProfile ?? "");
+  const cleanBaseEnvironmentName = `vps-fresh-${cleanBaseRuntimeImageProfile}-clean-base`;
   const cleanBaseFactoryMediaRoot = String(options.factoryMediaRoot ?? "");
   const cleanBaseVisionConfigurationSourcePath = String(
     options.visionConfigurationSourcePath ?? "",
   );
   const cleanBaseMaintenanceUser =
-    cleanBaseFactoryProfile === "production" ? "Admin" : "YKDZ";
+    cleanBaseRuntimeImageProfile === "production" ? "Admin" : "YKDZ";
   const cleanBaseHardwareMode =
-    cleanBaseFactoryProfile === "production" ? "production" : "simulated";
+    cleanBaseRuntimeImageProfile === "production" ? "production" : "simulated";
   const cleanBaseSnapshot = cleanBasePlan?.cleanBase.snapshot ?? "";
   const factoryWindowsBaselinePolicyJson = JSON.stringify(
     FACTORY_WINDOWS_BASELINE_POLICY,
@@ -5510,6 +5510,35 @@ function Assert-FirstClaimConfig($Config) {
 }
 
 function Get-ConfigSnapshotFromRuntimeSummary($Summary) {
+  if ($null -ne $Summary -and $null -ne $Summary.sourceDocuments -and $null -ne $Summary.sourceDocuments.bootstrap) {
+    $bootstrap = $Summary.sourceDocuments.bootstrap
+    $profile = $Summary.sourceDocuments.profileCache
+    $secrets = $Summary.secretStatus
+    $platform = $Summary.platform
+    $machine = $Summary.machine
+    $machineSecret = $null -ne $secrets -and [bool]$secrets.machineSecretConfigured
+    $mqttSigningSecret = $null -ne $secrets -and [bool]$secrets.mqttSigningSecretConfigured
+    $mqttPassword = $null -ne $secrets -and [bool]$secrets.mqttPasswordConfigured
+    $profileAccepted = $null -ne $profile
+    return [pscustomobject]@{
+      public = [pscustomobject]@{
+        machineCode = if ($null -ne $machine) { $machine.code } else { $null }
+        machineId = if ($null -ne $machine) { $machine.id } else { $null }
+        machineName = if ($null -ne $machine) { $machine.name } else { $null }
+        machineStatus = if ($null -ne $machine) { $machine.status } else { $null }
+        machineLocationLabel = if ($null -ne $machine) { $machine.locationLabel } else { $null }
+        apiBaseUrl = if ($null -ne $platform) { $platform.apiBaseUrl } else { $bootstrap.provisioningApiBaseUrl }
+        mqttUrl = if ($null -ne $platform -and $null -ne $platform.mqttConnection) { $platform.mqttConnection.url } else { $null }
+      }
+      machineSecretConfigured = $machineSecret
+      mqttSigningSecretConfigured = $mqttSigningSecret
+      mqttPasswordConfigured = $mqttPassword
+      maintenancePinConfigured = $true
+      provisioned = $profileAccepted -and $machineSecret -and $mqttSigningSecret
+      provisioningIssues = @()
+      runtimeBootstrapConfigured = $true
+    }
+  }
   if ($null -eq $Summary -or $null -eq $Summary.effectivePublic -or $null -eq $Summary.configuredState) {
     throw "daemon runtime configuration summary is incomplete"
   }
@@ -5530,7 +5559,7 @@ function Get-ConfigSnapshotFromRuntimeSummary($Summary) {
     maintenancePinConfigured = [bool]$state.maintenancePinConfigured
     provisioned = $issues.Count -eq 0
     provisioningIssues = @($issues)
-    factoryManifestConfigured = [bool]$state.factoryManifest
+    runtimeBootstrapConfigured = [bool]$state.factoryManifest
   }
 }
 
@@ -5544,8 +5573,6 @@ function Convert-ConfigSnapshotEvidence($Config) {
       mqttUrl = $null
       hardwareAdapter = $null
       scannerAdapter = $null
-      serialPortPath = $null
-      scannerSerialPortPath = $null
       machineSecretConfigured = $false
       mqttSigningSecretConfigured = $false
       mqttPasswordConfigured = $false
@@ -5561,8 +5588,6 @@ function Convert-ConfigSnapshotEvidence($Config) {
     mqttUrl = if ($null -ne $Config.public) { $Config.public.mqttUrl } else { $null }
     hardwareAdapter = if ($null -ne $Config.public) { $Config.public.hardwareAdapter } else { $null }
     scannerAdapter = if ($null -ne $Config.public) { $Config.public.scannerAdapter } else { $null }
-    serialPortPath = if ($null -ne $Config.public) { $Config.public.serialPortPath } else { $null }
-    scannerSerialPortPath = if ($null -ne $Config.public) { $Config.public.scannerSerialPortPath } else { $null }
     machineSecretConfigured = [bool]$Config.machineSecretConfigured
     mqttSigningSecretConfigured = [bool]$Config.mqttSigningSecretConfigured
     mqttPasswordConfigured = [bool]$Config.mqttPasswordConfigured
@@ -5927,7 +5952,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     platformTarget = ${psString(platformTarget)}
     apiBaseUrl = ${psString(platform.apiBaseUrl)}
     mqttUrl = ${psString(platform.mqttUrl)}
-    preClaimFactoryConfigVerified = $false
+    preClaimRuntimeBootstrapVerified = $false
     networkProbe = [ordered]@{
       endpoint = $null
       status = "not_attempted"
@@ -5977,39 +6002,17 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       throw "refusing to provision non-testbed target identity: ${machineCode}"
     }
 
-    # A disposable VM uses the run-local API/MQTT stack rather than the
-    # endpoint baked into its reusable Factory base.
-    $machineConfigPath = "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json"
-    $machineConfig = Read-JsonFile $machineConfigPath
-    if (-not [string]::IsNullOrWhiteSpace([string]$machineConfig.machineCode)) {
-      throw "refusing to retarget an already claimed machine config"
+    $runtimeBootstrapPath = "C:\\ProgramData\\VEM\\runtime-bootstrap.json"
+    $runtimeBootstrap = [ordered]@{
+      schemaVersion = 1
+      provisioningApiBaseUrl = ${psString(platform.apiBaseUrl)}
+      hardwareModel = ${psString(options.runtimeHardwareModel ?? options.factoryHardwareModel ?? "vem-prod-24")}
+      topology = [ordered]@{
+        identity = ${psString(platform.hardwareTopologyIdentity)}
+        version = ${psString(platform.hardwareTopologyVersion)}
+      }
     }
-    $machineConfig.apiBaseUrl = ${psString(platform.apiBaseUrl)}
-    $machineConfig.mqttUrl = ${psString(platform.mqttUrl)}
-    Write-JsonFile -Path $machineConfigPath -Value $machineConfig
-
-    # Effective pre-claim configuration is layered over the Factory manifest.
-    # machine-config.json is only a compatibility snapshot, so override the
-    # provisioning endpoint in the mutable local Bring-Up layer as well.
-    $localSettingsPath = "C:\\ProgramData\\VEM\\bringup\\local-settings.json"
-    $localSettings = Read-JsonFile $localSettingsPath
-    $localSettings.provisioningEndpointOverride = ${psString(platform.apiBaseUrl)}
-    Write-JsonFile -Path $localSettingsPath -Value $localSettings
-
-    # The disposable VM has only a virtual NIC. Use the daemon's existing
-    # test adapter for local-link evidence while keeping Platform probes,
-    # claim, MQTT, payment, and device flows real.
-    $serviceKey = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\VemVendingDaemon"
-    $serviceEnvironment = @(
-      (Get-ItemProperty -LiteralPath $serviceKey -Name Environment -ErrorAction SilentlyContinue).Environment |
-        Where-Object {
-          -not ([string]$_).StartsWith("VEM_NETWORK_ADAPTER=", [StringComparison]::OrdinalIgnoreCase) -and
-          -not ([string]$_).StartsWith("VEM_FAKE_NETWORK_OUTCOME=", [StringComparison]::OrdinalIgnoreCase)
-        }
-    )
-    $serviceEnvironment += "VEM_NETWORK_ADAPTER=fake"
-    $serviceEnvironment += "VEM_FAKE_NETWORK_OUTCOME=success"
-    Set-ItemProperty -LiteralPath $serviceKey -Name Environment -Type MultiString -Value $serviceEnvironment
+    Write-JsonFile -Path $runtimeBootstrapPath -Value $runtimeBootstrap
     Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
 
     $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
@@ -6017,102 +6020,31 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $baseUrl = $daemonIpc.baseUrl
     $headers = $daemonIpc.headers
 
-    # Factory writes a random single-use capability readable only by the
-    # maintenance account. Exchange it for the daemon's ordinary in-memory
-    # session before any protected Bring-Up task; never use mutable config IPC.
-    $bootstrapCapabilityPath = "C:\\ProgramData\\VEM\\vending-daemon\\factory\\bootstrap-provisioning-capability"
-    if (-not (Test-Path -LiteralPath $bootstrapCapabilityPath -PathType Leaf)) {
-      throw "Factory bootstrap maintenance capability is missing"
-    }
-    $bootstrapCapability = [IO.File]::ReadAllText($bootstrapCapabilityPath, [Text.UTF8Encoding]::new($false)).Trim()
-    if ([string]::IsNullOrWhiteSpace($bootstrapCapability)) {
-      throw "Factory bootstrap maintenance capability is empty"
-    }
-    $bootstrapHeaders = @{}
-    foreach ($entry in $headers.GetEnumerator()) { $bootstrapHeaders[[string]$entry.Key] = [string]$entry.Value }
-    $bootstrapHeaders["x-vem-factory-bootstrap-capability"] = $bootstrapCapability
-    $evidence.bootstrapMaintenanceSession.endpoint = "$baseUrl/v1/factory/bootstrap/maintenance-session"
-    try {
-      $bootstrapSession = Invoke-IpcJson "POST" "$baseUrl/v1/factory/bootstrap/maintenance-session" $bootstrapHeaders
-      if ([string]::IsNullOrWhiteSpace([string]$bootstrapSession.sessionId)) {
-        throw "Factory bootstrap session response has no session id"
-      }
-      $headers["x-vem-maintenance-session"] = [string]$bootstrapSession.sessionId
-      $evidence.bootstrapMaintenanceSession.status = "issued"
-      $evidence.bootstrapMaintenanceSession.httpStatus = 201
-    } catch {
-      $bootstrapError = Get-HttpErrorInfo $_
-      $evidence.bootstrapMaintenanceSession.status = "failed"
-      $evidence.bootstrapMaintenanceSession.httpStatus = $bootstrapError.statusCode
-      throw "Factory bootstrap maintenance session failed"
-    } finally {
-      $bootstrapCapability = $null
-      $bootstrapHeaders.Remove("x-vem-factory-bootstrap-capability")
-    }
-
     $configBefore = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers)
     $public = $configBefore.public
     Assert-FirstClaimConfig $configBefore
-    if (-not [bool]$configBefore.factoryManifestConfigured) {
-      throw "Factory bootstrap configuration is missing before Testbed claim"
+    if (-not [bool]$configBefore.runtimeBootstrapConfigured) {
+      throw "Runtime Bootstrap is missing before Testbed claim"
     }
     if ([string]$public.apiBaseUrl -ne ${psString(platform.apiBaseUrl)}) {
-      throw "disposable Testbed config did not reload the run-local Platform endpoint"
+      throw "Runtime Bootstrap did not expose the run-local Platform endpoint"
     }
-    $evidence.preClaimFactoryConfigVerified = $true
+    $evidence.preClaimRuntimeBootstrapVerified = $true
 
     $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
     $currentTask = $bringUp.currentTask
     if ($null -eq $currentTask) {
-      throw "daemon did not project a current Factory network task"
-    }
-    if ([string]$currentTask.kind -ne "configure_network" -or [string]$currentTask.intent -ne "refresh_network") {
-      throw "daemon projected unexpected Factory network task: $($currentTask.kind)/$($currentTask.intent)"
-    }
-    if (
-      [int]$currentTask.contractVersion -ne 1 -or
-      [string]::IsNullOrWhiteSpace([string]$currentTask.taskId) -or
-      [uint64]$currentTask.taskVersion -lt 1
-    ) {
-      throw "daemon projected an invalid Factory network task cursor"
-    }
-    $probePayload = [ordered]@{
-      contractVersion = [int]$currentTask.contractVersion
-      taskId = [string]$currentTask.taskId
-      taskVersion = [uint64]$currentTask.taskVersion
-      kind = [string]$currentTask.kind
-      intent = [string]$currentTask.intent
-      mutation = [ordered]@{ type = "probe_network" }
-    }
-    $evidence.networkProbe.endpoint = "$baseUrl/v1/bring-up/tasks/execute"
-    try {
-      $probeResult = Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $probePayload
-      if ([string]$probeResult.status -ne "connected") {
-        throw "daemon did not verify existing local network and Platform endpoint"
-      }
-      $evidence.networkProbe.status = "connected"
-      $evidence.networkProbe.httpStatus = 200
-    } catch {
-      $probeError = Get-HttpErrorInfo $_
-      $evidence.networkProbe.status = "failed"
-      $evidence.networkProbe.httpStatus = $probeError.statusCode
-      throw "daemon IPC existing-network probe failed"
-    }
-
-    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
-    $currentTask = $bringUp.currentTask
-    if ($null -eq $currentTask) {
-      throw "daemon did not project a Factory claim task after network probe"
+      throw "daemon did not project a Runtime Bootstrap claim task"
     }
     if ([string]$currentTask.kind -ne "claim_machine" -or [string]$currentTask.intent -ne "claim_machine") {
-      throw "daemon projected unexpected Factory claim task after network probe: $($currentTask.kind)/$($currentTask.intent)"
+      throw "daemon projected unexpected Runtime Bootstrap claim task: $($currentTask.kind)/$($currentTask.intent)"
     }
     if (
       [int]$currentTask.contractVersion -ne 1 -or
       [string]::IsNullOrWhiteSpace([string]$currentTask.taskId) -or
       [uint64]$currentTask.taskVersion -lt 1
     ) {
-      throw "daemon projected an invalid Factory claim task cursor after network probe"
+      throw "daemon projected an invalid Runtime Bootstrap claim task cursor"
     }
     $claimPayload = [ordered]@{
       contractVersion = [int]$currentTask.contractVersion
@@ -7234,8 +7166,8 @@ function Convert-CleanBaseFactoryAssertions($VerifierEvidence, $PreflightAbsence
     uiLauncherTask = [ordered]@{ status = if ($machineUiStartupMode -eq "shell_launcher" -or [bool]$machineUiTask.exists) { "passed" } else { "failed" }; task = $machineUiTask }
     runtimeResetGateClean = [ordered]@{ status = "passed"; preflightAbsence = @($PreflightAbsence) }
     hardwareProfileMode = [ordered]@{
-      status = if (([string]$checks.manifest.factoryProfile -eq "production" -and [string]$checks.manifest.hardwareMode -eq "production") -or ([string]$checks.manifest.factoryProfile -eq "testbed" -and [string]$checks.manifest.hardwareMode -eq "simulated")) { "passed" } else { "failed" }
-      profile = [string]$checks.manifest.factoryProfile
+      status = if (([string]$checks.manifest.runtimeImageProfile -eq "production" -and [string]$checks.manifest.hardwareMode -eq "production") -or ([string]$checks.manifest.runtimeImageProfile -eq "testbed" -and [string]$checks.manifest.hardwareMode -eq "simulated")) { "passed" } else { "failed" }
+      profile = [string]$checks.manifest.runtimeImageProfile
       mode = [string]$checks.manifest.hardwareMode
     }
     startupReachesBringUpOrSalesEligible = [ordered]@{ status = if ([bool]$checks.daemonService.exists -and ($machineUiStartupMode -eq "shell_launcher" -or $machineUiStartupMode -eq "scheduled_task")) { "passed" } else { "failed" }; state = "bring_up" }
@@ -7283,7 +7215,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
   if ($diagnostics.Count -eq 0) {
     try {
       $personalizationEvidence = [ordered]@{
-        profile = ${psString(cleanBaseFactoryProfile)}
+        profile = ${psString(cleanBaseRuntimeImageProfile)}
         source = "trusted_protected_gate"
         credentials = "not_logged"
         wireGuardPrivateKey = "not-supplied; generated-locally"
@@ -7359,7 +7291,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
       MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
       MachineUiSha256 = [string]$staged.machineUiSha256
       EnvironmentName = ${psString(cleanBaseEnvironmentName)}
-      DeploymentBatch = ${psString(`clean-base-${cleanBaseFactoryProfile}-v1`)}
+      DeploymentBatch = ${psString(`clean-base-${cleanBaseRuntimeImageProfile}-v1`)}
       ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
       MqttUrl = ${psString(platform.mqttUrl)}
       HardwareMode = ${psString(cleanBaseHardwareMode)}
@@ -7374,7 +7306,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
       ExpectedAutoLogonUser = "VEMKiosk"
       ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
       TargetLayoutVersion = "win10-runtime-layout/v1"
-      FactoryProfile = ${psString(cleanBaseFactoryProfile)}
+      RuntimeImageProfile = ${psString(cleanBaseRuntimeImageProfile)}
       FactoryMediaRoot = ${psString(cleanBaseFactoryMediaRoot)}
       VisionConfigurationSourcePath = ${psString(cleanBaseVisionConfigurationSourcePath)}
       PersonalizationMediaPath = ${psString(options.remotePersonalizationMediaPath ?? "")}
@@ -7443,7 +7375,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
     result = if ($passed) { "passed" } else { "failed" }
     ok = $passed
     dryRun = $false
-    factoryProfile = ${psString(cleanBaseFactoryProfile)}
+    runtimeImageProfile = ${psString(cleanBaseRuntimeImageProfile)}
     source = [ordered]@{
       kind = "clean-windows-base"
       uri = ${psString(cleanBaseSource)}
@@ -7466,7 +7398,7 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
     assertions = $assertions
     diagnostics = @($diagnostics)
     evidence = [ordered]@{
-      factoryProfile = ${psString(cleanBaseFactoryProfile)}
+      runtimeImageProfile = ${psString(cleanBaseRuntimeImageProfile)}
       preparationOutput = $preparationOutputPath
       verificationAction = $verificationOutputPath
       verifierEvidence = $verifierEvidencePath
@@ -8928,8 +8860,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
   } else {
     $null
   }
-  $lowerControllerCom = Get-WindowsComPortEvidence ([string]$daemonIpc.config.serialPortPath)
-  $scannerCom = Get-WindowsComPortEvidence ([string]$daemonIpc.config.scannerSerialPortPath)
+  $lowerControllerCom = [ordered]@{ observed = $false; reason = "dynamic_device_binding" }
+  $scannerCom = [ordered]@{ observed = $false; reason = "dynamic_device_binding" }
   if ($null -ne $orderId -and $null -ne $vendingCommandId) {
     $orderQuery = [uri]::EscapeDataString($orderId)
     $commandQuery = [uri]::EscapeDataString($vendingCommandId)
@@ -9172,7 +9104,7 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
   $maintenanceUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMaintenanceUI" -TaskPath "\\"
   $visionTask = Get-ScheduledTaskEvidence -TaskName "StartVisionServer" -TaskPath "\\VEM\\"
   $readyFile = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
-  $daemonConfig = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json"
+  $daemonConfig = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\runtime-bootstrap.json"
   $startupBringup = Get-StartupBringupEvidence
   $daemonIpc = Get-DaemonIpcInventoryEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
   $provisioningFacts = Convert-ProvisioningFacts $daemonIpc (@($ProvisioningActions) + @(Get-PersistedProvisioningActions))
@@ -10118,7 +10050,7 @@ function parseArgs(argv) {
       options.maintenanceIngressSourceAllowlist = next;
       index += 1;
     } else if (arg === "--factory-profile") {
-      options.factoryProfile = next;
+      options.runtimeImageProfile = next;
       index += 1;
     } else if (arg === "--factory-media-root") {
       options.factoryMediaRoot = next;

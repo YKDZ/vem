@@ -69,7 +69,7 @@ param(
   [string[]]$MaintenanceMaintainerSourceAllowlist,
   [string]$MaintenanceWireGuardInterfaceAlias = "VEM-Maintenance",
   [string]$MaintenanceWireGuardListenAddress,
-  [ValidateSet("production", "testbed")][string]$FactoryProfile = "production",
+  [ValidateSet("production", "testbed")][string]$RuntimeImageProfile = "production",
   [string]$MaintenanceSshCaPublicKeyPath = "C:\ProgramData\VEM\factory\maintenance-ca.pub",
   [switch]$EnableMaintenanceDebugTask,
   [string]$SshdConfigPath = "C:\ProgramData\ssh\sshd_config",
@@ -428,7 +428,7 @@ function Get-ControlledMaintenanceIngressPolicy {
   )
 
   if ($Profile -ne "production" -and $Profile -ne "testbed") {
-    throw "FactoryProfile must be production or testbed"
+    throw "RuntimeImageProfile must be production or testbed"
   }
   $wireGuardAddress = Assert-WireGuardListenAddress -InterfaceAlias $WireGuardInterfaceAlias -ListenAddress $WireGuardListenAddress
   if ($Profile -eq "testbed") {
@@ -461,7 +461,7 @@ function Assert-ProfileMaintenanceCa {
     throw "Maintenance SSH CA must contain exactly one profile-bound Ed25519 public key"
   }
   if ($matches[1] -cne $Profile) {
-    throw "Maintenance SSH CA profile does not match FactoryProfile $Profile"
+    throw "Maintenance SSH CA profile does not match RuntimeImageProfile $Profile"
   }
 }
 
@@ -493,7 +493,7 @@ function Ensure-SshdConfigDenyKioskUser {
       throw "Controlled Maintenance Ingress ListenAddress must be an IP address: $ListenAddress"
     }
     $isWildcard = $parsedAddress.Equals([System.Net.IPAddress]::Any) -or $parsedAddress.Equals([System.Net.IPAddress]::IPv6Any)
-    if ($isWildcard -and $FactoryProfile -ne "testbed") {
+    if ($isWildcard -and $RuntimeImageProfile -ne "testbed") {
       throw "WireGuard tunnel ListenAddress must not be wildcard or loopback"
     }
     if ($parsedAddress.Equals([System.Net.IPAddress]::Loopback) -or $parsedAddress.Equals([System.Net.IPAddress]::IPv6Loopback)) {
@@ -519,7 +519,7 @@ function Ensure-SshdConfigDenyKioskUser {
     "AllowUsers $($MaintenanceUser.ToLowerInvariant())",
     "DenyUsers $($KioskUser.ToLowerInvariant())",
     "PermitEmptyPasswords no",
-    "# profile CA: $FactoryProfile",
+    "# profile CA: $RuntimeImageProfile",
     "# SYSTEM SSH entrypoint: not configured; elevate explicitly from the administrator session",
     $endMarker
   )
@@ -763,13 +763,13 @@ function Ensure-ControlledMaintenanceIngress {
   if (@($RunnerSourceAllowlist).Count -eq 0 -or @($MaintainerSourceAllowlist).Count -eq 0) {
     throw "Controlled Maintenance Ingress requires explicit runner and maintainer role pools"
   }
-  if ($FactoryProfile -eq "production" -and $MaintenanceUser -cne "Admin") {
+  if ($RuntimeImageProfile -eq "production" -and $MaintenanceUser -cne "Admin") {
     throw "production profile permits only the Admin maintenance administrator"
   }
-  if ($FactoryProfile -eq "production" -and $null -ne (Get-LocalUser -Name "YKDZ" -ErrorAction SilentlyContinue)) {
+  if ($RuntimeImageProfile -eq "production" -and $null -ne (Get-LocalUser -Name "YKDZ" -ErrorAction SilentlyContinue)) {
     throw "production profile rejects a live YKDZ testbed account"
   }
-  if ($FactoryProfile -eq "testbed" -and $MaintenanceUser -cne "YKDZ") {
+  if ($RuntimeImageProfile -eq "testbed" -and $MaintenanceUser -cne "YKDZ") {
     throw "testbed profile permits only the YKDZ maintenance administrator"
   }
   $validatedIngressSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $SourceAllowlist
@@ -788,10 +788,10 @@ function Ensure-ControlledMaintenanceIngress {
     throw "kiosk account not found: $KioskUser. Configure it before enabling Controlled Maintenance Ingress."
   }
   Assert-RemoteMaintenanceAccountSeparation -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser
-  $ingressPolicy = Get-ControlledMaintenanceIngressPolicy -Profile $FactoryProfile -WireGuardInterfaceAlias $InterfaceAlias -WireGuardListenAddress $ListenAddress
+  $ingressPolicy = Get-ControlledMaintenanceIngressPolicy -Profile $RuntimeImageProfile -WireGuardInterfaceAlias $InterfaceAlias -WireGuardListenAddress $ListenAddress
   Assert-WireGuardListenAddress -InterfaceAlias $InterfaceAlias -ListenAddress $ListenAddress
 
-  Assert-ProfileMaintenanceCa -Path $CaPath -Profile $FactoryProfile
+  Assert-ProfileMaintenanceCa -Path $CaPath -Profile $RuntimeImageProfile
   Ensure-OpenSshServer
   if ([bool]$ingressPolicy.runnerDirectEnabled -and @($RunnerSourceAllowlist).Count -eq 0) {
     throw "testbed runner-direct SSH ingress requires a non-empty MaintenanceRunnerSourceAllowlist"
@@ -950,8 +950,8 @@ function Ensure-DaemonDataDirectory {
   )
 
   Ensure-Directory -Path $DataDirectory
-  $sourceConfig = Join-Path $BringupDirectory "machine-config.json"
-  $targetConfig = Join-Path $DataDirectory "machine-config.json"
+  $sourceConfig = Join-Path $BringupDirectory "runtime-bootstrap.json"
+  $targetConfig = Join-Path $DataDirectory "runtime-bootstrap.json"
   if ((Test-Path -LiteralPath $sourceConfig) -and -not (Test-Path -LiteralPath $targetConfig)) {
     Copy-Item -Force -Path $sourceConfig -Destination $targetConfig
   }

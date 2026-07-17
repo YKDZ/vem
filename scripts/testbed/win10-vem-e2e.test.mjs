@@ -365,7 +365,7 @@ function projectFactoryRuntimeBoundary(profile) {
       "C:\\VEM\\bringup\\machine.exe",
       "-TargetLayoutVersion",
       "1",
-      "-FactoryProfile",
+      "-RuntimeImageProfile",
       profile,
       "-OpenSshPackagePath",
       "C:\\input\\openssh.msi",
@@ -1923,7 +1923,7 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
     result: "passed",
     ok: true,
     dryRun: false,
-    factoryProfile: "testbed",
+    runtimeImageProfile: "testbed",
     source: {
       kind: "clean-windows-base",
       uri: "factory-media://clean-windows-base",
@@ -2060,7 +2060,7 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
       preflightNoPreviousVemEvidence: { status: "passed" },
     },
     evidence: {
-      factoryProfile: "testbed",
+      runtimeImageProfile: "testbed",
       preparationOutput,
       verificationAction,
       verifierEvidence,
@@ -2072,7 +2072,7 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
         checks: {
           manifest: {
             schemaVersion: "vem-factory-runtime-manifest/v1",
-            factoryProfile: "testbed",
+            runtimeImageProfile: "testbed",
             hardwareMode: "simulated",
             hardwareModel: "win10-clean-base",
             topologyIdentity: "clean-base-factory-runtime",
@@ -2178,11 +2178,11 @@ describe("win10-vem-e2e reset planning", () => {
 
   it("rejects profile promotion when clean-base or verifier evidence does not bind the same profile", () => {
     for (const evidence of [
-      cleanBaseFactoryAcceptanceEvidence({ factoryProfile: "production" }),
+      cleanBaseFactoryAcceptanceEvidence({ runtimeImageProfile: "production" }),
       cleanBaseFactoryAcceptanceEvidence({
         evidence: {
           ...cleanBaseFactoryAcceptanceEvidence().evidence,
-          factoryProfile: "production",
+          runtimeImageProfile: "production",
         },
       }),
       cleanBaseFactoryAcceptanceEvidence({
@@ -2195,7 +2195,7 @@ describe("win10-vem-e2e reset planning", () => {
               manifest: {
                 ...cleanBaseFactoryAcceptanceEvidence().evidence
                   .factoryRuntimeVerification.checks.manifest,
-                factoryProfile: "production",
+                runtimeImageProfile: "production",
               },
             },
           },
@@ -2207,7 +2207,7 @@ describe("win10-vem-e2e reset planning", () => {
           buildFactoryImageDeliveryUnitReport({
             cleanBaseAcceptance: evidence,
           }),
-        /factoryProfile|completed prep run evidence/i,
+        /runtimeImageProfile|completed prep run evidence/i,
       );
     }
   });
@@ -4396,9 +4396,9 @@ if ($errors.Count -gt 0) {
     assert.match(script, /apiBaseUrl = \$ProvisioningEndpoint/);
     assert.match(script, /mqttUrl = \$MqttUrl/);
     assert.match(script, /hardwareAdapter = "serial"/);
-    assert.match(script, /serialPortPath = \$LowerControllerSerialPortPath/);
+    assert.match(script, /lowerControllerPath = \$LowerControllerSerialPortPath/);
     assert.match(script, /scannerAdapter = "serial_text"/);
-    assert.match(script, /scannerSerialPortPath = \$ScannerSerialPortPath/);
+    assert.match(script, /scannerPath = \$ScannerSerialPortPath/);
     assert.match(script, /visionEnabled = \$true/);
     assert.match(
       script,
@@ -4440,7 +4440,7 @@ if ($errors.Count -gt 0) {
 
     assert.match(
       source,
-      /DeploymentBatch = \$\{psString\(`clean-base-\$\{cleanBaseFactoryProfile\}-v1`\)\}/,
+      /DeploymentBatch = \$\{psString\(`clean-base-\$\{cleanBaseRuntimeImageProfile\}-v1`\)\}/,
     );
   });
 
@@ -4836,7 +4836,7 @@ if ($errors.Count -gt 0) {
         (probe) =>
           probe.code === "preflightNoMachineIdentity" &&
           probe.paths.includes(
-            "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json",
+            "C:\\ProgramData\\VEM\\vending-daemon\\runtime-bootstrap.json",
           ),
       ),
     );
@@ -4885,7 +4885,7 @@ if ($errors.Count -gt 0) {
       runId: "RUN-191",
       cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
-      factoryProfile: "production",
+      runtimeImageProfile: "production",
       factoryMediaRoot,
       visionConfigurationSourcePath,
       daemonArtifactSha256: "a".repeat(64),
@@ -4901,7 +4901,7 @@ if ($errors.Count -gt 0) {
       runId: "RUN-191",
       cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
-      factoryProfile: "production",
+      runtimeImageProfile: "production",
       factoryMediaRoot,
       visionConfigurationSourcePath,
       platformTarget: "vem-vps",
@@ -4927,7 +4927,7 @@ if ($errors.Count -gt 0) {
       runId: "RUN-192",
       cleanBaseSource: "factory-media://clean-windows-base",
       cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
-      factoryProfile: "testbed",
+      runtimeImageProfile: "testbed",
       platformTarget: "vem-vps",
       machineCode: "VEM-TESTBED-WINVM-01",
       remoteSupportScriptRoot: "C:\\Windows\\Temp\\vem-clean-base-support",
@@ -4936,7 +4936,7 @@ if ($errors.Count -gt 0) {
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
     });
-    assert.match(script, /FactoryProfile = 'testbed'/);
+    assert.match(script, /RuntimeImageProfile = 'testbed'/);
     assert.match(script, /EnvironmentName = 'vps-fresh-testbed-clean-base'/);
     assert.match(script, /DeploymentBatch = 'clean-base-testbed-v1'/);
   });
@@ -4945,7 +4945,7 @@ if ($errors.Count -gt 0) {
     for (const profile of ["production", "testbed"]) {
       const result = projectFactoryRuntimeBoundary(profile);
       try {
-        assert.equal(result.projection.factoryProfile, profile);
+        assert.equal(result.projection.runtimeImageProfile, profile);
         assert.equal(
           result.projection.inputs.environmentName,
           `vps-fresh-${profile}-clean-base`,
@@ -5550,7 +5550,7 @@ if ($errors.Count -gt 0) {
           },
         ],
         evidence: {
-          factoryProfile: "testbed",
+          runtimeImageProfile: "testbed",
           preparationOutput:
             "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\RUN-186\\factory-runtime-preparation.json",
           verificationAction:
@@ -5565,7 +5565,7 @@ if ($errors.Count -gt 0) {
             checks: {
               manifest: {
                 schemaVersion: "vem-factory-runtime-manifest/v1",
-                factoryProfile: "testbed",
+                runtimeImageProfile: "testbed",
                 hardwareMode: "simulated",
                 hardwareModel: "win10-clean-base",
                 topologyIdentity: "clean-base-factory-runtime",

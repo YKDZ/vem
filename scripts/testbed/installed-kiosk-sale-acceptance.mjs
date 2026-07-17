@@ -329,24 +329,6 @@ $ports = @([System.IO.Ports.SerialPort]::GetPortNames() | ForEach-Object { $_.To
 if ($ports.Count -lt 2) { throw "installed kiosk serial activation requires two COM ports, found $($ports.Count)" }
 $lowerPort = if ($ports -contains 'COM1') { 'COM1' } else { $ports[0] }
 $scannerPort = if ($ports -contains 'COM2') { 'COM2' } else { @($ports | Where-Object { $_ -ne $lowerPort })[0] }
-Stop-Service -Name 'VemVendingDaemon' -Force
-foreach ($path in @('C:\ProgramData\VEM\vending-daemon\machine-config.json', 'C:\VEM\bringup\machine-config.json')) {
-  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-  $config = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-  foreach ($entry in @{ hardwareAdapter = 'serial'; serialPortPath = $lowerPort; lowerControllerUsbIdentity = $null; scannerAdapter = 'serial_text'; scannerSerialPortPath = $scannerPort; scannerUsbIdentity = $null }.GetEnumerator()) {
-    if ($config.PSObject.Properties.Name -contains $entry.Key) { $config.($entry.Key) = $entry.Value }
-    else { $config | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
-  }
-  [System.IO.File]::WriteAllText($path, ($config | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
-}
-$localSettingsPath = 'C:\ProgramData\VEM\bringup\local-settings.json'
-$localSettings = [System.IO.File]::ReadAllText($localSettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-foreach ($entry in @{ hardwareAdapter = 'serial'; serialPortPath = $lowerPort; lowerControllerUsbIdentity = $null; scannerAdapter = 'serial_text'; scannerSerialPortPath = $scannerPort; scannerUsbIdentity = $null }.GetEnumerator()) {
-  if ($localSettings.PSObject.Properties.Name -contains $entry.Key) { $localSettings.($entry.Key) = $entry.Value }
-  else { $localSettings | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
-}
-[System.IO.File]::WriteAllText($localSettingsPath, ($localSettings | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
-Start-Service -Name 'VemVendingDaemon'
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
   Start-Sleep -Milliseconds 500
@@ -364,11 +346,9 @@ if (-not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) {
     lowerControllerPort = $lowerPort
     scannerPort = $scannerPort
     serviceStatus = if ($service) { [string]$service.Status } else { 'missing' }
-    localSettings = [System.IO.File]::ReadAllText($localSettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-    machineConfig = [System.IO.File]::ReadAllText('C:\ProgramData\VEM\vending-daemon\machine-config.json', [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     health = $health
   }
-  throw "serial-backed daemon did not become hardware/scanner ready: $($diagnostic | ConvertTo-Json -Depth 30 -Compress)"
+  throw "serial-backed daemon did not become ready without direct persisted configuration edits: $($diagnostic | ConvertTo-Json -Depth 30 -Compress)"
 }
 [Console]::Out.WriteLine(([ordered]@{ ok = $true; lowerControllerPort = $lowerPort; scannerPort = $scannerPort; hardwareOnline = [bool]$health.hardwareOnline; scannerOnline = [bool]$health.scannerOnline } | ConvertTo-Json -Compress))
 `.trim();

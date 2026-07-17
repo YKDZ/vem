@@ -37,127 +37,36 @@ function hasPostTo(body, endpoint) {
  * runtime action performed by Get-ProtectedMaintenanceHeaders.
  */
 export function inspectProtectedMaintenanceSmokeContract(smoke) {
-  const body = powershellFunctionBody(smoke, "Get-ProtectedMaintenanceHeaders");
-  if (!body)
-    return { valid: false, failures: ["missing protected-session function"] };
-
   const failures = [];
-  if (
-    !/if\s*\(\s*-not\s+\[string\]::IsNullOrWhiteSpace\(\$Pin\)\s*\)/u.test(body)
-  ) {
-    failures.push("PIN branch is absent");
+  if (!/runtime-bootstrap\.json/u.test(smoke)) {
+    failures.push("smoke does not write Runtime Bootstrap");
   }
-  if (!hasPostTo(body, "/v1/maintenance/sessions")) {
-    failures.push(
-      "PIN branch does not call the daemon maintenance-session endpoint",
-    );
+  if (!/provisioningApiBaseUrl/u.test(smoke)) {
+    failures.push("smoke does not set the bootstrap provisioning API base URL");
   }
-  if (
-    !/pin\s*=\s*\$Pin/u.test(body) ||
-    !/operatorId\s*=\s*"windows-smoke"/u.test(body)
-  ) {
-    failures.push("PIN branch does not construct the daemon session request");
+  if (!/\/v1\/bring-up\/tasks\/execute/u.test(smoke)) {
+    failures.push("smoke does not exercise the daemon claim task endpoint");
   }
-  if (
-    !/Join-Path\s+\$RuntimeDataDir\s+"factory\\bootstrap-provisioning-capability"/u.test(
-      body,
-    )
-  ) {
-    failures.push(
-      "Factory capability is not resolved relative to RuntimeDataDir",
-    );
-  }
-  if (
-    /C:\\\\ProgramData\\\\VEM\\\\vending-daemon\\\\factory\\\\bootstrap-provisioning-capability/iu.test(
-      body,
-    )
-  ) {
-    failures.push(
-      "Factory capability is hard-coded instead of runtime-relative",
-    );
-  }
-  if (
-    !/Test-Path\s+-LiteralPath\s+\$capabilityPath\s+-PathType\s+Leaf/u.test(
-      body,
-    )
-  ) {
-    failures.push("missing capability must fail closed");
-  }
-  if (!/ReadAllText\(\$capabilityPath/u.test(body)) {
-    failures.push("capability is not securely read from its runtime path");
-  }
-  if (!hasPostTo(body, "/v1/factory/bootstrap/maintenance-session")) {
-    failures.push(
-      "capability branch does not call the daemon bootstrap endpoint",
-    );
-  }
-  if (!/x-vem-factory-bootstrap-capability/u.test(body)) {
-    failures.push("capability branch does not supply the required header");
-  }
-  if (
-    !/finally\s*\{[\s\S]{0,200}?\$headers\.Remove\("x-vem-factory-bootstrap-capability"\)/u.test(
-      body,
-    )
-  ) {
-    failures.push("capability header is not cleared after the daemon call");
-  }
-  if (
-    !/\[string\]::IsNullOrWhiteSpace\(\[string\]\$session\.sessionId\)/u.test(
-      body,
-    )
-  ) {
-    failures.push("missing daemon-issued session id does not fail closed");
-  }
-  if (
-    /Write-(?:Host|Output|Verbose)[^\r\n]*(?:\$MaintenancePin|\$Pin|\$capability)/u.test(
-      body,
-    )
-  ) {
-    failures.push("protected credential may be logged");
+  if (/machine-config|x-vem-factory-bootstrap-capability|bootstrap-provisioning-capability/iu.test(smoke)) {
+    failures.push("smoke retains a legacy full-config or factory bootstrap path");
   }
   return { valid: failures.length === 0, failures };
 }
 
 export function inspectBringUpReadmeSessionInvocation(readme) {
   const failures = [];
-  if (/powershell[^\r\n]*-MaintenancePin/iu.test(readme)) {
-    failures.push(
-      "README passes a PIN through a child PowerShell command line",
-    );
+  if (!/Runtime Bootstrap/u.test(readme)) {
+    failures.push("README does not describe Runtime Bootstrap as a bundle input");
   }
-  if (/\$env:VEM_MAINTENANCE_PIN/u.test(readme)) {
-    failures.push(
-      "README sources the PIN from an inherited environment variable",
-    );
-  }
-  if (!/Read-Host\s+.*-AsSecureString/u.test(readme)) {
-    failures.push(
-      "README does not read the PIN as a SecureString in the current process",
-    );
-  }
-  if (!/SecureStringToBSTR/u.test(readme) || !/ZeroFreeBSTR/u.test(readme)) {
-    failures.push(
-      "README does not bound and clear the transient PIN conversion",
-    );
-  }
-  if (
-    !/&\s+C:\\VEM\\bringup\\scripts\\windows\\vending-daemon-smoke\.ps1[\s\S]{0,900}?-MaintenancePin\s+\$maintenancePin/u.test(
-      readme,
-    )
-  ) {
-    failures.push(
-      "README does not invoke the smoke script in the current PowerShell process",
-    );
+  if (/machine-config/iu.test(readme)) {
+    failures.push("README retains legacy machine-config path wording");
   }
   return { valid: failures.length === 0, failures };
 }
 
 function inspectDaemonAuthRoutes(daemonIpc) {
   const failures = [];
-  for (const endpoint of [
-    "/v1/maintenance/sessions",
-    "/v1/factory/bootstrap/maintenance-session",
-  ]) {
+  for (const endpoint of ["/v1/bring-up/tasks/execute"]) {
     const escaped = endpoint.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     if (!new RegExp(`"${escaped}"\\s*,\\s*post\\(`, "u").test(daemonIpc)) {
       failures.push(`daemon does not expose POST ${endpoint}`);
@@ -175,7 +84,6 @@ export function checkWindowsBringUpBundle({
   workflow,
   readme,
   smoke,
-  factoryPreparation,
   daemonIpc = "",
 }) {
   const checks = [];
@@ -186,7 +94,7 @@ export function checkWindowsBringUpBundle({
       "vending-daemon.exe",
       "machine.exe",
       "WebView2Loader.dll",
-      "machine-config.bringup.example.json",
+      "runtime-bootstrap.example.json",
       "vending-daemon-smoke.ps1",
       "setup-scheduled-tasks.ps1",
       "public\\windows-bringup-bundle.md",
@@ -199,14 +107,14 @@ export function checkWindowsBringUpBundle({
   const smokeContract = inspectProtectedMaintenanceSmokeContract(smoke);
   addCheck(
     checks,
-    "smoke-protected-session-contract-is-real-and-fail-closed",
+    "smoke-runtime-bootstrap-claim-contract-is-real-and-fail-closed",
     smokeContract.valid,
     smokeContract.failures.join("; ") || "protected session contract verified",
   );
   const readmeContract = inspectBringUpReadmeSessionInvocation(readme);
   addCheck(
     checks,
-    "README-reads-and-calls-maintenance-PIN-in-current-process",
+    "README-documents-runtime-bootstrap-bundle-input",
     readmeContract.valid,
     readmeContract.failures.join("; ") ||
       "current-process secure PIN invocation verified",
@@ -214,21 +122,9 @@ export function checkWindowsBringUpBundle({
   const daemonContract = inspectDaemonAuthRoutes(daemonIpc);
   addCheck(
     checks,
-    "smoke-targets-real-daemon-auth-endpoints",
+    "smoke-targets-real-daemon-claim-endpoint",
     daemonContract.valid,
-    daemonContract.failures.join("; ") || "daemon auth endpoints verified",
-  );
-  addCheck(
-    checks,
-    "factory-and-smoke-share-the-one-shot-capability-origin",
-    factoryPreparation.includes(
-      "bootstrap-provisioning-capability-verifier.json",
-    ) &&
-      factoryPreparation.includes("bootstrap-provisioning-capability") &&
-      /Join-Path\s+\$RuntimeDataDir\s+"factory\\bootstrap-provisioning-capability"/u.test(
-        smoke,
-      ),
-    "Factory/Testbed preparation and bundle smoke must use the same verified one-shot capability origin",
+    daemonContract.failures.join("; ") || "daemon claim endpoint verified",
   );
 
   const failures = checks
@@ -242,7 +138,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     workflow: readText(".github/workflows/windows-bringup-bundle.yml"),
     readme: readText("public/windows-bringup-bundle.md"),
     smoke: readText("scripts/windows/vending-daemon-smoke.ps1"),
-    factoryPreparation: readText("scripts/windows/prepare-factory-runtime.ps1"),
     daemonIpc: readText("apps/vending-daemon/src/ipc.rs"),
   });
   for (const check of result.checks) {

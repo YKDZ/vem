@@ -31,7 +31,7 @@ param(
   [Parameter(Mandatory = $false)][string]$ExpectedAutoLogonUser,
   [Parameter(Mandatory = $false)][string]$ExpectedKioskShell,
   [Parameter(Mandatory = $false)][string]$TargetLayoutVersion,
-  [Parameter(Mandatory = $false)][ValidateSet("production", "testbed")][string]$FactoryProfile,
+  [Parameter(Mandatory = $false)][ValidateSet("production", "testbed")][string]$RuntimeImageProfile,
   [Parameter(Mandatory = $false)][string]$PersonalizationMediaPath,
   [Parameter(Mandatory = $false)][string]$FactoryMediaRoot,
   [Parameter(Mandatory = $false)][string]$VisionConfigurationSourcePath,
@@ -108,7 +108,7 @@ function Assert-RequiredInputs {
       "ExpectedAutoLogonUser",
       "ExpectedKioskShell",
       "TargetLayoutVersion",
-      "FactoryProfile",
+      "RuntimeImageProfile",
       "OpenSshPackagePath",
       "OpenSshPackageSource",
       "OpenSshPackageVersion",
@@ -136,7 +136,7 @@ function Assert-RequiredInputs {
     throw ("missing required input: {0}" -f ($missing -join ", "))
   }
 
-  if ($FactoryProfile -eq "production") {
+  if ($RuntimeImageProfile -eq "production") {
     $visionMissing = @("FactoryMediaRoot", "VisionConfigurationSourcePath") | Where-Object {
       [string]::IsNullOrWhiteSpace([string](Get-Variable -Name $_ -ValueOnly))
     }
@@ -152,8 +152,8 @@ function Assert-RequiredInputs {
 function New-FactoryRuntimeBoundaryProjection {
   $daemonFactoryManifest = [ordered]@{
     layoutVersion = 1
-    # FactoryProfile is the daemon's enum; operational labels stay outside it.
-    environment = $FactoryProfile
+    # RuntimeImageProfile is the daemon's enum; operational labels stay outside it.
+    environment = $RuntimeImageProfile
     provisioningEndpoint = $ProvisioningEndpoint
     hardwareMode = $HardwareMode
     hardwareModel = $HardwareModel
@@ -164,17 +164,17 @@ function New-FactoryRuntimeBoundaryProjection {
   }
   $factoryRuntimeManifest = [ordered]@{
     schemaVersion = "vem-factory-runtime-manifest/v1"
-    factoryProfile = $FactoryProfile
+    runtimeImageProfile = $RuntimeImageProfile
     environmentName = $EnvironmentName
     deploymentBatch = $DeploymentBatch
   }
   $localBringupSettings = [ordered]@{
-    schemaVersion = "vem-local-bringup-settings/v1"
+    schemaVersion = "vem-local-runtime-settings/v1"
     environmentName = $EnvironmentName
     deploymentBatch = $DeploymentBatch
     provisioningEndpoint = $ProvisioningEndpoint
   }
-  $visionInputs = if ($FactoryProfile -eq "production") {
+  $visionInputs = if ($RuntimeImageProfile -eq "production") {
     [ordered]@{
       factoryMediaRoot = $FactoryMediaRoot
       visionConfigurationSourcePath = $VisionConfigurationSourcePath
@@ -184,7 +184,7 @@ function New-FactoryRuntimeBoundaryProjection {
   }
   return [ordered]@{
     schemaVersion = "vem-factory-runtime-boundary-projection/v1"
-    factoryProfile = $FactoryProfile
+    runtimeImageProfile = $RuntimeImageProfile
     inputs = [ordered]@{
       environmentName = $EnvironmentName
       deploymentBatch = $DeploymentBatch
@@ -214,7 +214,7 @@ function Get-FactoryMaintenanceProfilePolicy {
     }
   }
   if (-not $policies.ContainsKey($Profile)) {
-    throw "FactoryProfile must be production or testbed"
+    throw "RuntimeImageProfile must be production or testbed"
   }
   return $policies[$Profile]
 }
@@ -229,7 +229,7 @@ function Get-FactoryMaintenanceIngressPolicy {
   $wireGuardAddress = ConvertTo-WireGuardHostAddress -Value $WireGuardListenAddress
   if ($Profile -eq "production") {
     if ([string]::IsNullOrWhiteSpace($WireGuardInterfaceAlias)) {
-      throw "production FactoryProfile requires a WireGuard maintenance interface alias"
+      throw "production RuntimeImageProfile requires a WireGuard maintenance interface alias"
     }
     return [ordered]@{
       mode = "wireguard-only"
@@ -240,7 +240,7 @@ function Get-FactoryMaintenanceIngressPolicy {
   }
   if ($Profile -eq "testbed") {
     if ([string]::IsNullOrWhiteSpace($WireGuardInterfaceAlias)) {
-      throw "testbed FactoryProfile requires a WireGuard maintenance interface alias"
+      throw "testbed RuntimeImageProfile requires a WireGuard maintenance interface alias"
     }
     return [ordered]@{
       mode = "testbed-runner-direct-plus-wireguard"
@@ -250,7 +250,7 @@ function Get-FactoryMaintenanceIngressPolicy {
       runnerDirectEnabled = $true
     }
   }
-  throw "FactoryProfile must be production or testbed"
+  throw "RuntimeImageProfile must be production or testbed"
 }
 
 function ConvertTo-WireGuardHostAddress {
@@ -278,7 +278,7 @@ function ConvertTo-WireGuardHostAddress {
 
 function Assert-ProductionHostIsolation {
   param(
-    [string]$DaemonConfigPath = "C:\ProgramData\VEM\vending-daemon\machine-config.json",
+    [string]$DaemonConfigPath = "C:\ProgramData\VEM\vending-daemon\runtime-bootstrap.json",
     [string]$WireGuardConfigPath = "C:\ProgramData\VEM\maintenance\VEM-Maintenance.conf",
     [string]$MaintenanceCaPath = "C:\ProgramData\VEM\factory\maintenance-ca.pub"
   )
@@ -292,7 +292,7 @@ function Assert-ProductionHostIsolation {
     $findings.Add("shared maintenance password environment input") | Out-Null
   }
   foreach ($candidate in @(
-      [pscustomobject]@{ path = $DaemonConfigPath; pattern = '(?i)"hardwareAdapter"\s*:\s*"mock"|"serialPortPath"\s*:\s*"tcp://|"machineCode"\s*:\s*"[^"]*(testbed|test|sim)' ; label = "daemon simulator/testbed hardware configuration" },
+      [pscustomobject]@{ path = $DaemonConfigPath; pattern = '(?i)"hardwareAdapter"\s*:\s*"mock"|"lowerControllerPath"\s*:\s*"tcp://|"machineCode"\s*:\s*"[^"]*(testbed|test|sim)' ; label = "daemon simulator/testbed hardware configuration" },
       [pscustomobject]@{ path = $WireGuardConfigPath; pattern = "(?i)testbed|test-peer|simulator|shared-password"; label = "test peer WireGuard configuration" },
       [pscustomobject]@{ path = $MaintenanceCaPath; pattern = "(?i)vem-maintenance-ca:testbed|test-ca"; label = "test Maintenance SSH CA" }
     )) {
@@ -317,23 +317,23 @@ function Assert-ProductionHostIsolation {
 }
 
 function Assert-FactoryMaintenanceProfile {
-  $policy = Get-FactoryMaintenanceProfilePolicy -Profile $FactoryProfile
+  $policy = Get-FactoryMaintenanceProfilePolicy -Profile $RuntimeImageProfile
   if ($ExpectedMaintenanceUser -cne [string]$policy.maintenanceUser) {
-    throw "FactoryProfile $FactoryProfile requires maintenance account $($policy.maintenanceUser)"
+    throw "RuntimeImageProfile $RuntimeImageProfile requires maintenance account $($policy.maintenanceUser)"
   }
-  if ($FactoryProfile -eq "production" -and $HardwareMode -ne "production") {
-    throw "production FactoryProfile cannot use simulated hardware"
+  if ($RuntimeImageProfile -eq "production" -and $HardwareMode -ne "production") {
+    throw "production RuntimeImageProfile cannot use simulated hardware"
   }
-  if ($FactoryProfile -eq "testbed" -and $HardwareMode -ne "simulated") {
-    throw "testbed FactoryProfile requires simulated hardware"
+  if ($RuntimeImageProfile -eq "testbed" -and $HardwareMode -ne "simulated") {
+    throw "testbed RuntimeImageProfile requires simulated hardware"
   }
-  if ($FactoryProfile -eq "production") {
+  if ($RuntimeImageProfile -eq "production") {
     $policy.productionHostIsolation = Assert-ProductionHostIsolation
   }
   foreach ($token in @($policy.rejectedTokens)) {
     foreach ($value in @($EnvironmentName, $HardwareModel, $TopologyIdentity, $MaintenanceSshCaPublicKeyPath)) {
       if ([string]$value -match [regex]::Escape([string]$token)) {
-        throw "FactoryProfile $FactoryProfile rejects contaminated input token $token"
+        throw "RuntimeImageProfile $RuntimeImageProfile rejects contaminated input token $token"
       }
     }
   }
@@ -490,8 +490,8 @@ function Assert-MaintenanceCaInput {
     throw "Maintenance SSH CA public key comment must declare vem-maintenance-ca:<profile>"
   }
   $derivedProfile = $matches[1]
-  if ($derivedProfile -cne $FactoryProfile) {
-    throw "Maintenance SSH CA profile $derivedProfile does not match FactoryProfile $FactoryProfile"
+  if ($derivedProfile -cne $RuntimeImageProfile) {
+    throw "Maintenance SSH CA profile $derivedProfile does not match RuntimeImageProfile $RuntimeImageProfile"
   }
   $keygen = Get-Command "ssh-keygen.exe" -ErrorAction SilentlyContinue
   if ($null -eq $keygen) { $keygen = Get-Command "ssh-keygen" -ErrorAction SilentlyContinue }
@@ -621,17 +621,17 @@ function Assert-FactoryPersonalizationMedia {
   if ([string]$schemaVersion -cne "vem-factory-personalization-media/v1" -or [string]$kind -cne "factory-personalization-media") {
     throw "Factory Personalization Media schema is invalid"
   }
-  if ([string]$mediaProfile -cne $FactoryProfile) { throw "Factory Personalization Media profile does not match FactoryProfile" }
+  if ([string]$mediaProfile -cne $RuntimeImageProfile) { throw "Factory Personalization Media profile does not match RuntimeImageProfile" }
   if ([string]$mediaId -notmatch "^[a-z0-9][a-z0-9-]{15,127}$") { throw "Factory Personalization Media id is invalid" }
   Assert-ExactObjectProperties -Value $protection -ExpectedNames @("encryptedAtRest", "access", "cache", "retention") -Label "Factory Personalization Media protection"
   $encryptedAtRest = Get-RequiredOwnProperty -Value $protection -Name "encryptedAtRest" -Label "Factory Personalization Media protection"
   if ($encryptedAtRest -isnot [bool] -or $encryptedAtRest -ne $true -or [string](Get-RequiredOwnProperty -Value $protection -Name "access" -Label "Factory Personalization Media protection") -cne "trusted-protected-gate" -or [string](Get-RequiredOwnProperty -Value $protection -Name "cache" -Label "Factory Personalization Media protection") -cne "forbidden" -or [string](Get-RequiredOwnProperty -Value $protection -Name "retention" -Label "Factory Personalization Media protection") -cne "installation-lifecycle-only") {
     throw "Factory Personalization Media protection policy is invalid"
   }
-  $credentialNames = if ($FactoryProfile -eq "production") { @("administrator", "kiosk") } else { @("bootstrap", "kiosk") }
+  $credentialNames = if ($RuntimeImageProfile -eq "production") { @("administrator", "kiosk") } else { @("bootstrap", "kiosk") }
   Assert-ExactObjectProperties -Value $credentialObject -ExpectedNames $credentialNames -Label "Factory Personalization Media credentials"
-  $maintenanceCredentialName = if ($FactoryProfile -eq "production") { "administrator" } else { "bootstrap" }
-  $expectedMaintenanceUser = if ($FactoryProfile -eq "production") { "Admin" } else { "YKDZ" }
+  $maintenanceCredentialName = if ($RuntimeImageProfile -eq "production") { "administrator" } else { "bootstrap" }
+  $expectedMaintenanceUser = if ($RuntimeImageProfile -eq "production") { "Admin" } else { "YKDZ" }
   $maintenance = Get-RequiredOwnProperty -Value $credentialObject -Name $maintenanceCredentialName -Label "Factory Personalization Media credentials"
   $kiosk = Get-RequiredOwnProperty -Value $credentialObject -Name "kiosk" -Label "Factory Personalization Media credentials"
   Assert-ExactObjectProperties -Value $maintenance -ExpectedNames @("user", "password") -Label "Factory Personalization Media maintenance credential"
@@ -671,7 +671,7 @@ function Assert-FactoryPersonalizationMedia {
   if ($serialized -match "(?i)private.?key|wireguard|wg|peer|certificate|token|secret") {
     throw "Factory Personalization Media must not supply WireGuard key or peer material"
   }
-  if ($FactoryProfile -eq "production" -and $serialized -match "(?i)YKDZ|testbed|test-ca|simulator|shared-password") {
+  if ($RuntimeImageProfile -eq "production" -and $serialized -match "(?i)YKDZ|testbed|test-ca|simulator|shared-password") {
     throw "production Factory Personalization Media contains testbed material"
   }
   return [pscustomobject]@{
@@ -684,7 +684,7 @@ function Assert-FactoryPersonalizationMedia {
     Redaction = [ordered]@{
       schemaVersion = "vem-factory-personalization-media-redaction/v1"
       kind = "factory-personalization-media-redaction"
-      profile = $FactoryProfile
+      profile = $RuntimeImageProfile
       protection = [ordered]@{
         encryptedAtRest = $true
         access = "trusted-protected-gate"
@@ -720,7 +720,7 @@ function Mark-FactoryPersonalizationConsumed {
   $markerPath = Join-Path $ProgramDataRoot "factory\personalization-consumed.json"
   Write-JsonFile -Path $markerPath -Value ([ordered]@{
       schemaVersion = "vem-factory-personalization-consumption/v1"
-      profile = [string]$Preflight.FactoryProfile
+      profile = [string]$Preflight.RuntimeImageProfile
       mediaId = [string]$Preflight.MediaId
     })
   icacls.exe $markerPath /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
@@ -737,7 +737,7 @@ function Assert-CredentialInputs {
     $dryRunCredentialRedaction = [ordered]@{
       kiosk = "not-configured"
     }
-    if ($FactoryProfile -eq "production") {
+    if ($RuntimeImageProfile -eq "production") {
       $dryRunCredentialRedaction = [ordered]@{
         administrator = "not-configured"
         kiosk = "not-configured"
@@ -758,7 +758,7 @@ function Assert-CredentialInputs {
       Redaction = [ordered]@{
         schemaVersion = "vem-factory-personalization-media-preview/v1"
         kind = "factory-personalization-media-preview"
-        profile = $FactoryProfile
+        profile = $RuntimeImageProfile
         protection = [ordered]@{
           encryptedAtRest = $true
           access = "trusted-protected-gate"
@@ -1003,7 +1003,7 @@ function Assert-FactoryRuntimePreflight {
   $wireGuardPackage = Assert-PinnedLocalPackage -Name "WireGuard" -Path $WireGuardPackagePath -Source $WireGuardPackageSource -Version $WireGuardPackageVersion -ExpectedSha256 $WireGuardPackageSha256 -ApprovedSignerThumbprint $WireGuardApprovedSignerThumbprint -ApprovedRootThumbprint $WireGuardApprovedRootThumbprint
   $maintenanceCa = Assert-MaintenanceCaInput
   $rolePools = Assert-RolePools
-  $maintenanceIngress = Get-FactoryMaintenanceIngressPolicy -Profile $FactoryProfile -WireGuardInterfaceAlias $MaintenanceWireGuardInterfaceAlias -WireGuardListenAddress $MaintenanceWireGuardListenAddress
+  $maintenanceIngress = Get-FactoryMaintenanceIngressPolicy -Profile $RuntimeImageProfile -WireGuardInterfaceAlias $MaintenanceWireGuardInterfaceAlias -WireGuardListenAddress $MaintenanceWireGuardListenAddress
   $supportScripts = @($FactoryRuntimeSupportScripts | ForEach-Object { Assert-SupportScriptPresent -Name $_ })
 
   return [pscustomobject]@{
@@ -1025,7 +1025,7 @@ function Assert-FactoryRuntimePreflight {
     MaintenancePinVerifierJson = $credentials.MaintenancePinVerifierJson
     PersonalizationRedaction = $credentials.Redaction
     CredentialSources = $credentials.Sources
-    FactoryProfile = $FactoryProfile
+    RuntimeImageProfile = $RuntimeImageProfile
     ProfilePolicy = $profilePolicy
     OpenSshPackage = $openSshPackage
     WireGuardPackage = $wireGuardPackage
@@ -1068,7 +1068,7 @@ function New-FactoryRuntimePlan {
       hardwareModel = $HardwareModel
       topologyIdentity = $TopologyIdentity
       topologyVersion = $TopologyVersion
-      factoryProfile = $Preflight.FactoryProfile
+      runtimeImageProfile = $Preflight.RuntimeImageProfile
       factoryMediaRoot = $FactoryMediaRoot
       visionConfigurationSourcePath = $VisionConfigurationSourcePath
       wireGuardInterfaceAlias = $Preflight.WireGuardInterfaceAlias
@@ -1144,9 +1144,9 @@ function New-FactoryRuntimePlan {
       factoryRoot = "C:\ProgramData\VEM\factory"
       manifestPath = Join-Path $factoryRoot "factory-runtime-manifest.json"
       daemonFactoryManifestPath = Join-Path $factoryRoot "factory-manifest.json"
-      bringupSettingsPath = Join-Path $bringupDataRoot "local-bringup-settings.json"
+      bringupSettingsPath = Join-Path $bringupDataRoot "local-runtime-settings.json"
       daemonBringupSettingsPath = Join-Path $bringupDataRoot "local-settings.json"
-      daemonConfigPath = Join-Path $daemonDataRoot "machine-config.json"
+      daemonConfigPath = Join-Path $daemonDataRoot "runtime-bootstrap.json"
       daemonReadyFile = Join-Path $daemonDataRoot "daemon-ready.json"
       provisioningRoot = $provisioningRoot
       secretsRoot = $secretsRoot
@@ -1732,7 +1732,7 @@ function Write-FactoryRuntimeFiles {
     environmentName = $EnvironmentName
     deploymentBatch = $DeploymentBatch
     provisioningEndpoint = $ProvisioningEndpoint
-    factoryProfile = $Preflight.FactoryProfile
+    runtimeImageProfile = $Preflight.RuntimeImageProfile
     personalization = $Preflight.PersonalizationRedaction
     packages = $Plan.inputs.packages
     packageInstallation = [ordered]@{
@@ -1811,9 +1811,9 @@ function Write-FactoryRuntimeFiles {
   }
   $daemonManifest = [ordered]@{
     layoutVersion = 1
-    # Merge preservation: FactoryProfile alone defines daemon environment;
+    # Merge preservation: RuntimeImageProfile alone defines daemon environment;
     # EnvironmentName and DeploymentBatch are human-readable deployment metadata.
-    environment = $Preflight.FactoryProfile
+    environment = $Preflight.RuntimeImageProfile
     provisioningEndpoint = $ProvisioningEndpoint
     hardwareMode = $HardwareMode
     hardwareModel = $HardwareModel
@@ -1825,7 +1825,7 @@ function Write-FactoryRuntimeFiles {
   Write-JsonFile -Path ([string]$Plan.layout.daemonFactoryManifestPath) -Value ([pscustomobject]$daemonManifest)
 
   $bringupSettings = [ordered]@{
-    schemaVersion = "vem-local-bringup-settings/v1"
+    schemaVersion = "vem-local-runtime-settings/v1"
     environmentName = $EnvironmentName
     deploymentBatch = $DeploymentBatch
     provisioningEndpoint = $ProvisioningEndpoint
@@ -1848,10 +1848,10 @@ function Write-FactoryRuntimeFiles {
     mqttUrl = $MqttUrl
     mqttUsername = $null
     hardwareAdapter = "serial"
-    serialPortPath = $LowerControllerSerialPortPath
+    lowerControllerPath = $LowerControllerSerialPortPath
     lowerControllerUsbIdentity = $null
     scannerAdapter = "serial_text"
-    scannerSerialPortPath = $ScannerSerialPortPath
+    scannerPath = $ScannerSerialPortPath
     scannerUsbIdentity = $null
     scannerBaudRate = 9600
     scannerFrameSuffix = "crlf"
@@ -1874,7 +1874,7 @@ function Write-FactoryRuntimeFiles {
     MaintenanceUser = $ExpectedMaintenanceUser
     ConfigureControlledMaintenanceIngress = $true
     MaintenanceSshCaPublicKeyPath = [string]$Plan.layout.maintenanceCaPath
-    FactoryProfile = [string]$Preflight.FactoryProfile
+    RuntimeImageProfile = [string]$Preflight.RuntimeImageProfile
     MaintenanceIngressSourceAllowlist = @($Preflight.RolePools)
     MaintenanceRunnerSourceAllowlist = @($Preflight.RunnerSourceAllowlist)
     MaintenanceMaintainerSourceAllowlist = @($Preflight.MaintainerSourceAllowlist)

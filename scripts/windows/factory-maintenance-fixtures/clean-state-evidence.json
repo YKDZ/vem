@@ -2,7 +2,7 @@
   "schemaVersion": "vem-factory-runtime-verification/v2",
   "ok": true,
   "checks": {
-    "factoryProfile": "testbed",
+    "runtimeImageProfile": "testbed",
     "factoryRemoteMaintenanceCapability": {
       "ingress": {
         "profile": "testbed",

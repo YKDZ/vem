@@ -10,10 +10,6 @@ const workflow = readFileSync(
 );
 const readme = readFileSync("public/windows-bringup-bundle.md", "utf8");
 const smoke = readFileSync("scripts/windows/vending-daemon-smoke.ps1", "utf8");
-const factoryPreparation = readFileSync(
-  "scripts/windows/prepare-factory-runtime.ps1",
-  "utf8",
-);
 const daemonIpc = readFileSync("apps/vending-daemon/src/ipc.rs", "utf8");
 
 test("Windows Bring-up bundle delivers executable runtime and a secure maintenance-session path", () => {
@@ -21,22 +17,17 @@ test("Windows Bring-up bundle delivers executable runtime and a secure maintenan
     workflow,
     readme,
     smoke,
-    factoryPreparation,
     daemonIpc,
   });
 
   assert.equal(result.ok, true, result.failures.join("\n"));
 });
 
-test("Windows Bring-up bundle checker rejects a README that leaks the PIN into a child process command", () => {
+test("Windows Bring-up bundle checker rejects legacy machine config README wording", () => {
   const result = checkWindowsBringUpBundle({
     workflow,
-    readme: readme.replace(
-      "& C:\\VEM\\bringup\\scripts\\windows\\vending-daemon-smoke.ps1",
-      "powershell -ExecutionPolicy Bypass -File C:\\VEM\\bringup\\scripts\\windows\\vending-daemon-smoke.ps1",
-    ),
+    readme: `${readme}\nCopy ${"machine-config"}.json before first boot.\n`,
     smoke,
-    factoryPreparation,
     daemonIpc,
   });
 
@@ -44,22 +35,21 @@ test("Windows Bring-up bundle checker rejects a README that leaks the PIN into a
   assert.ok(
     result.failures.some((failure) =>
       failure.includes(
-        "README-reads-and-calls-maintenance-PIN-in-current-process",
+        "README-documents-runtime-bootstrap-bundle-input",
       ),
     ),
     result.failures.join("\n"),
   );
 });
 
-test("Windows Bring-up bundle checker rejects a smoke script that targets a fake bootstrap endpoint", () => {
+test("Windows Bring-up bundle checker rejects a smoke script that targets a fake claim endpoint", () => {
   const result = checkWindowsBringUpBundle({
     workflow,
     readme,
     smoke: smoke.replace(
-      "/v1/factory/bootstrap/maintenance-session",
-      "/v1/factory/bootstrap/pretend-session",
+      "/v1/bring-up/tasks/execute",
+      "/v1/bring-up/tasks/pretend",
     ),
-    factoryPreparation,
     daemonIpc,
   });
 
@@ -67,7 +57,7 @@ test("Windows Bring-up bundle checker rejects a smoke script that targets a fake
   assert.ok(
     result.failures.some((failure) =>
       failure.includes(
-        "smoke-protected-session-contract-is-real-and-fail-closed",
+        "smoke-runtime-bootstrap-claim-contract-is-real-and-fail-closed",
       ),
     ),
     result.failures.join("\n"),

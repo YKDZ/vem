@@ -84,6 +84,24 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance"],
   },
   {
+    path: "scripts/check-effective-config-hard-migration.mjs",
+    owner: "machine-runtime",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/check-effective-config-hard-migration.test.mjs",
+    owner: "machine-runtime",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/fixtures/architecture-guard/negative-effective-config/legacy-path.txt",
+    owner: "machine-runtime",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/check-factory-runtime-prep.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -771,11 +789,10 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation", "managed update"],
   },
   {
-    path: "scripts/windows/machine-config.bringup.example.json",
+    path: "scripts/windows/runtime-bootstrap.example.json",
     owner: "machine-runtime",
-    category: "explicitly maintained legacy operation",
+    category: "public runbook operation",
     workflows: ["smoke"],
-    verifier: "scripts/check-machine-provisioning-default-api-base-url.mjs",
   },
   {
     path: "scripts/windows/prepare-factory-runtime.ps1",

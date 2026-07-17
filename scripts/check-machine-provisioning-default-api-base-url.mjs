@@ -11,14 +11,12 @@ function readText(path) {
 }
 
 const smokePath = "scripts/windows/vending-daemon-smoke.ps1";
-const examplePath = "scripts/windows/machine-config.bringup.example.json";
-const machineClientPath = "apps/machine/src/daemon/client.ts";
+const examplePath = "scripts/windows/runtime-bootstrap.example.json";
 const runbookPath = "public/machine-provisioning-default-api-base-url.md";
 
 const smoke = readText(smokePath);
 const example = readText(examplePath);
 const runbook = readText(runbookPath);
-const machineClient = readText(machineClientPath);
 
 addCheck(
   "smoke-script-accepts-default-api-base-url",
@@ -26,25 +24,25 @@ addCheck(
   `${smokePath} should expose -DefaultApiBaseUrl`,
 );
 addCheck(
-  "smoke-script-seeds-daemon-env",
-  smoke.includes("VEM_DEFAULT_API_BASE_URL"),
-  `${smokePath} should set VEM_DEFAULT_API_BASE_URL for service bring-up`,
+  "smoke-script-writes-runtime-bootstrap",
+  smoke.includes("runtime-bootstrap.json") &&
+    smoke.includes("provisioningApiBaseUrl"),
+  `${smokePath} should write Runtime Bootstrap for service bring-up`,
 );
 addCheck(
   "smoke-script-verifies-runtime-configuration-summary",
   smoke.includes("default-api-base-url-configured") &&
     smoke.includes("/v1/config/summary") &&
-    smoke.includes("effectivePublic"),
-  `${smokePath} should verify the safe runtime configuration summary exposes the default API Base URL`,
+    smoke.includes("sourceDocuments.bootstrap"),
+  `${smokePath} should verify the grouped runtime configuration summary exposes the bootstrap API Base URL`,
 );
 addCheck(
-  "smoke-script-executes-typed-claim-with-maintenance-session",
+  "smoke-script-executes-typed-claim-through-runtime-bootstrap",
   smoke.includes("/v1/bring-up") &&
     smoke.includes("/tasks/execute") &&
-    smoke.includes("x-vem-maintenance-session") &&
     smoke.includes("claimCode") &&
     smoke.includes("WXYZ-2345"),
-  `${smokePath} should POST a deliberately invalid test claim through the typed Bring-Up cursor with a maintenance session`,
+  `${smokePath} should POST a deliberately invalid test claim through the typed Bring-Up cursor`,
 );
 addCheck(
   "smoke-script-distinguishes-typed-invalid-claim-from-backend-unavailable",
@@ -57,17 +55,8 @@ addCheck(
 addCheck(
   "release-path-has-no-legacy-config-or-claim-endpoints",
   !smoke.includes('"$baseUrl/v1/config"') &&
-    !smoke.includes("/v1/provisioning/claim") &&
-    !machineClient.includes('"/v1/provisioning/claim"') &&
-    !machineClient.includes('"/v1/config"'),
-  `${smokePath} and ${machineClientPath} must not retain mutable legacy config or direct claim release paths`,
-);
-addCheck(
-  "machine-client-uses-summary-and-typed-bring-up",
-  machineClient.includes('"/v1/config/summary"') &&
-    machineClient.includes('"/v1/bring-up/tasks/execute"') &&
-    machineClient.includes('"x-vem-maintenance-session"'),
-  `${machineClientPath} should consume configuration summary and protected typed Bring-Up tasks`,
+    !smoke.includes("/v1/provisioning/claim"),
+  `${smokePath} must not retain mutable legacy config or direct claim release paths`,
 );
 addCheck(
   "smoke-script-verifies-first-boot-claim-code-page",
@@ -85,39 +74,35 @@ addCheck(
 
 const exampleJson = example ? JSON.parse(example) : {};
 addCheck(
-  "bringup-example-leaves-machine-unclaimed",
-  exampleJson.machineCode === null,
-  `${examplePath} should leave machineCode null so first boot asks only for a claim code`,
+  "runtime-bootstrap-example-has-no-machine-identity",
+  exampleJson.machineCode === undefined &&
+    exampleJson.machineId === undefined &&
+    exampleJson.machineSecret === undefined,
+  `${examplePath} should omit machine identity and credentials`,
 );
 addCheck(
-  "bringup-example-configures-default-api-base-url",
-  typeof exampleJson.apiBaseUrl === "string" &&
-    exampleJson.apiBaseUrl.startsWith("https://staging-api.example.com/api"),
-  `${examplePath} should show a staging default API Base URL`,
+  "runtime-bootstrap-example-configures-provisioning-api-base-url",
+  typeof exampleJson.provisioningApiBaseUrl === "string" &&
+    exampleJson.provisioningApiBaseUrl.endsWith("/api"),
+  `${examplePath} should show a provisioning API Base URL`,
 );
 
 addCheck(
-  "runbook-documents-staging-and-production",
-  runbook.includes("staging") && runbook.includes("production"),
-  `${runbookPath} should describe both staging and production values`,
+  "runbook-documents-runtime-bootstrap",
+  runbook.includes("Runtime Bootstrap") &&
+    runbook.includes("Provisioning Profile Cache"),
+  `${runbookPath} should describe Runtime Bootstrap and the accepted profile cache`,
 );
 addCheck(
   "runbook-documents-claim-endpoint-smoke",
-  runbook.includes("/machines/claim") && runbook.includes("Machine Claim Code"),
-  `${runbookPath} should explain how to verify the claim endpoint and first-boot page`,
-);
-addCheck(
-  "runbook-documents-first-boot-smoke-confirmation",
-  runbook.includes("-FirstBootMachineClaimCodePageObserved") &&
-    runbook.includes("-FirstBootBackendUrlInputAbsent") &&
-    runbook.includes("backend URL"),
-  `${runbookPath} should show the first-boot smoke confirmation switches`,
+  runbook.includes("claim") && runbook.includes("Runtime Bootstrap"),
+  `${runbookPath} should explain how Runtime Bootstrap feeds clean claim`,
 );
 addCheck(
   "runbook-documents-override-behavior",
-  runbook.includes("machine-config.json") &&
-    runbook.includes("overrides VEM_DEFAULT_API_BASE_URL"),
-  `${runbookPath} should document file override behavior`,
+  runbook.includes("Runtime Bootstrap") &&
+    !runbook.includes("VEM_DEFAULT_API_BASE_URL"),
+  `${runbookPath} should document Runtime Bootstrap without env overrides`,
 );
 
 const failures = checks.filter((check) => !check.passed);

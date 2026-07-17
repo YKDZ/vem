@@ -46,7 +46,7 @@ $personalizationRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("vem-persona
 try {
   New-Item -ItemType Directory -Path $personalizationRoot -Force | Out-Null
   $personalizationPath = Join-Path $personalizationRoot "personalization.json"
-  $script:FactoryProfile = "production"
+  $script:RuntimeImageProfile = "production"
   $script:ExpectedKioskUser = "VEMKiosk"
   $script:DryRun = $false
   $script:PersonalizationMediaPath = $personalizationPath
@@ -254,7 +254,7 @@ try {
       -ListenAddresses @("0.0.0.0")
   } -Pattern "must not be wildcard or loopback" -Message "testbed SSH configuration must reject a wildcard listener"
 
-  $script:FactoryProfile = "testbed"
+  $script:RuntimeImageProfile = "testbed"
   Ensure-SshdConfigDenyKioskUser `
     -ConfigPath $sshdConfig `
     -KioskUser "VEMKiosk" `
@@ -266,7 +266,7 @@ try {
   Assert-Fixture ($testbedEnabledSshd[0] -ceq "ListenAddress 0.0.0.0") "testbed runner-direct ingress must listen on non-WireGuard guest interfaces"
   Assert-Fixture (@($testbedEnabledSshd | Where-Object { $_ -ceq "PasswordAuthentication no" }).Count -eq 1) "testbed runner-direct ingress must keep password SSH disabled"
   Assert-Fixture (@($testbedEnabledSshd | Where-Object { $_ -ceq "AuthorizedKeysFile none" }).Count -eq 1) "testbed runner-direct ingress must keep raw authorized keys disabled"
-  $script:FactoryProfile = "production"
+  $script:RuntimeImageProfile = "production"
 } finally {
   Remove-Item -LiteralPath $sshdConfig -Force -ErrorAction SilentlyContinue
 }
@@ -366,7 +366,7 @@ try {
   New-Item -ItemType Directory -Path $caRoot -Force | Out-Null
   & ssh-keygen -q -t ed25519 -N "" -C "vem-maintenance-ca:testbed" -f $caPrivatePath
   Assert-Fixture ($LASTEXITCODE -eq 0) "fixture CA key generation must succeed"
-  $script:FactoryProfile = "testbed"
+  $script:RuntimeImageProfile = "testbed"
   $script:MaintenanceSshCaPublicKeyPath = $caPublicPath
   $script:MaintenanceSshCaPublicKeySha256 = (Get-FileHash -LiteralPath $caPublicPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $caEvidence = Assert-MaintenanceCaInput
@@ -375,7 +375,7 @@ try {
   Assert-Fixture ($caEvidence.keyCount -eq 1) "CA file must contain exactly one public key"
 
   $verifierCaEvidence = Get-MaintenanceCaEvidence -Manifest ([pscustomobject]@{
-    factoryProfile = "testbed"
+    runtimeImageProfile = "testbed"
     maintenanceSsh = [pscustomobject]@{
       caPath = $caPublicPath
       caSha256 = $script:MaintenanceSshCaPublicKeySha256
@@ -428,7 +428,7 @@ function Get-NetIPAddress {
   }
   return $null
 }
-$script:FactoryProfile = "production"
+$script:RuntimeImageProfile = "production"
 $normalizedWireGuardAddress = ConvertTo-WireGuardHostAddress -Value "10.77.0.10/32"
 Assert-Fixture ($normalizedWireGuardAddress.address -ceq "10.77.0.10" -and $normalizedWireGuardAddress.prefixLength -eq 32) "single-host CIDR must normalize to a bare WireGuard host address"
 $productionIngress = Get-ControlledMaintenanceIngressPolicy -Profile "production" -WireGuardInterfaceAlias "VEM-Maintenance" -WireGuardListenAddress "10.77.0.10/32"
@@ -577,7 +577,7 @@ Assert-Fixture (@($firewallEvidence.enabledInboundTcp22Rules | Where-Object { $_
 Assert-Fixture (@($firewallEvidence.listeners).Count -eq 2) "verifier must enumerate every TCP/22 listener"
 Assert-Fixture (@($firewallEvidence.unexpectedListeners).Count -eq 1) "verifier must reject wildcard or non-tunnel listeners"
 $testbedManifest = [pscustomobject]@{
-  factoryProfile = "testbed"
+  runtimeImageProfile = "testbed"
   maintenanceSsh = [pscustomobject]@{
     runnerSourceAllowlist = @("10.77.0.2")
     maintainerSourceAllowlist = @("10.77.0.3")
@@ -666,10 +666,10 @@ Remove-Item -LiteralPath "Function:global:Get-LocalUser" -Force -ErrorAction Sil
 $contaminationRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("vem-production-contamination-" + [guid]::NewGuid().ToString("N"))
 try {
   New-Item -ItemType Directory -Path $contaminationRoot -Force | Out-Null
-  $daemonContamination = Join-Path $contaminationRoot "machine-config.json"
+  $daemonContamination = Join-Path $contaminationRoot "runtime-bootstrap.json"
   $wireGuardContamination = Join-Path $contaminationRoot "VEM-Maintenance.conf"
   $caContamination = Join-Path $contaminationRoot "maintenance-ca.pub"
-  '{"machineCode":"VEM-TESTBED-01","hardwareAdapter":"mock","serialPortPath":"tcp://127.0.0.1:17991"}' | Set-Content -LiteralPath $daemonContamination -Encoding UTF8
+  '{"machineCode":"VEM-TESTBED-01","hardwareAdapter":"mock","lowerControllerPath":"tcp://127.0.0.1:17991"}' | Set-Content -LiteralPath $daemonContamination -Encoding UTF8
   "# test-peer simulator shared-password" | Set-Content -LiteralPath $wireGuardContamination -Encoding ASCII
   "ssh-ed25519 AAAA vem-maintenance-ca:testbed" | Set-Content -LiteralPath $caContamination -Encoding ASCII
   Assert-ThrowsLike -Action {
@@ -715,7 +715,7 @@ $validPersonalizationRedaction = [pscustomobject]@{
   stagingRetained = $false
 }
 $redactedEvidence = Get-FactoryPersonalizationRedaction -Manifest ([pscustomobject]@{
-    factoryProfile = "production"
+    runtimeImageProfile = "production"
     personalization = $validPersonalizationRedaction
   })
 Assert-Fixture ($redactedEvidence.credentials.administrator -ceq "configured") "verifier must reconstruct allowlisted personalization evidence"
@@ -723,7 +723,7 @@ Assert-Fixture ($redactedEvidence.maintenancePinVerifier -ceq "configured") "ver
 $validPersonalizationRedaction | Add-Member -NotePropertyName injectedSecret -NotePropertyValue "must-not-survive"
 Assert-ThrowsLike -Action {
   Get-FactoryPersonalizationRedaction -Manifest ([pscustomobject]@{
-      factoryProfile = "production"
+      runtimeImageProfile = "production"
       personalization = $validPersonalizationRedaction
     }) | Out-Null
 } -Pattern "invalid property shape" -Message "verifier must reject injected personalization secret fields"
@@ -746,7 +746,7 @@ $invalidBooleanRedaction = [pscustomobject]@{
 }
 Assert-ThrowsLike -Action {
   Get-FactoryPersonalizationRedaction -Manifest ([pscustomobject]@{
-      factoryProfile = "production"
+      runtimeImageProfile = "production"
       personalization = $invalidBooleanRedaction
     }) | Out-Null
 } -Pattern "protection contract" -Message "PowerShell must reject a string instead of Boolean encryptedAtRest"
