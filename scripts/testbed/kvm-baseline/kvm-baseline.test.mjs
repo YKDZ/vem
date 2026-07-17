@@ -358,6 +358,16 @@ describe("Linux KVM Windows baseline", () => {
       /<HideWirelessSetupInOOBE>true<\/HideWirelessSetupInOOBE>/,
     );
     assert.match(xml, /<LogonCount>2<\/LogonCount>/);
+    assert.match(xml, /<settings pass="specialize">/);
+    assert.match(xml, /Microsoft-Windows-Deployment/);
+    assert.match(
+      xml,
+      /C:\\ProgramData\\WindowsRuntimeBaseline\\media/,
+    );
+    assert.match(
+      xml,
+      /-File &quot;C:\\ProgramData\\WindowsRuntimeBaseline\\media\\bootstrap\.ps1&quot;/,
+    );
     assert.match(
       xml,
       /<ProductKey><Key>W269N-WFGWX-YVC9B-4J6C9-T83GX<\/Key><WillShowUI>Never<\/WillShowUI><\/ProductKey>/,
@@ -401,8 +411,9 @@ describe("Linux KVM Windows baseline", () => {
       );
       assert.match(
         bootstrapScript(),
-        /-SpiceGuestToolsInstallerPath \(Join-Path \$drive \$config\.spiceGuestToolsInstallerFile\)/,
+        /-SpiceGuestToolsInstallerPath \(Join-Path \$mediaRoot \$config\.spiceGuestToolsInstallerFile\)/,
       );
+      assert.doesNotMatch(bootstrapScript(), /Win32_CDROMDrive/);
       assert.deepEqual(commands[0][0], "xorriso");
       assert.ok(commands[0][1].includes(mediaRoot));
     } finally {

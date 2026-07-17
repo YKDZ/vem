@@ -179,6 +179,11 @@ export function renderUnattendedXml(config) {
       <UserData><AcceptEula>true</AcceptEula><FullName>Runtime Baseline</FullName><Organization>Runtime Baseline</Organization><ProductKey><Key>W269N-WFGWX-YVC9B-4J6C9-T83GX</Key><WillShowUI>Never</WillShowUI></ProductKey></UserData>
     </component>
   </settings>
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$drive = (Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive 'baseline-config.json') } | Select-Object -First 1 -ExpandProperty Drive); if ([string]::IsNullOrWhiteSpace($drive)) { throw 'baseline configuration media is unavailable during specialize' }; $dest = 'C:\\ProgramData\\WindowsRuntimeBaseline\\media'; New-Item -ItemType Directory -Force -Path $dest | Out-Null; Copy-Item -Path (Join-Path $drive '*') -Destination $dest -Recurse -Force"</Path><Description>Stage runtime baseline media</Description></RunSynchronousCommand></RunSynchronous>
+    </component>
+  </settings>
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <InputLocale>zh-CN</InputLocale><SystemLocale>zh-CN</SystemLocale><UILanguage>zh-CN</UILanguage><UserLocale>zh-CN</UserLocale>
@@ -187,7 +192,7 @@ export function renderUnattendedXml(config) {
       <OOBE><HideEULAPage>true</HideEULAPage><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
       <UserAccounts><LocalAccounts><LocalAccount wcm:action="add"><Name>${user}</Name><Group>Administrators</Group><Password><Value>${password}</Value><PlainText>true</PlainText></Password></LocalAccount></LocalAccounts></UserAccounts>
       <AutoLogon><Username>${user}</Username><Password><Value>${password}</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>2</LogonCount></AutoLogon>
-      <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$drive = (Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive 'baseline-config.json') } | Select-Object -First 1 -ExpandProperty Drive); &amp; (Join-Path $drive 'bootstrap.ps1')"</CommandLine><Description>Prepare runtime baseline</Description></SynchronousCommand></FirstLogonCommands>
+      <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;C:\\ProgramData\\WindowsRuntimeBaseline\\media\\bootstrap.ps1&quot;</CommandLine><Description>Prepare runtime baseline</Description></SynchronousCommand></FirstLogonCommands>
     </component>
   </settings>
 </unattend>
@@ -196,13 +201,12 @@ export function renderUnattendedXml(config) {
 
 export function bootstrapScript() {
   return `$ErrorActionPreference = "Stop"
-$drive = Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive "baseline-config.json") } | Select-Object -First 1 -ExpandProperty Drive
-if ([string]::IsNullOrWhiteSpace($drive)) { throw "baseline configuration media is unavailable" }
-$config = Get-Content -Raw (Join-Path $drive "baseline-config.json") | ConvertFrom-Json
+$mediaRoot = $PSScriptRoot
+$config = Get-Content -Raw (Join-Path $mediaRoot "baseline-config.json") | ConvertFrom-Json
 ${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
 New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
-Copy-Item -Force (Join-Path $drive "*.ps1") ${"$scriptRoot"}
-& (Join-Path $drive "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -SpiceGuestToolsInstallerPath (Join-Path $drive $config.spiceGuestToolsInstallerFile) -AuthorizedKeysPath (Join-Path $drive "administrators_authorized_keys") -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+Copy-Item -Force (Join-Path $mediaRoot "*.ps1") ${"$scriptRoot"}
+& (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -SpiceGuestToolsInstallerPath (Join-Path $mediaRoot $config.spiceGuestToolsInstallerFile) -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys") -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
 `;
 }
 
