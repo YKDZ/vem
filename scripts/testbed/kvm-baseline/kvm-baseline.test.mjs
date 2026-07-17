@@ -18,7 +18,10 @@ import {
 } from "./libvirt-runtime-profile.mjs";
 import {
   evaluateHostPreflight,
+  parseGuestAddress,
   promoteVerifiedBaseline,
+  readJsonWithBom,
+  replaceFilesTransaction,
   validateBaselineBuildConfig,
 } from "./linux-kvm-baseline.mjs";
 
@@ -32,7 +35,7 @@ function buildConfig(root) {
     vm: {
       name: "win10-runtime-baseline",
       networkName: "runtime-testbed",
-      guestAddress: "192.0.2.44",
+      macAddress: "52:54:00:12:34:56",
     },
     storage: {
       baselinePath: join(root, "images", "win10-runtime-baseline.qcow2"),
@@ -81,6 +84,7 @@ describe("Linux KVM Windows baseline", () => {
       systemDiskPath: "/srv/vm/win10.qcow2",
       cacheDiskPath: "/srv/vm/win10-cache.qcow2",
       networkName: "runtime-testbed",
+      macAddress: "52:54:00:12:34:56",
     });
 
     assert.equal(profile.vcpus, 8);
@@ -95,13 +99,20 @@ describe("Linux KVM Windows baseline", () => {
     assert.equal(profile.audio.defaultDevice, true);
     assert.equal(profile.disks.system.resettable, true);
     assert.equal(profile.disks.cache.persistent, true);
+    assert.equal(profile.network.macAddress, "52:54:00:12:34:56");
 
-    const xml = renderLibvirtDomainXml(profile);
+    const xml = renderLibvirtDomainXml(profile, {
+      cdromPaths: ["/srv/media/windows.iso", "/srv/media/config.iso"],
+    });
     assert.match(xml, /<memory unit="MiB">16384<\/memory>/);
     assert.match(xml, /<model type="qxl" ram="65536"/);
     assert.match(xml, /target type="usb-serial" port="0"/);
     assert.match(xml, /alias name="serial-scanner"/);
     assert.match(xml, /<sound model="ich9"\/>/);
+    assert.match(xml, /<mac address="52:54:00:12:34:56"\/>/);
+    assert.match(xml, /target dev="sdc" bus="sata"/);
+    assert.match(xml, /target dev="sdd" bus="sata"/);
+    assert.doesNotMatch(xml, /device="cdrom"[\s\S]*target dev="sd[ab]"/);
     assert.doesNotMatch(xml, /192\.168\.2\.22|\/mnt\/user|Unraid/i);
   });
 
@@ -137,12 +148,17 @@ describe("Linux KVM Windows baseline", () => {
               "xorriso",
               "ssh",
               "scp",
+              "flock",
             ],
             cpuCount: 32,
             availableMemoryMiB: 64 * 1024,
             availableStorageBytes: 200 * 1024 ** 3,
             installationMedia: { windowsIso: true },
-            networkAvailable: true,
+            networkActive: true,
+            storageAvailableBytes: {
+              baseline: 200 * 1024 ** 3,
+              cache: 200 * 1024 ** 3,
+            },
           }),
         /KVM/,
       );
@@ -158,12 +174,17 @@ describe("Linux KVM Windows baseline", () => {
               "xorriso",
               "ssh",
               "scp",
+              "flock",
             ],
             cpuCount: 8,
             availableMemoryMiB: 16 * 1024,
             availableStorageBytes: 79 * 1024 ** 3,
             installationMedia: { windowsIso: true },
-            networkAvailable: true,
+            networkActive: true,
+            storageAvailableBytes: {
+              baseline: 79 * 1024 ** 3,
+              cache: 79 * 1024 ** 3,
+            },
           }),
         /storage/,
       );
@@ -178,12 +199,17 @@ describe("Linux KVM Windows baseline", () => {
             "xorriso",
             "ssh",
             "scp",
+            "flock",
           ],
           cpuCount: 8,
           availableMemoryMiB: 16 * 1024,
           availableStorageBytes: 80 * 1024 ** 3,
-          installationMedia: { windowsIso: true },
-          networkAvailable: true,
+            installationMedia: { windowsIso: true },
+            networkActive: true,
+            storageAvailableBytes: {
+              baseline: 80 * 1024 ** 3,
+              cache: 80 * 1024 ** 3,
+            },
         }),
         { ok: true },
       );
@@ -218,6 +244,36 @@ describe("Linux KVM Windows baseline", () => {
     }
   });
 
+  it("rolls back every published artifact when a later publication stage fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-rollback-"));
+    const system = join(root, "system.qcow2");
+    const diagnostic = join(root, "system.qcow2.diagnostic.json");
+    const stagedSystem = join(root, "staged-system.qcow2");
+    const stagedDiagnostic = join(root, "staged-diagnostic.json");
+    try {
+      writeFileSync(system, "previous-system");
+      writeFileSync(diagnostic, "previous-diagnostic");
+      writeFileSync(stagedSystem, "verified-system");
+      writeFileSync(stagedDiagnostic, "verified-diagnostic");
+      await assert.rejects(
+        replaceFilesTransaction(
+          [
+            { stagedPath: stagedSystem, destinationPath: system },
+            { stagedPath: stagedDiagnostic, destinationPath: diagnostic },
+          ],
+          async (_entry, count) => {
+            if (count === 2) throw new Error("injected define failure");
+          },
+        ),
+        /injected define failure/,
+      );
+      assert.equal(readFileSync(system, "utf8"), "previous-system");
+      assert.equal(readFileSync(diagnostic, "utf8"), "previous-diagnostic");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps guest preparation separate from VM-only runner and toolchain setup", () => {
     const root = new URL(".", import.meta.url);
     const shared = readFileSync(
@@ -232,13 +288,32 @@ describe("Linux KVM Windows baseline", () => {
       new URL("./verify-vm-runtime.ps1", root),
       "utf8",
     );
+    const builder = readFileSync(
+      new URL("./build-win10-baseline.mjs", root),
+      "utf8",
+    );
 
     assert.match(shared, /WebView2/);
     assert.match(shared, /PlugPlay/);
     assert.match(shared, /W32Time/);
+    assert.match(shared, /Stop-Service/);
+    assert.match(shared, /ChangeDisplaySettings/);
+    assert.match(runtime, /Initialize-Disk/);
+    assert.match(runtime, /FileSystemLabel/);
+    assert.match(runtime, /SetEnvironmentVariable/);
+    assert.match(runtime, /\$env:Path/);
+    assert.match(runtime, /\.write-test/);
     assert.doesNotMatch(shared, /config\.cmd|actions-runner|choco install/i);
     assert.match(runtime, /config\.cmd/);
     assert.match(runtime, /choco install/i);
+    assert.ok(
+      runtime.indexOf("config.cmd") < runtime.indexOf("choco install"),
+      "runner registration happens before the long toolchain installation",
+    );
+    assert.match(builder, /UserKnownHostsFile=/);
+    assert.match(builder, /readJsonWithBom/);
+    assert.match(builder, /domifaddr/);
+    assert.doesNotMatch(builder, /registrationToken:\s*secrets/);
     for (const expected of [
       "SSH",
       "WebView2",
@@ -249,6 +324,31 @@ describe("Linux KVM Windows baseline", () => {
     ]) {
       assert.match(verify, new RegExp(expected, "i"));
     }
+    assert.match(verify, /AudioDeviceRole/);
+    assert.match(verify, /cacheDisk/);
+  });
+
+  it("discovers a lease address for the fixed guest MAC rather than trusting a configured IP", () => {
+    assert.equal(
+      parseGuestAddress(
+        " Name       MAC address          Protocol     Address\n" +
+          "-------------------------------------------------------------------------------\n" +
+          " vnet0      52:54:00:12:34:56    ipv4         192.0.2.44/24\n",
+        "52:54:00:12:34:56",
+      ),
+      "192.0.2.44",
+    );
+    assert.equal(
+      parseGuestAddress("vnet0 52:54:00:aa:bb:cc ipv4 192.0.2.45/24", "52:54:00:12:34:56"),
+      null,
+    );
+  });
+
+  it("parses a copied guest verification report with a UTF-8 BOM", () => {
+    assert.deepEqual(
+      readJsonWithBom("\ufeff{\"ok\":true,\"checks\":{\"SSH\":true}}"),
+      { ok: true, checks: { SSH: true } },
+    );
   });
 
   it("has an independent manual workflow that never uploads a baseline image", () => {
@@ -257,6 +357,9 @@ describe("Linux KVM Windows baseline", () => {
       "utf8",
     );
     assert.match(workflow, /workflow_dispatch:/);
+    assert.match(workflow, /concurrency:/);
+    assert.match(workflow, /vem-windows-runtime-testbed/);
+    assert.match(workflow, /default: vem-runtime/);
     assert.match(workflow, /build-win10-baseline\.mjs/);
     assert.doesNotMatch(
       workflow,

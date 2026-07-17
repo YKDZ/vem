@@ -78,6 +78,10 @@ export function createRuntimeProfile(options) {
   ) {
     throw new Error("audio must use the default ich9 Spice device");
   }
+  const macAddress = requiredString(options.macAddress, "macAddress").toLowerCase();
+  if (!/^52:54:00(?::[0-9a-f]{2}){3}$/.test(macAddress)) {
+    throw new Error("macAddress must be a stable libvirt locally administered MAC");
+  }
 
   return {
     vmName: requiredString(options.vmName, "vmName"),
@@ -100,7 +104,10 @@ export function createRuntimeProfile(options) {
         persistent: true,
       },
     },
-    networkName: requiredString(options.networkName, "networkName"),
+    network: {
+      name: requiredString(options.networkName, "networkName"),
+      macAddress,
+    },
   };
 }
 
@@ -116,7 +123,7 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
       return `    <disk type="file" device="cdrom">
       <driver name="qemu" type="raw"/>
       <source file="${xml(path)}"/>
-      <target dev="sd${String.fromCharCode(97 + index)}" bus="sata"/>
+      <target dev="sd${String.fromCharCode(99 + index)}" bus="sata"/>
       <readonly/>
     </disk>`;
     })
@@ -149,7 +156,7 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
       <source file="${xml(profile.disks.cache.path)}"/>
       <target dev="sdb" bus="sata"/>
     </disk>
-${cdroms}${cdroms ? "\n" : ""}    <interface type="network"><source network="${xml(profile.networkName)}"/><model type="e1000e"/></interface>
+${cdroms}${cdroms ? "\n" : ""}    <interface type="network"><mac address="${xml(profile.network.macAddress)}"/><source network="${xml(profile.network.name)}"/><model type="e1000e"/></interface>
     <graphics type="spice" autoport="yes"><listen type="none"/></graphics>
     <video><model type="qxl" ram="${profile.display.videoMemoryKiB}" vram="${profile.display.videoMemoryKiB}" vgamem="16384" heads="1" primary="yes"/></video>
     <audio id="1" type="spice"/>

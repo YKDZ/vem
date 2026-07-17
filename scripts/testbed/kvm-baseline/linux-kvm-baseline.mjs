@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, open, rename, stat } from "node:fs/promises";
+import { access, open, rename, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, normalize, resolve } from "node:path";
 
 import { createRuntimeProfile } from "./libvirt-runtime-profile.mjs";
@@ -12,6 +12,7 @@ const REQUIRED_COMMANDS = [
   "xorriso",
   "ssh",
   "scp",
+  "flock",
 ];
 
 function object(value, label) {
@@ -70,7 +71,9 @@ export function validateBaselineBuildConfig(input) {
     throw new Error("vm.name must be a portable libvirt domain name");
   }
   string(vm.networkName, "vm.networkName");
-  hostnameOrAddress(vm.guestAddress, "vm.guestAddress");
+  if (!/^52:54:00(?::[0-9a-f]{2}){3}$/i.test(string(vm.macAddress, "vm.macAddress"))) {
+    throw new Error("vm.macAddress must be a stable libvirt locally administered MAC");
+  }
 
   const storage = object(config.storage, "storage");
   const baselinePath = absolutePath(
@@ -121,6 +124,7 @@ export function runtimeProfileForConfig(config) {
     systemDiskPath: config.storage.baselinePath,
     cacheDiskPath: config.storage.cacheDiskPath,
     networkName: config.vm.networkName,
+    macAddress: config.vm.macAddress,
     vcpus: config.runtime?.vcpus,
     memoryMiB: config.runtime?.memoryMiB,
     display: { scalePercent: config.guest.desktopScalePercent },
@@ -151,12 +155,13 @@ export function evaluateHostPreflight(config, observed) {
     throw new Error(`host memory must satisfy ${profile.memoryMiB} MiB`);
   }
   const requiredStorageBytes = config.storage.minimumFreeGiB * GiB;
+  const storage = observed.storageAvailableBytes ?? {};
   if (
-    !Number.isFinite(observed.availableStorageBytes) ||
-    observed.availableStorageBytes < requiredStorageBytes
+    !Number.isFinite(storage.baseline) || !Number.isFinite(storage.cache) ||
+    storage.baseline < requiredStorageBytes || storage.cache < requiredStorageBytes
   ) {
     throw new Error(
-      `host storage must provide ${config.storage.minimumFreeGiB} GiB free`,
+      `both baseline and cache storage must provide ${config.storage.minimumFreeGiB} GiB free`,
     );
   }
   if (observed.installationMedia?.windowsIso !== true) {
@@ -164,10 +169,63 @@ export function evaluateHostPreflight(config, observed) {
       "Windows installation media must be a readable regular file",
     );
   }
-  if (observed.networkAvailable !== true) {
-    throw new Error("configured libvirt network is not available");
+  if (observed.networkActive !== true) {
+    throw new Error("configured libvirt network is not active");
   }
   return { ok: true };
+}
+
+export function parseGuestAddress(domifaddrOutput, macAddress) {
+  const wanted = string(macAddress, "macAddress").toLowerCase();
+  for (const line of String(domifaddrOutput).split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/);
+    if (!fields.some((field) => field.toLowerCase() === wanted)) continue;
+    const cidr = fields.find((field) => /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(field));
+    if (cidr) return cidr.split("/", 1)[0];
+  }
+  return null;
+}
+
+export function readJsonWithBom(value) {
+  return JSON.parse(String(value).replace(/^\uFEFF/, ""));
+}
+
+// Reverts every destination when a later replacement or callback fails.
+export async function replaceFilesTransaction(entries, afterReplace = async () => {}) {
+  const changes = [];
+  try {
+    for (const entry of entries) {
+      const stagedPath = absolutePath(entry.stagedPath, "stagedPath");
+      const destinationPath = absolutePath(entry.destinationPath, "destinationPath");
+      if (!(await stat(stagedPath)).isFile()) throw new Error("staged transaction file must be regular");
+      if ((await stat(dirname(stagedPath))).dev !== (await stat(dirname(destinationPath))).dev) {
+        throw new Error("transaction staging and destination must share a filesystem");
+      }
+      const backupPath = `${destinationPath}.rollback-${process.pid}-${changes.length}`;
+      let hadDestination = false;
+      try {
+        await rename(destinationPath, backupPath);
+        hadDestination = true;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      try {
+        await rename(stagedPath, destinationPath);
+      } catch (error) {
+        if (hadDestination) await rename(backupPath, destinationPath);
+        throw error;
+      }
+      changes.push({ destinationPath, backupPath, hadDestination });
+      await afterReplace(entry, changes.length);
+    }
+    await Promise.all(changes.filter((change) => change.hadDestination).map((change) => rm(change.backupPath, { force: true })));
+  } catch (error) {
+    for (const change of changes.reverse()) {
+      await rm(change.destinationPath, { force: true });
+      if (change.hadDestination) await rename(change.backupPath, change.destinationPath);
+    }
+    throw error;
+  }
 }
 
 export async function promoteVerifiedBaseline({

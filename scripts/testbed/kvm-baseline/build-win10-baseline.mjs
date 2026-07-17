@@ -23,7 +23,9 @@ import {
   REQUIRED_COMMANDS,
   assertReadableRegularFile,
   evaluateHostPreflight,
-  promoteVerifiedBaseline,
+  parseGuestAddress,
+  readJsonWithBom,
+  replaceFilesTransaction,
   runtimeProfileForConfig,
   validateBaselineBuildConfig,
 } from "./linux-kvm-baseline.mjs";
@@ -145,13 +147,14 @@ async function collectHostObservation(config) {
     commands,
     cpuCount: availableParallelism(),
     availableMemoryMiB: Math.floor(availableMemoryKiB / 1024),
-    availableStorageBytes: await availableStorageBytes(
-      config.storage.baselinePath,
-    ),
+    storageAvailableBytes: {
+      baseline: await availableStorageBytes(config.storage.baselinePath),
+      cache: await availableStorageBytes(config.storage.cacheDiskPath),
+    },
     installationMedia: {
       windowsIso: await readable(config.media.windowsIsoPath),
     },
-    networkAvailable: !network.failed,
+    networkActive: !network.failed && /^Active:\s+yes$/mi.test(network.stdout),
     profile,
   };
 }
@@ -185,9 +188,10 @@ function bootstrapScript() {
 $drive = Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive "baseline-config.json") } | Select-Object -First 1 -ExpandProperty Drive
 if ([string]::IsNullOrWhiteSpace($drive)) { throw "baseline configuration media is unavailable" }
 $config = Get-Content -Raw (Join-Path $drive "baseline-config.json") | ConvertFrom-Json
+${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
+New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
+Copy-Item -Force (Join-Path $drive "*.ps1") ${"$scriptRoot"}
 & (Join-Path $drive "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $drive "administrators_authorized_keys") -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
-& (Join-Path $drive "prepare-vm-runtime.ps1") -RunnerArchiveUri $config.runner.archiveUri -RunnerUrl $config.runner.url -RunnerRegistrationToken $config.runner.registrationToken -RunnerName $config.runner.name
-& (Join-Path $drive "verify-vm-runtime.ps1") -ExpectedWidth $config.display.width -ExpectedHeight $config.display.height -ExpectedScalePercent $config.display.scalePercent -OutputPath "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json"
 `;
 }
 
@@ -201,19 +205,8 @@ async function createConfigurationMedia(config, stagingDirectory) {
   ]) {
     await copyFile(new URL(name, BASELINE_ROOT), join(mediaRoot, name));
   }
-  const secrets = {
-    administratorPassword: (
-      await readFile(config.guest.administratorPasswordFile, "utf8")
-    ).trim(),
-    runnerRegistrationToken: (
-      await readFile(config.runner.registrationTokenFile, "utf8")
-    ).trim(),
-  };
-  if (!secrets.administratorPassword || !secrets.runnerRegistrationToken) {
-    throw new Error(
-      "administrator password and runner registration token files must not be empty",
-    );
-  }
+  const secrets = { administratorPassword: (await readFile(config.guest.administratorPasswordFile, "utf8")).trim() };
+  if (!secrets.administratorPassword) throw new Error("administrator password file must not be empty");
   const protectedConfig = {
     ...config,
     __secrets: secrets,
@@ -224,12 +217,6 @@ async function createConfigurationMedia(config, stagingDirectory) {
       width: 1080,
       height: 1920,
       scalePercent: config.guest.desktopScalePercent,
-    },
-    runner: {
-      archiveUri: config.media.runnerArchiveUri,
-      url: config.runner.url,
-      registrationToken: secrets.runnerRegistrationToken,
-      name: config.runner.name,
     },
   };
   await writeFile(
@@ -264,34 +251,58 @@ async function createConfigurationMedia(config, stagingDirectory) {
   return isoPath;
 }
 
-async function waitForGuestVerification(config, stagingDirectory) {
-  const verificationPath =
-    "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
-  const localReport = join(stagingDirectory, "verification.json");
-  const deadline = Date.now() + 60 * 60 * 1000;
-  const sshArguments = [
-    "-i",
-    config.guest.sshPrivateKeyFile,
-    "-o",
-    "StrictHostKeyChecking=accept-new",
-    "-o",
-    "ConnectTimeout=10",
-    `${config.guest.sshUser}@${config.vm.guestAddress}`,
-    `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${verificationPath}`,
+async function discoverGuestAddress(config, domainName) {
+  const command = ["--connect", config.host.libvirtUri, "domifaddr", domainName, "--source", "lease"];
+  const result = await run("virsh", command, { allowFailure: true });
+  const fromDomainLease = result.failed ? null : parseGuestAddress(result.stdout, config.vm.macAddress);
+  if (fromDomainLease) return fromDomainLease;
+  const lease = await run("virsh", ["--connect", config.host.libvirtUri, "net-dhcp-leases", config.vm.networkName], { allowFailure: true });
+  return lease.failed ? null : parseGuestAddress(lease.stdout, config.vm.macAddress);
+}
+
+function guestSshOptions(config, knownHostsPath) {
+  return [
+    "-i", config.guest.sshPrivateKeyFile,
+    "-o", `UserKnownHostsFile=${knownHostsPath}`,
+    "-o", "GlobalKnownHostsFile=/dev/null",
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "ConnectTimeout=10",
   ];
+}
+
+function powershellLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+async function waitForGuestVerification(config, domainName, stagingDirectory) {
+  const verificationPath = "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
+  const localReport = join(stagingDirectory, "verification.json");
+  const knownHostsPath = join(stagingDirectory, "known_hosts");
+  const deadline = Date.now() + 60 * 60 * 1000;
   while (Date.now() < deadline) {
-    const result = await run("ssh", sshArguments, { allowFailure: true });
-    if (!result.failed) {
+    const address = await discoverGuestAddress(config, domainName);
+    if (address) {
+      const target = `${config.guest.sshUser}@${address}`;
+      const sshOptions = guestSshOptions(config, knownHostsPath);
+      const result = await run("ssh", [...sshOptions, target, "exit"], { allowFailure: true });
+      if (!result.failed) {
+        const token = (await readFile(config.runner.registrationTokenFile, "utf8")).trim();
+        if (!token) throw new Error("runner registration token file must not be empty");
+        const runnerScript = join(stagingDirectory, "register-runner.ps1");
+        await writeFile(runnerScript, `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -RunnerArchiveUri ${powershellLiteral(config.media.runnerArchiveUri)} -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(config.runner.name)}\n`, { mode: 0o600 });
+        await run("scp", [...sshOptions, runnerScript, `${target}:C:/ProgramData/WindowsRuntimeBaseline/register-runner.ps1`]);
+        await run("ssh", [...sshOptions, target, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\register-runner.ps1"]);
+        await run("ssh", [...sshOptions, target, `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1 -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -OutputPath ${verificationPath}`]);
       await run("scp", [
-        "-i",
-        config.guest.sshPrivateKeyFile,
-        `${config.guest.sshUser}@${config.vm.guestAddress}:${verificationPath}`,
+        ...sshOptions,
+        `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
         localReport,
       ]);
-      const report = JSON.parse(await readFile(localReport, "utf8"));
+        const report = readJsonWithBom(await readFile(localReport, "utf8"));
       if (report.ok !== true)
         throw new Error("guest prerequisite verification reported failure");
       return report;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 10_000));
   }
@@ -331,6 +342,19 @@ async function destroyAndUndefine(config, domainName) {
   );
 }
 
+async function shutdownGuestAndWait(config, domainName, stagingDirectory) {
+  const address = await discoverGuestAddress(config, domainName);
+  if (!address) throw new Error("guest DHCP lease disappeared before shutdown");
+  const target = `${config.guest.sshUser}@${address}`;
+  await run("ssh", [...guestSshOptions(config, join(stagingDirectory, "known_hosts")), target, "shutdown.exe /s /t 0 /f"]);
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (Date.now() < deadline) {
+    if ((await domainState({ ...config, vm: { ...config.vm, name: domainName } })) === "shut off") return;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  throw new Error("guest did not shut down cleanly within five minutes");
+}
+
 export async function buildWin10Baseline(
   config,
   { sourceCommit, execute = false } = {},
@@ -350,6 +374,14 @@ export async function buildWin10Baseline(
     execute,
   };
   if (!execute) return plan;
+  const lockPath = `${config.storage.baselinePath}.build-lock`;
+  try {
+    await mkdir(lockPath, { mode: 0o700 });
+  } catch (error) {
+    if (error.code === "EEXIST") throw new Error("another baseline build already holds the host lock");
+    throw error;
+  }
+  try {
   const state = await domainState(config);
   if (state && state !== "shut off") {
     throw new Error(
@@ -396,7 +428,9 @@ export async function buildWin10Baseline(
         ),
       );
   const stagedPath = join(stagingDirectory, "system.qcow2");
-  const stagedCachePath = join(cacheStagingDirectory, "cache.qcow2");
+  const stagedCachePath = persistentCacheExists
+    ? config.storage.cacheDiskPath
+    : join(cacheStagingDirectory, "cache.qcow2");
   const constructionDomain = `${config.vm.name}-build-${randomUUID().slice(0, 8)}`;
   try {
     await run("qemu-img", [
@@ -406,13 +440,15 @@ export async function buildWin10Baseline(
       stagedPath,
       `${config.storage.systemDiskGiB}G`,
     ]);
-    await run("qemu-img", [
-      "create",
-      "-f",
-      "qcow2",
-      stagedCachePath,
-      `${config.storage.cacheDiskGiB}G`,
-    ]);
+    if (!persistentCacheExists) {
+      await run("qemu-img", [
+        "create",
+        "-f",
+        "qcow2",
+        stagedCachePath,
+        `${config.storage.cacheDiskGiB}G`,
+      ]);
+    }
     const configurationIso = await createConfigurationMedia(
       config,
       stagingDirectory,
@@ -449,24 +485,11 @@ export async function buildWin10Baseline(
       "start",
       constructionDomain,
     ]);
-    const verification = await waitForGuestVerification(
-      config,
-      stagingDirectory,
-    );
-    await destroyAndUndefine(config, constructionDomain);
-    if (!persistentCacheExists) {
-      await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
-      await promoteVerifiedBaseline({
-        stagedPath: stagedCachePath,
-        baselinePath: config.storage.cacheDiskPath,
-        verified: verification.ok,
-      });
-    }
-    await promoteVerifiedBaseline({
-      stagedPath,
-      baselinePath: config.storage.baselinePath,
-      verified: verification.ok,
-    });
+    const verification = await waitForGuestVerification(config, constructionDomain, stagingDirectory);
+    await shutdownGuestAndWait(config, constructionDomain, stagingDirectory);
+    await run("qemu-img", ["check", stagedPath]);
+    await run("qemu-img", ["check", stagedCachePath]);
+    await run("virsh", ["--connect", config.host.libvirtUri, "undefine", constructionDomain]);
     const finalXmlPath = join(stagingDirectory, "runtime-profile.xml");
     await writeFile(finalXmlPath, renderLibvirtDomainXml(profile), {
       mode: 0o600,
@@ -484,11 +507,22 @@ export async function buildWin10Baseline(
       profile,
       verification,
     };
+    const stagedDiagnosticPath = join(stagingDirectory, "diagnostic.json");
     await writeFile(
-      `${config.storage.baselinePath}.diagnostic.json`,
+      stagedDiagnosticPath,
       `${JSON.stringify(diagnostic, null, 2)}\n`,
       { mode: 0o600 },
     );
+    const publication = [
+      { stagedPath, destinationPath: config.storage.baselinePath },
+      { stagedPath: stagedDiagnosticPath, destinationPath: `${config.storage.baselinePath}.diagnostic.json` },
+    ];
+    if (!persistentCacheExists) publication.splice(1, 0, { stagedPath: stagedCachePath, destinationPath: config.storage.cacheDiskPath });
+    await replaceFilesTransaction(publication, async (_entry, count) => {
+      if (count === publication.length) {
+        await run("virsh", ["--connect", config.host.libvirtUri, "define", finalXmlPath]);
+      }
+    });
     return { ...plan, verification, promoted: true };
   } catch (error) {
     await destroyAndUndefine(config, constructionDomain);
@@ -498,6 +532,9 @@ export async function buildWin10Baseline(
     if (cacheStagingDirectory !== stagingDirectory) {
       await rm(cacheStagingDirectory, { recursive: true, force: true });
     }
+  }
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
   }
 }
 

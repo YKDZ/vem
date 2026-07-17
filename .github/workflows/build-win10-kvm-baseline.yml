@@ -11,14 +11,23 @@ on:
         description: Optional diagnostic source commit SHA
         required: false
         type: string
+      runner_label:
+        description: Self-hosted runner capability label
+        required: false
+        default: vem-runtime
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: vem-windows-runtime-testbed
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build And Verify Local Baseline
-    runs-on: [self-hosted, Linux, X64, kvm-libvirt]
+    runs-on: [self-hosted, Linux, X64, "${{ inputs.runner_label }}"]
     timeout-minutes: 180
     steps:
       - name: Checkout

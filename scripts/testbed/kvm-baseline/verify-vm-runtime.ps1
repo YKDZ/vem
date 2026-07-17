@@ -17,11 +17,20 @@ $webView2 = Get-ChildItem "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clien
   Get-ItemProperty -ErrorAction SilentlyContinue |
   Where-Object { $_.pv -and $_.name -match "WebView" } |
   Select-Object -First 1
-$audioEndpoint = [Windows.Media.Devices.MediaDevice, Windows.Media.Devices, ContentType = WindowsRuntime]::GetDefaultAudioRenderId("AudioRender")
+$audioDeviceRoleType = [Windows.Media.Devices.AudioDeviceRole, Windows.Media.Devices, ContentType = WindowsRuntime]
+$audioDeviceRole = [System.Enum]::Parse($audioDeviceRoleType, "Default")
+$audioEndpoint = [Windows.Media.Devices.MediaDevice, Windows.Media.Devices, ContentType = WindowsRuntime]::GetDefaultAudioRenderId($audioDeviceRole)
 $serialPorts = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue)
 $runnerService = @(Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "actions.runner*" -and $_.Status -eq "Running" })
 $tools = @("git", "node", "pnpm", "cargo", "rustc") | ForEach-Object {
   @{ name = $_; available = $null -ne (Get-Command $_ -ErrorAction SilentlyContinue) }
+}
+$cacheVolume = Get-Volume -DriveLetter D -ErrorAction SilentlyContinue
+$cacheWritable = $null -ne $cacheVolume -and $cacheVolume.FileSystem -eq "NTFS"
+if ($cacheWritable) {
+  $probe = "D:\runtime-cache\.verification-write-test"
+  Set-Content -Encoding ascii -Path $probe -Value "ok"
+  Remove-Item -Force $probe
 }
 $checks = @{
   desktop = $primary.Width -eq $ExpectedWidth -and $primary.Height -eq $ExpectedHeight -and $scalePercent -eq $ExpectedScalePercent
@@ -31,13 +40,14 @@ $checks = @{
   WebView2 = $null -ne $webView2
   Audio = -not [string]::IsNullOrWhiteSpace($audioEndpoint)
   Serial = $serialPorts.Count -ge 2
+  cacheDisk = $cacheWritable
 }
 $report = @{
   schemaVersion = "win10-kvm-baseline-verification/v1"
   ok = @($checks.Values | Where-Object { -not $_ }).Count -eq 0
   checks = $checks
   desktop = @{ width = $primary.Width; height = $primary.Height; scalePercent = $scalePercent }
-  virtualDevices = @{ serialPortCount = $serialPorts.Count; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint) }
+  virtualDevices = @{ serialPortCount = $serialPorts.Count; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
   toolchain = $tools
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPath) | Out-Null
