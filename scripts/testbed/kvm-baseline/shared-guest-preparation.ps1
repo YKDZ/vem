@@ -100,14 +100,14 @@ function Install-SpiceGuestTools {
       $state.exitCode = 3010
       $state.rebootRequired = $true
       $state.rebootApplied = $true
-      $state.resumeBootIdentity = $currentBootIdentity
+      $state | Add-Member -NotePropertyName "resumeBootIdentity" -NotePropertyValue $currentBootIdentity -Force
       Write-SpiceGuestToolsInstallationState -State $state
       Remove-SpiceGuestToolsResume
       return
     }
     if ($state.exitCode -eq 3010 -and $state.rebootRequired -and $state.installBootIdentity -ne $currentBootIdentity) {
       $state.rebootApplied = $true
-      $state.resumeBootIdentity = $currentBootIdentity
+      $state | Add-Member -NotePropertyName "resumeBootIdentity" -NotePropertyValue $currentBootIdentity -Force
       Write-SpiceGuestToolsInstallationState -State $state
       Remove-SpiceGuestToolsResume
       return

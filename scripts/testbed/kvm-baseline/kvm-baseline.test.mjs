@@ -476,7 +476,12 @@ describe("Linux KVM Windows baseline", () => {
     );
     assert.match(
       spiceInstallFunction,
-      /phase -eq "installing"[\s\S]*installBootIdentity -ne \$currentBootIdentity[\s\S]*resumeBootIdentity = \$currentBootIdentity/,
+      /phase -eq "installing"[\s\S]*installBootIdentity -ne \$currentBootIdentity[\s\S]*Add-Member -NotePropertyName "resumeBootIdentity" -NotePropertyValue \$currentBootIdentity -Force/,
+    );
+    assert.doesNotMatch(
+      spiceInstallFunction,
+      /\.resumeBootIdentity\s*=/,
+      "ConvertFrom-Json objects require Add-Member for a new resume field",
     );
     assert.match(
       spiceInstallFunction,
