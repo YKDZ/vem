@@ -77,9 +77,8 @@ const baseFlowConfig: PaymentProviderRuntimeConfig = {
 };
 
 function maskCode(authCode: string): string {
-  const trimmed = authCode.trim();
-  if (trimmed.length <= 8) return `${trimmed.slice(0, 2)}****`;
-  return `${trimmed.slice(0, 4)}****${trimmed.slice(-4)}`;
+  if (authCode.length <= 8) return `${authCode.slice(0, 2)}****`;
+  return `${authCode.slice(0, 4)}****${authCode.slice(-4)}`;
 }
 
 function makeOrdersDbForSuccessfulLocalDraft() {
@@ -340,7 +339,7 @@ function makeFlowHarness(overrides?: {
         isActive: true,
         amountCents: payment.amountCents,
         currency: "CNY",
-        authCodeHash: `hash:${input.authCode.trim().length}`,
+        authCodeHash: `hash:${input.authCode.length}`,
         authCodeMasked: maskCode(input.authCode),
         source: input.source,
         scannerHealthJson: input.scannerHealthJson ?? null,
@@ -364,6 +363,19 @@ function makeFlowHarness(overrides?: {
       attemptById.set(attempt.id, attempt);
       attemptByKey.set(input.idempotencyKey, attempt);
       return { payment, attempt, replayed: false };
+    }),
+    admitAndCall: vi.fn().mockImplementation(async (id, call) => {
+      const current = attemptById.get(id);
+      if (!current || current.status !== "created" || !current.isActive) {
+        throw new ConflictException("payment_code_order_not_payable");
+      }
+      const attempt = replaceAttempt({
+        ...current,
+        status: "submitting",
+        submittedAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return { attempt, result: await call(attempt) };
     }),
     markStatus: vi.fn().mockImplementation(async (id, status, patch = {}) => {
       const current = attemptById.get(id);

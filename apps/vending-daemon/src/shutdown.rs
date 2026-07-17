@@ -690,7 +690,7 @@ fn scanner_unavailable(
     }
 }
 
-async fn run_payment_code_watcher(
+pub async fn run_payment_code_watcher(
     mut rx: mpsc::Receiver<ArmedPaymentCode>,
     machine: TransactionStateMachine,
     shutdown: CancellationToken,

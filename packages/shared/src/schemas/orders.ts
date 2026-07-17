@@ -545,9 +545,18 @@ export const paymentCodeSourceSchema = z.enum([
   "manual_dev",
 ]);
 
+// This matches the serial-text scanner contract: printable ASCII with an
+// optional interior space, but no silently-normalized boundary whitespace.
+export const paymentCodeAuthCodeSchema = z
+  .string()
+  .min(6)
+  .max(128)
+  .regex(/^[\x20-\x7e]+$/)
+  .refine((value) => value === value.trim());
+
 export const paymentCodeSubmitSchema = z.object({
   machineCode: z.string().min(1).max(64),
-  authCode: z.string().trim().min(6).max(128),
+  authCode: paymentCodeAuthCodeSchema,
   idempotencyKey: z.string().trim().min(8).max(128),
   source: paymentCodeSourceSchema,
   scannerHealth: z

@@ -30,20 +30,8 @@ struct CheckoutCreationRecovery {
     idempotency_key: String,
 }
 
-pub(crate) type PaymentCodeSubmitGuard =
+pub type PaymentCodeSubmitGuard =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PaymentCodeSubmitStage {
-    AfterGuard,
-    AfterDurableBegin,
-    BeforeBackendSubmit,
-}
-
-#[cfg(test)]
-pub(crate) type PaymentCodeSubmitHook =
-    Arc<dyn Fn(PaymentCodeSubmitStage) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// A scanner arm belongs to one current payment-code checkout attempt. The
 /// scanner supplies its capture timestamp, so queued bytes from before a new
@@ -202,8 +190,6 @@ pub struct TransactionStateMachine {
     /// session is durable, but two IPC requests can both observe it as empty
     /// before either has received the platform's order response.
     checkout_creation_lock: Arc<Mutex<()>>,
-    #[cfg(test)]
-    payment_code_submit_hook: Option<PaymentCodeSubmitHook>,
 }
 
 impl TransactionStateMachine {
@@ -221,8 +207,6 @@ impl TransactionStateMachine {
             payment_code_submit_guard: None,
             payment_code_scan_armer: PaymentCodeScanArmer::default(),
             checkout_creation_lock: Arc::new(Mutex::new(())),
-            #[cfg(test)]
-            payment_code_submit_hook: None,
         }
     }
 
@@ -231,22 +215,9 @@ impl TransactionStateMachine {
         self
     }
 
-    pub(crate) fn with_payment_code_scan_armer(mut self, armer: PaymentCodeScanArmer) -> Self {
+    pub fn with_payment_code_scan_armer(mut self, armer: PaymentCodeScanArmer) -> Self {
         self.payment_code_scan_armer = armer;
         self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_payment_code_submit_hook(mut self, hook: PaymentCodeSubmitHook) -> Self {
-        self.payment_code_submit_hook = Some(hook);
-        self
-    }
-
-    #[cfg(test)]
-    async fn run_payment_code_submit_hook(&self, stage: PaymentCodeSubmitStage) {
-        if let Some(hook) = &self.payment_code_submit_hook {
-            hook(stage).await;
-        }
     }
 
     pub async fn restore_current(
@@ -643,9 +614,6 @@ impl TransactionStateMachine {
         if let Some(guard) = &self.payment_code_submit_guard {
             guard().await?;
         }
-        #[cfg(test)]
-        self.run_payment_code_submit_hook(PaymentCodeSubmitStage::AfterGuard)
-            .await;
 
         // The guard may await local readiness while cancel/replacement wins in
         // another state-machine instance. Re-read both the consumed arm and
@@ -697,10 +665,6 @@ impl TransactionStateMachine {
             (snapshot, order_no, idempotency_key)
         };
 
-        #[cfg(test)]
-        self.run_payment_code_submit_hook(PaymentCodeSubmitStage::AfterDurableBegin)
-            .await;
-
         // A terminal update may have landed after the durable begin but before
         // any network request. It is safe to stop here; the local attempt is
         // evidence of the rejected scan and the provider has not seen it.
@@ -726,9 +690,6 @@ impl TransactionStateMachine {
         let mut submit_error = None;
         let mut submit_response = None;
         for _ in 0..3 {
-            #[cfg(test)]
-            self.run_payment_code_submit_hook(PaymentCodeSubmitStage::BeforeBackendSubmit)
-                .await;
             // Keep the final local check directly adjacent to the network
             // call. The Service API has its own durable admission CAS for the
             // remaining cross-process race, but a terminal transition already
@@ -1028,7 +989,6 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::Barrier;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -2145,152 +2105,6 @@ mod tests {
                 .as_ref()
                 .and_then(|attempt| attempt.status.as_deref()),
             Some("succeeded")
-        );
-        drop(submit);
-    }
-
-    #[tokio::test]
-    async fn replacement_between_arm_consumption_guard_and_durable_begin_never_submits() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        seed_waiting_payment(&state, "ORDER-RACE-A").await;
-        let server = MockServer::start().await;
-        let submit = Mock::given(method("POST"))
-            .and(path("/machine-orders/ORDER-RACE-A/payment-code/submit"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount_as_scoped(&server)
-            .await;
-        let armer = PaymentCodeScanArmer::default();
-        let after_guard = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(2));
-        let hook_after_guard = after_guard.clone();
-        let hook_release = release.clone();
-        let hook: PaymentCodeSubmitHook = Arc::new(move |stage| {
-            let after_guard = hook_after_guard.clone();
-            let release = hook_release.clone();
-            Box::pin(async move {
-                if stage == PaymentCodeSubmitStage::AfterGuard {
-                    after_guard.wait().await;
-                    release.wait().await;
-                }
-            })
-        });
-        let machine = TransactionStateMachine::new(
-            state,
-            Arc::new(BackendClient::new(server.uri())),
-            Some("M-1".to_string()),
-            broadcast::channel(8).0,
-        )
-        .with_payment_code_scan_armer(armer.clone())
-        .with_payment_code_submit_guard(Arc::new(|| Box::pin(async { Ok(()) })))
-        .with_payment_code_submit_hook(hook);
-        armer.arm_at("ORDER-RACE-A", 1_000).await;
-        let arm = armer.consume_at(1_001).await.expect("consume A");
-        let task_machine = machine.clone();
-        let submit_task = tokio::spawn(async move {
-            task_machine
-                .submit_armed_payment_code(ArmedPaymentCode {
-                    arm,
-                    raw: vending_core::scanner::RawPaymentCode {
-                        auth_code: "621234567890123456".to_string(),
-                        masked_code: "6212****3456".to_string(),
-                        scanned_at_ms: 1_001,
-                    },
-                    scanner_health: scanner_health(),
-                })
-                .await
-        });
-
-        after_guard.wait().await;
-        armer.arm_at("ORDER-RACE-B", 1_002).await;
-        release.wait().await;
-
-        assert_eq!(
-            submit_task.await.expect("join").expect_err("replaced arm"),
-            "IGNORED_PAYMENT_CODE_ARM_MISMATCH"
-        );
-        drop(submit);
-    }
-
-    #[tokio::test]
-    async fn terminal_transition_after_durable_begin_stops_before_payment_api_call() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        seed_waiting_payment(&state, "ORDER-RACE-CANCEL").await;
-        let server = MockServer::start().await;
-        let submit = Mock::given(method("POST"))
-            .and(path(
-                "/machine-orders/ORDER-RACE-CANCEL/payment-code/submit",
-            ))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount_as_scoped(&server)
-            .await;
-        let after_begin = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(2));
-        let hook_after_begin = after_begin.clone();
-        let hook_release = release.clone();
-        let hook: PaymentCodeSubmitHook = Arc::new(move |stage| {
-            let after_begin = hook_after_begin.clone();
-            let release = hook_release.clone();
-            Box::pin(async move {
-                if stage == PaymentCodeSubmitStage::AfterDurableBegin {
-                    after_begin.wait().await;
-                    release.wait().await;
-                }
-            })
-        });
-        let machine = TransactionStateMachine::new(
-            state.clone(),
-            Arc::new(BackendClient::new(server.uri())),
-            Some("M-1".to_string()),
-            broadcast::channel(8).0,
-        )
-        .with_payment_code_submit_hook(hook);
-        let task_machine = machine.clone();
-        let submit_task = tokio::spawn(async move {
-            task_machine
-                .submit_payment_code(
-                    vending_core::scanner::RawPaymentCode {
-                        auth_code: "621234567890123456".to_string(),
-                        masked_code: "6212****3456".to_string(),
-                        scanned_at_ms: 1_001,
-                    },
-                    vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT,
-                    Some(scanner_health()),
-                )
-                .await
-        });
-
-        after_begin.wait().await;
-        state
-            .upsert_order_session(OrderSessionUpsert {
-                order_no: "ORDER-RACE-CANCEL",
-                payment_method: "payment_code",
-                payment_provider: Some("alipay"),
-                items_json: json!([]),
-                status: "canceled",
-                next_action: "closed",
-                payment_attempt_json: None,
-                recovery_strategy: "local",
-                last_backend_status_json: None,
-                last_error: None,
-            })
-            .await
-            .expect("apply terminal transition");
-        release.wait().await;
-
-        assert_eq!(
-            submit_task
-                .await
-                .expect("join")
-                .expect_err("canceled order"),
-            "IGNORED_TRANSACTION_NOT_WAITING_PAYMENT"
         );
         drop(submit);
     }

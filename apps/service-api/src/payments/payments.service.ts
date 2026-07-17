@@ -855,6 +855,44 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             return false;
           }
 
+          const [activeAttempt] = await tx
+            .select({
+              id: paymentCodeAttempts.id,
+              status: paymentCodeAttempts.status,
+            })
+            .from(paymentCodeAttempts)
+            .where(
+              and(
+                eq(paymentCodeAttempts.paymentId, payment.paymentId),
+                eq(paymentCodeAttempts.isActive, true),
+              ),
+            )
+            .limit(1);
+          if (activeAttempt && activeAttempt.status !== "created") {
+            return false;
+          }
+          if (activeAttempt) {
+            const [canceledAttempt] = await tx
+              .update(paymentCodeAttempts)
+              .set({
+                status: "canceled",
+                isActive: false,
+                failureCode: "PAYMENT_CODE_EXPIRED_BEFORE_SUBMISSION",
+                failureMessage: "付款码订单已过期，未提交支付机构",
+                finishedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(paymentCodeAttempts.id, activeAttempt.id),
+                  eq(paymentCodeAttempts.status, "created"),
+                  eq(paymentCodeAttempts.isActive, true),
+                ),
+              )
+              .returning({ id: paymentCodeAttempts.id });
+            if (!canceledAttempt) return false;
+          }
+
           const providerEventId = `expired:${payment.paymentNo}`;
           const [existingEvent] = await tx
             .select({ id: paymentEvents.id })

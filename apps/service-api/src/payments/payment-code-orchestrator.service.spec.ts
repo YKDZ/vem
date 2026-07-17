@@ -1,3 +1,4 @@
+import { ConflictException } from "@nestjs/common";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -76,6 +77,10 @@ function makeHarness(overrides?: {
 
   const attempts = {
     createOrReplay: vi.fn(),
+    admitAndCall: vi.fn().mockImplementation(async (_id, call) => {
+      const admitted = updateAttempt("submitting", { submittedAt: new Date() });
+      return { attempt: admitted, result: await call(admitted) };
+    }),
     markStatus: vi.fn().mockImplementation(async (_id, status, patch = {}) => {
       return updateAttempt(status, patch);
     }),
@@ -314,6 +319,27 @@ describe("PaymentCodeOrchestratorService", () => {
     expect(
       configService.assertMachinePaymentChannelAvailable,
     ).not.toHaveBeenCalled();
+    expect(provider.chargePaymentCode).not.toHaveBeenCalled();
+  });
+
+  it("does not call a provider when locked admission loses to expiry", async () => {
+    const { service, attempts, provider } = makeHarness();
+    attempts.admitAndCall.mockRejectedValue(
+      new ConflictException("payment_code_order_not_payable"),
+    );
+
+    await expect(
+      service.submit({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-expiry-won",
+        source: "serial_text",
+        clientIp: "127.0.0.1",
+      }),
+    ).rejects.toThrow("payment_code_order_not_payable");
+
+    expect(attempts.admitAndCall).toHaveBeenCalledTimes(1);
     expect(provider.chargePaymentCode).not.toHaveBeenCalled();
   });
 

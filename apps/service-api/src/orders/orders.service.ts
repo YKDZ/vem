@@ -1083,7 +1083,6 @@ export class OrdersService {
     row: CancelableMachineOrderRow,
   ): Promise<Record<string, unknown>> {
     if (row.paymentMethod === "payment_code") {
-      await this.assertNoActivePaymentCodeAttempt(row.orderId);
       return { skipped: true, reason: "payment_code_not_submitted" };
     }
 
@@ -1157,6 +1156,13 @@ export class OrdersService {
     const providerPayload = await this.cancelProviderPaymentIfNeeded(row);
 
     await this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select p.id
+        from payments p
+        inner join orders o on o.id = p.order_id
+        where p.id = ${row.paymentId} and o.id = ${row.orderId}
+        for update of p, o
+      `);
       const [current] = await tx
         .select({
           orderStatus: orders.status,
@@ -1175,6 +1181,52 @@ export class OrdersService {
         this.assertMachineOrderCanStillBeCanceled(current) === "already_closed"
       ) {
         return;
+      }
+
+      if (row.paymentMethod === "payment_code") {
+        const [activeAttempt] = await tx
+          .select({
+            id: paymentCodeAttempts.id,
+            status: paymentCodeAttempts.status,
+          })
+          .from(paymentCodeAttempts)
+          .where(
+            and(
+              eq(paymentCodeAttempts.paymentId, row.paymentId),
+              eq(paymentCodeAttempts.isActive, true),
+            ),
+          )
+          .limit(1);
+        if (activeAttempt && activeAttempt.status !== "created") {
+          throw new ConflictException(
+            "Payment code confirmation is in progress",
+          );
+        }
+        if (activeAttempt) {
+          const [canceledAttempt] = await tx
+            .update(paymentCodeAttempts)
+            .set({
+              status: "canceled",
+              isActive: false,
+              failureCode: "PAYMENT_CODE_ORDER_CANCELED",
+              failureMessage: "付款码订单已取消，未提交支付机构",
+              finishedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(paymentCodeAttempts.id, activeAttempt.id),
+                eq(paymentCodeAttempts.status, "created"),
+                eq(paymentCodeAttempts.isActive, true),
+              ),
+            )
+            .returning({ id: paymentCodeAttempts.id });
+          if (!canceledAttempt) {
+            throw new ConflictException(
+              "Machine order payment changed before cancel",
+            );
+          }
+        }
       }
 
       await tx

@@ -3088,6 +3088,32 @@ describe("shared API contract", () => {
       });
       expect(JSON.stringify(response)).not.toContain("28763443825664394");
     });
+
+    it("preserves exact payment-code payloads and rejects boundary whitespace or unsupported bytes", () => {
+      const accepted = paymentCodeSubmitSchema.parse({
+        machineCode: "M001",
+        authCode: "2876 3443825664394",
+        idempotencyKey: "scan-20260524-0002",
+        source: "serial_text",
+      });
+      expect(accepted.authCode).toBe("2876 3443825664394");
+
+      for (const authCode of [
+        " 28763443825664394",
+        "28763443825664394 ",
+        "28763443825664394\t",
+        "28763443825664394\u0080",
+      ]) {
+        expect(() =>
+          paymentCodeSubmitSchema.parse({
+            machineCode: "M001",
+            authCode,
+            idempotencyKey: "scan-20260524-0003",
+            source: "serial_text",
+          }),
+        ).toThrow();
+      }
+    });
   });
 
   describe("HARDWARE_ERROR_HANDLING defaults", () => {

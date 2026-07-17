@@ -41,6 +41,17 @@ describe("payment redaction utils", () => {
     expect(JSON.stringify(stored)).toContain("[REDACTED");
   });
 
+  it("does not normalize payment auth codes before masking or hashing", () => {
+    const accepted = "2876 3443825664394";
+    const boundaryWhitespace = ` ${accepted}`;
+
+    expect(maskPaymentCode(accepted)).toBe("2876****4394");
+    expect(maskPaymentCode(boundaryWhitespace)).toBe(" 287****4394");
+    expect(hashPaymentCode(boundaryWhitespace)).not.toBe(
+      hashPaymentCode(accepted),
+    );
+  });
+
   it("scheduled reconciliation queries honor next_retry_at gates", () => {
     const paymentSource = readFileSync(
       "src/payments/payments.service.ts",

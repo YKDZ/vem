@@ -47,13 +47,12 @@ export function sha256Hex(input: string): string {
 }
 
 export function hashPaymentCode(authCode: string): string {
-  return sha256Hex(authCode.trim());
+  return sha256Hex(authCode);
 }
 
 export function maskPaymentCode(authCode: string): string {
-  const normalized = authCode.trim();
-  if (normalized.length <= 8) return `${normalized.slice(0, 2)}****`;
-  return `${normalized.slice(0, 4)}****${normalized.slice(-4)}`;
+  if (authCode.length <= 8) return `${authCode.slice(0, 2)}****`;
+  return `${authCode.slice(0, 4)}****${authCode.slice(-4)}`;
 }
 
 /**

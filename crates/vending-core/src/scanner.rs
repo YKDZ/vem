@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const PAYMENT_CODE_SOURCE_SERIAL_TEXT: &str = "serial_text";
-pub const SCANNER_MAX_FRAME_BYTES: usize = 256;
+pub const SCANNER_MIN_FRAME_BYTES: usize = 6;
+pub const SCANNER_MAX_FRAME_BYTES: usize = 128;
 pub const SCANNER_FRAME_IDLE_TIMEOUT_MS: u128 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,7 +73,7 @@ impl ScannerFramer {
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8], now_ms: u128) -> Vec<RawPaymentCode> {
-        if (!self.frame.is_empty() || self.invalid_frame)
+        if (!self.frame.is_empty() || self.invalid_frame || self.pending_cr)
             && self
                 .last_input_at_ms
                 .is_some_and(|last| now_ms.saturating_sub(last) >= SCANNER_FRAME_IDLE_TIMEOUT_MS)
@@ -158,8 +159,7 @@ impl ScannerFramer {
         let Ok(code) = String::from_utf8(std::mem::take(&mut self.frame)) else {
             return;
         };
-        let code = code.trim().to_string();
-        if code.is_empty() {
+        if code.len() < SCANNER_MIN_FRAME_BYTES || code.starts_with(' ') || code.ends_with(' ') {
             return;
         }
         if code == self.last_code && now_ms.saturating_sub(self.last_at_ms) < 1500 {
@@ -183,11 +183,10 @@ fn is_allowed_payload_byte(byte: u8) -> bool {
 }
 
 pub fn mask_code(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
+    if input.is_empty() {
         return "****".to_string();
     }
-    let chars = trimmed.chars().collect::<Vec<_>>();
+    let chars = input.chars().collect::<Vec<_>>();
     if chars.len() <= 8 {
         return format!("{}****", chars.iter().take(2).collect::<String>());
     }
@@ -230,6 +229,44 @@ mod tests {
 
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].auth_code, "621234567890123456");
+    }
+
+    #[test]
+    fn scanner_framer_expires_a_lone_cr_before_the_next_frame() {
+        let mut framer = ScannerFramer::new(ScannerFrameSuffix::Crlf);
+        assert!(framer.push_bytes(b"\r", 1_000).is_empty());
+
+        let scanned = framer.push_bytes(b"621234567890123456\r\n", 2_000);
+
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].auth_code, "621234567890123456");
+    }
+
+    #[test]
+    fn scanner_framer_rejects_boundary_spaces_without_trimming() {
+        let mut framer = ScannerFramer::default();
+
+        assert!(framer
+            .push_bytes(b" 621234567890123456\r\n", 1_000)
+            .is_empty());
+        assert!(framer
+            .push_bytes(b"621234567890123456 \r\n", 1_001)
+            .is_empty());
+
+        let scanned = framer.push_bytes(b"6212 34567890123456\r\n", 1_002);
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].auth_code, "6212 34567890123456");
+    }
+
+    #[test]
+    fn scanner_framer_rejects_short_payloads_under_the_shared_contract() {
+        let mut framer = ScannerFramer::default();
+
+        assert!(framer.push_bytes(b"12345\r\n", 1_000).is_empty());
+        assert_eq!(
+            framer.push_bytes(b"123456\r\n", 1_001)[0].auth_code,
+            "123456"
+        );
     }
 
     #[test]

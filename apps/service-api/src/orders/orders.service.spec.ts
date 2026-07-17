@@ -3198,6 +3198,7 @@ describe("OrdersService (transaction boundary)", () => {
         paymentStatus: "canceled",
       };
       const tx = {
+        execute: vi.fn().mockResolvedValue([]),
         select: vi
           .fn()
           .mockReturnValueOnce({
@@ -3313,6 +3314,7 @@ describe("OrdersService (transaction boundary)", () => {
         paymentStatus: "canceled",
       };
       const tx = {
+        execute: vi.fn().mockResolvedValue([]),
         select: vi
           .fn()
           .mockReturnValueOnce({
@@ -3433,6 +3435,7 @@ describe("OrdersService (transaction boundary)", () => {
         providerConfigId: null,
       };
       const tx = {
+        execute: vi.fn().mockResolvedValue([]),
         select: vi.fn().mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             innerJoin: vi.fn().mockReturnValue({

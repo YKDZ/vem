@@ -137,6 +137,7 @@ export class PaymentCodeAttemptsService {
           amountCents: payments.amountCents,
           paymentStatus: payments.status,
           paymentMethod: payments.method,
+          expiresAt: payments.expiresAt,
           providerId: paymentProviders.id,
           providerCode: paymentProviders.code,
         })
@@ -172,6 +173,9 @@ export class PaymentCodeAttemptsService {
       // touch a provider. Canceled, closed, paid, or fulfillment-transitioned
       // orders must never create a new payment-code attempt.
       if (!isPayablePaymentCodeOrder(row)) {
+        throw new ConflictException("payment_code_order_not_payable");
+      }
+      if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) {
         throw new ConflictException("payment_code_order_not_payable");
       }
 
@@ -220,6 +224,7 @@ export class PaymentCodeAttemptsService {
           and(
             eq(payments.id, row.paymentId),
             inArray(payments.status, ["created", "pending", "processing"]),
+            sql`${payments.expiresAt} > now()`,
             sql`exists (
               select 1
               from ${orders} current_order
@@ -278,6 +283,92 @@ export class PaymentCodeAttemptsService {
         attempt,
         replayed: false,
       };
+    });
+  }
+
+  /**
+   * The provider request is the irrevocable admission point. Keep the
+   * payment/order/attempt locks while it is invoked so expiry or cancellation
+   * cannot close a payment that has a committed submission still able to run.
+   */
+  async admitAndCall<T>(
+    attemptId: string,
+    call: (attempt: PaymentCodeAttemptRow) => Promise<T>,
+  ): Promise<{ attempt: PaymentCodeAttemptRow; result: T }> {
+    return await this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select pca.id
+        from payment_code_attempts pca
+        inner join payments p on p.id = pca.payment_id
+        inner join orders o on o.id = pca.order_id
+        where pca.id = ${attemptId}
+        for update of pca, p, o
+      `);
+
+      const [current] = await tx
+        .select({
+          attemptStatus: paymentCodeAttempts.status,
+          attemptActive: paymentCodeAttempts.isActive,
+          paymentStatus: payments.status,
+          paymentExpiresAt: payments.expiresAt,
+          orderStatus: orders.status,
+          paymentState: orders.paymentState,
+          fulfillmentState: orders.fulfillmentState,
+        })
+        .from(paymentCodeAttempts)
+        .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
+        .innerJoin(orders, eq(orders.id, paymentCodeAttempts.orderId))
+        .where(eq(paymentCodeAttempts.id, attemptId))
+        .limit(1);
+
+      if (
+        !current ||
+        current.attemptStatus !== "created" ||
+        !current.attemptActive ||
+        !current.paymentExpiresAt ||
+        !isPayablePaymentCodeOrder({
+          orderStatus: current.orderStatus,
+          paymentState: current.paymentState,
+          fulfillmentState: current.fulfillmentState,
+          paymentStatus: current.paymentStatus,
+        })
+      ) {
+        throw new ConflictException("payment_code_order_not_payable");
+      }
+
+      const [attempt] = await tx
+        .update(paymentCodeAttempts)
+        .set({
+          status: "submitting",
+          submittedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(paymentCodeAttempts.id, attemptId),
+            eq(paymentCodeAttempts.status, "created"),
+            eq(paymentCodeAttempts.isActive, true),
+            sql`exists (
+              select 1
+              from payments current_payment
+              inner join orders current_order
+                on current_order.id = current_payment.order_id
+              where current_payment.id = ${paymentCodeAttempts.paymentId}
+                and current_payment.expires_at > now()
+                and current_payment.status in ('created', 'pending', 'processing')
+                and current_order.status = 'pending_payment'
+                and current_order.payment_state = 'awaiting_payment'
+                and current_order.fulfillment_state = 'awaiting_fulfillment'
+            )`,
+          ),
+        )
+        .returning();
+      if (!attempt) {
+        throw new ConflictException("payment_code_order_not_payable");
+      }
+
+      const result = await call(attempt);
+      return { attempt, result };
     });
   }
 

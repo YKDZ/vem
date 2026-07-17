@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { InventoryService } from "../inventory/inventory.service";
 import { VendingService } from "../vending/vending.service";
+import { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
 import { PaymentWebhookAttemptRecorderService } from "./payment-webhook-attempt-recorder.service";
@@ -62,6 +63,8 @@ async function seedTerminalRacePayment(
     expiresAt?: Date;
     queryPayment?: TerminalRaceProvider["queryPayment"];
     dispatchPendingCommandsForOrder?: (orderId: string) => Promise<unknown>;
+    paymentMethod?: "qr_code" | "payment_code";
+    providerAvailable?: boolean;
   } = {},
 ) {
   const suffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -163,7 +166,7 @@ async function seedTerminalRacePayment(
     orderId,
     providerId,
     paymentProviderConfigId: providerConfigId,
-    method: "qr_code",
+    method: options.paymentMethod ?? "qr_code",
     status: "pending",
     amountCents: 100,
     expiresAt: options.expiresAt,
@@ -232,7 +235,10 @@ async function seedTerminalRacePayment(
     inventoryService,
     vendingService as never,
     appConfig as never,
-    { get: () => provider, has: () => true } as never,
+    {
+      get: () => provider,
+      has: () => options.providerAvailable ?? true,
+    } as never,
     {} as never,
     paymentConfigSecrets,
     paymentProviderConfigService,
@@ -243,6 +249,8 @@ async function seedTerminalRacePayment(
   return {
     inventoryId,
     orderId,
+    orderNo: `ORD-PG-TERMINAL-RACE-${suffix}`,
+    machineCode: `PG-TERMINAL-RACE-${suffix}`,
     paymentId,
     paymentNo,
     providerCode,
@@ -541,5 +549,113 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
     expect(inventory.reservedQty).toBe(0);
     expect(events).toEqual([{ eventType: "payment.expired" }]);
     expect(commands).toEqual([]);
+  });
+
+  it("rejects payment-code admission when expiry gets the payment lock first", async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const { paymentId, service, orderId, orderNo, machineCode } =
+      await seedTerminalRacePayment(database, {
+        expiresAt,
+        paymentMethod: "payment_code",
+        providerAvailable: false,
+      });
+    const attempts = new PaymentCodeAttemptsService(database.client);
+
+    const expiry = service.expireOverduePayments(
+      new Date(expiresAt.getTime() + 1),
+    );
+    // The suite trigger delays the expired event insertion while the payment
+    // and order rows remain locked, making the losing admission deterministic.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    await expect(
+      attempts.createOrReplay({
+        orderNo,
+        machineCode,
+        authCode: "28763443825664394",
+        idempotencyKey: `expiry-won:${paymentId}`,
+        source: "serial_text",
+      }),
+    ).rejects.toThrow("payment_code_order_not_payable");
+    await expiry;
+
+    const [payment] = await database.client
+      .select({ status: payments.status })
+      .from(payments)
+      .where(eq(payments.id, paymentId));
+    const [order] = await database.client
+      .select({ status: orders.status })
+      .from(orders)
+      .where(eq(orders.id, orderId));
+    expect(payment.status).toBe("expired");
+    expect(order.status).toBe("payment_expired");
+  });
+
+  it("waits for an admitted payment-code provider call before expiry can close the order", async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const { paymentId, orderId, orderNo, machineCode, service } =
+      await seedTerminalRacePayment(database, {
+        expiresAt,
+        paymentMethod: "payment_code",
+        providerAvailable: false,
+      });
+    const attempts = new PaymentCodeAttemptsService(database.client);
+    const created = await attempts.createOrReplay({
+      orderNo,
+      machineCode,
+      authCode: "28763443825664394",
+      idempotencyKey: `admission-won:${paymentId}`,
+      source: "serial_text",
+    });
+
+    let providerCalls = 0;
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let markProviderStarted!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const admitted = attempts.admitAndCall(created.attempt.id, async () => {
+      providerCalls += 1;
+      markProviderStarted();
+      await providerReleased;
+      return { status: "failed" };
+    });
+    await providerStarted;
+
+    const expiry = service.expireOverduePayments(
+      new Date(expiresAt.getTime() + 1),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const [whileSubmitting] = await database.client
+      .select({ status: payments.status })
+      .from(payments)
+      .where(eq(payments.id, paymentId));
+    expect(whileSubmitting.status).toBe("pending");
+
+    releaseProvider();
+    await admitted;
+    expect((await expiry).processed).toBe(0);
+    expect(providerCalls).toBe(1);
+
+    await attempts.markStatus(created.attempt.id, "failed", {
+      finishedAt: new Date(),
+    });
+    expect(
+      await service.expireOverduePayments(new Date(expiresAt.getTime() + 2)),
+    ).toEqual({ processed: 1 });
+
+    const [payment] = await database.client
+      .select({ status: payments.status })
+      .from(payments)
+      .where(eq(payments.id, paymentId));
+    const [order] = await database.client
+      .select({ status: orders.status })
+      .from(orders)
+      .where(eq(orders.id, orderId));
+    expect(payment.status).toBe("expired");
+    expect(order.status).toBe("payment_expired");
   });
 });

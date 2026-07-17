@@ -414,4 +414,46 @@ describe("PaymentCodeAttemptsService", () => {
     ).rejects.toThrow(new ConflictException("payment_code_order_not_payable"));
     expect(tx.insert).not.toHaveBeenCalled();
   });
+
+  it("rejects an attempt when its payment has reached expiry", async () => {
+    const tx = { select: vi.fn(), insert: vi.fn() };
+    tx.select.mockReturnValueOnce(
+      makeSelectResult([
+        {
+          orderId: "order-1",
+          orderNo: "ORD001",
+          orderStatus: "pending_payment",
+          paymentState: "awaiting_payment",
+          fulfillmentState: "awaiting_fulfillment",
+          machineId: "machine-1",
+          paymentId: "payment-1",
+          paymentNo: "PAY001",
+          paymentProviderConfigId: "cfg-1",
+          amountCents: 300,
+          paymentStatus: "pending",
+          paymentMethod: "payment_code",
+          providerId: "provider-1",
+          providerCode: "alipay",
+          expiresAt: new Date(Date.now() - 1),
+        },
+      ]),
+    );
+    const db = {
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => unknown) => fn(tx)),
+    };
+    const service = new PaymentCodeAttemptsService(db as never);
+
+    await expect(
+      service.createOrReplay({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-expired",
+        source: "serial_text",
+      }),
+    ).rejects.toThrow(new ConflictException("payment_code_order_not_payable"));
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
 });

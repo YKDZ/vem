@@ -79,7 +79,11 @@ export class PaymentCodeOrchestratorService {
       clientIp: string | null;
     },
   ): Promise<PaymentCodeSubmitResponse> {
-    const { payment, attempt, replayed } = await this.attempts.createOrReplay({
+    const {
+      payment,
+      attempt: createdAttempt,
+      replayed,
+    } = await this.attempts.createOrReplay({
       orderNo: input.orderNo,
       machineCode: input.machineCode,
       authCode: input.authCode,
@@ -90,56 +94,66 @@ export class PaymentCodeOrchestratorService {
     });
 
     if (replayed) {
-      return this.toSubmitResponse(input.orderNo, payment.paymentNo, attempt);
+      return this.toSubmitResponse(
+        input.orderNo,
+        payment.paymentNo,
+        createdAttempt,
+      );
     }
 
-    assertPaymentCodeProvider(payment.providerCode);
-    if (payment.providerCode !== "mock")
-      await this.configService.assertMachinePaymentChannelAvailable({
-        providerCode: payment.providerCode,
-        method: "payment_code",
-        machineId: payment.machineId,
-      });
+    let provider: PaymentCodeCapableProvider;
+    let config: PaymentProviderRuntimeConfig;
+    try {
+      assertPaymentCodeProvider(payment.providerCode);
+      if (payment.providerCode !== "mock")
+        await this.configService.assertMachinePaymentChannelAvailable({
+          providerCode: payment.providerCode,
+          method: "payment_code",
+          machineId: payment.machineId,
+        });
 
-    const provider = this.registry.getPaymentCodeProvider(payment.providerCode);
-    const config =
-      payment.providerCode === "mock"
-        ? {
-            providerCode: "mock",
-            merchantNo: null,
-            appId: null,
-            publicConfigJson: {},
-            sensitiveConfigJson: {},
-          }
-        : await this.configService.resolveForExistingPayment({
-            providerCode: payment.providerCode,
-            providerConfigId: payment.providerConfigId,
-            machineId: payment.machineId,
-            providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
-          });
+      provider = this.registry.getPaymentCodeProvider(payment.providerCode);
+      config =
+        payment.providerCode === "mock"
+          ? {
+              providerCode: "mock",
+              merchantNo: null,
+              appId: null,
+              publicConfigJson: {},
+              sensitiveConfigJson: {},
+            }
+          : await this.configService.resolveForExistingPayment({
+              providerCode: payment.providerCode,
+              providerConfigId: payment.providerConfigId,
+              machineId: payment.machineId,
+              providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
+            });
+    } catch (error) {
+      await this.failUnadmittedAttempt(createdAttempt.id, error);
+      throw error;
+    }
 
-    await this.attempts.markStatus(attempt.id, "submitting", {
-      submittedAt: new Date(),
-    });
-
+    let attempt = createdAttempt;
     let charge: Awaited<ReturnType<typeof provider.chargePaymentCode>>;
     try {
-      charge = await provider.chargePaymentCode({
-        paymentNo: attempt.providerPaymentNo,
-        orderNo: input.orderNo,
-        amountCents: payment.amountCents,
-        authCode: input.authCode,
-        terminalId: this.readString(config.publicConfigJson, "terminalId"),
-        storeId: this.readString(config.publicConfigJson, "storeId"),
-        clientIp: input.clientIp,
-        config,
-      });
+      const admitted = await this.attempts.admitAndCall(
+        createdAttempt.id,
+        async (admittedAttempt) =>
+          await provider.chargePaymentCode({
+            paymentNo: admittedAttempt.providerPaymentNo,
+            orderNo: input.orderNo,
+            amountCents: payment.amountCents,
+            authCode: input.authCode,
+            terminalId: this.readString(config.publicConfigJson, "terminalId"),
+            storeId: this.readString(config.publicConfigJson, "storeId"),
+            clientIp: input.clientIp,
+            config,
+          }),
+      );
+      attempt = admitted.attempt;
+      charge = admitted.result;
     } catch (error) {
-      await this.attempts.markStatus(attempt.id, "failed", {
-        failureCode: "PROVIDER_EXCEPTION",
-        failureMessage: error instanceof Error ? error.message : String(error),
-        finishedAt: new Date(),
-      });
+      await this.failUnadmittedAttempt(createdAttempt.id, error);
       throw error;
     }
 
@@ -249,6 +263,22 @@ export class PaymentCodeOrchestratorService {
       canRetry: true,
       serverTime: new Date().toISOString(),
     };
+  }
+
+  private async failUnadmittedAttempt(
+    attemptId: string,
+    error: unknown,
+  ): Promise<void> {
+    await this.attempts.markStatusIfCurrentStatusIn(
+      attemptId,
+      "failed",
+      ["created", "submitting"],
+      {
+        failureCode: "PAYMENT_CODE_ADMISSION_FAILED",
+        failureMessage: this.errorMessage(error),
+        finishedAt: new Date(),
+      },
+    );
   }
 
   private async confirmLater(
